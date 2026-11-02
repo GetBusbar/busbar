@@ -1,16 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The hook message cap, as 1.5.5 applied it: an over-long value is cut to the cap and nothing is
-//! added.
-//!
-//! In 1.5.5 (`crates/busbar/src/hooks/wire.rs` at the `v1.5.5` tag) `sanitize_reject_message`
-//! kept the first `REJECT_MESSAGE_MAX_CHARS` characters, and `sanitize_cap` kept the first `n`
-//! characters of a status metric's `help`, `label` and `unit`. Predev replaces the last kept
-//! character with `…`. A hook's reject message is the error text the client receives, and the
-//! metric strings reach `/metrics/hooks` and the admin hook status, so the extra character is a
-//! customer-visible change that nobody signed. These tests hold the 1.5.5 bytes.
-
 use busbar_contract::hook_wire::reply::{
     parse_status_metrics, sanitize_reject_message, MAX_METRIC_HELP_CHARS, MAX_METRIC_LABEL_CHARS,
     MAX_METRIC_UNIT_CHARS, REJECT_MESSAGE_MAX_CHARS,

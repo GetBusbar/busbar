@@ -1,14 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE COMPILED-IN SHORTCUT'S RED ARM (store), host side. The store kind's ONE
-//! conformance suite is the published script (`conformance/store.rs`), run in-tree over the
-//! build's store, linked and dropped in (`conformance_store_runs_tests`). What stays here is the
-//! one arm that is not a plugin's: the pre-table arrangement reached the compiled-in store through
-//! its Rust type, a shortcut with no `op_id`, so a write the caller retried after losing the answer
-//! applies twice; through the table the retry carries the same `op_id` and applies once. The
-//! comparator must see the difference.
-
 use std::sync::Arc;
 
 use busbar_contract::abi::store::OpId;
@@ -19,7 +11,6 @@ use crate::dispatch::kinds::store::Store;
 use crate::dispatch::{load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink};
 use crate::store_v3::LoadedStore;
 
-/// The shipped build's store: its compiled-in door, through the table.
 fn compiled_in() -> LoadedStore {
     let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let row = LinkedRow::of(crate::both_ways::store_fixture::door)
@@ -35,7 +26,6 @@ fn compiled_in() -> LoadedStore {
     LoadedStore::open(p, d, b"{}", mint).expect("it opens")
 }
 
-/// This test process's `op_id` allocator: one counter, as the kernel's `door::op_id` is.
 fn mint() -> OpId {
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     OpId::from_parts(
@@ -63,7 +53,6 @@ fn delta(requests: i64, input: i64) -> UsageDelta {
     }
 }
 
-/// THE RED ARM, KEPT: the table (either door) applies a replayed write once; the shortcut twice.
 #[test]
 fn the_compiled_in_shortcut_answers_a_replayed_write_differently() {
     let table = compiled_in();

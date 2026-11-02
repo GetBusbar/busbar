@@ -1,23 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE BINARY A BOOT CLOCK TIMES — the shipped `busbar` under test, already exec'd once.
-//!
-//! A boot deadline measures how long BUSBAR takes to come up: parse its config, seal its
-//! composition, bind its listeners. It does not measure how long the operating system takes to
-//! page in and admit a freshly linked binary on its first exec (on macOS the first exec of a new
-//! ~170MB debug image was measured at 8.4s on its own, then 0.03s on every later exec), and on a
-//! loaded machine that one-time cost alone pushed a 30s boot deadline over while busbar itself had
-//! not yet started. So the path every boot-deadline test spawns comes from [`exe`], which runs
-//! `busbar --version` to completion once per test process before handing the path out: the
-//! first-exec cost is paid before any clock starts, and the deadline keeps its value.
-
 use std::path::Path;
 use std::process::Command;
 use std::sync::OnceLock;
 
-/// The path of the shipped binary under test, exec'd once (`--version`) before it is returned, so
-/// a boot deadline started after this call times busbar's boot and not the binary's first exec.
 pub fn exe() -> &'static str {
     static WARM: OnceLock<()> = OnceLock::new();
     let path = env!("CARGO_BIN_EXE_busbar");
@@ -36,32 +23,6 @@ pub fn exe() -> &'static str {
     path
 }
 
-/// A LOOPBACK PORT THIS PROCESS OWNS FROM THE MOMENT IT IS CHOSEN, for the child busbar to listen on.
-///
-/// A port picked by binding `:0` and DROPPING the socket is not owned by anyone until the child
-/// binds it, and the child is a process spawn and a boot away. In that window any socket on the
-/// machine may take the number: an outbound connection's ephemeral source port, a TIME_WAIT left by
-/// one, any listener bound to `:0` next — the test's own loopback upstream among them (the kernel
-/// handed a just-dropped number straight back to it). The child then refuses to boot (BUSBAR-9007,
-/// `cannot bind ... Address already in use`) with nothing of the test's wrong.
-/// Busbar cannot be told to bind `:0` and report the port back (its listen line logs the CONFIGURED
-/// address, 1.5.5's line, and each data worker binds the address itself), and it takes no inherited
-/// listener. So the port is never released instead: the socket that chose it stays BOUND, never
-/// listening, for this process's lifetime, with `SO_REUSEADDR` and `SO_REUSEPORT` — the options every
-/// root listener binds with (`busbar_core_connector::socket::listen`). The child's listeners bind
-/// beside it; nothing else can: an ephemeral bind or an outbound connection is never handed a port
-/// a socket is bound to. Never listening, it takes no connection and a connect before the child
-/// listens is refused as it was.
-///
-/// That holds on Linux, where every test run that gates this tree runs. Elsewhere the socket is
-/// dropped after choosing the port. On other unixes a bound,
-/// non-listening socket swallows a SYN instead of refusing it (a poll that connects before the child
-/// listens would hang for the OS connect timeout), so there the socket is dropped as before.
-///
-/// Each number is also claimed by an exclusive lock on a per-port file shared by every test process
-/// on the machine, held until this process exits, and a claimed number is skipped: where the socket
-/// is not kept, that claim is what stops two busbars from being handed one number (the data door's
-/// `SO_REUSEPORT` would let both listen and split the connections between them).
 pub fn free_port() -> u16 {
     static HELD: std::sync::Mutex<Vec<(std::fs::File, Option<socket2::Socket>)>> =
         std::sync::Mutex::new(Vec::new());
@@ -78,8 +39,6 @@ pub fn free_port() -> u16 {
     panic!("no loopback port could be reserved in 512 tries");
 }
 
-/// A loopback socket bound to an ephemeral port as a root listener binds (`SO_REUSEADDR` and
-/// `SO_REUSEPORT`), never listening, and the port the kernel chose for it.
 fn held_ephemeral_port() -> (socket2::Socket, u16) {
     use socket2::{Domain, Socket, Type};
     let socket = Socket::new(Domain::IPV4, Type::STREAM, None).expect("a stream socket");
@@ -98,7 +57,6 @@ fn held_ephemeral_port() -> (socket2::Socket, u16) {
     (socket, port)
 }
 
-/// The exclusive, cross-process claim on `port`, or `None` when another holder has it.
 pub fn try_reserve(port: u16) -> Option<std::fs::File> {
     let dir = std::env::temp_dir().join("busbar-test-ports");
     std::fs::create_dir_all(&dir).expect("the port-claim directory");
@@ -111,7 +69,6 @@ pub fn try_reserve(port: u16) -> Option<std::fs::File> {
     file.try_lock().ok().map(|()| file)
 }
 
-/// Own a child through every assertion path; unwinding must stop and reap the real binary too.
 pub struct Reap(pub std::process::Child);
 
 impl std::ops::Deref for Reap {
@@ -135,18 +92,10 @@ impl Drop for Reap {
     }
 }
 
-/// Whether the node's log holds BOTH "busbar listening" lines, the data side's (written by data
-/// worker 0) and the admin side's: what a test that compares the boot log's lines waits for before
-/// it stops the node, so neither line lands after the shutdown line. It is not a readiness wait:
-/// for that, [`healthz_answers`].
 pub fn log_shows_data_and_admin_listening(log: &str) -> bool {
     log.matches("busbar listening").count() >= 2
 }
 
-/// Whether the node's data door answers `GET /healthz` with `200` on loopback `port`: the
-/// readiness a client waits on. Once it answers, the admin surface is bound too (busbar binds the
-/// admin socket before any data worker serves, as 1.5.5 did), so an admin call made next is
-/// answered, never refused.
 pub fn healthz_answers(port: u16) -> bool {
     use std::io::{Read, Write};
     let Ok(mut s) = std::net::TcpStream::connect(("127.0.0.1", port)) else {
@@ -163,8 +112,6 @@ pub fn healthz_answers(port: u16) -> bool {
     buf.lines().next().and_then(|l| l.split_whitespace().nth(1)) == Some("200")
 }
 
-/// The node's whole log, printed to the test's stderr when the test panics while this guard is
-/// held, so a red shows what the node said (a refused connection names no cause on its own).
 pub struct DumpOnPanic<'a>(pub &'a Path);
 
 impl Drop for DumpOnPanic<'_> {

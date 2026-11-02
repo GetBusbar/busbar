@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE SETTINGS THE PLANE SCRIPT HANDS `open` AND `refresh` ([`handed`]), in the form the
-//! composition root hands them (`busbar::root::serve::settings_of`): a plane that declares the
-//! kernel-owned `pools` map, or reads any section beside its own (`SECTION_CONSUMED`), opens with
-//! ONE object keyed by section; any other plane with its section bare. RED: a keyed plane handed
-//! its section bare, a bare plane handed it keyed, inputs already keyed wrapped a second time.
-
 use serde_json::{json, Value};
 
 use super::handed;

@@ -1,26 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The fixed audit chain on the book: each unit's one record sealed and journalled whole
-//! (`audit.v4`), the in-memory cache of the newest [`AUDIT_RING`] rebuilt from the chain at boot, a
-//! window older than the cache read back off the journal, and the walk of the retained chain that
-//! `GET /admin/verify` reports.
-//!
-//! Split out of `durability/mod.rs` (structure-lint) — a private child module, as `replay` is; the
-//! journal body itself ([`audit_body`]) stays with the other journal writers in the parent.
-
 use super::*;
 use busbar_kernel_audit::Audit as _;
 
 impl Durability {
-    /// REBUILD THE AUDIT CACHE FROM THE CHAIN and continue the audit chain from its tail: every
-    /// `audit.v4` record is read back, the newest [`AUDIT_RING`] are kept, and the next record this
-    /// boot seals links to the last one a predecessor sealed. The chain is resumed FROM THE RECORDS,
-    /// so its head history is rebuilt with it: the head read answers with the tip the chain has,
-    /// never a null head beside a `next_seq` above one, and a window's anchor is the one it had
-    /// before the restart. A record that will not read back is a finding, never silently skipped.
-    /// The first record journalled after a `Bootstrap` (the keyset's seal) is where
-    /// [`Durability::audit_signed_from`] starts.
     pub(super) fn resume_audit(&mut self, records: &[JournalRecord]) {
         let mut sealed = Vec::new();
         let mut keyed = false;
@@ -41,26 +25,12 @@ impl Durability {
             }
         }
         if !sealed.is_empty() {
-            // Resumed as the node this book seals as: a predecessor's records name their own node.
             self.record = AuditChain::resume(&sealed).sealing_as(self.record.node());
         }
         let keep = sealed.len().saturating_sub(AUDIT_RING);
         self.audit_records = sealed.split_off(keep);
     }
 
-    /// SEAL A UNIT'S ONE FIXED AUDIT RECORD and put it on the journal, where the unit's one line is
-    /// written.
-    ///
-    /// `pass` is the audit pass the unit's own audit step was lent, handed back with its facts
-    /// (`Units::audited`): a unit that never passed its audit step has none, so it has no record,
-    /// and a pass seals once. The record is sealed under this boot's [`Durability::incarnation`] —
-    /// a unit key restarts with the process, the incarnation does not — and journalled whole
-    /// (`audit.v4`), so the journal can answer for it after the in-memory cache has let it go.
-    ///
-    /// # Errors
-    ///
-    /// The journal could not hand the batch to the Store lane, or its body could not be encoded.
-    /// The record is sealed on the chain and kept in the cache either way.
     pub fn seal_unit(
         &mut self,
         mut inputs: AuditInputs,
@@ -72,8 +42,7 @@ impl Durability {
         if record.key_id.is_some() && self.audit_signed_from.is_none() {
             self.audit_signed_from = Some(record.seq);
         }
-        // A record whose body cannot be written whole is a durability loss, reported as one: the
-        // journal never holds a record cut to fit.
+
         let appended = match audit_entry(&record) {
             Ok(entry) => self.journal.append(token, StepName::Audit, &[entry]),
             Err(_) => Err(DurabilityLost::observed(token, StepName::Audit)),
@@ -86,13 +55,6 @@ impl Durability {
         appended.map(|_| record)
     }
 
-    /// The sealed audit records at positions `from` through `to`, oldest first, at most
-    /// [`AUDIT_RING`] of them. From the cache when it covers `from`; otherwise read back off the
-    /// journal, which keeps every record — so a window older than the cache is never answered as
-    /// empty.
-    ///
-    /// `None` when the journal could not be read back, or does not verify: there is no window to
-    /// answer with then, and an empty one would say the chain holds nothing there (audit R1#3).
     #[must_use]
     pub fn audit_window(&self, from: u64, to: u64) -> Option<Vec<AuditRecord>> {
         match self.audit_window_at(from, to) {
@@ -101,11 +63,6 @@ impl Durability {
         }
     }
 
-    /// [`Durability::audit_window`] as of this hold of the book's lock: the cache's records when
-    /// it covers `from`, else the chain as of now ([`Durability::chain_at`]) to be read once the
-    /// lock is let go — on a node resumed from the store that read scans the store through its
-    /// plugin, which no unit's settle may wait on (THE DESIGN §11.2) — and finished under the lock
-    /// again by [`Durability::audit_window_since`].
     #[must_use]
     pub fn audit_window_at(&self, from: u64, to: u64) -> AuditWindowAt {
         let covered = self.audit_records.first().is_some_and(|r| r.seq <= from);
@@ -120,13 +77,6 @@ impl Durability {
         }
     }
 
-    /// FINISH A WINDOW READ OFF THE CHAIN, under the book's lock again: `window` is what
-    /// [`ChainAt::audit_window`] read of the chain as of the hold when the audit chain's next
-    /// position was `sealed_before`, and every record sealed since that falls in the window is
-    /// added from the cache, so the window and the head a range read folds in beside it answer as of
-    /// THIS hold (`AuditView::read`). `false` when the cache no longer reaches back to the first of
-    /// them, which only a run of more than [`AUDIT_RING`] seals during the read can do: the window
-    /// is then taken again.
     #[must_use]
     pub fn audit_window_since(
         &self,
@@ -153,12 +103,6 @@ impl Durability {
         true
     }
 
-    /// WHAT A WALK OF THE RETAINED AUDIT CHAIN FINDS, as `GET /admin/verify` reports it: a record
-    /// whose digest, link or position does not hold, a signature that does not verify under the
-    /// key it names, and a record with no signature at all at or after
-    /// [`Durability::audit_signed_from`] — the signature is not in the digest, so stripping it
-    /// leaves the chain whole and only this rule sees it. (What the boot could not read back is a restart finding.) Empty is the only
-    /// good answer.
     #[must_use]
     pub fn retained_audit_findings(&self) -> Vec<String> {
         let mut findings = Vec::new();
@@ -191,25 +135,13 @@ impl Durability {
     }
 }
 
-/// AN AUDIT WINDOW AS OF ONE HOLD OF THE BOOK'S LOCK ([`Durability::audit_window_at`]).
 pub enum AuditWindowAt {
-    /// The cache covers the window: its records, taken under the lock.
     Cached(Vec<AuditRecord>),
-    /// The window is older than the cache: the chain as of the hold, read without the lock
-    /// ([`ChainAt::audit_window`]), and the position the audit chain's next record took then.
-    OnChain {
-        /// The chain as of the hold.
-        chain: ChainAt,
-        /// The audit chain's next position at the hold: every record before it is on `chain`.
-        sealed_before: u64,
-    },
+
+    OnChain { chain: ChainAt, sealed_before: u64 },
 }
 
 impl ChainAt {
-    /// The sealed audit records at positions `from` through `to` on the chain as of the hold,
-    /// oldest first, at most [`AUDIT_RING`] of them. `None` when the chain could not be read back,
-    /// does not verify, or contains an audit record that does not decode, as
-    /// [`Durability::audit_window`].
     #[must_use]
     pub fn audit_window(self, from: u64, to: u64) -> Option<Vec<AuditRecord>> {
         let store = self.store().map(str::to_string);

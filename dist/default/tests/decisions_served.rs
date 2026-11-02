@@ -1,15 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DECISIONS PLANE, SERVED BY THE SHIPPED BINARY: a booted busbar whose config holds one
-//! `decisions.models` entry serves `POST /v1/systemone`, the plane's one jev claim, over that model's
-//! provider. The jev conformance suite (busbar-plane-decisions `testing/conformance/jev.sh`) judges
-//! the served bytes in depth; this test holds the one fact every other check stands on: the route is
-//! served, the far end is asked at the plane's path with the caller's bytes, and its answer reaches
-//! the caller. The last jev verdict (2026-09-28) read `404`, the absence code, on this request.
 #![cfg(unix)]
-// The configuration below is served by the plane door that declares `decisions:`; a build without
-// it is not the shape this test is about.
 #![cfg(linked_section_decisions)]
 
 mod common;
@@ -23,16 +15,13 @@ use std::time::{Duration, Instant};
 const ADMIN_TOKEN: &str = "decisions-served-admin";
 const PROVIDER_KEY: &str = "decisions-served-provider-key";
 
-/// The caller's request, odd spacing kept: a relay forwards these bytes as written.
 const REQUEST: &str = "{ \"state\" : {\"session\":\"served\",\"n\":[1, 2 ,3]},\n  \"context\":{} }";
-/// The far end's success, stating the units the plane meters.
+
 const SUCCESS: &str =
     "{\"request_id\" : \"req_served\", \"usage\":{\"units\":42},\"answers\":{\"decision\":\"approve\"}}";
 
-/// What the far end received: each request's head and body.
 type Seen = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
 
-/// A loopback far end answering every request with [`SUCCESS`], recording what it was asked.
 fn far_end() -> (u16, Seen) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind the far end");
     let port = listener.local_addr().unwrap().port();
@@ -70,8 +59,6 @@ fn fixture_dir(tag: &str) -> PathBuf {
     d
 }
 
-/// One jev provider at the far end, one decisions model over it, keys on the data plane, an admin
-/// token, the far end's loopback address declared as an allowed destination.
 fn write_configs(dir: &Path, upstream: u16, data: u16, admin: u16) {
     std::fs::write(
         dir.join("providers.yaml"),

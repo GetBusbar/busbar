@@ -1,20 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A PLUGIN'S LIFECYCLE RUNS ONLY ON THE PERMANENT FFI WORKERS (`crate::ffi_thread`), whoever calls
-//! it: a dispatcher worker, or a ticket-less caller thread that exits right after.
-//!
-//! A thread that runs plugin code and exits after the plugin's library is unmapped runs the
-//! plugin's Rust thread-exit cleanup out of unmapped memory and dies on SIGSEGV. `open` is where a
-//! plugin first touches its thread-locals and `close` runs its `Drop`, so both, with the rest of
-//! the lifecycle and the door function, cross on a worker that never exits.
-//!
-//! RED ARM: [`lifecycle_on_permanent_workers_open_and_close_from_a_throwaway_thread`] calls `open`
-//! and `close` ticket-less from a thread that then exits. Before the routing, both crossed on that
-//! thread and the debug assertion at the FFI call
-//! ([`lifecycle_on_permanent_workers_the_assertion_trips_off_the_workers`] proves it trips there)
-//! panicked it.
-
 use std::sync::Arc;
 
 use busbar_contract::abi::mechanism::call::{Blob, InHead, OutHead, Outcome, BLOB_OCTETS};
@@ -72,9 +58,6 @@ fn open_frame(settings: &'static [u8]) -> Frame<OpenIn, OpenOut> {
     )
 }
 
-/// The build's store, compiled in, opened and closed TICKET-LESS from a thread that exits right
-/// after: both answer READY, and neither enters plugin code on that thread (in a debug build the
-/// FFI call's assertion would panic it, and the join would fail).
 #[test]
 fn lifecycle_on_permanent_workers_open_and_close_from_a_throwaway_thread() {
     let outcomes = std::thread::Builder::new()
@@ -107,8 +90,6 @@ crate::dispatch_tests::c_abi! {
     }
 }
 
-/// The assertion at the FFI call is real: a lifecycle slot entered on a thread that is not a
-/// permanent worker panics it, naming the slot; the same slot entered on a worker does not.
 #[cfg(debug_assertions)]
 #[test]
 fn lifecycle_on_permanent_workers_the_assertion_trips_off_the_workers() {
@@ -116,7 +97,6 @@ fn lifecycle_on_permanent_workers_the_assertion_trips_off_the_workers() {
 
     use super::enter_lifecycle;
 
-    /// `a_slot` entered as lifecycle slot `open`, on the calling thread.
     fn enter_a_slot() -> RawOutcome {
         enter_lifecycle(
             "open",
@@ -148,9 +128,6 @@ fn key(id: &str) -> VirtualKey {
     }
 }
 
-/// THE STRESS: the store DROPPED IN (its `cdylib`), loaded, opened on a dispatcher worker, used,
-/// closed from the caller and unloaded 200 times across 8 caller threads that exit as they finish,
-/// each with dispatchers of their own. Every round answers, and no thread dies.
 #[test]
 fn lifecycle_on_permanent_workers_dropped_store_200_rounds() {
     const ROUNDS: usize = 200;

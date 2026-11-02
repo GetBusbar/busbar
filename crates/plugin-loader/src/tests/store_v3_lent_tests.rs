@@ -1,17 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE MEMORY A STORE CALL LENDS LIVES UNTIL ITS CROSSING RETURNS (`BUSBAR-1.6.0.md` THE DESIGN §2:
-//! "The memory a call lends a plugin lives until that call completes, abandoned or not, for every
-//! kind (a submit that the watchdog can abandon uses the lending submit)").
-//!
-//! A store door whose `record_get` and `get_plane_record` hold their crossing past the Call-class
-//! watchdog budget: the watchdog faults the op and the caller gets its answer (FAULT) while the
-//! crossing still runs. The caller then has its own key back and overwrites it. When the crossing
-//! is let go it reads the key its `in` names: it must still read the bytes the call lent, never the
-//! caller's reused (or freed) memory. Both surfaces: the typed [`StoreCalls`] and the synchronous
-//! [`RecordStore`] bridge.
-
 use std::ffi::c_void;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
@@ -26,7 +15,6 @@ use crate::dispatch::kinds::store::Store;
 use crate::dispatch::{load_linked, Bind, Budgets, DispatchConfig, Dispatcher, LinkedRow, NoSink};
 use crate::store_v3::LoadedStore;
 
-/// One wedged slot's gate: (let go, what the crossing read once let go).
 struct Gate {
     state: Mutex<(bool, Option<Vec<u8>>)>,
     cv: Condvar,
@@ -40,7 +28,6 @@ impl Gate {
         }
     }
 
-    /// The plugin's side: hold until let go, then read `len` bytes at `ptr` and post them.
     fn hold_then_read(&self, ptr: *const u8, len: usize) {
         let mut g = self.state.lock().unwrap();
         while !g.0 {
@@ -53,7 +40,6 @@ impl Gate {
         self.cv.notify_all();
     }
 
-    /// The test's side: let the crossing go and wait for what it read.
     fn release_and_read(&self) -> Vec<u8> {
         let mut g = self.state.lock().unwrap();
         g.0 = true;
@@ -70,7 +56,6 @@ impl Gate {
 static GET_GATE: Gate = Gate::new();
 static PLANE_GATE: Gate = Gate::new();
 
-/// `record_get`: holds its crossing until [`GET_GATE`] lets it go, then reads its key.
 struct WedgedGet;
 impl RawSlot for WedgedGet {
     type In = RecordGetIn;
@@ -81,7 +66,6 @@ impl RawSlot for WedgedGet {
     }
 }
 
-/// `get_plane_record`: holds its crossing until [`PLANE_GATE`] lets it go, then reads its id.
 struct WedgedPlaneGet;
 impl RawSlot for WedgedPlaneGet {
     type In = GetPlaneRecordIn;
@@ -158,7 +142,6 @@ mod wedged {
     }
 }
 
-/// A store on a dispatcher whose watchdog faults a Call-class crossing past 50 ms.
 fn open() -> LoadedStore {
     let d = Arc::new(Dispatcher::new(DispatchConfig {
         workers: 2,
@@ -194,9 +177,6 @@ fn mint() -> OpId {
 
 const LENT: u8 = 0xab;
 
-/// RED before the store's typed calls used the lending submit: the watchdog-faulted `record_get`
-/// returned to its caller while its crossing ran on over the caller's own key, so the crossing
-/// read the bytes the caller wrote after it had them back.
 #[test]
 fn a_watchdog_faulted_typed_call_keeps_the_memory_it_lent() {
     let s = open();
@@ -211,7 +191,7 @@ fn a_watchdog_faulted_typed_call_keeps_the_memory_it_lent() {
         answered.is_err(),
         "the watchdog faults the wedged op and the caller is answered: {answered:?}"
     );
-    // The caller has its key back: it is the caller's to reuse.
+
     key.fill(0);
     let read = GET_GATE.release_and_read();
     assert_eq!(
@@ -222,8 +202,6 @@ fn a_watchdog_faulted_typed_call_keeps_the_memory_it_lent() {
     drop(key);
 }
 
-/// RED before the bridge used the lending submit: as above, through the synchronous
-/// [`RecordStore`] surface.
 #[test]
 fn a_watchdog_faulted_bridge_call_keeps_the_memory_it_lent() {
     let s = open();

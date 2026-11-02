@@ -57,46 +57,12 @@ pub struct KeyFacts {
     pub name: String,
 }
 
-/// The port the root reaches a node's virtual-key directory through.
-///
-/// Both methods answer about a PRESENTED credential and neither hands anything back that could be
-/// presented again, which is what makes the port safe to hold behind a shared handle: there is no
-/// method on it that leaks a secret and no method that mutates the directory.
 pub trait VirtualKeyDirectory: Send + Sync {
-    /// Verify a busbar-minted signed key and resolve the facts behind it. `None` for anything that
-    /// is not a currently-valid key: unknown, unsigned, expired, rotated, revoked or disabled.
-    ///
-    /// `expected_aud` is the plane boundary, and it is threaded rather than checked by a caller for
-    /// the reason the unit's own trait doc gives: a route added to an audience-bound plane later
-    /// cannot forget a check that happens inside the verifier. `None` means the residual plane,
-    /// where a token that CARRIES an audience is inadmissible.
-    ///
-    /// The order an implementor must follow is the ladder the design pins — signature, then the
-    /// token's own expiry, then the denylist, then the rotation generation — each step
-    /// short-circuiting the ones after it, so the FIRST reason a token failed is the one the design
-    /// names rather than a later one that happened to also be true.
     fn verify(&self, credential: &str, now: u64, expected_aud: Option<&str>) -> Option<KeyFacts>;
 
-    /// Whether the subject a credential names is on the revocation denylist.
-    ///
-    /// This is the gate for a NEW unit and for nothing else — a unit already in flight is never
-    /// asked, because revoking mid-unit would tear down work already paid for and observed while
-    /// the next unit is refused a fraction of a second later anyway.
-    ///
-    /// It is deliberately NOT the only place revocation is enforced, and it is not the place a
-    /// signed token's revocation is enforced: [`VirtualKeyDirectory::verify`] consults the same
-    /// denylist as its third step, so a revoked token is already refused before this is reached.
-    /// What this covers is the credential shapes whose subject IS the credential's own id, where
-    /// there is no signature to read a subject out of. An implementor that cannot resolve a
-    /// credential to a subject answers `false` and loses nothing: the verifier has already refused
-    /// everything this would have refused.
     fn revoked(&self, credential: &str) -> bool;
 }
 
-/// The two traits the unit asks for, over one directory.
-///
-/// One value implementing both, rather than two, because they answer from the same source and
-/// binding them separately is how a deployment ends up with a verifier and a denylist that disagree.
 struct DirectoryArm(Arc<dyn VirtualKeyDirectory>);
 
 impl KeyVerifier for DirectoryArm {
@@ -121,15 +87,11 @@ impl RevocationView for DirectoryArm {
     }
 }
 
-/// Everything the authenticate step is handed beside the request itself.
-///
-/// Built at boot and borrowed by every unit that authenticates.
 pub struct AuthBindings {
     directory: Option<DirectoryArm>,
 }
 
 impl AuthBindings {
-    /// Bind a virtual-key directory.
     #[must_use]
     pub fn new(directory: Arc<dyn VirtualKeyDirectory>) -> Self {
         AuthBindings {
@@ -137,24 +99,16 @@ impl AuthBindings {
         }
     }
 
-    /// Bind nothing — the posture of a node that resolves no busbar-minted keys.
-    ///
-    /// Not a degraded build and not a placeholder. With no verifier the signed-key arm denies, which
-    /// is the fail-closed answer the chain already documents for exactly this case; with no
-    /// revocation view the NEW-unit gate does not run, which changes nothing a verifier that denies
-    /// everything had not already decided.
     #[must_use]
     pub fn without_directory() -> Self {
         AuthBindings { directory: None }
     }
 
-    /// The signed-key verifier, when a directory was bound.
     #[must_use]
     pub fn keys(&self) -> Option<&dyn KeyVerifier> {
         self.directory.as_ref().map(|d| d as &dyn KeyVerifier)
     }
 
-    /// The revocation view, when a directory was bound.
     #[must_use]
     pub fn revocations(&self) -> Option<&dyn RevocationView> {
         self.directory.as_ref().map(|d| d as &dyn RevocationView)
@@ -169,17 +123,11 @@ impl std::fmt::Debug for AuthBindings {
     }
 }
 
-/// The virtual-key directory a node whose keys are busbar's own has: the governance state.
-///
-/// A delegation and nothing more. Both methods forward to the state's own published answer, so
-/// there is no second opinion here about what a valid key is, no second denylist, and nothing this
-/// type could get wrong that the state has not already decided.
 pub struct GovernanceDirectory {
     state: Arc<busbar_kernel::governance::GovState>,
 }
 
 impl GovernanceDirectory {
-    /// Bind the directory to one governance state.
     #[must_use]
     pub fn new(state: Arc<busbar_kernel::governance::GovState>) -> Self {
         GovernanceDirectory { state }
@@ -197,35 +145,17 @@ impl VirtualKeyDirectory for GovernanceDirectory {
     }
 
     fn revoked(&self, credential: &str) -> bool {
-        // The denylist is keyed by SUBJECT id. A signed token's own revocation was already enforced
-        // inside `verify_token`, so what this answers for is a credential that IS its subject's id.
-        // A credential that is neither is not on the denylist and answers `false`, which is the same
-        // answer the gate would have reached by any other route.
         self.state.is_revoked(credential)
     }
 }
 
-/// The fixed id the operator's admin credential identifies as.
-///
-/// The previous release's own literal, and the reason the scope rule can be written as an equality:
-/// the operator credential is the root credential a deployment is born with, so what it identifies
-/// as is a constant of the surface rather than a value a configuration picks.
 pub const ADMIN_PRINCIPAL_ID: &str = "admin";
 
-/// THE ROOT MIGRATION TABLE: the operator credential's provider, as configuration spells it (the
-/// `auth.admin_auth:` default, the one `module:` whose definition may carry `token:`, and a reserved
-/// hook name). Frozen operator-visible config text the root hands to the kernel with its linked auth
-/// rows, so the kernel spells it nowhere. The word is the manifest's: the registry key
-/// of the row its `[package.metadata.busbar.operator-auth]` table names, stated in packaging whether
-/// or not this build links that row, so no source here names the module. Its value is v1.5.5's
-/// (v1.5.5:crates/busbar/src/config/mod.rs:795; :1874,1891, the hook-name reservation).
 #[must_use]
 pub fn operator_auth_module() -> &'static str {
     crate::LINKED.operator_auth
 }
 
-/// THE OPERATOR CREDENTIAL'S WORDS, off the root migration table: [`operator_auth_module`] and
-/// [`ADMIN_PRINCIPAL_ID`] (v1.5.5's operator principal id).
 #[must_use]
 pub fn operator_words() -> busbar_kernel_identity::operator::OperatorWords {
     busbar_kernel_identity::operator::OperatorWords {

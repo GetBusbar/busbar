@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Independent permanent audit anchors in the configured Store (Decision 82).
-//! Samples never share the journal's schema or a plane's retention table. The final part of an
-//! audit record and its new checkpoint cross in one conditional transaction on the existing lane.
-
 use busbar_contract::abi::sdk::store::conditional::{Decision, Expected, Mutation, Predicate};
 use busbar_contract::store_calls::StoreCalls;
 use busbar_kernel_audit::{heads::HEAD_SAMPLE_SECONDS, HeadHistory, SignedHead};
@@ -125,7 +121,6 @@ fn checkpoint(calls: &dyn StoreCalls, node: u64) -> Result<Option<(Checkpoint, V
     Ok(Some((checkpoint, raw.as_slice().to_vec())))
 }
 
-/// Prefix subdivision reads every sample without a lifetime-size ceiling or an unbounded answer.
 fn samples(calls: &dyn StoreCalls, node: u64) -> Result<Vec<Head>, String> {
     let mut pending = vec![sample_prefix(node)];
     let mut rows = Vec::new();
@@ -186,8 +181,6 @@ pub(super) fn load(calls: &dyn StoreCalls, node: u64) -> Result<Option<HeadHisto
     .map_err(str::to_string)
 }
 
-/// Backfill completes before the book can enqueue writes. Samples without a tip are an interrupted
-/// backfill: they must be an exact prefix of the journal-derived samples, never silently replaced.
 #[cfg(test)]
 pub(super) fn initialize(
     calls: &dyn StoreCalls,
@@ -343,7 +336,6 @@ fn backfill_put(
                 {
                     return Err("audit checkpoint changed during backfill".into());
                 }
-                // A definitive miss with unchanged audit state can only be a refreshed lease.
             }
         }
     }
@@ -521,7 +513,6 @@ impl Advance {
                             return Err("an immutable audit sample changed".into());
                         }
                     }
-                    // Only the lease predicate changed. Refresh that predicate, not the audit head.
                 }
             }
         }

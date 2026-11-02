@@ -1,19 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! NO TELEMETRY, AIR-GAP DEPLOYABLE (privacy page: "Busbar does not include telemetry that phones
-//! home to us"; site: "Air-gap deployable"). The real binary boots the configuration the
-//! getbusbar/busbar image ships (`docker/config.yaml` over the shipped `providers.yaml`), listening
-//! on loopback, and sits idle with no caller. Busbar dials only when it serves a request or runs
-//! something the operator configured (a probe, a sink, a store, an MCP upstream); the shipped
-//! default configures none of those, so the process must hold no outbound socket at all: from spawn
-//! through boot and an idle window after it, every socket it owns is a listener or a connection
-//! accepted on one of its own listeners.
-//!
-//! The process's sockets are read from the operating system, not from busbar: `/proc/<pid>/fd` and
-//! `/proc/<pid>/net/{tcp,tcp6,udp,udp6}` on Linux, `lsof` on macOS. A dial that bypassed the
-//! connector (a plugin's own client) is caught the same as one through it. The idle window is
-//! bounded, so a phone-home scheduled long after boot is out of its reach.
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 
 mod common;
@@ -23,7 +10,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-/// How long the idle node is watched after both listeners are up.
 const IDLE_WINDOW: Duration = Duration::from_secs(8);
 
 fn repo_root() -> PathBuf {
@@ -45,7 +31,6 @@ fn fixture_dir() -> PathBuf {
     d
 }
 
-/// The shipped image default, its listeners moved to loopback test ports; nothing else changes.
 fn shipped_default_on(data: u16, admin: u16) -> String {
     let shipped = std::fs::read_to_string(repo_root().join("docker/config.yaml"))
         .expect("the shipped docker/config.yaml");
@@ -60,7 +45,6 @@ fn shipped_default_on(data: u16, admin: u16) -> String {
     )
 }
 
-/// One socket the process owns that is neither a listener nor accepted on one of `own`: a dial.
 fn outbound_sockets(pid: u32, own: &[u16]) -> Vec<String> {
     #[cfg(target_os = "linux")]
     {
@@ -84,7 +68,6 @@ fn macos_outbound(pid: u32, own: &[u16]) -> Vec<String> {
     text.lines()
         .skip(1)
         .filter(|line| {
-            // NAME is the second-to-last column for TCP ("a->b (STATE)") and the last for UDP.
             let name = line
                 .split_whitespace()
                 .find(|w| w.contains(':'))
@@ -172,7 +155,6 @@ fn default_config_makes_no_outbound_connection() {
     let own = [data, admin];
     let read = || std::fs::read_to_string(&log_path).unwrap_or_default();
 
-    // From spawn: every sample, through boot and the idle window after it.
     let mut seen: BTreeSet<String> = BTreeSet::new();
     let mut samples = 0usize;
     let boot_deadline = Instant::now() + Duration::from_secs(30);

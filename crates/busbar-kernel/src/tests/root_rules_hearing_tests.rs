@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The root's destination guard hears a committed configuration through the root's rules, which
-//! every build is handed and every generation keeps.
-
 use std::sync::{Arc, Mutex};
 
 use crate::appbuild::RootRules;
@@ -153,12 +150,8 @@ fn a_completed_candidate_refusal_is_returned_before_a_reload_can_replace_the_old
     assert_eq!(prior.config_version, prior_version);
 }
 
-/// THE COMMIT REACHES THE GUARD THROUGH THE ROOT'S RULES, as it reached it through the installed
-/// capability: a build dropped unkept (an apply whose persist or swap failed) raises nothing, and a
-/// kept build raises exactly the destinations its configuration states, once.
 #[test]
 fn a_kept_build_raises_its_destinations_to_the_rules_it_was_judged_by() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
     crate::snapshot::init();
     let cfg = || {

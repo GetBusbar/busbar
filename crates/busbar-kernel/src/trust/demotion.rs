@@ -1,53 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DURABLE DEMOTION RECORD — what makes a quarantine outlive the process that noticed it.
-//!
-//! ## The hole this closes, stated exactly
-//!
-//! A drift quarantine is DERIVED, never stored: the kernel's trust book ([`crate::trust::book`])
-//! compares the operator's approval against the last sighting, and a state nobody stores is a state
-//! nothing can leave stale. That is the right design and it has one consequence — the observation is
-//! in process memory, so a restarted process has none, and an upstream with no observation answers the
-//! owning plane's "unsighted" digest state, which dispatches against the digest the
-//! operator WROTE IN CONFIG.
-//!
-//! That fallback is correct and must stay: a deployment that never runs a refresh has only the
-//! operator's declarative approval, and treating "we have never looked" as "it moved" would empty
-//! the catalogue of every such deployment on the day it shipped. But it is correct only for an upstream
-//! NOBODY LOOKED AT. For an upstream somebody looked at and DEMOTED it is wrong, and before this
-//! existed nothing on disk told those two apart — so a restart handed a demoted upstream its
-//! approval back until the next unattended sweep looked again.
-//!
-//! ## Which is why the record is a fact, not a state
-//!
-//! What is written is not "this upstream is quarantined". It is "a live observation of this upstream
-//! disagreed with the approval, at this time" — an OBSERVATION that outlives the process, in exactly
-//! the way the in-memory sighting was always meant to and could not. It is replayed at admit
-//! ([`crate::trust::book::TrustBook::admit`]) as a demotion the counterparty's pin must be seen
-//! again to clear. Nothing acquires a stored trust state.
-//!
-//! The boot replay itself — the owning plane's own hydration routine — stays on that plane for now,
-//! because it reaches into that plane's own client to seed the live sightings cache. This module holds
-//! only the pure core state: the row store and the one settle rule.
-//!
-//! Two things follow, and both are deliberate:
-//!
-//! - An upstream with NO record replays as nothing at all, so it is `Never` sighted and the declarative
-//!   fallback applies to it exactly as before. The absence of a row is not a demotion.
-//! - The record is CLEARED by the first observation that agrees with the approval again, which is
-//!   how an operator's remedy takes effect: they fix the upstream, the sweep looks, the row goes.
-//!   Nothing else clears it — in particular a restart does not, which is the whole point.
-//!
-//! ## What a deployment with no durable store gets
-//!
-//! Exactly what it had. [`busbar_contract::records::RecordStore`]'s methods here are defaulted to accept-and-keep-
-//! nothing, so with no sink attached — or with a backend that implements none of them, which is the
-//! same thing from here — the write is discarded and the boot read is empty. The quarantine is then
-//! process-local and bounded by one sweep interval, which is the pre-existing behaviour. As
-//! everywhere else on this seam, a write's `Ok(())` is not evidence of durability: the engine finds
-//! out what its backend kept by READING IT BACK at boot.
-
 use crate::store::plane_view::{decode, encode, PlaneStore, KIND_DEMOTION, KIND_TRUST_DECISION};
 use crate::trust::book::RulingRow;
 use busbar_contract::records::{PlaneDisposition, PlaneRecord, PlaneSelector, RecordStoreResult};
@@ -69,8 +22,6 @@ pub struct DemotionRow {
     pub recorded_at: u64,
 }
 
-/// Upsert `body` as the one point-read record `(kind, id)` at `ts`. Neither record kind here is
-/// purged by age, so the disposition is immaterial and left `Active`.
 fn upsert<T: serde::Serialize>(
     store: &dyn PlaneStore,
     kind: &str,
@@ -103,16 +54,10 @@ impl DemotionRecord {
         Self::default()
     }
 
-    /// Attach the configured governance store. Called once at boot, on the instance that is carried
-    /// across every later config apply — a demotion is evidence, not intent, so an unrelated config
-    /// edit must not be able to detach the thing that remembers it.
     pub fn set_sink(&self, store: Arc<dyn PlaneStore>) {
         *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = Some(store);
     }
 
-    /// Poison-recovering, like every other request-path lock in this process: the value behind it is
-    /// an `Option<Arc<_>>` that a panic cannot have torn, and cascading the poison would take the
-    /// quarantine record out of service for the life of the process over an unrelated panic.
     fn sink(&self) -> Option<Arc<dyn PlaneStore>> {
         self.sink
             .lock()
@@ -121,13 +66,6 @@ impl DemotionRecord {
             .cloned()
     }
 
-    /// RECORD that a live observation of `upstream` disagreed with the approval.
-    ///
-    /// A failure is reported and swallowed rather than propagated, and the choice is the same one
-    /// the durable call log makes: the demotion is ALREADY IN FORCE in this process the moment the
-    /// sweep derives it, so a store hiccup costs durability across a restart and never costs the
-    /// refusal itself. What it must not be is silent — a deployment whose quarantines are not
-    /// surviving restarts has to be able to find that out.
     pub(crate) fn record(&self, upstream: &str, reason: &str, now: u64) {
         let Some(store) = self.sink() else {
             return;
@@ -149,9 +87,6 @@ impl DemotionRecord {
         }
     }
 
-    /// CLEAR `upstream`'s record — what an observation that agrees with the approval does. Clearing an
-    /// absent row is a no-op at the store, so this runs on every agreeing observation rather than
-    /// the engine tracking whether it had demoted.
     pub(crate) fn clear(&self, upstream: &str) {
         let Some(store) = self.sink() else {
             return;
@@ -168,20 +103,11 @@ impl DemotionRecord {
         }
     }
 
-    /// EVERY recorded demotion. Empty when no store is attached, when the backend keeps none, and
-    /// when there genuinely are none — three situations that are indistinguishable from here and
-    /// have the same correct outcome, which is that nothing is replayed.
-    ///
-    /// # Errors
-    ///
-    /// The store could not be read. The caller refuses rather than re-open an upstream this
-    /// deployment demoted.
     pub fn read(&self) -> Result<Vec<DemotionRow>, String> {
         self.list_kind(KIND_DEMOTION)
             .map_err(|e| format!("the durable demotion records could not be read: {e}"))
     }
 
-    /// Every record of `kind`, decoded; empty when no store is attached.
     fn list_kind<T: serde::de::DeserializeOwned>(&self, kind: &str) -> RecordStoreResult<Vec<T>> {
         let Some(store) = self.sink() else {
             return Ok(Vec::new());
@@ -191,20 +117,11 @@ impl DemotionRecord {
             .and_then(|bodies| bodies.iter().map(|body| decode(body)).collect())
     }
 
-    /// [`Self::read`], for a test that holds a store which answers.
     #[cfg(test)]
     pub fn list(&self) -> Vec<DemotionRow> {
         self.read().expect("the test store answers")
     }
 
-    /// KEEP the operator's trust decision about one key, upserted under it (the instance label,
-    /// the counterparty and any item, joined by the unit separator). Unlike a demotion this is the
-    /// answer to an operator's write, so a failure is RETURNED, in the store's own words, for the
-    /// write to refuse: a decision nothing kept was not made durable.
-    ///
-    /// # Errors
-    ///
-    /// The store's refusal.
     pub fn keep_decision(&self, row: &RulingRow, now: u64) -> Result<(), String> {
         let Some(store) = self.sink() else {
             return Ok(());
@@ -218,40 +135,14 @@ impl DemotionRecord {
         upsert(&*store, KIND_TRUST_DECISION, id, now, row).map_err(|e| e.to_string())
     }
 
-    /// EVERY kept trust decision; empty when no store is attached or none was kept.
-    ///
-    /// # Errors
-    ///
-    /// The store could not be read. The caller refuses rather than let the configured trust stand
-    /// over an operator's revoke it cannot see.
     pub fn decisions(&self) -> Result<Vec<RulingRow>, String> {
         self.list_kind(KIND_TRUST_DECISION)
             .map_err(|e| format!("the durable trust decisions could not be read: {e}"))
     }
 }
 
-/// SETTLE the durable record against what an observation just derived. THE ONE RULE, written once.
-///
-/// Both things that take a live observation of an upstream call this — the unattended sweep and
-/// the operator's `connect` verb — and they call it rather than each deciding for itself, because
-/// two copies of this rule is how one of them comes to record a demotion the other never clears. An
-/// operator who works a remedy through `connect` and sees `approved` must not find the upstream
-/// quarantined again at the next restart.
-///
-/// ONLY `Quarantined` records, and the narrowness is deliberate. `Error` is an upstream that could
-/// not be reached, which is transient and re-derived by the next look; persisting it would turn a
-/// network blip into a quarantine that survives restarts. `Suspended` is the operator's own standing
-/// decision and already lives in config. `Pending` is an unpinned registration, which serves nothing
-/// for a reason that has nothing to do with drift. What is durable here is the one fact nothing else
-/// keeps: the upstream was observed serving something other than what was approved.
-///
-/// And ONLY `Approved` clears. Every other state leaves the row exactly as it is — an upstream that
-/// has stopped answering has not stopped drifting, and clearing on it would let a demoted upstream
-/// buy its approval back by going dark.
 pub(crate) fn settle(demotions: &DemotionRecord, upstream: &str, state: crate::trust::TrustState) {
     match state {
-        // The WALL clock, not the sweep's monotonic tick: this timestamp is read by an operator
-        // after a restart, and a tick would be meaningless to them.
         crate::trust::TrustState::Quarantined => {
             demotions.record(upstream, state.word(), busbar_kernel::store::now())
         }

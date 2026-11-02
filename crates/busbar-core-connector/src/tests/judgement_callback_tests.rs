@@ -24,8 +24,7 @@ impl Reentry {
             answer
         });
         entered.recv().unwrap();
-        // The old callback releases its guard after this timeout, so its blocked call can
-        // complete and be joined before the test asserts. The failure cannot strand a thread.
+
         self.timely.store(
             done.recv_timeout(Duration::from_secs(5)).is_ok(),
             Ordering::SeqCst,
@@ -109,8 +108,6 @@ impl FramerDoor for HeldProxyWrite {
 
 struct DropWait(Arc<Reentry>);
 
-// Drop runs the real reentry observation when the stored waker is retired. Waker::noop
-// would discard that callback and make the outside-guard retirement assertion untested.
 #[allow(clippy::manual_noop_waker)]
 impl Wake for DropWait {
     fn wake(self: Arc<Self>) {}
@@ -205,11 +202,10 @@ fn completing_a_later_replay_drops_the_earlier_public_waker_outside_guards() {
                 .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                 .await
                 .unwrap();
-            // Keep the tunnel open without a target reply, so a public read stays pending.
+
             socket
         });
-        // CONNECT occupied part of the allowance. Releasing it lets a different caller finish
-        // replay, replacing the fan's old Waker before Answer releases that Waker's last hold.
+
         gate.released.store(true, Ordering::SeqCst);
         gate.waker.wake();
         let dropped = tokio::time::timeout(Duration::from_secs(15), async {

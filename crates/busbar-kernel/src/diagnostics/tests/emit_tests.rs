@@ -6,7 +6,6 @@ use crate::diagnostics::{Class, Diagnostic, Severity};
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
-/// A catalogue entry of the shape a first-party plugin declares (the webhook sink's non-2xx code).
 const WEBHOOK_DELIVERY_NON_2XX: Diagnostic = Diagnostic {
     code: 7071,
     class: Class::Plane,
@@ -33,7 +32,6 @@ impl Write for Buf {
     }
 }
 
-/// Every line, with the level/timestamp prefix the host's layer writes cut off at the level.
 fn lines(buf: &Buf) -> Vec<String> {
     let text = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
     text.lines()
@@ -45,10 +43,6 @@ fn lines(buf: &Buf) -> Vec<String> {
         .collect()
 }
 
-/// **A RUNTIME-FIELDED DIAGNOSTIC RENDERS BYTE FOR BYTE AS THE MACRO SITE'S LINE** (K9c): the
-/// host's own fmt layer (no target, as `init_logging` builds it) writes the compiled-in
-/// `diag_debug!` line and the [`emit`] line identically — message, `diag=`, then the fields in
-/// order, a string field quoted by the caller the way the macro's `String` field is.
 #[test]
 fn a_runtime_fielded_diagnostic_renders_as_the_macro_site_does() {
     let buf = Buf::default();
@@ -86,8 +80,6 @@ fn a_runtime_fielded_diagnostic_renders_as_the_macro_site_does() {
     );
 }
 
-/// Below the subscriber's level nothing is written — the runtime callsite is filtered as a macro
-/// site is.
 #[test]
 fn a_runtime_diagnostic_below_the_level_is_not_written() {
     let buf = Buf::default();

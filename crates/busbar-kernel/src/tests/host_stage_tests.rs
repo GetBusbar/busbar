@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The kernel's `verify.*`, `content.scan` and `hook.call`: the caller's own verify cache, and the
-//! hook stage of the unit the crossing serves, run over the hooks its route leg bound (its pool,
-//! its generation), never over anything the plane names.
-
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
@@ -32,7 +28,6 @@ fn services(clock: &Arc<AtomicU64>) -> KernelServices {
     s
 }
 
-/// A [`Later`] answered into a channel the test awaits.
 fn answered() -> (Later, tokio::sync::oneshot::Receiver<Stored>) {
     let (tx, rx) = tokio::sync::oneshot::channel();
     (
@@ -42,8 +37,6 @@ fn answered() -> (Later, tokio::sync::oneshot::Receiver<Stored>) {
         rx,
     )
 }
-
-// ── verify ───────────────────────────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn verify_is_the_callers_own_cache_hit_lead_or_follow() {
@@ -70,14 +63,13 @@ async fn verify_is_the_callers_own_cache_hit_lead_or_follow() {
         (hit.value, hit.bytes.as_slice()),
         (svc::VERIFY_HIT, &b"ok"[..])
     );
-    // Another instance never reads it.
+
     assert_eq!(
         now(s.verify_lookup(&caller("other"), b"card", answered().0)).value,
         svc::VERIFY_LEAD
     );
 }
 
-/// RED: an instance the kernel never admitted reaches no cache.
 #[test]
 fn verify_from_an_instance_never_admitted_is_refused() {
     let s = services(&Arc::new(AtomicU64::new(0)));
@@ -88,7 +80,6 @@ fn verify_from_an_instance_never_admitted_is_refused() {
     assert_eq!((r.outcome, r.error), (Outcome::Refused, NOT_ADMITTED));
 }
 
-/// RED: a leader that never stores loses its lead at the tick, to its first follower.
 #[tokio::test]
 async fn the_verify_tick_hands_a_lapsed_lead_to_a_follower() {
     let clock = Arc::new(AtomicU64::new(0));
@@ -102,10 +93,6 @@ async fn the_verify_tick_hands_a_lapsed_lead_to_a_follower() {
     assert_eq!(follower.await.unwrap().value, svc::VERIFY_LEAD);
 }
 
-// ── the hook stage ───────────────────────────────────────────────────────────────────────────
-
-/// A hook that rejects any request whose prompt carries `secret` (status 451), records the pool it
-/// was asked over, and as a rewrite hook rewrites to `word` (abstaining when `word` is empty).
 struct Screen {
     name: &'static str,
     word: &'static str,
@@ -169,7 +156,6 @@ impl RoutingPolicy for Screen {
     }
 }
 
-/// A gate whose backend is down.
 struct Down;
 
 #[async_trait::async_trait]
@@ -222,7 +208,6 @@ fn gate(policy: Arc<dyn RoutingPolicy>, on_error: PolicyOnError) -> (u16, Resolv
     )
 }
 
-/// The generation's hooks: the global `gates` and `rewrites`, and a `pool-a`-only gate.
 fn hooks(
     gates: Vec<(u16, ResolvedPolicy)>,
     rewrites: Vec<Arc<dyn RoutingPolicy>>,
@@ -249,7 +234,6 @@ fn hooks(
     }
 }
 
-/// Unit `unit` in flight on `instance`, its stage over `pool` bound by `binder`.
 fn staged(s: &KernelServices, unit: u64, instance: &str, pool: &str, binder: Arc<dyn HookBinder>) {
     let scope = RoutedScope {
         pool: pool.to_string(),
@@ -258,7 +242,6 @@ fn staged(s: &KernelServices, unit: u64, instance: &str, pool: &str, binder: Arc
     staged_over(s, (unit, instance), scope, binder);
 }
 
-/// Unit `unit` in flight on `instance`, its stage over the route `scope` bound by `binder`.
 fn staged_over(
     s: &KernelServices,
     (unit, instance): (u64, &str),
@@ -357,9 +340,6 @@ async fn a_gate_stops_with_its_clamped_status_and_words_and_passes_otherwise() {
     assert_eq!((stop.value, stop.bytes.as_slice()), (451, &b"screened"[..]));
 }
 
-/// A gate that cannot answer decides by its own `on_error`: `reject` stops (RED) with the one
-/// shared refusal every seat answers, 1.5.5's retryable 503 and its words (THE DESIGN §11.7;
-/// v1.5.5 crates/busbar/src/proxy/engine/mod.rs:1012-1018); anything else passes.
 #[tokio::test]
 async fn a_gate_that_cannot_answer_decides_by_its_on_error() {
     let s = services(&Arc::new(AtomicU64::new(0)));
@@ -399,8 +379,6 @@ async fn a_gate_that_cannot_answer_decides_by_its_on_error() {
     );
 }
 
-/// The rewrite chain answers the first rewriting hook as `1 + i` with its rewrite; the plane
-/// resumes from there; a reject stops it.
 #[tokio::test]
 async fn the_rewrite_chain_resumes_after_each_rewrite() {
     let s = services(&Arc::new(AtomicU64::new(0)));
@@ -428,8 +406,6 @@ async fn the_rewrite_chain_resumes_after_each_rewrite() {
     assert_eq!((stop.value, stop.bytes.as_slice()), (409, &b"no"[..]));
 }
 
-/// A rewrite hook declared load-bearing whose call failed: what the resolver's `on_error: reject`
-/// decorator hands every firing site (the shared refusal, minted as a transform reject).
 struct LoadBearingDown;
 
 #[async_trait::async_trait]
@@ -456,9 +432,6 @@ impl RoutingPolicy for LoadBearingDown {
     }
 }
 
-/// RED (THE DESIGN §11.7, HOOK Q1): an in-session rewrite whose load-bearing hook could not answer
-/// stops with the shared 503 and its words, never clamped to a 403; a hook's own out-of-band
-/// status still is.
 #[tokio::test]
 async fn a_load_bearing_rewrite_that_cannot_answer_stops_with_the_shared_503() {
     let s = services(&Arc::new(AtomicU64::new(0)));
@@ -479,8 +452,6 @@ async fn a_load_bearing_rewrite_that_cannot_answer_stops_with_the_shared_503() {
     );
 }
 
-/// SECURITY (RED): the gates are the unit's own pool's, from what the kernel recorded: a
-/// `pool-a` gate stops a `pool-a` unit and never a `pool-b` one, whatever the prompt says.
 #[tokio::test]
 async fn the_gate_scope_is_the_units_recorded_pool() {
     let s = services(&Arc::new(AtomicU64::new(0)));
@@ -503,7 +474,6 @@ async fn the_gate_scope_is_the_units_recorded_pool() {
     assert_eq!(*screen.pools.lock().unwrap(), vec!["pool-a".to_string()]);
 }
 
-/// A binder that binds a stricter generation each time it is asked.
 struct Generations {
     binds: AtomicUsize,
     first: BoundHooks,
@@ -520,8 +490,6 @@ impl HookBinder for Generations {
     }
 }
 
-/// RED: a unit's stage binds once; every later call (a resumed chain included) runs over that
-/// binding, never a later generation's.
 #[tokio::test]
 async fn a_units_stage_stays_pinned_to_the_generation_it_bound() {
     let s = services(&Arc::new(AtomicU64::new(0)));
@@ -553,8 +521,6 @@ async fn a_units_stage_stays_pinned_to_the_generation_it_bound() {
     assert_eq!(gens.binds.load(Ordering::SeqCst), 1);
 }
 
-/// RED, one arm each: no unit served, a unit not in flight, a unit whose stage is not stated yet,
-/// and another instance's unit are each refused before any hook runs.
 #[tokio::test]
 async fn the_stage_refuses_every_unit_it_does_not_hold() {
     let s = services(&Arc::new(AtomicU64::new(0)));
@@ -591,7 +557,7 @@ async fn the_stage_refuses_every_unit_it_does_not_hold() {
     ));
     assert_eq!((r.outcome, r.error), (Outcome::Refused, NOT_ADMITTED));
     assert!(screen.pools.lock().unwrap().is_empty(), "no hook ran");
-    // A unit that ended takes its stage with it, and a stage stated for it after is dropped.
+
     s.units().ended(3);
     assert!(s.units().stage(3).is_none());
     let late = SessionStage::new(
@@ -604,7 +570,6 @@ async fn the_stage_refuses_every_unit_it_does_not_hold() {
     assert!(!s.units().staged(3, Arc::new(late)));
 }
 
-/// With no hook bound, a gate passes and a chain is unchanged: a unit no hook binds pays nothing.
 #[tokio::test]
 async fn a_unit_no_hook_binds_passes_unchanged() {
     let s = services(&Arc::new(AtomicU64::new(0)));
@@ -640,7 +605,6 @@ async fn a_unit_no_hook_binds_passes_unchanged() {
     assert_eq!(scan(&s, Some(1), b"secret").await.value, svc::CONTENT_PASS);
 }
 
-/// A binder that records the dialect each unit it binds arrived in.
 struct DialectSeen {
     hooks: BoundHooks,
     seen: std::sync::Mutex<Vec<u32>>,
@@ -653,8 +617,6 @@ impl HookBinder for DialectSeen {
     }
 }
 
-/// A session that arrived in a dialect other than the plane's first binds its hooks THERE: the
-/// stage carries the dialect its unit arrived in, never a default.
 #[tokio::test]
 async fn a_session_on_a_later_dialect_binds_its_hooks_in_that_dialect() {
     let s = services(&Arc::new(AtomicU64::new(0)));
@@ -698,8 +660,6 @@ async fn a_session_on_a_later_dialect_binds_its_hooks_in_that_dialect() {
     );
 }
 
-/// A gate-first binder: `screen` is attached to the entry `srv-a` only; the routed order binds a
-/// gate that blocks everything, so a stage that bound the wrong order would block both units.
 struct EntryGates {
     screen: Arc<Screen>,
     routed: BoundHooks,
@@ -726,9 +686,6 @@ impl HookBinder for EntryGates {
     }
 }
 
-/// RED: a gate-first plane's unit runs its in-session content through the hooks attached to the
-/// entry its route resolved (its container), as its request stage does; another entry's unit
-/// passes, and the routed order's hooks are never bound.
 #[tokio::test]
 async fn a_gate_first_units_stage_is_its_entrys_hooks() {
     let s = services(&Arc::new(AtomicU64::new(0)));

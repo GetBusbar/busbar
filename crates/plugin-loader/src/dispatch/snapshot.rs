@@ -1,19 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE SNAPSHOT LAYOUT (`abi::host::service`, `snapshot.read`): the host's metric families laid out
-//! in the CALLER's buffer, in the export kind's scrape layout — the [`ScrapeFamily`] array at offset
-//! `0`, then every family's [`ScrapeSample`]s, then every sample's [`ScrapeLabel`]s, then the bytes
-//! of every string, each pointer naming a range of that same buffer. The caller reads it as it reads
-//! a `scrape` op's lent families (`abi::sdk::services::Services::snapshot_read`).
-
 use std::mem::size_of;
 
 use busbar_contract::abi::export::{ScrapeFamily, ScrapeLabel, ScrapeSample};
 use busbar_contract::abi::mechanism::call::AbiStr;
 use busbar_contract::export_calls::Family;
 
-/// The counts a layout of `families` holds: samples, labels and string bytes.
 fn counts(families: &[Family]) -> (usize, usize, usize) {
     let opt = |s: &Option<String>| s.as_ref().map_or(0, String::len);
     families.iter().fold((0, 0, 0), |(s, l, b), f| {
@@ -33,7 +26,6 @@ fn counts(families: &[Family]) -> (usize, usize, usize) {
     })
 }
 
-/// The bytes the layout of `families` takes.
 #[must_use]
 pub fn size_of_layout(families: &[Family]) -> usize {
     let (samples, labels, bytes) = counts(families);
@@ -43,7 +35,6 @@ pub fn size_of_layout(families: &[Family]) -> usize {
         + bytes
 }
 
-/// A bump writer over the caller's buffer.
 struct Bump {
     base: *mut u8,
     at: usize,

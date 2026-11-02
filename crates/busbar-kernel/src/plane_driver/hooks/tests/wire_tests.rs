@@ -1,14 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for the hook reply wire (`busbar_contract::hook_wire::reply`, the kernel's `hooks::wire` until
-//! P2 D4), and v1.5.5's hook reply tests (its `wire.rs`
-//! inline suite, M4 HOOK-PARITY), verbatim. The 1.5.5 host normalized a JSON reply here; on the
-//! memory ABI the reply is lowered by the hook SDK into the kind's fixed `out` and read back by the
-//! kernel (`policy`'s two readers, `answered` here and `transformed`), so `norm` runs that chain.
-
-/// A hook-supplied multi-byte help/label/unit must cap at a CHAR
-/// boundary, never panic (String::truncate takes bytes — 100 × '€' panicked the admin handler).
 #[test]
 fn status_metric_hints_cap_char_safe() {
     let long_euro = "€".repeat(400);
@@ -32,7 +24,7 @@ fn status_metric_hints_cap_char_safe() {
         metric.unit.as_ref().unwrap().chars().count(),
         reply::MAX_METRIC_UNIT_CHARS
     );
-    // Out-of-vocabulary viz + non-finite max drop individually; the metric survives.
+
     let m2 = [
         serde_json::json!({"name": "g", "type": "gauge", "value": 0.5,
                                      "viz": "hologram", "max": f64::NAN}),
@@ -62,7 +54,6 @@ fn status_metric_text_does_not_inherit_the_rejection_fallback() {
         );
     }
 
-    // Printable text, including spaces, keeps its content; rejected requests alone get a fallback.
     for (raw, expected) in [("  ", "  "), (" €\r\n\u{202E}ms ", " €ms ")] {
         let metrics = [serde_json::json!({
             "name": "requests_total", "type": "counter", "value": 1.0,
@@ -82,51 +73,39 @@ fn status_metric_text_does_not_inherit_the_rejection_fallback() {
     assert_eq!(reply::sanitize_reject_message(" €\r\n\u{202E}ms "), " €ms ");
 }
 
-/// The redesigned metric shape (the compression-hook fit-test): a Prometheus-style ARRAY carrying
-/// per-dimension LABELS, a HISTOGRAM distribution via quantiles, and an ESTIMATE with a CI —
-/// the shapes a real plugin dashboard needs and the old flat map could not express. Malformed
-/// optional members are dropped individually; the entry survives.
 #[test]
 fn status_metrics_labels_quantiles_and_estimates() {
     let m = [
-        // Two entries share a NAME, differ by pool label (the per-pool breakdown).
         serde_json::json!({"name":"chars_saved_total","type":"counter","value":812000.0,
                                "labels":{"pool":"chat"}}),
         serde_json::json!({"name":"chars_saved_total","type":"counter","value":410000.0,
                                "labels":{"pool":"code","BAD KEY":"dropped"}}),
-        // A histogram: value is the count, distribution rides quantiles; a >1 quantile drops.
         serde_json::json!({"name":"compress_ms","type":"histogram","value":900.0,
                                "quantiles":{"0.5":12.0,"0.95":34.0,"1.5":99.0,"x":1.0}}),
-        // An estimate with a valid CI; a second with an INVERTED CI (both bounds dropped).
         serde_json::json!({"name":"dollars_saved","type":"gauge","value":31.2,
                                "estimated":true,"ci_low":27.7,"ci_high":35.7}),
         serde_json::json!({"name":"bad_ci","type":"gauge","value":1.0,
                                "ci_low":9.0,"ci_high":1.0}),
-        // Whole-entry drops: bad name, unknown type.
         serde_json::json!({"name":"Bad Name","type":"counter","value":1.0}),
         serde_json::json!({"name":"weird","type":"summary","value":1.0}),
     ];
     let parsed = reply::parse_status_metrics(&m);
     assert_eq!(parsed.len(), 5, "2 bad entries dropped whole");
     let by = |i: usize| &parsed[i];
-    // Labels: valid key kept, out-of-charset key dropped.
+
     assert_eq!(by(0).labels.as_ref().unwrap()["pool"], "chat");
     assert_eq!(by(1).labels.as_ref().unwrap().len(), 1);
     assert!(!by(1).labels.as_ref().unwrap().contains_key("BAD KEY"));
-    // Quantiles: probabilities in [0,1] with finite values kept; "1.5"/"x" dropped.
+
     let q = by(2).quantiles.as_ref().unwrap();
     assert_eq!(q.len(), 2);
     assert_eq!(q["0.95"], 34.0);
-    // Estimate CI: valid pair kept; inverted pair fully dropped.
+
     assert_eq!(by(3).estimated, Some(true));
     assert_eq!((by(3).ci_low, by(3).ci_high), (Some(27.7), Some(35.7)));
     assert_eq!((by(4).ci_low, by(4).ci_high), (None, None));
 }
 
-/// Unlike labels/buckets, the `[0,1]` filter on quantile keys does not bound the COUNT —
-/// "0.5001", "0.5002", ... are all distinct strings that all parse in range. A hostile or buggy
-/// hook could otherwise mint an unbounded quantile map, defeating `scrape.rs`'s stated BOUNDED
-/// scrape-output property (one Prometheus line per quantile per metric).
 #[test]
 fn status_metrics_caps_the_quantile_count() {
     let mut quantiles = serde_json::Map::new();
@@ -146,17 +125,12 @@ fn status_metrics_caps_the_quantile_count() {
     );
 }
 
-/// Native histogram `buckets` are validated like quantiles: a key must be `+Inf` or parse as a
-/// finite `le` bound, a count must be finite and non-negative, and an all-bad map drops to
-/// `None` (so the renderer never emits a malformed histogram).
 #[test]
 fn status_metrics_validates_native_buckets() {
     let m = [
-        // Good bucket map: finite bounds + "+Inf" kept; NaN count, non-numeric key dropped.
         serde_json::json!({"name":"rewriter_compression_ratio","type":"histogram","value":7.0,
                                "buckets":{"0.5":3.0,"1":7.0,"+Inf":7.0,
                                           "abc":1.0,"2":-2.0}}),
-        // Every entry invalid => the whole buckets map drops to None.
         serde_json::json!({"name":"all_bad","type":"histogram","value":1.0,
                                "buckets":{"x":1.0,"y":-1.0}}),
     ];
@@ -277,9 +251,6 @@ fn ctx() -> RoutingContext<'static> {
     }
 }
 
-/// The DEFAULT payload is shape-only and byte-stable: none of the opt-in keys (`system`,
-/// `messages`, `user`) nor an empty `tags` may appear — an existing hook parsing strictly must
-/// see the exact pre-opt-in contract.
 #[test]
 fn default_payload_omits_opt_in_keys() {
     let r = req();
@@ -291,8 +262,6 @@ fn default_payload_omits_opt_in_keys() {
     }
 }
 
-/// With the opt-ins populated (as `forward` does behind `send_prompt`/`send_user`) and tags
-/// declared, the payload carries all of them — and never any secret-shaped field.
 #[test]
 fn opt_in_payload_carries_prompt_identity_tags() {
     static TAGS: std::sync::LazyLock<Vec<String>> =
@@ -319,14 +288,12 @@ fn opt_in_payload_carries_prompt_identity_tags() {
     assert_eq!(v["request"]["user"]["user"], "alice@example.com");
     assert_eq!(v["candidates"][0]["tags"][0], "team-a");
     assert_eq!(v["candidates"][0]["tags"][1], "eu");
-    // The identity projection is built from the key RECORD: no token/secret field exists.
+
     for key in ["\"token\"", "\"secret\"", "\"generation_hash\""] {
         assert!(!json.contains(key), "payload leaked {key}: {json}");
     }
 }
 
-/// `send_prompt` on + no system prompt: `messages` is PRESENT (possibly empty) so a hook can
-/// distinguish "opted in, empty" from "not opted in"; `system` stays absent.
 #[test]
 fn opt_in_prompt_without_system_still_sends_messages() {
     let mut r = req();
@@ -343,11 +310,6 @@ fn opt_in_prompt_without_system_still_sends_messages() {
     assert_eq!(v["request"]["messages"], serde_json::json!([]));
 }
 
-/// A 1.5.5 `decide` reply, as the host now receives it: the hook SDK lowers the JSON
-/// (`lower_decide_reply`) and states it in the kind's fixed `out` (`write_verdict`: the verb bits,
-/// the stated status, the written parts); the kernel reads that back (`answered`). The
-/// `out` encoding below is the hook ABI's, one line per verdict (the SDK's own tests prove
-/// `write_verdict` writes exactly this and the frame reads it back).
 fn norm(json: &str) -> RoutingDecision {
     let cands = [cand(0, &[]), cand(1, &[])];
     let (verbs, status, message, tags, order) =
@@ -370,8 +332,6 @@ fn norm(json: &str) -> RoutingDecision {
     answered(verbs, status, || message, || tags, || order, &cands)
 }
 
-/// A 1.5.5 `transform` reply, the same way (`lower_transform_reply`, `write_rewrite`,
-/// `plugin::transformed`).
 fn transform(json: &str) -> TransformOutcome {
     let (verbs, status, message, rewrite) =
         match lower_transform_reply(Ok(serde_json::from_str(json).unwrap())) {
@@ -385,12 +345,10 @@ fn transform(json: &str) -> TransformOutcome {
     transformed(verbs, status, || message, || rewrite)
 }
 
-/// A reject's verb bits: the status bit only when the hook stated one that fits a `u16`.
 fn reject_verbs(status: Option<u16>) -> u32 {
     VERB_REJECT | status.map_or(0, |_| VERB_HAS_REJECT_STATUS)
 }
 
-/// A bare `{"reject":{}}` is a full-strength rejection with the defaults: 403 + generic message.
 #[test]
 fn reject_bare_uses_defaults() {
     match norm(r#"{"reject":{}}"#) {
@@ -402,9 +360,6 @@ fn reject_bare_uses_defaults() {
     }
 }
 
-/// A hook may only speak client errors: in-range statuses pass, everything else clamps to 403 —
-/// including values that would not even FIT a u16 (70000, -1): the reject verb must stay a
-/// rejection, never abort the reply parse and silently route the request.
 #[test]
 fn reject_status_clamps_to_4xx() {
     for (sent, want) in [
@@ -428,8 +383,6 @@ fn reject_status_clamps_to_4xx() {
     }
 }
 
-/// The reject message is sanitized: control chars (CRLF/log injection) stripped, length capped,
-/// and a message that sanitizes to nothing falls back to the default.
 #[test]
 fn reject_message_is_sanitized() {
     match norm("{\"reject\":{\"message\":\"no\\r\\nSet-Cookie: x\\u0000!\"}}") {
@@ -453,7 +406,6 @@ fn reject_message_is_sanitized() {
     }
 }
 
-/// `reject` wins over `order` AND `abstain`: a hook that says both meant reject.
 #[test]
 fn reject_takes_precedence() {
     for json in [
@@ -467,10 +419,6 @@ fn reject_takes_precedence() {
     }
 }
 
-/// The reject verb is FAIL-CLOSED: any malformed / non-object `reject` value still rejects with
-/// the defaults (403 + canned message) — a hook that tried to say "reject" must never have its
-/// request silently routed because a detail was mis-typed. The one explicit opt-out is
-/// `reject: false` (and `null`, which parses as absent): those defer to `order`/`abstain`.
 #[test]
 fn reject_is_fail_closed_on_malformed_values() {
     for json in [
@@ -493,7 +441,7 @@ fn reject_is_fail_closed_on_malformed_values() {
             other => panic!("expected fail-closed Reject for {json}, got {other:?}"),
         }
     }
-    // The explicit opt-outs: false / null defer to the rest of the reply.
+
     assert!(matches!(
         norm(r#"{"order":[1,0],"reject":false}"#),
         RoutingDecision::Prefer(o) if o == vec![1, 0]
@@ -504,25 +452,19 @@ fn reject_is_fail_closed_on_malformed_values() {
     ));
 }
 
-/// U+2028/U+2029 (line/paragraph separators — log-record splitters in several pipelines) AND
-/// the invisible formatting chars (bidi overrides/isolates: terminal log-line spoofing;
-/// zero-widths/BOM: hidden content) are stripped from the reject message.
 #[test]
 fn reject_message_strips_unicode_line_separators() {
     match norm("{\"reject\":{\"message\":\"a\\u2028b\\u2029c\"}}") {
         RoutingDecision::Reject { message, .. } => assert_eq!(message, "abc"),
         other => panic!("expected Reject, got {other:?}"),
     }
-    // Bidi override + isolate + zero-width + BOM all stripped; visible text intact.
+
     match norm("{\"reject\":{\"message\":\"ok\\u202Espoof\\u2066x\\u200By\\uFEFFz\"}}") {
         RoutingDecision::Reject { message, .. } => assert_eq!(message, "okspoofxyz"),
         other => panic!("expected Reject, got {other:?}"),
     }
 }
 
-/// PINS the "opted in, anonymous" wire shape: `send_user` on with an all-None identity emits
-/// `"user": {}` (present but empty) — a hook detects the opt-in by the KEY's presence, so a
-/// future skip-if-all-none "cleanup" would silently break that contract.
 #[test]
 fn anonymous_identity_emits_empty_user_object() {
     let mut r = req();
@@ -539,10 +481,6 @@ fn anonymous_identity_emits_empty_user_object() {
     assert_eq!(v["request"]["user"], serde_json::json!({}));
 }
 
-/// NDJSON framing invariant: prompt text containing literal newlines/control chars must stay
-/// ONE serialized line — serde_json escapes them inside string values, and the socket
-/// transport's whole framing rests on that. This is the tripwire against any future custom
-/// serializer that would let a raw 0x0A reach the wire and desync the hook's line reader.
 #[test]
 fn opt_in_content_with_newlines_stays_one_line() {
     let mut r = req();
@@ -557,13 +495,12 @@ fn opt_in_content_with_newlines_stays_one_line() {
         !line.contains('\n') && !line.contains('\r'),
         "serialized hook payload must contain no raw newline bytes: {line}"
     );
-    // And the content round-trips intact through a parse of that single line.
+
     let v: serde_json::Value = serde_json::from_str(&line).unwrap();
     assert_eq!(v["request"]["system"], "line1\nline2");
     assert_eq!(v["request"]["messages"][0]["text"], "a\nb\rc\u{2028}d");
 }
 
-/// The pre-reject behaviors are untouched: order normalizes, abstain abstains, `{}` abstains.
 #[test]
 fn non_reject_replies_unchanged() {
     assert!(matches!(
@@ -577,47 +514,40 @@ fn non_reject_replies_unchanged() {
     assert!(matches!(norm(r#"{}"#), RoutingDecision::Abstain));
 }
 
-/// `normalize` maps `restrict` to `RoutingDecision::Restrict` with reject > restrict > order
-/// precedence; a malformed restrict is fail-closed to an EMPTY tag set (→ on_empty downstream),
-/// and `restrict: false` is the explicit opt-out.
 #[test]
 fn normalize_restrict_precedence_and_fail_closed() {
-    // Well-formed restrict → the tags.
     match norm(r#"{"restrict":{"tags_any":["baa"]}}"#) {
         RoutingDecision::Restrict { tags_any } => assert_eq!(tags_any, vec!["baa".to_string()]),
         other => panic!("expected Restrict, got {other:?}"),
     }
-    // reject WINS over a co-present restrict.
+
     assert!(matches!(
         norm(r#"{"reject":{"status":403},"restrict":{"tags_any":["baa"]}}"#),
         RoutingDecision::Reject { .. }
     ));
-    // restrict WINS over a co-present order.
+
     assert!(matches!(
         norm(r#"{"restrict":{"tags_any":["x"]},"order":[0,1]}"#),
         RoutingDecision::Restrict { .. }
     ));
-    // Malformed restrict → fail-closed empty tag set (→ on_empty), never allow-all/order.
+
     match norm(r#"{"restrict":{"tags_any":[]}}"#) {
         RoutingDecision::Restrict { tags_any } => assert!(tags_any.is_empty()),
         other => panic!("malformed restrict must stay Restrict (fail-closed), got {other:?}"),
     }
-    // Explicit opt-out: `restrict: false` is NOT a restriction.
+
     assert!(matches!(
         norm(r#"{"restrict":false,"order":[1,0]}"#),
         RoutingDecision::Prefer(_)
     ));
 }
 
-/// `parse_restrict` is FAIL-CLOSED: a well-formed restrict yields the trimmed non-empty tags; any
-/// malformed shape yields `None` (the caller routes to on_error, never allow-all).
 #[test]
 fn parse_restrict_is_fail_closed() {
     let ok = parse_restrict(&serde_json::json!({"tags_any": ["baa", " gpu ", ""]}))
         .expect("well-formed restrict parses");
     assert_eq!(ok.tags_any, vec!["baa".to_string(), "gpu".to_string()]);
 
-    // Malformed → None (fail-closed): no tags_any, empty list, whitespace-only, non-array, non-object.
     assert!(parse_restrict(&serde_json::json!({})).is_none());
     assert!(parse_restrict(&serde_json::json!({"tags_any": []})).is_none());
     assert!(parse_restrict(&serde_json::json!({"tags_any": ["", "  "]})).is_none());
@@ -625,8 +555,6 @@ fn parse_restrict_is_fail_closed() {
     assert!(parse_restrict(&serde_json::json!("baa")).is_none());
 }
 
-/// `parse_rewrite` is FAIL-CLOSED: a well-formed rewrite yields the messages (+ optional tools);
-/// any malformed shape yields `None` (the caller keeps the ORIGINAL body).
 #[test]
 fn parse_rewrite_is_fail_closed() {
     let ok = parse_rewrite(&serde_json::json!({
@@ -637,22 +565,16 @@ fn parse_rewrite_is_fail_closed() {
     assert_eq!(ok.messages.len(), 1);
     assert_eq!(ok.tools.len(), 1);
 
-    // tools optional → defaults empty.
     let no_tools = parse_rewrite(&serde_json::json!({"messages": [{"role": "user"}]}))
         .expect("rewrite without tools parses");
     assert!(no_tools.tools.is_empty());
 
-    // Malformed → None (fail-closed): no messages, empty messages, non-array, non-object.
     assert!(parse_rewrite(&serde_json::json!({})).is_none());
     assert!(parse_rewrite(&serde_json::json!({"messages": []})).is_none());
     assert!(parse_rewrite(&serde_json::json!({"messages": "hi"})).is_none());
     assert!(parse_rewrite(&serde_json::json!("hi")).is_none());
 }
 
-/// The transform reply, read back: reject > rewrite > abstain; a reject's status clamped and its
-/// message sanitised; a rewrite that does not parse proceeds with the ORIGINAL body (abstain), and a
-/// well-formed one crosses intact. (1.5.5's host did this in `wire::transform_outcome`, deleted
-/// with the JSON reply lane.)
 #[test]
 fn transform_reply_reads_back_as_1_5_5_did() {
     match transform(

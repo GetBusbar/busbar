@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A 1.5.5 PROVIDERS CATALOG WITH A STRAY KEY STILL BOOTS AFTER THE MIGRATION (owner ruling
-//! 2026-10-27). 1.5.5 ignored a `providers.yaml` entry's key its grammar does not read; 1.6.0
-//! refuses it. `busbar --migrate-config` writes the catalog without it beside the old one, names it
-//! in `providers_file:`, and prints one line per removed key. Against the real binary.
-
 use std::path::PathBuf;
 use std::process::Command;
 

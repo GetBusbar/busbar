@@ -1090,7 +1090,7 @@ fn actual_canceled_serve_settles_on_idle_driver_without_new_tick_or_resubmission
     use busbar_contract::abi::mechanism::call::DeadlineClass;
     use busbar_contract::plane_calls::PlaneCalls;
     let (dispatcher, plugin, provider, state) = plane_rig();
-    // No crossing is outstanding while this fixture option is set.
+
     unsafe {
         (*state.cast_mut()).outcome_only_driver = true;
     }

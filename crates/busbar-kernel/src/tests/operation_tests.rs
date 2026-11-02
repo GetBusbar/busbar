@@ -1,19 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-core/src/operation.rs`.
-
 use crate::operation::*;
 
-/// Every verb, listed once, with the SHAPE it collapsed onto and the operator-visible name it
-/// publishes. Written out rather than derived: a verb added without a line here is a verb no test
-/// names, and the pairing below is what pins both halves of `Verb { op, name }`.
-///
-/// **THE THIRTEEN NAMES ARE THE 1.5-ERA METRIC LABEL SET, UNCHANGED.** Collapsing thirteen flat
-/// variants onto six shapes must not re-base a single metric series, and this table is where that
-/// is asserted rather than assumed.
 const ALL: [(OpVerb, OpShape, &str); 13] = [
-    // The LLM family: seven words, ONE shape. Name a model, hand it arguments, get content back.
     (OpVerb::CHAT, OpShape::Invoke, "chat"),
     (OpVerb::EMBEDDINGS, OpShape::Invoke, "embeddings"),
     (OpVerb::MODERATION, OpShape::Invoke, "moderation"),
@@ -21,7 +11,6 @@ const ALL: [(OpVerb, OpShape, &str); 13] = [
     (OpVerb::TRANSCRIPTION, OpShape::Invoke, "transcription"),
     (OpVerb::SPEECH, OpShape::Invoke, "speech"),
     (OpVerb::RERANK, OpShape::Invoke, "rerank"),
-    // The protocol surface: one verb per shape today, carrying the shape's own word.
     (OpVerb::INVOKE, OpShape::Invoke, "invoke"),
     (OpVerb::CATALOGUE, OpShape::Catalogue, "catalogue"),
     (OpVerb::FETCH, OpShape::Fetch, "fetch"),
@@ -33,7 +22,7 @@ const ALL: [(OpVerb, OpShape, &str); 13] = [
 #[test]
 fn names_are_stable_and_distinct() {
     let names: Vec<_> = ALL.iter().map(|(o, _, _)| o.name()).collect();
-    // all distinct
+
     let mut sorted = names.clone();
     sorted.sort_unstable();
     sorted.dedup();
@@ -41,9 +30,6 @@ fn names_are_stable_and_distinct() {
     assert_eq!(OpVerb::CHAT.name(), "chat");
 }
 
-/// THE NAMES ARE AN OPERATOR-VISIBLE CONTRACT — the metrics label and the `paths:` config key — so
-/// each one is pinned to its literal here. A rename that reaches this file is a breaking change to
-/// somebody's dashboard and somebody's config, and it should have to be written down twice.
 #[test]
 fn every_name_is_pinned_to_its_literal() {
     for (op, _, expected) in ALL {
@@ -51,9 +37,6 @@ fn every_name_is_pinned_to_its_literal() {
     }
 }
 
-/// EVERY VERB'S SHAPE, PINNED. The seven LLM words collapsing onto one shape is the finding this
-/// change is built on; if one of them ever needs a shape of its own, that is a design decision and
-/// it should have to be written down here first.
 #[test]
 fn every_verb_is_pinned_to_its_shape() {
     for (op, expected, name) in ALL {
@@ -61,10 +44,6 @@ fn every_verb_is_pinned_to_its_shape() {
     }
 }
 
-/// `Operation::ALL` IS THE CORE-OWNED HALF OF THE VOCABULARY — the six shape verbs, exactly the
-/// table's protocol-surface rows, in the same order. The LLM rows are deliberately NOT in it any
-/// more: they reach the vocabulary through `proto::registry::declared_verbs()` (the declarations),
-/// which `the_metric_label_surface_is_exactly_these_thirteen` below pins as the other half.
 #[test]
 fn all_holds_every_core_owned_verb_and_nothing_else() {
     let listed: Vec<OpVerb> = ALL
@@ -79,17 +58,6 @@ fn all_holds_every_core_owned_verb_and_nothing_else() {
     );
 }
 
-/// THE METRIC LABEL SURFACE, AS A SET. `Operation::name` is a Prometheus/tracing label; the set of
-/// values it can take is the set of series an operator's dashboard can select. This is that set,
-/// spelled once, sorted, so any change to it is a visible diff in this file rather than a silently
-/// re-based series.
-///
-/// DERIVED FROM BOTH HALVES since the LLM rows left `Operation::ALL`: the core's six shape verbs
-/// plus whatever the registered protocol declarations serve. With the built-in protocols present
-/// this is the SAME thirteen labels the 1.5 era published — asserting that here is what proves the
-/// derivation re-based nothing — and in a build whose protocols are deleted the declared half
-/// genuinely shrinks, which is the vocabulary-level teeth the deletion test lacked while the seven
-/// words were a core table.
 #[test]
 fn the_metric_label_surface_is_exactly_these_thirteen() {
     let mut labels: Vec<&str> = OpVerb::ALL
@@ -120,9 +88,6 @@ fn the_metric_label_surface_is_exactly_these_thirteen() {
     );
 }
 
-/// `ToolCall` became `Invoke` in 1.6.0 because the operation now carries A2A `message/send` as well
-/// as MCP `tools/call`; the old MCP-flavoured label must not survive anywhere on this axis, or a
-/// dashboard would keep reading a name that claims the engine knows which protocol it is serving.
 #[test]
 fn no_operation_is_still_called_tool_call() {
     assert!(
@@ -131,15 +96,8 @@ fn no_operation_is_still_called_tool_call() {
     );
 }
 
-/// NO VERB NAMES A PROTOCOL. The whole point of the split is that a core type carries no protocol's
-/// identity, so the metric label surface may not contain one either — `mcp_tools_call` in this list
-/// would fail the deletion test on line one.
 #[test]
 fn no_verb_name_carries_a_protocol_identity() {
-    // The identities are READ OFF THE REGISTRY, not listed here: every protocol this test binary
-    // registers, so a protocol added to the registry is checked the day it lands. The plane keys of
-    // the real roster are checked against the same verbs in
-    // `crates/busbar/tests/operation_names_cross_plane.rs`, where that roster is registered.
     let identities: Vec<&str> = crate::ingress::protocols::registry()
         .decls()
         .iter()
@@ -160,9 +118,6 @@ fn no_verb_name_carries_a_protocol_identity() {
     }
 }
 
-/// THE SHAPE SET IS ENUMERABLE, and every shape has a distinct word. The same role
-/// `Transport::ALL` plays for its axis: a shape absent from `OpShape::ALL` is a shape nothing
-/// enumerates.
 #[test]
 fn every_shape_is_enumerated_once_with_a_distinct_word() {
     let mut words: Vec<&str> = OpShape::ALL.iter().map(|s| s.as_str()).collect();
@@ -179,10 +134,6 @@ fn every_shape_is_enumerated_once_with_a_distinct_word() {
     }
 }
 
-/// THE STREAMING FLOOR IS A PROPERTY OF THE SHAPE, and exactly one shape has increments to deliver.
-/// A catalogue page, a fetched document, a task record, a subscription acknowledgement and a
-/// handshake are each ONE answer; a cell that claimed otherwise would leave the engine holding a
-/// response open for a body that is never coming.
 #[test]
 fn only_the_invoke_shape_may_stream() {
     assert!(OpShape::Invoke.may_stream());
@@ -197,9 +148,6 @@ fn only_the_invoke_shape_may_stream() {
     }
 }
 
-/// THE SEVEN LLM VERBS SHARE A SHAPE, so the shape alone cannot tell them apart — which is exactly
-/// why the word rides beside it. If this ever fails, either a verb changed shape or two verbs
-/// collided on a name, and both are breaking changes.
 #[test]
 fn the_named_invoke_family_is_one_shape_with_seven_distinct_words() {
     let family: Vec<&str> = ALL

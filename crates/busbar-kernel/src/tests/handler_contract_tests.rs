@@ -3,7 +3,6 @@ use busbar_contract::codec::{
     CodecError, EgressCtx, IngressReject, OperationHandler, RequestHandler,
 };
 
-// A minimal implementation exercises the public traits through trait objects.
 struct NoopModeration;
 impl OperationHandler for NoopModeration {
     fn read_request(
@@ -28,7 +27,6 @@ impl RequestHandler for WidgetLike {
         "widget"
     }
     fn operation_handler(&self, op: OpVerb) -> Option<&dyn OperationHandler> {
-        // This fixture serves moderation only.
         match op {
             OpVerb::MODERATION => Some(&NoopModeration),
             _ => None,

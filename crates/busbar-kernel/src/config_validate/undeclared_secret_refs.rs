@@ -1,36 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE UNDECLARED-REFERENCE REFUSAL (OWNER RULING, CHIP-REVIEW-v4 change 2; overturns Q123).
-//!
-//! A secret reference (`{env:}`, `{file:}`, `{module:, settings:}`) at any position in a PLUGIN'S
-//! settings block that the plugin has not declared secret (its Statement's `secret_refs`, `*` = any
-//! key or index) is refused, at boot and at `--validate` alike: busbar never resolves a secret into
-//! a field the plugin did not ask to hold one. The sentence names the field, the plugin and the
-//! instance, and says to write the value itself.
-//!
-//! A reference at a path the plugin names REFERENCE-CAPABLE (its Statement's extensions'
-//! `reference_fields`, lead ruling item 7a: a store, exporter or hook `url`) is not refused: the
-//! kernel resolves it in place to its string. A secret module's settings reach its open as written,
-//! so none of its fields is reference-capable.
-//!
-//! Core's own typed config fields (`auth.signing_key`, `providers.<name>.api_key`, a TLS key, an
-//! identity provider's `token:` and `browser_login.client_secret`, …) are not plugin settings and
-//! are not looked at here.
-//!
-//! Self-contained: the registry's declared paths and the config in, the first refusal out. The one
-//! validator (`config_validate::check`) runs it on every path: boot, `--validate` and the dry run.
-
 use busbar_contract::plugin_rows::PluginRows;
 use busbar_contract::secret_fields::{undeclared_reference, undeclared_refusal};
 
 use super::RootCfg;
 
-/// The first secret reference in a plugin's settings that the plugin did not declare secret, as
-/// the refusal sentence.
-///
-/// # Errors
-/// That sentence: `<field>: … the plugin '<plugin>' did not declare it as a secret …`.
 pub(crate) fn undeclared_secret_refs(
     registry: &dyn PluginRows,
     cfg: &RootCfg,

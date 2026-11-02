@@ -1,22 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Projections of one named-map DEFINITION onto the shared read view.
-//!
-//! One module because they answer one question — what may a read-only admin see about a named
-//! definition — and they answer it under one rule: a secret REFERENCE collapses to a boolean and a
-//! `settings:` bag collapses to its KEY NAMES, so the two places a credential could leak are closed
-//! by construction rather than by each projection remembering. Keeping them together is what makes
-//! that rule checkable by reading one file; a new section's projection lands here beside the others.
-
 use super::service::settings_keys;
 use crate::v1::contract::NamedDefView;
 
-/// The key a definition carries its opaque settings bag under.
 pub(super) const SETTINGS_KEY: &str = "settings";
 
-/// A view carrying only the three fields every definition has; each projection sets the rest it
-/// can know and leaves the others absent.
 fn bare_view(name: &str, module: String, settings_keys: Vec<String>) -> NamedDefView {
     NamedDefView {
         name: name.to_string(),
@@ -32,9 +21,6 @@ fn bare_view(name: &str, module: String, settings_keys: Vec<String>) -> NamedDef
     }
 }
 
-/// Project one `identity-providers:` DEFINITION onto the shared named-map view. The `token:` secret
-/// REFERENCE is collapsed to a boolean here and the `settings:` bag to its KEY NAMES — the two
-/// places a secret could leak, closed by construction.
 pub(super) fn identity_provider_view(
     name: &str,
     cfg: &busbar_kernel::config::IdentityProviderCfg,
@@ -47,10 +33,6 @@ pub(super) fn identity_provider_view(
     }
 }
 
-/// Project one `export:` DEFINITION onto the shared named-map view. An exporter carries neither a
-/// trust ceiling nor a credential FIELD, so those are omitted from the body entirely — but its
-/// `settings:` bag routinely carries one (a webhook sink's header credential value), so the bag is
-/// projected as KEY NAMES exactly as the identity-provider view projects it.
 pub(super) fn export_def_view(
     name: &str,
     cfg: &busbar_kernel::config::ExportDefCfg,
@@ -58,16 +40,6 @@ pub(super) fn export_def_view(
     bare_view(name, cfg.module.clone(), settings_keys(&cfg.settings))
 }
 
-// A plane-owned named-map section is NOT projected here: each compiled-in plane owns its own
-// admin view for its own section(s) and is reached through the plane's `named_def_list`/
-// `named_def_get` seam, so this core module names no plane-specific config or view type.
-
-/// Project one overlay definition this binary CANNOT parse onto the same named-map view, explicitly
-/// FLAGGED (`unparseable`). Such an entry is stored in the overlay but dropped at every rebuild, so
-/// it is not live anywhere — before this it was invisible to every read surface and announced only
-/// by a boot log line, which an operator who does not tail logs can never discover. `module` and
-/// `settings_keys` are a best-effort projection of the RAW stored document (still key names only, so
-/// the no-secret-in-a-read-scope rule holds even for a document that failed to parse).
 pub(super) fn unparseable_def_view(
     name: &str,
     entry: &busbar_kernel::config::overlay::UnparseableNamedDef,

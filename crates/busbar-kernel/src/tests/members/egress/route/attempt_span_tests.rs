@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE ATTEMPT SPAN (status row 173): a terminal's dispatch opens 1.5.5's `forward_once`, at the
-//! hot-path level, naming the lane index of the member it dispatches to (v1.5.5
-//! `proxy/engine/walk.rs:382`, `fields(lane = i)`; `docs/observability.md` l.162-174). 1.5.5
-//! opened it around each degraded dispatch (a spill into a fallback pool, the least-bad bypass, a
-//! queued slot) and around no attempt of the ordered walk, so the walk's own attempts open none.
-
 use crate::test_support::tokens::pass;
 use std::sync::{Arc, Mutex};
 
@@ -18,14 +12,12 @@ use crate::plane_driver::{FarEnd, Pick};
 use busbar_contract::DestinationId;
 use busbar_kernel_egress::pool::OnExhausted;
 
-/// One span opened: its name, its level, and each field it recorded with its value.
 type Opened = (&'static str, tracing::Level, Vec<(&'static str, String)>);
 
 /// Every span opened under it.
 #[derive(Clone, Default)]
 struct SpanLog(Arc<Mutex<Vec<Opened>>>);
 
-/// A field visitor: every field's name and its value as written.
 struct Fields<'a>(&'a mut Vec<(&'static str, String)>);
 
 impl tracing::field::Visit for Fields<'_> {
@@ -51,7 +43,6 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for SpanLog {
     }
 }
 
-/// A three-member pool whose exhaustion terminal is `on_exhausted`, every member answering 200.
 fn pool_of_three(on_exhausted: OnExhausted) -> Node {
     let mut node = Node::with_lanes(&["a", "b", "c"]);
     node.pool(
@@ -69,7 +60,6 @@ fn pool_of_three(on_exhausted: OnExhausted) -> Node {
     node
 }
 
-/// The first attempt's pick, and the spans its attempt span opened, under a capturing subscriber.
 fn first_attempt(node: &Node) -> (Pick, Vec<Opened>) {
     let log = SpanLog::default();
     let subscriber = tracing_subscriber::registry().with(log.clone());
@@ -91,10 +81,6 @@ fn first_attempt(node: &Node) -> (Pick, Vec<Opened>) {
     (picked, opened)
 }
 
-/// THE LEAST-BAD BYPASS IS A TERMINAL'S DISPATCH: every member cooling down, the last resort takes
-/// the soonest (destination 1) and its attempt opens `forward_once` at the hot-path level, naming
-/// that member's lane index and nothing else. RED before the far end stated an attempt span: none
-/// opened.
 #[test]
 fn a_least_bad_dispatch_opens_forward_once_naming_its_lane() {
     let node = pool_of_three(OnExhausted::LeastBad);
@@ -123,8 +109,6 @@ fn a_least_bad_dispatch_opens_forward_once_naming_its_lane() {
     );
 }
 
-/// THE ORDERED WALK'S OWN ATTEMPT IS NO TERMINAL'S DISPATCH: a healthy pool's first attempt opens
-/// no span, as 1.5.5's walk opened none around it.
 #[test]
 fn the_walks_own_attempt_opens_no_attempt_span() {
     let node = pool_of_three(OnExhausted::LeastBad);

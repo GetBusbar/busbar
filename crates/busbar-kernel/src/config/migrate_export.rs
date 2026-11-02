@@ -24,11 +24,6 @@ use busbar_contract::abi::export::ExportStream;
 use busbar_contract::plugin::Kind;
 use serde_yaml::{Mapping, Value};
 
-/// The retired TYPE keys of the 1.5.x type-keyed `export:` block, each with the default instance
-/// NAME it is rewritten to and the `module:` that backs it — `(type key, instance name, module)` —
-/// read off the root migration table's `export_type_keys` row (BUSBAR-1.6.0.md §2: a migration for a
-/// plugin that may not be in the build lives there, frozen 1.5.5 text; the kernel names no export
-/// instance). Shared with the migrator tests so the goldens cannot drift from the rewrite.
 pub(crate) fn export_type_keys() -> Vec<(&'static str, &'static str, &'static str)> {
     super::migration_table::text("export_type_keys")
         .split(" | ")
@@ -39,9 +34,6 @@ pub(crate) fn export_type_keys() -> Vec<(&'static str, &'static str, &'static st
         .collect()
 }
 
-/// The streams each 1.5.x export module carried — a FROZEN fact about the documents this pass
-/// rewrites (the root migration table's `export_module_streams` row, `module:stream` per module): the
-/// first-party sink on the export axis that now carries each declares the same streams.
 fn released_module_streams() -> Vec<(&'static str, Vec<ExportStream>)> {
     super::migration_table::text("export_module_streams")
         .split(" | ")
@@ -56,7 +48,6 @@ fn released_module_streams() -> Vec<(&'static str, Vec<ExportStream>)> {
         .collect()
 }
 
-/// Ensure `root.export` exists as a mapping, returning a handle to splice an instance into.
 fn export_map_mut(root: &mut Mapping) -> &mut Mapping {
     let entry = root
         .entry(Kind::Export.root().into())
@@ -70,9 +61,6 @@ fn export_map_mut(root: &mut Mapping) -> &mut Mapping {
     }
 }
 
-/// Pick an instance name not already taken in a NAMED-DEFINITION map (`req-log`, `req-log-2`, …), so
-/// migrating a config that already carries a hand-written named instance never clobbers it. Used for
-/// `export:` and, when a per-plane settings conflict forces a split, for `identity-providers:`.
 pub(super) fn uniq_export_name(export: &Mapping, base: &str) -> String {
     if !export.contains_key(Value::from(base)) {
         return base.to_string();
@@ -83,15 +71,12 @@ pub(super) fn uniq_export_name(export: &Mapping, base: &str) -> String {
         .expect("an unbounded counter always finds a free name")
 }
 
-/// 1.5.3: rewrite the TYPE-KEYED `export:` block into the NAMED-DEFINITION map
-/// (`<name>: { module, settings }`). SHAPE-CONVERGENT and IDEMPOTENT: an entry that already names a
-/// `module:` is ALREADY an instance and is left untouched, so a second run is a no-op.
 pub(super) fn migrate_export_named_map(root: &mut Mapping, changes: &mut Vec<String>) {
     let Some(Value::Mapping(export)) = root.get(Value::from(Kind::Export.root())).cloned() else {
         return;
     };
     let type_keys = export_type_keys();
-    // Split: the retired TYPE keys to rewrite vs everything else (already-named instances) to keep.
+
     let mut kept = Mapping::new();
     let mut to_rewrite: Vec<(String, Value)> = Vec::new();
     for (k, v) in export {
@@ -117,9 +102,7 @@ pub(super) fn migrate_export_named_map(root: &mut Mapping, changes: &mut Vec<Str
         let name = uniq_export_name(&kept, base_name);
         let mut inst = Mapping::new();
         inst.insert("module".into(), Value::from(*module));
-        // The retired shape nested the bag under `settings:`; carry it through verbatim (an entry
-        // with no `settings:` becomes an instance with no settings, which is legal for every module
-        // whose settings are all-defaulted).
+
         if let Some(settings) = body
             .as_mapping()
             .and_then(|m| m.get(Value::from("settings")))
@@ -135,26 +118,6 @@ pub(super) fn migrate_export_named_map(root: &mut Mapping, changes: &mut Vec<Str
     root.insert(Kind::Export.root().into(), Value::Mapping(kept));
 }
 
-/// 1.5.3 — the EXPORT PROJECTION GRAMMAR: make each `export:` instance's PROJECTION EXPLICIT by
-/// writing the `streams:` its `module:` already implies.
-///
-/// Nothing about the deployment changes: an instance with no `streams:` still means "the streams
-/// this module carries" (see `crate::export::projection::resolve_projection`), so this is a
-/// TEACHING rewrite, not a semantic one — the migrated document shows the operator the key they will
-/// narrow with `fields:`, and the ledger says so. The streams are read from
-/// [`released_module_streams`] — for each 1.5.x module, the streams its sink on the export axis
-/// declares — so the migrator cannot write a projection the validator would then reject.
-///
-/// IDEMPOTENT (an instance that already declares `streams:` is left alone) and NON-DESTRUCTIVE:
-///
-/// - a MALFORMED instance (`broken: null`, a scalar, a list) is left EXACTLY as written with a TODO,
-///   via [`take_mapping`]'s take-on-match discipline — the migrator never drops what it cannot read;
-/// - an instance whose `module:` this build does not know gets a TODO rather than a GUESS: writing
-///   an inferred projection for a sink we know nothing about is exactly the "reports success while
-///   quietly not taking effect" shape;
-/// - a hand-written `streams: [audit]` is NOT rewritten. `audit` was REMOVED (an auditor is a
-///   projection made of other streams), and WHICH streams replace it is a disclosure decision that
-///   belongs to the operator, not to a mechanical rewrite. It gets a TODO naming the shape.
 pub(super) fn migrate_export_projection(
     root: &mut Mapping,
     changes: &mut Vec<String>,
@@ -174,7 +137,6 @@ pub(super) fn migrate_export_projection(
             continue;
         };
         match take_mapping(&mut export, &name, Kind::Export.root(), todos) {
-            // Left EXACTLY as written, in place, with the TODO already pushed by `take_mapping`.
             Taken::Malformed => {
                 if let Some(v) = export.get(&key) {
                     out.insert(key.clone(), v.clone());
@@ -187,11 +149,10 @@ pub(super) fn migrate_export_projection(
             }
         }
     }
-    // `insert` on an existing key keeps its position, so `export:` does not move within the document.
+
     root.insert(Kind::Export.root().into(), Value::Mapping(out));
 }
 
-/// The per-instance half of [`migrate_export_projection`].
 fn migrate_one_export_projection(
     name: &str,
     inst: &mut Mapping,
@@ -199,7 +160,7 @@ fn migrate_one_export_projection(
     todos: &mut Vec<String>,
 ) {
     let ctx = format!("export.{name}");
-    // ALREADY DECLARED: leave it. The only thing to say is whether it names the retired `audit`.
+
     if let Some(existing) = inst.get(Value::from("streams")) {
         let names_audit = existing
             .as_sequence()
@@ -241,18 +202,6 @@ fn migrate_one_export_projection(
     ));
 }
 
-/// 1.5.3: DELETE the `observability:` block, folding its last field (the trace URL, the root legacy
-/// table's `observability_trace_key`, or its 1.4.x spelling `observability_trace_key_1_4` if
-/// `migrate_observability`'s rename has not run) into an `export:` instance of the trace exporter
-/// 1.5.5 folded it into (the table's `export_trace_module`, named `export_trace_instance`).
-/// IDEMPOTENT: a config with no `observability:` block has nothing to fold.
-///
-/// A MALFORMED block (`observability: null`, a sequence, a scalar — real hand-edited shapes) is still
-/// DELETED: the section does not exist in 1.5.3, so there is nothing to carry it into and leaving it
-/// would fail the `deny_unknown_fields` parse. But the deletion is RECORDED in the ledger:
-/// `root.remove` always removes the key, so without this arm a malformed block vanished from
-/// the migrated document with no `changes` entry at all, which is exactly the "silently lost operator
-/// config" shape `migrate_auth` refuses.
 pub(super) fn migrate_observability_block(root: &mut Mapping, changes: &mut Vec<String>) {
     let removed = root.remove(Value::from("observability"));
     let Some(Value::Mapping(mut obs)) = removed else {
@@ -271,8 +220,7 @@ pub(super) fn migrate_observability_block(root: &mut Mapping, changes: &mut Vec<
         .into_iter()
         .filter(|k| !k.is_empty())
         .find_map(|k| take(&mut obs, k));
-    // A `null` URL is how the shipped example spelled "tracing off" — folding it into an instance
-    // would turn an OFF sink into a boot error (`settings.url` is REQUIRED), so drop it instead.
+
     let url = url.filter(|v| !v.is_null());
     if let Some(url) = url {
         let export = export_map_mut(root);

@@ -74,9 +74,6 @@ impl Drop for FlushOwner<'_> {
 }
 
 impl GovState {
-    /// Flush one retained snapshot through an explicitly supported supplied-id operation.
-    /// Store calls run without accumulator or flight locks. A skipped concurrent caller cannot
-    /// cancel the active owner, and unwinding releases the runner while keeping its operation.
     pub(super) fn flush_metering_deduped(&self, shutdown: bool) -> usize {
         let pending = &self.pending_metering;
         let current = std::thread::current().id();
@@ -94,8 +91,7 @@ impl GovState {
                 );
                 return 0;
             }
-            // WriteBehind operations have no I/O deadline. A final caller waits actual completion,
-            // then owns the retry itself; returning while another thread runs is not a final flush.
+
             runner = pending
                 .flush_finished
                 .wait(runner)
@@ -108,8 +104,6 @@ impl GovState {
         {
             let mut flight = pending.flight.lock().unwrap_or_else(|p| p.into_inner());
             if flight.is_empty() {
-                // Capture once per invocation. An uncertain snapshot never absorbs newer arrivals,
-                // so outage storage is bounded by one snapshot plus the bounded pending shards.
                 flight.extend(pending.drain().into_iter().filter_map(MeteringWrite::new));
                 captured = true;
             }
@@ -126,8 +120,6 @@ impl GovState {
             };
             let Some(write) = write else {
                 if shutdown && !captured {
-                    // Finish fresh arrivals after a retained retry. At most one new snapshot is
-                    // captured per invocation, after the previous one is fully acknowledged.
                     let mut flight = pending.flight.lock().unwrap_or_else(|p| p.into_inner());
                     flight.extend(pending.drain().into_iter().filter_map(MeteringWrite::new));
                     captured = true;
@@ -136,8 +128,6 @@ impl GovState {
                 return flushed;
             };
             let op = write.op.unwrap_or_else(|| {
-                // Mint only after raw custody is installed. Even an allocator initialization
-                // panic must leave the unsent counts available to a later caller.
                 let replay_before = std::time::Instant::now()
                     + std::time::Duration::from_secs(
                         busbar_contract::abi::store::OP_ID_RETENTION_SECS,
@@ -155,8 +145,7 @@ impl GovState {
                     .op = Some(op);
                 op
             });
-            // A Store may forget the receipt after this bound. Replaying after that could apply
-            // an already-committed body twice. Keep its identity and raw debt, but send nothing.
+
             let result = if std::time::Instant::now() >= op.replay_before {
                 Err(RecordStoreError(
                     "metering receipt retention expired; exact operation and counts retained"
@@ -168,7 +157,6 @@ impl GovState {
             };
             match result {
                 Ok(()) => {
-                    // Only this runner retires a front operation, only after its real acknowledgement.
                     let acknowledged = pending
                         .flight
                         .lock()

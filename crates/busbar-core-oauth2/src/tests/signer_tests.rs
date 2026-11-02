@@ -1,31 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE SIGNER CONFORMANCE GATE.
-//!
-//! `PROPOSAL-oauth-as-ring-backend.md` §4 states the debt the seam creates in one sentence: *a host
-//! can install a broken signer, and wrong signatures fail silently*. A signature that does not
-//! verify is indistinguishable, at a resource server, from a token somebody tampered with, so the
-//! deployment learns about it from its users. That is why the harness ships WITH the backend and
-//! not after it.
-//!
-//! The harness is `oauth_as::signer_conformance`, and the reason it is worth more than any test
-//! written here is that it carries the RFC 7515 appendix A.3 known-answer vector. busbar's signer
-//! and busbar's verifier agreeing with each other proves only that they agree; the RFC's vector is
-//! a value neither of them produced.
-
 use super::{RingEs256Key, RingEs256Verifier};
 
-/// Build the signer the production plane builds, from a freshly generated key.
 fn key(kid: &str) -> RingEs256Key {
     let der = RingEs256Key::generate_pkcs8().expect("generate a P-256 key");
     RingEs256Key::from_pkcs8_der(kid, &der).expect("load the key just generated")
 }
 
-/// EVERY CHECK IN THE UPSTREAM HARNESS, GREEN.
-///
-/// Reported by NAME on failure rather than as a count: "3 violations" sends a reader to a debugger,
-/// and `signer/output_is_not_der` sends them to the one constant that is wrong.
 #[tokio::test]
 async fn the_ring_backend_passes_the_upstream_signer_conformance_harness() {
     let violations = oauth_as::signer_conformance::SignerConformance::new(
@@ -46,17 +28,8 @@ async fn the_ring_backend_passes_the_upstream_signer_conformance_harness() {
     );
 }
 
-/// THE HARNESS ITSELF CAN GO RED, proven by planting the exact fault it exists to catch.
-///
-/// Emitting ASN.1 DER instead of the RFC 7518 §3.4 fixed-width `r || s` is THE way to get this
-/// wrong: `ring` offers both under constants that differ by one word, both compile, and both
-/// produce bytes. The `JwsSignature::Es256([u8; 64])` return type refuses the wrong LENGTH — a DER signature is 70-72
-/// bytes and would not fit — so this fault is planted at the only place it still fits: a 64-byte
-/// value that is not the signature. If this test ever passes, the harness has stopped checking and
-/// the green above means nothing.
 #[tokio::test]
 async fn the_harness_fails_a_signer_that_does_not_actually_sign() {
-    /// A signer that returns a fixed 64 bytes: right length, right type, no signature.
     struct ConstantSigner(oauth_as::jwt::Jwk);
     impl oauth_as::jwt::JwsSigner for ConstantSigner {
         fn alg(&self) -> oauth_as::jwt::JwsAlg {
@@ -88,12 +61,6 @@ async fn the_harness_fails_a_signer_that_does_not_actually_sign() {
     );
 }
 
-/// THE VERIFIER REFUSES THE DER ENCODING, stated here as well as inside the harness.
-///
-/// Accepting both encodings of one signature is malleability: a value a deployment recorded as
-/// unique stops being unique. The harness has `verifier/rejects_the_der_encoding`; this restates it
-/// against busbar's own type so a future refactor of the verifier cannot quietly widen it while the
-/// upstream harness is skipped for an unrelated reason.
 #[tokio::test]
 async fn the_verifier_refuses_an_asn1_der_signature() {
     use oauth_as::jwt::{JwsSigner as _, JwsVerifier as _};
@@ -111,9 +78,6 @@ async fn the_verifier_refuses_an_asn1_der_signature() {
         "the fixed-width signature must verify, or the rest of this test proves nothing"
     );
 
-    // Re-encode the same signature as the ASN.1 DER `SEQUENCE { r INTEGER, s INTEGER }` that
-    // OpenSSL and most KMS APIs emit, so the verifier is presented with the exact wrong thing
-    // rather than with random bytes.
     let der = der_encode(&fixed);
     assert!(
         !super::RingEs256Verifier.verify(&public, input, &der),
@@ -122,9 +86,6 @@ async fn the_verifier_refuses_an_asn1_der_signature() {
     );
 }
 
-/// `r || s` as `SEQUENCE { r INTEGER, s INTEGER }`. Hand written, in the test, because pulling a
-/// DER encoder into the dependency tree to build one test input would undo the reduction the ring
-/// backend exists for.
 fn der_encode(fixed: &[u8; 64]) -> Vec<u8> {
     fn integer(bytes: &[u8]) -> Vec<u8> {
         let trimmed = bytes
@@ -132,7 +93,7 @@ fn der_encode(fixed: &[u8; 64]) -> Vec<u8> {
             .position(|b| *b != 0)
             .unwrap_or(bytes.len() - 1);
         let mut value = bytes[trimmed..].to_vec();
-        // DER INTEGERs are signed, so a leading bit of 1 needs a zero byte in front of it.
+
         if value.first().is_some_and(|b| b & 0x80 != 0) {
             value.insert(0, 0x00);
         }
@@ -147,21 +108,6 @@ fn der_encode(fixed: &[u8; 64]) -> Vec<u8> {
     out
 }
 
-/// THE TWO DISCOVERY DOCUMENTS, PINNED TO THE BYTE — the observable an `oauth-as` bump is most
-/// likely to move without anybody deciding to move it.
-///
-/// `oauth-as` 0.10.0 dissolved the struct `Jwk` (which carried `use` and `alg` as members) into a
-/// `kty`-tagged enum with neither, and re-derives `"use":"sig","alg":"ES256"` from the curve when it
-/// SERVES the key set. A client or resource server that caches the JWKS, or compares metadata, sees
-/// any change in member set, member order, header or status here. 1.5.5 shipped these exact bytes
-/// (on `oauth-as` 0.9.3); §9.5 holds them identical, so a future bump that moves them fails here
-/// and is queued as a customer-visible change instead of shipping as a recompile.
-///
-/// Driven through `AsPlane::handle`, the one entry `routes::forward` hands every request to, built
-/// by the boot path's own `AsPlane::build` with an operator-supplied key, so the key coordinates are
-/// known and the whole body can be compared. The PLAIN posture (`fapi2` absent): the FAPI 2.0
-/// building blocks `oauth-as` is compiled with (`par`, `dpop`, `client-assertion`) must not move one
-/// byte of the document a deployment that did not ask for them serves.
 #[tokio::test]
 async fn the_jwks_and_metadata_documents_are_byte_identical_to_1_5_5() {
     use base64::Engine as _;
@@ -169,8 +115,7 @@ async fn the_jwks_and_metadata_documents_are_byte_identical_to_1_5_5() {
     use ring::signature::KeyPair as _;
 
     let der = RingEs256Key::generate_pkcs8().expect("generate a P-256 key");
-    // The coordinates, read from `ring` directly rather than through the `oauth-as` JWK type whose
-    // shape is precisely what this test watches.
+
     let pair = ring::signature::EcdsaKeyPair::from_pkcs8(
         &ring::signature::ECDSA_P256_SHA256_FIXED_SIGNING,
         &der,
@@ -229,8 +174,6 @@ async fn the_jwks_and_metadata_documents_are_byte_identical_to_1_5_5() {
         }
     };
 
-    // RFC 7517 §5: member order `kty`, `crv`, `x`, `y`, `kid`, `use`, `alg` — what 0.9.3's struct
-    // `Jwk` serialized, and what 1.0.0's served `JwksEntry` must still serialize.
     let (status, headers, body) = get(jwks_path).await;
     assert_eq!(status, 200, "the JWKS document's status moved");
     assert_eq!(
@@ -247,10 +190,6 @@ async fn the_jwks_and_metadata_documents_are_byte_identical_to_1_5_5() {
          change and must be queued, not absorbed"
     );
 
-    // RFC 8414 §2 metadata. No signing-algorithm member appears at all: busbar enables none of
-    // `client-assertion`/`jar`/`dpop`, and 0.10.0–0.11.0 re-plumbed exactly those members (the
-    // per-algorithm `mark_alg_verifiable`, the `jws_alg_allow_list` filter). A bump that started
-    // advertising an algorithm list here would be advertising a method the token endpoint refuses.
     let (status, headers, body) = get(metadata_path).await;
     assert_eq!(status, 200, "the metadata document's status moved");
     assert_eq!(

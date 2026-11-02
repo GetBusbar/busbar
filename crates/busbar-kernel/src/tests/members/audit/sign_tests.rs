@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Signing, the published recipe, the three reads, and the anchors that outlive the records.
-
-// ONE `use`, not two, and the merge is deliberate rather than tidy: `kind-isolation`'s matrix
-// counts every naming of another crate, so two import lines are two recorded couplings where the
-// test needs exactly one. The types are the contract's own — a record is built out of them, so a
-// test that builds a fully populated record cannot avoid naming them once.
 use crate::test_support::tokens::pass;
 use busbar_contract::{
     caps::{
@@ -26,9 +20,6 @@ use busbar_kernel_audit::record::{
 use busbar_kernel_audit::sign::{AuditKeySet, AuditSigningKey, AuditVerifyingKey, KeyError};
 use busbar_kernel_audit::test_support;
 
-/// A fixed seed, so every test here signs with the same key and a verifier can be handed the public
-/// half. A TEST key and nothing else: it is in a public source file, which is exactly what makes it
-/// unusable for anything real.
 const TEST_SEED_HEX: &str = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60";
 
 fn origin() -> Origin {
@@ -39,8 +30,6 @@ fn signer() -> AuditSigningKey {
     AuditSigningKey::from_hex_seed(TEST_SEED_HEX).expect("the test seed is 64 lowercase hex")
 }
 
-/// A record with something in every arm that carries a payload, because those are the fields whose
-/// encoding is easiest to move by accident.
 fn inputs(unit: u64) -> AuditInputs {
     AuditInputs {
         subject: Subject::PrincipalId(format!("pseudonym-{unit}")),
@@ -106,18 +95,10 @@ fn inputs(unit: u64) -> AuditInputs {
     }
 }
 
-/// THE RICH FIXTURE, lent to the sibling module that checks the published recipe.
-///
-/// `pub(super)` rather than copied: the published-recipe check must run over a record with
-/// something in every arm that carries a payload, and two fixtures drifting apart would leave it
-/// checking a shape this crate no longer seals.
 pub(super) fn rich_inputs(unit: u64) -> AuditInputs {
     inputs(unit)
 }
 
-/// A record with every repeatable group EMPTY, which is the shape the published body is easiest to
-/// get wrong: a group that publishes nothing instead of an empty array leaves a reader unable to
-/// tell "zero of these" from "this build did not send that member".
 fn empty_group_inputs() -> AuditInputs {
     let mut i = inputs(9);
     i.usage.lines.clear();
@@ -138,15 +119,6 @@ fn empty_group_inputs() -> AuditInputs {
     i
 }
 
-// ── THE RECIPE IS THE IMPLEMENTATION ─────────────────────────────────────────────────────────────
-
-/// THE PUBLISHED RECIPE AND THE SEALED DIGEST ARE ONE COMPUTATION.
-///
-/// This is the test the whole publication rests on. `docs/audit-chain-digest-v4.md` describes the
-/// field list in [`busbar_kernel_audit::recipe::digest_fields`]; if hashing that list did not reproduce what
-/// [`AuditChain::digest_of`] seals, then the document would describe something the node does not
-/// do, and every third-party verification would fail while looking — to the third party — exactly
-/// like a tampered chain.
 #[test]
 fn the_published_recipe_hashes_to_the_digest_the_chain_seals() {
     let mut chain = AuditChain::new();
@@ -164,10 +136,6 @@ fn the_published_recipe_hashes_to_the_digest_the_chain_seals() {
     }
 }
 
-/// Every field the recipe names is a field the published range body carries, under that name.
-///
-/// A recipe field with no published member is a preimage byte a third party cannot obtain, which
-/// makes the recipe unusable however accurate it is.
 #[test]
 fn every_recipe_field_is_published_under_its_own_name() {
     let mut chain = AuditChain::new().signing_with(signer());
@@ -185,16 +153,12 @@ fn every_recipe_field_is_published_under_its_own_name() {
             field.name
         );
     }
-    // And the two things that are not digest inputs but are what a verifier checks AGAINST.
+
     assert!(body.contains("\"hash\""));
     assert!(body.contains("\"signature\""));
     assert!(body.contains("\"key_id\""));
 }
 
-// ── THE SIGNATURE ────────────────────────────────────────────────────────────────────────────────
-
-/// A sealed record carries a signature that verifies against the published key, and names the key
-/// by an identifier the verifier can DERIVE from that key rather than be told.
 #[test]
 fn a_sealed_record_verifies_against_the_published_key() {
     let mut chain = AuditChain::new().signing_with(signer());
@@ -215,13 +179,6 @@ fn a_sealed_record_verifies_against_the_published_key() {
     );
 }
 
-/// ALTERING ANY DIGESTED FIELD BREAKS THE SIGNATURE — including the ones that look cosmetic.
-///
-/// The list below is deliberately stuffed with fields nobody would defend: the monotonic clock
-/// (which is not even the timestamp a reader looks at), the `estimated` flag on a usage line, the
-/// basis points of a tier that priced to the same number anyway, the origin kind. Every one of them
-/// is in the preimage, so every one of them is evidence, and an editor who "only fixed a typo" is
-/// caught by exactly the same mechanism as one who moved money.
 #[test]
 fn altering_any_field_breaks_the_signature_including_the_cosmetic_ones() {
     let mut chain = AuditChain::new().signing_with(signer());
@@ -229,7 +186,6 @@ fn altering_any_field_breaks_the_signature_including_the_cosmetic_ones() {
     let published =
         AuditVerifyingKey::from_hex(&signer().public_key_hex()).expect("a published key");
 
-    // Each edit is a thing somebody could argue is harmless. None of them is.
     type Edit = (&'static str, fn(&mut AuditRecord));
     let edits: Vec<Edit> = vec![
         ("the monotonic clock", |r| r.mono += 1),
@@ -283,15 +239,13 @@ fn altering_any_field_breaks_the_signature_including_the_cosmetic_ones() {
             altered, sealed,
             "the edit to {what} did not actually change the record"
         );
-        // Reported as the EDIT it is, never as a key problem: the record no longer hashes to its
-        // own fields, and an operator told "bad signature" goes looking at the key.
+
         assert_eq!(
             AuditChain::verify_signature(&altered, &published),
             Err(KeyError::DigestMismatch),
             "editing {what} left a record that is not reported as edited"
         );
-        // And the same edit with the hash recomputed — the forger who remembered to rehash — still
-        // fails, because the signature is over a digest they cannot re-mint without the key.
+
         let mut rehashed = altered.clone();
         rehashed.hash = AuditChain::digest_of(&rehashed);
         assert_eq!(
@@ -302,8 +256,6 @@ fn altering_any_field_breaks_the_signature_including_the_cosmetic_ones() {
     }
 }
 
-/// A record signed by one key does not verify against another, and an unsigned record is reported
-/// as unsigned rather than as a failure — the two are different findings.
 #[test]
 fn a_foreign_key_and_an_absent_signature_are_different_answers() {
     let mut signed_chain = AuditChain::new().signing_with(signer());
@@ -326,12 +278,6 @@ fn a_foreign_key_and_an_absent_signature_are_different_answers() {
     );
 }
 
-/// THE DIGEST DID NOT MOVE WHEN SIGNING ARRIVED.
-///
-/// The signature is computed FROM the digest and is not digested, which is what lets a chain
-/// written before this release keep verifying. The frozen hex is the one in `record_tests`; it is
-/// repeated here against a SIGNED chain to say the thing that test cannot: that turning signing on
-/// does not move it either.
 #[test]
 fn turning_signing_on_does_not_move_the_sealed_digest() {
     let mut unsigned = AuditChain::new();
@@ -343,11 +289,8 @@ fn turning_signing_on_does_not_move_the_sealed_digest() {
     assert!(b.signature.is_some());
 }
 
-/// A small-order public key verifies EVERY signature, so publishing one would turn the whole
-/// mechanism into a rubber stamp. Refused at the door.
 #[test]
 fn a_small_order_public_key_is_refused() {
-    // The order-1 identity point, and an order-8 point. Both decompress; neither is a key.
     let identity = "0100000000000000000000000000000000000000000000000000000000000000";
     assert_eq!(
         AuditVerifyingKey::from_hex(identity),
@@ -359,14 +302,6 @@ fn a_small_order_public_key_is_refused() {
     );
 }
 
-// ── KEY MATERIAL NEVER REACHES A LOG ─────────────────────────────────────────────────────────────
-
-/// THE SECRET IS NOT IN ANY `Debug`, AT ANY DEPTH.
-///
-/// Formatted three ways, because the leak nobody rehearses is the indirect one: a key is rarely
-/// printed on purpose, it is printed because something CONTAINING it was. So this formats the key,
-/// the chain that holds the key, and a tuple of both, and looks for the seed's hex, the seed's
-/// bytes as a Rust debug slice, and the ed25519 crate's own rendering of a secret scalar.
 #[test]
 fn debug_never_shows_the_secret() {
     let key = signer();
@@ -377,7 +312,7 @@ fn debug_never_shows_the_secret() {
         !rendered.contains(TEST_SEED_HEX),
         "the seed's hex is in a Debug rendering: {rendered}"
     );
-    // The seed's bytes, as a derive would print them.
+
     let seed_bytes: Vec<u8> = (0..32)
         .map(|i| {
             u8::from_str_radix(&TEST_SEED_HEX[i * 2..i * 2 + 2], 16).expect("test seed is hex")
@@ -387,7 +322,7 @@ fn debug_never_shows_the_secret() {
         !rendered.contains(&format!("{seed_bytes:?}")),
         "the seed's bytes are in a Debug rendering: {rendered}"
     );
-    // A derive on the dalek type would name its secret field; the identifier must be there instead.
+
     assert!(!rendered.contains("secret"), "a Debug named a secret field");
     assert!(
         rendered.contains(key.key_id()),
@@ -396,12 +331,6 @@ fn debug_never_shows_the_secret() {
     assert!(rendered.contains("ed25519"));
 }
 
-/// AN ERROR NEVER QUOTES THE THING IT REFUSED.
-///
-/// A hex decoder from a general library names the offending character and its index. For a signing
-/// seed that is a byte of the secret, printed into whatever caught the error — a log line, a
-/// terminal, a support ticket. So every rejection here is a whole-input judgement, and this checks
-/// that no fragment of a bad key survives into the message.
 #[test]
 fn a_rejected_key_is_never_quoted_back() {
     let nearly = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7fZZ";
@@ -418,7 +347,7 @@ fn a_rejected_key_is_never_quoted_back() {
                 );
             }
         }
-        // And it names no offset either — an index narrows what the rest can be.
+
         assert!(!said.contains("index"), "the error named an offset: {said}");
         assert!(
             !said.contains(&(bad.len() - 1).to_string()),
@@ -427,7 +356,6 @@ fn a_rejected_key_is_never_quoted_back() {
     }
 }
 
-/// The key set publishes the public half and there is no path to the other one.
 #[test]
 fn the_key_set_publishes_only_the_public_half() {
     let mut keys = AuditKeySet::new();
@@ -445,17 +373,8 @@ fn the_key_set_publishes_only_the_public_half() {
     assert!(body.contains("\"algorithm\":\"ed25519\""));
 }
 
-// ── THE ANCHORS SURVIVE A RESTART ────────────────────────────────────────────────────────────────
-
-/// HEAD HISTORY SURVIVES A RESTART, rebuilt from the records the journal hands back.
-///
-/// [`AuditChain::resume`] is what a boot continues the chain with. Resumed from the sealed records,
-/// the chain answers the head read with the tip it really has — never a null head beside a
-/// `next_seq` above one — and every window's anchor is the one it had before the restart, still
-/// signed. A chain resumed from its tail alone answered `"head":null` and lost every anchor.
 #[test]
 fn head_history_survives_a_restart_rebuilt_from_its_records() {
-    // One head per hour (the default); a record every twenty minutes for six hours.
     let mut chain = AuditChain::new().signing_with(signer());
     let start = 1_700_000_000u64;
     let mut records = Vec::new();
@@ -503,14 +422,11 @@ fn head_history_survives_a_restart_rebuilt_from_its_records() {
         "a window's published anchor moved across the restart"
     );
 
-    // An empty journal resumes as a new chain: a null head, and position one next.
     let empty = AuditChain::resume(&[]);
     assert!(expose::head_body(&empty).contains("\"head\":null"));
     assert_eq!(empty.next_seq(), 1);
 }
 
-/// The genesis head always joins the series, whatever the sampling rate, because a window-verifier
-/// needs it to know the chain started where it says it did.
 #[test]
 fn the_genesis_head_is_always_an_anchor() {
     let mut history = HeadHistory::every(86_400);
@@ -524,8 +440,6 @@ fn the_genesis_head_is_always_an_anchor() {
     assert_eq!(history.series()[0].hash, first.hash);
 }
 
-/// A head history with nothing in it is a node that has sealed nothing, and the head read says so
-/// rather than refusing: "this chain has no records" is a true answer.
 #[test]
 fn a_chain_that_has_sealed_nothing_publishes_a_null_head() {
     let chain = AuditChain::new();
@@ -535,18 +449,6 @@ fn a_chain_that_has_sealed_nothing_publishes_a_null_head() {
     assert!(body.contains("\"next_seq\":1"));
 }
 
-/// A head history has no way to lose anything: no pruning method, no cutoff, no capacity.
-///
-/// Stated as a test rather than only as a comment because the guarantee is the ABSENCE of an
-/// operation, and an absence is the one thing a reader stops noticing. `observe` only ever grows
-/// the series.
-///
-/// Driven PAST the size heads.rs costs the history at — 8 760 hourly heads a year — at the
-/// default hourly rate, for two years and one hour. A capacity bound is the one a tidy-up would
-/// reach for, and the number it would reach for is that one; fifty observations could not see it.
-/// One sealed record is re-observed at each hour with its position advanced: `observe` reads only
-/// the head fields, and sealing (and signing) seventeen thousand records would cost the suite far
-/// more than the property needs.
 #[test]
 fn nothing_shrinks_the_head_history() {
     let mut history = HeadHistory::every(0);
@@ -593,9 +495,6 @@ fn history_grows_by_one(history: &mut HeadHistory, record: &AuditRecord) {
     );
 }
 
-// ── THE THREE READS ──────────────────────────────────────────────────────────────────────────────
-
-/// The head read answers with the tip and the names a verifier needs to know which rules apply.
 #[test]
 fn the_head_read_answers_with_the_tip_and_the_recipe_it_was_sealed_under() {
     let mut chain = AuditChain::new().signing_with(signer());
@@ -621,8 +520,6 @@ fn the_head_read_answers_with_the_tip_and_the_recipe_it_was_sealed_under() {
     assert!(body.contains("\"next_seq\":4"), "{body}");
 }
 
-/// The range read is inclusive at both ends, in position order, and a window that runs off either
-/// end is shorter rather than an error.
 #[test]
 fn the_range_read_is_inclusive_and_clips_rather_than_refusing() {
     let mut chain = AuditChain::new().signing_with(signer());
@@ -642,8 +539,6 @@ fn the_range_read_is_inclusive_and_clips_rather_than_refusing() {
     assert!(empty.contains("\"records\":[]"), "{empty}");
 }
 
-/// An empty repeated group publishes an EMPTY ARRAY, not nothing. A reader must be able to tell
-/// "zero usage lines" from "this build did not send that member".
 #[test]
 fn an_empty_group_publishes_an_empty_array() {
     let mut chain = AuditChain::new().signing_with(signer());
@@ -663,8 +558,6 @@ fn an_empty_group_publishes_an_empty_array() {
     );
 }
 
-/// A field holding arbitrary caller text comes out as valid, re-readable JSON — including the
-/// characters a naive escaper drops.
 #[test]
 fn caller_named_text_survives_into_the_published_body() {
     let mut chain = AuditChain::new().signing_with(signer());
@@ -672,9 +565,7 @@ fn caller_named_text_survives_into_the_published_body() {
     i.what.op_class = OpClassId::new("tool\"a\\b\nc\u{1}d|e");
     let record = chain.seal(i, &pass::<AuditStep>());
     let body = expose::range_body(&chain, std::slice::from_ref(&record), 1, 1);
-    // Built rather than written as a literal, so the expectation cannot be mangled by whatever
-    // edits this file: backslash-quote, backslash-backslash, backslash-n, and the control
-    // character as its six-character \u form.
+
     let expected = format!("tool{}\"a{}{}b{}nc{}u0001d|e", "\\", "\\", "\\", "\\", "\\");
     assert!(body.contains(&expected), "{body}");
     let parsed: serde_json::Value = serde_json::from_str(&body).expect("the body is valid JSON");
@@ -684,9 +575,6 @@ fn caller_named_text_survives_into_the_published_body() {
     );
 }
 
-/// Every published body parses, and the numeric members that are 128-bit come out as TEXT — a JSON
-/// number wide enough to hold them is not safely readable, and through an `f64` it is not readable
-/// at all.
 #[test]
 fn the_published_bodies_parse_and_the_wide_numbers_are_text() {
     let mut chain = AuditChain::new().signing_with(signer());
@@ -707,10 +595,7 @@ fn the_published_bodies_parse_and_the_wide_numbers_are_text() {
     let parsed: serde_json::Value =
         serde_json::from_str(&expose::range_body(&chain, &records, 1, 2)).expect("JSON");
     assert_eq!(parsed["records"][0]["emission_delta"].as_str(), Some("-7"));
-    // NO PRICED FIGURE IS PUBLISHED, because none is sealed (#43, #71, #77(3)): the record carries
-    // counts and the inputs a read-time price is computed from, and the body is the recipe rendered
-    // as data. `busbar.audit.digest.v1` carried `pre_tier`, `priced` and `hooks[].priced_delta`;
-    // v2 carries none of them, and a build that published one would be sealing a stored price.
+
     let record = parsed["records"][0]
         .as_object()
         .expect("a published record is an object");
@@ -720,8 +605,7 @@ fn the_published_bodies_parse_and_the_wide_numbers_are_text() {
             "the published record carries a stored price `{stored_price}`: {record:?}"
         );
     }
-    // A hook that ran is named, with its decision head and whether it failed (`hooks[].head`,
-    // `hooks[].failed`: docs/audit-chain-digest-v4.md rows 39-40), and never priced.
+
     let hooks = parsed["records"][0]["hooks"]
         .as_array()
         .expect("the hooks are an array");
@@ -743,27 +627,21 @@ fn the_published_bodies_parse_and_the_wide_numbers_are_text() {
         }
     }
     assert_eq!(parsed["recipe"].as_str(), Some("busbar.audit.digest.v4"));
-    // The inputs a read-time price takes ARE published: the counts, the tier, the fee count and the
-    // card version.
+
     assert_eq!(parsed["records"][0]["tier_bp"].as_str(), Some("9000"));
     assert_eq!(parsed["records"][0]["fee_count"].as_str(), Some("1"));
     assert_eq!(
         parsed["records"][0]["rate_card_version"].as_str(),
         Some("3")
     );
-    // And the fields the digest takes as numbers go out as their decimal text, in a record and in a
-    // group alike: a `u64` above 2^53 does not survive a reader that maps JSON numbers to doubles.
+
     assert_eq!(parsed["records"][0]["seq"].as_str(), Some("1"));
     assert!(parsed["records"][0]["lines"][0]["quantity"].is_string());
-    // The envelope's positions stay JSON numbers.
+
     assert_eq!(parsed["from"].as_u64(), Some(1));
     assert_eq!(parsed["to"].as_u64(), Some(2));
 }
 
-/// Every value the recipe calls `Num` is published as its canonical decimal text in a JSON string,
-/// and every `Text` as a JSON string. The kind comes from the published recipe page, not from the
-/// JSON type; what the body must hold is the exact value, unrounded, which a JSON number above 2^53
-/// would not survive through a reader that maps numbers to doubles.
 #[test]
 fn the_body_keeps_the_texts_texts_and_the_numbers_decimal_text() {
     let mut chain = AuditChain::new().signing_with(signer());
@@ -794,8 +672,6 @@ fn the_body_keeps_the_texts_texts_and_the_numbers_decimal_text() {
     }
 }
 
-/// A sealing node above 2^53 — the normal case, since a node is a uniform 64-bit draw — comes out
-/// exact. A JSON number this wide would be rounded by any reader that maps numbers to doubles.
 #[test]
 fn a_node_above_two_to_the_fifty_three_is_published_exactly() {
     let node: u64 = 16_045_690_984_833_335_023;
@@ -815,11 +691,6 @@ fn a_node_above_two_to_the_fifty_three_is_published_exactly() {
     );
 }
 
-/// THE CANONICAL RECORD THE PUBLISHED SPEC'S WORKED EXAMPLE IS BUILT FROM.
-///
-/// Fixed in every field, including the ones a fixture usually varies, because the spec quotes its
-/// digest and its signature as literal hex. Sealed with the RFC 8032 test key so a reader can check
-/// the worked example against any ed25519 implementation they already trust.
 fn worked_example_inputs() -> AuditInputs {
     let mut i = empty_group_inputs();
     i.subject = Subject::Node(7);
@@ -834,10 +705,8 @@ fn worked_example_inputs() -> AuditInputs {
     i
 }
 
-/// The node the published spec's worked example was sealed by.
 const WORKED_EXAMPLE_NODE: u64 = 5;
 
-/// Pull the nth fenced `json` block out of the published spec.
 fn spec_json_block(doc: &str, nth: usize) -> serde_json::Value {
     let block = doc
         .split("```json")
@@ -849,15 +718,6 @@ fn spec_json_block(doc: &str, nth: usize) -> serde_json::Value {
     serde_json::from_str(block).expect("the spec's worked example is valid JSON")
 }
 
-/// THE PUBLISHED SPEC CANNOT DRIFT FROM THE CODE.
-///
-/// `docs/audit-chain-digest-v4.md` quotes three bodies and a digest as literal values. A document
-/// that described something the node does not do would make every third-party verification fail
-/// while looking, to the third party, exactly like a tampered chain — so the worked example is
-/// asserted against this build rather than transcribed once and trusted.
-///
-/// Compared as PARSED JSON, not as bytes: the page pretty-prints for a human reader, and the
-/// contract is the members and their values, not the whitespace.
 #[test]
 fn the_worked_example_in_the_published_spec_is_what_this_build_answers_with() {
     let doc = std::fs::read_to_string(
@@ -897,7 +757,6 @@ fn the_worked_example_in_the_published_spec_is_what_this_build_answers_with() {
         "the spec's key-set example is not what this build answers with"
     );
 
-    // And the three values the prose quotes outside a fence.
     assert!(
         doc.contains(&record.hash),
         "the spec quotes a digest this build does not produce"
@@ -915,7 +774,6 @@ fn the_worked_example_in_the_published_spec_is_what_this_build_answers_with() {
     );
 }
 
-/// The preimage the spec's worked example quotes the LENGTH of is the one this build frames.
 #[test]
 fn the_worked_examples_preimage_is_the_length_the_spec_quotes() {
     let mut chain = AuditChain::new()
@@ -934,10 +792,6 @@ fn the_worked_examples_preimage_is_the_length_the_spec_quotes() {
     assert_eq!(framed, 489);
 }
 
-// ── ONE KEYSET, TWO DOMAINS: ledger checkpoints are signed by the audit key (Q71(3), #82) ──────────
-
-/// A checkpoint-shaped body. The audit crate never parses one — it signs the bytes the ledger hands
-/// it — so any bytes stand in for the ledger's `Checkpoint::signed_body`.
 const CHECKPOINT_BODY: &[u8] = b"checkpoint 1: bucket b, window 1, settled 450";
 
 #[test]
@@ -946,7 +800,7 @@ fn a_checkpoint_signed_by_the_audit_chain_verifies_with_the_audit_keyset() {
     let signature = chain
         .sign_checkpoint_body(CHECKPOINT_BODY)
         .expect("a chain given a key signs checkpoints with it");
-    // The SAME set the audit key-set read publishes: the public half of the chain's own key.
+
     let mut keys = AuditKeySet::new();
     keys.insert(
         AuditVerifyingKey::from_hex(&chain.public_key_hex().unwrap()).expect("a real public key"),
@@ -980,7 +834,7 @@ fn a_checkpoint_signature_and_a_record_signature_cannot_stand_in_for_each_other(
     let digest_hex = busbar_kernel_audit::digest::sha256_hex(CHECKPOINT_BODY);
     let mut keys = AuditKeySet::new();
     keys.insert(AuditVerifyingKey::from_hex(&key.public_key_hex()).expect("a public key"));
-    // A record signature over the checkpoint body's digest does not verify as a checkpoint.
+
     let record_sig = key.sign_digest(&digest_hex);
     let raw: Vec<u8> = (0..record_sig.len())
         .step_by(2)
@@ -990,7 +844,7 @@ fn a_checkpoint_signature_and_a_record_signature_cannot_stand_in_for_each_other(
         keys.verify_checkpoint_body(CHECKPOINT_BODY, &raw),
         Err(KeyError::BadSignature)
     );
-    // And a checkpoint signature does not verify as a record signature over that digest.
+
     let checkpoint_sig: String = key
         .sign_checkpoint_body(CHECKPOINT_BODY)
         .iter()

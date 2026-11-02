@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Store-owned overlay generations. Immutable bounded chunks precede one atomic head CAS.
-//! Unknown outcomes retain the exact candidate and replay identity; no observation substitutes
-//! for its receipt. Store callbacks run without a host mutex guard.
-//! Receipt age uses both local monotonic and wall clocks. StoreCalls exposes no authoritative
-//! remote clock or receipt deadline; independent Store clock discontinuities remain unobservable.
-
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Wake, Waker};
@@ -51,8 +45,6 @@ enum State {
     NeedsReload,
 }
 
-/// Custody is installed before any effect. Unwinding restores the exact unknown candidate;
-/// planning failures restore Idle. The mutex protects ownership transfers only.
 struct Operation<'a> {
     store: &'a OverlayStore,
     candidate: Option<Candidate>,
@@ -77,7 +69,6 @@ impl Drop for Operation<'_> {
     }
 }
 
-/// A real opened Store backend. Its name is diagnostic only; it is never a filesystem path.
 pub struct OverlayStore {
     calls: Arc<dyn StoreCalls>,
     state: Mutex<State>,
@@ -104,8 +95,6 @@ impl OverlayStore {
         }))
     }
 
-    /// A confirmed overlay was not published with its App. Retain any exact unknown receipt,
-    /// but refuse further edits through this old generation until reload installs a fresh carrier.
     pub fn require_reload(&self) {
         self.unpublished
             .store(true, std::sync::atomic::Ordering::Release);
@@ -122,7 +111,6 @@ impl OverlayStore {
         Ok(())
     }
 
-    /// Diagnostic identity retained for callers that previously displayed a resolved path.
     pub fn display(&self) -> &'static str {
         "configured Store"
     }
@@ -136,8 +124,7 @@ impl OverlayStore {
             if raw.is_none() {
                 return Ok((None, None));
             }
-            // A successful CAS retires its predecessor atomically. A reader that already took
-            // that predecessor retries only after proving the head was superseded.
+
             let current = wait(self.calls.record_get(SCHEMA, HEAD)).map_err(|e| e.to_string())?;
             if current.as_ref().map(|value| value.as_slice()) == raw.as_deref() {
                 return Err("config overlay generation is incomplete".into());
@@ -182,11 +169,10 @@ impl OverlayStore {
         self.snapshot().map(|(_, bytes)| bytes)
     }
 
-    /// Fail closed on unreadable data. Boot/reload callers must propagate this result.
     pub fn read_required(&self) -> Result<Option<OverlayDoc>, String> {
         let (head, bytes) = self.snapshot()?;
         let doc = Self::decode(bytes)?;
-        // Diagnostics may initialize a fresh carrier, but never advance an already-pinned App.
+
         let mut observed = self.observed.lock().unwrap_or_else(|p| p.into_inner());
         if observed.is_none() {
             *observed = Some(head);
@@ -204,9 +190,6 @@ impl OverlayStore {
         }
     }
 
-    /// Resolve exact retained custody before a reload reads the authoritative generation. Return
-    /// a fresh carrier for the candidate App; it becomes writable only if that App is published.
-    /// The old carrier keeps refusing mutations after recovery, even if rebuilding fails.
     pub fn reopen_for_reload(&self) -> Result<(Arc<Self>, Option<OverlayDoc>), String> {
         let previous = {
             let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
@@ -241,7 +224,7 @@ impl OverlayStore {
                 Some(current) if current == &head => self.observed.clone(),
                 Some(_) => {
                     operation.needs_reload = true;
-                    // A failed rebuild must leave the old carrier pinned and quarantined.
+
                     Arc::new(Mutex::new(Some(head)))
                 }
             }
@@ -259,7 +242,7 @@ impl OverlayStore {
 
     pub(super) fn update(&self, edit: impl FnOnce(&mut OverlayDoc)) -> Result<(), String> {
         self.ensure_published()?;
-        // Move owned data out before any Store callback or secret-bearing destructor runs.
+
         let previous = {
             let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
             if matches!(*state, State::Busy) {
@@ -377,7 +360,7 @@ impl OverlayStore {
             };
             drop(old);
         }
-        // Only definitive decisions relinquish custody, and destructors run without a mutex.
+
         drop(operation.candidate.take());
         match decision {
             Decision::ConditionConflict => Err("config overlay changed in Store; reload before retrying".into()),
@@ -400,8 +383,7 @@ impl OverlayStore {
         }) {
             return Err("config overlay receipt retention expired; exact unknown candidate and identity retained; restart and recover the Store head before changing configuration".into());
         }
-        // Once the head was attempted every chunk was already confirmed. A successor may have
-        // retired them since; replay the receipt alone so old chunks are never resurrected.
+
         if candidate.first_submit.is_none() {
             for (key, value) in &candidate.chunks {
                 wait(self.calls.record_put(SCHEMA, key, value)).map_err(|e| e.to_string())?;
@@ -421,8 +403,6 @@ impl OverlayStore {
     }
 
     fn retire_conflicted(&self, candidate: &Candidate) -> Result<(), String> {
-        // Definitive conflict proves this generation was never published. Its sole writer has
-        // relinquished the CAS; deleting its immutable staging rows cannot affect a reader.
         let empty = RecordBytes::new(Vec::new()).expect("empty deletion record");
         for (key, _) in &candidate.chunks {
             wait(self.calls.record_put(SCHEMA, key, &empty))
@@ -741,7 +721,7 @@ mod tests {
         let (candidate, doc) = backend.reopen_for_reload().unwrap();
         assert_eq!(doc.unwrap().root.unwrap().per_request_fee, Some(9));
         assert_eq!(*backend.observed.lock().unwrap(), before);
-        drop(candidate); // a semantic rebuild refused before publication
+        drop(candidate);
         assert!(persist_root(Some(&backend), &RootSettings::default()).is_err());
         assert_eq!(*backend.observed.lock().unwrap(), before);
     }

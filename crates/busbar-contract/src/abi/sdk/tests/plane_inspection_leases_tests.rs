@@ -16,7 +16,6 @@ static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 struct Owned(std::sync::Weak<Leases>);
 impl Drop for Owned {
     fn drop(&mut self) {
-        // A kept destructor can reenter its lease owner: RELEASE must detach and unlock first.
         if let Some(leases) = self.0.upgrade() {
             let _ = leases.held();
         }
@@ -160,6 +159,27 @@ fn close(instance: *mut c_void) {
         Outcome::Ready
     );
 }
+#[test]
+fn a_plane_with_an_actual_lease_book_refuses_zero_and_unknown_ids_in_words() {
+    let _serial = SERIAL.lock().unwrap();
+    let instance = open();
+    for lease in [0, 999] {
+        let mut input: ReleaseIn = zero();
+        input.head = head::<ReleaseIn>(slot::RELEASE);
+        input.lease = lease;
+        let mut out = out_head::<OutHead>();
+        assert_eq!(
+            call(table().head.release, instance, &input, &mut out),
+            Outcome::Refused
+        );
+        assert_eq!(out.lease, 0);
+        // SAFETY: the SDK's refusal text remains live in this instance's current output report.
+        let error = unsafe { out.error.as_str() }.expect("the refusal is UTF-8");
+        assert_eq!(error, crate::abi::sdk::life::NO_SUCH_LEASE);
+    }
+    close(instance);
+}
+
 #[test]
 fn raw_release_drops_once_duplicate_is_refused_and_close_drops_unreleased_answers() {
     let _serial = SERIAL.lock().unwrap();

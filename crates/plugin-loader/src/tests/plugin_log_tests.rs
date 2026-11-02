@@ -1,21 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **PLUGIN LOGGING, BOTH WAYS.** One plugin LINKED (the `log_witness_plugin` fixture, compiled
-//! into this build) and DROPPED (the same source behind the one-line `export_door!` cdylib, the
-//! `log_witness_door` example), driven by ONE script through the SAME dispatcher into the SAME
-//! per-plugin log file sink, and the two files compared BYTE FOR BYTE.
-//!
-//! The script logs through `tracing` and `log`, from the plugin's own code and from the libraries
-//! inside it (`h2` through `tracing`, `tungstenite` through `log`), floods past the bound, and
-//! writes outside any capture. A compiled-in plugin shares the host's `tracing` and `log`; a
-//! dropped-in one carries its own copies of both. The door macro's call capture is what makes the
-//! two write the same file.
-//!
-//! RED ARMS, kept: what a plugin writes to standard error, or logs from a thread of its own, is
-//! outside every capture and is shown NOT to reach its log file in either build; two plugin images
-//! on one thread keep their own records, even when one calls the other inside its call.
-
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -30,7 +15,6 @@ use crate::dispatch::{
     MAX_LOG_RECORDS, NO_BLOB,
 };
 
-/// The witness's kind, as the dispatcher sees it: a lifecycle-only table.
 struct WitnessKind;
 impl Kind for WitnessKind {
     const CODE: KindCode = witness::KIND;
@@ -39,15 +23,12 @@ impl Kind for WitnessKind {
         busbar_contract::abi::mechanism::call::Outcome::Failed;
 }
 
-/// The instance name both builds log under: the same name, so the same file name and line tags.
 const INSTANCE: &str = "log-witness";
 
-/// A fixed time, so the two files can be compared byte for byte.
 fn fixed_clock() -> u64 {
     1_790_000_000
 }
 
-/// A fresh directory of this test's own.
 pub(crate) fn scratch(tag: &str) -> PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -83,7 +64,6 @@ fn bind(sink: Arc<dyn EnvelopeSink>) -> Bind {
     }
 }
 
-/// The sink `dir` gives the witness instance, on the fixed clock.
 fn sink(dir: &Path, level: LogLevel) -> Arc<PluginLogSink> {
     Arc::new(
         config(dir, level)
@@ -103,14 +83,11 @@ fn linked_b(sink: Arc<dyn EnvelopeSink>) -> Plugin<WitnessKind> {
     load_linked::<WitnessKind>(&row, bind(sink)).expect("the linked witness B loads")
 }
 
-/// The dropped-in witness: the `log_witness_door` example cdylib `cargo test` built beside this
-/// binary. A missing artifact is a failure naming the command that builds it, never a skip.
 fn dropped_path() -> PathBuf {
     crate::both_ways::example_cdylib("log_witness_door")
 }
 
 fn dropped(sink: Arc<dyn EnvelopeSink>) -> Plugin<WitnessKind> {
-    // The signed manifest's rendering: the linked rlib's door, the same crate the cdylib is.
     let stated = rendering_of(witness::a::door).expect("the witness renders its Statement");
     load_dropped::<WitnessKind>(&dropped_path(), &stated, bind(sink))
         .expect("the dropped witness loads")
@@ -139,10 +116,7 @@ fn open(p: &Plugin<WitnessKind>) {
     );
 }
 
-/// One `tick` in `mode`.
 fn tick(p: &Plugin<WitnessKind>, mode: &[u8]) {
-    // Plugin::call executes on this thread and joins the crossing before returning, so this
-    // borrowed mode stays live through every read; a watchdog cannot abandon this frame.
     let mut head = in_head();
     head.extensions = Blob {
         ptr: mode.as_ptr(),
@@ -165,7 +139,6 @@ fn tick(p: &Plugin<WitnessKind>, mode: &[u8]) {
     );
 }
 
-/// The script both builds run, each on a thread of its own (a fresh capture slot each).
 fn run(p: Plugin<WitnessKind>) {
     std::thread::spawn(move || {
         open(&p);
@@ -178,15 +151,12 @@ fn run(p: Plugin<WitnessKind>) {
     .expect("the script runs");
 }
 
-/// What the witness instance's file holds once `sink`'s writer has written every line handed over.
 fn read(dir: &Path, sink: &PluginLogSink) -> String {
     sink.flush();
     let path = config(dir, LogLevel::Trace).path_for(INSTANCE, witness::KIND);
     std::fs::read_to_string(path).unwrap_or_default()
 }
 
-/// **THE PROOF.** The linked and the dropped-in witness, the same script, the same sink: the two
-/// plugin log files are byte-identical, and they hold what the plugin and its libraries logged.
 #[test]
 fn a_linked_and_a_dropped_plugin_write_byte_identical_log_files() {
     let (ld, dd) = (scratch("linked"), scratch("dropped"));
@@ -222,10 +192,6 @@ fn a_linked_and_a_dropped_plugin_write_byte_identical_log_files() {
     let _ = (std::fs::remove_dir_all(&ld), std::fs::remove_dir_all(&dd));
 }
 
-/// **RED ARM, KEPT.** A plugin writing straight to standard error, or logging from a thread of its
-/// own, is outside every capture: neither reaches its log file, in either build. The lines are not
-/// caught; they are lost to the plugin's file, which is the rule's other half (a plugin writes no
-/// log of its own).
 #[test]
 fn a_write_outside_the_capture_never_reaches_the_plugin_log() {
     for (tag, load) in [("outside-linked", true), ("outside-dropped", false)] {
@@ -249,10 +215,6 @@ fn a_write_outside_the_capture_never_reaches_the_plugin_log() {
     }
 }
 
-/// **RED ARM, KEPT: THE CAPTURE IS PER PLUGIN IMAGE.** Plugin A logs, calls plugin B's `tick` on the
-/// same thread from inside its own call (B logs), and logs again. A's file holds both of A's lines
-/// and none of B's. One capture shared by both images would hand A's first line to B's reply,
-/// which A's call discards, and A's file would lose it.
 #[test]
 fn two_plugin_images_on_one_thread_keep_their_own_records() {
     let (da, db) = (scratch("image-a"), scratch("image-b"));
@@ -286,7 +248,6 @@ fn two_plugin_images_on_one_thread_keep_their_own_records() {
     let _ = (std::fs::remove_dir_all(&da), std::fs::remove_dir_all(&db));
 }
 
-/// The instance's configured level filters its file: at `warn`, only warnings and errors.
 #[test]
 fn the_instance_level_filters_its_file() {
     let dir = scratch("level");
@@ -309,12 +270,6 @@ fn the_instance_level_filters_its_file() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The file rotates by the host's rule: past the size it is renamed `<file>.1`, and a new file
-/// begins. A line break inside a record stays inside its one line.
-/// TWO KINDS, ONE INSTANCE NAME, TWO FILES. Instance names are unique only within a kind (each is a
-/// key of its own config section), so a store and an auth provider may both be named `memory`. Each
-/// writes its own file, named with its kind's section, and neither's records reach the other's.
-/// RED before: both wrote `memory.log`, one file holding two plugins' records.
 #[test]
 fn a_store_and_an_auth_provider_of_one_name_log_to_two_files() {
     use crate::dispatch::Diagnostic;
@@ -389,8 +344,6 @@ fn the_file_rotates_and_keeps_one_record_per_line() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The directory is the host's to make: a sink opened on a directory that does not exist yet
-/// creates it (and its missing parents) and the file, and opening again reuses both.
 #[test]
 fn opening_a_sink_creates_a_missing_directory() {
     let root = scratch("create");
@@ -407,8 +360,6 @@ fn opening_a_sink_creates_a_missing_directory() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// **RED ARM, KEPT.** A directory that cannot be used (a FILE where it should be) refuses the
-/// open, naming the key and the directory, `plugins.logs.dir <dir>: <error>`.
 #[test]
 fn an_unusable_directory_refuses_the_open_naming_its_key() {
     let root = scratch("unusable");
@@ -422,7 +373,6 @@ fn an_unusable_directory_refuses_the_open_naming_its_key() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// `plugins.logs` resolves, and a level word that names no level is refused, naming its key.
 #[test]
 fn the_config_resolves_and_refuses_a_bad_level() {
     let mut levels = std::collections::BTreeMap::new();
@@ -438,8 +388,6 @@ fn the_config_resolves_and_refuses_a_bad_level() {
     assert!(err.contains("plugins.logs.levels['typo']"), "{err}");
 }
 
-/// A config under `dir` whose file is opened at its first line (the default directory's rule), so
-/// the first line is what meets a stalled file.
 #[cfg(unix)]
 fn deferred(dir: &Path, level: LogLevel) -> PluginLogConfig {
     PluginLogConfig {
@@ -448,8 +396,6 @@ fn deferred(dir: &Path, level: LogLevel) -> PluginLogConfig {
     }
 }
 
-/// A FIFO where the instance's file goes: opening it to write waits until a reader opens it, as a
-/// disk that does not answer would.
 #[cfg(unix)]
 fn stall(path: &Path) {
     use std::os::unix::ffi::OsStrExt as _;
@@ -459,7 +405,6 @@ fn stall(path: &Path) {
     assert_eq!(made, 0, "mkfifo {}", path.display());
 }
 
-/// Open the stalled file to read, which lets its writer through, and hand over each line it reads.
 #[cfg(unix)]
 fn release(path: PathBuf) -> std::sync::mpsc::Receiver<String> {
     use std::io::BufRead as _;
@@ -476,10 +421,6 @@ fn release(path: PathBuf) -> std::sync::mpsc::Receiver<String> {
     rx
 }
 
-/// **RED ARM: A STALLED LOG FILE NEVER STALLS THE PLUGIN CALL** (§11.2: no blocking on the hot path;
-/// §11.11 R4: the bounded disk lane is not plugin logging's). The instance's file is a FIFO nobody
-/// reads, so opening it waits; the plugin call that logs still answers, and its lines reach the
-/// file, in the one line format, once the file is read.
 #[cfg(unix)]
 #[test]
 fn a_stalled_log_file_never_stalls_the_plugin_call() {
@@ -503,7 +444,7 @@ fn a_stalled_log_file_never_stalls_the_plugin_call() {
     let returned = answered
         .recv_timeout(std::time::Duration::from_secs(10))
         .is_ok();
-    // Let the file through either way, so a call that did wait finishes before the verdict.
+
     let lines = release(path);
     let p = caller.join().expect("the script runs");
     let want = " INFO  log-witness export log_witness: tracing from the plugin who=\"a\" calls=1";
@@ -528,9 +469,6 @@ fn a_stalled_log_file_never_stalls_the_plugin_call() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **RED ARM: A FULL QUEUE COUNTS, IT NEVER WAITS.** With the file stalled, more lines than the
-/// writer's queue holds are handed to the sink: every hand-over returns, and once the file is read
-/// each line is either written or counted in ONE line saying how many were dropped.
 #[cfg(unix)]
 #[test]
 fn a_full_log_queue_counts_its_lines_and_never_waits() {
@@ -563,7 +501,7 @@ fn a_full_log_queue_counts_its_lines_and_never_waits() {
         .recv_timeout(std::time::Duration::from_secs(10))
         .is_ok();
     let lines = release(path);
-    // The sink goes: its writer writes what it holds, reports what it lost, and closes the file.
+
     drop(feeder.join().expect("the feeder runs"));
     let mut read = Vec::new();
     while let Ok(line) = lines.recv_timeout(std::time::Duration::from_secs(30)) {
@@ -600,7 +538,6 @@ fn a_full_log_queue_counts_its_lines_and_never_waits() {
     );
 }
 
-/// One `info` record of `text`, handed to `s`.
 fn info(s: &PluginLogSink, text: &[u8]) {
     s.diag(crate::dispatch::Diagnostic {
         id: busbar_contract::abi::mechanism::call::DIAG_LOG,
@@ -610,10 +547,6 @@ fn info(s: &PluginLogSink, text: &[u8]) {
     });
 }
 
-/// **RED ARM: ONE FILE, ONE STATE.** Two live sinks of one instance (an auth row is bound anew
-/// under one label) write one file: it rotates by the size of everything in it, once, and no line
-/// lands in an archive through a descriptor a rotation left behind. Oldest archive first, the files
-/// hold one unbroken run of lines; none passes the size by more than a line; `keep` archives stay.
 #[test]
 fn two_sinks_of_one_file_rotate_it_once_and_never_write_an_archive() {
     let dir = scratch("one-file");
@@ -658,9 +591,6 @@ fn two_sinks_of_one_file_rotate_it_once_and_never_write_an_archive() {
     }
 }
 
-/// **RED ARM: A FAILED ROTATION IS REPORTED ONCE AND BACKS OFF.** Where the archive goes stands a
-/// directory that is not empty, so every rotation of the file fails: the file says so once, keeps
-/// every line, and the directory is left as it was.
 #[test]
 fn a_failed_rotation_is_reported_once_and_keeps_every_line() {
     let dir = scratch("rotate-fails");
@@ -736,8 +666,6 @@ fn a_successful_live_rename_resets_the_byte_retry_even_when_retention_fails() {
     assert!(current.contains("next-file"), "{current}");
 }
 
-/// **RED ARM: A PATH IS ROTATED AS ITSELF.** A directory whose name is not UTF-8 rotates its own
-/// file: no lossy copy of its name is renamed in its place.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_file_under_a_name_that_is_not_utf8_rotates() {
@@ -764,8 +692,6 @@ fn a_file_under_a_name_that_is_not_utf8_rotates() {
     );
 }
 
-/// **RED ARM: EVERY CONTROL CHARACTER IS ESCAPED.** ESC, NUL, DEL and a tab reach the file as
-/// `\u{..}`, and a line break and a carriage return as `\n` and `\r`, as before: nothing raw.
 #[test]
 fn every_control_character_in_a_record_is_written_escaped() {
     let dir = scratch("escape");
@@ -786,9 +712,6 @@ fn every_control_character_in_a_record_is_written_escaped() {
     );
 }
 
-/// **RED ARM: A CONFIG APPLY REACHES A LIVE SINK** (THE DESIGN §11.2). A sink opened under `warn`
-/// in one directory drops an `info` line; reconfigured to `info` in another, it writes the next one
-/// there (the directory created as at bind) and nothing to the first.
 #[test]
 fn a_reconfigured_level_and_directory_reach_a_live_sink() {
     let (first, second) = (scratch("reconf-a"), scratch("reconf-b").join("made"));
@@ -815,14 +738,11 @@ fn a_reconfigured_level_and_directory_reach_a_live_sink() {
     );
 }
 
-/// The host log's own events, as a global subscriber sees them: `(target, level, plugin, message)`.
 pub(crate) type HostLine = (String, tracing::Level, String, String);
 
-/// A minimal global subscriber that keeps every event (busbar's own log, as the host writes it).
 pub(crate) struct HostLog(std::sync::Mutex<Vec<HostLine>>);
 
 impl HostLog {
-    /// The process's one host log, installed once as the global subscriber.
     pub(crate) fn installed() -> &'static HostLog {
         static LOG: std::sync::OnceLock<&'static HostLog> = std::sync::OnceLock::new();
         LOG.get_or_init(|| {
@@ -887,12 +807,6 @@ impl tracing::Subscriber for Shared {
     fn exit(&self, _: &tracing::span::Id) {}
 }
 
-/// **A DROPPED-IN PLUGIN'S WARNING REACHES BUSBAR'S OWN LOG** (owner ruling 2026-10-27, the 1.5.5
-/// upgrade): 1.5.5 printed its plugins' warnings in busbar's log, and a log pipeline that watches
-/// only that log must still see them. The dropped-in witness logs at every level; its WARN line is
-/// in its own file AND is one host line at WARN, written as 1.5.5 wrote it (the message, without
-/// the module path the plugin's file leads with), while its INFO and DEBUG lines stay in its file
-/// alone. RED before the mirror: the host log holds no such line.
 #[test]
 fn a_dropped_in_plugins_warning_is_also_a_line_of_busbars_own_log() {
     const MIRRORED: &str = "mirror-witness";
@@ -945,8 +859,6 @@ fn a_dropped_in_plugins_warning_is_also_a_line_of_busbars_own_log() {
     );
 }
 
-/// The busbar.log copy of a plugin line carries no `diag=` field: 1.5.5 printed the line with none
-/// (the oracle's `export|request-log-webhook|loopback-refused` cell holds it byte for byte).
 #[test]
 fn the_busbar_log_copy_carries_no_diag_field() {
     assert_eq!(

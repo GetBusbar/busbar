@@ -41,12 +41,10 @@ use std::path::{Path, PathBuf};
 
 use super::{resolve, DeployCfg, ProviderDef};
 
-/// The directory holding the corpus configs and their blessed golden snapshots.
 fn corpus_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("src/config/tests/backcompat-corpus")
 }
 
-/// Every corpus config (`*.yaml`), sorted for a deterministic run order.
 fn corpus_configs() -> Vec<PathBuf> {
     let mut v: Vec<PathBuf> = std::fs::read_dir(corpus_dir())
         .expect("read the back-compat corpus directory")
@@ -57,12 +55,7 @@ fn corpus_configs() -> Vec<PathBuf> {
     v
 }
 
-/// A minimal `ProviderDef` for every provider a corpus config's `providers:` map names. `resolve`
-/// refuses a deployment provider with no catalog entry, so it needs a def per name — but the
-/// billing/limits surface never reads any provider FIELD, so a single fixed protocol/base_url def
-/// (an opaque dialect name: the merge names none) per name is faithful. Built by deserialize so it stays valid as `ProviderDef` gains fields.
 fn defs_for(deploy: &DeployCfg) -> HashMap<String, ProviderDef> {
-    // `providers` is `pub(crate)`; this test compiles inside busbar-core, so it reads it directly.
     deploy
         .providers
         .keys()
@@ -76,17 +69,10 @@ fn defs_for(deploy: &DeployCfg) -> HashMap<String, ProviderDef> {
         .collect()
 }
 
-/// Canonical, round-trippable rendering of an `f64` rate. `{}` gives the shortest representation that
-/// round-trips (2.5 -> "2.5", 10.0 -> "10", 0.075 -> "0.075") and is fully deterministic across
-/// platforms, so a rate that changes value changes the snapshot and nothing else does.
 fn rate(v: f64) -> String {
     format!("{v}")
 }
 
-/// Render ONLY the billing/limits projection of a resolved `RootCfg` as a stable, sorted, line-based
-/// snapshot. Every map is emitted in key order (`rate_card`/`groups` are `BTreeMap`s already; `models`
-/// is a `HashMap`, so its keys are sorted here); list order (a group's `limits`) is operator intent
-/// and is preserved verbatim. No timestamps, no addresses, no iteration-order dependence.
 fn snapshot(cfg: &super::RootCfg) -> String {
     use std::fmt::Write as _;
     let mut s = String::new();
@@ -104,7 +90,6 @@ fn snapshot(cfg: &super::RootCfg) -> String {
         b.minimal, b.low, b.medium, b.high
     );
 
-    // rate_card: a BTreeMap<model, four tiers> (or ABSENT — the "all pricing is 0" case).
     s.push_str("rate_card:\n");
     match &cfg.rate_card {
         None => s.push_str("  <absent>\n"),
@@ -122,7 +107,6 @@ fn snapshot(cfg: &super::RootCfg) -> String {
         }
     }
 
-    // models: HashMap — sort keys. Only the resolved per-model CAPS matter to billing/limits.
     s.push_str("models:\n");
     let mut model_names: Vec<&String> = cfg.models.keys().collect();
     model_names.sort();
@@ -141,8 +125,6 @@ fn snapshot(cfg: &super::RootCfg) -> String {
         );
     }
 
-    // groups: a BTreeMap<name, GroupCfg>. Emit enabled/parent, then the ordered limits, then any
-    // child_default template limits.
     s.push_str("groups:\n");
     for (name, g) in &cfg.groups {
         let parent = g.parent.as_deref().unwrap_or("-");
@@ -164,8 +146,6 @@ fn snapshot(cfg: &super::RootCfg) -> String {
     s
 }
 
-/// One limit rendered as a stable `key=value` line. Optionals collapse to `-` so a field appearing or
-/// disappearing changes the line rather than the field count.
 fn render_limit(l: &super::LimitCfg) -> String {
     let per = l.per.map_or("-", |w| w.as_str());
     let scope = l
@@ -188,8 +168,6 @@ fn render_limit(l: &super::LimitCfg) -> String {
     )
 }
 
-/// Resolve one corpus config to its billing/limits snapshot, failing loudly if `resolve` itself
-/// refuses the config (a corpus member must be resolvable — that is the whole point).
 fn snapshot_for(config_path: &Path) -> String {
     let yaml = std::fs::read_to_string(config_path)
         .unwrap_or_else(|e| panic!("read corpus config {}: {e}", config_path.display()));
@@ -206,17 +184,10 @@ fn snapshot_for(config_path: &Path) -> String {
     snapshot(&cfg)
 }
 
-/// The blessed-golden path beside a corpus config: `<name>.yaml` -> `<name>.snap`.
 fn golden_path(config_path: &Path) -> PathBuf {
     config_path.with_extension("snap")
 }
 
-/// THE GATE. For every corpus config, resolve it and assert its billing/limits snapshot equals the
-/// blessed golden. Set `BLESS_BACKCOMPAT_CORPUS=1` to (re)write the goldens from current behavior —
-/// do that ONLY for an intended, reviewed change to resolved output.
-///
-/// Reports EVERY mismatch at once (not just the first): a resolution change usually moves the same
-/// value across many configs, and seeing the whole blast radius is the diagnosis.
 #[test]
 fn resolved_billing_and_limits_config_is_byte_stable() {
     let configs = corpus_configs();

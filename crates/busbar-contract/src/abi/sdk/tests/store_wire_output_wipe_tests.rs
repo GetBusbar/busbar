@@ -2,8 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Old-public-API witness: write_all's owned output must be wiped at actual deallocation.
-//! The fake host registers only its first WRITE loan, whose bytes start at the output allocation
-//! base. Subsequent partial loans may be interior slices and are never registered.
 
 use std::ffi::c_void;
 use std::sync::{Mutex, OnceLock, PoisonError};

@@ -33,8 +33,6 @@ fn bounded_tail_context(
     Plane::context(&st).map(|_| ())
 }
 
-/// The same declaration supplies loader facts and signed bytes. A physically shorter legacy
-/// allocation has no list, even when a newer tail would have held one at that offset.
 #[test]
 fn streaming_media_are_loaded_and_rendered_and_absent_from_legacy_tails() {
     use busbar_contract::abi::mechanism::{
@@ -89,8 +87,7 @@ fn streaming_media_are_loaded_and_rendered_and_absent_from_legacy_tails() {
 
     let old_size = std::mem::offset_of!(PlaneTail, streaming_content_types);
     tail.head.size = old_size as u32;
-    // Allocate only the old layout, aligned like PlaneTail. Reading appended fields directly
-    // would access bytes beyond this allocation; both loader and rendering must zero-extend.
+
     let mut old = vec![0_u64; old_size / size_of::<u64>()];
     assert_eq!(old.len() * size_of::<u64>(), old_size);
     // SAFETY: the source and destination have old_size initialized bytes and do not overlap.

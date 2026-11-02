@@ -12,7 +12,7 @@ use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::sdk::door::{AbiIn, AbiOut};
 use busbar_contract::abi::sdk::life::{Held, Life, Refreshed, Refusal};
 use busbar_contract::abi::sdk::{Instance, Lent, Out, SafeSlot};
-use busbar_kernel::test_support::{rows, TestApp};
+use busbar_kernel_testkit::test_support::{rows, TestApp};
 
 const NAME: &str = "inbound-retirement-hook";
 const WAIT: Duration = Duration::from_secs(5);
@@ -119,8 +119,7 @@ fn hooked_app() -> Arc<busbar_kernel::state::App> {
         "settings": { "uncached": { "env": "INBOUND_CLOSE_UNUSED" } }
     }))
     .unwrap();
-    // The reference shape bypasses the global resolution cache. An explicit in-memory resolver
-    // supplies fixture bytes, so no environment or file is read. The App owns the final hook.
+
     let app = TestApp::new()
         .hook_env(env)
         .hook("retiring-close", cfg)
@@ -147,7 +146,7 @@ fn listener(app: Arc<busbar_kernel::state::App>) -> kin::Listener {
         app,
         door_refusals: Vec::new(),
         ids,
-        signed_ingress: kin::signed_by_dialect(),
+        signed_ingress: busbar_kernel_testkit::test_support::inbound::signed_by_dialect(),
         scope: None,
     }
 }

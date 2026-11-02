@@ -97,8 +97,7 @@ impl ServiceStore {
             }
             _ => None,
         };
-        // The held marker remains until terminal output/cancel, including the gap between an
-        // observation receipt and the fresh GET which consumes it. TICK cannot reset this epoch.
+
         Ok((
             Capability {
                 ticket,
@@ -292,7 +291,6 @@ impl ServiceStore {
         let receipt = {
             let mut map = self.lock(ticket);
             map.get_mut(&ticket).and_then(|h| {
-                // Ordinary legacy service state does not opt an instance into this protocol.
                 if !h.conditional_units.contains_key(&caller) {
                     return None;
                 }
@@ -322,13 +320,10 @@ impl ServiceStore {
             })
     }
 
-    /// One immutable outcome for this same instance; never a capability or a new submission.
     pub(crate) fn settlement_input(
         &self,
         caller: usize,
     ) -> Option<(zeroize::Zeroizing<Request>, Arc<[u8]>)> {
-        // The InstanceWake driver-selection lock serializes lending. Keep a lent receipt sticky
-        // until ACK, then select the oldest existing epoch so new arrivals cannot starve it.
         for previously_lent in [true, false] {
             let mut oldest: Option<(Ticket, u64)> = None;
             for shard in &self.shards {
@@ -392,15 +387,12 @@ impl ServiceStore {
         }
     }
 
-    /// Remove only the exact original commit after its receipt has been lent and acknowledged.
     pub(crate) fn settlement_ack(
         &self,
         caller: usize,
         ack: &busbar_contract::abi::sdk::plane::conditional::SettlementAck,
         consume: bool,
     ) -> Result<bool, ()> {
-        // Hash the retained snapshot outside the shard lock. Its encoder and snapshot both
-        // carry wiping owners, and retiring either owner must not happen under a host lock.
         let request = {
             let map = self.lock(ack.capability.ticket);
             let Some(h) = map.get(&ack.capability.ticket) else {
@@ -432,8 +424,6 @@ impl ServiceStore {
             };
             let key = (caller, ack.capability.epoch);
             let Some(k) = h.conditionals.get(&key) else {
-                // An acknowledgement for another instance cannot consume its entry. An already
-                // consumed acknowledgement is harmless, including an output retry.
                 if h.conditionals
                     .keys()
                     .any(|(owner, epoch)| *owner != caller && *epoch == ack.capability.epoch)
@@ -469,7 +459,6 @@ impl ServiceStore {
         Ok(consumed)
     }
 
-    /// Instance teardown ends plugin-side local obligations, never an in-flight store request.
     pub(crate) fn conditional_teardown(&self, caller: usize) {
         for shard in &self.shards {
             let removed = {

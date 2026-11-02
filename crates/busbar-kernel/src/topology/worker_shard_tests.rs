@@ -1,6 +1,3 @@
-//! A data worker's stripe: each worker id picks its own stripe, an out-of-range id clamps to the
-//! last one, and a thread that never set an id shares the last (fallback) stripe.
-
 #[test]
 fn worker_ids_index_distinct_stripes_and_unset_falls_back() {
     let stripe_for = |id: Option<usize>, stripes: usize| {

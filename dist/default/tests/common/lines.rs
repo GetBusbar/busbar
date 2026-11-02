@@ -1,17 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE LINE-SERVED CHILD the black-box suites drive: the real binary spawned as somebody's child
-//! process, its stdin written line by line and its stdout read line by line, every stdout line
-//! required to be ONE JSON message (the line carrier writes nothing else), and EOF on stdin its
-//! shutdown. Moved here from the suite that first wrote it.
-
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-/// The child, its pipes, and a line-reader thread per output stream.
 pub struct LineChild {
     pub child: super::boot::Reap,
     pub stdin: Option<std::process::ChildStdin>,
@@ -19,7 +13,6 @@ pub struct LineChild {
     pub stderr: mpsc::Receiver<String>,
 }
 
-/// Spawn `cmd` with all three pipes, a reader thread on each output.
 pub fn spawn(mut cmd: Command) -> LineChild {
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -49,7 +42,6 @@ pub fn spawn(mut cmd: Command) -> LineChild {
 }
 
 impl LineChild {
-    /// Write `value` as one line.
     pub fn send(&mut self, value: &serde_json::Value) {
         let stdin = self.stdin.as_mut().expect("stdin still open");
         let mut bytes = serde_json::to_vec(value).expect("the line serializes");
@@ -58,8 +50,6 @@ impl LineChild {
         stdin.flush().expect("flush a line");
     }
 
-    /// The next stdout line, which MUST be one JSON message. A hang detector, not a latency
-    /// assertion: a debug child on a saturated host can take most of a minute to answer.
     pub fn recv(&self) -> serde_json::Value {
         let line = self
             .stdout
@@ -70,7 +60,6 @@ impl LineChild {
         })
     }
 
-    /// [`LineChild::recv`] within `bound`, its failure a sentence rather than a panic.
     pub fn try_recv(&self, bound: Duration) -> Result<serde_json::Value, String> {
         let line = self
             .stdout
@@ -80,13 +69,11 @@ impl LineChild {
             .map_err(|e| format!("every stdout line must be one JSON message ({e}): {line:?}"))
     }
 
-    /// EOF on stdin, then the exit code — bounded, so a child that ignores EOF fails the caller.
     pub fn eof_and_wait(mut self, bound: Duration) -> i32 {
         drop(self.stdin.take());
         wait_bounded(&mut self.child, bound)
     }
 
-    /// Everything stderr has said so far, drained with a short grace per line.
     pub fn stderr_so_far(&self) -> String {
         let mut all = String::new();
         while let Ok(line) = self.stderr.recv_timeout(Duration::from_millis(300)) {
@@ -97,12 +84,10 @@ impl LineChild {
     }
 }
 
-/// The child's exit code within `bound`; a child still running then is killed and the caller fails.
 pub fn wait_bounded(child: &mut Child, bound: Duration) -> i32 {
     try_wait_bounded(child, bound).unwrap_or_else(|e| panic!("{e}"))
 }
 
-/// [`wait_bounded`], its failure a sentence rather than a panic.
 pub fn try_wait_bounded(child: &mut Child, bound: Duration) -> Result<i32, String> {
     let deadline = Instant::now() + bound;
     loop {

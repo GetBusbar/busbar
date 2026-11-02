@@ -2,11 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE DOOR AND THE STATEMENT: the ONE thing a plugin exports, and the plain data it states.
-//!
-//! A plugin of any kind exports exactly [`super::DOOR_SYMBOL`], a [`DoorFn`] answering a `'static`
-//! [`Door`]. A compiled-in plugin is a row holding the same `DoorFn`; the kernel reaches both
-//! through the same table and never holds a plugin crate's Rust types (the design: compiled in or
-//! dropped in, the same table).
 
 use super::call::{AbiStr, Blob, Op};
 use super::lifecycle::OpsHead;
@@ -54,12 +49,6 @@ pub struct Door {
 }
 
 /// The door function: the ONE symbol a plugin exports. `extern "C"`: a panic escaping it aborts.
-///
-/// SEALED (status row 195, ARCHITECT ruling on `admit_linked`): it answers a `&'static Door`, and a
-/// [`Door`]'s fields are private behind the `unsafe` [`Door::__from_parts`], so every `DoorFn` safe
-/// code can name answers a door some `unsafe` constructor vouched for. The C header spells the same
-/// symbol `const bb_mech_Door *(*)(void)`; a door read off a `dlsym` is a
-/// [`RawDoorFn`](crate::abi::sdk::door::RawDoorFn) until the loader has checked it.
 pub type DoorFn = extern "C" fn() -> &'static Door;
 
 /// A door's fields, plain: what [`Door::__from_parts`] takes and [`Door::read_parts`] answers. A
@@ -311,7 +300,7 @@ impl Door {
                 } else {
                     None
                 },
-                // An absent word reads `0`, which no kind's fingerprint is: refused at load.
+
                 layout: if has_layout {
                     addr_of!((*p).layout).read_unaligned()
                 } else {
@@ -352,8 +341,6 @@ pub struct MetricFamily {
 
 impl MetricFamily {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    /// builds its value as `MetricFamily { …, ..MetricFamily::ZERO }` so a field appended later
-    /// reads as not declared.
     pub const ZERO: Self = Self {
         name: AbiStr::ZERO,
         help: AbiStr::ZERO,
@@ -365,8 +352,7 @@ impl MetricFamily {
     };
 }
 
-/// HOW A `MetricFamily` IS MADE (status row 194): [`MetricFamily::new`], its label keys set with
-/// [`MetricFamily::with_label_keys`].
+/// HOW A `MetricFamily` IS MADE: [`MetricFamily::new`], its label keys set with
 impl MetricFamily {
     /// The family `name`, with `help`, `unit` (absent = none) and `kind`, and no label keys.
     #[must_use]
@@ -469,8 +455,6 @@ pub struct Statement {
 
 impl Statement {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    /// builds its value as `Statement { …, ..Statement::ZERO }` so a field appended later reads as
-    /// not declared.
     pub const ZERO: Self = Self {
         size: 0,
         kind: 0,
@@ -505,7 +489,7 @@ impl Statement {
     };
 }
 
-/// HOW A `Statement` IS MADE (status row 194): from
+/// HOW A `Statement` IS MADE: from
 /// [`statement`](crate::abi::sdk::door::statement) (its name, version and in-flight bound, every
 /// list empty), each list set by its setter to items that live for the program, the kind tail by
 /// [`Statement::with_kind_tail`]. Its other fields are plain and set directly.
@@ -534,7 +518,6 @@ impl Statement {
     }
 
     /// Point the kind tail at `tail`, which lives for the program: one of the kinds' tails, each
-    /// leading with a [`KindTailHead`] ([`KindTail`]).
     #[must_use]
     pub const fn with_kind_tail<T: KindTail>(mut self, tail: &'static T) -> Self {
         self.kind_tail = std::ptr::from_ref(tail).cast::<KindTailHead>();
@@ -555,7 +538,6 @@ impl Statement {
     }
 
     /// The kind tail's raw pointer (NULL = none): the host reads it under its own checks
-    /// ([`tail_read_len`]).
     #[must_use]
     pub const fn kind_tail(&self) -> *const KindTailHead {
         self.kind_tail
@@ -574,8 +556,6 @@ mod sealed {
 }
 
 /// A KIND'S STATEMENT TAIL: a `#[repr(C)]` struct leading with a [`KindTailHead`], one per kind
-/// that states one. Sealed: only the kinds' own tails are one, so [`Statement::with_kind_tail`]
-/// points only at a tail the host knows how to read.
 pub trait KindTail: sealed::Sealed + 'static {}
 impl KindTail for crate::abi::store::StoreTail {}
 impl KindTail for crate::abi::auth::AuthTail {}
@@ -583,11 +563,6 @@ impl KindTail for crate::abi::hook::Tail {}
 impl KindTail for crate::abi::export::Tail {}
 impl KindTail for crate::abi::plane::PlaneTail {}
 impl KindTail for crate::abi::transport::TransportTail {}
-
-// ── THE MARKS, REWRITES AND SECTIONS a Statement carries ────────────────────────────────────────
-//
-// The design's One Statement rule: each fact is declared once. A section, path or scheme mark is
-// DERIVED from `sections`, inbound `needs` and transport claims, and never stored.
 
 /// [`Statement::marks`]: at most one instance of the plugin may be configured.
 pub const MARK_ONE_INSTANCE: u64 = 1;
@@ -601,26 +576,18 @@ pub const MARK_BLOCKS: u64 = 1 << 3;
 pub const MARKS_KNOWN: u64 = MARK_ONE_INSTANCE | MARK_EPHEMERAL | MARK_CATALOG | MARK_BLOCKS;
 
 /// [`MarkWord::class`]: a hook word (a strategy word such as a ranking order). EXCLUSIVE: two
-/// plugins claiming the same word refuse boot.
 pub const MARK_WORD_HOOK: u32 = 1;
 /// [`MarkWord::class`]: a carrier class the plugin consumes (an inbound credential carrier an auth
-/// plugin reads; the kernel strips it from what a plane sees). SHARED: never a conflict.
 pub const MARK_WORD_CARRIER: u32 = 2;
 /// [`MarkWord::class`]: the literal prefix of the public id the host issues for the row's
-/// credential kinds (an auth row stating `abi::auth::FACT_READS_CREDENTIALS`). Absent = no prefix.
-/// SHARED. The five ISSUED marks are the issued credential's shape: the host draws every other
-/// symbol from the OS CSPRNG over the stated alphabets and names no format of its own.
 pub const MARK_WORD_ISSUED_ID_PREFIX: u32 = 3;
 /// [`MarkWord::class`]: the issued public id's total length in characters, prefix included, as a
-/// decimal word. SHARED.
 pub const MARK_WORD_ISSUED_ID_LENGTH: u32 = 4;
 /// [`MarkWord::class`]: the issued public id's alphabet after its prefix: distinct ASCII graphic
-/// characters, each drawn with equal weight. SHARED.
 pub const MARK_WORD_ISSUED_ID_ALPHABET: u32 = 5;
 /// [`MarkWord::class`]: the issued secret's length in characters, as a decimal word. SHARED.
 pub const MARK_WORD_ISSUED_SECRET_LENGTH: u32 = 6;
 /// [`MarkWord::class`]: the issued secret's alphabet: distinct ASCII graphic characters, each drawn
-/// with equal weight. SHARED.
 pub const MARK_WORD_ISSUED_SECRET_ALPHABET: u32 = 7;
 
 /// One word mark: its class and the word.
@@ -637,8 +604,6 @@ pub struct MarkWord {
 
 impl MarkWord {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    /// builds its value as `MarkWord { …, ..MarkWord::ZERO }` so a field appended later reads as
-    /// not declared.
     pub const ZERO: Self = Self {
         class: 0,
         _reserved: 0,
@@ -647,33 +612,21 @@ impl MarkWord {
 }
 
 /// [`Rewrite::class`]: `from` is another name config may give the plugin (a module alias). The
-/// registry holds it exclusive, beside the plugin's own name. `to` is absent.
 pub const REWRITE_ALIAS: u32 = 1;
 /// [`Rewrite::class`]: `from` is a reference key naming the plugin (the `k` in `{k: X}`, a secret
-/// reference's SUGAR); `to` is the settings key the value lands under, so `{k: X}` is
-/// `{ module: k, settings: { <to>: X } }`. The host reads it ([`crate::secret_ref::Sugars`]) and
-/// refuses a secret plugin whose sugar states no key, or a word another plugin declares.
 pub const REWRITE_SUGAR: u32 = 2;
 /// [`Rewrite::class`]: the setting key `from` is rewritten to the path `to` before the plugin's
-/// section reaches it (a flat key to a nested path).
 pub const REWRITE_KEY: u32 = 3;
 /// [`Rewrite::class`]: `from` is a sugar word the same Statement declares; `to` is the placeholder
-/// a refusal text shows for its value (absent = the sugar's settings key).
 pub const REWRITE_SUGAR_SHOWN: u32 = 4;
 /// [`Rewrite::class`]: `from` is a sugar word the same Statement declares; `to` is what its value
-/// names in a missing-setting refusal (`requires settings.<key> (<to>)`; absent = `the <key>`).
-/// The host reads it ([`crate::secret_ref::Sugars`]).
 pub const REWRITE_SUGAR_NAMES: u32 = 5;
 /// [`Rewrite::class`]: `from` is a sugar word the same Statement declares; `to` is the core role
-/// word its value plays ([`SUGAR_ROLE_FILL`], [`SUGAR_ROLE_PATH`]). Exclusive: two plugins claiming
-/// one role refuse the load.
 pub const REWRITE_SUGAR_ROLE: u32 = 6;
 
 /// [`REWRITE_SUGAR_ROLE`]: a config `${VAR}` at a credential position names the value of this
-/// sugar.
 pub const SUGAR_ROLE_FILL: &str = "fill";
 /// [`REWRITE_SUGAR_ROLE`]: the value of this sugar is a file path a credential may name in place of
-/// its material (a service account's key file).
 pub const SUGAR_ROLE_PATH: &str = "path";
 
 /// One live rewrite.
@@ -693,8 +646,6 @@ pub struct Rewrite {
 
 impl Rewrite {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    /// builds its value as `Rewrite { …, ..Rewrite::ZERO }` so a field appended later reads as not
-    /// declared.
     pub const ZERO: Self = Self {
         class: 0,
         _reserved: 0,
@@ -710,10 +661,6 @@ pub const SECTION_REQUIRED: u32 = 1 << 1;
 /// [`Section::flags`]: the plugin reads the section but does not own its grammar.
 pub const SECTION_CONSUMED: u32 = 1 << 2;
 /// [`Section::flags`]: this section's presence uses the plane (it selects it at boot, Law 7).
-///
-/// Nothing else reads it: the section's grammar stays whoever owns it, and a plane may be selected
-/// by a section it only consumes. A plane's declaring section selects it already, so the two
-/// together are refused, as is the bit on any other kind.
 pub const SECTION_SELECTS: u32 = 1 << 4;
 
 /// One top-level config section the plugin owns or reads.
@@ -730,8 +677,6 @@ pub struct Section {
 
 impl Section {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    /// builds its value as `Section { …, ..Section::ZERO }` so a field appended later reads as not
-    /// declared.
     pub const ZERO: Self = Self {
         name: AbiStr::ZERO,
         flags: 0,
@@ -751,8 +696,6 @@ pub struct KindTailHead {
 
 impl KindTailHead {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    /// builds its value as `KindTailHead { …, ..KindTailHead::ZERO }` so a field appended later
-    /// reads as not declared.
     pub const ZERO: Self = Self {
         size: 0,
         _reserved: 0,
@@ -760,11 +703,6 @@ impl KindTailHead {
 }
 
 /// THE KIND TAIL GROWTH RULE: a kind tail grows only by APPENDING fields, and its head's `size`
-/// says how much of it the plugin wrote. The host reads the plugin's first `min(size, host)` bytes
-/// and zero-fills the rest, so a field the plugin predates reads absent (`0`, NULL, an empty
-/// string); a newer plugin's bytes past the host's tail are not read. Only a tail smaller than
-/// `frozen`, the kind's size when its tail last froze, is refused (`None`). Returns how many of
-/// the plugin's bytes the host reads.
 #[must_use]
 pub const fn tail_read_len(size: u32, frozen: usize, host: usize) -> Option<usize> {
     let size = size as usize;

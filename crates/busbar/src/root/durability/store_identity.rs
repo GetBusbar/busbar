@@ -1,43 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The node identity and deployment signing key, owned by the configured Store.
-//!
-//! ## The node's identity
-//!
-//! A journal record is named `(node, node_seq)`, and the store keys every record by that pair. Two
-//! nodes numbering under one identity would overwrite each other's records in a shared store, so
-//! each node journals under an identity no other LIVE node holds (nodes share one store, and a money
-//! record never vanishes silently). There is no `node_id` configuration key: adding one changes the frozen
-//! configuration schema.
-//!
-//! The identity is the stable one the Store registry keeps for this host, regardless of
-//! `data_dir`. The host name is held under a lease: a restart takes a free or expired lease and
-//! resumes its chain; a concurrent live process receives a fresh registered id. A clean shutdown
-//! releases the lease; a crash restart watches for at most one lease period before deciding.
-//!
-//! The host is the operating system's host name ([`host_identity`]), a label: two processes with one
-//! name, or two with none, never journal under one identity while both are live. A deployment whose
-//! host name changes on every restart mints a new identity each time, and its predecessor's chain
-//! stays in the store under the old one, readable and verified by `/admin/verify`
-//! ([`walk_stored_chains`]) but not resumed, and so does a
-//! process that restarts while its predecessor still refreshes the lease ([`LEASE_TTL_MS`]).
-//!
-//! ## The deployment keyset
-//!
-//! The one key that signs the audit chain and the checkpoints is the DEPLOYMENT's (spec #82(a)), so
-//! it is kept once in the store ([`KEYSET_SCHEMA`]) and every node on that store signs with it. A
-//! node mints it once and reads it back on every boot, so `/admin/verify` verifies the records a
-//! predecessor signed. There is no filesystem cache.
-//!
-//! ## Atomic ownership
-//!
-//! The configured Store must negotiate conditional record transactions. The host pointer and
-//! deployment key are inserted only when absent. Lease take, refresh and release compare exact
-//! observed bytes, and every leased journal mutation compares that same lease in its transaction.
-//! A delayed predecessor cannot publish after a successor takes the identity. Unknown outcomes
-//! retain their immutable operation id/body until a definitive Store decision.
-
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use busbar_contract::abi::sdk::store::conditional::{Decision, Expected, Mutation, Predicate};
@@ -47,49 +10,33 @@ use busbar_kernel_audit::{AuditChain, AuditKeySet, AuditRecord};
 
 use super::store_chain::{off_runtime, read_chain, read_chain_beside, wait_for, JournalLane};
 
-/// The record schema of the node registry: host to node id.
 pub(super) const NODE_SCHEMA: &str = "busbar.node.v1";
 
-/// The record schema the deployment keyset is kept under.
 pub(super) const KEYSET_SCHEMA: &str = "busbar.keyset.v1";
 
-/// The one key the deployment keyset is kept at.
 const KEYSET_KEY: &[u8] = b"deployment";
 
-/// The most registry rows one scan reads.
 const REGISTRY_LIMIT: u32 = 1 << 16;
 
-/// The kind every minting claim is redeemed under (`redeem_plane_token`).
 pub(super) const MINT_CLAIM_KIND: &str = "busbar.mint.v1";
 
-/// The most candidate node ids one boot tries to claim before it refuses.
 const ID_ATTEMPTS: usize = 16;
 
-/// The claim that holds node id `id` for the one host that took it, for good.
 fn id_claim(id: u64) -> String {
     format!("node-id:{id:016x}")
 }
 
-/// Now, in whole Unix seconds.
 fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
 }
 
-/// REDEEM the single-use minting claim `token`, standing until `expires_at`: `true` when this call
-/// was its first redemption, so this boot is the one that mints.
-///
-/// # Errors
-///
-/// The store refused or failed the redemption.
 fn claim(calls: &dyn StoreCalls, token: &str, expires_at: u64) -> Result<bool, String> {
     wait_for(calls.redeem_plane_token(MINT_CLAIM_KIND, token, expires_at, now_secs()))
         .map_err(|f| format!("the store would not answer the minting claim `{token}`: {f}"))
 }
 
-/// This host's name, as the node registry keys it: `HOSTNAME`, else the kernel's host name, else
-/// `/etc/hostname`, else empty (one identity for every such host).
 #[must_use]
 pub fn host_identity() -> String {
     let clean = |s: String| {
@@ -112,28 +59,17 @@ pub fn host_identity() -> String {
         .unwrap_or_default()
 }
 
-/// The registry key of `host`.
 fn host_key(host: &str) -> Vec<u8> {
     let mut key = b"host:".to_vec();
     key.extend_from_slice(host.as_bytes());
     key
 }
 
-/// A registry value as a node id.
 fn id_of(value: &RecordBytes) -> Option<u64> {
     let bytes: [u8; 8] = value.as_slice().try_into().ok()?;
     Some(u64::from_be_bytes(bytes)).filter(|&id| id != 0)
 }
 
-/// THIS HOST'S NODE ID: the one the registry holds for `host`, or one conditionally inserted now.
-/// A concurrent loser reads the winning pointer. Each minted id is claimed for good before use,
-/// so it is
-/// never zero and never an id another host holds.
-///
-/// # Errors
-///
-/// The store refused or failed a read, a claim or the write, did not keep what it took, or another
-/// boot holds the claim and kept nothing in time.
 pub fn node_id(calls: &dyn StoreCalls, host: &str) -> Result<u64, String> {
     let key = host_key(host);
     let get = || registry_get(calls, &key);
@@ -141,8 +77,7 @@ pub fn node_id(calls: &dyn StoreCalls, host: &str) -> Result<u64, String> {
         return Ok(id);
     }
     let id = mint_id(calls)?;
-    // The host pointer is immutable. A delayed first boot can never overwrite its winner,
-    // regardless of elapsed time or any earlier ambiguous answer.
+
     let request = super::conditional::candidate(
         vec![Predicate {
             schema: NODE_SCHEMA.into(),
@@ -159,27 +94,17 @@ pub fn node_id(calls: &dyn StoreCalls, host: &str) -> Result<u64, String> {
     get()?.ok_or_else(|| "the store did not keep this node's id".to_string())
 }
 
-/// The node id the registry keeps at `key`, if any.
-///
-/// # Errors
-///
-/// The store refused or failed the read.
 fn registry_get(calls: &dyn StoreCalls, key: &[u8]) -> Result<Option<u64>, String> {
     wait_for(calls.record_get(NODE_SCHEMA, key))
         .map(|value| value.as_ref().and_then(id_of))
         .map_err(|f| format!("the store would not read the node registry: {f}"))
 }
 
-/// A node id no registered node holds, claimed for good before it is handed back: never zero.
-///
-/// # Errors
-///
-/// The random source or the store failed, or the store granted none of the ids tried.
 fn mint_id(calls: &dyn StoreCalls) -> Result<u64, String> {
     let taken: Vec<u64> = registered(calls)?.into_iter().map(|(_, id)| id).collect();
     for _ in 0..ID_ATTEMPTS {
         let id = u64::from_be_bytes(random()?);
-        // ONE HOST PER ID: the id is claimed for good before it is kept.
+
         if id != 0 && !taken.contains(&id) && claim(calls, &id_claim(id), u64::MAX)? {
             return Ok(id);
         }
@@ -189,11 +114,6 @@ fn mint_id(calls: &dyn StoreCalls) -> Result<u64, String> {
     ))
 }
 
-/// Keep `id` in the registry at `key`.
-///
-/// # Errors
-///
-/// The store refused or failed the write.
 fn keep_id(calls: &dyn StoreCalls, key: &[u8], id: u64) -> Result<(), String> {
     let value = RecordBytes::new(id.to_be_bytes().to_vec())
         .map_err(|n| format!("a {n}-byte node id is over the slot's bound"))?;
@@ -201,11 +121,6 @@ fn keep_id(calls: &dyn StoreCalls, key: &[u8], id: u64) -> Result<(), String> {
         .map_err(|f| format!("the store would not keep this node's id: {f}"))
 }
 
-/// `N` bytes from the operating system's random source.
-///
-/// # Errors
-///
-/// The source gave none.
 fn random<const N: usize>() -> Result<[u8; N], String> {
     let mut raw = [0u8; N];
     getrandom::fill(&mut raw).map_err(|_| {
@@ -214,57 +129,39 @@ fn random<const N: usize>() -> Result<[u8; N], String> {
     Ok(raw)
 }
 
-/// AN ID OF THIS PROCESS'S OWN, for a node that may not journal under its host's: minted as a host's
-/// is, and registered under the host's name AND the id, so `/admin/verify` walks its chain too
-/// ([`registered`] reads every `host:` row) while the host's own row is left to its holder.
-///
-/// # Errors
-///
-/// As [`mint_id`] and [`keep_id`].
 fn fresh_node_id(calls: &dyn StoreCalls, host: &str) -> Result<u64, String> {
     let id = mint_id(calls)?;
     let mut key = host_key(host);
-    // A host name never holds a NUL, so this row is never another host's.
+
     key.push(0);
     key.extend_from_slice(format!("{id:016x}").as_bytes());
     keep_id(calls, &key, id)?;
     Ok(id)
 }
 
-/// The tick every lease constant is derived from: the checkpoint flush tick the lease is refreshed
-/// on (`root::serve`'s `Checkpoints::tick`, every [`busbar_kernel::host_records::FLUSH_INTERVAL`]).
 #[cfg(not(test))]
 const LEASE_TICK: Duration = busbar_kernel::host_records::FLUSH_INTERVAL;
 #[cfg(test)]
 const LEASE_TICK: Duration = Duration::from_millis(20);
 
-/// The lease is refreshed on every this-many-th checkpoint flush tick.
 pub(super) const LEASE_REFRESH_TICKS: u32 = 3;
 
-/// How long a node's lease on its host name holds without a refresh, in milliseconds: three of its
-/// refresh periods, each [`LEASE_REFRESH_TICKS`] flush ticks.
 pub const LEASE_TTL_MS: u64 = 3
     * LEASE_REFRESH_TICKS as u64
     * (LEASE_TICK.as_secs() * 1_000 + LEASE_TICK.subsec_millis() as u64);
 
-/// How long a boot that finds its host name's lease held WATCHES it before it decides: one lease
-/// period, enough for a live holder to refresh it and for a dead one's to lapse.
 const LEASE_WATCH: Duration = Duration::from_millis(LEASE_TTL_MS);
 
-/// How often a watching boot reads the lease again: one flush tick.
 const LEASE_POLL: Duration = LEASE_TICK;
 
-// A lease that lapses the moment it is taken holds nothing.
 const _: () = assert!(LEASE_TTL_MS > 0);
 
-/// Now, in Unix milliseconds.
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
-/// The registry key of `host`'s lease.
 fn lease_key(host: &str) -> Vec<u8> {
     let mut key = b"lease:".to_vec();
     key.extend_from_slice(host.as_bytes());
@@ -298,11 +195,6 @@ impl LeaseRow {
     }
 }
 
-/// The lease row `host`'s name is held under, if any.
-///
-/// # Errors
-///
-/// The store refused or failed the read.
 fn read_lease(calls: &dyn StoreCalls, host: &str) -> Result<Option<LeaseRow>, String> {
     wait_for(calls.record_get(NODE_SCHEMA, &lease_key(host)))
         .map_err(|f| format!("the store would not read this host's lease: {f}"))
@@ -316,11 +208,6 @@ fn read_lease(calls: &dyn StoreCalls, host: &str) -> Result<Option<LeaseRow>, St
         })
 }
 
-/// Put `row` as `host`'s lease.
-///
-/// # Errors
-///
-/// The store refused or failed the write.
 #[cfg(test)]
 fn put_lease(calls: &dyn StoreCalls, host: &str, row: LeaseRow) -> Result<(), String> {
     let value = RecordBytes::new(row.bytes())
@@ -329,8 +216,6 @@ fn put_lease(calls: &dyn StoreCalls, host: &str, row: LeaseRow) -> Result<(), St
         .map_err(|f| format!("the store would not keep this host's lease: {f}"))
 }
 
-/// `host`'s lease row as the store holds it: its holder and when it lapses (0 = released). A
-/// test-only read, so a cell asserts what a hand-driven refresh or release left in the store.
 #[cfg(test)]
 pub(super) fn lease_row(calls: &dyn StoreCalls, host: &str) -> Option<([u8; 16], u64)> {
     read_lease(calls, host)
@@ -338,15 +223,12 @@ pub(super) fn lease_row(calls: &dyn StoreCalls, host: &str) -> Option<([u8; 16],
         .map(|row| (row.holder, row.expires_ms))
 }
 
-/// Put `host`'s held lease back to lapse at `expires_ms`, its holder kept: a test-only write, so a
-/// cell tells a refresh by the expiry it moves without reading the wall clock.
 #[cfg(test)]
 pub(super) fn set_lease_expiry(calls: &dyn StoreCalls, host: &str, expires_ms: u64) {
     let (holder, _) = lease_row(calls, host).expect("a lease is held");
     put_lease(calls, host, LeaseRow { holder, expires_ms }).expect("the lease is kept");
 }
 
-/// Whether another process holds `host`'s lease live now.
 fn held_live(row: Option<LeaseRow>, holder: &[u8; 16], now: u64) -> bool {
     row.is_some_and(|row| row.holder != *holder && row.expires_ms > now)
 }
@@ -359,9 +241,6 @@ pub struct NodeLease {
 }
 
 impl NodeLease {
-    /// Exact ownership predicate for the same atomic transaction as the journal mutation.
-    /// A local expiry check is never a server fence: a successor's conditional take changes
-    /// these bytes before it reads the chain it will resume.
     fn predicate(&self, calls: &dyn StoreCalls) -> Result<Option<Predicate>, String> {
         Ok(read_lease(calls, &self.host)?
             .filter(|row| row.holder == self.holder && row.expires_ms != 0)
@@ -372,12 +251,6 @@ impl NodeLease {
             }))
     }
 
-    /// REFRESH the lease for another [`LEASE_TTL_MS`]. `false` when another process holds it now
-    /// (this one went unrefreshed past its lapse): it is left to that holder.
-    ///
-    /// # Errors
-    ///
-    /// The store refused or failed the read or the write.
     pub fn refresh(&self, calls: &dyn StoreCalls) -> Result<bool, String> {
         loop {
             let Some(predicate) = self.predicate(calls)? else {
@@ -402,12 +275,6 @@ impl NodeLease {
         }
     }
 
-    /// RELEASE the lease, if this process still holds it, so the next boot of the host resumes at
-    /// once.
-    ///
-    /// # Errors
-    ///
-    /// The store refused or failed the read or the write.
     pub fn release(&self, calls: &dyn StoreCalls) -> Result<(), String> {
         loop {
             let Some(predicate) = self.predicate(calls)? else {
@@ -433,20 +300,6 @@ impl NodeLease {
     }
 }
 
-/// THE ONE DECISION ON A HOST NAME'S LEASE: `true` when this boot, as `holder`, now holds `host`'s
-/// lease (it was free, released or lapsed, and this boot won the store's claim on taking it), and
-/// `false` when another live process holds it or won that claim.
-///
-/// A lease found held is WATCHED for up to [`LEASE_WATCH`] before deciding: refreshed (or taken)
-/// meanwhile, its holder is live and this boot clashes with it; released, or left to lapse, its
-/// holder is gone (a crash), and this boot takes it and resumes the chain, recovering its holds.
-///
-/// Taking the lease conditionally replaces the exact observed row. Time only permits a take
-/// attempt; the atomic Store comparison fences a delayed refresh, release or journal mutation.
-///
-/// # Errors
-///
-/// The store refused or failed a read, the claim or the write.
 fn take_lease(calls: &dyn StoreCalls, host: &str, holder: [u8; 16]) -> Result<bool, String> {
     let mut seen = read_lease(calls, host)?;
     if held_live(seen, &holder, now_ms()) {
@@ -456,7 +309,6 @@ fn take_lease(calls: &dyn StoreCalls, host: &str, holder: [u8; 16]) -> Result<bo
             let now = read_lease(calls, host)?;
             let live = held_live(now, &holder, now_ms());
             if now != seen {
-                // Refreshed or taken by another: a live holder. Released: free.
                 if live {
                     return Ok(false);
                 }
@@ -464,7 +316,6 @@ fn take_lease(calls: &dyn StoreCalls, host: &str, holder: [u8; 16]) -> Result<bo
                 break;
             }
             if !live {
-                // Never refreshed, and lapsed: its holder is gone.
                 break;
             }
             if Instant::now() >= deadline {
@@ -502,14 +353,6 @@ pub struct TakenNode {
     pub lease: Option<NodeLease>,
 }
 
-/// THE IDENTITY OF A NODE WITH NO DATA DIRECTORY: the host's stable id from the registry
-/// ([`node_id`]) when this boot takes the host name's lease, so a restart resumes its chain and
-/// recovers its holds; otherwise — another live process holds the name, nameless or not — a fresh
-/// id of this process's own ([`fresh_node_id`]), logged once. Never a refusal.
-///
-/// # Errors
-///
-/// The store refused or failed a read, a claim or a write ([`node_id`]).
 pub fn take_node(calls: &dyn StoreCalls, host: &str) -> Result<TakenNode, String> {
     let holder = random::<16>()?;
     if take_lease(calls, host, holder)? {
@@ -550,7 +393,6 @@ impl HeldLease {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Keep `lease` as the one [`HeldLease::refresh`] and [`HeldLease::release`] act on.
     pub fn hold(&self, lease: NodeLease) {
         *self.lock() = Some(lease);
     }
@@ -575,10 +417,6 @@ impl HeldLease {
         }
     }
 
-    /// REFRESH the lease in `calls`, if one is held, on every [`LEASE_REFRESH_TICKS`]-th call: run
-    /// on the checkpoint flush tick, off any runtime worker. A lease another process took (this one
-    /// went unrefreshed past its lapse) is logged. The lease is cloned out of the lock, so no store
-    /// call waits under it.
     pub fn refresh(&self, calls: &dyn StoreCalls) {
         let tick = self
             .ticks
@@ -602,8 +440,6 @@ impl HeldLease {
         }
     }
 
-    /// RELEASE the lease in `calls`, if one is held: run on a clean shutdown once the journal's lane
-    /// drained, so the next boot of the host resumes the whole chain at once.
     pub fn release(&self, calls: &dyn StoreCalls) {
         let Some(lease) = self.lock().take() else {
             return;
@@ -614,12 +450,6 @@ impl HeldLease {
     }
 }
 
-/// Every readable node the registry names: `(host, node id)`, in key order. The verification and
-/// migration readers also report unreadable rows through their existing diagnostic channels.
-///
-/// # Errors
-///
-/// The store refused or failed the scan.
 pub(super) fn registered(calls: &dyn StoreCalls) -> Result<Vec<(String, u64)>, String> {
     scan_registry(calls).map(|scan| scan.nodes)
 }
@@ -633,8 +463,6 @@ fn scan_registry(calls: &dyn StoreCalls) -> Result<RegistryScan, String> {
     scan_registry_with_limit(calls, REGISTRY_LIMIT)
 }
 
-/// Saturated pages are subdivided by raw key prefix, including a row equal to that prefix.
-/// The byte alphabet partitions the remaining keys completely; no fleet-size limit is imposed.
 fn scan_registry_with_limit(calls: &dyn StoreCalls, limit: u32) -> Result<RegistryScan, String> {
     if limit == 0 {
         return Err("a node-registry scan needs a nonzero page size".into());
@@ -681,11 +509,6 @@ fn scan_registry_with_limit(calls: &dyn StoreCalls, limit: u32) -> Result<Regist
     Ok(scan)
 }
 
-/// The deployment keyset's seed as the store keeps it (64 hex characters), or `None`.
-///
-/// # Errors
-///
-/// The store refused or failed the read, or the present row is not UTF-8 keyset text.
 pub fn stored_keyset(calls: &dyn StoreCalls) -> Result<Option<String>, String> {
     wait_for(calls.record_get(KEYSET_SCHEMA, KEYSET_KEY))
         .map_err(|f| format!("the store would not read the deployment keyset: {f}"))
@@ -699,13 +522,6 @@ pub fn stored_keyset(calls: &dyn StoreCalls) -> Result<Option<String>, String> {
         })
 }
 
-/// The immutable deployment keyset: insert `seed_hex` only when absent; a concurrent loser reads
-/// the winning seed. No elapsed-time claim can authorize replacing an existing key.
-///
-/// # Errors
-///
-/// The store refused or failed a read, the claim or the write, kept nothing, or another boot holds
-/// the claim and kept nothing in time.
 pub fn keep_keyset(calls: &dyn StoreCalls, seed_hex: &str) -> Result<String, String> {
     if let Some(held) = stored_keyset(calls)? {
         return Ok(held);
@@ -737,11 +553,6 @@ pub struct StoredWalk {
     pub findings: Vec<String>,
 }
 
-/// WALK EVERY CHAIN THE STORE KEEPS — every node the registry names, and `own` — verifying each
-/// journal chain and the audit records on it, signatures included, against `keys`. Off any runtime
-/// worker where one is waiting: this reads the whole of every chain. `own`'s chain is read beside
-/// `lane`, which may be putting to it ([`read_chain_beside`]): its record mid-put is not torn.
-/// Another node's chain has no lane here, so a record missing a part there is.
 #[must_use]
 pub fn walk_stored_chains(lane: &JournalLane, own: u64, keys: &AuditKeySet) -> StoredWalk {
     let calls = lane.calls();
@@ -791,9 +602,7 @@ pub fn walk_stored_chains(lane: &JournalLane, own: u64, keys: &AuditKeySet) -> S
                     continue;
                 }
             };
-            // As the boot resumes a chain (`resume_audit`): a record that will not read back is a
-            // finding, and the first record journalled after this chain's `Bootstrap` is where
-            // its signatures start.
+
             let mut audits: Vec<AuditRecord> = Vec::new();
             let mut keyed = false;
             let mut signed_from = None;
@@ -818,8 +627,6 @@ pub fn walk_stored_chains(lane: &JournalLane, own: u64, keys: &AuditKeySet) -> S
             }
             for record in &audits {
                 let Some(key_id) = record.key_id.as_deref() else {
-                    // The signature is not in the digest: stripped, it leaves the chain whole and
-                    // only this rule sees it.
                     if signed_from.is_some_and(|from| record.seq >= from) {
                         walk.findings.push(format!(
                             "node {node}: audit record {} is unsigned, sealed after the keyset \
@@ -845,14 +652,6 @@ pub fn walk_stored_chains(lane: &JournalLane, own: u64, keys: &AuditKeySet) -> S
     })
 }
 
-/// EVERY OTHER NODE'S CHAIN THE STORE KEEPS, decoded: `(node, its records in chain order)` for each
-/// node the registry names but `own`. A chain that will not read or verify is left out, named in a
-/// warning. Read by the rate-card migration (MONEY-DESIGN section 3a), which copies every chain's card
-/// records into the fleet-shared history.
-///
-/// # Errors
-///
-/// The store would not list its node registry.
 pub fn stored_chains(
     calls: &dyn StoreCalls,
     own: u64,

@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! `unit.nest` as the kernel serves it: a child of the unit the crossing serves, handed to the
-//! root's seam under the parent's principal and one more depth; the depth cap and the node's
-//! permit bound; the whole reply laid out as the ABI states it; a reply the root drops answers
-//! FAILED and gives its permit back.
-
 use std::sync::{Arc, Mutex};
 
 use busbar_contract::abi::mechanism::call::Outcome;
@@ -105,7 +100,7 @@ fn a_nested_unit_runs_under_its_parents_principal_one_level_deeper() {
         Some("alice")
     );
     assert_eq!(seen[0].ask, ask(b"hello"));
-    // The whole reply: the status, the body in span 0, each field after it.
+
     assert_eq!((got.outcome, got.value), (Outcome::Ready, 200));
     let at = |o: u32, n: u32| got.bytes[o as usize..(o + n) as usize].to_vec();
     assert_eq!(got.spans[0].key.offset, SPAN_ABSENT);
@@ -150,7 +145,7 @@ fn a_nest_with_no_unit_in_flight_or_past_the_cap_is_refused_before_the_root_sees
         run(|l| s.unit_nest(&caller(), Some(9), ask(b""), l)),
         NEST_TOO_DEEP,
     );
-    // An instance never admitted.
+
     let stranger = Caller {
         instance: Arc::from("stranger"),
         ..caller()
@@ -160,7 +155,7 @@ fn a_nest_with_no_unit_in_flight_or_past_the_cap_is_refused_before_the_root_sees
         NOT_ADMITTED,
     );
     assert!(seam.seen.lock().unwrap().is_empty());
-    // The deepest child the cap admits runs.
+
     s.units().admitted(
         10,
         UnitRecord {

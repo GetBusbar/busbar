@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! What the log is allowed to keep in memory while it stays correct.
-//!
-//! A bound is worth nothing until a test runs past it and reads back what the node decided to hold
-//! on to. A node that answers correctly for a week and is killed by the allocator on the eighth day
-//! answered incorrectly.
-
 use busbar_contract::caps::StepName;
 
 use busbar_kernel_wal::backend::MemoryFactory;
@@ -16,15 +10,8 @@ use busbar_kernel_wal::wal::{Mode, Wal};
 
 use super::fixtures::{durability_token, records, FaultyFactory};
 
-/// Small enough that a run of a few thousand records rolls the log many times over.
 const CEILING: u64 = 256 * FRAME_BYTES as u64;
 
-/// The idempotence check is a bound, not a ledger of everything the process ever wrote.
-///
-/// The identity space is `(node, node_seq)` and a writer numbers its own records upward, so what the
-/// log has to remember is one mark per node — not one entry per record. A set that grew per record
-/// would cost a running node roughly a gigabyte a day at a very ordinary rate, on a product that
-/// otherwise measures its footprint in megabytes.
 #[test]
 fn the_idempotence_check_costs_one_mark_per_node_not_one_entry_per_record() {
     let (factory, _switch, _memory) = FaultyFactory::new();
@@ -57,13 +44,6 @@ fn the_idempotence_check_costs_one_mark_per_node_not_one_entry_per_record() {
     );
 }
 
-/// A node with no data directory holds ONE segment's bytes, however many it has rolled through.
-///
-/// The memory backing is the whole of such a node's storage, so a factory that kept a reference to
-/// every segment it ever opened would turn a long-running node into a process whose footprint grows
-/// by a segment's ceiling on every roll — sixty-four megabytes at a time in production, and never
-/// released, because nothing above it ever asks for those bytes again. The record bound above governs
-/// what the log will HOLD for a store; this one governs what it leaves behind after it has moved on.
 #[test]
 fn a_memory_backed_log_keeps_only_the_segment_it_is_writing_to() {
     let factory = MemoryFactory::new();
@@ -97,8 +77,6 @@ fn a_memory_backed_log_keeps_only_the_segment_it_is_writing_to() {
         wal.segments_used() - 1
     );
 
-    // And the one that is resident is the one the log is actually writing to: a bound that held by
-    // dropping the LIVE segment would pass the count above and lose the log.
     let ack = wal
         .append_batch(&token, StepName::Meter, &records(2, 1, 1, 300))
         .expect("the live segment still takes a batch");
@@ -106,8 +84,6 @@ fn a_memory_backed_log_keeps_only_the_segment_it_is_writing_to() {
     assert_eq!(factory.segment_count(), 1);
 }
 
-/// Bounding the check must not weaken it: an identity the log already holds is still passed over,
-/// including one written into a segment the log has long since rolled past.
 #[test]
 fn a_bounded_idempotence_check_still_suppresses_a_re_offer_from_a_rolled_segment() {
     let (factory, _switch, _memory) = FaultyFactory::new();

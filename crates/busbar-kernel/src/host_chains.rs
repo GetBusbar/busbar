@@ -1,44 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE PLANE RECORD CHAINS ON THE KERNEL'S RECORD PATH (`BUSBAR-1.6.0.md` THE DESIGN, the route
-//! pump: "A record kind the plane declares as chained keeps its declared framing (§5:
-//! length-prefixed or pipe-separated, with or without the scope in the digest); the host frames
-//! and verifies its chain"; Part 3 §5). The contract's words for a chained kind are on
-//! `abi::plane::RecordChain`; this is the host's half, naming no plane.
-//!
-//! * THE DECLARATION ([`ChainFraming::of`]) is the tail's `record_chains` entry for the kind: its
-//!   framing and whether the scope enters the digest.
-//! * AN APPEND is sealed when the write-behind flush reaches it ([`ChainBook::append`]), on the
-//!   pool, one flush at a time, so the chain's order is the queue's. The position (the next
-//!   sequence and the tail's digest) is the ONE chain mechanism's ([`crate::audit::Chain`]) and the
-//!   digest its ([`crate::audit::frame_prelude`] in the declared framing, then the plane's bytes
-//!   raw: [`StreamRecord`]). The position advances only once the store took the record (the
-//!   journal's write-ordering rule), so a refused write burns no sequence.
-//! * A SCOPE THE CACHE DOES NOT HOLD (the first append after a start, or one evicted past
-//!   [`POSITIONS_CAP`]) is RESUMED from the store: its records are read back and VERIFIED; a chain
-//!   that does not verify is reported (`PLANE_JOURNAL_RESUME_CHAIN_BROKEN`) and continued from its
-//!   tail, never refused, since refusing would make detection a deletion primitive.
-//! * A READ ([`verified`]) groups the stored records by chain, verifies each and answers the
-//!   records with a span announcing each break ahead of them: the plane learns of it and says it
-//!   in its own words. An undecodable record is skipped, counted and reported
-//!   (`PLANE_JOURNAL_ROW_UNREADABLE`), never allowed to drop the rest.
-//! * A record is stored under `record_key(instance, chain_key(scope, seq))` as [`encode`]'s body:
-//!   a version byte, the sequence, the previous and own digests, then the plane's bytes.
-//! * LEGACY POSITION CLAIMS. Before a record is stored its position is CLAIMED in
-//!   the store ([`RecordRows::claim`]): the instance, the kind, the scope, the chain's life, the
-//!   sequence and the previous digest. A node that loses the claim, or finds the slot already
-//!   holding a record (its cached position is stale: another node wrote there), forgets its
-//!   position, resumes from the store's tail and seals again, so two nodes appending to one chain
-//!   continue each other's completed records. The chain's LIFE is a counter the
-//!   store keeps under the host's own record kind ([`CHAIN_LIFE_SCHEMA`], never a plane's, so a scan
-//!   of the plane's kind never meets it): every drop raises it before striking the chain's rows, and
-//!   every append rereads it, so a chain dropped and begun again, on this node or any other, never meets
-//!   its old claims. (A drop's strikes REMOVE its rows, slot 26's rule, so nothing in the plane's
-//!   kind is left to count.) These separate legacy reads, claims and puts cannot atomically fence
-//!   a concurrent drop or a lease expiring during a store call. The conditional path below uses
-//!   the existing transactional contract for that stronger guarantee.
-
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -57,36 +19,24 @@ use crate::audit::stream_registry::{StreamInput, StreamRecord};
 use crate::audit::{verify_chain, Chain, ChainBreak, ChainedRecord, Framing};
 use crate::host_records::{record_key, RecordRows, CLAIM_KIND, WRITE_FAILED};
 
-/// The refusal of a chained write whose key is no scope: empty, not UTF-8, or ending in what a
-/// listed record key ends in.
 pub const CHAIN_SCOPE_UNFIT: &str =
     "a chained record's key is its chain's scope: UTF-8, not empty, not ending in `/<20 digits>`";
-/// The refusal of a chained write too large to keep with its chain fields.
+
 pub const CHAIN_RECORD_TOO_LARGE: &str =
     "a chained record's bytes and its chain fields exceed the record ceiling";
-/// The refusal of `records.get` on a chained kind.
+
 pub const CHAIN_READ_WHOLE: &str = "a chained record kind is read whole, through records.list";
 
-/// The stored body's layout version.
 const BODY_VERSION: u8 = 1;
 
-/// The most bytes the host adds to a chained record's own: the version, the sequence, and two
-/// sha256 digests in hex with a length byte each.
 pub const CHAIN_OVERHEAD: usize = 1 + 8 + 1 + 64 + 1 + 64;
 
-/// The most chain positions held in memory; past it the least recently written is resumed from
-/// the store on its next append.
 pub const POSITIONS_CAP: usize = 65_536;
 
-/// How long a position's claim is held, in seconds. Retried writes cannot reuse it after expiry.
 const CLAIM_SECS: u64 = 60;
 
-/// The record kind every chain's LIFE is kept under: the host's own, never one a plane declares, so
-/// a scan of a plane's kind never answers it.
 pub const CHAIN_LIFE_SCHEMA: RecordSchemaId = RecordSchemaId::new("kernel-chain-life");
 
-/// How many times an append resumes from the store's tail after losing its position to another
-/// writer before it answers [`WRITE_FAILED`].
 const CLAIM_ATTEMPTS: usize = 8;
 
 /// A chained record kind's declaration, as the host frames it.
@@ -97,8 +47,6 @@ pub struct ChainFraming {
 }
 
 impl ChainFraming {
-    /// The framing `c` declares; `None` for a framing or a flag this build does not know (the
-    /// loader refuses such a tail, `check_record_chains`).
     #[must_use]
     pub fn of(c: &RecordChain) -> Option<Self> {
         let framing = match c.framing {
@@ -116,15 +64,12 @@ impl ChainFraming {
     }
 }
 
-/// Whether `key` may name a chain: UTF-8, not empty, and not shaped like a listed record's key
-/// (which a break's span, keyed by the bare scope, must never be mistaken for).
 #[must_use]
 pub fn scope_of(key: &[u8]) -> Option<&str> {
     let scope = std::str::from_utf8(key).ok()?;
     (!scope.is_empty() && chain_key_parts(key).is_none()).then_some(scope)
 }
 
-/// The stored body of `r`; `None` when a digest is longer than a length byte holds.
 pub(crate) fn encode(r: &StreamRecord) -> Option<Vec<u8>> {
     let (prev, hash) = (r.prev_hash().as_bytes(), r.hash().as_bytes());
     let mut body = Vec::with_capacity(CHAIN_OVERHEAD + r.content().len());
@@ -138,8 +83,6 @@ pub(crate) fn encode(r: &StreamRecord) -> Option<Vec<u8>> {
     Some(body)
 }
 
-/// The record a stored `body` of the chain `scope` holds, under the declaration `f`; `None` for a
-/// body this build did not write.
 pub(crate) fn decode(scope: &str, body: &[u8], f: ChainFraming) -> Option<StreamRecord> {
     let (&version, rest) = body.split_first()?;
     if version != BODY_VERSION || rest.len() < 8 {
@@ -160,7 +103,6 @@ pub(crate) fn decode(scope: &str, body: &[u8], f: ChainFraming) -> Option<Stream
     ))
 }
 
-/// One length-byte-prefixed digest off the front of `bytes`, and what follows it.
 fn digest_text(bytes: &[u8]) -> Option<(String, &[u8])> {
     let (&len, rest) = bytes.split_first()?;
     let len = usize::from(len);
@@ -171,10 +113,8 @@ fn digest_text(bytes: &[u8]) -> Option<(String, &[u8])> {
     Some((String::from_utf8(field.to_vec()).ok()?, rest))
 }
 
-/// One chain's position: the instance's label, the kind, the scope.
 type Position = (Arc<str>, String, String);
 
-/// One stored row, `(key, bytes)`.
 type Row = (Vec<u8>, Vec<u8>);
 
 /// A chain's position and its life (how many times the chain had been dropped when it was resumed,
@@ -187,7 +127,6 @@ pub(crate) struct Held {
     conditional: bool,
 }
 
-/// Every chain's position, the least recently written first.
 type Positions = IndexMap<Position, Held>;
 
 struct RetainedClaim {
@@ -217,7 +156,6 @@ impl ChainBook {
         self.positions.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// A failed write may reuse its claim only before the exact lease it won expires.
     fn holds(&self, at: &Position, token: &str, now: u64) -> Option<u64> {
         let mut claimed = self.claimed.lock().unwrap_or_else(|e| e.into_inner());
         claimed.retain(|_, held| held.expires_at > now);
@@ -230,7 +168,6 @@ impl ChainBook {
         }
     }
 
-    /// Retain one current failed-write claim per position, within the existing bound.
     fn hold(&self, at: &Position, token: String, expires_at: u64) {
         let mut claimed = self.claimed.lock().unwrap_or_else(|e| e.into_inner());
         if claimed.contains_key(at) || claimed.len() < POSITIONS_CAP {
@@ -238,7 +175,6 @@ impl ChainBook {
         }
     }
 
-    /// Retire only this node's retry hint; never remove or renew a store claim.
     fn retire(&self, at: &Position) {
         self.claimed
             .lock()
@@ -246,7 +182,6 @@ impl ChainBook {
             .remove(at);
     }
 
-    /// Keep `chain` as the position at `at`, the most recently written.
     fn commit(&self, at: Position, chain: Held) {
         self.retire(&at);
         let mut positions = self.lock();
@@ -257,14 +192,6 @@ impl ChainBook {
         }
     }
 
-    /// APPEND `content` to `instance`'s chain `scope` of `schema`: seal it at the chain's next
-    /// position, store it, and advance the position once the store took it.
-    ///
-    /// # Errors
-    ///
-    /// [`WRITE_FAILED`] when the store refused the read that resumes the chain, the claim or the
-    /// record, or other writers kept taking the chain's next position; [`CHAIN_RECORD_TOO_LARGE`]
-    /// when the sealed record exceeds the ceiling. The position is left where it was.
     pub(crate) fn append(
         &self,
         rows: &dyn RecordRows,
@@ -323,13 +250,11 @@ impl ChainBook {
                 && life_of(rows, instance, schema, scope)? == life
                 && busbar_kernel::store::now() < expires_at;
             if !ours {
-                // Another writer holds this position: read the chain back and seal at its tail.
                 self.retire(&at);
                 self.lock().shift_remove(&at);
                 continue;
             }
-            // These fresh observations reject known stale custody, but the legacy store API
-            // cannot atomically fence a life change or lease expiry during record_put itself.
+
             rows.record_put(schema, &key, &body)
                 .map_err(|_| WRITE_FAILED)?;
             self.commit(
@@ -354,13 +279,6 @@ impl ChainBook {
         Err(WRITE_FAILED)
     }
 
-    /// DROP `instance`'s chain `scope` of `schema`: its life raised in the store, a strike over
-    /// each of its records, and its position forgotten, so its next append starts again at
-    /// sequence `1` in a life whose claims no earlier record took.
-    ///
-    /// # Errors
-    ///
-    /// [`WRITE_FAILED`] when the store refused the life, the read or a strike.
     pub(crate) fn drop_chain(
         &self,
         rows: &dyn RecordRows,
@@ -373,21 +291,18 @@ impl ChainBook {
             schema.as_str().to_string(),
             scope.to_string(),
         );
-        // The life is raised FIRST: a strike that fails leaves a chain that is resumed in the new
-        // life, never a chain begun again in the old one.
+
         let dropped = raise_life(rows, instance, schema, scope)
             .and_then(|()| tombstone(rows, instance, schema, scope));
         if dropped.is_ok() {
             self.retire(&at);
         }
-        // A failed life write may have left the old life intact. Preserve its retry claim
-        // until a later observation proves a changed position/life, or the lease expires.
+
         self.lock().shift_remove(&at);
         dropped
     }
 }
 
-/// Tombstone every live record of `instance`'s chain `scope`.
 fn tombstone(
     rows: &dyn RecordRows,
     instance: &str,
@@ -412,8 +327,6 @@ fn tombstone(
     Ok(())
 }
 
-/// Where the store keeps the life of `instance`'s chain `scope` of `schema`, under
-/// [`CHAIN_LIFE_SCHEMA`]: the kind and the scope, each length-prefixed, scoped by the instance.
 pub(crate) fn life_key(instance: &str, schema: RecordSchemaId, scope: &str) -> Vec<u8> {
     let mut key = Vec::new();
     for field in [schema.as_str(), scope] {
@@ -423,8 +336,6 @@ pub(crate) fn life_key(instance: &str, schema: RecordSchemaId, scope: &str) -> V
     record_key(instance, &key)
 }
 
-/// The life of `instance`'s chain `scope` of `schema` as the store keeps it: how many times it was
-/// dropped, `0` for a chain never dropped.
 fn life_of(
     rows: &dyn RecordRows,
     instance: &str,
@@ -437,9 +348,6 @@ fn life_of(
     parse_life(held.as_ref().map(RecordBytes::as_slice))
 }
 
-/// Raise the life of `instance`'s chain `scope` of `schema` by one, in the store. Two drops racing
-/// may both write the same next life; either way the chain begun again is in a life above every
-/// one its old claims were taken in.
 fn raise_life(
     rows: &dyn RecordRows,
     instance: &str,
@@ -463,7 +371,6 @@ fn parse_life(bytes: Option<&[u8]>) -> Result<u64, &'static str> {
     }
 }
 
-/// Observe the exact optional life before the consumer reads the state it plans to mutate.
 pub(crate) fn observe_life(
     rows: &dyn RecordRows,
     instance: &str,
@@ -536,7 +443,6 @@ impl ChainBook {
                 if decision == Decision::ConditionConflict {
                     positions.shift_remove(at);
                 } else if positions.get(at).is_none_or(|current| current == before) {
-                    // A delayed replay must not regress a hint advanced by a later committed write.
                     positions.shift_remove(at);
                     positions.insert(at.clone(), after.clone());
                     while positions.len() > POSITIONS_CAP {
@@ -553,8 +459,6 @@ impl ChainBook {
 }
 
 impl ConditionalChain {
-    /// Check and retirement use the original life without reading history. Append resumes only
-    /// when its committed-position hint is missing/stale, then fences the exact tail and slots.
     pub(crate) fn prepare(
         &self,
         rows: &dyn RecordRows,
@@ -594,8 +498,7 @@ impl ConditionalChain {
                     .checked_add(20)
                     .and_then(|length| u64::try_from(length).ok())
                     .ok_or(WRITE_FAILED)?;
-                // Retire the fixed-width slot domain, including corrupt same-width suffixes.
-                // Valid nested scopes have longer keys and remain untouched.
+
                 request.mutations.push(Mutation::DeleteRange {
                     schema: self.schema.as_str().to_string(),
                     prefix,
@@ -613,8 +516,6 @@ impl ConditionalChain {
         let before = match cached {
             Some(held) => held,
             None => {
-                // This is the existing restart/eviction resume surface. Its store scan ceiling
-                // remains a limitation; steady-state appends do not rescan the whole history.
                 resume_conditional(rows, instance, self.schema, &self.scope, self.framing, life)?
             }
         };
@@ -721,7 +622,6 @@ fn resume_conditional(
     })
 }
 
-/// The store's rows under `instance`'s chain `scope` (and any chain whose scope it prefixes).
 fn held(
     rows: &dyn RecordRows,
     instance: &str,
@@ -734,8 +634,6 @@ fn held(
         .map_err(|_| WRITE_FAILED)
 }
 
-/// The claim token of the position `record` takes in `instance`'s chain `scope` of `schema`, in its
-/// life `life`: every field length-prefixed, then digested.
 pub(crate) fn position_token(
     instance: &str,
     schema: RecordSchemaId,
@@ -753,9 +651,6 @@ pub(crate) fn position_token(
     busbar_contract::redacted::sha256_hex(&framed)
 }
 
-/// RESUME `instance`'s chain `scope` from the store: its records read back, VERIFIED, and the
-/// position taken from the tail; a break is reported and the chain continued from its tail. Beside
-/// it, the chain's life, as the store keeps it ([`life_of`]).
 fn resume(
     rows: &dyn RecordRows,
     instance: &str,
@@ -801,9 +696,6 @@ fn resume(
         .and_then(|(key, _)| chain_key_parts(key))
         .map(|(_, seq)| seq);
     if let Some(seq) = occupied {
-        // The key is the occupied position even when its body is unreadable or names another
-        // sequence. Keep the last readable digest, report the break, and continue beyond it.
-        // This temporary position anchor is never persisted or passed off as verified history.
         if key_mismatch || records.last().is_none_or(|last| last.seq() != seq) {
             crate::diagnostics::diag_error!(
                 crate::diagnostics::PLANE_JOURNAL_RESUME_CHAIN_BROKEN,
@@ -824,7 +716,7 @@ fn resume(
             );
             chain = Chain::from_persisted_unverified(&[anchor]);
         }
-        // Saturating the next sequence would otherwise repeatedly target the occupied last slot.
+
         if seq == u64::MAX {
             return Err(WRITE_FAILED);
         }
@@ -837,8 +729,6 @@ fn resume(
     })
 }
 
-/// The live records among `stored` (`(chain key, body)` of one chain, in key order), decoded and
-/// each beside its key; an undecodable one is skipped and reported, never allowed to drop the rest.
 fn decoded<'k>(
     instance: &str,
     schema: RecordSchemaId,
@@ -868,11 +758,6 @@ fn decoded<'k>(
         .collect()
 }
 
-/// THE VERIFIED READ of `instance`'s chained kind: `stored` (the store's rows under the list's
-/// prefix, keys unscoped) grouped by chain, each chain verified, answered as `(chain key, the
-/// plane's own bytes)` per record, with a `(scope, the break in words)` span ahead of each chain
-/// that does not verify. Rows that are no chain record's (a tombstone, a foreign key) are not
-/// answered.
 #[must_use]
 pub fn verified(
     instance: &str,
@@ -910,7 +795,6 @@ pub fn verified(
     out
 }
 
-/// A break's words, as the span announcing it carries them.
 fn break_words(brk: &ChainBreak) -> Vec<u8> {
     brk.to_string().into_bytes()
 }

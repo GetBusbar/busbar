@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tickets at the `GovState` seam (row 132): minted for a standing key, admitted once, and never a
-//! key. Driven over the memory store, whose single-use redemption is a real test-and-set.
-
 use std::sync::Arc;
 
 use super::TicketRefusal;
@@ -24,7 +21,6 @@ fn gov() -> Arc<GovState> {
     gov_with(9)
 }
 
-/// A standing key of `g`, living until `exp`: its id and its token.
 fn key(g: &GovState, exp: u64) -> (String, String) {
     let (binding, token) = g
         .mint_signed(
@@ -55,7 +51,7 @@ fn a_ticket_admits_its_key_once_with_its_record() {
     let (admitted, record) = g.admit_ticket(PREFIX, &ticket, NOW + 1).expect("admit");
     assert_eq!(admitted.id, id);
     assert_eq!(record, b"{\"locked\":1}");
-    // RED: a ticket admits once.
+
     assert!(
         g.admit_ticket(PREFIX, &ticket, NOW + 2).is_none(),
         "a spent ticket is refused"
@@ -69,26 +65,26 @@ fn a_foreign_or_expired_or_misprefixed_ticket_is_refused() {
     let signer = TokenSigner::from_secret_bytes(&[9; 32], DEFAULT_KID);
     let g = GovState::new_with_signer(memory.clone(), None, Some(signer)).unwrap();
     let (id, _) = key(&g, NOW + 86_400);
-    // RED: minted by another deployment's signer.
+
     let other = gov_with(7);
     let (other_id, _) = key(&other, NOW + 86_400);
     let (foreign, _) = other
         .mint_ticket(&other_id, PREFIX, 600, None, b"{}", NOW)
         .expect("mint");
     assert!(g.admit_ticket(PREFIX, &foreign, NOW + 1).is_none());
-    // RED: past its expiry.
+
     let (expired, exp) = g
         .mint_ticket(&id, PREFIX, 10, None, b"{}", NOW)
         .expect("mint");
     memory.pin_token_clock(exp + 1);
     assert!(g.admit_ticket(PREFIX, &expired, exp).is_none());
-    // RED: presented on a route whose plane declares another prefix, or none.
+
     let (ticket, _) = g
         .mint_ticket(&id, PREFIX, 600, None, b"{}", NOW)
         .expect("mint");
     assert!(g.admit_ticket("other_", &ticket, NOW + 1).is_none());
     assert!(g.admit_ticket("", &ticket, NOW + 1).is_none());
-    // A misprefixed presentation spent nothing: the ticket still admits on its own route.
+
     assert!(g.admit_ticket(PREFIX, &ticket, NOW + 1).is_some());
 }
 
@@ -99,18 +95,18 @@ fn a_ticket_is_never_a_key_and_a_key_is_never_a_ticket() {
     let (ticket, _) = g
         .mint_ticket(&id, PREFIX, 600, None, b"{}", NOW)
         .expect("mint");
-    // RED: the ticket, and its body under the key prefix, on the plain data plane.
+
     assert!(g.verify_token(&ticket, NOW + 1, None).is_none());
     let body = ticket.strip_prefix(PREFIX).expect("prefixed");
     assert!(g
         .verify_token(&format!("bbk_{body}"), NOW + 1, None)
         .is_none());
-    // RED: a key, given the ticket prefix, on a route that takes tickets.
+
     let key_body = key_token.strip_prefix("bbk_").expect("a key");
     assert!(g
         .admit_ticket(PREFIX, &format!("{PREFIX}{key_body}"), NOW + 1)
         .is_none());
-    // The key itself still verifies.
+
     assert!(g.verify_token(&key_token, NOW + 1, None).is_some());
 }
 
@@ -122,9 +118,9 @@ fn a_ticket_stands_only_while_its_key_does() {
         .mint_ticket(&id, PREFIX, 600, None, b"{}", NOW)
         .expect("mint");
     g.revoke(&id, "test").expect("revoke");
-    // RED: the key was revoked after the mint.
+
     assert!(g.admit_ticket(PREFIX, &ticket, NOW + 1).is_none());
-    // RED: no ticket for a revoked key, nor an unknown one.
+
     assert_eq!(
         g.mint_ticket(&id, PREFIX, 600, None, b"{}", NOW),
         Err(TicketRefusal::NoStanding)
@@ -139,12 +135,12 @@ fn a_ticket_stands_only_while_its_key_does() {
 fn a_tickets_lifetime_is_held_under_the_ceiling_and_its_keys_expiry() {
     let g = gov();
     let (id, _) = key(&g, NOW + 86_400);
-    // The mint ceiling clamps the lifetime asked.
+
     let (_, exp) = g
         .mint_ticket(&id, PREFIX, 7_200, Some(120), b"{}", NOW)
         .expect("mint");
     assert_eq!(exp, NOW + 120);
-    // The key's own expiry caps it.
+
     let mut binding = (*g.lookup_by_sub(&id).expect("bound")).clone();
     binding.expires_at = Some(NOW + 300);
     g.store().put_key(&binding).expect("put");
@@ -155,10 +151,6 @@ fn a_tickets_lifetime_is_held_under_the_ceiling_and_its_keys_expiry() {
     assert_eq!(exp, NOW + 300);
 }
 
-/// A store serving the RULE-CARRYING purge only: every verb is the memory store's, except the
-/// age-only `purge_plane_records_before`, left at the contract's default (it purges nothing). The
-/// rule-carrying `purge_plane_records` is the purge the store ABI carries (slot 22 passes the rule
-/// with every purge), so a store is complete without the age-only verb.
 struct RuleCarryingOnly(Arc<MemoryStore>);
 
 mod rule_carrying_only {
@@ -295,7 +287,6 @@ mod rule_carrying_only {
     }
 }
 
-/// How many ticket records `store` holds.
 fn ticket_records(store: &MemoryStore) -> usize {
     use busbar_contract::records::{PlaneSelector, RecordStore};
     store
@@ -304,14 +295,6 @@ fn ticket_records(store: &MemoryStore) -> usize {
         .len()
 }
 
-/// **A LAPSED TICKET'S RECORD GOES AT THE NEXT MINT, THROUGH THE RULE-CARRYING PURGE, BY AGE.** The
-/// kernel's ticket kind is purged under `Retention::Age` on the purge that carries the rule, so a
-/// store that serves only that purge (the one the store ABI carries) drops a lapsed ticket's record
-/// as every other store does. The timing is the one tickets always had: a record whose ticket
-/// lapsed before the mint's instant goes; one lapsing at that instant or later stays.
-///
-/// RED while ticket expiry called the age-only `purge_plane_records_before`: on a store serving
-/// only the rule-carrying purge, every lapsed ticket's record was kept, without bound.
 #[test]
 fn a_lapsed_tickets_record_goes_through_the_rule_carrying_purge_on_the_next_mint() {
     let memory = Arc::new(MemoryStore::new());
@@ -324,13 +307,13 @@ fn a_lapsed_tickets_record_goes_through_the_rule_carrying_purge_on_the_next_mint
     )
     .expect("gov");
     let (id, _) = key(&g, NOW + 86_400);
-    // They lapse at NOW + 10 and at NOW + 20.
+
     g.mint_ticket(&id, PREFIX, 10, None, b"{}", NOW)
         .expect("mint");
     g.mint_ticket(&id, PREFIX, 20, None, b"{}", NOW)
         .expect("mint");
     assert_eq!(ticket_records(&memory), 2);
-    // At NOW + 20 the first has lapsed and goes; the second lapses at this very instant and stays.
+
     memory.pin_token_clock(NOW + 20);
     g.mint_ticket(&id, PREFIX, 600, None, b"{}", NOW + 20)
         .expect("mint");
@@ -339,7 +322,7 @@ fn a_lapsed_tickets_record_goes_through_the_rule_carrying_purge_on_the_next_mint
         2,
         "the record of the ticket lapsed before the mint goes; the one lapsing at it stays"
     );
-    // At NOW + 21 the second has lapsed too.
+
     memory.pin_token_clock(NOW + 21);
     g.mint_ticket(&id, PREFIX, 600, None, b"{}", NOW + 21)
         .expect("mint");

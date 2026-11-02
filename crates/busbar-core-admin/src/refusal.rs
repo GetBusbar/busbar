@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The reasons a verb call can be refused, named so a caller can render or audit the exact reason
-//! without re-deriving it from a status code.
-
 use busbar_kernel_seams::verb_store::StoreError;
 
 /// A refused verb call. `step` mirrors the ten-step names `busbar-caps` seals (this crate only ever
@@ -18,7 +15,6 @@ pub struct Refusal {
 }
 
 impl Refusal {
-    /// Build a refusal.
     pub const fn new(step: RefusalStep, reason: ReasonCode) -> Self {
         Refusal { step, reason }
     }
@@ -56,12 +52,6 @@ pub enum ReasonCode {
     Internal,
 }
 
-/// The refusal a store failure becomes, mapped the same fail-closed way
-/// [`crate::governance::GovernanceError::into_refusal`] maps a governance failure. Was
-/// `StoreError::into_refusal` before the store face was pulled forward to
-/// `busbar_kernel_seams::verb_store` (DECISIONS #40): the inherent method could not follow the type
-/// to the leaf seams crate without dragging this refusal vocabulary along, so it is a free function
-/// here instead — same mapping, verbatim.
 pub fn store_error_into_refusal(err: StoreError) -> Refusal {
     let reason = match err {
         StoreError::NotFound => ReasonCode::NotFound,

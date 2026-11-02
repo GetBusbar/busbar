@@ -1,17 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The assembled binary's real tracing producer feeds full records through the linked and
-//! dropped OTLP doors. A cross-dialect request drops unsupported sampling controls, producing
-//! real warning events within its forward span. Both collectors must retain those events, full
-//! attributes, status and the same identity, beyond the projected trace fields.
-
 #![cfg(unix)]
 #![cfg(feature = "export-otlp")]
-// The config serves `providers:`/`models:`, so the build must link the plane door that declares
-// `pools:` (`linked_section_pools`): the linked table's answer, never a feature name.
 #![cfg(linked_section_pools)]
-// The linked door is an export door: the test is that axis's, and its collector proves the sink.
 #![cfg(linked_axis_export_doors)]
 
 mod common;
@@ -24,21 +16,15 @@ use std::time::{Duration, Instant};
 
 include!(concat!(env!("OUT_DIR"), "/linked_transports.rs"));
 
-/// The dropped-in door's library: the sink repo's cdylib crate, snake-cased.
 const CDYLIB: &str = "busbar_export_otlp_plugin";
 
-/// The name the dropped-in tarball's manifest states.
 const DROPPED: &str = "span-record-dropped";
 
-/// The key of the wire the data door rides.
 const WIRE: &str = "tcp";
 
-/// The collector paths each door posts to.
 const LINKED_PATH: &str = "/linked/v1/traces";
 const DROPPED_PATH: &str = "/dropped/v1/traces";
 
-/// `config.yaml` and `providers.yaml` in `dir`: the linked instance, and the dropped one only when
-/// `name_dropped`.
 fn write_configs(
     dir: &Path,
     data_port: u16,
@@ -92,7 +78,6 @@ models:
     .unwrap();
 }
 
-/// Kill the child when the test ends, however it ends.
 struct Reap(Child);
 impl Drop for Reap {
     fn drop(&mut self) {
@@ -101,7 +86,6 @@ impl Drop for Reap {
     }
 }
 
-/// One model request over a fresh connection: the status, or `None` before the listener is up.
 fn request(port: u16, body: &str) -> Option<u16> {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
     stream
@@ -121,7 +105,6 @@ fn request(port: u16, body: &str) -> Option<u16> {
 
 #[test]
 fn real_producer_span_records_survive_both_otlp_doors() {
-    // A both-doors proof never skips: the dropped-in door's cdylib is built or the test fails.
     let lib = common::plugins::cdylib(CDYLIB)
         .unwrap_or_else(|| common::plugins::missing(CDYLIB, common::plugins::BUILD_PINNED));
     let dir = common::plugins::scratch("otlp-span-records");
@@ -134,8 +117,7 @@ fn real_producer_span_records_survive_both_otlp_doors() {
     );
     let tarball = common::plugins::seal(manifest, &lib);
     std::fs::write(dir.join("plugins").join("otlp.tar.gz"), tarball).unwrap();
-    // THE WIRE UNDER THE DOOR. A build that does not link the wire's row boots only with it dropped
-    // in; one that links it would refuse the tarball as a second row on the same key.
+
     if !LINKED_TRANSPORTS.iter().any(|w| w.key == WIRE) {
         let (lib, _) = common::plugins::transport_cdylib_under(&[WIRE]).unwrap_or_else(|| {
             common::plugins::missing(&format!("{WIRE} transport"), common::plugins::BUILD_PINNED)
@@ -154,7 +136,6 @@ fn real_producer_span_records_survive_both_otlp_doors() {
         c
     };
 
-    // 1. The scan admits the operator-trusted third party's collector: `--validate` skips nothing.
     let (data_port, admin_port) = (common::boot::free_port(), common::boot::free_port());
     write_configs(&dir, data_port, admin_port, collector_port, upstream, true);
     let out = busbar().arg("--validate").output().expect("run --validate");
@@ -169,14 +150,11 @@ fn real_producer_span_records_survive_both_otlp_doors() {
         "{stdout}"
     );
 
-    // 2. Both collectors post the request path's spans.
     let log_path = dir.join("out.log");
     let read_log = || std::fs::read_to_string(&log_path).unwrap_or_default();
 
-    // Anthropic has no seed/frequency_penalty: its real writer logs the dropped controls while
-    // the kernel's forward span is active. The local upstream answers a valid whole response.
     let body = r#"{"model":"test-model","max_tokens":1,"seed":17,"frequency_penalty":0.5,"messages":[{"role":"user","content":"hi"}]}"#;
-    // The ports step 1 wrote: `free_port` holds each from the moment it chose it.
+
     let log = std::fs::File::create(&log_path).unwrap();
     let mut child = Reap(
         busbar()
@@ -206,8 +184,6 @@ fn real_producer_span_records_survive_both_otlp_doors() {
         }
     }
 
-    // Wait for the known closed forward spans, then inspect their payload. Missing metadata is
-    // an assertion failure, rather than a timeout waiting for fields the old flag never produced.
     let forwards = |path| {
         common::otlp::spans(&common::otlp::requests(&seen, Some(path)))
             .into_iter()

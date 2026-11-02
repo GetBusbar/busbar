@@ -52,16 +52,14 @@ use super::{crossings, dispatcher, input, Fold, Leg, Script, Subject, Want};
 use crate::dispatch::kinds::transport::Transport;
 use crate::dispatch::{Called, Plugin};
 
-/// Each buffer of the host's sink, and the routes the lane has room for.
 const AMPLE: usize = 16 * 1024;
-/// The pieces the sink has room for.
+
 const PIECES: usize = 16;
-/// The routes the lane has room for.
+
 const ROUTES: usize = 16;
-/// The host port's address when the inputs name none (a documentation address).
+
 const LOCAL: &str = "198.51.100.1:40000";
-/// The host's public certificate when the inputs name none: a framer states a digest of it and
-/// reads nothing else of it.
+
 const CERTIFICATE: &[u8] = b"the host's public certificate, DER";
 
 const NONE: AbiStr = AbiStr {
@@ -79,7 +77,6 @@ fn abi(s: &[u8]) -> AbiStr {
     }
 }
 
-/// The host's buffers (the stream script's [`Sink`], ample) and lane for one framer op.
 struct Host {
     sink: Sink,
     routes: Vec<DatagramRoute>,
@@ -97,7 +94,6 @@ impl Host {
         self.sink.raw()
     }
 
-    /// The lane of a call carrying bytes on `lane` (`0`: none), nothing heard, bound or verified.
     fn lane(&mut self, lane: u32, local: &[u8]) -> DatagramLane {
         DatagramLane {
             size: u32::try_from(std::mem::size_of::<DatagramLane>()).unwrap_or(u32::MAX),
@@ -116,9 +112,6 @@ impl Host {
         }
     }
 
-    /// What one answer yielded, as one deterministic line (never a credential a framer minted):
-    /// the lane's judgement, each piece's stream, flags and whether it holds every `contains`
-    /// string, the routes, the end and re-call flags, and the terms' role.
     fn yielded(&self, c: &Called, o: &FramerOut, contains: &[Vec<u8>]) -> String {
         let judged = match check_datagram(c.outcome, o, &self.routes, self.routes.len() as u64) {
             Ok(()) => "ok".to_owned(),
@@ -150,21 +143,19 @@ impl Host {
     }
 }
 
-/// What the inputs state, read once.
 struct Inputs {
     local: Vec<u8>,
     certificate: Vec<u8>,
     locate: Outcome,
     encode: Outcome,
     opening: Vec<(Vec<u8>, Vec<u8>)>,
-    /// `None`: a dialled begin yields nothing; `Some((flags, contains))`: one piece.
+
     offer: Option<(u16, Vec<Vec<u8>>)>,
     junk: Vec<u8>,
-    /// The far end's description, its answer's piece flags, and the terms' role.
+
     rendezvous: Option<(Vec<u8>, u16, u32)>,
 }
 
-/// `"refused"` or `"failed"`.
 fn refusal(v: &serde_json::Value, what: &str) -> Outcome {
     match v.as_str() {
         Some("refused") => Outcome::Refused,
@@ -175,7 +166,6 @@ fn refusal(v: &serde_json::Value, what: &str) -> Outcome {
     }
 }
 
-/// The flags of an end-of-frame piece, a text piece when `v["text"]` is true.
 fn piece_flags(v: &serde_json::Value) -> u16 {
     if v["text"].as_bool().unwrap_or(false) {
         PIECE_END_OF_FRAME | PIECE_TEXT
@@ -253,8 +243,6 @@ impl Inputs {
     }
 }
 
-/// `begin` on `side` with the host's certificate, the dialled side's opening fields and (when
-/// `lane`) the lane: its line, judged against `contains`, and the framing it minted.
 fn begin(
     p: &Plugin<Transport>,
     inputs: &Inputs,
@@ -285,7 +273,7 @@ fn begin(
     let l = host.lane(0, &inputs.local);
     let mut i: BeginIn = input();
     i.side = side;
-    // A datagram lane rides the host's secure layer, as the connector's does.
+
     i.scheme = busbar_contract::abi::host::service::SCHEME_SECURE;
     i.facts = &facts;
     i.sink = host.sink();
@@ -307,7 +295,6 @@ fn begin(
     )
 }
 
-/// `ingest` of `bytes` on `lane` into `framing`: its line, judged against `contains`.
 fn ingest(
     p: &Plugin<Transport>,
     inputs: &Inputs,
@@ -325,7 +312,6 @@ fn ingest(
     format!("{} {}", super::called(&c), host.yielded(&c, &o, contains))
 }
 
-/// `finish` of `framing`: its line.
 fn finish(p: &Plugin<Transport>, inputs: &Inputs, framing: u64) -> String {
     let mut host = Host::new();
     let l = host.lane(0, &inputs.local);
@@ -335,7 +321,6 @@ fn finish(p: &Plugin<Transport>, inputs: &Inputs, framing: u64) -> String {
     format!("{} {}", super::called(&c), host.yielded(&c, &o, &[]))
 }
 
-/// The line of a READY answer that judged clean and yielded `pieces`, `flags` and `terms`.
 fn ready_line(framing: Option<bool>, pieces: &[String], flags: u32, terms: u32) -> String {
     let minted = framing.map(|m| format!(" framing={m}")).unwrap_or_default();
     format!(
@@ -343,12 +328,10 @@ fn ready_line(framing: Option<bool>, pieces: &[String], flags: u32, terms: u32) 
     )
 }
 
-/// One end-of-frame piece on stream `0` with `flags`, holding what it must.
 fn described(flags: u16) -> String {
     format!("stream=0 flags={flags} holds=true")
 }
 
-/// The datagram framer's fold.
 pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let inputs = Inputs::read(s.kind_inputs("transport"));
     let settings = leg.settings(s);
@@ -357,11 +340,9 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let mut sc = Script::new(crossings(&p));
     let begin_dial = || begin(&p, &inputs, SIDE_DIAL, true, &[]).0;
 
-    // ── the Statement, an op before `open`, the lifecycle, `ready`, the role it does not play ──
     let line = format!("{} datagram={}", facts_line(&p, &facts), facts.datagram);
     framer_opened(&mut sc, (s, &p, &d), &settings, line, &begin_dial);
 
-    // ── the framer ops a datagram framer has no use for ──
     sc.judged("locate", 1, Want::Starts(starts(inputs.locate)), || {
         locate(&p, b"conformance", AMPLE).0
     });
@@ -372,13 +353,10 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         super::called(&go::<EncodeIn, FramerOut>(&p, slot::ENCODE, e).0)
     });
 
-    // ── a datagram framer reads its lane ──
     sc.judged("begin without a lane", 1, Want::Starts("Failed "), || {
         begin(&p, &inputs, SIDE_DIAL, false, &[]).0
     });
 
-    // ── dialled over a lane: its opening, at once; a rendezvous that is no description fails the
-    //    framing, which is then forgotten ──
     let offered: Vec<Vec<u8>> = inputs
         .offer
         .as_ref()
@@ -399,8 +377,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         });
     }
 
-    // ── accepted: it waits for the far end's description, answers it when the inputs give one,
-    //    and ends when finished ──
     let want = Want::Is(ready_line(Some(true), &[], 0, HANDSHAKE_NONE));
     let accepted = sc.step_judged("begin accept", 1, want, || {
         begin(&p, &inputs, SIDE_ACCEPT, true, &[])
@@ -420,12 +396,10 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         ingest(&p, &inputs, u64::MAX, LANE_RENDEZVOUS, &inputs.junk, &[])
     });
 
-    // ── the rest of the lifecycle; a closed instance serves nothing ──
     framer_closed(&mut sc, &p, &settings, &begin_dial);
     sc.fold()
 }
 
-/// The start of a refusal's line.
 fn starts(o: Outcome) -> &'static str {
     if o == Outcome::Refused {
         "Refused "

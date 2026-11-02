@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The loop's own cells: every step order, every refusal reason, every end, both audit doors, the
-//! one exit, and the canary that says the counts balance.
-
 mod common;
 
 use std::future::Future;
@@ -23,7 +20,6 @@ use busbar_kernel::teller::{
 
 use common::{cell, ctx, principal, Door, NeverRoutes, TestDoor, TestUnits};
 
-/// The ten steps, in the one order they are ever called in.
 const ORDER: [StepName; 10] = [
     StepName::Arrival,
     StepName::Decode,
@@ -72,12 +68,6 @@ fn every_step_runs_once_in_order() {
     assert!(matches!(ended, Ended::Settled { .. }));
 }
 
-/// THE VERIFY STEP CAN SEAL WHAT IT VERIFIED.
-///
-/// Sealing a destination takes the trust token, and the loop lends it beside the unit token at
-/// verify — the same shape admit is lent the admit token and meter the usage token. Without it a
-/// step could decide where a unit may go and have no way to say so, so every implementor would have
-/// answered with the empty set. This pins that what verify sealed is what approve is handed.
 #[test]
 fn the_verify_step_seals_the_destinations_the_later_steps_read() {
     let kernel = Kernel::new();
@@ -97,12 +87,6 @@ fn the_verify_step_seals_the_destinations_the_later_steps_read() {
     );
 }
 
-/// A challenge round is a handshake unit: the authenticate step answers "one more round" rather
-/// than an identity, so it reaches no destination and opens no reservation. VERIFY is skipped —
-/// there is no principal whose destinations could be sealed, and nothing downstream would consume
-/// the set — but APPROVE and ADMIT are still asked, over the anonymous principal and the empty
-/// destination set, because a hook veto or a frozen group must be able to refuse the exchange
-/// itself. What a challenge does NOT do is verify, hold, or draw a lease.
 #[test]
 fn a_challenge_round_reaches_no_destination_and_opens_no_reservation() {
     let kernel = Kernel::new();
@@ -159,15 +143,6 @@ fn a_challenge_round_reaches_no_destination_and_opens_no_reservation() {
     );
 }
 
-/// A CHALLENGE ROUND STILL FACES THE TWO SEATS THAT DECIDE WHETHER THE NODE WILL ENGAGE AT ALL.
-///
-/// `approve` is the hook-veto seat and `admit` is the door, where a frozen group is read. A
-/// challenge is unauthenticated and reaches no destination, but skipping these two was an
-/// unauthenticated path straight around the node's own admission control: a hook wired to veto the
-/// exchange, or a frozen group that would refuse it, was never asked. The round now presents the
-/// anonymous principal at both, so a refusal at either stops the handshake exactly as it stops an
-/// authenticated unit — and the record names the step and the reason, rather than settling as
-/// though the node had agreed to the round.
 #[test]
 fn a_challenge_round_still_faces_the_hook_veto_and_the_frozen_group() {
     for (step, reason) in [
@@ -213,8 +188,7 @@ fn a_refusal_stops_the_chain_at_the_step_that_raised_it() {
         let cell = cell(&kernel);
         let canary = Canary::new();
         let ended = run(&units, &kernel, &cell, &canary);
-        // Every step up to and including the refusing one ran, then the refused audit door and the
-        // encode that renders it. Nothing after the refusal ran.
+
         let mut expected: Vec<StepName> = ORDER[..=index].to_vec();
         expected.push(StepName::Audit);
         expected.push(StepName::Encode);
@@ -386,11 +360,9 @@ fn a_child_spending_against_its_parent_balances_the_canary_too() {
     let kernel = Kernel::new();
     let canary = Canary::new();
 
-    // A parent that has passed the door and is still open.
     let parent = std::sync::Arc::new(cell(&kernel));
     let admitted = busbar_contract::caps::Hold::open(&kernel.admit_token(), common::principal());
-    // The cell hands the arrival hold back rather than dropping it; the parent's admitted hold has
-    // taken its place, and this binding is what the loop's own swap does with it.
+
     let _arrival = parent
         .admit(admitted, &kernel.admit_token())
         .expect("the parent's cell was fresh");
@@ -399,7 +371,7 @@ fn a_child_spending_against_its_parent_balances_the_canary_too() {
         door: Door::Accrual(std::sync::Arc::clone(&parent)),
         ..TestUnits::default()
     };
-    // The child enters the table like every other unit, so its cell and its leases are its slot's.
+
     let table = InFlight::new(4);
     let child_slot = table
         .insert(client(1))
@@ -420,8 +392,7 @@ fn a_child_spending_against_its_parent_balances_the_canary_too() {
             taps: None,
         },
     );
-    // The child ends like every other unit: one sealed end carrying one posting, and its posting is
-    // clean — nothing about it is late, because the parent was still open when it ended.
+
     match ended {
         Ended::Settled { end, requests, fee } => {
             assert_eq!(end.outcome(), Outcome::Completed);
@@ -443,9 +414,6 @@ fn a_child_spending_against_its_parent_balances_the_canary_too() {
     assert_eq!((counts.drafts, counts.holds, counts.accruals), (1, 0, 1));
     assert_eq!(canary.balanced(), Ok(()));
 
-    // The child opened no reservation, but it entered the table with an arrival hold like every
-    // other unit, and its cell is emptied at its end. Leaving it full would leave the sweep — the
-    // other holder of a key to that cell — free to settle a unit that has already finished.
     assert_eq!(
         child_slot.cell().state(),
         busbar_contract::caps::HoldCellState::Taken
@@ -482,7 +450,6 @@ fn a_zero_priced_unit_holds_nothing_and_still_posts() {
     }
 }
 
-/// A unit is never refused at its end for what it ran up: it posts the count it reported.
 #[test]
 fn a_unit_that_ran_up_more_than_it_was_admitted_for_posts_it_rather_than_refusing() {
     let kernel = Kernel::new();
@@ -507,8 +474,6 @@ fn a_unit_that_ran_up_more_than_it_was_admitted_for_posts_it_rather_than_refusin
     }
 }
 
-/// ONE FIGURE SETTLES THE HOLD: the posting carries the count the plane reported, so
-/// a second count — the rig's meter, whatever it reads — cannot move it.
 #[test]
 fn the_hold_is_posted_at_the_reported_figure_not_by_a_second_count() {
     let kernel = Kernel::new();
@@ -577,16 +542,6 @@ fn the_leases_go_back_on_every_end_whatever_it_was() {
     }
 }
 
-/// THE CLIENT THAT WENT AWAY.
-///
-/// The loop awaits in one place — the Route leg — so a caller that drops it drops it there, with the
-/// hold in the cell, the lease drawn and the unit's slot occupied. Nothing about that end is
-/// special: it leaves through the charged audit door like every admitted unit, the exit takes the
-/// hold out of the cell, the lease goes back to the gauge and the slot is free for the next arrival.
-///
-/// What this cell also pins is that cancellation REACHES THE UPSTREAM. A loop that merely stopped
-/// polling would leave the upstream's future alive somewhere; the flag below is set by that future's
-/// own `Drop`, so the only way it is true is if the loop let go of it.
 #[test]
 fn a_caller_that_goes_away_drops_the_route_leg_and_frees_the_unit() {
     let kernel = Kernel::new();
@@ -597,8 +552,6 @@ fn a_caller_that_goes_away_drops_the_route_leg_and_frees_the_unit() {
         dropped: &dropped,
     };
 
-    // A table with room for exactly one unit, so the slot this unit occupies IS the node's in-flight
-    // ceiling: a second arrival is refused while it is held and admitted the moment it is not.
     let table = InFlight::new(1);
     let key = UnitKey::new(11);
     let slot = table
@@ -616,7 +569,7 @@ fn a_caller_that_goes_away_drops_the_route_leg_and_frees_the_unit() {
     let gauge = ConcurrencyGauge::new();
     let bucket = busbar_kernel::slice::bucket_all("team");
     gauge.acquire(&bucket, 4).expect("room in the gauge");
-    // The lease is recorded on the unit's SLOT, which is where both of its ends can reach it.
+
     assert!(slot.leases().take(bucket));
     let canary = Canary::new();
     let meter = AccrualMeter::new();
@@ -655,7 +608,6 @@ fn a_caller_that_goes_away_drops_the_route_leg_and_frees_the_unit() {
             "the waiting unit occupies the node's one in-flight slot"
         );
     }
-    // The client goes away: the loop's future is dropped, and with it the leg it was awaiting.
 
     assert!(
         dropped.load(Ordering::Acquire),
@@ -697,8 +649,6 @@ fn a_caller_that_goes_away_drops_the_route_leg_and_frees_the_unit() {
         "it left through the charged audit door, because it passed the door"
     );
 
-    // The slot is released by the caller that took it, and the ceiling is a table's again rather
-    // than a thread pool's: with the unit gone, the next arrival is admitted.
     table.remove(key);
     assert!(
         table.admits(&client(12)),
@@ -709,15 +659,6 @@ fn a_caller_that_goes_away_drops_the_route_leg_and_frees_the_unit() {
         .expect("one draft, one hold, one settlement — an abandoned unit still balances");
 }
 
-/// THE DRAW. A unit the door admitted is one the node is running, and the gauge says so.
-///
-/// The exit path and the sweep have both given leases back since they were written, but nothing ever
-/// took one, so the gauge read zero on a node that was full and the sweep had nothing of a lost unit
-/// to reclaim. This is the other half of the rule: the door's yes draws the lease, on the unit's own
-/// slot, and the unit's end gives it back.
-///
-/// The reading is taken WHILE the unit is in flight, which is the only moment the difference between
-/// a drawn lease and no lease at all is visible: a gauge read after the end is zero either way.
 #[test]
 fn the_door_draws_the_in_flight_lease_and_the_end_gives_it_back() {
     let kernel = Kernel::new();
@@ -779,15 +720,6 @@ fn the_door_draws_the_in_flight_lease_and_the_end_gives_it_back() {
     assert_eq!(slot.leases().held(), 0);
 }
 
-/// ONE LEASE PER CAPPED GROUP. Two capped groups are two counts while the unit is in flight, and
-/// nothing at all once it has ended.
-///
-/// The design gives a unit a `concurrent` lease per capped-`concurrent` group in its chain, and the
-/// node-wide one it has always drawn beside them. Only the door knows which groups those are, so
-/// this is the reading of what the door SAID: two named groups, counted separately, on the same
-/// slot, given back together by the one end the unit reaches. A single node-wide count cannot tell
-/// an operator which group filled up, and a per-group count that the end does not release is a
-/// group that stops admitting for good.
 #[test]
 fn two_capped_groups_are_two_leases_while_the_unit_flies_and_none_after() {
     let kernel = Kernel::new();
@@ -846,14 +778,6 @@ fn two_capped_groups_are_two_leases_while_the_unit_flies_and_none_after() {
     assert_eq!(slot.leases().held(), 0);
 }
 
-/// A unit that never reaches the door draws nothing, and neither does an exempt one.
-///
-/// Three units that must not raise the gauge, for three different reasons: a challenge round, which
-/// faces the door's policy seats but opens no reservation behind them, so it holds no slot to
-/// count; a tick, which moves no money; and a unit whose every destination is a kernel verb, which
-/// is what makes the administrative surface answer while the rest of the node is capped out. A
-/// gauge these three raised would be a node that stopped admitting because of the very units that
-/// are meant to keep it reachable.
 #[test]
 fn a_challenge_a_tick_and_a_kernel_verb_unit_draw_no_lease() {
     for (name, units, unit_ctx) in [
@@ -913,7 +837,6 @@ fn a_challenge_a_tick_and_a_kernel_verb_unit_draw_no_lease() {
     }
 }
 
-/// A door that refuses draws nothing: there is no slot to count.
 #[test]
 fn a_unit_the_door_refused_draws_no_lease() {
     let kernel = Kernel::new();
@@ -945,16 +868,6 @@ fn a_unit_the_door_refused_draws_no_lease() {
     );
 }
 
-/// A GROUP CAPPED AT ONE ADMITS ONE UNIT AND REFUSES THE NEXT WHILE IT FLIES.
-///
-/// The door's `concurrent` cap is a count it raises when it says yes and releases when the value
-/// that yes handed back is dropped. Dropped at the end of the door's own step, the cap compares
-/// every arrival against zero: N units in flight, N admissions, and a cap that has never refused
-/// anything in its life. This is the cell that says otherwise — and it has to be read WHILE the
-/// first unit is in flight, because that is the only moment the two behaviours differ.
-///
-/// Then the first unit ends, and the group admits again. A cap that refuses for ever is not a cap
-/// either.
 #[test]
 fn a_group_capped_at_one_refuses_the_second_unit_until_the_first_has_ended() {
     let kernel = Kernel::new();
@@ -999,8 +912,6 @@ fn a_group_capped_at_one_refuses_the_second_unit_until_the_first_has_ended() {
             "and the count that says so is the slot's, not the door step's frame"
         );
 
-        // THE SECOND UNIT, while the first is still in the air. The refusal is the door's own, at
-        // the door's own status, on a counter the first unit is still holding.
         let second_units = TestUnits::behind(&group);
         let second_cell = cell(&kernel);
         let second_leases = LeaseCell::new();
@@ -1038,7 +949,6 @@ fn a_group_capped_at_one_refuses_the_second_unit_until_the_first_has_ended() {
     );
     assert!(first.leases().holds_grant().not());
 
-    // AND THE GROUP ADMITS AGAIN.
     let third_units = TestUnits::behind(&group);
     let third_cell = cell(&kernel);
     let third_leases = LeaseCell::new();
@@ -1064,7 +974,6 @@ fn a_group_capped_at_one_refuses_the_second_unit_until_the_first_has_ended() {
     );
 }
 
-/// One client arrival, as the table weighs it against the cap.
 fn client(key: u64) -> Enter {
     Enter {
         key: UnitKey::new(key),
@@ -1082,14 +991,6 @@ fn client(key: u64) -> Enter {
     }
 }
 
-/// THE CANARY BALANCES OVER EVERY SHAPE OF UNIT, NOT ONLY ADMITTED ONES (item 272).
-///
-/// The identity `drafts == holds + accruals == settlements` was unsatisfiable for every refusal and
-/// every zero-hold unit: the draft was counted four steps before the door (so a unit refused at
-/// arrival or decode settled without a draft), and the hold only on the admitted arm (so a refused
-/// or zero-priced unit, which settles its arrival hold, settled without a hold). On a deployment
-/// with no rate card every admitted unit is zero-hold, so the one arithmetic proof that no unit went
-/// missing could never be read on a running node. A run of every shape must balance.
 #[test]
 fn the_canary_balances_over_refusals_and_zero_hold_units_too() {
     let kernel = Kernel::new();

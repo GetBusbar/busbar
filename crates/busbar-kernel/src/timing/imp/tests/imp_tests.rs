@@ -1,21 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-kernel/src/timing/mod.rs` (feature-on registry, module `imp`).
-
 use super::*;
 
-/// The runtime gate is a PROCESS-global atomic, so the tests that drive it cannot run concurrently:
-/// one flipping it on while another asserts the disabled behaviour makes the second flaky. This lock
-/// serializes exactly those tests and nothing else.
-///
-/// `pub(super)` so the sibling `mutation_hardening_tests` module — which also drives the same
-/// process-global gate (and, for its output-capture tests, the process's real stderr fd) — shares
-/// this ONE lock rather than racing it with a second one of its own.
 pub(super) static GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Take the gate lock, ignoring poisoning — a failed assertion in one gate test must not cascade
-/// into unrelated failures in the others.
 pub(super) fn gate_lock() -> std::sync::MutexGuard<'static, ()> {
     GATE.lock().unwrap_or_else(|p| p.into_inner())
 }
@@ -23,14 +12,13 @@ pub(super) fn gate_lock() -> std::sync::MutexGuard<'static, ()> {
 #[test]
 fn bucket_monotonic_and_percentiles_separate_scales() {
     let mut s = MethodStat::default();
-    // 1000 samples near 500ns, 1 sample near 25us.
+
     for _ in 0..1000 {
         s.record(500);
     }
     s.record(25_000);
     assert_eq!(s.count, 1001);
-    // p50 sits in the ~500ns band (bucket floor 256), p99 also (only 1/1001 is the outlier),
-    // and max captures the 25us outlier exactly.
+
     assert!(s.percentile(0.50) <= 512, "p50 {}", s.percentile(0.50));
     assert_eq!(s.max_ns, 25_000);
     assert_eq!(s.min_ns, 500);
@@ -47,15 +35,6 @@ fn bucket_of_is_log2() {
     assert_eq!(bucket_of(1024), 11);
 }
 
-/// A single bucket must keep counting past the 32-bit ceiling, in both `record` and `merge`.
-///
-/// The buckets were `u32` while `count` was `u64`, so the bucket overflowed first: a method logging
-/// ~1M samples/s into one latency band tips it in about 70 minutes. This crate is debug-only, and in
-/// debug that is an arithmetic PANIC inside `record` — the timing probe killing the request it was
-/// timing. In release it wraps, and then `percentile`'s cumulative sum can never reach a `target`
-/// computed from the exact `count`, so the loop falls through and reports `max_ns` for p50 and p99
-/// alike. The assertion below is on the bucket VALUE rather than on the absence of a panic, so it
-/// fails in release (where the wrap is silent) as well as in debug.
 #[test]
 fn a_bucket_keeps_counting_past_the_32_bit_ceiling() {
     let ceiling = u64::from(u32::MAX);
@@ -85,8 +64,6 @@ fn a_bucket_keeps_counting_past_the_32_bit_ceiling() {
         "merging two saturated per-thread histograms wrapped the fold"
     );
 
-    // The consequence the width exists to prevent: percentiles still resolve to a real bucket
-    // instead of falling through the loop and collapsing onto `max_ns`.
     a.max_ns = 9_999_999;
     assert_eq!(a.percentile(0.50), bucket_floor(idx));
 }
@@ -122,10 +99,6 @@ fn scoped_record_and_reset_are_thread_local() {
     assert!(snap2.is_empty());
 }
 
-/// The thread registry must not grow with threads that have EXITED. Holding an `Arc` there made the
-/// vector the OWNER of every accumulator it ever saw, so a churning worker pool accumulated one live
-/// `HashMap` per thread ever spawned, for the life of the process — the diagnostic becoming the
-/// leak. With `Weak` handles the registry dies with its thread and a walk sweeps the tombstone.
 #[test]
 fn dead_threads_do_not_accumulate_in_the_registry() {
     let _gate = gate_lock();
@@ -137,7 +110,6 @@ fn dead_threads_do_not_accumulate_in_the_registry() {
             .expect("worker thread");
     }
 
-    // The dump walks the vector, and pruning rides along with the walk — no reaper needed.
     dump();
 
     let remaining = threads().lock().unwrap_or_else(|p| p.into_inner()).len();
@@ -147,11 +119,6 @@ fn dead_threads_do_not_accumulate_in_the_registry() {
     );
 }
 
-/// A worker thread's samples must OUTLIVE the worker. The thread registry holds only `Weak` handles,
-/// so the moment a short-lived thread exits its accumulator is freed — and a process-wide walk that
-/// looked at nothing but live threads reported a table with the worker's work missing entirely, which
-/// is precisely the case the count column exists to explain. The thread hands its samples to the
-/// process accumulator as it exits, so a joined worker's rows are still in the merge afterwards.
 #[test]
 fn samples_from_an_exited_thread_survive_in_the_process_merge() {
     let _gate = gate_lock();
@@ -174,11 +141,6 @@ fn samples_from_an_exited_thread_survive_in_the_process_merge() {
     assert_eq!(s.max_ns, 3_000);
 }
 
-/// The live path and the hand-off path must compose EXACTLY: a sample is counted once, whether it is
-/// still sitting in a running thread's accumulator or has already been moved into the process one.
-/// Recording N here and M on a joined worker must total N + M — not N + 2M (a copying hand-off that
-/// left the source intact would double-count a thread that is still alive) and not N (the missing
-/// worker case above).
 #[test]
 fn live_and_exited_samples_are_counted_exactly_once() {
     let _gate = gate_lock();
@@ -198,7 +160,6 @@ fn live_and_exited_samples_are_counted_exactly_once() {
     .join()
     .expect("worker thread");
 
-    // This thread is still LIVE and still holds its N samples; the worker's M have been handed over.
     let merged = merged_snapshot();
     let s = merged
         .get("exactly_once_probe")
@@ -207,9 +168,6 @@ fn live_and_exited_samples_are_counted_exactly_once() {
     assert_eq!(s.total_ns, (N + M) * 100);
 }
 
-/// With the feature ON but the runtime gate OFF, a timer must record NOTHING — and, per the module
-/// header, cost only the gate check. Both halves are asserted: no sample lands, and the guard holds
-/// no start instant at all, which two unconditional `Instant::now()` calls used to falsify.
 #[test]
 fn a_disabled_gate_records_nothing_and_reads_no_clock() {
     let _gate = gate_lock();

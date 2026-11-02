@@ -1,23 +1,3 @@
-//! A TARGETED loom model of the one invariant the config-mutation lock exists to protect.
-//!
-//! Run with `cargo xtask loom` (`cargo test -p busbar --features loom-model txn_loom`). The whole
-//! file sits behind the optional `loom-model` feature, so it never compiles into a normal build or
-//! CI test run. It is a cargo FEATURE rather than loom's usual `--cfg loom` because RUSTFLAGS is
-//! global: `--cfg loom` makes tokio compile out `tokio::net`, which the server needs.
-//!
-//! SCOPE, deliberately narrow. Loom explores thread interleavings over ITS OWN sync primitives; it
-//! cannot model `tokio::sync::Mutex`, `spawn_blocking`, or thread parking, so the
-//! blocking-under-the-lock class is proven instead by the executor-not-stalled assertion in
-//! `txn_tests.rs` (loom could not see a parked worker anyway) and by the compile fence. What loom
-//! CAN decide exactly is the LOST-UPDATE question: the `read snapshot → build next → swap` sequence
-//! that `AppHandle::load`/`AppHandle::swap` implement over an `RwLock<Arc<App>>`, and whether the
-//! mutual exclusion `config_transaction` wraps it in is actually sufficient. That is modelled here
-//! over loom's `RwLock` + `Mutex`, both directions:
-//!
-//! - WITHOUT the section (the shape the tree had before every mutation funnelled through one door),
-//!   loom finds an interleaving where one increment is silently lost — the exact defect;
-//! - WITH the section, no interleaving loses one.
-
 use loom::sync::{Arc, Mutex, RwLock};
 
 /// `loom::thread::Builder::stack_size` forwards, unconverted, straight through to `generator`'s
@@ -62,11 +42,8 @@ use loom::sync::{Arc, Mutex, RwLock};
 /// fits, not a guess at one that does not. If a
 /// future model body genuinely needs more, raise it -- but keep it under 64 MiB or it stops being
 /// runnable on macOS, and do not expect it to affect thread 0.
-const LOOM_STACK_WORDS: usize = 262_144; // 2 MiB real (words x 8), allocatable on every host
+const LOOM_STACK_WORDS: usize = 262_144;
 
-/// The `AppHandle` shape under test: a swappable snapshot behind an `RwLock`, read by `load` and
-/// replaced wholesale by `swap` — `crate::state::AppHandle` in miniature, with `config_version`
-/// standing in for the whole `App`.
 struct Handle {
     current: RwLock<Arc<usize>>,
 }
@@ -80,8 +57,6 @@ impl Handle {
     }
 }
 
-/// WITH the transaction: `read → build → swap` runs under one mutual-exclusion section, exactly as
-/// `config_transaction` runs it under `CONFIG_MUTATION_LOCK`. No interleaving may lose an update.
 #[test]
 fn transaction_never_loses_a_swap() {
     loom::model(|| {
@@ -92,13 +67,13 @@ fn transaction_never_loses_a_swap() {
         let ths: Vec<_> = (0..2)
             .map(|_| {
                 let (handle, section) = (handle.clone(), section.clone());
-                // See LOOM_STACK_WORDS's doc comment for why this is needed and what it's in units of.
+
                 loom::thread::Builder::new()
                     .stack_size(LOOM_STACK_WORDS)
                     .spawn(move || {
                         let _guard = section.lock().unwrap();
-                        let current = handle.load(); // the FRESH post-lock snapshot
-                        handle.swap(Arc::new(*current + 1)); // build + swap, still under the guard
+                        let current = handle.load();
+                        handle.swap(Arc::new(*current + 1));
                     })
                     .unwrap()
             })
@@ -115,10 +90,6 @@ fn transaction_never_loses_a_swap() {
     });
 }
 
-/// WITHOUT the transaction (documentation of the defect the door closes): loom is expected to find
-/// an interleaving in which both threads read the same version and one swap is lost. The model
-/// records whether ANY execution lost an update and asserts that it did — so if this ever stops
-/// failing, the model itself has gone blind and the positive test above means nothing.
 #[test]
 fn unsectioned_read_build_swap_loses_an_update() {
     let lost = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -130,11 +101,11 @@ fn unsectioned_read_build_swap_loses_an_update() {
         let ths: Vec<_> = (0..2)
             .map(|_| {
                 let handle = handle.clone();
-                // See LOOM_STACK_WORDS's doc comment for why this is needed and what it's in units of.
+
                 loom::thread::Builder::new()
                     .stack_size(LOOM_STACK_WORDS)
                     .spawn(move || {
-                        let current = handle.load(); // NO section: the read and the swap can interleave
+                        let current = handle.load();
                         handle.swap(Arc::new(*current + 1));
                     })
                     .unwrap()

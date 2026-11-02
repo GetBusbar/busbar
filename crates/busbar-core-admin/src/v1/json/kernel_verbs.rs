@@ -1,32 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE 1.6.0 KERNEL VERBS, IN THE ONE DOCUMENT.
-//!
-//! The closed verb table (`admin_codec::verbs`) declares 19 operations 1.6.0 adds to the
-//! administrative surface: the 11 kernel verbs ([`NEW_VERBS`]: eight money-governance, three trust),
-//! the five ledger views ([`LEDGER_VERBS`]) and the three audit-chain reads ([`AUDIT_VERBS`]). The router in this crate
-//! mounts none of them. The node's administrative mount walks every row the table declares whose
-//! effect is bound through the kernel loop, and it is the composition root's route step that answers them — the ledger and
-//! audit reads render from the one ledger (the store's usage counts x the rate card) and the
-//! node's audit chain, `adjust` lands on the usage counts as a signed adjustment,
-//! `amend_rate_history` lands on the node's amendment journal, and the two disaster-recovery verbs
-//! land on the store.
-//!
-//! They used to be described nowhere, or in a side-car document kept beside the served one so the
-//! served bytes need not move. This module is what put them in the one generated document instead:
-//! [`operations`] iterates the three verb lists and the table's own `(method, path)` rows, so the
-//! document cannot describe a verb the table does not declare and cannot miss one it does. Each
-//! verb's contract below is what the root's code does — its request shape, its success body and
-//! the statuses its refusals map to (`units_admin::answer_for`) — never what a design once intended.
-//!
-//! A NEW VERB WITH NO EFFECT BOUND IN THIS BUILD (`crate::verb::effect_bound`) is not served — the
-//! node's mount hands it to the surface's own fallback, which answers the unmounted `404` — so this
-//! document does not describe it either: [`operations`] asks the same one question the mount asks.
-//! Since owner answer Q71(2) bound `verify`, `plane_facts`, `plane_record_write` and
-//! `commit_upgrade`, every one of the nine is bound; the three trust verbs are bound with them
-//! (ARCHITECT 2026-10-06).
-
 #[cfg(feature = "openapi-schema")]
 use crate::admin_codec::verbs::ResolvedVerb;
 #[cfg(feature = "openapi-schema")]
@@ -40,16 +14,8 @@ use serde_json::{json, Value};
 #[cfg(feature = "openapi-schema")]
 use std::collections::BTreeMap;
 
-/// The release that added every operation this module documents, stamped as `x-busbar-since`.
 #[cfg(feature = "openapi-schema")]
 pub(crate) const SINCE: &str = "1.6.0";
-
-// ── the typed contracts (schema-only: never serialized at runtime) ──────────────────────────────
-//
-// Each mirrors, field for field, the JSON the composition root writes for the verb
-// (`crates/busbar/src/root/units_admin`). The root renders those bodies by hand, byte-deterministic,
-// so these are schema-only views in the same sense as `contract::schema`: the drift test keeps the
-// document locked to them, and the root-leg tests pin the bodies they describe.
 
 /// A money figure: a decimal integer carried as TEXT. The ledger keeps money in 128-bit integers and
 /// JSON's number is a double, exact only to 2^53; a nano-unit total passes that on a busy day, and a
@@ -678,20 +644,15 @@ pub(crate) struct StoreRestoreReq {
     backup_ref: String,
 }
 
-// ── one verb's contract ──────────────────────────────────────────────────────────────────────────
-
-/// What a kernel verb answers when it succeeds.
 #[cfg(feature = "openapi-schema")]
 enum Success {
-    /// `200` with a typed JSON body.
     Json(Value, &'static str),
-    /// `200` carrying the one generated OpenAPI document.
+
     Document,
-    /// `204`: the verb's whole result is its effect.
+
     NoContent(&'static str),
 }
 
-/// One kernel verb's documented contract.
 #[cfg(feature = "openapi-schema")]
 struct VerbDoc {
     summary: &'static str,
@@ -702,8 +663,6 @@ struct VerbDoc {
     errors: Vec<(&'static str, String)>,
 }
 
-/// The refusal a new mutating verb earns, in the one status the root renders it at
-/// (`units_admin::answer_for` / `scope_answer`): every gate the new verbs run answers `403`.
 #[cfg(feature = "openapi-schema")]
 fn gated_403() -> (&'static str, String) {
     (
@@ -714,8 +673,6 @@ fn gated_403() -> (&'static str, String) {
     )
 }
 
-/// The `503` every kernel verb can answer: the node could not take the unit, or could not record
-/// what the operation would do.
 #[cfg(feature = "openapi-schema")]
 fn unavailable_503(what: &str) -> (&'static str, String) {
     (
@@ -727,13 +684,9 @@ fn unavailable_503(what: &str) -> (&'static str, String) {
     )
 }
 
-/// The `400` the mount itself answers for a body it could not read to the operator's cap.
 #[cfg(feature = "openapi-schema")]
 const BODY_UNREADABLE: &str = "a request body that could not be read to the operator's size cap";
 
-/// The contract for one kernel verb, or `None` for a verb this module does not document — which,
-/// for a verb the build binds an effect to, the served-surface coverage test turns into a red
-/// build, so an arm cannot be forgotten.
 #[cfg(feature = "openapi-schema")]
 fn doc_for(
     verb: KernelVerb,
@@ -773,7 +726,7 @@ fn doc_for(
         ],
     };
     Some(match verb {
-        // ── the two disaster-recovery verbs: their effect lands on the store ──
+
         KernelVerb::ChainBreak => VerbDoc {
             summary: "Deliberately break the journal chain (disaster recovery)",
             description: "Admitted through the same gates as every other new verb, then handed to \
@@ -827,7 +780,7 @@ fn doc_for(
                 ),
             ],
         },
-        // ── the four verbs owner answer Q71(2) binds ──
+
         KernelVerb::Verify => VerbDoc {
             summary: "Verify this node's ledger: checkpoints, sequences, the book and the identity",
             description: "Every sealed checkpoint must re-hash to its own body, no node's sequence \
@@ -1038,7 +991,7 @@ fn doc_for(
                 ),
             ],
         },
-        // ── the two money verbs: a signed count correction, and a dated card correction ──
+
         KernelVerb::Adjust => VerbDoc {
             summary: "Correct a key's COUNTS by a signed delta, never a money figure",
             description: "Money is the one ledger's counts x the rate card, so a correction moves \
@@ -1114,7 +1067,7 @@ fn doc_for(
             ],
         },
 
-        // ── the five ledger views ──
+
         KernelVerb::GetLedgerTotals => ledger_read(
             "What the one ledger's counts come to, per key",
             "Each key's usage counts priced by the one function against the rate card each era \
@@ -1159,7 +1112,7 @@ fn doc_for(
             errors: vec![unavailable_503("the node could not take the unit")],
         },
 
-        // ── the three audit-chain reads ──
+
         KernelVerb::GetAuditHead => audit_read(
             "The audit record chain's tip: position, digest, signature, key identifier and clock",
             schema_of(gen.subschema_for::<AuditChainHeadView>()),
@@ -1212,12 +1165,6 @@ fn doc_for(
     })
 }
 
-/// Every kernel verb's OpenAPI operation, as `(absolute path, method, operation)`.
-///
-/// Driven by the three verb lists and joined to the closed table's own row for each, so the path
-/// and method documented are the ones the mount resolves. The success and error responses, the
-/// scope annotation and the security schemes are stamped here; the caller's shared passes add the
-/// error-envelope content and the stable `operationId`.
 #[cfg(feature = "openapi-schema")]
 pub(crate) fn operations(
     gen: &mut schemars::SchemaGenerator,
@@ -1233,7 +1180,7 @@ pub(crate) fn operations(
         let Some(row) = table.iter().find(|row| row.verb == name) else {
             continue;
         };
-        // The mount's own question: a verb with no bound effect is not served, so not described.
+
         if !crate::verb::effect_bound(verb) {
             continue;
         }
@@ -1268,8 +1215,7 @@ pub(crate) fn operations(
             "401".into(),
             json!({"description": "Missing/invalid admin credential (error code `unauthorized`)"}),
         );
-        // Every error status speaks the one `Error` envelope (its `code` enum carries `unavailable`);
-        // the caller's shared pass attaches it.
+
         for (status, description) in doc.errors {
             by_status.insert(status.into(), json!({ "description": description }));
         }

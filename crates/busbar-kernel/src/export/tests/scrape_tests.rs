@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for the host snapshot service (`export/scrape.rs`): `/metrics` and `/metrics/hooks` are
-//! the scrape sink's OWN routes, answered by its `serve` over `snapshot.read` (owner law
-//! 2026-09-27; ARCHITECT Q-U2-4); the snapshot is lent only to the crossing granted it; and what the
-//! sink answers reaches the scrape verbatim. The sink here is the stand-in axis's scrape DOUBLE
-//! (`test_support::export_axis::ScrapeDouble`, R-FIX3); the real scrape sink's rendering is proven
-//! where it is linked (`crates/busbar/src/root/tests/linked.rs`).
-
 use super::*;
 use crate::config::{resolve_export, ExportCfg, ExportDefs};
 use crate::test_support::export_axis::{
@@ -16,16 +9,10 @@ use crate::test_support::export_axis::{
 use busbar_contract::abi::mechanism::route::{Route, RouteAuth, RouteMethod};
 use busbar_contract::export_calls::{ExportAxis, ExportCalls};
 
-/// The export axis THIS test binary resolves `export:` against: the neutral rows, and the scrape
-/// double answering the frozen scrape module word (`prometheus`) linked ahead of them, as the
-/// composition root links its scrape sink — the configuration layer asks its answers to know it is
-/// the scrape sink. Every test here that resolves an `export:` block installs it first (the first
-/// install holds, and every install in this binary is this one).
 pub(crate) fn installed_axis() {
     crate::test_support::export_axis::install_export_axis();
 }
 
-/// The scrape sink, opened as boot opens it, on the stand-in axis.
 fn scrape_sink() -> Arc<dyn ExportCalls> {
     installed_axis();
     crate::test_support::export_axis::STAND_IN
@@ -37,7 +24,6 @@ fn scrape_sink() -> Arc<dyn ExportCalls> {
         .expect("the scrape sink opens")
 }
 
-/// A `GET` of `path`.
 fn get(path: &str) -> EndpointRequest {
     EndpointRequest {
         method: "GET".into(),
@@ -48,7 +34,6 @@ fn get(path: &str) -> EndpointRequest {
     }
 }
 
-/// The instance subscribed to `metrics` is the scrape sink, and the recorder's settings ride on it.
 #[test]
 fn the_metrics_instance_is_the_scrape_sink() {
     installed_axis();
@@ -75,10 +60,6 @@ fn the_metrics_instance_is_the_scrape_sink() {
     );
 }
 
-/// THE ROUTES ARE THE SINK'S (owner law: "the kernel owns no route that exists for one plugin"):
-/// with no scrape sink configured nothing declares `/metrics` (the presence-is-the-switch
-/// contract); the scrape sink DECLARES `GET /metrics` and `GET /metrics/hooks` behind the data
-/// plane's key, and its declarations build a live route table — the kernel declares neither.
 #[test]
 fn metrics_route_declared_only_when_configured() {
     assert!(
@@ -117,10 +98,6 @@ fn metrics_route_declared_only_when_configured() {
     }
 }
 
-/// THE GRANTED SCRAPE: through the grant, `GET /metrics` is the sink's `200` rendering of the
-/// recorder's snapshot under the sink's own content type, and `GET /metrics/hooks` the hook
-/// rendering under its own (the app-less arm folds no hook, so it is empty) — the kernel passes the
-/// sink's answer through verbatim, headers included.
 #[test]
 fn a_granted_scrape_is_the_sinks_rendering_of_the_snapshot() {
     crate::snapshot::init();
@@ -156,9 +133,6 @@ fn a_granted_scrape_is_the_sinks_rendering_of_the_snapshot() {
     );
 }
 
-/// RED: the snapshot is lent ONLY to the crossing granted it. The same sink's route dispatched
-/// without the grant reads nothing (a `502` with no body, never the host's own text), and a read
-/// from no crossing is refused.
 #[test]
 fn an_ungranted_crossing_reads_no_snapshot() {
     crate::snapshot::init();
@@ -174,9 +148,6 @@ fn an_ungranted_crossing_reads_no_snapshot() {
     );
 }
 
-/// The lend is the crossing's: inside it the read answers (and the read takes the lend, so a
-/// crossing the read makes is not lent it, then restores it); an unknown scope is refused; after
-/// the crossing nothing is lent.
 #[test]
 fn the_lend_lasts_exactly_the_crossing() {
     crate::snapshot::init();

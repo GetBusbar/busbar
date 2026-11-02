@@ -1,17 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE SCAN'S FIXED-CLASS HALF AND ITS KEPT RED ARM. The scan beside this file
-//! proves a failing secret's source never reaches a door plane's caller; this file proves two more
-//! things about the same renders:
-//! * the refusal is a FIXED CLASS: two different sources failing (an unset variable, a missing file)
-//!   hand the caller the same status and the same body, so nothing in it depends on which source
-//!   failed or how;
-//! * the scan SEES a leak: the operator's text spliced into a real door's caller render (what the
-//!   retired `SetupRefusal::client_message` redaction stood in front of until #511) is found by the
-//!   same detector and fails the same assertion every door's cell makes. A scan that could not fail
-//!   would prove nothing; this arm stays in the tree so it cannot quietly go blind.
-
 use axum::http::{HeaderMap, StatusCode};
 use busbar_contract::secret_ref::SecretRef;
 
@@ -22,20 +11,14 @@ use super::{
 use crate::root::door_steps::tests::tool_door::try_rig_tools;
 use crate::root::serve::planes_tests::PUBLISHING;
 
-/// One caller-facing answer: its status, its headers and its body.
 type Answer = (StatusCode, HeaderMap, Vec<u8>);
 
-/// The caller's answer to a call on a member program whose `env` reference is `secret`, which does
-/// not resolve, served by the tool door as `instance`.
 async fn refused_call(instance: &'static str, secret: &SecretRef) -> Answer {
     let rig = try_rig_tools(instance, 0, program_section(secret))
         .unwrap_or_else(|e| panic!("{instance}: a member's env is not resolved at compose: {e}"));
     call(&rig).await
 }
 
-/// THE REFUSAL IS ONE FIXED CLASS: an unset variable and a missing file, each the `env` reference of
-/// a member program, reach the caller as the same status and the same body, both free of either
-/// source.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_failing_sources_reach_the_caller_as_one_fixed_refusal() {
     let _one = PUBLISHING.lock().await;
@@ -67,10 +50,6 @@ async fn two_failing_sources_reach_the_caller_as_one_fixed_refusal() {
     );
 }
 
-/// THE KEPT RED ARM: the scan catches a leak. A real tool-door caller render for a reference that
-/// does not resolve is first proven clean; the operator's text for the same reference is then
-/// spliced into its body in place of the connector's fixed words (exactly the leak #511's redaction
-/// stood in front of), and the same detector names the source and the same assertion fails.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_scan_catches_a_source_spliced_into_a_real_door_render() {
     let _one = PUBLISHING.lock().await;

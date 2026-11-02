@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE `oauth_as:` BLOCK, and the boot-time refusals that make it either whole or absent.
-//!
-//! Every derivation happens here, once, so nothing downstream re-parses an issuer or re-decides a
-//! path. A config that cannot produce an [`AsPlane`] does not boot: an authorization server that is
-//! half-configured is worse than one that is absent, because it ANSWERS — and what it answers with
-//! is tokens.
-
 use serde::{Deserialize, Serialize};
 
 use busbar_contract::SecretRef;
@@ -266,28 +259,17 @@ pub struct AsIdentity {
     pub signing_key: Option<SecretRef>,
 }
 
-/// RFC 8414 §3.1: the well-known segment goes BEFORE the issuer's path, not after it. This is the
-/// one detail of the document that is easy to get backwards, and getting it backwards means every
-/// conforming client's discovery 404s. (RFC 9728 inserts the path the OTHER way round, which is why
-/// the protected-resource well-known path and this constant are built in opposite orders.)
 const AS_WELL_KNOWN: &str = "/.well-known/oauth-authorization-server";
 
-/// The default access token lifetime: ten minutes. Short because the `2026-07-28` authorization revision's token-theft note
-/// asks for short-lived access tokens, and a client that wants continuity has a refresh token.
 const DEFAULT_ACCESS_TOKEN_TTL: std::time::Duration = std::time::Duration::from_secs(600);
 
-/// The longest access token lifetime: one day. An access token is a bearer credential with no
-/// revocation path at the resource; past a day it is not short-lived by any reading.
 pub(crate) const MAX_ACCESS_TOKEN_TTL_SECS: u64 = 24 * 60 * 60;
 
-/// The default refresh chain lifetime: thirty days.
 const DEFAULT_REFRESH_TOKEN_TTL: std::time::Duration =
     std::time::Duration::from_secs(30 * 24 * 60 * 60);
 
-/// The longest refresh chain lifetime: one year.
 pub(crate) const MAX_REFRESH_TOKEN_TTL_SECS: u64 = 365 * 24 * 60 * 60;
 
-/// A configured lifetime, held to 1 second ..= `max`; absent is `default`.
 fn ttl(
     field: &'static str,
     secs: Option<u64>,
@@ -302,8 +284,6 @@ fn ttl(
 }
 
 impl AsIdentity {
-    /// Validate and derive. Every refusal is at BOOT rather than at first request: an operator finds
-    /// out from a process that will not start, not from an agent that cannot log in.
     pub fn from_cfg(cfg: &OauthAsCfg) -> Result<Self, AsCfgError> {
         let issuer = cfg.issuer.trim();
         if issuer.is_empty() {
@@ -341,8 +321,7 @@ impl AsIdentity {
 
         Ok(Self {
             issuer: issuer.to_string(),
-            // The well-known path is `/.well-known/oauth-authorization-server` at the ROOT, with the
-            // issuer's own path appended after it (RFC 8414 §3.1).
+
             metadata_path: format!("{AS_WELL_KNOWN}{issuer_path}"),
             authorize_path: under("authorize"),
             token_path: under("token"),
@@ -400,25 +379,22 @@ impl AsIdentity {
     pub fn par_path(&self) -> &str {
         &self.par_path
     }
-    /// The absolute RFC 9126 PAR endpoint URL the metadata advertises. Absolute for the reason
-    /// `jwks_uri` is: it is a value clients compare, derived once here.
+
     pub fn par_endpoint(&self) -> String {
         format!("{}{}", self.origin(), self.par_path)
     }
-    /// Whether this plane runs the FAPI 2.0 Security Profile posture.
+
     pub fn fapi2(&self) -> bool {
         self.fapi2
     }
-    /// The absolute URL of the consent screen, which is what the authorize endpoint redirects a
-    /// browser to. Absolute because the user agent is following it from wherever it started.
+
     pub fn consent_url(&self) -> String {
         format!("{}{}", self.origin(), self.consent_path)
     }
     pub fn jwks_uri(&self) -> String {
         format!("{}{}", self.origin(), self.jwks_path)
     }
-    /// The issuer's `scheme://authority`, with its path removed: the origin busbar's own protected
-    /// resources are served on, which `auth::dpop` makes a proof's `htu` from.
+
     pub fn origin(&self) -> &str {
         &self.issuer[..self.issuer.len() - self.issuer_path.len()]
     }
@@ -439,7 +415,6 @@ impl AsIdentity {
     }
 }
 
-/// Every `oauth_as.clients:` refusal, at boot, naming the client.
 fn validate_clients(clients: &[StaticClientCfg]) -> Result<(), AsCfgError> {
     let mut seen = std::collections::HashSet::new();
     for client in clients {
@@ -458,7 +433,7 @@ fn validate_clients(clients: &[StaticClientCfg]) -> Result<(), AsCfgError> {
                 "redirect_uris is empty; the authorization code has nowhere to go",
             ));
         }
-        // OAuth 2.1 s4.1.3 / RFC 6749 s3.1.2: absolute, no fragment, matched exactly.
+
         if client
             .redirect_uris
             .iter()
@@ -492,7 +467,6 @@ fn validate_clients(clients: &[StaticClientCfg]) -> Result<(), AsCfgError> {
     Ok(())
 }
 
-/// The shape of one public key: EC P-256 for ES256, or RSA of at least 2048 bits for PS256.
 fn validate_public_jwk(key: &StaticClientJwk) -> Result<(), &'static str> {
     let decoded = |v: &Option<String>| {
         v.as_deref().and_then(|v| {
@@ -513,7 +487,6 @@ fn validate_public_jwk(key: &StaticClientJwk) -> Result<(), &'static str> {
             }
         }
         "RSA" => {
-            // RS256 is what FAPI 2.0 s5.4.1 forbids; an RSA key here signs PS256 or nothing.
             if key.alg.as_deref().is_some_and(|alg| alg != "PS256") {
                 return Err("an RSA key's `alg`, when given, must be PS256");
             }
@@ -536,17 +509,6 @@ fn validate_public_jwk(key: &StaticClientJwk) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Split an absolute `http(s)` URL into `(origin, path)`, or `None` when it is not one.
-///
-/// Hand-written, because what is needed is a STRICT recogniser
-/// for one shape, and a permissive general-purpose parser is the wrong tool for a value whose whole
-/// job is to be compared for exact equality. A lenient parse that normalised `HTTPS://Host:443/as`
-/// would hand back a string that no longer equals the `iss` a client recorded.
-///
-/// The authority is read by the one split ([`busbar_contract::net::url_authority`]), where every
-/// browser and HTTP client ends it. A URL those readers would split elsewhere than this text reads
-/// is not the one shape: one with a `\` (a dialling stack reads it as `/`, so
-/// `https://as.example\@evil.example` is `as.example`'s path) or with an empty host is refused.
 fn split_absolute(uri: &str) -> Option<(&str, &str)> {
     let rest = uri
         .strip_prefix("https://")
@@ -560,19 +522,12 @@ fn split_absolute(uri: &str) -> Option<(&str, &str)> {
     Some((&uri[..split], &uri[split..]))
 }
 
-/// RFC 6749 §3.3 `scope-token`: one or more of `%x21 / %x23-5B / %x5D-7E` — printable ASCII except
-/// space, double quote and backslash.
 fn is_scope_token(s: &str) -> bool {
     !s.is_empty()
         && s.bytes()
             .all(|b| b == 0x21 || (0x23..=0x5B).contains(&b) || (0x5D..=0x7E).contains(&b))
 }
 
-/// THE KERNEL'S ASK, answered here (`busbar_kernel::oauth_as::seam::AsPlaneSeam::check`): the
-/// kernel carries the `oauth_as:` block as an opaque value and hands it to its owner. This parses it
-/// (a malformed or unknown key is refused here), validates it ([`AsIdentity::from_cfg`], the same
-/// refusals with the same text), and returns every secret reference it carries, so the kernel's
-/// `--validate` can resolve them and its boot can resolve the signing key.
 pub(crate) fn seam_check(block: &serde_yaml::Value) -> Result<Vec<(String, SecretRef)>, String> {
     let identity = identity_of(block)?;
     Ok(secret_refs(&identity)
@@ -581,30 +536,16 @@ pub(crate) fn seam_check(block: &serde_yaml::Value) -> Result<Vec<(String, Secre
         .collect())
 }
 
-/// Parse and validate the opaque block into the validated identity.
 pub(crate) fn identity_of(block: &serde_yaml::Value) -> Result<AsIdentity, String> {
     let cfg: OauthAsCfg =
         serde_yaml::from_value(block.clone()).map_err(|e| format!("oauth_as: {e}"))?;
     AsIdentity::from_cfg(&cfg).map_err(|e| e.to_string())
 }
 
-/// Every `SecretRef` the validated `oauth_as:` block carries, as `(config path, reference)`.
-///
-/// THE ES256 SIGNING KEY. `--validate` must be able to resolve it, because the alternative is a
-/// deployment that boots, advertises a JWKS, and fails on the first token request of the day with a
-/// secret module error.
-///
-/// Destructured EXHAUSTIVELY rather than read through `identity.signing_key()`, because the accessor
-/// would keep compiling on the day a second `SecretRef` is added to the validated identity, and that
-/// second secret would then be one `--validate` calls fine and the process fails on at runtime.
-/// Everything below `signing_key` is a derived endpoint path or a policy number, and none of them
-/// can ever carry a credential, but each is named here so that ADDING one is a compile error
-/// somebody has to answer.
 pub(crate) fn secret_refs(identity: &AsIdentity) -> Vec<(String, &SecretRef)> {
     let AsIdentity {
         signing_key,
-        // The issuer and the nine paths derived from it. Public by construction: every one of
-        // them is published in the RFC 8414 metadata document.
+
         issuer: _,
         issuer_path: _,
         metadata_path: _,
@@ -617,10 +558,9 @@ pub(crate) fn secret_refs(identity: &AsIdentity) -> Vec<(String, &SecretRef)> {
         jwks_path: _,
         consent_path: _,
         par_path: _,
-        // Policy, not credential: the FAPI 2.0 posture switch, the scope ceiling, the token
-        // lifetime, and the advisory `kid` that appears in every published JWKS entry.
+
         fapi2: _,
-        // Operator-provisioned clients: PUBLIC keys only (a configured `d` is a boot refusal).
+
         clients: _,
         default_grant: _,
         access_token_ttl: _,
@@ -633,5 +573,4 @@ pub(crate) fn secret_refs(identity: &AsIdentity) -> Vec<(String, &SecretRef)> {
         .collect()
 }
 
-/// The config path the signing key's reference is reported under.
 pub(crate) const SIGNING_KEY_PATH: &str = "oauth_as.signing_key";

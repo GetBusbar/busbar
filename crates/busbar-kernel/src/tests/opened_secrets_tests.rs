@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE OPENED SECRET PLUGINS (audit kernel-K1 #6): one handle per plugin, and no lock held while a
-//! plugin answers, so one slow or hung secret source stalls only the resolutions it answers.
-
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -14,7 +11,6 @@ use busbar_contract::secret::{SecretCalls, SecretRefused};
 
 use crate::preflight::OpenedSecrets;
 
-/// A source that answers its settings back, after waiting for `gate` when it holds one.
 struct Source {
     gate: Option<std::sync::Mutex<mpsc::Receiver<()>>>,
 }
@@ -38,14 +34,12 @@ fn a_slow_secret_source_does_not_stall_another_modules_resolution() {
     let gate = std::sync::Mutex::new(gate);
     let slow: Arc<dyn SecretCalls> = Arc::new(Source { gate: Some(gate) });
 
-    // The slow module's resolution is in the plugin, waiting.
     let slow_side = {
         let opened = Arc::clone(&opened);
         std::thread::spawn(move || opened.resolve("slow-source", "slow", None, || Ok(slow)))
     };
     std::thread::sleep(Duration::from_millis(200));
 
-    // Another module resolves while it waits.
     let (done_tx, done) = mpsc::channel();
     {
         let opened = Arc::clone(&opened);
@@ -85,8 +79,6 @@ fn a_plugin_is_opened_once_under_its_key() {
     assert_eq!(opens.load(Ordering::SeqCst), 1);
 }
 
-/// A source that reads the disk, as the loader serves one (THE DESIGN §11.11 R4): refused without
-/// the config-time proof, answering with it.
 struct DiskSource;
 
 impl SecretCalls for DiskSource {
@@ -106,9 +98,6 @@ impl SecretCalls for DiskSource {
     }
 }
 
-/// A DROPPED-IN source answers through the opened handle with the caller's proof: at config time it
-/// resolves, and without the proof (a request path) it is refused. RED before: `OpenedSecrets`
-/// dropped the proof and asked the request-path form whatever the caller held.
 #[test]
 fn a_dropped_in_source_is_handed_the_callers_config_time_proof() {
     let opened = OpenedSecrets::default();
@@ -126,7 +115,7 @@ fn a_dropped_in_source_is_handed_the_callers_config_time_proof() {
         "{}",
         refused.text
     );
-    // The source's own code reaches the kernel's caller (S4).
+
     assert_eq!(
         refused.error_kind,
         busbar_contract::abi::secret::ERROR_KIND_DENIED

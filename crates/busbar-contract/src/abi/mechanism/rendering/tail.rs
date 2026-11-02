@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE KIND TAIL'S FACTS (`kind_tail_facts` in the rendering's format): every field of a kind's
-//! Statement tail, so the signed manifest carries the tail itself and not only its size (ARCHITECT
-//! ruling 2026-10-20, audit root#7 and loader#9). A reader that must not open the plugin reads a
+//! Statement tail, so the signed manifest carries the tail itself and not only
+//! its size. A reader that must not open the plugin reads a
 //! dropped-in row's tail from its manifest ([`read_auth_tail`] for an auth row,
 //! [`read_plane_cli_help`] for a plane's command-line help), and the admit comparison covers the
 //! tail, so a manifest stating another tail than the door's refuses the load.
@@ -318,8 +318,6 @@ unsafe fn export_tail(o: &mut Out, t: &export::Tail) -> Result<(), RenderError> 
 ///
 /// As [`render`]'s, for `t`'s lists and strings.
 unsafe fn plane_tail(o: &mut Out, t: &plane::PlaneTail) -> Result<(), RenderError> {
-    // Preserve a pre-extension plugin's signed BBSTMT03 bytes. Zero-extension permits reads,
-    // but must not invent an extra serialized list for a declaration built before that list.
     let has_streaming_content_types = t.head.size as usize
         >= core::mem::offset_of!(plane::PlaneTail, streaming_content_types_len)
             + size_of::<usize>();
@@ -663,8 +661,6 @@ unsafe fn transport_tail(o: &mut Out, t: &transport::TransportTail) -> Result<()
     Ok(())
 }
 
-// ── reading an auth tail back (a dropped-in auth row's facts, with no dlopen) ────────────────────
-
 /// One outbound style an auth tail states, read back.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReadStyle {
@@ -697,12 +693,6 @@ pub struct ReadAuthTail {
 }
 
 /// THE AUTH TAIL READ BACK from an auth rendering's kind tail facts, for a reader that must not open
-/// the plugin. The whole input must be one auth tail: trailing bytes are refused.
-///
-/// # Errors
-///
-/// [`Unreadable`], at the first byte that is not what the format states (an empty input is the
-/// facts of a Statement that states no tail).
 pub fn read_auth_tail(facts: &[u8]) -> Result<ReadAuthTail, Unreadable> {
     let mut i = In { b: facts, at: 0 };
     let caps = i.u32("auth.caps")?;
@@ -737,20 +727,7 @@ pub fn read_auth_tail(facts: &[u8]) -> Result<ReadAuthTail, Unreadable> {
     })
 }
 
-// ── reading a plane's command-line help back (a dropped-in plane's `busbar --help` rows) ─────────
-
 /// A PLANE STATEMENT'S COMMAND-LINE HELP ([`plane::PlaneTail::cli_help`], in the
-/// [`plane::cli_help`] grammar), read back from its rendering's kind tail facts
-/// ([`super::Read::kind_tail`]) for a reader that must not open the plugin: the host's command
-/// line, read before any configuration is served, takes a dropped-in plane's rows, its line-serve
-/// flag among them, from its signed manifest as it takes a linked door's from its tail
-/// (BUSBAR-1.6.0.md l.2179, Part 2 #2). The tail's fields before the help are read past in their
-/// rendered order; the fields after it are not read. An empty help is a plane that states none.
-///
-/// # Errors
-///
-/// [`Unreadable`], at the first byte up to the help's end that is not what the format states (an
-/// empty input is the facts of a Statement that states no tail, and states no help).
 pub fn read_plane_cli_help(facts: &[u8]) -> Result<String, Unreadable> {
     let mut i = In { b: facts, at: 0 };
     for field in [

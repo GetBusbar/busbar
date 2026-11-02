@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The host-side verify cache: hit, lead and follow; a lead that lapses passes to a follower; every
-//! bound refuses; two instances never share a key.
-
 use std::sync::{Arc, Mutex};
 
 use busbar_contract::abi::host::service::{VERIFY_FOLLOW, VERIFY_HIT, VERIFY_LEAD};
@@ -13,7 +10,6 @@ use busbar_contract::services::{Later, Ran, Stored};
 use super::*;
 use crate::host_services::tests::verdict_now as now;
 
-/// A [`Later`] that keeps what it is answered.
 fn kept() -> (Later, Arc<Mutex<Option<Stored>>>) {
     let got = Arc::new(Mutex::new(None));
     let g = Arc::clone(&got);
@@ -72,8 +68,6 @@ fn an_entry_stands_for_its_ttl_or_the_default_then_is_led_again() {
     );
 }
 
-/// RED: a leader that never stores does not wedge its followers: the tick hands the lead to the
-/// first one, and a lookup after the lapse leads.
 #[test]
 fn a_lapsed_lead_passes_to_the_first_follower() {
     let book = VerifyBook::default();
@@ -96,7 +90,6 @@ fn a_lapsed_lead_passes_to_the_first_follower() {
         Some(VERIFY_FOLLOW)
     );
 
-    // A lapsed lead with nobody waiting is taken over by the next lookup.
     let _ = now(book.lookup(&a, b"j", 0, kept().0));
     assert_eq!(
         now(book.lookup(&a, b"j", LEAD_MS, kept().0)).value,
@@ -104,7 +97,6 @@ fn a_lapsed_lead_passes_to_the_first_follower() {
     );
 }
 
-/// RED: two instances never share an entry or a lead.
 #[test]
 fn two_instances_never_share_a_key() {
     let book = VerifyBook::default();
@@ -119,7 +111,6 @@ fn two_instances_never_share_a_key() {
     );
 }
 
-/// RED, one arm per bound: an entry too long, a full cache, a full lead.
 #[test]
 fn every_bound_refuses() {
     let book = VerifyBook::default();
@@ -137,14 +128,13 @@ fn every_bound_refuses() {
     let s = now(book.lookup(&a, b"f", 1, kept().0));
     assert_eq!((s.outcome, s.error), (Outcome::Refused, TOO_MANY_FOLLOWERS));
 
-    // Every key led (in use): a new key is refused, never evicting a lead.
     let b = label("b");
     for n in 0..MAX_KEYS {
         let _ = now(book.lookup(&b, &n.to_le_bytes(), 0, kept().0));
     }
     let s = now(book.lookup(&b, b"one more", 0, kept().0));
     assert_eq!((s.outcome, s.error), (Outcome::Refused, CACHE_FULL));
-    // An idle key with a stale entry makes room.
+
     let c = label("c");
     for n in 0..MAX_KEYS {
         let _ = book.store(&c, &n.to_le_bytes(), b"v", 1, 0);

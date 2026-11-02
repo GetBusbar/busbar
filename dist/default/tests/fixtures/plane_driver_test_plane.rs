@@ -1,53 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE PLANE DRIVER'S TEST PLANE — one source, compiled into the test build (the LINKED door) and
-//! built as the `plane_driver_test_plane` example `cdylib` (the DROPPED door).
-//!
-//! It exports the one door over the plane table and defines no ABI shape of its own. What it does
-//! with a unit is chosen by the member name the kernel hands its ATTEMPT piece (`ok`, `retry`,
-//! `retry-late`, `pend`, `hang`, `wedge`, `fault`, `cancel-fault`, `short`, `short-twice`), and `arrive`
-//! reacts to the request target (`/short`, `/short-twice`, `/refuse`, `/stats`, `/clock`). A unit
-//! on `/call/local` answers its caller itself (an echo of the body), as does one on
-//! `/call/local-counted`, `/call/local-quiet` and `/call/local-estimated` (routed `ROUTE_LOCAL`:
-//! counted as an admitted call, not, and stating expected units); a unit on `/call/nest:<target>`
-//! runs `POST <target>` as a NESTED unit through the host's `unit.nest` and answers its caller
-//! `nested:<status>:<the child's body>` (`nest-refused:<reason>` when the host refused it,
-//! `nest-failed:<reason>` when a child ran but its reply failed); `/call/local-repeat:<bytes>`
-//! counts one local admission and emits that many fixture bytes in bounded pieces. A unit on
-//! `/call/services` (or `/call/services-pool:<pool>`, routed over that pool) passes its body
-//! through the host's `content.scan`, `hook.call` (a gate, then a rewrite) and `verify.lookup`
-//! (keyed by the body; a lead stores `fetched`), and answers `<op>=<value>` (or
-//! `<op>!<reason>`) for each, space-separated. Its far-end
-//! answer echoes the far end's bytes, in pieces of at most `reply_cap` (`more = 1` for the rest),
-//! with cumulative far-end-reported units = the bytes emitted so far.
-//!
-//! It counts its own crossings and every call it makes into the host tables; `arrive` on `/stats`
-//! answers the counters as unit amounts, in [`Stat`] order, so a linked and a dropped instance
-//! report through the same table.
-//!
-//! Its `tick` asks for the next tick `/tick-every:<ms>` after the one it ran (`0`, the default, asks
-//! for none); after `/tick-read` its next `tick` ESTABLISHes its one need and READs it on the
-//! ticket `tick` was handed (a READ that pends makes that `tick` answer PENDING), and a `drive`
-//! reads that stream again on its driver ticket. Each `/tick-hold` arms one HELD EXCHANGE for a
-//! coming `tick` to start ([`hold_step`]): ESTABLISH then READ on the driver ticket, under handles
-//! of its own; one that pends is held, its `tick` answers PENDING, and every `drive` carries each
-//! held exchange on, answering PENDING while one still waits; `/tick-reuse` makes the next one
-//! issue the first exchange's handles instead of its own (a plane bug the host refuses). `/ticks`
-//! answers the tick counters, in [`Ticked`] order.
-//!
-//! A DUPLEX SESSION's pieces (those with a stream) are answered by [`session_piece`]: a caller piece
-//! `far:<x>` is bound for the far end (`POST /far/turn`, body `x`), `push:<x>` is held as the
-//! session's unsolicited output and the instance's driver ticket woken (its `drive` then names the
-//! session, and the collection `FROM_KERNEL` answers `x`), any other piece is echoed `echo:<x>`, and
-//! the caller's last piece ends the reply. A far-end piece is answered `far-said:<x>`. `/sessions`
-//! answers the session counters, in [`Sessions`] order.
-//!
-//! Opened with `capture_to` (a directory), it records each generation it retires there as an empty
-//! `retired.<generation>`; opened with `unchecked_refresh: true`, every `refresh` answers READY with
-//! a snapshot whose first claim's arrival span is no span name (`[a-z0-9_]`), which the host's copy
-//! of the snapshot refuses.
-
 #![allow(clippy::missing_safety_doc, unsafe_op_in_unsafe_fn)]
 
 use std::collections::HashMap;
@@ -91,8 +44,6 @@ use busbar_contract::abi::plane::{
     UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
 };
 
-/// The plane's own refusal code and the status `/clock` refuses with when the host will not read
-/// its clock (`/refuse` is 7, `/post-only` is 9).
 const CLOCK_REFUSED: (u32, u32) = (8, 403);
 
 /// The counters `/stats` answers, in this order.
@@ -114,7 +65,7 @@ pub enum Stat {
     /// The unit key the last `on_piece` carried.
     Unit = 6,
 }
-/// How many counters `/stats` answers.
+
 pub const STATS: usize = 7;
 
 /// The counters `/ticks` answers, in this order.
@@ -139,7 +90,7 @@ pub enum Ticked {
     /// Calls of held exchanges the host answered FAULT.
     HoldFaulted = 8,
 }
-/// How many counters `/ticks` answers.
+
 pub const TICKED: usize = 9;
 
 /// The counters `/sessions` answers, in this order.
@@ -152,14 +103,13 @@ pub enum Sessions {
     /// ATTEMPT pieces of a session's turn legs.
     Attempts = 2,
 }
-/// How many counters `/sessions` answers.
+
 pub const SESSIONS: usize = 3;
 
 struct Shared<T>(T);
 // SAFETY: immutable `'static` data (pointers into other statics).
 unsafe impl<T> Sync for Shared<T> {}
 
-/// How long a `wedge` crossing runs: past the dispatcher's 1s Stream budget.
 pub const WEDGE: Duration = Duration::from_millis(1500);
 
 const fn s(b: &'static [u8]) -> AbiStr {
@@ -174,7 +124,6 @@ const NO_BLOB: Blob = Blob {
     ..Blob::ZERO
 };
 
-/// Its declaring section, and an owned section beside it (handed at `open` as `PlaneOpenIn::owned`).
 static SECTIONS: Shared<[Section; 2]> = Shared([
     Section {
         name: s(b"test_plane"),
@@ -191,8 +140,7 @@ static OP_CLASSES: Shared<[OpClass; 1]> = Shared([OpClass {
     op: s(b"call"),
     name: s(b"test"),
 }]);
-/// Twelve billable classes: the check refuses a class counted twice, so a report of several counts
-/// (the short-buffer cases, `/stats`) names a distinct class for each.
+
 static CLASSES: Shared<[BillableClass; 12]> = Shared([
     BillableClass {
         class: s(b"bytes"),
@@ -244,9 +192,6 @@ static CLASSES: Shared<[BillableClass; 12]> = Shared([
     },
 ]);
 
-/// The statuses its refusals wear where they are not the kernel's defaults (`plane_driver_cases`'s
-/// `STATUSES`): `revoked` (code 14) is 403 in its one dialect and 451 in any other, and
-/// `scope_denied` (code 15) is 404 in every dialect.
 static STATUSES: Shared<[RefusalStatus; 3]> = Shared([
     RefusalStatus {
         dialect: 0,
@@ -275,7 +220,7 @@ static TAIL: Shared<PlaneTail> = Shared(PlaneTail {
     },
     ingress: INGRESS_REQUEST_RESPONSE | INGRESS_RESPONSE_STREAM | INGRESS_DUPLEX_SESSION,
     dispatch_shape: SHAPE_WHOLE,
-    // The layout this plane writes its answers in: the contract's it was built against.
+
     answer_layout: ANSWER_LAYOUT,
     scope: s(b"test"),
     label: s(b"Test plane"),
@@ -327,7 +272,6 @@ static STATEMENT: Shared<Statement> = Shared(Statement {
     ..Statement::ZERO
 });
 
-/// Its one outbound need: handed the host's connection slots only where the host binds a table.
 static NEEDS: Shared<[Need; 1]> = Shared([Need {
     direction: DIRECTION_OUTBOUND,
     transport: s(b"sock"),
@@ -360,7 +304,7 @@ static OPS: Shared<Ops> = Shared(Ops {
     hydrate: Some(ready),
     start: Some(ready),
     project: Some(project),
-    // No claim mounts this renderer; root tests call the unitless seam directly.
+
     catalog: Some(catalog),
 });
 
@@ -380,9 +324,6 @@ static DOOR: Shared<Door> = Shared(unsafe {
     })
 });
 
-/// The claims: every path under `/call` for POST, `/open`, a claim that takes no inbound
-/// credential (an anonymous unit, never billed), and every path under `/framed`, an open claim
-/// over the neutral `frame` claim, whose streams that claim's framer frames (ARCHITECT 4l).
 static CLAIMS: Shared<[Claim; 3]> = Shared([
     Claim {
         verb: s(b"POST"),
@@ -406,12 +347,8 @@ static CLAIMS: Shared<[Claim; 3]> = Shared([
     },
 ]);
 
-/// The claims' arrival spans (status row 173), one per claim: an arrival on `/call` opens
-/// `test_arrival`; `/open` and `/framed` open none, the RED arm of the root's span test.
 static ARRIVALS: Shared<[AbiStr; 3]> = Shared([s(b"test_arrival"), s(b""), s(b"")]);
 
-/// The admin routes the snapshot publishes, served through `serve`: an audited admin route, and a
-/// public one the kernel's admin table never serves.
 static ADMIN_ROUTES: Shared<[AdminRoute; 2]> = Shared([
     AdminRoute {
         verb: s(b"POST"),
@@ -429,25 +366,19 @@ static ADMIN_ROUTES: Shared<[AdminRoute; 2]> = Shared([
     },
 ]);
 
-/// The reply bytes a `short` request needs: past the kernel's default reply buffer, so the first
-/// answer is short and the one re-call is served.
 const SHORT_REPLY: usize = 1 << 20;
 
-/// A local reply emitted in bounded pieces, of the byte length its target suffix names.
 const LOCAL_REPEAT: &[u8] = b"/call/local-repeat:";
-/// The same producer declaring Content-Length, and its observable byte counter.
+
 const LOCAL_REPEAT_WHOLE: &[u8] = b"/call/local-repeat-whole:";
 const LOCAL_PRODUCED: &[u8] = b"/call/local-produced";
 const CONTENT_LENGTH: &[u8] = b"content-length";
 
-/// HTTP's successful response status, used by the head echo and repeated local reply controls.
 const HTTP_OK: u32 = 200;
 
-/// Datagram-opening controls: wait without stating a head, or state one and keep the session.
 const DATAGRAM_HEAD_PENDING: &[u8] = b"/open?head=pending";
 const DATAGRAM_HEAD_READY: &[u8] = b"/open?head=ready";
 
-/// THE DOOR: the `DoorFn` a compiled-in row holds.
 pub extern "C" fn door() -> &'static Door {
     &DOOR.0
 }
@@ -473,44 +404,43 @@ struct Unit {
 
 struct Inst {
     wake: WakeFn,
-    /// The directory the open settings' `capture_to` named, where `retire` records.
+
     capture: Option<std::path::PathBuf>,
-    /// The open settings' `unchecked_refresh`: every refreshed snapshot fails the host's copy.
+
     unchecked_refresh: bool,
-    /// The host's service table, as `open` was handed it (`/clock` reads its `clock.now`).
+
     services: *const HostSlots,
     ctx: HostCtx,
     snapshot: Box<PlaneSnapshot>,
     units: Mutex<HashMap<u64, Unit>>,
-    /// The caller's target each unit's `arrive` carried, keyed by `unit`: it crosses once.
+
     heads: Mutex<HashMap<u64, Vec<u8>>>,
-    /// The unit each ticket serves, for `cancel`.
+
     tickets: Mutex<HashMap<Ticket, u64>>,
     stats: [AtomicU64; STATS],
     produced: AtomicU64,
-    /// The envelope `drive` answers: valid until the next op on the driver ticket.
+
     drive_metric: Box<Mutex<MetricEntry>>,
-    /// The host's connection slots (NULL without a table).
+
     conns: *const ConnectorSlots,
-    /// The period `tick` asks for, in ms (`0` = no next tick).
+
     tick_every_ms: AtomicU64,
-    /// The next `tick` reads its need.
+
     tick_read: AtomicBool,
-    /// The stream a `tick`'s READ left pending (`0` = none).
+
     stream: AtomicU64,
-    /// Held exchanges armed for the coming ticks (`/tick-hold`), one per `tick`.
+
     holds: AtomicU64,
-    /// The held exchanges still waiting, by the order they started: each one's index and first
-    /// handle.
+
     held: Mutex<Vec<(u32, u32)>>,
-    /// The next held exchange issues the first one's handles (`/tick-reuse`).
+
     reuse: AtomicBool,
     ticked: [AtomicU64; TICKED],
-    /// The instance's driver ticket, as its last `tick` was handed it.
+
     driver: Mutex<Ticket>,
-    /// Each session's unsolicited output, until it is collected.
+
     outbox: Mutex<HashMap<u64, Vec<u8>>>,
-    /// The tickets each session's pieces crossed on.
+
     session_tickets: Mutex<HashMap<u64, Vec<Ticket>>>,
     sessions: [AtomicU64; SESSIONS],
 }
@@ -563,8 +493,6 @@ extern "C" fn ready(_: *mut c_void, _: *const c_void, out: *mut c_void) -> RawOu
     unsafe { say(out, Outcome::Ready) }
 }
 
-/// `project`: an empty view (no pool, no dialect, no prompt turn, nothing rewritten), so a unit a
-/// hook binds is read and its hooks see the shape only.
 extern "C" fn project(_: *mut c_void, _: *const c_void, out: *mut c_void) -> RawOutcome {
     unsafe {
         let o = &mut *out.cast::<ProjectOut>();
@@ -578,9 +506,6 @@ extern "C" fn project(_: *mut c_void, _: *const c_void, out: *mut c_void) -> Raw
     }
 }
 
-/// THE CROSSING RECORDER: a settings object naming a `capture_to` directory (a key no other
-/// caller writes) has every blob the call was handed written there, as `<tag>.<blob>`, so a test
-/// reads the exact bytes that crossed the ABI.
 unsafe fn record(tag: &str, settings: Blob, blobs: &[(&str, Blob)]) {
     let Ok(v) = serde_json::from_slice::<serde_json::Value>(bytes(settings)) else {
         return;
@@ -596,12 +521,8 @@ unsafe fn record(tag: &str, settings: Blob, blobs: &[(&str, Blob)]) {
     }
 }
 
-/// The arrival spans an `unchecked_refresh` snapshot states, one per claim: the first is no span
-/// name, so the host's copy refuses the snapshot.
 static UNCHECKED_SPANS: Shared<[AbiStr; 3]> = Shared([s(b"Not-A-Span"), NO_STR, NO_STR]);
 
-/// `refresh`: the next generation, its snapshot the first one's claims (with `unchecked_refresh`,
-/// spans the host refuses); recorded.
 extern "C" fn refresh(instance: *mut c_void, input: *const c_void, out: *mut c_void) -> RawOutcome {
     unsafe {
         let i = &*input.cast::<RefreshIn>();
@@ -623,7 +544,6 @@ extern "C" fn refresh(instance: *mut c_void, input: *const c_void, out: *mut c_v
     }
 }
 
-/// `retire`: the generation retired, recorded where the open settings named `capture_to`.
 extern "C" fn retire(instance: *mut c_void, input: *const c_void, out: *mut c_void) -> RawOutcome {
     unsafe {
         if !instance.is_null() {
@@ -658,9 +578,7 @@ extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> Ra
         let Some(wake) = host.wake else {
             return say(out, Outcome::Refused);
         };
-        // THE PROVIDERS' DIALECT FACTS this open was handed, echoed as the snapshot's resource
-        // facts (`[[name, protocol, error_map or null], ..]`; absent when none), so a test reads what
-        // crossed. Read only where the host's `in` reaches them (the append rule).
+
         let handed = i.open.head.size as usize >= std::mem::size_of::<PlaneOpenIn>()
             && !i.providers.is_null()
             && i.providers_len > 0;
@@ -757,14 +675,11 @@ extern "C" fn close(instance: *mut c_void, _: *const c_void, out: *mut c_void) -
     }
 }
 
-/// `drive`: counts itself, names one ready session when the host's `in` carries the plane's
-/// sessions buffer, and reports the count as its envelope gauge. It reads past the lifecycle's
-/// `DriveIn` only when the host's `in` says it is a whole `PlaneDriveIn`.
 extern "C" fn drive(instance: *mut c_void, input: *const c_void, out: *mut c_void) -> RawOutcome {
     unsafe {
         let me = inst(instance);
         let n = me.stats[Stat::Drives as usize].fetch_add(1, Ordering::SeqCst) + 1;
-        // The stream a `tick` left pending: read again, on the driver ticket.
+
         let stream = me.stream.load(Ordering::SeqCst);
         if stream != 0 {
             let driver = (*input.cast::<DriveIn>()).driver;
@@ -773,7 +688,7 @@ extern "C" fn drive(instance: *mut c_void, input: *const c_void, out: *mut c_voi
                 me.stream.store(0, Ordering::SeqCst);
             }
         }
-        // Every held exchange carried on, on the driver ticket: PENDING while one still waits.
+
         let driver = (*input.cast::<DriveIn>()).driver;
         let held = std::mem::take(&mut *me.held.lock().unwrap());
         let waiting: Vec<(u32, u32)> = held
@@ -786,7 +701,6 @@ extern "C" fn drive(instance: *mut c_void, input: *const c_void, out: *mut c_voi
         if head.size as usize >= std::mem::size_of::<PlaneDriveIn>() {
             let i = &*input.cast::<PlaneDriveIn>();
             if (*out.cast::<OutHead>()).size as usize >= std::mem::size_of::<PlaneDriveOut>() {
-                // The sessions with output held, as many as the host's buffer takes.
                 let outbox = me.outbox.lock().unwrap();
                 let ready = outbox.iter().filter(|(_, held)| !held.is_empty());
                 let mut named = 0;
@@ -832,14 +746,12 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
             amount,
         };
         let wants: Vec<UnitCount> = match target {
-            // A path that takes POST only: another method is the plane's own 405.
             b"/post-only" if text(i.method) != b"POST" => {
                 o.refusal = 9;
                 o.refusal_status = 405;
                 return say(out, Outcome::Refused);
             }
             b"/refuse" => {
-                // The plane's own decode refusal: its code, and the 4xx it wears.
                 o.refusal = 7;
                 o.refusal_status = 404;
                 return say(out, Outcome::Refused);
@@ -850,8 +762,6 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
             }
             b"/short" => vec![estimate(0, 1), estimate(1, 2)],
             t if t.starts_with(b"/wake:") => {
-                // `/wake:<slot>:<generation>`: wake that ticket (the test's way to wake a driver
-                // ticket, which only a plugin can).
                 let text = std::str::from_utf8(&t[6..]).unwrap_or("");
                 let (slot, generation) = text.split_once(':').unwrap_or(("", ""));
                 let ticket = Ticket {
@@ -863,9 +773,6 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
                 vec![estimate(0, 0)]
             }
             b"/forge-context" => {
-                // #74: hand the host's `wake` this instance's own context one tag bit off, a
-                // context the host never minted, from inside a non-lifecycle op. The host
-                // quarantines the instance, and this arrive itself answers FAULT.
                 me.count(Stat::HostCalls);
                 let forged = HostCtx {
                     handle: me.ctx.handle ^ (1 << 24),
@@ -874,9 +781,6 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
                 vec![estimate(0, 0)]
             }
             b"/clock" => {
-                // The host's own clock, through its service table: the reading, as two amounts. A
-                // clock the host would not read (no table, no slot, not READY) refuses the arrival,
-                // and like every REFUSED arrive it names the plane's own code and a 4xx status.
                 me.count(Stat::HostCalls);
                 let Some(now) = me.services.as_ref().and_then(|t| t.clock_now) else {
                     (o.refusal, o.refusal_status) = CLOCK_REFUSED;
@@ -941,8 +845,7 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
                 me.tick_every_ms.store(ms, Ordering::SeqCst);
                 vec![estimate(0, ms)]
             }
-            // UNITS THE PLANE ANSWERS ITSELF (`ROUTE_LOCAL`), stating no expected units: counted as an
-            // admitted call (`ROUTE_COUNTED`), or not; and one stating expected units.
+
             t if t == b"/call/local-counted"
                 || t.starts_with(LOCAL_REPEAT)
                 || t.starts_with(LOCAL_REPEAT_WHOLE) =>
@@ -960,7 +863,6 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
                 vec![estimate(0, i.body.len as u64)]
             }
             t if t.starts_with(b"/call/services-pool:") => {
-                // The in-session services on a unit routed over the pool the target names.
                 let name: &'static [u8] = Box::leak(t[20..].to_vec().into_boxed_slice());
                 o.route = ROUTE_POOL;
                 o.pool = AbiStr {
@@ -970,7 +872,6 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
                 vec![estimate(0, i.body.len as u64)]
             }
             t if t == b"/call/local" || t == b"/call/services" || t.starts_with(b"/call/nest:") => {
-                // A local answer, or a nesting unit: each routes directly over the section's `m`.
                 o.route = ROUTE_DIRECT;
                 o.pool = AbiStr {
                     ptr: b"m".as_ptr(),
@@ -979,7 +880,6 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
                 vec![estimate(0, i.body.len as u64)]
             }
             b"/framed/refuse" => {
-                // A framed stream the plane refuses: its code, and the 4xx it wears.
                 o.refusal = 7;
                 o.refusal_status = 404;
                 return say(out, Outcome::Refused);
@@ -989,7 +889,6 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
                 || t == DATAGRAM_HEAD_READY
                 || t.starts_with(b"/framed") =>
             {
-                // The open claims route directly over the section's `m`.
                 o.route = ROUTE_DIRECT;
                 o.pool = AbiStr {
                     ptr: b"m".as_ptr(),
@@ -998,9 +897,6 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
                 vec![estimate(0, i.body.len as u64)]
             }
             t if t.starts_with(b"/call/pool:") || t.starts_with(b"/call/direct:") => {
-                // The route the target names (ARCHITECT Q-SW6/Q-FL3): `pool:<pool>` or
-                // `direct:<entry>`; the name in plane memory that outlives the call, as an
-                // answer's string must.
                 let (class, at) = if t.starts_with(b"/call/pool:") {
                     (ROUTE_POOL, 11)
                 } else {
@@ -1035,7 +931,6 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
     }
 }
 
-/// Copy `b` into the arena at `at`; its span.
 unsafe fn put(i: &OnPieceIn, at: &mut usize, b: &[u8]) -> Span {
     std::ptr::copy_nonoverlapping(b.as_ptr(), i.arena_buf.add(*at), b.len());
     let span = Span {
@@ -1059,7 +954,6 @@ extern "C" fn on_piece(
         let t = i.head.ticket;
         me.stats[Stat::Unit as usize].store(i.unit, Ordering::SeqCst);
         let Some(head) = me.heads.lock().unwrap().get(&i.unit).cloned() else {
-            // A piece of a unit that never arrived: the caller's head is not re-sent.
             return RawOutcome::of(Outcome::Fault);
         };
         me.tickets.lock().unwrap().insert(t, i.unit);
@@ -1071,18 +965,13 @@ extern "C" fn on_piece(
         let piece = bytes(i.bytes);
         let resume = i.head.flags & FLAG_RESUME != 0;
         if let Some(from) = u.more_from.take() {
-            // The re-call after `more = 1`: the same source, no bytes, no flags.
             if i.from != from || !piece.is_empty() || i.flags != 0 {
                 return RawOutcome::of(Outcome::Fault);
             }
             if head.as_slice() == b"/framed/fail" {
-                // `/framed/fail` FAILS ITS UNIT AFTER ITS HEAD: the re-call for the rest of a
-                // reply whose head and first message already reached the caller.
                 return say(out, Outcome::Failed);
             }
             if head.as_slice() == b"/framed/drain" {
-                // `/framed/drain` PENDS its re-call and never wakes it: the unit, its head and
-                // first message already with the caller, waits there until the kernel cuts it.
                 return say(out, Outcome::Pending);
             }
         }
@@ -1094,8 +983,6 @@ extern "C" fn on_piece(
                     .map(|length| (length, true))
             })
         {
-            // The body of this local unit is a repeated fixture byte. Re-calls emit only the
-            // remainder, so a host buffering limit can fail after real child admission/output.
             let Ok(length) = std::str::from_utf8(length)
                 .unwrap_or_default()
                 .parse::<u64>()
@@ -1135,7 +1022,6 @@ extern "C" fn on_piece(
                 return say(out, Outcome::Ready);
             }
             FROM_CALLER => {
-                // A resumed crossing re-reads the piece it pended on: the body already holds it.
                 if !resume {
                     u.body.extend_from_slice(piece);
                 }
@@ -1143,9 +1029,6 @@ extern "C" fn on_piece(
                     return say(out, Outcome::Ready);
                 }
                 if let Some(child) = head.strip_prefix(b"/call/nest:") {
-                    // A NESTED UNIT through the host's `unit.nest`, on the unit's own ticket; a
-                    // PENDING answer pends this crossing, and the resumed crossing re-issues the
-                    // same handle and reads the child's stored reply.
                     let reply = match nest(me, t, child, &u.body) {
                         None => return say(out, Outcome::Pending),
                         Some(reply) => reply,
@@ -1158,25 +1041,18 @@ extern "C" fn on_piece(
                     return say(out, Outcome::Ready);
                 }
                 if head.starts_with(b"/framed") {
-                    // A FRAMED STREAM'S ANSWER (ARCHITECT 4l): the caller's messages echoed as
-                    // ONE message, its end marked; `/framed/status` closes it with a final status
-                    // the plane states, in the claim's numbering, with a message and details.
                     o.reply_status = 200;
                     let n = u.body.len().min(i.reply_cap);
                     std::ptr::copy_nonoverlapping(u.body.as_ptr(), i.reply_buf, n);
                     o.emitted = n as u64;
                     o.flags = EMIT_DONE | EMIT_MESSAGE_END;
                     if head.as_slice() == b"/framed/fail" || head.as_slice() == b"/framed/drain" {
-                        // `/framed/fail` and `/framed/drain`: the head and the one message, the
-                        // reply not done; each asks to be re-called for more, and that re-call
-                        // fails the unit (`/framed/fail`) or pends until the kernel cuts it.
                         o.flags = EMIT_MESSAGE_END;
                         o.more = 1;
                         u.more_from = Some(i.from);
                         return say(out, Outcome::Ready);
                     }
                     if head.as_slice() == b"/framed/status" || head.as_slice() == b"/framed/wild" {
-                        // `/framed/wild` states a status the claim's numbering does not have.
                         let mut at = 0;
                         o.final_status = if head.as_slice() == b"/framed/wild" {
                             42
@@ -1191,9 +1067,6 @@ extern "C" fn on_piece(
                     return say(out, Outcome::Ready);
                 }
                 if head.starts_with(b"/call/services") {
-                    // The in-session services, each on the unit's own ticket under its own handle;
-                    // one that pends pends this crossing, and the resumed crossing re-issues every
-                    // handle and reads what each stored.
                     let Some(reply) = in_session(me, t, &u.body) else {
                         return say(out, Outcome::Pending);
                     };
@@ -1205,8 +1078,6 @@ extern "C" fn on_piece(
                     return say(out, Outcome::Ready);
                 }
                 if head.as_slice() == b"/local" || head.starts_with(b"/call/local") {
-                    // A LOCAL ANSWER: the plane answers the caller itself (an echo of the body),
-                    // with nothing for the far end.
                     o.reply_status = 200;
                     if head.as_slice() == LOCAL_PRODUCED {
                         emit(
@@ -1240,7 +1111,7 @@ extern "C" fn on_piece(
             }
             _ => {}
         }
-        // A far-end piece, or the empty piece that asks for more after `more = 1`.
+
         let fresh = i.from == FROM_FAR_END && (!piece.is_empty() || i.flags != 0) && !resume;
         if fresh {
             u.far_answered = true;
@@ -1249,8 +1120,6 @@ extern "C" fn on_piece(
             match u.mode.as_slice() {
                 b"fault" => return RawOutcome::of(Outcome::Fault),
                 b"wedge" => {
-                    // A crossing that outlives the watchdog's Stream budget: the host has
-                    // answered FAULT long before it re-reads its piece and writes its reply buffer.
                     drop(units);
                     std::thread::sleep(WEDGE);
                     let n = piece.len().min(i.reply_cap);
@@ -1281,7 +1150,6 @@ extern "C" fn on_piece(
             if i.flags & PIECE_FIELDS == 0 {
                 u.pending.extend_from_slice(piece);
             } else if u.mode.as_slice() == b"trailers" {
-                // A plane that reads the far end's trailers.
                 u.pending.push(b'[');
                 u.pending.extend_from_slice(piece);
                 u.pending.push(b']');
@@ -1302,9 +1170,7 @@ extern "C" fn on_piece(
             *i.fields_buf = OutField { name, value };
             o.fields_written = 1;
             o.arena_written = at as u64;
-            // A plane whose usage tap could not read the answer (modes `tap-bad-json`,
-            // `tap-unknown`, the latter a byte outside the vocabulary): the fault rides the answer
-            // that opens the reply, once.
+
             o.tap_fault = match u.mode.as_slice() {
                 b"tap-bad-json" => busbar_contract::abi::plane::TAP_FAULT_BAD_JSON,
                 b"tap-unknown" => 0xC8,
@@ -1332,7 +1198,7 @@ extern "C" fn on_piece(
             o.flags = EMIT_DONE;
             o.verdict = 0;
         }
-        // A plane whose emitted messages are text (mode `text`): each whole message says so.
+
         if u.mode.as_slice() == b"text" && o.emitted > 0 && o.more == 0 {
             o.flags |= PIECE_OUT_TEXT;
         }
@@ -1340,9 +1206,6 @@ extern "C" fn on_piece(
     }
 }
 
-/// `POST <child>` as a nested unit of the unit on ticket `t`, through the host's `unit.nest`:
-/// `None` while it pends; then `nested:<status>:<body>`, `nest-refused:<reason>` or
-/// `nest-failed:<reason>`, preserving the host's terminal distinction.
 unsafe fn nest(me: &'static Inst, t: Ticket, child: &[u8], body: &[u8]) -> Option<Vec<u8>> {
     me.count(Stat::HostCalls);
     let Some(slot) = me.services.as_ref().and_then(|table| table.unit_nest) else {
@@ -1403,7 +1266,6 @@ unsafe fn nest(me: &'static Inst, t: Ticket, child: &[u8], body: &[u8]) -> Optio
     }
 }
 
-/// Echo the catalog head as response fields, so root tests observe exactly what crossed.
 extern "C" fn catalog(_: *mut c_void, input: *const c_void, out: *mut c_void) -> RawOutcome {
     unsafe {
         let i = &*input.cast::<CatalogIn>();
@@ -1438,8 +1300,6 @@ extern "C" fn catalog(_: *mut c_void, input: *const c_void, out: *mut c_void) ->
     }
 }
 
-/// `content.scan`, `hook.call` (gate, rewrite) and `verify.lookup` over `body`, on ticket `t`
-/// (handles `0..4`): `None` while one pends; then each one's `<op>=<value>` or `<op>!<reason>`.
 unsafe fn in_session(me: &'static Inst, t: Ticket, body: &[u8]) -> Option<Vec<u8>> {
     let Some(table) = me.services.as_ref() else {
         return Some(b"unserved".to_vec());
@@ -1556,7 +1416,7 @@ unsafe fn in_session(me: &'static Inst, t: Ticket, body: &[u8]) -> Option<Vec<u8
             }
         }
     }
-    // A LEAD fetches and stores (here: the bytes `fetched`), so the next unit's lookup is a hit.
+
     if said.last().map(String::as_str) == Some("verify=2") {
         if let Some(store) = table.verify_store {
             let entry = b"fetched";
@@ -1586,15 +1446,12 @@ unsafe fn in_session(me: &'static Inst, t: Ticket, body: &[u8]) -> Option<Vec<u8
     (!pending).then(|| said.join(" ").into_bytes())
 }
 
-/// Emit `b` toward the caller (or, with [`EMIT_TO_FAR_END`], toward the far end), cut to the reply
-/// buffer.
 unsafe fn emit(i: &OnPieceIn, o: &mut OnPieceOut, b: &[u8]) {
     let n = b.len().min(i.reply_cap);
     std::ptr::copy_nonoverlapping(b.as_ptr(), i.reply_buf, n);
     o.emitted = n as u64;
 }
 
-/// One piece of a duplex session (see the module's documentation).
 unsafe fn session_piece(
     me: &'static Inst,
     i: &OnPieceIn,
@@ -1674,9 +1531,7 @@ extern "C" fn refusal(_: *mut c_void, input: *const c_void, out: *mut c_void) ->
     unsafe {
         let i = &*input.cast::<RefusalIn>();
         let o = &mut *out.cast::<RefusalOut>();
-        // The reason crosses beside its text (`RefusalIn::text`, the kernel's own message: the
-        // reason's spelling, or the walk terminal's own words): a refusal whose code names no reason,
-        // or that carries no text, is FAULT.
+
         if busbar_contract::abi::plane::reason_of(i.reason).is_none() || text(i.text).is_empty() {
             return RawOutcome::of(Outcome::Fault);
         }
@@ -1687,14 +1542,13 @@ extern "C" fn refusal(_: *mut c_void, input: *const c_void, out: *mut c_void) ->
             text(i.text),
         ]
         .concat();
-        // The target crosses beside every refusal (one may precede `arrive`): this plane names it
-        // when the target asks.
+
         let target = text(i.target);
         if target == b"/target-echo" {
             body.extend_from_slice(b" for ");
             body.extend_from_slice(target);
         }
-        // A Retry-After the kernel hands (the walk's exhaustion terminal): this plane names it.
+
         if i.retry_after_s != 0 {
             body.extend_from_slice(format!(":retry={}", i.retry_after_s).as_bytes());
         }
@@ -1729,15 +1583,11 @@ extern "C" fn refusal(_: *mut c_void, input: *const c_void, out: *mut c_void) ->
     }
 }
 
-/// `serve`, route 0 only. The body chooses the answer: `malformed` is 400 and unaudited,
-/// `disagree` is 400 and audited `rejected`, `bad-audit` reports an unknown audit code, `short`
-/// answers short once, `short-twice` on every call; anything else is 200 and audited `applied`.
-/// The reply names the target and the head field names the plane was handed.
 extern "C" fn serve(_: *mut c_void, input: *const c_void, out: *mut c_void) -> RawOutcome {
     unsafe {
         let i = &*input.cast::<ServeIn>();
         let o = &mut *out.cast::<ServeOut>();
-        // Route 0, the admin route; route 1, the public one (answered under its own word).
+
         if i.route > 1 {
             return say(out, Outcome::Refused);
         }
@@ -1802,8 +1652,7 @@ extern "C" fn cancel(instance: *mut c_void, input: *const c_void, out: *mut c_vo
     unsafe {
         let me = inst(instance);
         me.count(Stat::Cancels);
-        // No thread-local of this image is touched on a host thread: a dropped image's
-        // thread-local destructors would outlive it on the dispatcher's workers.
+
         let cancel_in = &*input.cast::<CancelIn>();
         if cancel_in.head.deadline_class == DeadlineClass::Stream as u8 {
             me.count(Stat::CancelsOnWorker);
@@ -1831,8 +1680,6 @@ extern "C" fn cancel(instance: *mut c_void, input: *const c_void, out: *mut c_vo
     }
 }
 
-/// `tick`: counts itself, notes its ticket and whether it came early, runs a pending `/tick-read`,
-/// and asks for the next tick `tick_every_ms` on.
 extern "C" fn tick(instance: *mut c_void, input: *const c_void, out: *mut c_void) -> RawOutcome {
     unsafe {
         let me = inst(instance);
@@ -1849,7 +1696,7 @@ extern "C" fn tick(instance: *mut c_void, input: *const c_void, out: *mut c_void
             n(Ticked::Early).fetch_add(1, Ordering::SeqCst);
         }
         let mut pended = me.tick_read.swap(false, Ordering::SeqCst) && establish_and_read(me, t);
-        // One armed held exchange started; held when it pends.
+
         let armed = me
             .holds
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
@@ -1885,7 +1732,6 @@ extern "C" fn tick(instance: *mut c_void, input: *const c_void, out: *mut c_void
     }
 }
 
-/// One host connection service call on `ticket`, its sequence `seq`.
 unsafe fn conn_call<I>(
     me: &Inst,
     f: Option<busbar_contract::abi::host::service::ServiceFn>,
@@ -1912,8 +1758,6 @@ unsafe fn conn_call<I>(
     Some(out)
 }
 
-/// ESTABLISH the one need, then READ it, on `ticket`; a PENDING read leaves its stream for `drive`
-/// and answers `true`.
 unsafe fn establish_and_read(me: &Inst, ticket: Ticket) -> bool {
     let Some(slots) = me.conns.as_ref() else {
         return false;
@@ -1937,17 +1781,10 @@ unsafe fn establish_and_read(me: &Inst, ticket: Ticket) -> bool {
     true
 }
 
-/// The first handle held exchange `k` issues: each counts on from its own, so no two exchanges
-/// held side by side on the one driver ticket ever issue the same handle.
 fn hold_base(k: u32) -> u32 {
     100 + 10 * k
 }
 
-/// ONE ENTRY OF HELD EXCHANGE `k` on `ticket`: ESTABLISH its need (handle `base`, its
-/// [`hold_base`]), then READ it (the next handle), the same calls in the same order on every entry
-/// (the replay rule: a kept ESTABLISH answers its stream again without a second dial). `true` once
-/// it is over: its READ answered (bit `k` of [`Ticked::HoldDone`]), or a call failed (a FAULT
-/// counted in [`Ticked::HoldFaulted`]).
 unsafe fn hold_step(me: &Inst, ticket: Ticket, k: u32, base: u32) -> bool {
     let faulted = |o: &ServiceOut| {
         if o.outcome.outcome() == Outcome::Fault {
@@ -1986,12 +1823,10 @@ unsafe fn hold_step(me: &Inst, ticket: Ticket, k: u32, base: u32) -> bool {
     true
 }
 
-/// READ `stream` on `ticket`: the bytes, or `None` while it pends.
 unsafe fn read(me: &Inst, ticket: Ticket, stream: u64) -> Option<u64> {
     read_at(me, ticket, stream, 2)
 }
 
-/// READ `stream` on `ticket` under handle `seq`: the bytes, or `None` while it pends.
 unsafe fn read_at(me: &Inst, ticket: Ticket, stream: u64, seq: u32) -> Option<u64> {
     let slots = me.conns.as_ref()?;
     let mut buf = [0u8; 64];

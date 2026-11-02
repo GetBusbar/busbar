@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The door's VERIFY guards over a fixed deployment, in their one order.
-
 use super::*;
 use std::collections::BTreeMap;
 

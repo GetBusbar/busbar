@@ -25,10 +25,6 @@ use crate::diagnostics::{
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
-// ───────────────────────── shared log-capture fixture (mirrors
-// `diagnostics::tests::emit_tests::Buf`/`lines`, duplicated locally: that helper is private to its
-// own test module and this suite lives in a different crate-internal module tree) ─────────────
-
 #[derive(Clone, Default)]
 struct Buf(Arc<Mutex<Vec<u8>>>);
 
@@ -61,13 +57,6 @@ fn capture<T>(f: impl FnOnce() -> T) -> (T, Buf) {
     (out, buf)
 }
 
-// ───────────────────────────────── 1. fault-path diagnostic identities ───────────────────────
-
-/// Every auth fault/saturation diagnostic `auth/mod.rs` imports (`auth/mod.rs:14-18`), pinned by
-/// (code, slug) so a refactor cannot silently rename or renumber one without this test moving. Each
-/// one traces to a bare `tracing::warn!`/`tracing::error!` at the SAME trigger condition in 1.5.5
-/// `crates/busbar/src/auth/mod.rs` (line cited per row) — the Diagnostic wrapper is new in 1.6.0
-/// (K9c coded-diagnostics migration), the trigger and message are not.
 #[test]
 fn auth_fault_path_diagnostic_identities_are_pinned() {
     let table: &[(&Diagnostic, u16, &str, &str)] = &[
@@ -135,9 +124,6 @@ fn auth_fault_path_diagnostic_identities_are_pinned() {
     }
 }
 
-/// **TRIGGERED** (not just identity-pinned): an empty data-plane chain with no `keys` verifier is
-/// the open-relay posture and must warn `AUTH_CHAIN_OPEN_RELAY` — byte-identical condition and
-/// message to v1.5.5 `crates/busbar/src/auth/mod.rs:338-340`.
 #[test]
 fn auth_chain_open_relay_diag_fires_on_empty_data_plane_chain() {
     let cfg = crate::config::AuthCfg::default_none();
@@ -157,16 +143,11 @@ fn auth_chain_open_relay_diag_fires_on_empty_data_plane_chain() {
     );
 }
 
-/// **TRIGGERED**: an `admin_auth` chain naming a module with no resolved plugin skips it (falls
-/// through to `Pass`) and warns loudly — `ADMIN_MODULE_UNRESOLVED`, the same condition and message
-/// as v1.5.5 `crates/busbar/src/auth/mod.rs:919` ("boot resolves every non-builtin admin module,
-/// fail-closed" — this path is reachable only via the test-fixture shortcut below, since a real boot
-/// would already have failed closed before `run_admin_chain` ever runs).
 #[test]
 fn admin_module_unresolved_diag_fires_and_falls_through_to_pass() {
     let mut app = crate::test_support::TestApp::new().build();
     let a = Arc::get_mut(&mut app).expect("freshly built App Arc is unshared");
-    a.admin_chain = vec!["ghost-module".to_string()]; // never resolved into a_.admin_modules
+    a.admin_chain = vec!["ghost-module".to_string()];
     let (verdict, buf) =
         capture(|| super::tests::run_admin_chain_on(&app, Some("anything"), None).0);
     assert_eq!(
@@ -185,15 +166,6 @@ fn admin_module_unresolved_diag_fires_and_falls_through_to_pass() {
     );
 }
 
-// ─────────────── 1b. the saturation / fault diagnostics on the door path (TRIGGERED) ───────────
-//
-// 1.5.5 emitted 4005/4006 on the data plane and 4008/4009 on the admin plane around its offloaded
-// auth calls. The door path keeps each at the analogous trigger — a saturated admission budget or a
-// door's own `max_inflight` full (4005/4008), a FAULTED verify (4006/4009), an admitted admin verify
-// that does not answer within the wait (4009) — with 1.5.5's text byte for byte at the default
-// budgets (64 data / 16 admin in flight, a 5s wait), and each one denies. RED arms: the same deny
-// from a verifier that merely refused says nothing.
-
 /// How a [`FakeDoor`] answers each `verify`.
 #[derive(Clone)]
 enum DoorAnswer {
@@ -206,19 +178,15 @@ enum DoorAnswer {
 }
 
 impl DoorAnswer {
-    /// Answers `verified`.
     fn verdict(verified: busbar_contract::auth_calls::Verified) -> Self {
         Self::Verdict(Box::new(verified))
     }
 }
 
-/// An emitter of one of the four, on a latch.
 type Emitter = fn(&std::sync::atomic::AtomicBool);
 
-/// A door stand-in that never answers on the spot, so every `verify` is submitted and awaited.
 struct FakeDoor(DoorAnswer);
 
-/// One submitted `verify` of a [`FakeDoor`].
 struct FakeCall(DoorAnswer);
 
 impl std::future::Future for FakeCall {
@@ -269,12 +237,6 @@ impl busbar_contract::auth_calls::AuthCalls for FakeDoor {
     }
 }
 
-/// Run `f` on a current-thread runtime whose clock is paused (a wait elapses the moment the runtime
-/// is idle), inside the log capture. A latch another test tripped turns a warning into a debug line,
-/// so the capture must see DEBUG: the [`WarnCapture`] gate held across it keeps every callsite's
-/// interest live (and serializes with the other capturing tests).
-///
-/// [`WarnCapture`]: crate::test_support::warn_capture::WarnCapture
 fn captured_on_paused_clock<T>(f: impl std::future::Future<Output = T>) -> (T, Buf) {
     let _gate = crate::test_support::warn_capture::WarnCapture::capturing_debug();
     capture(|| {
@@ -287,7 +249,6 @@ fn captured_on_paused_clock<T>(f: impl std::future::Future<Output = T>) -> (T, B
     })
 }
 
-/// The data-plane chain `[door]` over `answer`, walked on the request path.
 async fn data_door(answer: DoorAnswer) -> ChainVerdict {
     let auth = Arc::new(AuthMiddleware::from_doors_for_test(vec![(
         "door".to_string(),
@@ -303,7 +264,6 @@ async fn data_door(answer: DoorAnswer) -> ChainVerdict {
     .await
 }
 
-/// The admin chain `[ext]`, `ext` an external admin door over `answer`, walked awaited.
 async fn admin_door_walk(answer: DoorAnswer) -> ChainVerdict {
     let app = crate::test_support::TestApp::new()
         .admin_chain(vec!["ext".to_string()])
@@ -316,25 +276,20 @@ async fn admin_door_walk(answer: DoorAnswer) -> ChainVerdict {
         .0
 }
 
-/// 4005's text at the default budget: 1.5.5's, byte for byte.
 const AUTH_SATURATED_TEXT: &str =
     "auth chain offload could not be started within 5s (64 already in \
      flight); an auth plugin is not returning. Denying (fail-closed) rather than admitting \
      unverified.";
-/// 4006's text: 1.5.5's.
+
 const AUTH_PANICKED_TEXT: &str = "auth chain panicked; denying (fail-closed)";
-/// 4008's text at the default budget: 1.5.5's, byte for byte.
+
 const ADMIN_SATURATED_TEXT: &str = "admin auth chain offload could not be started within 5s (16 \
      already in flight); an admin auth plugin is not returning. Denying (fail-closed) rather than \
      admitting unverified.";
-/// 4009's text at the default wait: 1.5.5's, byte for byte.
+
 const ADMIN_STALLED_TEXT: &str =
     "admin auth chain did not complete within 5s (or panicked); denying (fail-closed).";
 
-/// 4005: a data-plane admission budget with no slot free within the wait denies with 1.5.5's
-/// saturation text. A door whose own `max_inflight` is full is not 4005: the walk hands it back
-/// apart for the data plane's 503. RED: a door that refused denies too, and
-/// says nothing of saturation.
 #[test]
 fn a_saturated_data_plane_verifier_says_4005_in_1_5_5_words_and_denies() {
     use busbar_contract::auth_calls::Verified;
@@ -359,7 +314,6 @@ fn a_saturated_data_plane_verifier_says_4005_in_1_5_5_words_and_denies() {
     );
     assert!(!said.text().contains("BUSBAR-4005"), "{:?}", said.text());
 
-    // The budget itself: every slot held, the wait elapses, the request is denied unverified.
     let (verdict, said) = captured_on_paused_clock(async {
         let held = AUTH_ADMISSION_PERMITS
             .acquire_many(AUTH_ADMISSION_MAX_INFLIGHT as u32)
@@ -380,15 +334,12 @@ fn a_saturated_data_plane_verifier_says_4005_in_1_5_5_words_and_denies() {
         said.text()
     );
 
-    // RED: a refusal is a deny with no saturation said.
     let (verdict, said) =
         captured_on_paused_clock(data_door(DoorAnswer::verdict(Verified::Reject)));
     assert_eq!(verdict, ChainVerdict::Denied);
     assert!(!said.text().contains("BUSBAR-4005"), "{:?}", said.text());
 }
 
-/// 4006: a data-plane door whose verify FAULTED denies with 1.5.5's panic text. RED: the same failed
-/// verify that did not fault denies and says nothing of a panic.
 #[test]
 fn a_faulted_data_plane_verify_says_4006_in_1_5_5_words_and_denies() {
     use busbar_contract::auth_calls::Verified;
@@ -404,9 +355,6 @@ fn a_faulted_data_plane_verify_says_4006_in_1_5_5_words_and_denies() {
     assert!(!said.text().contains("BUSBAR-4006"), "{:?}", said.text());
 }
 
-/// 4008: an external admin door whose own `max_inflight` is full, and an admin admission budget
-/// with no slot free within the wait, each deny with 1.5.5's admin saturation text. RED: a door that
-/// refused denies and says nothing.
 #[test]
 fn a_saturated_admin_verifier_says_4008_in_1_5_5_words_and_denies() {
     use busbar_contract::auth_calls::Verified;
@@ -442,8 +390,6 @@ fn a_saturated_admin_verifier_says_4008_in_1_5_5_words_and_denies() {
     assert!(!said.text().contains("BUSBAR-4008"), "{:?}", said.text());
 }
 
-/// 4009: an admitted admin verify that does not answer within the wait, and one that FAULTED, each
-/// deny with 1.5.5's stalled text. RED: a failed verify that did not fault denies and says nothing.
 #[test]
 fn a_stalled_or_faulted_admin_verify_says_4009_in_1_5_5_words_and_denies() {
     use busbar_contract::auth_calls::Verified;
@@ -460,8 +406,6 @@ fn a_stalled_or_faulted_admin_verify_says_4009_in_1_5_5_words_and_denies() {
     assert!(!said.text().contains("BUSBAR-4009"), "{:?}", said.text());
 }
 
-/// Each of the four keeps 1.5.5's WARN-ONCE latch: the transition into the state warns, a
-/// recurrence logs at debug, and once the state clears the next transition warns again.
 #[test]
 fn the_door_path_diagnostics_warn_once_then_debug_as_1_5_5() {
     let _gate = crate::test_support::warn_capture::WarnCapture::capturing_debug();
@@ -495,13 +439,6 @@ fn the_door_path_diagnostics_warn_once_then_debug_as_1_5_5() {
     }
 }
 
-// ───────────────────────── 2. pre-mint READY-with-zero-fields -> no auth header ───────────────
-
-/// THE ADMIN CREDENTIAL NEVER REACHES A LOG LINE (admin
-/// requests terminate locally and the verify answer's strips are not applied there, so nothing the
-/// chain writes may carry the credential). Every answer the operator's door can give — an identity,
-/// a bad credential, a pass, an overloaded verifier, an outage — is walked with both carriers
-/// presented, under a DEBUG capture, and neither value appears.
 #[test]
 fn the_admin_credential_never_reaches_a_log_line() {
     use busbar_contract::auth_calls::{Verified, VerifiedIdentity};

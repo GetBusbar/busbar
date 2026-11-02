@@ -1,23 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The dated history and the lookup over it: appending never rewrites, the resolution rule takes
-//! the highest covering seq, a snapshot answers the same way forever, a hole is a refusal, and the
-//! figure a reader uses is the lookup's.
-
 use super::fixtures::*;
 use busbar_kernel_ledger::cost::{
     price, price_fail_closed, Author, CardEntryDraft, History, HistorySeq, LaneClass, Posting,
     RateCard, Unpriceable, STANDARD_TIER_BP,
 };
 
-/// A card pricing one class on one lane at a named rate.
 fn card_at(micro: f64) -> RateCard {
     RateCard::from_micro_rates([(LaneClass::new("m", INPUT), micro)], 0)
 }
 
-/// A history with three entries: the opening one, an ordinary edit, and a back-dated amendment that
-/// overlaps both. Written once because every resolution case reads it.
 fn overlapping_history() -> History {
     let mut history = History::opening(card_at(1.0), 0);
     history.append(CardEntryDraft {
@@ -39,10 +32,6 @@ fn overlapping_history() -> History {
     history
 }
 
-/// **APPEND-ONLY.** Appending assigns the next dense seq and touches nothing that is already there:
-/// every earlier entry's seq, interval, card, write time and author are the same objects afterwards
-/// as before. A history that closed the previous open entry on append would fail this, which is why
-/// it does not close it — the resolution rule makes closing unnecessary.
 #[test]
 fn appending_assigns_the_next_seq_and_rewrites_nothing() {
     let mut history = History::opening(card_at(1.0), 42);
@@ -87,7 +76,6 @@ fn appending_assigns_the_next_seq_and_rewrites_nothing() {
     );
     assert_eq!(history.entries()[0].author(), &Author::Opening);
 
-    // And the rate the first entry holds is still the first entry's rate.
     let at_zero = history.snapshot(HistorySeq(0));
     assert_eq!(
         price(&at_zero, &posting_at("m", 100, &[(INPUT, 1_000)]))
@@ -97,9 +85,6 @@ fn appending_assigns_the_next_seq_and_rewrites_nothing() {
     );
 }
 
-/// An empty history has no head, and asking for one does not answer zero. Zero is a real entry
-/// number belonging to a real opening entry; a head that lied about it would let a caller snapshot
-/// an entry that is not there and read a hole as a card.
 #[test]
 fn an_empty_history_has_no_head_and_prices_nothing() {
     let history = History::new();
@@ -112,10 +97,6 @@ fn an_empty_history_has_no_head_and_prices_nothing() {
     );
 }
 
-/// A snapshot sees exactly the entries with `seq <= at`, so an older snapshot cannot see a newer
-/// amendment and answers today what it answered when the invoice was cut. Two reads at the same
-/// snapshot are the same answer; two reads at different snapshots differ, and the reader is told
-/// which snapshot it read.
 #[test]
 fn a_snapshot_answers_the_same_way_forever() {
     let history = overlapping_history();
@@ -141,13 +122,9 @@ fn a_snapshot_answers_the_same_way_forever() {
         (HistorySeq(2), 3_000_000)
     );
 
-    // Asked again, byte for byte the same.
     assert_eq!(price(&at_one, &posting).expect("covered"), older);
 }
 
-/// **A HOLE IS A REFUSAL, NOT A ZERO.** An instant no entry covers cannot be priced, and the
-/// lookup says so rather than answering nothing — a zero would bill a gap in the record as a free
-/// request, which is the one answer that can never be corrected later.
 #[test]
 fn an_instant_no_entry_covers_is_a_refusal() {
     let mut history = History::new();
@@ -170,9 +147,6 @@ fn an_instant_no_entry_covers_is_a_refusal() {
     );
 }
 
-/// **THE FIGURE IS THE LOOKUP'S, AND ONLY THE LOOKUP'S.** A posting carries quantities and an instant
-/// and no price, so asking it twice over the same view answers the same figure, and that figure is
-/// exactly the lookup's: there is no stored figure beside the quantities that could stand in for it.
 #[test]
 fn the_figure_a_reader_uses_is_the_lookups() {
     let history = History::opening(card_at(2.0), 0);
@@ -189,9 +163,6 @@ fn the_figure_a_reader_uses_is_the_lookups() {
     );
 }
 
-/// The two postures over one lookup: a read reports an unpriced lane per row, and a settlement that
-/// must fail closed refuses it. The refusing posture performs no arithmetic of its own — the figure
-/// it would have returned is the reading posture's, exactly.
 #[test]
 fn the_fail_closed_posture_refuses_an_unpriced_lane_without_a_second_arithmetic() {
     let history = History::opening(
@@ -215,7 +186,7 @@ fn the_fail_closed_posture_refuses_an_unpriced_lane_without_a_second_arithmetic(
             lane: "mystery".to_string(),
         })
     );
-    // A lane the card DOES name passes both postures with the same answer.
+
     let known = posting_at("known", 0, &[(INPUT, 1_000_000)]);
     assert_eq!(price_fail_closed(&view, &known), price(&view, &known));
 }

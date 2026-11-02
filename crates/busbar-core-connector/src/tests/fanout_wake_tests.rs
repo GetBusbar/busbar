@@ -83,8 +83,6 @@ impl Wake for Callback {
     }
 }
 
-// Each raw handle owns exactly one Arc reference. Cloning retains a new reference before
-// running caller code; borrowed operations use ManuallyDrop and consuming ones release it.
 unsafe fn clone_callback(data: *const ()) -> RawWaker {
     // SAFETY: all vtable data pointers originate from Arc::into_raw in raw_waker or this clone.
     let callback = ManuallyDrop::new(unsafe { Arc::<Callback>::from_raw(data.cast()) });
@@ -134,8 +132,6 @@ impl Side for CapturedSide {
     }
 
     fn register(&self, waker: &Waker) {
-        // Capture the real carrier wake instead of delivering reactor notifications during
-        // setup. Each test chooses the exact broadcast or sibling publication that delivers it.
         let incoming = waker.clone();
         let previous = self.wake.lock().unwrap().replace(incoming);
         drop(previous);

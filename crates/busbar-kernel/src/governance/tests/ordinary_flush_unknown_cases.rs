@@ -66,7 +66,6 @@ impl UnknownFlushStore {
 }
 
 fn accrue_plain(gov: &GovState, bucket: &str, count: u64) {
-    // Use the real raw accrual operation with an undated card, independent of global card history.
     let mut cells = gov.budget.write(bucket);
     let cell = cells
         .entry(bucket.to_string())

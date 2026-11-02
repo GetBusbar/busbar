@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A DOOR PLANE'S ADMIN ROUTE, served (`served_at`), over a plane double that echoes what crossed:
-//! the head it was handed holds none of the credentials the auth gate consumed, its target carries
-//! the query, and the audit row it asks for is written under the admitted principal.
-
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -24,7 +20,6 @@ use busbar_contract::plane_calls::{
 use super::*;
 use crate::plane_driver::AuditSink;
 
-/// What one `serve` crossing was handed: its target and its head field names.
 type Crossed = (String, Vec<String>);
 
 /// A plane whose `serve` keeps the target and head field names it was handed, answers `200`, and
@@ -45,7 +40,6 @@ const READY: Answered = Answered {
     disposition: None,
 };
 
-/// A `serve` answered at once.
 struct Now(ServeOut);
 // SAFETY: plain data the double wrote; its pointers are never dereferenced.
 unsafe impl Send for Now {}
@@ -63,7 +57,6 @@ impl ServeInFlight for Now {
     }
 }
 
-/// No piece is ever driven here.
 struct NoPiece;
 
 impl Future for NoPiece {
@@ -95,7 +88,6 @@ unsafe fn text(s: AbiStr) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
-/// The audit row the double asks for: its action (`key`) and resource (`value`).
 const ROW: (&[u8], &[u8]) = (b"door.check", b"door:a");
 
 impl PlaneCalls for Echo {
@@ -212,16 +204,6 @@ impl AuditSink for Rows {
     }
 }
 
-/// RED (K2 #4): a door plane's admin route is handed the request as the auth gate admitted it.
-/// - The credential lines the gate consumed on the admin plane (`gate_consumed`: the client and
-///   admin carriers and the DPoP proof) never cross: not `x-admin-token`, which the contract's
-///   never-kept list does not name, nor `x-api-key`, `x-goog-api-key`, `authorization` or `dpop`.
-///   A line the gate did not read (`x-trace`) does.
-/// - The target is `path?query`.
-/// - The plane's audit row names the admitted principal, not `anonymous`.
-///
-/// RED before: `served_at` struck only the never-kept list (so `x-admin-token` and `dpop`
-/// crossed), passed the path alone, and wrote the row under `AuthPrincipal(None)`.
 #[tokio::test]
 async fn a_door_plane_admin_route_sees_no_consumed_credential_and_its_row_names_the_actor() {
     let echo = std::sync::Arc::new(Echo::default());
@@ -307,7 +289,6 @@ async fn a_door_plane_admin_route_sees_no_consumed_credential_and_its_row_names_
     );
 }
 
-/// One admin request at `path`, no query, no credential consumed, no principal.
 fn asked<'a>(path: &'a str, headers: &'a axum::http::HeaderMap) -> AdminServe<'a> {
     AdminServe {
         method: "GET",
@@ -319,7 +300,6 @@ fn asked<'a>(path: &'a str, headers: &'a axum::http::HeaderMap) -> AdminServe<'a
     }
 }
 
-/// One instance whose one admin route is `GET /{instance}/{name}/health`, served by `calls`.
 fn health_table(instance: &str, calls: std::sync::Arc<Echo>) -> ServeTable {
     ServeTable {
         instance: instance.to_string(),
@@ -336,11 +316,6 @@ fn health_table(instance: &str, calls: std::sync::Arc<Echo>) -> ServeTable {
     }
 }
 
-/// TWO APPS IN ONE PROCESS, EACH LENT ITS ROOT'S TABLE, SERVE ONLY THEIR OWN INSTANCE: the kernel
-/// holds no admin table; the root that publishes owns it and lends it. Two generations, each lent
-/// the table one root published one instance into, serve that instance's admin route and answer
-/// the other's as no published instance names it; a generation lent none serves neither. While the
-/// table was one process-wide value, both instances were on every generation's table.
 #[tokio::test]
 async fn two_apps_lent_two_tables_each_serve_only_their_own_instance() {
     let echo = std::sync::Arc::new(Echo::default());
@@ -397,10 +372,6 @@ async fn two_apps_lent_two_tables_each_serve_only_their_own_instance() {
     }
 }
 
-/// AN APPLY KEEPS THE PUBLISHED INSTANCES SERVED: the next generation is built carrying the prior
-/// generation's admin table, so an instance the root published into the boot generation's table is
-/// served by the applied one, and one published after the apply is served by both (they share one
-/// table). The boot build itself starts from an empty table.
 #[test]
 fn a_rebuild_carries_the_published_admin_table() {
     crate::test_support::register_neutral_test_plane();
@@ -445,17 +416,12 @@ fn a_rebuild_carries_the_published_admin_table() {
     }
 }
 
-/// AN APPLIED SERVE ANSWER IS AUDITED EVEN WHEN ITS HEAD CANNOT BE RENDERED (Q128 arch u35 #43): the
-/// plane's record writes were committed, so the route's `<audit_kind>.<audit_verb>` row is written,
-/// and the caller gets the kernel's 502. RED before the fix: the reply failed to render first and
-/// the row was skipped, so a mutation the plane applied left no audit row.
 #[tokio::test]
 async fn an_applied_answer_whose_head_cannot_render_is_still_audited() {
-    // The admin audit rows land in the durable log's read model (the in-process ring is gone, C5).
     crate::audit::auditlog::ensure_global_audit_stream_registered();
     let echo = std::sync::Arc::new(Echo::default());
     echo.status.store(1_000, Ordering::SeqCst);
-    // The plane applied the mutation: its answer asks for the route's audit row.
+
     echo.audit.store(AUDIT_APPLIED, Ordering::SeqCst);
     let tables = ServeTables::default();
     tables

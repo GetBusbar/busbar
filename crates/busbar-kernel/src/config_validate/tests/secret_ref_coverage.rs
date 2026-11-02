@@ -28,11 +28,8 @@ use super::{SecretBearing, SECRET_BEARING_TYPES};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-/// The repository's `crates/` directory, derived from this crate's manifest dir. Panics rather than
-/// returning an `Option`: a test that cannot find the tree it is supposed to scan has FAILED to
-/// determine its answer, and a check that cannot determine its answer is red, not green.
 fn crates_dir() -> PathBuf {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR")); // .../crates/busbar
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let dir = manifest
         .parent()
         .unwrap_or_else(|| panic!("no parent of CARGO_MANIFEST_DIR {}", manifest.display()))
@@ -46,28 +43,10 @@ fn crates_dir() -> PathBuf {
     dir
 }
 
-/// Whether a directory named `name` is excluded from the source scan. Kept as its own named
-/// function (rather than inlined into the walk) so the exclusion rule is one place to read, and one
-/// place a unit test below can drive directly without standing up a whole directory tree.
-///
-/// - `target` is build output, not source.
-/// - `tests` holds integration-test files: a test CONSTRUCTS config structs, it does not DECLARE
-///   them, so scanning it would only add false positives; excluding it cannot hide a declaration,
-///   because a type declared under `tests/` is not part of the config surface `--validate` walks.
-/// - `bin` holds `[[bin]]` target sources — standalone executables that are not part of the crate's
-///   library surface `RootCfg` and its config-resolution walk can ever reach. Today the one `bin`
-///   target in the workspace is itself a conformance-test harness, in a sibling plane crate, that
-///   declares its own mock `SecretResolve` stand-in (`OneSecretResolver`) to probe that plane's
-///   composition seams; that mock is exactly as test-only as a helper under `tests/`, and it
-///   must be excluded for the same reason: it is code that CONSTRUCTS a stand-in to exercise the
-///   config surface, not code that DECLARES a field the config surface itself has to resolve. See
-///   `exclusion_rule_matches_known_directories` and `exclusion_rule_does_not_hide_ordinary_source_dirs`
-///   below, which pin this rule against regressing silently.
 fn is_excluded_source_dir(name: &str) -> bool {
     name == "target" || name == "tests" || name == "bin"
 }
 
-/// Every `.rs` file under `crates/*/src`, excluding [`is_excluded_source_dir`] directories.
 fn source_files() -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![crates_dir()];
@@ -90,9 +69,6 @@ fn source_files() -> Vec<PathBuf> {
     out
 }
 
-/// [`is_excluded_source_dir`] excludes exactly the directory names it documents, and nothing else —
-/// pinned so a future edit cannot silently widen (or narrow) the exclusion without this test naming
-/// the drift.
 #[test]
 fn exclusion_rule_matches_known_directories() {
     for excluded in ["target", "tests", "bin"] {
@@ -103,10 +79,6 @@ fn exclusion_rule_matches_known_directories() {
     }
 }
 
-/// The exclusion rule is narrow: it must not swallow an ordinary source directory (a plugin-owned
-/// module, a crate's `src` root, or a directory that merely CONTAINS "test"/"bin" as a substring
-/// rather than matching the whole component name) — a wide match here would hide a real declaration
-/// from the scan, which is the exact silent-hole failure mode this guard exists to close.
 #[test]
 fn exclusion_rule_does_not_hide_ordinary_source_dirs() {
     for kept in [
@@ -126,11 +98,6 @@ fn exclusion_rule_does_not_hide_ordinary_source_dirs() {
     }
 }
 
-/// `TypeName -> the field names it declares with a `SecretRef`-mentioning type`, scanned out of the
-/// sources. Deliberately a line scanner and not a Rust parser: it needs to be readable by anyone who
-/// has to debug a failure, and its bias is toward OVER-reporting (a false hit is a loud, obvious
-/// test failure a human resolves in one edit; a false MISS is the silent hole this whole guard
-/// exists to close).
 fn declared_secret_ref_fields() -> BTreeMap<String, BTreeSet<String>> {
     let struct_re = regex_lite_struct();
     let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -166,7 +133,6 @@ fn declared_secret_ref_fields() -> BTreeMap<String, BTreeSet<String>> {
                 current = Some(name);
                 depth = code.matches('{').count() as i32 - code.matches('}').count() as i32;
                 if depth <= 0 {
-                    // A tuple struct or a one-line `struct X;` declares no named fields.
                     current = None;
                     depth = 0;
                 }
@@ -176,8 +142,6 @@ fn declared_secret_ref_fields() -> BTreeMap<String, BTreeSet<String>> {
     out
 }
 
-/// The code content of a line: empty for a whole-line `//` comment, and with a trailing `//` comment
-/// removed when the line holds no string literal (so a `//` inside a literal cannot truncate code).
 fn strip_comment(line: &str) -> String {
     let trimmed = line.trim_start();
     if trimmed.starts_with("//") {
@@ -192,8 +156,6 @@ fn strip_comment(line: &str) -> String {
     }
 }
 
-/// `struct Foo` on a declaration line -> `Some("Foo")`. Matches any visibility and skips a line that
-/// merely MENTIONS the word (a `use` or a turbofish), by requiring `struct` to start the item.
 fn regex_lite_struct() -> impl Fn(&str) -> Option<String> {
     |code: &str| {
         let t = code.trim_start();
@@ -211,8 +173,6 @@ fn regex_lite_struct() -> impl Fn(&str) -> Option<String> {
     }
 }
 
-/// `pub(crate) client_secret: Option<SecretRef>,` -> `Some("client_secret")`. Requires a `name:`
-/// prefix so a method signature, a `where` clause or a struct-literal line cannot match.
 fn field_named_secret_ref(code: &str) -> Option<String> {
     if !code.contains("SecretRef") {
         return None;
@@ -228,15 +188,10 @@ fn field_named_secret_ref(code: &str) -> Option<String> {
     if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
         return None;
     }
-    // `foo: SecretRef` / `Option<SecretRef>` / `Vec<SecretRef>` / `BTreeMap<String, SecretRef>` all
-    // count: the guard is about the TYPE appearing in a field position, at any nesting.
+
     ty.contains("SecretRef").then(|| name.to_string())
 }
 
-/// The substring of `path` from the first occurrence of `from` up to (not including) `to`. Both
-/// markers must be present or the extraction PANICS: a scan that cannot find the region it is
-/// supposed to read has FAILED to determine its answer, and a check that cannot determine its answer
-/// is red, not green.
 fn read_between(path: &Path, from: &str, to: &str) -> String {
     let text = std::fs::read_to_string(path)
         .unwrap_or_else(|e| panic!("read {} failed: {e}", path.display()));
@@ -249,10 +204,6 @@ fn read_between(path: &Path, from: &str, to: &str) -> String {
     text[start..start + end].to_string()
 }
 
-/// The body of `secret_refs` and the helpers it delegates its destructures to. Used to prove that
-/// a type CLAIMING to be `Walked` really is destructured somewhere this guard can see, so the
-/// inventory cannot be satisfied by listing a type and never looking at it. Every plane section is a
-/// door's, its references read at the door's declared paths, so no plane impl is folded in.
 fn secret_refs_source() -> String {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let core = read_between(
@@ -260,8 +211,7 @@ fn secret_refs_source() -> String {
         "pub(crate) fn secret_refs(",
         "pub(crate) const SECRET_BEARING_TYPES",
     );
-    // The `tools:` and `agents:` planes are served through their doors: their references are read
-    // at each door's declared paths (`SecretBearing::DoorDeclared`), with no typed impl to scan.
+
     let body = core;
     assert!(
         body.len() > 500,
@@ -272,12 +222,6 @@ fn secret_refs_source() -> String {
     body
 }
 
-/// EVERY type in the tree that declares a `SecretRef`-typed field is accounted for by
-/// [`SECRET_BEARING_TYPES`] — set equality in both directions.
-///
-/// A NEW secret-bearing type fails here with its name. A type that stops carrying secrets fails here
-/// too, as a stale entry, so the inventory can never accumulate standing permission for a type that
-/// no longer exists.
 #[test]
 fn every_secret_bearing_type_is_accounted_for() {
     let declared = declared_secret_ref_fields();
@@ -320,17 +264,12 @@ fn every_secret_bearing_type_is_accounted_for() {
     );
 }
 
-/// A type the inventory calls `Walked` is REALLY destructured by `secret_refs`, and a type it calls
-/// `NotInResolvedConfig` really is absent from it. Without this, the inventory would be satisfiable
-/// by writing a name down, which is precisely the "remembered, not enforced" property B1 was.
 #[test]
 fn the_inventory_matches_what_secret_refs_actually_does() {
     let body = secret_refs_source();
     let mut walked = 0;
     let mut excluded = 0;
     for (ty, bearing) in SECRET_BEARING_TYPES {
-        // The type's OWN name, not a longer one ending in it (`IdentityProviderCfg {` is not a
-        // destructure of `ProviderCfg`).
         let pattern = format!("{ty} {{");
         let destructured = body
             .match_indices(&pattern)
@@ -378,16 +317,8 @@ fn the_inventory_matches_what_secret_refs_actually_does() {
     );
 }
 
-/// The strict `--validate` resolve walks what BOOT resolves. A `token:` on an `identity-providers:`
-/// definition nothing references is still ENUMERATED (the coverage contract: no secret-bearing field
-/// is hidden from the structural and module-existence checks) but is NOT RESOLVED, because boot never
-/// reads it — an operator keeping a spare definition on file with its env var unset has a config
-/// that boots, and `--validate` must say so. The one token boot does read, the operator credential
-/// out of the resolved chains, is resolved and is the one named when it cannot be.
 #[test]
 fn unreferenced_identity_provider_token_is_enumerated_but_not_resolved_by_validate() {
-    // `oracle-keys` is defined but appears in neither chain; nothing on the running gateway ever
-    // reads its `token:`. `admin_auth` is explicitly open so there is no operator token to resolve.
     let yaml = r#"
 listen: "127.0.0.1:8080"
 providers: {}
@@ -426,8 +357,6 @@ auth:
         panic!("--validate refused a config boot serves (the unset env var is never read): {e}")
     });
 
-    // The operator credential IS read at boot, so it IS resolved at --validate — and it is reported
-    // once, from the resolved chain entry, not a second time from the definition.
     let yaml = r#"
 listen: "127.0.0.1:8080"
 providers: {}
@@ -443,7 +372,7 @@ auth:
   chain: [keys]
   admin_auth: [OPERATOR]
 "#;
-    // The operator credential's provider is the word the root hands in (this build's double).
+
     let op = crate::config::operator_provider();
     let yaml = yaml.replace("OPERATOR", op);
     let deploy: crate::config::DeployCfg =
@@ -469,9 +398,6 @@ auth:
     );
 }
 
-/// The behavioural half, at the level `--validate` actually asks: a config carrying a
-/// `browser_login.client_secret` yields that path from `secret_refs`. This is the reference the old
-/// hand-written list missed, and this test fails against the pre-fix function.
 #[test]
 fn browser_login_client_secret_is_enumerated() {
     let yaml = r#"
@@ -505,17 +431,6 @@ auth:
     );
 }
 
-/// `api_key: none` — the declaration that there is NO credential — is meaningful for a provider
-/// `api_key` and for NOTHING else. Every other secret here protects something with no
-/// credential-free mode (a TLS cert, `auth.signing_key`, the authorization server's key, an admin
-/// token, an OIDC client secret, a plane's outbound delegation credential), and accepting `none`
-/// on one of those would not configure anything — it would silently disarm the thing the secret
-/// exists to protect.
-///
-/// Driven over the REAL walk of a config that populates every secret-bearing section, so the
-/// classification is checked against the paths that actually exist rather than against a list
-/// somebody has to remember to update: a new secret-bearing field arrives here as a new path and is
-/// classified by this test the moment `secret_refs` reports it.
 #[test]
 fn keyless_is_accepted_on_provider_api_keys_alone() {
     let yaml = r#"
@@ -548,12 +463,11 @@ auth:
   admin_auth: [OPERATOR]
   signing_key: { file: /run/secrets/signing.key }
 "#;
-    // The operator credential's provider is the word the root hands in (this build's double).
+
     let yaml = yaml.replace("OPERATOR", crate::config::operator_provider());
     let deploy: crate::config::DeployCfg =
         serde_yaml::from_str(&yaml).expect("the fixture DeployCfg yaml must parse");
-    // Both providers need a catalog entry (`providers.yaml`); only the credential differs between
-    // them, which is the whole point of the fixture.
+
     let defs: std::collections::HashMap<String, crate::config::ProviderDef> = ["hosted", "local"]
         .into_iter()
         .map(|name| {
@@ -587,8 +501,6 @@ auth:
         "exactly the provider api_keys may be keyless; got: {keyless:?}"
     );
 
-    // And the config as written is VALID: `api_key: none` on the local provider passes, while the
-    // hosted provider's real reference is untouched. (Structure only — no value is resolved here.)
     let mut errors = Vec::new();
     crate::config_validate::validate(&cfg).unwrap_or_else(|e| errors = e);
     assert!(
@@ -596,8 +508,6 @@ auth:
         "`api_key: none` on a provider must validate; got: {errors:?}"
     );
 
-    // Move that same `none` onto a secret that requires a credential and it is REFUSED, naming the
-    // field. This is the half that keeps the new form from becoming a quiet off switch.
     let mut cfg = cfg;
     cfg.auth.as_mut().expect("auth").signing_key = Some(crate::config::SecretRef::none());
     let errors = crate::config_validate::validate(&cfg)
@@ -610,9 +520,6 @@ auth:
     );
 }
 
-/// `credentials.at_rest` (1.6.0, lifted off the frozen top-level struct): its `key` and `previous`
-/// are walked, so `--validate` resolves both as boot does, and `none` on either is refused — an
-/// at-rest key has no credential-free mode. A misspelt key under the block is refused by name.
 #[test]
 fn the_at_rest_keys_are_walked_and_refuse_none() {
     let yaml = r#"

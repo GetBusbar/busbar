@@ -1,10 +1,6 @@
-//! Tests for `serve_lines.rs`: the line carrier is the transports' declared fact, never a name the
-//! root holds.
-
 use super::*;
 use crate::root::linked::LinkedTransport;
 
-/// A transport row whose claims are `claims` and whose first-line claims are `lines`, built never.
 fn row(
     key: crate::root::linked::KeyOf,
     claims: fn() -> Vec<&'static str>,
@@ -21,8 +17,6 @@ fn row(
     }
 }
 
-/// THE CARRIER IS WHAT THE ROWS DECLARE: the one claim whose row opens on the first line, whatever
-/// it is called; a build with none carries no lines.
 #[test]
 fn the_line_carrier_is_the_claim_a_row_declares_opening_on_its_first_line() {
     let rows = [
@@ -38,8 +32,6 @@ fn the_line_carrier_is_the_claim_a_row_declares_opening_on_its_first_line() {
     assert_eq!(line_carrier(&[]), Ok(None));
 }
 
-/// TWO LINE CARRIERS ARE REFUSED, naming both: the process has one stdin/stdout, and which claim it
-/// carries is never decided by picking the first.
 #[test]
 fn two_claims_opening_on_their_first_line_are_refused() {
     let rows = [
@@ -55,7 +47,6 @@ fn two_claims_opening_on_their_first_line_are_refused() {
     assert!(refusal.contains("`other-pipe`"), "{refusal}");
 }
 
-/// The build's own carrier is read off its linked rows, and a build that links one serves it.
 #[test]
 fn the_builds_carrier_is_read_off_its_linked_rows() {
     assert_eq!(refusal(), None, "the build states one line carrier at most");
@@ -66,8 +57,6 @@ fn the_builds_carrier_is_read_off_its_linked_rows() {
     assert!(carrier().is_some(), "this build links a line carrier");
 }
 
-/// THE SESSION CREDENTIAL'S VARIABLE is spelled from the plane's key and the carrier's key, both
-/// upper-cased: the shape the launching client's `env` block has always carried.
 #[test]
 fn the_credential_variable_is_spelled_from_the_plane_and_the_carrier() {
     assert_eq!(
@@ -77,12 +66,6 @@ fn the_credential_variable_is_spelled_from_the_plane_and_the_carrier() {
     assert_eq!(env_credential("x", "y"), "BUSBAR_X_Y_CREDENTIAL");
 }
 
-/// A LINE PAST THE BOUND IS DROPPED WHOLE, its tail with it, and the next line is read as it is
-/// (the carrier's own contract: "a longer one is read to its end and dropped ... so the session
-/// goes on"). The reader hands the line over in pieces smaller than the bound, so the bound is
-/// crossed mid-line and pieces of the same line follow it. RED before the fix: the buffer
-/// was cleared where the bound was crossed and the rest of the line kept, so its tail (`bb`) came
-/// back as a line of its own.
 #[tokio::test]
 async fn a_line_past_the_bound_is_dropped_with_its_tail() {
     let input: &[u8] = b"aaaaaaaaaaaabb\nok\n";
@@ -131,7 +114,6 @@ async fn a_full_payload_has_the_same_bound_with_lf_crlf_or_eof() {
     }
 }
 
-/// A caller over `reader`, its writes kept nowhere.
 fn caller_over<R: AsyncRead + Unpin + Send>(reader: R) -> LineCaller<R> {
     LineCaller {
         lines: AsyncMutex::new(tokio::io::BufReader::new(reader)),
@@ -141,12 +123,6 @@ fn caller_over<R: AsyncRead + Unpin + Send>(reader: R) -> LineCaller<R> {
     }
 }
 
-/// THE SHUTDOWN SIGNAL ENDS THE READ (THE DESIGN §7: a unit is settled and recorded, never lost
-/// with the process): a stop that fires while the caller sends nothing ends the line loop with no
-/// line, so the serve goes on to drain its units and to the shutdown tail instead of waiting on
-/// stdin.
-/// RED before the fix: the line loop could not be stopped; `main` dropped the whole serve future on
-/// the signal, units in flight with it.
 #[tokio::test]
 async fn the_shutdown_signal_ends_the_read_with_no_line() {
     let (_held, reader) = tokio::io::duplex(64);
@@ -155,7 +131,6 @@ async fn the_shutdown_signal_ends_the_read_with_no_line() {
     assert_eq!(next_line(&caller, stop).await, None);
 }
 
-/// The green twin: with no signal, the next line is read as it always was.
 #[tokio::test]
 async fn with_no_signal_the_next_line_is_read() {
     let caller = caller_over(&b"one\n"[..]);
@@ -163,10 +138,6 @@ async fn with_no_signal_the_next_line_is_read() {
     assert_eq!(next_line(&caller, stop).await, Some(b"one".to_vec()));
 }
 
-/// A UNIT IN FLIGHT WHEN THE SERVE STOPS FINISHES AND ANSWERS (THE DESIGN §7; the listener path
-/// lets its in-flight requests drain on the same signal): the drain waits for it within the grace,
-/// and nothing is ended.
-/// RED before the fix: every unit still open was aborted where the read loop ended.
 #[tokio::test(start_paused = true)]
 async fn a_unit_in_flight_when_the_serve_stops_finishes_and_answers() {
     let answered = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -182,7 +153,6 @@ async fn a_unit_in_flight_when_the_serve_stops_finishes_and_answers() {
     assert!(answered.load(std::sync::atomic::Ordering::SeqCst));
 }
 
-/// The green twin: a unit still running when the grace is spent is ended, so a stop is bounded.
 #[tokio::test(start_paused = true)]
 async fn a_unit_still_running_past_the_drain_grace_is_ended() {
     let mut units = tokio::task::JoinSet::new();
@@ -199,7 +169,6 @@ const TEST_CARRIER: &str = "test-line-carrier";
 const QUEUED_LINE: &[u8] = b"queued";
 const OUTPUT_ERROR: &str = "test output failure";
 
-/// A watchdog derived from the production grace makes the pre-fix unbounded wait fail the test.
 async fn shutdown_result(serve: impl std::future::Future<Output = i32>) -> i32 {
     tokio::time::timeout(busbar_kernel::detached::DETACHED_DRAIN_GRACE * 2, serve)
         .await
@@ -265,7 +234,6 @@ impl AsyncWrite for ProbeWriter {
         }
         match self.write {
             IoOutcome::Ready => {
-                // Force write_all to resume across partial writes, preserving whole-line order.
                 let count = bytes.len().min(1);
                 self.probe
                     .bytes
@@ -307,8 +275,6 @@ impl AsyncWrite for ProbeWriter {
     }
 }
 
-/// EOF and the shutdown signal both give accepted output the existing grace, then retire the
-/// writer even when AsyncWrite never wakes. The output error also lets the root exit nonzero.
 #[tokio::test(start_paused = true)]
 async fn eof_and_stop_retire_a_writer_stuck_in_write_or_flush() {
     for at_eof in [true, false] {
@@ -361,8 +327,6 @@ async fn eof_and_stop_retire_a_writer_stuck_in_write_or_flush() {
     }
 }
 
-/// Queued unsolicited lines and a unit's answer are drained in handoff order, including partial
-/// writes, without discarding accepted output at EOF. A successful drain stays successful.
 #[tokio::test(start_paused = true)]
 async fn queued_lines_and_a_units_answer_drain_whole_and_in_order() {
     let probe = Arc::new(OutputProbe::default());
@@ -396,8 +360,6 @@ async fn queued_lines_and_a_units_answer_drain_whole_and_in_order() {
     assert!(probe.dropped.load(std::sync::atomic::Ordering::SeqCst));
 }
 
-/// A unit may spend part of the grace settling and queue its answer. Output gets only the
-/// remainder, so a blocked writer cannot add a second grace after the units finish.
 #[tokio::test(start_paused = true)]
 async fn units_and_output_share_one_shutdown_deadline() {
     let probe = Arc::new(OutputProbe::default());
@@ -436,8 +398,6 @@ async fn units_and_output_share_one_shutdown_deadline() {
     assert!(probe.dropped.load(std::sync::atomic::Ordering::SeqCst));
 }
 
-/// Both join sites handle writer failure: while waiting for more input and after EOF. A panic
-/// becomes an output failure, and a JoinHandle consumed by the read loop is never polled again.
 #[tokio::test(start_paused = true)]
 async fn writer_errors_and_panics_end_the_serve_without_repolling_a_finished_join() {
     for at_eof in [true, false] {

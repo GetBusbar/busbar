@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE KERNEL'S OWN ROUTE-TABLE INPUTS: every resolved lane and pool, flattened from the resolved
-//! `RootCfg` into neutral rows that
-//! [`ConfigTables::of`](super::route_tables::ConfigTables::of) builds the driver's route tables from.
-//! They carry only what the route tables, the boot banner and the telemetry label bank read.
-
 /// Active health-probe mode — a neutral mirror of `busbar_kernel::config::HealthMode`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum HealthModeInput {

@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The plugin's digest (`digest.rs`): FIPS 180-2's vectors, the one digest behind `sha256_hex`,
-//! and its `sha256/<base64>` tag.
 
 use super::*;
 

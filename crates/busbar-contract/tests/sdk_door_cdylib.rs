@@ -2,10 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE DOOR MACRO, DROPPED-IN LEG: the `sdk_door_plugin` example is a `cdylib` built from
-//! `plugin_door!` + `export_door!`. This test reads its dynamic symbol table against a baseline
-//! `cdylib` that links the contract and invokes neither macro (the macros export exactly the door),
-//! and loads it with `dlopen`, reaching the plugin only through `busbar_plugin_door`: a panicking
-//! slot — lifecycle or kind op — answers FAULT and the process lives on.
 
 use std::ffi::{c_char, c_int, c_void, CStr};
 use std::mem::size_of;
@@ -92,9 +88,7 @@ fn exported_symbols(example: &str) -> Vec<String> {
 fn the_macros_export_exactly_one_symbol_the_door() {
     let door = std::str::from_utf8(&DOOR_SYMBOL[..DOOR_SYMBOL.len() - 1]).unwrap();
     let plugin = exported_symbols("sdk_door_plugin");
-    // The contract defines no `#[no_mangle]` symbol of its own: the HOT and COLD lanes' frozen
-    // handshake (`busbar_abi`, `busbar_plugin_kind`, `busbar_plane_decl`, ...) is deleted (row 84),
-    // so an image that links the contract and exports no door exports no busbar symbol at all.
+
     let baseline = exported_symbols("sdk_door_baseline");
     assert!(
         !baseline.iter().any(|s| s.starts_with("busbar_")),
@@ -105,7 +99,7 @@ fn the_macros_export_exactly_one_symbol_the_door() {
         missing.is_empty(),
         "the baseline is not a subset: {missing:?}"
     );
-    // Exactly what the macros add — in particular the logic crate's `door` is NOT exported.
+
     let added: Vec<&str> = plugin
         .iter()
         .map(String::as_str)
@@ -202,7 +196,6 @@ fn the_dropped_in_door_answers_and_a_panicking_slot_is_fault_not_abort() {
     assert_eq!(table.head.size as usize, size_of::<OneKindOp>());
     assert_eq!(table.head.slots, LIFECYCLE_SLOTS + 1);
 
-    // A panicking `validate`.
     let panics = ValidateIn {
         head: in_head(size_of::<ValidateIn>(), slot::VALIDATE),
         settings: Blob {
@@ -218,7 +211,6 @@ fn the_dropped_in_door_answers_and_a_panicking_slot_is_fault_not_abort() {
     assert_eq!(call(table.head.validate, &panics, &mut out), Outcome::Fault);
     assert_eq!(out.outcome.outcome(), Outcome::Fault);
 
-    // A panicking `open`: FAULT, and no instance handed back.
     let open = OpenIn {
         head: in_head(size_of::<OpenIn>(), slot::OPEN),
         host: ptr::null(),
@@ -238,7 +230,6 @@ fn the_dropped_in_door_answers_and_a_panicking_slot_is_fault_not_abort() {
     assert_eq!(out.head.outcome.outcome(), Outcome::Fault);
     assert!(out.instance.is_null());
 
-    // A panicking kind op: FAULT, its out untouched but for the outcome.
     let echo = |generation| GenIn {
         head: in_head(size_of::<GenIn>(), LIFECYCLE_SLOTS),
         generation,
@@ -251,7 +242,6 @@ fn the_dropped_in_door_answers_and_a_panicking_slot_is_fault_not_abort() {
     assert_eq!(out.head.outcome.outcome(), Outcome::Fault);
     assert_eq!((out.next_tick_ns, out.head.wake_at_ns), (0x5EED, 0xAAAA));
 
-    // Still alive, still answering; the outcome is mirrored into `out`.
     let mut out = TickOut {
         head: out_head(size_of::<TickOut>()),
         next_tick_ns: 0,

@@ -1,12 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/plugin-loader/src/stage.rs`.
-
 use super::*;
 
-/// The per-process staging dir is private (0700 on unix), named with the pid, and stable
-/// while staged files are live.
 #[test]
 fn staging_dir_is_private_and_pid_named() {
     let mut state = staging_state().lock().unwrap_or_else(|p| p.into_inner());
@@ -21,7 +17,7 @@ fn staging_dir_is_private_and_pid_named() {
         let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o700, "staging dir must be 0700, got {mode:o}");
     }
-    // It lives in the ONE dedicated, owner-only parent, not at the top of the temp dir.
+
     let parent = staging_parent_in(&std::env::temp_dir());
     assert_eq!(dir.parent(), Some(parent.as_path()));
     #[cfg(unix)]
@@ -30,12 +26,10 @@ fn staging_dir_is_private_and_pid_named() {
         let mode = std::fs::metadata(&parent).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o700, "staging parent must be 0700, got {mode:o}");
     }
-    // A second call returns the SAME directory while it exists.
+
     assert_eq!(ensure_staging_dir(&mut state).unwrap(), dir);
 }
 
-/// Dropping a `Staged::TempFile` removes the file (unload-then-remove is enforced by holder
-/// field order; here we assert the removal half).
 #[test]
 fn temp_file_staging_cleans_up_on_drop() {
     let (path, pin) = stage_temp_file(b"pretend library bytes").expect("stage");
@@ -47,17 +41,9 @@ fn temp_file_staging_cleans_up_on_drop() {
     assert!(!path.exists(), "staged file must be removed on drop");
 }
 
-/// The dead-pid sweep removes a staging dir whose pid is dead, and leaves the live (current)
-/// process's dir alone.
-///
-/// Unix-only: on non-unix `pid_alive` deliberately reports every pid alive (see its doc
-/// comment — Windows relies on the locked-DLL failure mode instead), so the sweep never
-/// removes anything there and `removed >= 1` is unsatisfiable by design, not by defect.
 #[cfg(unix)]
 #[test]
 fn sweep_removes_dead_pid_dirs_only() {
-    // Our own live dir must survive the sweep: hold a real staged file so the shared state
-    // keeps the directory alive for the duration of this test.
     let (path, pin) = stage_temp_file(b"keepalive bytes").expect("stage keepalive");
     let held = Staged::TempFile {
         path,
@@ -71,22 +57,8 @@ fn sweep_removes_dead_pid_dirs_only() {
             .expect("staging dir exists while a file is live")
     };
 
-    // The sweep walks the SHARED staging parent, and so does every OTHER busbar-shaped process
-    // on the host (a parallel run of this same test binary, a booting busbar — main.rs sweeps at
-    // startup). A dead-pid fixture dir placed there is therefore legitimate prey for a CONCURRENT
-    // sweeper, and this test used to flake exactly that way under parallel load: a sibling swept
-    // the fixed-name fixture first, `sweep_dead_staging()` here found nothing, and `removed >= 1`
-    // failed with the sweep working perfectly. Two changes close it without weakening what is
-    // proven:
-    //   * a RANDOM suffix, so a sibling running this test can never create/remove the same path;
-    //   * a RETRY when — and only when — the fixture vanished without this call removing it, which
-    //     has exactly one cause (a concurrent sweeper won the race) and re-running the experiment
-    //     is the correct response to it. A fixture that still EXISTS after our sweep is the real
-    //     defect and fails immediately, every attempt.
     let mut proven = false;
     for _ in 0..5 {
-        // A dir for a pid that is certainly dead (pid_max on linux is < 2^22 by default; u32::MAX
-        // range pids do not exist on any supported platform).
         let dead = staging_parent_in(&std::env::temp_dir())
             .join(format!("{STAGING_PREFIX}4294967294-{}", random_hex(8)));
         std::fs::create_dir_all(dead.join("sub")).unwrap();
@@ -105,8 +77,6 @@ fn sweep_removes_dead_pid_dirs_only() {
             proven = true;
             break;
         }
-        // removed == 0 with the fixture gone: a concurrent sweeper (sibling test process or a
-        // booting busbar) removed it before this call walked the dir. Run the experiment again.
     }
     assert!(
         proven,
@@ -117,17 +87,12 @@ fn sweep_removes_dead_pid_dirs_only() {
     drop(held);
 }
 
-/// A private temp root for a sweep test: the sweep is pointed at it through
-/// `sweep_dead_staging_under`, so no concurrent sweeper on the host can touch its fixtures.
 fn private_root(tag: &str) -> PathBuf {
     let root = std::env::temp_dir().join(format!("busbar-sweep-{tag}-{}", random_hex(8)));
     std::fs::create_dir_all(&root).unwrap();
     root
 }
 
-/// Plugin#4 regression: a dead-pid-named SYMLINK inside the staging parent is SKIPPED by the
-/// sweep, never acted on. The sweep classifies the entry with `symlink_metadata` (no-follow), so a
-/// symlink is not a directory to it: the link is left in place and its target is never traversed.
 #[cfg(unix)]
 #[test]
 fn sweep_skips_symlinked_dead_pid_entry() {
@@ -135,13 +100,12 @@ fn sweep_skips_symlinked_dead_pid_entry() {
 
     let root = private_root("symlink");
     let parent = ensure_staging_parent(&root).expect("parent");
-    // A victim dir OUTSIDE staging, holding a canary that must never be touched.
+
     let victim = root.join("victim");
     std::fs::create_dir_all(&victim).unwrap();
     let canary = victim.join("canary");
     std::fs::write(&canary, b"do not delete").unwrap();
 
-    // A symlink in the parent named like a DEAD-pid staging dir, pointing at the victim.
     let link = parent.join(format!("{STAGING_PREFIX}4294967294-{}", random_hex(8)));
     symlink(&victim, &link).unwrap();
 
@@ -159,11 +123,6 @@ fn sweep_skips_symlinked_dead_pid_entry() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// LOADER-SWEEP regression: the boot sweep must NOT iterate the OS temp directory. A temp root
-/// holding 10,000 unrelated entries (plus the staging parent) is swept through a COUNTING lister;
-/// the sweep may list the dedicated parent only, and must see only the parent's own entries. The
-/// pre-fix sweep listed the temp root itself, so it iterated all 10,000 (boot unbounded on a huge
-/// `$TMPDIR`). Iteration is counted, never timed.
 #[cfg(unix)]
 #[test]
 fn sweep_lists_only_the_staging_parent_not_the_temp_root() {
@@ -200,10 +159,6 @@ fn sweep_lists_only_the_staging_parent_not_the_temp_root() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// Inside the dedicated parent: a dead pid's dir is removed; this process's own dir and a
-/// different LIVE process's dir (our parent process) are kept. A pre-1.6.0 top-level
-/// `busbar-plugins-<dead-pid>-*` in the temp root is NOT swept (the legacy layout is dropped so the
-/// full temp-root scan never comes back).
 #[cfg(unix)]
 #[test]
 fn sweep_in_parent_removes_dead_keeps_live() {
@@ -238,8 +193,6 @@ fn sweep_in_parent_removes_dead_keeps_live() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// The parent is refused (not staged under, not swept) when it is a symlink or not ours: a
-/// symlinked parent aimed at a directory holding a dead-pid-named dir must leave it untouched.
 #[cfg(unix)]
 #[test]
 fn symlinked_staging_parent_is_refused_and_not_swept() {
@@ -268,7 +221,6 @@ fn symlinked_staging_parent_is_refused_and_not_swept() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// An existing parent of ours with a loosened mode is tightened back to owner-only.
 #[cfg(unix)]
 #[test]
 fn loose_staging_parent_is_tightened_to_0700() {
@@ -283,7 +235,6 @@ fn loose_staging_parent_is_tightened_to_0700() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// pid_alive is true for ourselves and false for an absurd pid (unix).
 #[cfg(unix)]
 #[test]
 fn pid_liveness() {
@@ -291,13 +242,9 @@ fn pid_liveness() {
     assert!(!pid_alive(4_294_967_294));
 }
 
-/// Env marker: set in the child process [`a_replaced_image_on_a_reused_fd_runs_its_own_bytes`]
-/// re-executes itself in, so only the child runs the load/unload/load body.
 #[cfg(target_os = "linux")]
 const REUSED_FD_CHILD: &str = "BUSBAR_STAGE_REUSED_FD_CHILD";
 
-/// Build a tiny shared object from C `src` with the system C compiler (the same `cc` rustc links
-/// with on linux-gnu, so it is present wherever this crate builds). `extra` adds linker flags.
 #[cfg(target_os = "linux")]
 fn build_probe_library(dir: &std::path::Path, stem: &str, src: &str, extra: &[&str]) -> Vec<u8> {
     let c = dir.join(format!("{stem}.c"));
@@ -318,25 +265,6 @@ fn build_probe_library(dir: &std::path::Path, stem: &str, src: &str, extra: &[&s
     std::fs::read(&so).expect("read probe library")
 }
 
-/// THE REPLACED-PLUGIN DEFECT (PORT-EXT-B; spec #40, code-signing integrity). Linux stages a verified
-/// library as a memfd and `dlopen`s it by the name `/proc/self/fd/N`. glibc's `dlopen` first matches
-/// the NAME against every object still in the link map, and an image routinely outlives its handle
-/// (`DF_1_NODELETE`, or a Rust cdylib whose thread-local destructors ran on a plugin worker — glibc
-/// will not unload it). So when plugin A is unloaded, its fd number is closed and handed out again,
-/// and a replacement B is staged on that SAME number, `dlopen("/proc/self/fd/N")` returned A's image:
-/// the verified new bytes never ran, the old ones answered in their place.
-///
-/// A is built `-z nodelete` (the deterministic form of "the image outlives its handle"); A and B
-/// both export `busbar_stage_probe` (A answers 1, B answers 2) and each exports a symbol the other
-/// lacks. After A is unloaded and B is loaded, B's handle must answer with B's bytes.
-///
-/// The body runs in a CHILD of this test binary (`--exact`, one test thread): fd numbers are
-/// process-wide, and in the shared harness a sibling test could take A's freed number first, which
-/// would let the defective loader pass by luck. Alone in its process, the lowest free fd after A's
-/// memfd closes IS A's number, so on the defective loader B is staged on exactly A's fd, every run.
-///
-/// Linux-only: the memfd + `/proc/self/fd/N` path exists only there. macOS/Windows stage into a
-/// per-process directory under a monotonic, never-reused file name, so no name is ever reused.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_replaced_image_on_a_reused_fd_runs_its_own_bytes() {
@@ -383,7 +311,6 @@ fn a_replaced_image_on_a_reused_fd_runs_its_own_bytes() {
 
     type Probe = unsafe extern "C" fn() -> i32;
 
-    // Load A and prove it is A.
     let (lib_a, staged_a) = load_library_from_bytes(&a, "probe-a").expect("stage plugin A");
     // SAFETY: the symbol is the `int (void)` function compiled above.
     let from_a = unsafe {
@@ -393,11 +320,9 @@ fn a_replaced_image_on_a_reused_fd_runs_its_own_bytes() {
     };
     assert_eq!(from_a, 1, "plugin A answers with A's bytes");
 
-    // Unload A the way every holder does: the library first (on the FFI worker), then its backing.
     crate::dlclose_on_worker(lib_a);
     drop(staged_a);
 
-    // Load the REPLACEMENT. Its bytes, and only its bytes, must answer.
     let (lib_b, staged_b) = load_library_from_bytes(&b, "probe-b").expect("stage plugin B");
     // SAFETY: as above.
     let from_b = unsafe {
@@ -424,21 +349,9 @@ fn a_replaced_image_on_a_reused_fd_runs_its_own_bytes() {
     drop(staged_b);
 }
 
-/// W23, the website's "verified in memory ... the bytes that were verified are exactly the bytes
-/// that load" (plugins.astro:179). Linux stages into a SEALED memfd, so nothing can change the
-/// bytes between the verify and the `dlopen`. macOS, Windows and Linux's memfd fallback stage
-/// into a file, and a file has a window: between the write and the load something can rewrite it
-/// in place, or rename another library over its name. These tests open that window with the
-/// loader's `before_load` seam and tamper inside it; the load of the tampered file must not
-/// happen. `the_staged_bytes_are_the_verified_bytes` is the in-place rewrite (same file, other
-/// bytes); `a_staged_file_swapped_between_verify_and_load_is_refused` is the rename (other file,
-/// same name).
 mod staged_file_pin {
     use super::*;
 
-    /// Two DIFFERENT real libraries: `verified` is what the loader is handed; `other` is a LOADABLE
-    /// replacement, so a loader that maps whatever sits at the staged name succeeds on it (garbage
-    /// would fail the `dlopen` and let the defect pass as a refusal).
     pub(super) fn two_libraries() -> (Vec<u8>, Vec<u8>) {
         let verified = std::fs::read(crate::both_ways::example_cdylib("dispatch_test_plugin"))
             .expect("read the verified fixture library");
@@ -448,16 +361,12 @@ mod staged_file_pin {
         (verified, other)
     }
 
-    /// Release a load the way every holder does: the library first (on the FFI worker), then its
-    /// staged backing.
     pub(super) fn release(loaded: (Library, Staged)) {
         let (lib, staged) = loaded;
         crate::dlclose_on_worker(lib);
         drop(staged);
     }
 
-    /// Stage `verified`, run `tamper` on the staged file inside the staged-to-loaded window, and
-    /// return what the OS said to the tamper and what the loader then did.
     pub(super) fn tamper_then_load(
         verified: &[u8],
         tamper: impl FnOnce(&std::path::Path) -> std::io::Result<()>,
@@ -475,7 +384,6 @@ mod staged_file_pin {
         )
     }
 
-    /// The untampered path loads, and the file it loads from holds exactly the verified bytes.
     pub(super) fn clean_load_holds_the_verified_bytes(verified: &[u8]) {
         let mut seen = None;
         let loaded = load_via_staged_file(verified, "w23-clean", &mut |path| {
@@ -490,8 +398,6 @@ mod staged_file_pin {
         release(loaded);
     }
 
-    /// A refusal from the loader's own staged-file check (not a `dlopen` failure: both fixtures
-    /// load).
     pub(super) fn assert_refused(what: &str, loaded: Result<(Library, Staged), String>) {
         match loaded {
             Ok(l) => {
@@ -509,9 +415,6 @@ mod staged_file_pin {
     }
 }
 
-/// Unix staging file (macOS, any non-Linux unix, and Linux's memfd fallback). The same uid can
-/// always chmod and rewrite its own file, and rename inside its own `0700` directory, so the OS
-/// lets both tampers happen; the loader must notice and refuse.
 #[cfg(unix)]
 mod on_unix {
     use super::staged_file_pin::*;
@@ -523,7 +426,6 @@ mod on_unix {
         let (verified, other) = two_libraries();
         clean_load_holds_the_verified_bytes(&verified);
 
-        // In place: the SAME file, rewritten with another loadable library's bytes.
         let (tampered, loaded) = tamper_then_load(&verified, |path| {
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
             let mut f = std::fs::OpenOptions::new()
@@ -536,8 +438,6 @@ mod on_unix {
         tampered.expect("the owning uid can rewrite its own staged file in place");
         assert_refused("staged file rewritten in place", loaded);
 
-        // A quieter rewrite: one byte flipped in place, same length, and the mode put back to the
-        // staged 0400, so only the bytes themselves differ from what was verified.
         let (tampered, loaded) = tamper_then_load(&verified, |path| {
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
             let mut f = std::fs::OpenOptions::new().write(true).open(path)?;
@@ -554,7 +454,7 @@ mod on_unix {
     #[test]
     fn a_staged_file_swapped_between_verify_and_load_is_refused() {
         let (verified, other) = two_libraries();
-        // The swap: another library renamed over the staged name (same directory, same uid).
+
         let (swapped, loaded) = tamper_then_load(&verified, |path| {
             let decoy = path.with_extension("decoy");
             std::fs::write(&decoy, &other)?;
@@ -565,17 +465,11 @@ mod on_unix {
     }
 }
 
-/// Windows staging file. The loader holds the staged file open READ-ONLY with a share mode that
-/// grants no write and no delete, so the OS should refuse both tampers outright (a sharing
-/// violation). Either way the tampered bytes must never load: if a tamper does land, the loader
-/// must refuse; if the OS refuses it, the verified bytes load and the file still holds them.
 #[cfg(windows)]
 mod on_windows {
     use super::staged_file_pin::*;
     use super::*;
 
-    /// One tamper's outcome, judged: (OS refused, verified loaded) and (tamper landed, loader
-    /// refused) are both safe; a landed tamper that loads is the defect.
     fn judge(
         what: &str,
         verified: &[u8],
@@ -606,7 +500,6 @@ mod on_windows {
         let (verified, other) = two_libraries();
         clean_load_holds_the_verified_bytes(&verified);
 
-        // In place: the SAME file opened for write and rewritten with another library's bytes.
         let (tampered, loaded) = tamper_then_load(&verified, |path| {
             let mut f = std::fs::OpenOptions::new()
                 .write(true)
@@ -626,7 +519,7 @@ mod on_windows {
     #[test]
     fn a_staged_file_swapped_between_verify_and_load_is_refused() {
         let (verified, other) = two_libraries();
-        // The swap: another library renamed over the staged name (MoveFileEx, replace existing).
+
         let (swapped, loaded) = tamper_then_load(&verified, |path| {
             let decoy = path.with_extension("decoy");
             std::fs::write(&decoy, &other)?;
@@ -640,8 +533,6 @@ mod on_windows {
     }
 }
 
-/// Linux's primary path for the same claim: the memfd the loader mapped holds exactly the verified
-/// bytes and is sealed against any further write, grow or shrink.
 #[cfg(target_os = "linux")]
 mod on_linux_memfd {
     use super::staged_file_pin::*;
@@ -669,7 +560,7 @@ mod on_linux_memfd {
             want,
             "the memfd must be sealed (got {seals:#x})"
         );
-        // A write through a reopen of its name is refused by the seal.
+
         let rewrite = std::fs::OpenOptions::new()
             .write(true)
             .open(&name)

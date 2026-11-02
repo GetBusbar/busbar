@@ -2,12 +2,9 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The `op_id` dedupe every store runs: a replayed batch applies once, a reused `op_id` with a
-//! different body is a conflict and applies nothing, a refused op records nothing, and a body an
-//! older build recorded (its `{:?}` form) still replays the same batch.
 
 use std::collections::{BTreeMap, HashMap};
 
-// `Sha256` and its `Digest` methods come with the module's own imports.
 use super::*;
 use crate::abi::store::OpId;
 use crate::records::{
@@ -287,7 +284,7 @@ fn the_body_is_the_documented_encoding() {
         h.update((s.len() as u64).to_le_bytes());
         h.update(s.as_bytes());
     }
-    // One usage cell: ("b", 60, { requests 1, billable 1, models [("m", {"input": 7})] }).
+
     let mut h = Sha256::new();
     text(&mut h, "busbar.store.op/1");
     text(&mut h, "add_usage_batch");
@@ -304,7 +301,6 @@ fn the_body_is_the_documented_encoding() {
     let want: [u8; 32] = h.finalize().into();
     assert_eq!(Dedupe::usage(&[("b", 60, delta(1))]).body(), &want);
 
-    // A plane record: kind, id, parent (present), seq, ts, disposition, body.
     let mut h = Sha256::new();
     text(&mut h, "busbar.store.op/1");
     text(&mut h, "append_plane_record");

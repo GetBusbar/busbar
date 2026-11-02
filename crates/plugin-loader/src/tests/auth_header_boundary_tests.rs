@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Observe the actual raw VERIFY inputs through opened instances, including buffer negotiation
-//! and dispatcher custody. The SDK still owns the instances, verdicts and SHORT leases.
-
 use super::*;
 use crate::dispatch::{load_linked, Bind, ConnTable, DispatchConfig, LinkedRow};
 use busbar_contract::abi::auth::{
@@ -41,7 +38,6 @@ const CONNECTION: u64 = 7;
 const UNIT: u64 = 11;
 const WAIT: Duration = Duration::from_secs(5);
 
-// Literal request fixtures deliberately interleave duplicates and fields outside the capability.
 const LINES: &[(&str, &[u8])] = &[
     ("x-private", b"never-copy-private"),
     ("X-FiRsT", b"first\0\xff"),
@@ -199,7 +195,7 @@ fn crossed(
                 gate = GATE.1.wait(gate).unwrap();
             }
         }
-        // In CANCEL mode the owner has already dropped its future before these bytes are read.
+
         let lines = if request.lines_len == 0 {
             Vec::new()
         } else {
@@ -226,7 +222,7 @@ fn crossed(
         if initial && text(request.request.method) == PENDING.as_bytes() {
             let pending = RawOutcome::of(Outcome::Pending);
             (*output.cast::<IdentifyOut>()).head.outcome = pending;
-            // Nonzero means an immediate timer-driven resume, including at clock epoch zero.
+
             (*output.cast::<IdentifyOut>()).head.wake_at_ns = now_ns().max(1);
             return pending;
         }
@@ -349,7 +345,6 @@ fn release_gate() {
     GATE.1.notify_all();
 }
 
-/// Release blocked crossings before a failed assertion unwinds or a scoped thread is joined.
 struct ReleaseGate;
 
 impl Drop for ReleaseGate {
@@ -503,8 +498,7 @@ async fn raw_verify_enforces_instance_header_capabilities_and_preserves_call_cus
     entered();
     drop(abandoned);
     release_gate();
-    // One worker: a subsequent awaited VERIFY is a barrier after the abandoned crossing. Its
-    // observation is identical except for the method, so check the abandoned input separately.
+
     answer(
         Box::into_pin(calls.verify(request(NORMAL, AuthPoint::HeadBody))).await,
         false,

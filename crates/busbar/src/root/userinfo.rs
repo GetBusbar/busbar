@@ -1,26 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! AN OPERATOR URL'S USERINFO AS A BASIC CREDENTIAL OF THE AUTH KIND (the kernel never sees
-//! the key).
-//!
-//! 1.5.5 sent every provider request, and every token POST, with reqwest over the URL as the
-//! operator wrote it (v1.5.5 `crates/busbar/src/proxy/engine/mod.rs:1669-1670`,
-//! `proxy/engine/walk.rs:583-584`, `health.rs:313-314`,
-//! `egress_auth/oauth_client_credentials.rs:119-126`, `egress_auth/jwt_bearer.rs:175-181`).
-//! reqwest 0.12.28's `RequestBuilder::new` (`src/async_impl/request.rs:169-182`) took a
-//! `user:pass@` out of the URL (`extract_authority`, `:581-605`: percent-decoded; nothing when the
-//! user is empty and there is no password) and put it FIRST as a sensitive
-//! `authorization: Basic base64(user:pass)` (`src/util.rs:4-25`); the request's own credential then
-//! went in through `.headers(auth)`, whose `replace_headers` (`src/util.rs:50-77`) replaced that
-//! field only when the credential named `authorization`.
-//!
-//! The composition root reads that userinfo AT CONFIGURATION TIME into a [`UserinfoBasic`], and it is
-//! presented through the auth kind's outbound call alone: a member's binding is wrapped
-//! ([`lead_with`]) so its fields lead with the Basic value unless they name `authorization`, and a
-//! minting plugin's token POST is led by it from the root's own connection table. The kernel holds
-//! the binding's handle (`Arc<dyn OutboundAuth>`) and never the bytes.
-
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -28,7 +8,6 @@ use std::task::{Context, Poll};
 use busbar_contract::auth_calls::{AuthField, Fielding, Fields, FieldsRequest, OutboundAuth};
 use busbar_contract::redacted::Secret;
 
-/// The field a URL's userinfo rides under, and the one name that displaces it.
 const AUTHORIZATION: &str = "authorization";
 
 /// THE BASIC VALUE AN OPERATOR'S URL SPELLED (`Basic base64(user:pass)`), root-owned. `Debug` prints
@@ -37,14 +16,8 @@ const AUTHORIZATION: &str = "authorization";
 pub struct UserinfoBasic(Arc<Secret<Vec<u8>>>);
 
 impl UserinfoBasic {
-    /// The Basic value `url`'s authority spells, or `None` when it spells no user and no password.
-    /// The authority ends at the first `/`, `?`, `#` or `\`, and the userinfo is everything before
-    /// its LAST `@`; the user is what precedes the first `:`, the pass what follows it (an empty pass
-    /// is none). Both are percent-decoded as reqwest decoded them: a user that does not decode to
-    /// UTF-8 presents nothing, a pass that does not is no pass (`extract_authority`'s two arms).
     #[must_use]
     pub fn of(url: &str) -> Option<Self> {
-        // The authority the one split reads ([`busbar_contract::net::url_authority`]).
         let parts = busbar_contract::net::url_authority(url);
         parts.scheme?;
         let spelled = parts.userinfo?;
@@ -54,7 +27,7 @@ impl UserinfoBasic {
         };
         let user = Secret::new(percent_decoded(user)?);
         let pass = pass.and_then(percent_decoded).map(Secret::new);
-        // Read under the kernel's seal (Part 2 #54): the root spells the Basic value once, here.
+
         let seal = busbar_kernel::seal::lend();
         if user.expose(&seal).is_empty() && pass.is_none() {
             return None;
@@ -70,15 +43,10 @@ impl UserinfoBasic {
         )))))
     }
 
-    /// The value's bytes, for the root's own field writers, read under the kernel's seal (Part 2
-    /// #54).
     fn bytes(&self) -> &[u8] {
         self.0.expose(&busbar_kernel::seal::lend())
     }
 
-    /// A connection open's head `fields` with this value LEADING them under `authorization`, or
-    /// `None` when they already name `authorization` (the value then rides nowhere): 1.5.5's
-    /// order and condition, for a minting plugin's token POST.
     #[must_use]
     pub fn leading<'a>(
         &'a self,
@@ -97,8 +65,6 @@ impl UserinfoBasic {
         )
     }
 
-    /// An auth answer led by this value, under the same condition: a ready answer that names no
-    /// `authorization` gets it first; one that does, and any other answer, is left as it is.
     #[must_use]
     pub fn lead(&self, answer: Fields) -> Fields {
         match answer {
@@ -130,7 +96,6 @@ impl std::fmt::Debug for UserinfoBasic {
     }
 }
 
-/// `Basic ` and the standard base64 (padded) of `plain`: what reqwest's `util::basic_auth` wrote.
 fn basic_value(plain: &[u8]) -> Vec<u8> {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = b"Basic ".to_vec();
@@ -146,8 +111,6 @@ fn basic_value(plain: &[u8]) -> Vec<u8> {
     out
 }
 
-/// `%XX` sequences decoded to bytes, the result read as UTF-8 (`None` when it is not). A `%` that
-/// opens no two-digit hex escape is kept as written, as the percent-decoder reqwest used kept it.
 fn percent_decoded(text: &str) -> Option<String> {
     let bytes = text.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -169,8 +132,6 @@ fn percent_decoded(text: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
-/// A member's binding as the kernel is handed it: `auth` itself when its provider's URL spelled no
-/// userinfo, else `auth` with every answer led by the Basic value ([`UserinfoBasic::lead`]).
 #[must_use]
 pub fn lead_with(
     auth: Arc<dyn OutboundAuth>,
@@ -182,7 +143,6 @@ pub fn lead_with(
     }
 }
 
-/// See [`lead_with`]: every call is the inner binding's own, its answers led by the Basic value.
 struct BasicLed {
     inner: Arc<dyn OutboundAuth>,
     basic: UserinfoBasic,
@@ -216,7 +176,6 @@ impl OutboundAuth for BasicLed {
     }
 }
 
-/// An inner `fields` in flight, its answer led by the Basic value once it arrives.
 struct LedFielding {
     inner: Box<dyn Fielding>,
     basic: UserinfoBasic,

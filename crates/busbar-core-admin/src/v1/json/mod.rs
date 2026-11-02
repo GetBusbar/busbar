@@ -1,14 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The JSON-REST adapter for Admin API **v1** — mounts `/api/v1/admin/*`.
-//!
-//! The version-specific WIRE layer for the JSON transport: it declares the v1 routes, owns the v1 JSON
-//! envelope helpers, and maps each route to a shared `AdminService` call. It holds NO operation logic
-//! — logic lives in `super::service`, the frozen types in `crate::v1::contract`. A GraphQL adapter for v1
-//! is a sibling `super::graphql` over the SAME service. Releasing v2 copies the whole `v1/` directory
-//! to `v2/`, changes only what differs, and mounts `/admin/v2/*` alongside; v1 keeps answering.
-
 use std::sync::Arc;
 
 use axum::extract::State;
@@ -29,25 +21,13 @@ use crate::v1::contract::{
     AdminError, PATH_ADMIN_AUTH, PATH_CONFIG_VALIDATE, PATH_GROUPS, PATH_HOOKS,
     PATH_PLUGINS_INSPECT,
 };
-// The kernel's admin audit ring, named once for this crate (the handlers, the plane-verb backing and
-// the audit-page view all reach it here).
+
 pub(crate) use busbar_kernel::audit_ring as audit;
 use busbar_kernel::state::AppHandle;
 
-/// The OpenAPI response-object key (`"responses"`). Named here ONCE and assembled from fragments so
-/// this neutral admin source carries no bare `responses` token: the OpenAPI keyword collides with a
-/// reserved dialect token the plane-purity gate (`cargo xtask gate plane-purity`) bans as vendor-API
-/// vocabulary, and the neutral crates must name no plane/dialect vocabulary. `concat!` folds to the identical
-/// `"responses"` &'static str at compile time, so every emitted OpenAPI document is byte-for-byte
-/// unchanged — this is a naming refactor, not a wire change. Only the OpenAPI document builders
-/// (`openapi-schema`) reference it, so it is gated to that feature to stay dead-code-clean elsewhere.
 #[cfg(feature = "openapi-schema")]
 pub(crate) const RESPONSES_KEY: &str = concat!("respon", "ses");
 
-/// The JSON-REST adapter for v1: the `/api/v1/admin/*` resource API with the stable
-/// `{"error":{"code","message"}}` envelope. Zero-sized — each request
-/// builds an `AdminService` over the CURRENT snapshot from the router's `Arc<AppHandle>` state (so a
-/// read after a config apply reflects the new config), and the mutation path swaps through the handle.
 pub(crate) struct JsonV1;
 
 impl AdminTransport for JsonV1 {
@@ -64,11 +44,6 @@ impl AdminTransport for JsonV1 {
     }
 
     fn router(&self) -> Router<Arc<AppHandle>> {
-        // Routes are RELATIVE — `admin::transport::mount` nests this router under the computed
-        // `/api/<version>/<area>` prefix (the algorithmic mount grammar), so no path here can drift
-        // from `contract::ADMIN_PREFIX`. Each handler pulls the `Arc<AppHandle>` state, loads the
-        // current snapshot into a per-request `AdminService`, and maps the typed result onto the
-        // JSON wire.
         #[cfg_attr(not(test), allow(clippy::let_and_return))]
         let router = Router::new()
             .route("/info", get(info))
@@ -85,22 +60,10 @@ impl AdminTransport for JsonV1 {
             .route("/hooks/{name}/settings", patch(patch_hook_settings))
             .route("/hooks/{name}/schema", get(hook_schema))
             .route("/hooks/{name}/status", get(hook_status))
-            // The 1.5.3 named-DEFINITION maps, mounted in ONE loop over `NamedMapSection::ALL` so
-            // the admin surface mirrors the config grammar and a future section is additive.
             .merge(named_map::routes());
-        // EACH PLANE'S TRUST VERBS, contributed through the registry rather than named here: whatever
-        // operator verbs a plane adds ON TOP of its generic named-definition CRUD (e.g. a verb that
-        // moves a registration's upstream between a declared and a standing state). Each plane's
-        // `admin_routes` owns the operator's standing decision about the upstream behind a
-        // registration; the generic handler still owns the DEFINITION. Merged in the registry's
-        // DECLARATION ORDER, so every plane's operator surface is read together and the route order
-        // is stable. Without these a named-definition section is CRUD only and no sequence of
-        // operator actions can make a registered upstream actually serve. The `admin_routes` fns are
-        // granted only the router — never a `Store`/`GovCtx`/audit handle.
+
         let router = mount_plane_admin_routes(router);
         let router = router
-            // Groups — the `groups:` limit-tree CRUD: runtime-mutable groups
-            // → per-user budgets. Reads are read-only scope; mutations are full scope.
             .route(PATH_GROUPS, get(list_groups).post(register_group))
             .route(
                 "/groups/{name}",
@@ -110,8 +73,6 @@ impl AdminTransport for JsonV1 {
                     .delete(delete_group),
             )
             .route("/groups/{name}/usage", get(get_group_usage))
-            // Per-section overlay RESET: DISCARD a section's overlay mutations and revert it to
-            // base config.yaml. Full scope (the mutation fallthrough). section ∈ {groups, hooks}.
             .route(
                 "/overlay/{section}",
                 axum::routing::delete(reset_overlay_section),
@@ -141,9 +102,6 @@ impl AdminTransport for JsonV1 {
                 get(get_config_settings).put(put_config_settings),
             )
             .route("/openapi.json", get(openapi))
-            // Virtual-key management — the keys resource of the SAME v1 admin surface. Handlers
-            // live in `busbar_kernel::admin` while they migrate into the layered service; mounting them
-            // here (not in main.rs) keeps the whole admin surface one router under one prefix.
             .route(
                 "/keys",
                 post(crate::keys::create_key).get(crate::keys::list_keys),
@@ -156,25 +114,14 @@ impl AdminTransport for JsonV1 {
             )
             .route("/keys/{id}/usage", get(crate::keys::key_usage))
             .route("/keys/{id}/rotate", post(crate::keys::rotate_key))
-            // 1.5.0 signed-token keys: revoke a key (denylist, keep the binding) and rotate the
-            // busbar key-signing key (revoke-all).
             .route("/keys/{id}/revoke", post(crate::keys::revoke_key))
             .route("/signing-key/rotate", post(crate::keys::rotate_signing_key))
-            // EVERY response on this surface speaks the frozen envelope — including an unmatched
-            // path (404 `not_found`) and a matched path with the wrong method (405
-            // `method_not_allowed`). Without these, axum's nest semantics leak an empty-body 405
-            // from the inner MethodRouter and fall unmatched paths through to the data plane's
-            // vendor-native shaping.
             .fallback(plane_serve_or_not_found)
             .method_not_allowed_fallback(|| async { err_json(&AdminError::MethodNotAllowed) });
-        // This crate's tests only: the taxonomy under-claim check. `Router::layer` runs AFTER
-        // routing, so it sees the `MatchedPath` (the operation) alongside the tag `err_json` stamped
-        // on the response.
+
         #[cfg(test)]
         let router = router.layer(axum::middleware::from_fn(record_declared_error));
-        // THE KEY MUTATIONS' REPLAY CACHE rides in as a request extension (the composition root
-        // inserts the node's one, built for the life of the process). A mount that inserts none
-        // gets this router's own, so a replayable mutation is never left without one.
+
         router.layer(axum::middleware::from_fn_with_state(
             Arc::new(crate::keys::KeyReplayCache::new()),
             supply_replay_cache,
@@ -182,7 +129,6 @@ impl AdminTransport for JsonV1 {
     }
 }
 
-/// Insert `own` as the request's replay cache unless the mount already supplied the node's.
 async fn supply_replay_cache(
     State(own): State<Arc<crate::keys::KeyReplayCache>>,
     mut req: axum::extract::Request,
@@ -198,19 +144,6 @@ async fn supply_replay_cache(
     next.run(req).await
 }
 
-/// TEST-ONLY under-claim check (see `JsonV1::router`). For every response carrying a taxonomy tag it
-/// PANICS when the endpoint's `declared_errors` does not list that emission, failing the very test
-/// that triggered it.
-///
-/// The under-claim comparison runs at the SAME `(operation, ErrKind, Cond)` granularity the
-/// over-claim direction does, whenever the emission names its condition (`err_json_cond`). It used
-/// to compare `ErrKind` alone, which made the guard blind to the exact defect it exists to catch: a
-/// handler emitting a NEW condition under an ALREADY-DECLARED kind sailed through, because a
-/// sibling condition on the same operation kept `.any(|d| d.kind == tag.kind)` true. Two such
-/// emissions shipped undocumented in 1.5.0 behind that hole — the `AtKeyCap` 409 on
-/// `PATCH /keys/{id}` (declared nowhere, but Conflict was declared for `GovernanceOff`) and the
-/// delegated-mint 400 on `POST /keys` (which additionally reused the wrong `Cond`, so its
-/// openapi.json prose described the rebind target instead). Both now fail the build at emission.
 #[cfg(test)]
 async fn record_declared_error(
     req: axum::extract::Request,
@@ -230,16 +163,7 @@ async fn record_declared_error(
         let rel = path
             .strip_prefix(crate::v1::contract::ADMIN_PREFIX)
             .unwrap_or(&path);
-        // UNDER-CLAIM IS FATAL, HERE, NOW. If a handler emitted something the endpoint's
-        // declaration does not list, `openapi.json` would under-document the surface — so fail the
-        // test that produced it rather than accumulating a report someone has to read. Every test in
-        // the suite is a driver for this direction; there is no ordering dependency and no way to
-        // add an undocumented error response without turning the build red.
-        //
-        // GRANULARITY. A `err_json_cond` emission names its condition, so it is matched on the FULL
-        // `(kind, cond)` pair — matching on `kind` alone would let a new condition hide behind a
-        // declared sibling of the same kind, which is exactly the hole this guard is for. An
-        // untagged emission (`err_json`) can only be matched on `kind`.
+
         let declared = taxonomy::declared_errors(method, rel);
         let matched_decl = match tag.cond {
             Some(cond) => declared
@@ -265,44 +189,17 @@ async fn record_declared_error(
     resp
 }
 
-/// Build a per-request `AdminService` over the CURRENT snapshot loaded from the handle.
 fn service(handle: &Arc<AppHandle>) -> AdminService {
     AdminService::new(handle.load())
 }
 
-/// Absolute admin path from a RELATIVE one — relocated to the neutral substrate
-/// (`busbar_kernel::api::ap`) alongside `ADMIN_PREFIX`, re-exported here so `openapi_doc()` and
-/// every in-core caller are unchanged.
 #[cfg_attr(not(feature = "openapi-schema"), allow(unused_imports))]
 pub use busbar_kernel::api::ap;
 
-/// The config-plane mutation choke point. Every mutation — from any transport, in any module — runs
-/// inside `txn::config_transaction`, which owns the (file-private) mutation lock, hands the body a
-/// FRESH post-lock snapshot, forces store/disk work onto `spawn_blocking`, and applies the resulting
-/// plan through `AppHandle::commit_and_swap`. See `txn.rs` for the four guarantees.
-// The config-mutation choke point RELOCATED to `busbar_kernel::config::transaction` (1.6.0 de-alias, stage
-// 2a): core infrastructure, not admin-surface vocabulary. Re-exported here so every existing
-// `config_transaction`/`Outcome` call site in this module tree is unchanged; `E` resolves to
-// `AdminError` by inference at every one of them (their bodies construct `AdminError::…` directly).
 pub(crate) use busbar_kernel::config::transaction::{config_transaction, Outcome};
 
-/// The GENERIC named-DEFINITION map CRUD (`/identity-providers`, `/export`; further sections land
-/// additively as planes register them). One handler set for every section of the universal config
-/// pattern — see the module header.
 pub(crate) mod named_map;
 
-// ── The plane admin-verb route-mount adapter (ADMIN-3) ───────────────────────────────────────────
-
-/// MOUNT EVERY PLANE'S ADMIN TRUST VERBS onto the admin router — the ADMIN-3 mirror of the data
-/// plane's `router::mount_plane_routes`. Iterates the plane decls in the registry's DECLARATION
-/// ORDER, preserving the operator-visible route order, asks each for its neutral
-/// [`busbar_kernel::admin_verbs::AdminRouteSpec`] list, and registers each spec at its VERBATIM
-/// `(method, path)` so the auth middleware's `required_scope(method, path)` is byte-identical.
-///
-/// The `&dyn Any` a plane's `admin_routes` fn takes is the seam's shared shape (it mirrors
-/// `PlaneDecl::routes`); the admin verbs' paths are static and their handlers read the request's own
-/// snapshot through the host the shim mints per request, so no build-time slot value is needed — a
-/// unit placeholder satisfies the signature.
 fn mount_plane_admin_routes(mut router: Router<Arc<AppHandle>>) -> Router<Arc<AppHandle>> {
     for decl in busbar_kernel::plane_driver::registry::plane_decls() {
         if let Some(admin_routes) = decl.admin_routes {
@@ -314,10 +211,6 @@ fn mount_plane_admin_routes(mut router: Router<Arc<AppHandle>>) -> Router<Arc<Ap
     router
 }
 
-/// THE ADMIN SURFACE'S FALLBACK: a path no route above matched is a published plane instance's
-/// admin route, served by its `serve` op (`busbar_kernel::plane_driver::serve`, ARCHITECT C2c S5
-/// Q1), or the unmatched `404`. The auth middleware has already judged it like every admin path.
-/// The table is the live generation's (`App::serve_tables`).
 async fn plane_serve_or_not_found(
     State(handle): State<Arc<AppHandle>>,
     req: axum::extract::Request,
@@ -329,9 +222,6 @@ async fn plane_serve_or_not_found(
         .unwrap_or_else(|| err_json(&AdminError::not_found("resource")))
 }
 
-/// LAW 7 (BUSBAR-1.6.0.md: "Core loads a plugin **iff** its configuration section is present"): an admin
-/// path of a plane this generation did NOT configure answers exactly what the unmounted path answers
-/// (the router fallback's `404`), so a 1.5.5 config sees 1.5.5's surface. `None` = serve it.
 pub(crate) fn unconfigured_plane(
     handle: &AppHandle,
     decl: Option<&busbar_kernel::plane_driver::registry::PlaneDecl>,
@@ -341,21 +231,13 @@ pub(crate) fn unconfigured_plane(
     }
     #[cfg_attr(not(test), allow(unused_mut))]
     let mut resp = err_json(&AdminError::not_found("resource"));
-    // The unmounted path's answer is no operation's emission, exactly as the router fallback's (which
-    // matches no route) never is: it carries no taxonomy tag for the recording layer to attribute.
+
     #[cfg(test)]
     resp.extensions_mut()
         .remove::<crate::v1::contract::taxonomy::observed::Tag>();
     Some(resp)
 }
 
-/// Mount ONE neutral [`busbar_kernel::admin_verbs::AdminRouteSpec`] onto the admin router. This is
-/// the single place a plane's admin verb touches `Arc<AppHandle>` / `ok_json` / `err_json` / the audit
-/// chain: the shim loads the handle, mints the neutral host, builds an
-/// [`busbar_kernel::admin_verbs::AdminReqCtx`], awaits the plane's own handler, and frames the
-/// [`busbar_kernel::admin_verbs::AdminReply`] — mapping the neutral `PlaneVerbError` back onto
-/// `AdminError` and, for an `Audited` verb, recording the audit row EXACTLY where the pre-seam
-/// `connect` did (applied on a view, rejected on a look refusal, NOTHING on the resolve-time `404`).
 fn mount_one_admin_spec(
     router: Router<Arc<AppHandle>>,
     decl: &'static busbar_kernel::plane_driver::registry::PlaneDecl,
@@ -385,9 +267,7 @@ fn mount_one_admin_spec(
                     return resp;
                 }
                 let principal = principal.map(|axum::Extension(p)| p);
-                // LOAD + MINT stays 100% core-side (the plane names neither `AppHandle` nor the host
-                // factory). `from_handle` mirrors the data-plane adapter; the verbs here read only the BOUND
-                // slot, so it is byte-identical to the pre-seam `engine_host(&handle.load())` mint.
+
                 let host = busbar_kernel::plane_driver::engine_host_from_handle(&handle);
                 let ctx = AdminReqCtx {
                     host,
@@ -395,8 +275,7 @@ fn mount_one_admin_spec(
                     body,
                     headers,
                     principal: principal.clone(),
-                    // What the auth gate consumed of the head and the query it left: a verb that hands
-                    // the request on to a plane strikes the one and keeps the other.
+
                     consumed: consumed.map(|axum::Extension(c)| c),
                     query,
                     serve: handle.load().serve_tables.clone(),
@@ -404,7 +283,7 @@ fn mount_one_admin_spec(
                 finish_admin_reply(plane, &name, kind, principal, handler(ctx).await)
             }
         };
-    // Wrong method: the router's `405`, or — plane unconfigured (Law 7) — the unmounted path's `404`.
+
     let wrong_method = move |State(handle): State<Arc<AppHandle>>| async move {
         unconfigured_plane(&handle, Some(decl))
             .unwrap_or_else(|| err_json(&AdminError::MethodNotAllowed))
@@ -415,9 +294,6 @@ fn mount_one_admin_spec(
     )
 }
 
-/// Frame a plane handler's [`busbar_kernel::admin_verbs::AdminReply`] onto the wire, and record the
-/// audit row for an `Audited` verb. The variants encode the pre-seam behaviour exactly: `Refused` is
-/// the un-audited resolve-time refusal, and `Applied`/`Rejected` are the audited look-time outcomes.
 fn finish_admin_reply(
     plane: &'static str,
     name: &str,
@@ -437,8 +313,7 @@ fn finish_admin_reply(
         AdminReply::Refused(e) => crate::planeverbs::refusal_response(plane, name, e),
         AdminReply::Applied(body) => {
             record_audit(audit::OUTCOME_APPLIED);
-            // Byte-identical to `ok_json(StatusCode::OK, &view)`: same status, same content type, and the
-            // body was serialized handler-side by the SAME `serde_json::to_string(&view)` call.
+
             (
                 StatusCode::OK,
                 [(CONTENT_TYPE, busbar_contract::protocol::APPLICATION_JSON)],
@@ -453,16 +328,9 @@ fn finish_admin_reply(
     }
 }
 
-// ── JSON wire helpers (v1) ───────────────────────────────────────────────────────────────────────
-
-// The v1 envelope PRIMITIVES (`ok_json`/`err_json`/`err_json_cond`), moved here from the kernel's
-// `admin::v1::json` (P2 D4); the kernel keeps only the neutral envelope for its own answers
-// (`busbar_kernel::admin::gate`).
 mod envelope;
 pub use envelope::{err_json, err_json_cond, ok_json};
 
-/// Map a service `Result<View, AdminError>` onto the JSON wire: `ok_json` on success (given status),
-/// `err_json` on error. The single seam every v1 json handler funnels through.
 fn respond<T: Serialize>(status: StatusCode, result: Result<T, AdminError>) -> Response {
     match result {
         Ok(view) => ok_json(status, &view),
@@ -470,10 +338,6 @@ fn respond<T: Serialize>(status: StatusCode, result: Result<T, AdminError>) -> R
     }
 }
 
-/// Decode the opaque `?cursor=` into a start offset (0 when absent). A malformed/foreign cursor is a
-/// 400 `invalid_request` — never a silent skip — so every cursor-paginated handler rejects it the same.
-// The Err variant is an axum `Response` (the ready-to-return 400) — intentionally, so callers just
-// `return` it; that makes the Result "large", which is fine for a per-request handler helper.
 #[allow(clippy::result_large_err)]
 fn cursor_offset(q: &std::collections::HashMap<String, String>) -> Result<usize, Response> {
     match q.get("cursor") {
@@ -487,8 +351,6 @@ fn cursor_offset(q: &std::collections::HashMap<String, String>) -> Result<usize,
     }
 }
 
-/// The 409 for a `kind` entry `name` the base config file defines: file-owned, so the additive
-/// overlay cannot durably shadow it.
 fn base_owned(kind: &str, name: &str) -> AdminError {
     AdminError::Conflict(format!(
         "{kind} `{name}` is defined in the base config file; edit config.yaml (the API cannot \
@@ -496,8 +358,6 @@ fn base_owned(kind: &str, name: &str) -> AdminError {
     ))
 }
 
-/// `body` as the JSON a mutation takes, or the 400 that names it a `malformed <what> body`
-/// (boxed: the ready-to-return `Response` is large, and the happy path should not carry it).
 fn json_body<T: serde::de::DeserializeOwned>(body: &[u8], what: &str) -> Result<T, Box<Response>> {
     serde_json::from_slice(body).map_err(|e| {
         Box::new(err_json(&AdminError::Validation(format!(
@@ -506,8 +366,6 @@ fn json_body<T: serde::de::DeserializeOwned>(body: &[u8], what: &str) -> Result<
     })
 }
 
-/// The page a list read serves: `?cursor=`'s offset and `?limit=N` (unparsable or absent:
-/// `default`), clamped to `1..=LIST_LIMIT_MAX`. A foreign cursor answers as [`cursor_offset`] does.
 fn page_window(
     q: &std::collections::HashMap<String, String>,
     default: usize,
@@ -520,13 +378,6 @@ fn page_window(
     Ok((cursor_offset(q).map_err(Box::new)?, limit))
 }
 
-/// Given a slice fetched with `limit + 1` starting at `start`, trim it IN PLACE to `limit` and return
-/// the next opaque cursor iff the probe row existed (i.e. a further page remains). The one seam that
-/// gives keys/audit/versions an identical `{items, next_cursor}` continuation.
-///
-/// PRECONDITION: `limit >= 1`. At `limit == 0` the cursor would encode `start + 0 == start` — a
-/// cursor pointing at the exact offset it was just served from, so a cursor-following client loops
-/// forever. Every caller clamps `limit` to at least 1 before reaching here.
 fn page_cursor<T>(items: &mut Vec<T>, start: usize, limit: usize) -> Option<String> {
     if items.len() > limit {
         items.truncate(limit);
@@ -538,14 +389,6 @@ fn page_cursor<T>(items: &mut Vec<T>, start: usize, limit: usize) -> Option<Stri
     }
 }
 
-/// Parse the optional `If-Match` header into the caller's expected config version (ONE
-/// optimistic-concurrency mechanism across the whole surface — the RFC-7232 header, exactly as the
-/// keys resource already speaks it; there is no body-level `expected_version` twin). Grammar: the
-/// config-plane ETag is the config version quoted (`"42"`); a bare `42` is accepted leniently and
-/// `*` (RFC: "any current representation") matches unconditionally, i.e. no guard. Anything else is
-/// a 400 `invalid_request` — a malformed guard must never silently pass as "no guard".
-// The Err variant is the ready-to-return 400 `Response` — intentional (callers just `return` it);
-// a "large" Result is fine for a per-request handler helper.
 #[allow(clippy::result_large_err)]
 fn if_match_version(headers: &axum::http::HeaderMap) -> Result<Option<u64>, Response> {
     let Some(raw) = headers.get(axum::http::header::IF_MATCH) else {
@@ -555,7 +398,7 @@ fn if_match_version(headers: &axum::http::HeaderMap) -> Result<Option<u64>, Resp
     if s == "*" {
         return Ok(None);
     }
-    let bare = s.strip_prefix("W/").unwrap_or(s); // weak tags compare by value here
+    let bare = s.strip_prefix("W/").unwrap_or(s);
     let bare = bare.trim_matches('"');
     bare.parse::<u64>().map(Some).map_err(|_| {
         err_json_cond(
@@ -569,12 +412,8 @@ fn if_match_version(headers: &axum::http::HeaderMap) -> Result<Option<u64>, Resp
     })
 }
 
-/// The stale-guard rejection every version-guarded mutation shares: the caller's `If-Match` version
-/// vs the live one. `None` (absent / `*`) never rejects.
 fn stale_if_match(expected: Option<u64>, current: u64) -> Option<AdminError> {
     match expected {
-        // RETRYABLE: re-read the resource (fresh ETag) and retry — its own frozen code, split
-        // from terminal `conflict`.
         Some(v) if v != current => Some(AdminError::VersionConflict(format!(
             "If-Match version {v} is stale (current is {current})"
         ))),
@@ -582,9 +421,6 @@ fn stale_if_match(expected: Option<u64>, current: u64) -> Option<AdminError> {
     }
 }
 
-/// Stamp the config-plane `ETag` (`"<config_version>"`) onto a response — the token `If-Match`
-/// guards against. Emitted on the version-guarded reads AND on every successful mutation (whose new
-/// version the caller chains into its next `If-Match`).
 fn with_config_etag(mut resp: Response, version: u64) -> Response {
     if let Ok(v) = axum::http::HeaderValue::from_str(&format!("\"{version}\"")) {
         resp.headers_mut().insert(axum::http::header::ETAG, v);
@@ -592,26 +428,16 @@ fn with_config_etag(mut resp: Response, version: u64) -> Response {
     resp
 }
 
-// ── route handlers (thin: call the service, project onto the wire) ───────────────────────────────
-
 mod handlers;
 pub(crate) use handlers::*;
 
-/// The 1.6.0 kernel verbs' contracts, documented in the one generated document.
 mod kernel_verbs;
 
-/// THE ONE ADMINISTRATIVE OPENAPI DOCUMENT, unfiltered — the committed, generated `openapi.json`,
-/// byte for byte: every operation the BUILD can serve. The composition root serves it at
-/// `GET /ledger/openapi.json`; this crate's `GET /openapi.json` serves it filtered to the planes the
-/// node configured (Law 7).
 #[must_use]
 pub fn openapi_document() -> String {
     handlers::openapi_json()
 }
-// An extracted plane contributes its trust verbs' typed response schemas through
-// this exact helper (`admin_view::openapi_schemas`). It is relocated to the neutral substrate
-// (`busbar_kernel::api::set_response_schema`) so the plane names it directly; re-exported here at
-// its old path, gated the same as the helper itself, so in-core callers are unchanged.
+
 #[cfg(feature = "openapi-schema")]
 pub use busbar_kernel::api::set_response_schema;
 

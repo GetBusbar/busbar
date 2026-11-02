@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A STORE TEST DOUBLE over the build's store: [`Wrapped<H>`] serves every store v3 op through
-//! [`Hooks`], each hook defaulting to the memory store's own body, so a test overrides only the ops
-//! it bends (a miscount, a shared backing, a settings check, a pend).
-
 use std::marker::PhantomData;
 use std::sync::Arc;
 
@@ -19,16 +15,14 @@ use busbar_contract::records::{
 
 use crate::both_ways::store_fixture::MemoryStore;
 
-/// The ops a test bends; every default is the memory store's own.
 #[allow(clippy::too_many_arguments)]
 pub(crate) trait Hooks: Send + Sync + 'static {
-    /// Whether the store states itself ephemeral (the memory store does).
     const EPHEMERAL: bool = true;
-    /// The settings check.
+
     fn validate(settings: &[u8]) -> Result<(), String> {
         <MemoryStore as StoreSlots>::validate(settings)
     }
-    /// The backing store an open serves.
+
     fn open(
         settings: &[u8],
         secrets: &[&[u8]],
@@ -37,7 +31,7 @@ pub(crate) trait Hooks: Send + Sync + 'static {
         let _ = (settings, secrets, host);
         Ok(Arc::new(MemoryStore::new()))
     }
-    /// `open`'s connect step.
+
     fn connect(inner: &MemoryStore, cx: &mut Op<'_>) -> Step<Result<(), String>> {
         let _ = (inner, cx);
         Step::Ready(Ok(()))
@@ -322,7 +316,6 @@ pub(crate) trait Hooks: Send + Sync + 'static {
     }
 }
 
-/// The memory store, served through `H`.
 pub(crate) struct Wrapped<H>(pub(crate) Arc<MemoryStore>, PhantomData<fn() -> H>);
 
 #[allow(clippy::too_many_arguments)]

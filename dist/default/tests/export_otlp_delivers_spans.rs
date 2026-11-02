@@ -1,26 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **THE SHIPPED BINARY DELIVERS ITS SPANS TO AN OTLP COLLECTOR** (OTLP export
-//! never delivered in 1.5.5 — every batch's export thread panicked, "there is no reactor running",
-//! and shutdown printed "OTLP tracer shutdown failed" — and 1.6.0 fixes it as a bug fix).
-//!
-//! The real binary boots with one `module: otlp` instance pointed at a loopback collector this test
-//! stands up (a plaintext `http://127.0.0.1` collector — the policy the sink declares allows it, as
-//! 1.5.x's guard did), serves model requests that fail upstream (the request path's spans close
-//! anyway), and is stopped with SIGTERM. The collector must have received OTLP/HTTP protobuf
-//! `ExportTraceServiceRequest`s — decoded by the OpenTelemetry project's own generated types and
-//! re-encoding to the very bytes received — carrying the request path's spans, each with a 16-byte
-//! trace id, an 8-byte span id and `service.name = busbar`, children joined to their parents. The
-//! boot log says `OTLP tracing enabled`, and neither of 1.5.5's two failure lines appears.
-//!
-//! RED (the 1.5.5 behaviour this fixes): the collector receives nothing.
-
 #![cfg(unix)]
-// The config serves `providers:`/`models:`, so the build must link the plane door that declares
-// `pools:` (`linked_section_pools`): the linked table's answer, never a feature name.
 #![cfg(linked_section_pools)]
-// The sink is a linked export door: the test is that axis's, and asserts the binary links this one.
 #![cfg(linked_axis_export_doors)]
 
 mod common;
@@ -37,7 +19,6 @@ use std::time::{Duration, Instant};
 
 include!(concat!(env!("OUT_DIR"), "/linked_transports.rs"));
 
-/// The key of the wire the data door rides.
 const WIRE: &str = "tcp";
 
 fn fixture_dir() -> PathBuf {
@@ -61,7 +42,6 @@ fn free_port() -> u16 {
 }
 
 fn write_configs(dir: &Path, data_port: u16, admin_port: u16, collector: u16) {
-    // The provider catalog row is test data (`fixtures/mock_provider.yaml`), not a literal here.
     std::fs::write(
         dir.join("providers.yaml"),
         include_str!("fixtures/mock_provider.yaml"),
@@ -99,7 +79,6 @@ models:
     std::fs::create_dir_all(dir.join("plugins")).unwrap();
 }
 
-/// Kill the child when the test ends, however it ends.
 struct Reap(Child);
 impl Drop for Reap {
     fn drop(&mut self) {
@@ -108,7 +87,6 @@ impl Drop for Reap {
     }
 }
 
-/// One HTTP/1.1 request over a fresh connection: the status, or `None` before the listener is up.
 fn request(port: u16, method: &str, path: &str, body: &str) -> Option<u16> {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
     stream
@@ -126,8 +104,6 @@ fn request(port: u16, method: &str, path: &str, body: &str) -> Option<u16> {
     text.lines().next()?.split_whitespace().nth(1)?.parse().ok()
 }
 
-/// THE WIRE UNDER THE DOOR, into `dir`'s plugins. A build that does not link the wire's row boots only
-/// with it dropped in; one that links it would refuse the tarball as a second row on the same key.
 fn drop_in_wire(dir: &Path) {
     if !LINKED_TRANSPORTS.iter().any(|w| w.key == WIRE) {
         let (lib, _) = common::plugins::transport_cdylib_under(&[WIRE]).unwrap_or_else(|| {
@@ -138,7 +114,6 @@ fn drop_in_wire(dir: &Path) {
     }
 }
 
-/// Is `module: otlp` served by this build? A module on no export axis is refused by `--validate`.
 fn otlp_linked(dir: &Path) -> bool {
     let out = Command::new(common::boot::exe())
         .arg("--validate")
@@ -182,7 +157,6 @@ fn the_shipped_binary_posts_its_spans_to_an_otlp_collector() {
     );
     let read_log = || std::fs::read_to_string(&log_path).unwrap_or_default();
 
-    // Model requests whose upstream refuses: the request path's spans open and close regardless.
     let body =
         r#"{"model":"test-model","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}"#;
     let deadline = Instant::now() + Duration::from_secs(60);
@@ -198,7 +172,6 @@ fn the_shipped_binary_posts_its_spans_to_an_otlp_collector() {
         }
     }
 
-    // Delivery is off the request path, batched: wait for the collector to hear the sink's spans.
     let deadline = Instant::now() + Duration::from_secs(30);
     let heard = || common::otlp::spans(&common::otlp::requests(&seen, None)).len();
     while heard() < 3 {
@@ -211,14 +184,13 @@ fn the_shipped_binary_posts_its_spans_to_an_otlp_collector() {
         std::thread::sleep(Duration::from_millis(50));
     }
 
-    // Graceful stop, then read what the process said.
     unsafe_free_sigterm(child.0.id());
     let stop = Instant::now() + Duration::from_secs(30);
     while child.0.try_wait().expect("try_wait").is_none() && Instant::now() < stop {
         std::thread::sleep(Duration::from_millis(50));
     }
     let log = read_log();
-    // The sink's own lines are in its own log file (THE DESIGN §11.2), named by its instance.
+
     let sink_log = std::fs::read_to_string(dir.join("plugin-logs").join("export.trace.log"))
         .unwrap_or_default();
     let _ = std::fs::remove_dir_all(&dir);
@@ -282,7 +254,7 @@ fn the_shipped_binary_posts_its_spans_to_an_otlp_collector() {
             "{span:?}"
         );
     }
-    // Every child's parent arrived too, in the same trace.
+
     let children: Vec<_> = spans
         .iter()
         .filter(|s| !s.parent_span_id.is_empty())
@@ -296,17 +268,12 @@ fn the_shipped_binary_posts_its_spans_to_an_otlp_collector() {
     }
 }
 
-/// SIGTERM without `libc` in this test's dependencies: the `kill` utility every unix ships.
 fn unsafe_free_sigterm(pid: u32) {
     let _ = Command::new("kill")
         .args(["-TERM", &pid.to_string()])
         .status();
 }
 
-// ── the request path's spans, as 1.5.5 named them ─────────────────────────────────
-
-/// One request of the fixture: the entry span it opens and the fields that span records, the
-/// `ingress` its `forward` carries, the head fields it adds, its path and its body.
 struct Row {
     entry: Option<&'static str>,
     entry_fields: Vec<(&'static str, &'static str)>,
@@ -316,7 +283,6 @@ struct Row {
     body: &'static str,
 }
 
-/// The fixture's rows (`fixtures/otlp_request_spans.txt`).
 fn rows() -> Vec<Row> {
     let some = |field: &'static str| (field != "-").then_some(field);
     include_str!("fixtures/otlp_request_spans.txt")
@@ -346,8 +312,6 @@ fn rows() -> Vec<Row> {
         .collect()
 }
 
-/// One HTTP/1.1 POST carrying `head` over a fresh connection: the status, or `None` before the
-/// listener is up.
 fn post_with(port: u16, path: &str, head: &[(&str, &str)], body: &str) -> Option<u16> {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
     stream
@@ -366,7 +330,6 @@ fn post_with(port: u16, path: &str, head: &[(&str, &str)], body: &str) -> Option
     text.lines().next()?.split_whitespace().nth(1)?.parse().ok()
 }
 
-/// A span's attribute, as the string the sink wrote.
 fn attribute(span: &Span, key: &str) -> Option<String> {
     span.attributes
         .iter()
@@ -377,7 +340,6 @@ fn attribute(span: &Span, key: &str) -> Option<String> {
         })
 }
 
-/// Whether `span`'s parent, in its trace, is one of `spans` named one of `names`.
 fn under(spans: &[Span], span: &Span, names: &[&str]) -> bool {
     spans.iter().any(|p| {
         names.contains(&p.name.as_str())
@@ -386,30 +348,6 @@ fn under(spans: &[Span], span: &Span, names: &[&str]) -> bool {
     })
 }
 
-/// **THE REQUEST PATH'S SPANS REACH THE OTLP COLLECTOR AS 1.5.5 NAMED THEM**. 1.5.5 opened, at the hot-path level (DEBUG, the OTLP
-/// floor), an ingress entry span with no field, chosen by the request's head fields first and its
-/// path's shape then (v1.5.5 `proto/detect.rs`), and beneath it, for a request it dispatched, the
-/// unit's `forward` span carrying `pool`, `ingress` and `op` (v1.5.5 `proxy/engine/mod.rs:120`).
-///
-/// The real binary boots with one `module: otlp` instance pointed at a loopback collector this test
-/// stands up and serves one request per row of `fixtures/otlp_request_spans.txt` (their upstream
-/// refuses; the spans close anyway). The rows are test data: which entry span each request opens
-/// and which `ingress` its `forward` carries are the plane's words, never this crate's. The
-/// collector must receive:
-///
-/// - each entry span exactly as many times as rows name it, each carrying exactly the fields its
-///   row names, in order (none for the ladder's spans; `named` its `pool`, `adhoc` its `provider`
-///   and `model`, read off the path): a row whose head field alone decides its entry opens it, and
-///   a row whose head field ends the reading opens none, however its path reads;
-/// - for a row naming its entry and its `ingress`, a `forward` beneath that entry carrying it and
-///   `op = chat`;
-/// - for a row naming no entry and an `ingress`, a `forward` carrying it under no entry span.
-///
-/// RED: with the plane stating no entry span, none reaches the collector; with the path's named
-/// segments uncaptured, `named` and `adhoc` carry no field; with the head fields
-/// unread, the header-only row opens no entry and the header-stop row opens one; with the traces
-/// producer reading only the fields a span opened with, `forward` carries neither `ingress` nor
-/// `op`.
 #[test]
 fn the_request_paths_spans_reach_the_collector_as_1_5_5_named_them() {
     let dir = fixture_dir();
@@ -433,8 +371,6 @@ fn the_request_paths_spans_reach_the_collector_as_1_5_5_named_them() {
     );
     let read_log = || std::fs::read_to_string(&log_path).unwrap_or_default();
 
-    // One request per row. Their upstream refuses: the request path's spans open and close
-    // regardless.
     let rows = rows();
     let mut entries: Vec<&str> = rows.iter().filter_map(|r| r.entry).collect();
     entries.sort_unstable();
@@ -455,8 +391,6 @@ fn the_request_paths_spans_reach_the_collector_as_1_5_5_named_them() {
         }
     }
 
-    // Delivery is off the request path, batched: wait for every entry span and every forward a
-    // row names.
     let spans = || common::otlp::spans(&common::otlp::requests(&seen, None));
     let forwards = rows.iter().filter(|r| r.ingress.is_some()).count();
     let heard = |spans: &[Span]| {
@@ -476,13 +410,11 @@ fn the_request_paths_spans_reach_the_collector_as_1_5_5_named_them() {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    // A stray entry span (a header that should have ended the reading) arrives with the rest.
+
     std::thread::sleep(Duration::from_secs(2));
     let spans = spans();
     let _ = std::fs::remove_dir_all(&dir);
 
-    // EACH ENTRY SPAN: as many as the rows name, each carrying exactly its row's fields, in order
-    // (1.5.5's `skip_all` plus the `fields(..)` it named).
     for entry in &entries {
         let mut opened: Vec<Vec<(String, String)>> = spans
             .iter()
@@ -511,7 +443,7 @@ fn the_request_paths_spans_reach_the_collector_as_1_5_5_named_them() {
             "`{entry}` opens once per row naming it, with that row's fields, and for no other row"
         );
     }
-    // EACH ROW NAMING ITS `ingress`: its `forward`, beneath its entry span or under none.
+
     for row in rows.iter().filter(|r| r.ingress.is_some()) {
         let ingress = row.ingress;
         let found = spans.iter().any(|s| {

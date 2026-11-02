@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! RED arms for the plane answer validators: one per rule and arm, each failing if its check is
-//! removed.
 
 use std::mem::zeroed;
 use std::ptr::null;
@@ -62,8 +61,6 @@ fn sp(offset: u32, len: u32) -> Span {
     Span { offset, len }
 }
 
-// ── arrive ──
-
 #[test]
 fn arrive_units_follow_m_sb() {
     let mut o: ArriveOut = z();
@@ -100,7 +97,6 @@ fn arrive_units_follow_m_sb() {
 }
 
 /// RED: a refused arrival names the plane's own code and a 4xx status; any other answer names
-/// neither.
 #[test]
 fn a_refused_arrival_names_its_code_and_a_caller_status() {
     let refused = |refusal, refusal_status| {
@@ -121,13 +117,12 @@ fn a_refused_arrival_names_its_code_and_a_caller_status() {
         check_arrive(Refused, &refused(1, 499), &[], 4, &bounds()),
         Ok(())
     );
-    // Zero on REFUSED: the plane could not render what it decided.
+
     assert_eq!(
         check_arrive(Refused, &refused(0, 400), &[], 4, &bounds()),
         f(Rule::Missing, "arrive.refusal")
     );
-    // Out of range: a plane never mints a 5xx (the kernel's faults keep the table's status), and
-    // a refusal is never a success.
+
     for status in [0, 200, 399, 500, 503, 600] {
         assert_eq!(
             check_arrive(Refused, &refused(1, status), &[], 4, &bounds()),
@@ -135,7 +130,7 @@ fn a_refused_arrival_names_its_code_and_a_caller_status() {
             "{status}"
         );
     }
-    // Nonzero on any other outcome.
+
     for outcome in [Ready, Failed, Pending] {
         for o in [refused(1, 0), refused(0, 400)] {
             assert_eq!(
@@ -170,7 +165,6 @@ fn an_arrival_index_past_its_list_or_unknown_need_is_fault() {
 }
 
 /// One cumulative count per class and source: a second count of one class is a contradiction,
-/// refused (so the host never has to add two running totals, which could wrap).
 #[test]
 fn a_class_counted_twice_is_fault() {
     let mut o: ArriveOut = z();
@@ -190,8 +184,7 @@ fn a_class_counted_twice_is_fault() {
     v.source = UNITS_REPORTED;
     v.class = 0;
     assert_eq!(check_arrive(Ready, &o, &[u, v], 4, &bounds()), Ok(()));
-    // ONE BILLING COUNT per class: a floor beside a reported count of the same class is two bills
-    // of one thing, refused; a floor beside an estimate is not.
+
     v.class = 1;
     v.source = UNITS_FLOOR;
     assert_eq!(
@@ -203,7 +196,6 @@ fn a_class_counted_twice_is_fault() {
 }
 
 /// THE USAGE FLOOR (Q24/Q28): a floor count is a known source and bills like a reported one; an
-/// estimate never bills, and no other value is a source.
 #[test]
 fn a_floor_count_is_a_known_source_that_bills() {
     let mut o: ArriveOut = z();
@@ -220,7 +212,6 @@ fn a_floor_count_is_a_known_source_that_bills() {
 }
 
 /// THE CANCEL RULE's shape: an arrival is either a cancellable unit (`correlation`) or a cancel
-/// (`cancels`), never both. Either alone is valid.
 #[test]
 fn an_arrival_that_cancels_carries_no_correlation_of_its_own() {
     let mut o: ArriveOut = z();
@@ -246,10 +237,6 @@ fn an_arrival_that_cancels_carries_no_correlation_of_its_own() {
     );
 }
 
-/// THE POOL AN ARRIVAL NAMES (ARCHITECT Q-SW6, 2026-10-02): the entry name inside the plane's own
-/// section, on a READY answer only. Absent is valid (the plane's single default entry); a length
-/// with no bytes is FAULT, a failed arrival naming a pool is a contradiction, and a refused one may
-/// name the entry its refusal is about (ARCHITECT Q-DEL-A2A-GATE).
 #[test]
 fn an_arrival_names_its_pool_only_when_ready_and_only_with_bytes() {
     let mut o: ArriveOut = z();
@@ -273,8 +260,7 @@ fn an_arrival_names_its_pool_only_when_ready_and_only_with_bytes() {
         check_arrive(Ready, &o, &[], 4, &bounds()),
         f(Rule::NullWithCount, "arrive.pool")
     );
-    // A REFUSED arrival may name the entry its refusal is about (rule 6, ARCHITECT
-    // Q-DEL-A2A-GATE): held past the caller's grant, never charged.
+
     let mut o: ArriveOut = z();
     o.refusal = 3;
     o.refusal_status = 404;
@@ -289,8 +275,6 @@ fn an_arrival_names_its_pool_only_when_ready_and_only_with_bytes() {
 }
 
 /// A REFUSED ARRIVAL'S WORDS are carried whole or not at all: up to `MAX_REFUSAL_TEXT` bytes pass,
-/// one byte more is a FAULT (never cut), a length with no bytes is a FAULT, and a READY arrival's
-/// head error is not judged here.
 #[test]
 fn a_refused_arrivals_text_is_bounded_and_never_cut() {
     let at_cap = "x".repeat(MAX_REFUSAL_TEXT as usize);
@@ -336,7 +320,6 @@ fn a_refused_arrivals_text_is_bounded_and_never_cut() {
 }
 
 /// Words that echo the largest field line a transport admits fit: an echoed field never overflows
-/// the refusal text.
 #[test]
 fn a_refusal_echoing_the_largest_admitted_field_line_fits() {
     let echoed = format!(
@@ -358,9 +341,6 @@ fn a_refusal_echoing_the_largest_admitted_field_line_fits() {
 }
 
 /// The ABI distinguishes refusal causes and accepts a rendering that leaves status unspecified.
-/// The host's fallback is exercised by kernel `plane_driver`'s
-/// `a_refused_arrival_is_rendered_in_the_planes_own_words`: its refusal callback leaves status
-/// zero, and the driven refusal retains status 400.
 #[test]
 fn the_refusal_causes_are_distinct_and_zero_status_is_accepted() {
     assert_eq!(
@@ -393,8 +373,6 @@ fn a_unit_naming_no_billable_class_or_unknown_source_is_fault() {
     );
 }
 
-// ── on_piece ──
-
 fn piece(o: &OnPieceOut, u: &[UnitCount], r: &[RecordWrite], fl: &[OutField]) -> Result<(), Fault> {
     check_on_piece(Ready, o, (u, r, fl), &caps(), &bounds())
 }
@@ -426,7 +404,6 @@ fn on_piece_unknown_flags_or_more_are_fault() {
 }
 
 /// A text message is a whole message of at least one byte: PIECE_OUT_TEXT on an answer that
-/// emits nothing, or one that asks for more, is refused.
 #[test]
 fn a_text_message_is_whole_and_not_empty() {
     let mut o: OnPieceOut = z();
@@ -445,7 +422,6 @@ fn a_text_message_is_whole_and_not_empty() {
 }
 
 /// RED (SEAM-4l additions): THE MESSAGE BOUNDARY is a known bit, valid on an answer toward the
-/// caller with bytes or without, never on a request bound for the far end.
 #[test]
 fn a_message_boundary_ends_a_message_toward_the_caller_only() {
     let mut o: OnPieceOut = z();
@@ -465,7 +441,6 @@ fn a_message_boundary_ends_a_message_toward_the_caller_only() {
 }
 
 /// RED (SEAM-4l additions): THE FINAL STATUS closes the reply (`EMIT_DONE`), its message and details
-/// inside the arena written; its fields are zero unless it is flagged.
 #[test]
 fn a_final_status_closes_the_reply_inside_the_arena() {
     let at = |offset: u32, len: u32| crate::abi::mechanism::call::Span { offset, len };
@@ -503,7 +478,6 @@ fn a_final_status_closes_the_reply_inside_the_arena() {
 }
 
 /// THE CATALOGUE WATCH: `EMIT_WATCH_CATALOGUE` and `EMIT_UNWATCH_CATALOGUE` are known bits, each
-/// valid alone, and an answer setting both is a contradiction.
 #[test]
 fn a_catalogue_watch_and_its_drop_are_known_and_never_together() {
     for flag in [EMIT_WATCH_CATALOGUE, EMIT_UNWATCH_CATALOGUE] {
@@ -520,7 +494,6 @@ fn a_catalogue_watch_and_its_drop_are_known_and_never_together() {
 }
 
 /// The catalogue-moved tick is its own `OnPieceIn::flags` bit, distinct from every other piece bit,
-/// and the watch bits are distinct from every other emit bit.
 #[test]
 fn the_catalogue_bits_share_no_bit_with_their_neighbours() {
     let piece_bits = [
@@ -680,7 +653,6 @@ fn a_record_write_with_an_unknown_kind_is_fault() {
 }
 
 /// A record write is a put: the retired delete code (2) and every other is FAULT, never a write
-/// the kernel would drop.
 #[test]
 fn a_record_write_that_is_not_a_put_is_fault() {
     let mut o: OnPieceOut = z();
@@ -693,9 +665,6 @@ fn a_record_write_that_is_not_a_put_is_fault() {
 }
 
 /// SEAM-L(k), THE UNIT'S AUDIT RECORD: a [`RECORD_AUDIT`] write names the row's outcome where a
-/// put names its kind (so it needs no record kind of the plane's: here a tail with none), its
-/// action in `key` (never empty) and its resource in `value`, both inside the arena. RED: every
-/// write but a put was FAULT, and its outcome was judged as a record kind.
 #[test]
 fn an_audit_record_names_its_outcome_and_action() {
     let mut o: OnPieceOut = z();
@@ -744,7 +713,6 @@ fn an_audit_record_names_its_outcome_and_action() {
 }
 
 /// SEAM-L(j), THE UNIT'S LEDGER LANE: an answer may name the lane its units are priced under, in
-/// the arena written, on any answer; none named is a zero length. RED: the answer had no lane.
 #[test]
 fn a_ledger_lane_rides_the_arena() {
     let mut o: OnPieceOut = z();
@@ -806,8 +774,6 @@ fn serve_records(
 }
 
 /// SEAM-L(o), A REFUSAL'S RECORD WRITES: judged as an `on_piece` answer's, under the short-buffer
-/// rule over the host's `records_buf`: an audit row inside the arena passes; a write past the cap,
-/// an unknown op or a span outside the arena is FAULT. RED: a refusal had no record slot.
 #[test]
 fn a_refusals_record_writes_are_judged_as_an_answers() {
     let mut o: RefusalOut = z();
@@ -840,8 +806,6 @@ fn a_refusals_record_writes_are_judged_as_an_answers() {
 }
 
 /// SEAM-L(t), A SERVED REQUEST'S RECORD WRITES: judged as an answer's: a put of a declared kind
-/// inside the arena passes; a short buffer is a short answer; a kind past the tail is FAULT. RED: a
-/// served request had no record slot.
 #[test]
 fn a_served_requests_record_writes_are_judged_as_an_answers() {
     let mut o: ServeOut = z();
@@ -868,8 +832,6 @@ fn a_served_requests_record_writes_are_judged_as_an_answers() {
 }
 
 /// SEAM-L(r), A CANCEL'S RECORD WRITES: never re-called, so they fit the host's buffers or the
-/// answer is FAULT; each is judged as an answer's; a `cancel` that is not READY writes none. RED: a
-/// cancel had no record slot.
 #[test]
 fn a_cancels_record_writes_fit_and_are_judged_as_an_answers() {
     let mut o: PlaneCancelOut = z();
@@ -904,8 +866,6 @@ fn a_cancels_record_writes_fit_and_are_judged_as_an_answers() {
     );
 }
 
-// ── refusal, serve, cancel ──
-
 #[test]
 fn a_refusal_marker_is_known_and_its_reply_follows_m_sb() {
     let mut o: RefusalOut = z();
@@ -914,7 +874,7 @@ fn a_refusal_marker_is_known_and_its_reply_follows_m_sb() {
         check_refusal(Ready, &o, &[], &[], &caps(), &bounds()),
         f(Rule::UnknownCode, "refusal.marker")
     );
-    // The gate-rejected marker is the kernel's to set, never a plane's.
+
     o.marker = MARK_GATE_REJECTED;
     assert_eq!(
         check_refusal(Ready, &o, &[], &[], &caps(), &bounds()),
@@ -1007,7 +967,7 @@ fn an_unwritten_or_unknown_cancel_disposition_is_fault() {
         f(Rule::UnknownCode, "cancel.disposition")
     );
     assert_eq!(check_cancel(Ready, CANCEL_ABORTED), Ok(()));
-    // Another outcome answers no disposition: unwritten passes, a written one is FAULT.
+
     assert_eq!(check_cancel(Failed, 0), Ok(()));
     assert_eq!(check_cancel(Pending, 0), Ok(()));
     assert_eq!(
@@ -1015,8 +975,6 @@ fn an_unwritten_or_unknown_cancel_disposition_is_fault() {
         f(Rule::Contradiction, "cancel.disposition")
     );
 }
-
-// ── snapshot ──
 
 fn snapshot() -> PlaneSnapshot {
     let mut s: PlaneSnapshot = z();
@@ -1069,8 +1027,6 @@ fn a_snapshot_list_counted_with_a_null_pointer_or_too_long_is_fault() {
 }
 
 /// THE APPEND RULE ON THE SNAPSHOT: a snapshot published before `listed` was appended states the
-/// size its fields end at and is judged as one that lists nothing; any other size is foreign. The
-/// list itself is bounded and never counted over NULL, and each name is non-empty text.
 #[test]
 fn a_snapshot_from_before_listed_is_read_and_its_list_is_judged() {
     let mut sn = snapshot();
@@ -1098,9 +1054,6 @@ fn a_snapshot_from_before_listed_is_read_and_its_list_is_judged() {
     );
 }
 
-/// THE ARRIVAL SPANS (status row 173): a snapshot published before they were appended states the
-/// size its fields end at and opens none; a list is none or one per claim, never counted over NULL,
-/// and each name is empty (that claim opens none) or at most `MAX_ARRIVAL_SPAN` bytes.
 #[test]
 fn a_snapshots_arrival_spans_are_none_or_one_per_claim() {
     use crate::abi::plane::check::check_arrival_spans;
@@ -1163,16 +1116,16 @@ fn claim(verb: &'static str, target: &'static str, flags: u32) -> Claim {
 fn a_claim_states_only_known_flags() {
     let open_exact = claim("V", "/t", CLAIM_OPEN | CLAIM_EXACT);
     assert_eq!(check_claims(&[open_exact], 1), Ok(()));
-    // A catalog route is a known flag (ARCHITECT ruling 2026-10-16, 3b C).
+
     let catalog = claim("V", "/t", CLAIM_EXACT | CLAIM_CATALOG);
     assert_eq!(check_claims(&[catalog], 1), Ok(()));
-    // A signed-ingress path is a known flag (ARCHITECT ruling 2026-10-16, 3b A).
+
     let signed = claim("V", "/t", CLAIM_EXACT | CLAIM_SIGNED_INGRESS);
     assert_eq!(check_claims(&[signed], 1), Ok(()));
-    // An entry fact is a known flag (status row 173).
+
     let entry = claim("V", "path:/t/*", CLAIM_ENTRY);
     assert_eq!(check_claims(&[entry], 1), Ok(()));
-    // RED: a bit none of the known claim bits, the first past `CLAIM_TICKET` (the highest).
+
     let unknown = claim("V", "/t", crate::abi::plane::CLAIM_TICKET << 1);
     assert_eq!(
         check_claims(&[unknown], 1),
@@ -1186,7 +1139,7 @@ fn a_ticket_claim_is_a_keyed_claim() {
     use crate::abi::plane::CLAIM_TICKET;
     let keyed = claim("POST", "/v1/x", CLAIM_EXACT | CLAIM_TICKET);
     assert_eq!(check_claims(&[keyed], 1), Ok(()));
-    // RED: CLAIM_OPEN with CLAIM_TICKET.
+
     let open = claim("POST", "/v1/x", CLAIM_OPEN | CLAIM_EXACT | CLAIM_TICKET);
     assert_eq!(
         check_claims(&[open], 1),
@@ -1255,7 +1208,6 @@ fn a_pattern_target_parses_into_literals_and_one_level_placeholders() {
 }
 
 /// RED: a malformed pattern is refused AT BIND, by the same grammar the selector reads, so a bad
-/// claim never waits for its first route.
 #[test]
 fn a_malformed_pattern_is_refused_at_bind_by_the_selectors_grammar() {
     for bad in [
@@ -1312,10 +1264,6 @@ fn a_pattern_claims_one_level_only() {
     assert!(!crate::grammar::pattern_matches(p, "/v1/tasks"));
 }
 
-/// THE MULTI-SEGMENT PLACEHOLDER (ARCHITECT ruling 2026-10-16, 3b A): `{name+}` takes one or more
-/// segments, so `/model/{id+}/converse` matches an identifier carrying a raw `/` (an unencoded
-/// inference-profile ARN) and an encoded one alike, the previous release's prefix-and-suffix rule;
-/// it never matches nothing, and a sibling suffix is a different path.
 #[test]
 fn a_plus_placeholder_spans_one_or_more_segments() {
     let Ok(crate::grammar::Selector::PathPattern(p)) =
@@ -1349,7 +1297,6 @@ fn a_plus_placeholder_spans_one_or_more_segments() {
 }
 
 /// RED: a pattern names at most one `{name+}` (two cannot be split deterministically), and the
-/// placeholder's name is a name.
 #[test]
 fn a_pattern_with_two_plus_placeholders_is_refused_at_registration() {
     assert_eq!(
@@ -1364,8 +1311,6 @@ fn a_pattern_with_two_plus_placeholders_is_refused_at_registration() {
 }
 
 /// Two patterns that differ only after a `{name+}` are disjoint, so the two signed bedrock claims
-/// seal side by side at one precedence; a `{name+}` beside a one-segment variable over the same
-/// suffix overlaps.
 #[test]
 fn plus_patterns_overlap_exactly() {
     use crate::grammar::Selector;
@@ -1408,8 +1353,6 @@ fn every_snapshot_claim_and_route_is_named() {
     );
 }
 
-// ── tail ──
-
 fn tail() -> PlaneTail {
     let mut t: PlaneTail = z();
     t.ingress = INGRESS_REQUEST_RESPONSE;
@@ -1425,7 +1368,7 @@ fn a_tail_with_unknown_bits_or_no_ingress_is_fault() {
     let mut t = tail();
     t.ingress = INGRESS_REQUEST_RESPONSE | (1 << 5);
     assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.ingress"));
-    // The first bit past the last one a tail may state (`TAIL_REFUSED_PIECE`, bit 3, is known).
+
     let mut t = tail();
     t.flags = TAIL_REFUSED_PIECE << 1;
     assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.flags"));
@@ -1479,7 +1422,6 @@ fn exactly_one_section_is_the_declaring_one() {
 }
 
 /// A plane's section may select it without being its verb (`SECTION_SELECTS`, Law 7), never as
-/// well as being its verb. RED: before the bit was known, the selecting section was an unknown code.
 #[test]
 fn a_selecting_section_is_not_the_declaring_one() {
     assert_eq!(
@@ -1517,7 +1459,7 @@ fn dialect_auth_names_a_dialect_and_a_style() {
     assert_eq!(
         check_dialect_auth(&[bad], 1),
         f(Rule::Missing, "dialect_auth.style")
-    ); // The style's parameters: a JSON object, a counted blob never NULL.
+    );
     const PARAMS: &[u8] = br#"{"service":"s"}"#;
     let mut with = d;
     with.params = Blob {
@@ -1541,9 +1483,6 @@ fn dialect_auth_names_a_dialect_and_a_style() {
     );
 }
 
-/// THE PER-DIALECT FLAGS (ARCHITECT ruling 2026-10-16, item 3): a line states whether a provider may
-/// name its dialect; the word was padding, so `0` (a line that predates it) states no. RED arm: a
-/// bit past the known one refuses the load.
 #[test]
 fn dialect_auth_flags_are_provider_and_nothing_else() {
     let mut d = DialectAuth {
@@ -1597,7 +1536,6 @@ fn billable_classes_are_named() {
 }
 
 /// Every fee unit is also a billable class, so the plane can report it as a count. RED: a fee
-/// unit the classes do not list is refused.
 #[test]
 fn fee_units_are_billable_classes() {
     let c = BillableClass {
@@ -1677,7 +1615,6 @@ fn needs_have_a_known_direction_and_a_transport() {
 }
 
 /// A need's kept response head fields: lower-case tokens, bounded; a hop-by-hop or credential
-/// field is refused at boot, so it never crosses to a plugin.
 #[test]
 fn a_need_keeps_only_declarable_response_fields() {
     let mut n: Need = z();
@@ -1751,8 +1688,6 @@ fn a_need_keeps_only_declarable_response_fields() {
 }
 
 /// RED for the keep mode (OWNER ruling 2026-10-02, dialect fidelity F2): a need keeps either the
-/// fields it names or every field but the ones it denies, never both lists, and no other mode.
-/// Denied names are lower-case tokens, bounded; denying a credential name is allowed.
 #[test]
 fn a_need_keeps_named_fields_or_all_but_denied_ones_and_nothing_else() {
     let mut n: Need = z();
@@ -1859,7 +1794,6 @@ fn a_need_keeps_named_fields_or_all_but_denied_ones_and_nothing_else() {
 }
 
 /// What crosses under each mode: the named fields (never a `NEVER_KEPT` one), or every field but
-/// hop-by-hop, the connection's nominees, the re-derived framing and the plugin's denied names.
 #[test]
 fn a_response_field_crosses_by_the_needs_mode() {
     use crate::abi::host::conn::connector::keeps_response_field as keeps;
@@ -1978,9 +1912,6 @@ fn a_multi_buffer_short_answer_needs_one_buffer_over_its_cap() {
     );
 }
 
-// ── the plane driver's additions: the ATTEMPT answer, the verdict, probes, public routes, chained
-//    record framing, `project` and `drive` ──
-
 #[test]
 fn a_verdict_is_known() {
     let mut o: OnPieceOut = z();
@@ -1993,10 +1924,6 @@ fn a_verdict_is_known() {
     );
 }
 
-/// THE BREAKER FAULT READING (ARCHITECT 2026-10-05): one vocabulary with the transport's
-/// (`FAULT_*`, healthy included), separate from the verdict. RED arms: past `FAULT_HEALTHY`, on an
-/// answer that is not
-/// READY, and its padding not zero.
 #[test]
 fn a_fault_reading_is_the_transports_vocabulary_on_a_ready_answer() {
     use crate::abi::transport::{
@@ -2013,7 +1940,7 @@ fn a_fault_reading_is_the_transports_vocabulary_on_a_ready_answer() {
         o.fault = reading;
         assert_eq!(piece(&o, &[], &[], &[]), Ok(()), "{reading}");
     }
-    // Separate from the verdict: a retried answer that is the caller's own fault.
+
     o.verdict = VERDICT_RETRY;
     o.fault = FAULT_CALLER;
     assert_eq!(piece(&o, &[], &[], &[]), Ok(()));
@@ -2036,9 +1963,6 @@ fn a_fault_reading_is_the_transports_vocabulary_on_a_ready_answer() {
     );
 }
 
-/// THE USAGE-TAP FAULT rides the answer as data (row 155), beside the breaker reading and separate
-/// from it, on a READY answer only. A value past the vocabulary is ADMITTED: the kernel counts it
-/// as `unknown` rather than refusing the answer it rides. RED arm: a fault on a non-READY answer.
 #[test]
 fn a_usage_tap_fault_rides_only_a_ready_answer() {
     use crate::abi::plane::{
@@ -2108,8 +2032,6 @@ fn an_attempt_answer_names_its_verb_and_target_in_the_arena() {
     );
 }
 
-/// MULTI-NEED (ARCHITECT Q-L5B-NEEDS 2026-10-03): a far request may name the need it rides; a need
-/// named on an answer that sends nothing to the far end contradicts it.
 #[test]
 fn a_named_need_rides_only_a_far_request() {
     let mut o = attempt_answer();
@@ -2158,7 +2080,6 @@ fn a_tail_may_declare_probes() {
 }
 
 /// A tail may state the gate-first hook order (`TAIL_HOOKS_GATED`); a flag past the known ones is
-/// still unknown.
 #[test]
 fn a_tail_may_declare_the_gate_first_hook_order() {
     let mut t = tail();
@@ -2169,7 +2090,6 @@ fn a_tail_may_declare_the_gate_first_hook_order() {
 }
 
 /// A tail may state that the plane takes a credential refusal as a piece first
-/// (`TAIL_REFUSED_PIECE`), beside the gate-first order; a flag past it is still unknown.
 #[test]
 fn a_tail_may_take_a_credential_refusal_as_a_piece() {
     let mut t = tail();
@@ -2204,9 +2124,6 @@ fn an_admin_route_flag_is_known() {
 }
 
 /// RED (`BUSBAR-1.6.0.md` l.4882, a callback route the plane addresses by its own token): a
-/// public route may carry the plane's own token, and an admin route may not — its `authorization`
-/// is the operator's credential, which never crosses — so a snapshot stating the bit on a route that
-/// is not public is refused at its load.
 #[test]
 fn only_a_public_route_carries_its_own_token() {
     let mut r = AdminRoute {
@@ -2274,8 +2191,6 @@ fn a_record_kind_is_chained_at_most_once() {
         f(Rule::Contradiction, "record_chain.kind_twice")
     );
 }
-
-// ── record retentions ──
 
 fn retention(kind: u32, rule: u32) -> RecordRetention {
     RecordRetention { kind, rule }
@@ -2345,8 +2260,6 @@ fn red_a_tail_counting_record_retentions_over_a_null_pointer_is_fault() {
         f(Rule::NullWithCount, "tail.record_retentions")
     );
 }
-
-// ── trust keys ──
 
 const MECHANISMS: [PinMechanism; 2] = [
     PinMechanism {
@@ -2440,7 +2353,6 @@ fn well_formed_trust_keys_pass() {
 }
 
 /// RED (SEAM-4f): a registration's private reach is a trust key of its own role: a boolean the
-/// host reads, so it carries no flags, no mechanisms and no default (absent reads `false`).
 #[test]
 fn a_private_reach_key_carries_no_default_flags_or_mechanisms() {
     let reach = TrustKey {
@@ -2469,8 +2381,6 @@ fn a_private_reach_key_carries_no_default_flags_or_mechanisms() {
     );
 }
 
-/// RED (ARCHITECT 2026-10-06): the configured item approvals name the field each item's digest is
-/// written under (`default`), and carry no flags and no mechanisms.
 #[test]
 fn an_item_approvals_key_names_its_digest_field() {
     let approvals = duration_key(TRUST_ITEM_APPROVALS);
@@ -2672,7 +2582,7 @@ fn a_pin_mechanism_is_named_with_known_flags() {
         check_pin_mechanisms(&[m]),
         f(Rule::UnknownCode, "pin_mechanism.flags")
     );
-    // A far-end key pin is a root; the no-root spelling carrying one contradicts itself.
+
     let mut m = MECHANISMS[0];
     m.flags = MECHANISM_PEER_KEY;
     assert_eq!(
@@ -2706,7 +2616,6 @@ fn a_dialect_and_reason_are_stated_at_most_once() {
 }
 
 /// THE WIRE CODE TABLE, pinned whole: every number to its code and its word. Renumbering one
-/// variant, reordering the table or giving a code another word is RED here.
 const PINNED: &[(u32, RefusalCode, &str)] = &[
     (0, RefusalCode::InFlightCap, "in_flight_cap"),
     (1, RefusalCode::CursorBudget, "cursor_budget"),
@@ -2768,10 +2677,8 @@ const PINNED: &[(u32, RefusalCode, &str)] = &[
         RefusalCode::CredentialUnavailable,
         "credential_unavailable",
     ),
-    // The kernel's own refusals, rendered by the owning plane (ARCHITECT ruling 2026-10-16, 3b B).
     (44, RefusalCode::MethodNotAllowed, "method_not_allowed"),
     (45, RefusalCode::Internal, "internal"),
-    // The walk's exhaustion with nothing sent: kernel-to-plane piece reasons alone.
     (46, RefusalCode::UnsentNoAttempt, "unsent_no_attempt"),
     (47, RefusalCode::UnsentNoRoute, "unsent_no_route"),
     (48, RefusalCode::UnsentNeedUnbound, "unsent_need_unbound"),
@@ -2801,13 +2708,10 @@ fn every_wire_refusal_code_is_pinned_to_its_number_and_word() {
             code,
             RefusalCode::OverdraftCeiling | RefusalCode::StaleSlice
         ) {
-            // A kernel-only money verdict: pinned on the wire, never decoded from a plane.
             assert_eq!(reason_of(*number), None, "{word}: no plane carries it");
             continue;
         }
         if code.unsent() {
-            // The walk's exhaustion with nothing sent: the kernel's piece reason, never a reason a
-            // plane states, and the one family `nothing_sent` reads beside the credential's.
             assert_eq!(reason_of(*number), None, "{word}: no plane states it");
             assert!(nothing_sent(*number), "{word}: nothing left");
             continue;
@@ -2823,7 +2727,7 @@ fn every_wire_refusal_code_is_pinned_to_its_number_and_word() {
     }
     assert_eq!(RefusalCode::of(PINNED.len() as u32), None);
     assert_eq!(reason_of(u32::MAX), None);
-    // Every reason in the kernel's vocabulary has a wire code, and none shares one.
+
     for (i, r) in ReasonCode::ALL.iter().enumerate() {
         let c = reason_code(*r);
         assert!(
@@ -2832,8 +2736,6 @@ fn every_wire_refusal_code_is_pinned_to_its_number_and_word() {
         );
     }
 }
-
-// ── project ──
 
 struct Host {
     signals: [SignalEntry; 2],
@@ -2975,9 +2877,6 @@ fn projected_view_flags_are_known() {
 }
 
 /// A READY `project` that carried a rewrite and applied none may state
-/// [`PROJECT_REWRITE_NOT_APPLICABLE`] beside the hook view's own flags: the plane's word that the
-/// unit's operation has no conversation to frame the rewrite into. RED: the mark refused as an
-/// unknown flag, so no plane could state it.
 #[test]
 fn a_projected_view_may_state_the_rewrite_not_applicable_mark() {
     let h = host();
@@ -3014,8 +2913,6 @@ fn projected_strings_lie_inside_the_arena_written() {
     );
 }
 
-/// THE SESSION (ARCHITECT RULING 2026-10-03, Q-FOLD-A2A-2-PROJECT-POOL session half): absent, or
-/// flagless octets inside the arena written; anything else is FAULT, naming the field.
 #[test]
 fn a_projected_session_is_absent_or_octets_inside_the_arena_written() {
     use crate::abi::mechanism::call::{Blob, BLOB_ABSENT, BLOB_JSON, BLOB_OCTETS};
@@ -3279,8 +3176,6 @@ fn a_rewritten_body_answers_only_a_rewrite_and_lies_inside_the_arena_written() {
     );
 }
 
-// ── drive ──
-
 #[test]
 fn drive_names_its_ready_sessions_under_the_short_buffer_rule() {
     let mut o: PlaneDriveOut = z();
@@ -3326,9 +3221,6 @@ fn pending_drive_names_ready_sessions_while_other_work_waits() {
     );
 }
 
-/// RED (ARCHITECT ruling 2026-10-01, a money invariant): the overdraft ceiling and a stale slice
-/// are kernel-only money verdicts. A plane that names either code is answering malformed, never
-/// carrying the verdict: its tail row is refused, and the code decodes to no reason.
 #[test]
 fn a_plane_naming_a_kernel_money_verdict_is_malformed_not_the_verdict() {
     for reason in [ReasonCode::OverdraftCeiling, ReasonCode::StaleSlice] {
@@ -3348,9 +3240,6 @@ fn a_plane_naming_a_kernel_money_verdict_is_malformed_not_the_verdict() {
     }
 }
 
-/// THE ROUTE FLAGS (ARCHITECT round 4 Q-L3B-SURFACES (h) `ROUTE_ONCE`; round 5 Q-L3B-K6-HTTP (a)
-/// `ROUTE_SESSION`): a READY arrival may state either or both, whatever it routes over; a bit the
-/// contract does not define is FAULT, and an answer that admits nothing states none.
 #[test]
 fn an_arrivals_route_flags_are_once_and_session() {
     for flags in [
@@ -3379,7 +3268,7 @@ fn an_arrivals_route_flags_are_once_and_session() {
         check_arrive(Ready, &o, &[], 4, &bounds()),
         f(Rule::UnknownCode, "arrive.route_flags")
     );
-    // ROUTE_COUNTED counts a unit the plane answers itself; on a routed unit it contradicts.
+
     for route in [ROUTE_POOL, ROUTE_DIRECT, ROUTE_SCOPE] {
         let mut o: ArriveOut = z();
         o.route = route;
@@ -3401,10 +3290,6 @@ fn an_arrivals_route_flags_are_once_and_session() {
     );
 }
 
-/// THE TRUST FACTS (ARCHITECT 2026-10-06, the kernel's Approve): a READY arrival may state a
-/// counterparty, a capability there and the digest it is offered at, each a bounded text. RED arms:
-/// a capability with no counterparty, a digest with no capability, a fact counted with no bytes, a
-/// fact past the text bound, and any fact on an answer that admits nothing.
 #[test]
 fn an_arrivals_trust_facts_are_bounded_ordered_and_an_admitted_units_own() {
     let s = |b: &'static [u8]| AbiStr {
@@ -3428,7 +3313,6 @@ fn an_arrivals_trust_facts_are_bounded_ordered_and_an_admitted_units_own() {
         "all three"
     );
 
-    // RED: a digest with no capability; a capability with no counterparty.
     o.trust_item = z();
     assert_eq!(
         check_arrive(Ready, &o, &[], 4, &bounds()),
@@ -3441,7 +3325,7 @@ fn an_arrivals_trust_facts_are_bounded_ordered_and_an_admitted_units_own() {
         check_arrive(Ready, &o, &[], 4, &bounds()),
         f(Rule::Contradiction, "arrive.trust_item")
     );
-    // RED: counted with no bytes; past the text bound.
+
     o.trust_item = z();
     o.trust_counterparty = AbiStr {
         ptr: std::ptr::null(),
@@ -3460,7 +3344,7 @@ fn an_arrivals_trust_facts_are_bounded_ordered_and_an_admitted_units_own() {
         check_arrive(Ready, &o, &[], 4, &bounds()),
         f(Rule::OverMax, "arrive.trust_counterparty")
     );
-    // RED: an answer that admits nothing states no trust fact.
+
     let mut o: ArriveOut = z();
     o.refusal = 3;
     o.refusal_status = 404;
@@ -3471,9 +3355,6 @@ fn an_arrivals_trust_facts_are_bounded_ordered_and_an_admitted_units_own() {
     );
 }
 
-/// THE STICKY-ROUTING KEY (ARCHITECT Q1 ArriveOut, 2026-10-05): a READY arrival may state an
-/// opaque key, bounded like every plane text; a key counted with no bytes is FAULT, and an answer
-/// that admits nothing states none (RED arms).
 #[test]
 fn an_arrivals_affinity_is_an_admitted_units_own_bounded_key() {
     let key = b"session-7";
@@ -3529,10 +3410,6 @@ fn an_arrivals_affinity_is_an_admitted_units_own_bounded_key() {
     );
 }
 
-/// THE ROUTE CLASS (ARCHITECT Q-SW6 amended by Q-FL3, 2026-10-02, Q-L3B-LOCAL and Q-DEL-A2A-SELECT):
-/// a READY arrival names whether its entry is a pool or a model routed directly, that the plane
-/// answers it itself, or that the kernel routes it by the principal's scope (both naming no entry); any other class is FAULT, and an answer that admits nothing names the default
-/// class only.
 #[test]
 fn an_arrivals_route_class_is_pool_or_direct() {
     for class in [ROUTE_POOL, ROUTE_DIRECT] {
@@ -3545,7 +3422,7 @@ fn an_arrivals_route_class_is_pool_or_direct() {
             "{class}"
         );
     }
-    // A unit the plane answers itself names no entry (ARCHITECT Q-L3B-LOCAL).
+
     let mut o: ArriveOut = z();
     o.route = ROUTE_LOCAL;
     assert_eq!(check_arrive(Ready, &o, &[], 4, &bounds()), Ok(()));
@@ -3555,12 +3432,11 @@ fn an_arrivals_route_class_is_pool_or_direct() {
         f(Rule::Contradiction, "arrive.pool"),
         "a local unit names no entry"
     );
-    // A unit routed by scope names no entry: the kernel picks the one member the principal's
-    // sealed set reaches (ARCHITECT Q-DEL-A2A-SELECT).
+
     let mut o: ArriveOut = z();
     o.route = ROUTE_SCOPE;
     assert_eq!(check_arrive(Ready, &o, &[], 4, &bounds()), Ok(()));
-    // It may name its candidate entries (ARCHITECT Q-DEL-A2A-SCOPE-TRUST).
+
     o.pool = s("a, b");
     assert_eq!(check_arrive(Ready, &o, &[], 4, &bounds()), Ok(()));
     let mut o: ArriveOut = z();
@@ -3580,10 +3456,6 @@ fn an_arrivals_route_class_is_pool_or_direct() {
 }
 
 /// A UNIT ANSWERED BY THE PLANE AT ITS SCOPE'S ONE ENTRY (`ROUTE_SCOPE_LOCAL`, COORDINATOR ruling
-/// 2026-10-07): a READY arrival may state it, naming no entry or its candidate entries as
-/// `ROUTE_SCOPE` does, and may count it as an admitted call as `ROUTE_LOCAL` may (`ROUTE_COUNTED`);
-/// a refusal about an entry never names it, as it never names `ROUTE_SCOPE`. RED: value `4` was an
-/// unknown route.
 #[test]
 fn a_unit_answered_at_its_scopes_one_entry_is_a_route_of_its_own() {
     let mut o: ArriveOut = z();
@@ -3613,10 +3485,6 @@ fn a_unit_answered_at_its_scopes_one_entry_is_a_route_of_its_own() {
     );
 }
 
-/// A REFUSAL ABOUT AN ENTRY (ARCHITECT Q-DEL-A2A-GATE, abi/plane "A refused arrival" rule 6): a
-/// REFUSED arrival may name the entry its refusal concerns, with its class, operation class and
-/// dialect, and then wear a 5xx; one naming no entry stays a 4xx; a named entry with a class the
-/// rule does not admit, or an operation class the plane does not have, is FAULT.
 #[test]
 fn a_refused_arrival_may_name_the_entry_it_is_about() {
     let about = |route: u8, status: u32| {
@@ -3656,9 +3524,6 @@ fn a_refused_arrival_may_name_the_entry_it_is_about() {
 }
 
 /// A REFUSAL RENDERED AFTER ADMISSION (abi/plane "A refused arrival", rule 6, the
-/// [`REFUSED_AFTER_ADMISSION`] arm): accepted on a refused answer that names its entry directly or
-/// as a pool, alone or beside [`REFUSED_UNSUPPORTED_ACTION`]; a FAULT on a refused answer naming no
-/// entry, and on a ready answer. RED before the arm: the bit was an unknown code on every answer.
 #[test]
 fn a_refusal_after_admission_names_its_entry_and_only_refuses() {
     let about = |route: u8, flags: u32| {
@@ -3693,7 +3558,7 @@ fn a_refusal_after_admission_names_its_entry_and_only_refuses() {
         ),
         Ok(())
     );
-    // Naming no entry: no pool, or a route that is neither a pool nor a direct entry.
+
     let mut o: ArriveOut = z();
     o.refusal = 7;
     o.refusal_status = 400;
@@ -3713,7 +3578,7 @@ fn a_refusal_after_admission_names_its_entry_and_only_refuses() {
         ),
         f(Rule::Contradiction, "arrive.refusal_flags")
     );
-    // A ready answer states no refusal, and so no order for one.
+
     let mut o: ArriveOut = z();
     o.route = ROUTE_POOL;
     o.pool = s("planner");
@@ -3725,8 +3590,6 @@ fn a_refusal_after_admission_names_its_entry_and_only_refuses() {
     );
 }
 
-/// THE ATTEMPT'S COUNTER LABELS (ARCHITECT ruling: one optional per-attempt tail): where an answer
-/// states them, each sits inside the arena it wrote; absent is a zero length.
 #[test]
 fn an_attempts_stated_counter_labels_sit_inside_the_arena() {
     let mut o = attempt_answer();
@@ -3748,8 +3611,6 @@ fn an_attempts_stated_counter_labels_sit_inside_the_arena() {
 }
 
 /// THE TAIL'S COUNTER LANE WORDS: a closed vocabulary, declared once. Each word named, a label
-/// value (no control character), none twice, at most `MAX_METRIC_LANES`; a count over NULL is the
-/// tail's own fault.
 #[test]
 fn a_tails_counter_lane_words_are_a_small_closed_vocabulary() {
     assert_eq!(
@@ -3805,8 +3666,6 @@ fn a_tails_counter_lane_words_are_a_small_closed_vocabulary() {
 }
 
 /// THE MEMBER WHOSE WAIT A REFUSAL ANSWERS (`OnPieceOut::wait_member`, a tail addition) lies inside
-/// the arena written, as every span an answer states does; whether it names a member of the unit's
-/// pool is the kernel's to judge. RED with the field unchecked: a span past the arena passed.
 #[test]
 fn a_stated_wait_member_lies_inside_the_arena() {
     let mut o: OnPieceOut = z();
@@ -3821,9 +3680,6 @@ fn a_stated_wait_member_lies_inside_the_arena() {
 }
 
 /// A CUT ANSWER AND A FINAL ANSWER ARE STATED ON THE FAR END'S PIECES ALONE (`PIECE_CUT`,
-/// `PIECE_FINAL`): a cut only on the far end's last piece, the final mark only on the far end's first
-/// piece (the one carrying its status). RED: either bit on a caller's or the kernel's piece, a cut
-/// on a far-end piece that is not its last, or a final mark on a far-end piece with no status.
 #[test]
 fn a_cut_and_a_final_mark_ride_only_the_far_ends_own_pieces() {
     use crate::abi::plane::check::check_piece_in;
@@ -3869,9 +3725,6 @@ fn a_cut_and_a_final_mark_ride_only_the_far_ends_own_pieces() {
     }
 }
 
-/// A RAW-AFFIX CLAIM'S TARGET (`CLAIM_RAW_AFFIX`, ARCHITECT ruling 2026-10-17): exactly one `*`
-/// between a prefix that starts with `/` and a non-empty suffix, never beside the open, exact or
-/// pattern bits. RED: each malformed spelling and each forbidden pairing is refused.
 #[test]
 fn a_raw_affix_target_is_a_prefix_a_star_and_a_suffix() {
     assert_eq!(
@@ -3902,21 +3755,16 @@ fn a_raw_affix_target_is_a_prefix_a_star_and_a_suffix() {
             "{pair}"
         );
     }
-    // The bit is a known claim bit; the first one past every claim bit (`CLAIM_ENTRY` and
-    // `CLAIM_TICKET`, the next ones up, are claims of their own) is not.
+
     assert_eq!(
         check_claims(&[claim("V", "/model/*/converse", CLAIM_RAW_AFFIX)], 0),
         Ok(())
     );
-    // `CLAIM_RAW_AFFIX << 1` is `CLAIM_ENTRY` now (status row 173), and `CLAIM_ENTRY << 1` is
-    // `CLAIM_TICKET`: the first bit past the known claim bits stays refused.
+
     assert!(check_claims(&[claim("V", "/t", crate::abi::plane::CLAIM_TICKET << 1)], 0).is_err());
 }
 
 /// A RAW AFFIX MATCHES THE RAW PATH AS BYTES, so the previous release's rule (`starts_with` the
-/// prefix and `ends_with` a suffix) holds on every path, the odd ones included: empty segments, a
-/// trailing `/` and a leading `//` count as bytes, and the affixes may share their `/`. RED: the
-/// two paths that rule refuses stay refused.
 #[test]
 fn a_raw_affix_matches_the_previous_releases_paths_byte_for_byte() {
     let claims = ["/model/*/converse", "/model/*/converse-stream"];
@@ -3951,10 +3799,6 @@ fn a_raw_affix_matches_the_previous_releases_paths_byte_for_byte() {
     );
 }
 
-/// AN ENTRY FACT (status row 173, `CLAIM_ENTRY`): its target is one or more predicates, `field:`
-/// (present, or its value's prefix) and at most one `path:` pattern, in which `*` is any run of
-/// bytes and a whole segment `{}` or `{<field>}` one non-empty segment, a named one captured. A
-/// malformed target, or the flag beside another, is refused at bind.
 #[test]
 fn an_entry_facts_target_is_its_predicates_and_its_path_captures_named_segments() {
     use crate::abi::plane::check::EntryPredicate::{Field, Path};
@@ -4001,14 +3845,11 @@ fn an_entry_facts_target_is_its_predicates_and_its_path_captures_named_segments(
     );
 }
 
-/// THE SIGNED FLAG RIDES A RAW AFFIX ALONE (ARCHITECT ruling 2026-10-17): a signed path is matched
-/// against the raw path as the previous release matched it, so the flag on an exact, pattern or
-/// prefix claim is refused at bind, and a raw affix, which mounts no route, lists no catalog.
 #[test]
 fn a_signed_claim_is_a_raw_affix_and_a_raw_affix_is_no_catalog() {
     let signed = CLAIM_RAW_AFFIX | CLAIM_SIGNED_INGRESS;
     assert_eq!(check_claim_target("/door/*/sign", signed), Ok(()));
-    // RED: the flag beside every other path form.
+
     for (target, form) in [
         ("/door/x/sign", CLAIM_EXACT),
         ("/door/{id+}/sign", CLAIM_PATTERN),
@@ -4027,7 +3868,6 @@ fn a_signed_claim_is_a_raw_affix_and_a_raw_affix_is_no_catalog() {
 }
 
 /// Every shortage participates in ONE reply/fields/arena/records answer. Fitting dimensions
-/// still report their full nonzero needs, and none of the four dimensions may write on a shortage.
 #[test]
 fn serve_and_refusal_recall_all_four_buffers_atomically() {
     let cap = caps();

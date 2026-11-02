@@ -1,16 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE ROOT'S LISTENERS ARE THE CONNECTOR'S: over the REAL
-//! binary, the data door and the admin surface are bound from the one list of listeners through the
-//! connector's listener — every data worker's socket and the admin socket — and each answers only
-//! its own routes: the admin surface is never served on the data bind, nor the data door on the
-//! admin bind. With a `tls:` block, the data door's socket still comes from the connector, and a
-//! client that never speaks is dropped at the configured handshake bound
-//! (`limits.tls_handshake_timeout_secs`), never answered.
 #![cfg(unix)]
-// The fixture boots a REAL server with a provider row (`GET /v1/models` answers from it), so the
-// proof needs the door that declares `pools:` linked, as thread_per_core_serves.rs gates.
 #![cfg(linked_section_pools)]
 
 mod common;
@@ -21,10 +12,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
-/// The admin surface's token.
 const ADMIN_TOKEN: &str = "root-listeners-admin-token";
 
-/// The data workers the node runs: more than one, so every worker's socket is counted.
 const WORKERS: usize = 2;
 
 fn fixture_dir(tag: &str) -> PathBuf {
@@ -46,7 +35,6 @@ fn fixture_dir(tag: &str) -> PathBuf {
 fn write_configs(dir: &Path, data_port: u16, admin_port: u16, extra: &str) {
     std::fs::write(
         dir.join("providers.yaml"),
-        // The provider catalog row is test data (`fixtures/mock_provider.yaml`), not a literal here.
         include_str!("fixtures/mock_provider.yaml"),
     )
     .unwrap();
@@ -79,7 +67,6 @@ models:
     .unwrap();
 }
 
-/// Kill the child when the test ends, however it ends.
 struct Reap(Child);
 impl Drop for Reap {
     fn drop(&mut self) {
@@ -96,7 +83,6 @@ fn boot(dir: &Path) -> Reap {
             .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
             .env("MOCK_KEY", "x")
             .env("BUSBAR_ADMIN_TOKEN", ADMIN_TOKEN)
-            // DEBUG: the per-listener "listening through the connector" lines are DEBUG-level.
             .env("RUST_LOG", "debug")
             .stdout(log.try_clone().unwrap())
             .stderr(log)
@@ -120,12 +106,10 @@ fn wait_for(budget: Duration, mut cond: impl FnMut() -> bool) -> bool {
     cond()
 }
 
-/// The status line of one plain `GET path` on `port`, if it answered.
 fn status(port: u16, path: &str) -> Option<String> {
     status_as(port, path, "")
 }
 
-/// [`status`], carrying the admin token.
 fn admin_status(port: u16, path: &str) -> Option<String> {
     status_as(
         port,
@@ -155,8 +139,6 @@ fn code(line: Option<String>) -> u16 {
         .unwrap_or(0)
 }
 
-/// RED: every data worker's socket and the admin socket are bound through the connector's
-/// listener, and the two binds each serve only their own routes.
 #[test]
 fn the_data_door_and_the_admin_surface_are_the_connectors_and_answer_only_their_own_routes() {
     let dir = fixture_dir("routes");
@@ -185,8 +167,6 @@ fn the_data_door_and_the_admin_surface_are_the_connectors_and_answer_only_their_
         "the admin surface listens through the connector"
     );
 
-    // With the admin credential: the data door answers its routes and not the admin surface's;
-    // the admin surface answers its routes and not the data door's.
     for path in ["/api/v1/admin/openapi.json", "/api/v1/admin/usage"] {
         assert_eq!(
             code(admin_status(admin, path)),
@@ -213,8 +193,6 @@ fn the_data_door_and_the_admin_surface_are_the_connectors_and_answer_only_their_
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// With a `tls:` block the data door's sockets are still the connector's, and a client that
-/// connects and never speaks is dropped at the configured handshake bound, never answered.
 #[test]
 fn a_silent_client_on_the_tls_data_door_is_dropped_at_the_handshake_bound() {
     let dir = fixture_dir("tls");

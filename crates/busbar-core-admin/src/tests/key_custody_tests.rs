@@ -8,8 +8,9 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::Extension;
 use busbar_contract::records::*;
 use busbar_kernel::auth::AuthPrincipal;
-use busbar_kernel::governance::{GovState, MemoryStore};
+use busbar_kernel::governance::GovState;
 use busbar_kernel::state::{AppHandle, CurrentApp};
+use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 use serde_json::{json, Value};
 use tokio::sync::Notify;
 
@@ -155,7 +156,7 @@ impl RecordStore for Store {
 }
 
 fn app(store: Arc<Store>) -> Arc<AppHandle> {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7; 32],
         busbar_kernel::governance::signing::DEFAULT_KID,

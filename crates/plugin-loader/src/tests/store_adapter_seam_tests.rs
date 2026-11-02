@@ -1,21 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! What the migration's head read does with a store that will not answer.
-
 use super::*;
 use busbar_contract::records::{
     AuditRecord, MeteringDelta, MeteringRow, RecordStore as AbiStore, RecordStoreError,
     RecordStoreResult, UsageLedger, VirtualKey,
 };
 
-/// A store that answers the audit tail however the test says and holds nothing else.
-///
-/// `Ok(Vec::new())` is what a store which does not KNOW the tail op reads as by the time the
-/// adapter sees it: the loaded-store seam already turns the plugin's out-of-band
-/// "I cannot decode this request" into the empty list, so an old store and an empty log are the
-/// same answer here — which is the point. `Err` is the case that is NOT the same: a store that
-/// failed to answer.
 struct AuditTail(Result<Vec<AuditRecord>, String>);
 
 impl AbiStore for AuditTail {
@@ -53,7 +44,6 @@ impl AbiStore for AuditTail {
     }
 }
 
-/// An adapter over a store whose audit tail answers `tail`.
 fn adapter_over_tail(tail: Result<Vec<AuditRecord>, String>) -> StoreAdapter {
     StoreAdapter::new(
         Arc::new(AuditTail(tail)),
@@ -61,7 +51,6 @@ fn adapter_over_tail(tail: Result<Vec<AuditRecord>, String>) -> StoreAdapter {
     )
 }
 
-/// One audit row, at a named sequence number.
 fn record(seq: u64) -> AuditRecord {
     AuditRecord {
         seq,
@@ -75,9 +64,6 @@ fn record(seq: u64) -> AuditRecord {
     }
 }
 
-/// A store that will not answer for its audit rows has not said "there are none". The head is
-/// still empty — a node whose store is briefly unreachable must boot — but the reason is named, so
-/// the migration report says the chain head is unknown instead of silently sealing over it.
 #[test]
 fn a_store_that_will_not_answer_for_its_audit_tail_names_the_reason() {
     let adapter = adapter_over_tail(Err("the backend is unreachable".to_string()));
@@ -91,7 +77,6 @@ fn a_store_that_will_not_answer_for_its_audit_tail_names_the_reason() {
         "the reason must carry what the store said, said: {reason}"
     );
 
-    // And it reaches the migration report on the same channel an unread cell does.
     let rows = adapter.migration_ledger_rows(MigrationReadPlan::nothing());
     assert_eq!(
         rows.read_figures().unreadable.len(),
@@ -100,9 +85,6 @@ fn a_store_that_will_not_answer_for_its_audit_tail_names_the_reason() {
     );
 }
 
-/// A store that answers with no rows — because it keeps none, or because it predates the tail op
-/// and the loaded-store seam already read that as "no durable audit" — has answered. The head is
-/// empty and nothing is reported, exactly as before.
 #[test]
 fn a_store_with_no_audit_rows_reads_empty_without_a_reason() {
     let adapter = adapter_over_tail(Ok(Vec::new()));
@@ -114,7 +96,6 @@ fn a_store_with_no_audit_rows_reads_empty_without_a_reason() {
     );
 }
 
-/// The head a store DOES hold still reads through unchanged.
 #[test]
 fn the_last_audit_row_is_the_head() {
     let adapter = adapter_over_tail(Ok(vec![record(41), record(42)]));

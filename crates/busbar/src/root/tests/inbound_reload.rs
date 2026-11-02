@@ -15,7 +15,7 @@ use busbar_contract::auth_calls::{
 use busbar_contract::transport::TransportSettings;
 use busbar_core_connector::framer::{Established, FramerDoor, Framing};
 use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
-use busbar_kernel::test_support::TestApp;
+use busbar_kernel_testkit::test_support::TestApp;
 use busbar_test_kit::root_door_fixtures::scoped_mux;
 
 use crate::root::doors::{bind_on, Dispatched};
@@ -78,7 +78,7 @@ fn app(provider: &Arc<Provider>) -> Arc<busbar_kernel::state::App> {
     let calls: Arc<dyn AuthCalls> = provider.clone();
     TestApp::new()
         .auth(Arc::new(
-            busbar_kernel::auth::AuthMiddleware::from_doors_for_test(vec![(
+            busbar_kernel_testkit::test_support::auth_helpers::from_doors_for_test(vec![(
                 provider.name.into(),
                 calls,
             )]),

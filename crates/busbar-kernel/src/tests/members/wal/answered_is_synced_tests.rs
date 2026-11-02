@@ -1,19 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE WRITE-BEFORE-ANSWER GATE: every record the journal acknowledged is on the medium as of the
-//! last completed sync, so a crash right after the answer loses nothing that was answered.
-//!
-//! A real disk keeps written-but-unsynced bytes in the page cache, and `kill -9` does not lose
-//! them, so a kill test over a real directory cannot tell an append that synced from one that only
-//! wrote. The backing here keeps two images per segment: what was WRITTEN, and what was there at the
-//! last completed `sync` (what a power cut leaves). After every acknowledged append the test cuts
-//! the power, reopens a journal over only the synced images and replays it: every record any `Ok`
-//! has carried must be there, byte for byte, and the chain must verify.
-//!
-//! This holds for any way of committing. A group commit that answered a waiter before the sync
-//! covering its record would leave that record only in the written image, and this test reports it.
-
 use std::collections::{BTreeMap, HashMap};
 use std::io;
 use std::sync::{Arc, Mutex};
@@ -26,27 +13,14 @@ use busbar_kernel_wal::wal::{Mode, Wal};
 
 use super::fixtures::{durability_token, wall_ms, METER};
 
-/// The node every record is written as.
 const NODE: u64 = 7;
 
-/// A small segment ceiling, so the run rolls through several segments.
 const CEILING: u64 = 24 * FRAME_BYTES as u64;
 
-/// What a power cut leaves: each segment's bytes as of its last completed sync.
 type Synced = Arc<Mutex<BTreeMap<u64, Vec<u8>>>>;
 
-/// The segments whose sync has failed once. Shared by every backing the factory hands out, so a
-/// segment reopened under the same index stays failed.
 type Failed = Arc<Mutex<std::collections::HashSet<u64>>>;
 
-/// A memory backing that copies its bytes to the synced image only when a sync completes, and can
-/// be told to fail its next sync.
-///
-/// AFTER A FAILED SYNC THE SEGMENT'S SYNCED IMAGE IS FROZEN. A kernel may drop the dirty pages of a
-/// file whose fsync returned EIO and report the next fsync as a success ("fsyncgate"), so nothing
-/// written to that segment before or after the failure counts as durable. A later `sync` answers
-/// `Ok` and snapshots nothing. A log that kept the failed batch on the poisoned segment, or marked it
-/// written instead of rewriting it on a fresh one, loses it here.
 struct PowerCutBackend {
     index: u64,
     written: MemorySegment,
@@ -107,8 +81,6 @@ impl PowerCutFactory {
         }
     }
 
-    /// Cut the power: a fresh factory holding, for every segment the log created, only the bytes
-    /// its last completed sync covered. A segment created but never synced comes back empty.
     fn after_power_cut(&self, created: u64) -> MemoryFactory {
         let image = MemoryFactory::retaining();
         let synced = self.synced.lock().unwrap();
@@ -170,8 +142,6 @@ fn journal_over(factory: Box<dyn SegmentFactory>) -> Journal {
     Journal::over(wal, NODE)
 }
 
-/// One batch of `n` entries, each body naming the batch and its place in it. Bodies vary in length
-/// so some records span more than one frame.
 fn batch(round: u64, n: u64) -> Vec<Entry> {
     (0..n)
         .map(|i| {
@@ -184,7 +154,6 @@ fn batch(round: u64, n: u64) -> Vec<Entry> {
         .collect()
 }
 
-/// Cut the power now and assert every answered record is on what is left, and the chain verifies.
 fn assert_power_cut_keeps(
     factory: &PowerCutFactory,
     created: u64,
@@ -211,8 +180,6 @@ fn assert_power_cut_keeps(
     }
 }
 
-/// Every append that answers `Ok` has been synced: a power cut right after any answer keeps every
-/// record answered so far, across segment rolls and group commits of one to four records.
 #[test]
 fn a_power_cut_right_after_any_answer_loses_nothing_answered() {
     let token = durability_token();
@@ -234,9 +201,6 @@ fn a_power_cut_right_after_any_answer_loses_nothing_answered() {
     );
 }
 
-/// The same with a failing medium: an append whose sync fails answers a loss, not `Ok`, and every
-/// record that WAS answered `Ok` survives a power cut — including the failed batch once a later
-/// append writes it again and answers for it.
 #[test]
 fn a_failed_sync_answers_no_ok_and_every_ok_survives_a_power_cut() {
     let token = durability_token();
@@ -258,7 +222,7 @@ fn a_failed_sync_answers_no_ok_and_every_ok_survives_a_power_cut() {
                 for record in &ack.sealed {
                     answered.insert(record.node_seq, record.body.clone());
                 }
-                // A retained batch is written ahead of this one, so this Ok answers for it too.
+
                 answered.extend(std::mem::take(&mut lost));
             }
             Err(_) => {

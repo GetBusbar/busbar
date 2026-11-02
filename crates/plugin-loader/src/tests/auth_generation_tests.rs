@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! SAFETY for raw service calls below: the test supplies the selected slot's initialized
-//! frame, live nested loans, and an exclusive initialized output for the whole invocation.
-//! Malformed heads are rejected before any range they do not cover is accessed.
-
 use super::*;
 
 #[test]

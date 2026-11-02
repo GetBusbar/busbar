@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DOOR PLANES' SESSION ROUTES (ARCHITECT Q-L5B-SESSION-SERVE 2026-10-03; TRANSITIONAL with the
-//! routes): a session route handed to `build_split_routers_serving_sessions` is mounted at the data
-//! router's construction; its handler answers before any upgrade. An admitted session's socket is
-//! bridged onto its pipe both ways, many messages each way (text stays text), and the session
-//! dropping its sender closes the socket; a refusal goes out as it is and no socket binds.
-
 use std::sync::Arc;
 
 use busbar_contract::abi::mechanism::route::RouteAuth;
@@ -19,8 +13,6 @@ use tokio_tungstenite::tungstenite::Message;
 const OPEN: &str = "/session-route-test/live";
 const REFUSED: &str = "/session-route-test/refused";
 
-/// A session whose handler echoes each caller message as `echo:<msg>`, as one text message, and
-/// ends after the caller's `bye`; or refuses with 403 before any upgrade.
 fn session(path: &'static str) -> PlaneSessionSpec {
     PlaneSessionSpec {
         path: path.to_string(),
@@ -73,7 +65,11 @@ async fn serve() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
     .0;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let server = tokio::spawn(async move {
+        axum::serve(listener, super::session_socket_test_adapter::adapt(router))
+            .await
+            .unwrap()
+    });
     (addr, server)
 }
 
@@ -102,7 +98,7 @@ async fn an_admitted_session_is_bridged_both_ways_until_the_session_ends() {
             .expect("a message"),
         Message::Text("echo:bye".into())
     );
-    // The session dropped its sender: the socket closes.
+
     let closed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
             match ws.next().await {
@@ -167,7 +163,11 @@ async fn a_websocket_plane_receives_no_scheme_derived_from_a_raw_credential() {
     .0;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let server = tokio::spawn(async move {
+        axum::serve(listener, super::session_socket_test_adapter::adapt(router))
+            .await
+            .unwrap()
+    });
     let mut request = format!("ws://{addr}{OPEN}").into_client_request().unwrap();
     request
         .headers_mut()

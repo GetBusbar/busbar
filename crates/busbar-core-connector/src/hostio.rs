@@ -2,26 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE HOST'S I/O, `io.*` (`busbar_contract::abi::host::io`; `BUSBAR-1.6.0.md` THE DESIGN §5: "No
-//! plugin opens a socket, dials, binds or does TLS"; TRANSPORT-STACK (2): a carrier writes "with
-//! readiness via core `io.*`"): the ONE place in this crate that holds an OS handle — a stream
-//! socket (IP or unix-domain), a listener, a spawned program's two pipes — and moves bytes over it.
-//! Every other module reaches the wire through a carrier's slots ([`crate::carrier`]), and the
-//! carrier reaches it through here.
-//!
-//! [`HostIo`] implements the contract's [`IoHost`]: the loader's `io` slots dispatch every carrier
-//! instance's `io.*` call into it, and a handle belongs to the instance whose call made it.
-//!
-//! * THE DESTINATION GUARD STAYS ONE CHECK (THE DESIGN §5): the connector
-//!   judges and pins every address before it asks a carrier to dial, and ADMITS exactly what it
-//!   judged for the dial's ticket ([`HostIo::admit`]); `open` reaches only an admitted address,
-//!   `listen` binds only an admitted bind, `spawn` starts only the admitted program. Anything else is
-//!   refused before any system call.
-//! * Readiness is the calling worker's reactor's ([`crate::io`]): a call that cannot progress
-//!   answers `Pending` with the ticket's waker registered, never a block, never a thread.
-//! * A stream is non-blocking, no-delay, probed after 60 s idle (1.5.5's keepalive); a
-//!   listener reuses its address and port (one per acceptor); a program is spawned with no shell, an
-//!   absolute path and only the environment its settings state, its error output the host's, and
-//!   killed when its handle is closed or dropped.
 
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
@@ -65,6 +45,7 @@ pub enum OpenFailure {
 #[derive(Debug, Default)]
 struct Admitted {
     what: Option<Admission>,
+    owner: Option<u64>,
     made: Option<u64>,
     failure: Option<OpenFailure>,
 }
@@ -103,10 +84,6 @@ const SLOTS: u64 = (FIRST as u64) * ((1 << SEGMENTS) - 1);
 const GENERATION: u64 = 1 << 32;
 
 /// THE HANDLE TABLE: a slot per live handle, read by every `io.*` call WITHOUT A LOCK (one atomic
-/// load). A handle is its slot (its low 32 bits, counted from 1: a handle is never 0) and the slot's
-/// generation (its high 32 bits); the entry carries its whole handle, so a handle released (or
-/// taken) names nothing even once its slot holds another: a handle is never made twice. A slot whose
-/// generations are spent is retired. Making and releasing serialise on [`Table::free`].
 struct Table {
     segments: [OnceLock<Box<[ArcSwapOption<Entry>]>>; SEGMENTS],
     free: Mutex<Free>,
@@ -187,7 +164,6 @@ impl Table {
     }
 
     /// Release every handle `owner` holds, as [`Table::release`] releases one: each names nothing
-    /// from here on.
     fn reap(&self, owner: u64) -> Vec<Arc<Entry>> {
         let mut free = self.free.lock().unwrap_or_else(PoisonError::into_inner);
         let mut gone = Vec::new();
@@ -237,7 +213,6 @@ fn polled<T>(p: Poll<io::Result<T>>) -> Poll<IoResult<T>> {
 }
 
 /// The process's one host I/O: every connector, carrier and wire of the process is served from it
-/// unless built over another ([`crate::Connector::with_io`]).
 static PROCESS: std::sync::OnceLock<Arc<HostIo>> = std::sync::OnceLock::new();
 
 /// The process's one host I/O ([`PROCESS`]).
@@ -264,8 +239,12 @@ impl HostIo {
     }
 
     /// ADMIT `what` for the op about to run on `ticket` (the destination guard's pinned address, the
-    /// bind, the program): the one thing that op may reach.
     pub fn admit(&self, ticket: Ticket, what: Admission) {
+        self.admit_for(ticket, what, None);
+    }
+
+    /// Admit one supplier's operation under its checked, opaque host I/O owner.
+    pub(crate) fn admit_for(&self, ticket: Ticket, what: Admission, owner: Option<u64>) {
         self.admitted
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -273,13 +252,13 @@ impl HostIo {
                 ticket,
                 Admitted {
                     what: Some(what),
+                    owner,
                     ..Admitted::default()
                 },
             );
     }
 
     /// The op on `ticket` is done: its admission is withdrawn, and what it came to answered — the
-    /// handle it made and the last `open` failure.
     pub fn settle(&self, ticket: Ticket) -> (Option<u64>, Option<OpenFailure>) {
         let a = self
             .admitted
@@ -328,9 +307,14 @@ impl HostIo {
             .ok_or_else(IoRefusal::unknown)
     }
 
+    /// A successful same-ticket spawn still owns an actual program handle for this supplier.
+    pub(crate) fn program_receipt(&self, owner: u64, id: u64) -> bool {
+        self.handles
+            .get(id)
+            .is_some_and(|entry| entry.owner == owner && matches!(entry.kind, Kind::Program(_)))
+    }
+
     /// TAKE a stream handle's socket off the host's table, as the byte stream moves on to the
-    /// kernel's own serving loop (the root's non-plane listeners hand each accepted socket up): it
-    /// leaves the reactor, non-blocking. `None` for no such stream, or one still referenced.
     #[must_use]
     pub fn take_stream(&self, id: u64) -> Option<TcpStream> {
         let entry = Arc::into_inner(self.handles.release(id, |_| true)?)?;
@@ -344,7 +328,6 @@ impl HostIo {
     }
 
     /// Whether the program handle `id` runs has exited (without waiting for it); `false` for any
-    /// other handle, and for one no longer held.
     #[must_use]
     pub fn program_exited(&self, id: u64) -> bool {
         let Some(e) = self.handles.get(id) else {
@@ -373,10 +356,6 @@ impl HostIo {
     }
 
     /// RETIRE the listening handle `id` (the one a carrier's `listen` made, [`HostIo::settle`]): it
-    /// is closed at once and names nothing from here on, so its address stops accepting now, not
-    /// when the carrier's instance closes. The handle is the host's (`abi::transport`, "a retired
-    /// listener"): a carrier's later `accept` on it is FAILED as an unknown handle. Any other
-    /// handle, or one no longer held, is left alone.
     pub fn retire_listener(&self, id: u64) {
         if let Some(e) = self
             .handles
@@ -433,10 +412,6 @@ pub struct HostListener {
 
 impl HostListener {
     /// Bind `bind` (`ip:port`) on the calling worker's reactor, address and port reused.
-    ///
-    /// # Errors
-    ///
-    /// The address does not parse or cannot be bound, or the caller is not on a worker.
     pub fn bind(bind: &str) -> io::Result<Self> {
         let l = socket::listen(bind)?;
         let local = l.local_addr()?;
@@ -453,10 +428,6 @@ impl HostListener {
     }
 
     /// The next socket and its far end; an aborted or interrupted accept is retried at once (1.5.5).
-    ///
-    /// # Errors
-    ///
-    /// The accept failed (fd exhaustion): the caller backs off.
     pub fn poll_accept(
         &mut self,
         cx: &mut Context<'_>,
@@ -474,14 +445,20 @@ impl HostListener {
     }
 }
 
-/// A released handle's end: a program is its handle's own, and ends with it.
+/// End a released handle before its last descriptor closes.
 fn ended(e: &Entry) {
-    if let Kind::Program(p) = &e.kind {
-        let _ = p
-            .child
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .start_kill();
+    match &e.kind {
+        Kind::Listener(listener) => {
+            let _ = socket2::SockRef::from(listener.get_ref()).shutdown(Shutdown::Both);
+        }
+        Kind::Program(p) => {
+            let _ = p
+                .child
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .start_kill();
+        }
+        Kind::Stream { .. } => {}
     }
 }
 
@@ -527,8 +504,6 @@ impl IoHost for HostIo {
     fn listen(&self, owner: u64, ticket: Ticket, bind: &str) -> IoResult<(u64, String)> {
         self.admits(ticket, |a| matches!(a, Admission::Bind(b) if b == bind))?;
         let failed_bind = |stage: &str, error: &io::Error| {
-            // These are host parser/OS/reactor errors, before conversion into a carrier's
-            // arbitrary failure text. Never include the configured bind string.
             tracing::warn!(
                 owner,
                 ticket_slot = ticket.slot,
@@ -568,7 +543,6 @@ impl IoHost for HostIo {
             match l.poll_io(Direction::Read, &mut cx, TcpListener::accept) {
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(Ok((stream, peer))) => {
-                    // A per-connection transient was the far end's; the accept carries on.
                     if stream.set_nonblocking(true).is_err() {
                         continue;
                     }
@@ -591,7 +565,7 @@ impl IoHost for HostIo {
                     self.record(ticket, Some(id), None);
                     return Poll::Ready(Ok((id, peer.to_string())));
                 }
-                // 1.5.5's accept loop: an aborted or interrupted accept is retried at once.
+
                 Poll::Ready(Err(e))
                     if matches!(
                         e.kind(),
@@ -680,7 +654,7 @@ impl IoHost for HostIo {
                 sock.poll_ready(d, &mut cx)
                     .map(|r| r.map(|_| ()).map_err(|err| failed(&err)))
             }
-            // A program's pipes are open from the spawn.
+
             Kind::Program(_) | Kind::Listener(_) => Poll::Ready(Ok(())),
         }
     }
@@ -716,46 +690,71 @@ impl IoHost for HostIo {
     }
 
     fn spawn(&self, owner: u64, ticket: Ticket, spawn: &Spawn<'_>) -> IoResult<u64> {
-        // The admitted program's environment REFERENCES: never in the destination the carrier was
-        // handed (it carries the written values only), held since config time resolved them.
-        let mut held = None;
-        self.admits(ticket, |a| {
-            let admitted = matches!(a, Admission::Spawn(p, _) if p.command == spawn.program
-                && p.args.iter().map(String::as_str).eq(spawn.args.iter().copied())
-                && p.env.iter().map(|(k, v)| (k.as_str(), v.as_str())).eq(spawn.env.iter().copied()));
-            if let (true, Admission::Spawn(_, env)) = (admitted, a) {
-                held = Some(env.clone());
+        let (held, cwd) = {
+            let admitted = self.admitted.lock().unwrap_or_else(PoisonError::into_inner);
+            let admitted = admitted.get(&ticket).ok_or_else(|| {
+                IoRefusal::Refused("the host did not admit this for the op that asked".into())
+            })?;
+            if admitted.owner.is_some_and(|expected| expected != owner) {
+                return Err(IoRefusal::Refused(
+                    "the program admission belongs to another supplier".into(),
+                ));
             }
-            admitted
-        })?;
-        if !spawn.program.starts_with('/') {
+            match admitted.what.as_ref() {
+                Some(Admission::Spawn(program, env))
+                    if program.command == spawn.program
+                        && program
+                            .args
+                            .iter()
+                            .map(String::as_str)
+                            .eq(spawn.args.iter().copied())
+                        && program
+                            .env
+                            .iter()
+                            .map(|(k, v)| (k.as_str(), v.as_str()))
+                            .eq(spawn.env.iter().copied()) =>
+                {
+                    (env.clone(), program.cwd.clone())
+                }
+                _ => {
+                    return Err(IoRefusal::Refused(
+                        "the host did not admit this for the op that asked".into(),
+                    ))
+                }
+            }
+        };
+        if !std::path::Path::new(spawn.program).is_absolute() {
             return Err(IoRefusal::Refused(
                 "a program is spawned by its absolute path only".into(),
+            ));
+        }
+        if cwd.as_deref().is_some_and(|directory| {
+            !std::path::Path::new(directory).is_absolute()
+                || directory.trim() != directory
+                || directory.contains('\0')
+        }) {
+            return Err(IoRefusal::Refused(
+                "a program working directory must be an unpadded absolute path without NUL".into(),
             ));
         }
         if tokio::runtime::Handle::try_current().is_err() {
             return Err(IoRefusal::Failed(reactor::NOT_ON_A_WORKER.into()));
         }
-        // The environment's references were resolved at config time and are HELD for the spawn
-        // (`crate::spawn_env`): the spawn loads them and resolves nothing, so no secret resolution
-        // runs on the request a spawn serves. One that did not resolve at its last load or refresh
-        // spawns nothing.
-        let held = held.map(|env| env.now());
-        let resolved = match held.as_deref().map(crate::spawn_env::Resolved::env) {
-            None => &[][..],
-            Some(Ok(env)) => env,
-            Some(Err(why)) => return Err(IoRefusal::Refused(why.to_owned())),
-        };
-        // Two OS pipes: the child reads one and writes the other; the host keeps the far ends.
-        // The child's error output is the host's own (a spawned command inherits it).
+
+        let held = held.now();
+        let resolved = held
+            .env()
+            .map_err(|why| IoRefusal::Refused(why.to_owned()))?;
+
         let (child_reads, host_writes) = std::io::pipe().map_err(|e| failed(&e))?;
         let (host_reads, child_writes) = std::io::pipe().map_err(|e| failed(&e))?;
-        // The command (and the child's ends of the pipes it holds) is dropped with this statement,
-        // so the child sees the end of its input when the host closes its end. The held values are
-        // revealed into the child's environment under the kernel's seal: the one place a program's
-        // secret leaves the host's records.
+
         let seal = busbar_kernel::seal::lend();
-        let child = tokio::process::Command::new(spawn.program)
+        let mut command = tokio::process::Command::new(spawn.program);
+        if let Some(directory) = cwd {
+            command.current_dir(directory);
+        }
+        let child = command
             .args(spawn.args)
             .env_clear()
             .envs(spawn.env.iter().copied())
@@ -800,8 +799,7 @@ impl IoHost for HostIo {
                 port: l.get_ref().local_addr().map_err(|err| failed(&err))?.port(),
                 ..Ends::default()
             }),
-            // The program ITSELF, without waiting: a descendant still holding its output keeps the
-            // pipe open, so its exit is read here, never from the pipe's end.
+
             Kind::Program(p) => Ok(Ends {
                 exit: p
                     .child

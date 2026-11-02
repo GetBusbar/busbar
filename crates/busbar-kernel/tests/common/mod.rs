@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The stand-in units the battery drives the loop with.
-//!
-//! Every unit behind a sealed trait is replaced here by one that records that it was called and
-//! answers what the test told it to answer. That is the whole harness: the loop under test is the
-//! real one, the money types are the real ones, and only the units are fakes.
-
 #![allow(dead_code)]
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,21 +16,12 @@ use busbar_kernel::plane_driver::DriverSteps;
 use busbar_kernel::registry::Generation;
 use busbar_kernel::teller::{AccrualMeter, Evidence, Kernel, UnitCtx};
 
-/// A group with a `concurrent` cap, kept the way a real door keeps one.
-///
-/// The kernel depends on no door, so the door's counter is modelled here — and modelled exactly:
-/// a count raised while the decision is being taken, released by dropping the value the yes handed
-/// back, and a refusal for anything that arrives while the count is at the cap. That shape is the
-/// whole of what the fix is about. A grant nothing holds is a count released before the unit it
-/// admitted has run, and the N+1th unit is then measured against a gauge that has forgotten the N
-/// in flight.
 pub struct CappedGroup {
     live: Arc<std::sync::atomic::AtomicUsize>,
     cap: usize,
 }
 
 impl CappedGroup {
-    /// A group that will run at most `cap` units at once.
     pub fn at(cap: usize) -> Arc<Self> {
         Arc::new(CappedGroup {
             live: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
@@ -44,12 +29,10 @@ impl CappedGroup {
         })
     }
 
-    /// How many units this group is running right now.
     pub fn live(&self) -> usize {
         self.live.load(Ordering::Acquire)
     }
 
-    /// Count one unit, or say the group is full. The count comes back when the answer is dropped.
     fn count_one(&self) -> Option<GroupCount> {
         self.live
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
@@ -60,7 +43,6 @@ impl CappedGroup {
     }
 }
 
-/// One unit's count on a [`CappedGroup`], given back by dropping it.
 struct GroupCount(Arc<std::sync::atomic::AtomicUsize>);
 
 impl Drop for GroupCount {
@@ -69,62 +51,47 @@ impl Drop for GroupCount {
     }
 }
 
-/// What the fake door answers.
 pub enum Door {
-    /// Open a hold of the unit's own.
     Own,
-    /// Run under a parent's hold in this cell.
+
     Accrual(Arc<HoldCell>),
-    /// Hold nothing.
+
     Zero,
 }
 
-/// The units the battery drives the loop with.
 pub struct TestUnits {
-    /// Every step the loop called, in the order it called them.
     pub calls: Mutex<Vec<StepName>>,
-    /// Refuse at this step, with this reason.
+
     pub refuse_at: Option<(StepName, ReasonCode)>,
-    /// The Retry-After, in whole seconds, the refusal at `refuse_at` carries (an admission's
-    /// window reset, as the root's door hands it). `None` = the refusal carries none.
+
     pub refuse_wait: Option<u32>,
-    /// What the door answers.
+
     pub door: Door,
-    /// What the settlement table reads at the exit.
+
     pub evidence: Evidence,
-    /// How much the route step spends.
+
     pub spend: u64,
-    /// The meter the route step accrues `spend` onto. A unit accrues nothing through the loop's
-    /// seam (the kernel reads its own meter at the exit), so a battery that runs a spending unit
-    /// hands the loop THIS meter as the run's meter — one meter, as production has one.
+
     pub meter: Arc<AccrualMeter>,
-    /// Whether the door for a unit that never passed the door was used.
+
     pub refused_door: AtomicBool,
-    /// Whether the door for a unit that DID pass was used.
+
     pub admitted_door: AtomicBool,
-    /// Answer the authenticate step with a challenge instead of an identity.
+
     pub challenge: bool,
-    /// The lanes the verified set carried when it reached the approve step.
+
     pub approved_lanes: Mutex<Vec<busbar_contract::caps::LaneId>>,
-    /// The principal each POLICY SEAT was handed, in the order the seats were asked. A challenge
-    /// round has no established identity and still has to present one to the seats that decide
-    /// ABOUT a principal, so this is what says WHICH one it presented.
+
     pub seated_principals: Mutex<Vec<PrincipalId>>,
-    /// The capped-`concurrent` groups this door names on its yes, as the root would have interned
-    /// them. Empty is the door that names none, which is every case that predates the slip.
+
     pub groups: Vec<&'static str>,
-    /// The capped group this door enforces on its own counter, when it has one. `None` is a door
-    /// whose cap is somebody else's, which is every case that predates the grant.
+
     pub capped: Option<Arc<CappedGroup>>,
-    /// The ends of units a caller went away from, as the loop handed them to the leg's plane. What
-    /// a plane does with one is post it; what this harness does is keep it, so a cell can post it
-    /// onto a real ledger and read the books.
+
     pub abandoned: Mutex<Vec<busbar_kernel::teller::Ended>>,
-    /// The one entry a `ROUTE_SCOPE_LOCAL` unit's scope resolved to, as a composition's steps
-    /// resolve it on the principal's grant (`DriverSteps::resolved`). `None` = none resolved.
+
     pub resolved: Option<Vec<u8>>,
-    /// Every usage-tap fault the driver handed these steps, `(dialect, reason)`, in order. Each is
-    /// also counted on the kernel's own counter, as the root's steps count it.
+
     pub tap_faults: Mutex<Vec<(u32, &'static str)>>,
 }
 
@@ -153,12 +120,10 @@ impl Default for TestUnits {
 }
 
 impl TestUnits {
-    /// Units that let every step through.
     pub fn passing() -> Self {
         TestUnits::default()
     }
 
-    /// Units whose door counts every unit against these capped groups and says so.
     pub fn in_groups(groups: &[&'static str]) -> Self {
         TestUnits {
             groups: groups.to_vec(),
@@ -166,8 +131,6 @@ impl TestUnits {
         }
     }
 
-    /// Units whose door enforces a `concurrent` cap on its own counter, and hands the count it
-    /// took to the slot to hold.
     pub fn behind(group: &Arc<CappedGroup>) -> Self {
         TestUnits {
             capped: Some(Arc::clone(group)),
@@ -175,7 +138,6 @@ impl TestUnits {
         }
     }
 
-    /// Units that refuse at `step` for `reason`.
     pub fn refusing(step: StepName, reason: ReasonCode) -> Self {
         TestUnits {
             refuse_at: Some((step, reason)),
@@ -183,12 +145,10 @@ impl TestUnits {
         }
     }
 
-    /// The steps the loop called.
     pub fn called(&self) -> Vec<StepName> {
         self.calls.lock().unwrap().clone()
     }
 
-    /// Which audit door the unit left through.
     pub fn doors(&self) -> (bool, bool) {
         (
             self.refused_door.load(Ordering::Acquire),
@@ -196,12 +156,10 @@ impl TestUnits {
         )
     }
 
-    /// The destination set as the approve step received it — what the verify step actually sealed.
     pub fn approved_lanes(&self) -> Vec<busbar_contract::caps::LaneId> {
         self.approved_lanes.lock().unwrap().clone()
     }
 
-    /// The principal the approve and admit seats were handed, in that order.
     pub fn seated_principals(&self) -> Vec<PrincipalId> {
         self.seated_principals.lock().unwrap().clone()
     }
@@ -221,20 +179,12 @@ impl TestUnits {
     }
 }
 
-/// THE UPSTREAM THAT IS STILL THINKING.
-///
-/// A Route leg that never answers, so the loop is left waiting at its one await — exactly where a
-/// client that hangs up mid-request drops it. Nothing else about the plane changes: every other step
-/// is [`TestUnits`]', so what the cells around this fixture measure is the await and only the await.
 pub struct NeverRoutes<'u> {
-    /// The plane the other nine steps come from, so the call order still reads as one unit.
     pub units: &'u TestUnits,
-    /// Set when the leg's own future is dropped — the proof that cancellation reached the upstream
-    /// rather than stopping at the loop.
+
     pub dropped: &'u AtomicBool,
 }
 
-/// The leg itself. It answers `Pending` for ever, and says so when it is dropped.
 pub struct Never<'u> {
     dropped: &'u AtomicBool,
 }
@@ -274,8 +224,6 @@ impl busbar_kernel::teller::RouteAwait for NeverRoutes<'_> {
     }
 }
 
-/// A principal every test shares.
-/// The arrival record the battery's kernel-owned arrival step hands forward.
 pub fn arrival_record() -> busbar_contract::caps::ArrivalRecord {
     busbar_contract::caps::ArrivalRecord {
         source: "127.0.0.1:9".into(),
@@ -287,7 +235,6 @@ pub fn arrival_record() -> busbar_contract::caps::ArrivalRecord {
     }
 }
 
-/// What the battery's audit step seals.
 pub fn audit_facts() -> busbar_contract::caps::AuditFacts {
     busbar_contract::caps::AuditFacts {
         op_class: busbar_contract::caps::OpClassId::new("battery"),
@@ -295,7 +242,6 @@ pub fn audit_facts() -> busbar_contract::caps::AuditFacts {
     }
 }
 
-/// The one frame the battery's encode step produces.
 pub fn encoded_frame() -> busbar_contract::caps::Frame {
     busbar_contract::caps::Frame {
         direction: busbar_contract::Direction::Outbound,
@@ -305,8 +251,6 @@ pub fn encoded_frame() -> busbar_contract::caps::Frame {
     }
 }
 
-/// The door, as the table asks it for an arrival hold. The real one is the admission unit; what
-/// the battery needs is only that the hold is opened by whoever holds the token, not by the table.
 pub struct TestDoor;
 
 impl busbar_kernel::inflight::ArrivalDoor for TestDoor {
@@ -323,7 +267,6 @@ pub fn principal() -> PrincipalId {
     PrincipalId::new("acct:battery")
 }
 
-/// A context for a client unit.
 pub fn ctx(key: u64) -> UnitCtx {
     UnitCtx {
         call: busbar_contract::caps::CallId::UNBOUND,
@@ -336,12 +279,10 @@ pub fn ctx(key: u64) -> UnitCtx {
     }
 }
 
-/// A cell holding an arrival hold, ready for the door.
 pub fn cell(kernel: &Kernel) -> HoldCell {
     HoldCell::new(Hold::open(&kernel.admit_token(), principal()))
 }
 
-/// A usage report of one line, for tests that need one directly.
 pub fn usage(token: &Grant<Consumption>, quantity: u64) -> Usage {
     Usage::report(
         token,
@@ -365,7 +306,6 @@ macro_rules! step {
     }};
 }
 
-/// A plain answer, stamped at the seat that asked for it.
 fn seated<S: busbar_contract::caps::Step>(
     token: &Pass<S>,
     answer: Result<S::Facts, Refusal>,
@@ -376,13 +316,8 @@ fn seated<S: busbar_contract::caps::Step>(
     }
 }
 
-/// The protocol label this harness counts a usage-tap fault under (its plane has no dialect names).
 pub const TAP_FAULT_PROTOCOL: &str = "plane-driver-test";
 
-/// The battery's answers at the kernel's seats, as the plane driver asks them; told nothing beyond
-/// the loop's own seats, save the entry a scope-local unit resolved to, when the case names one,
-/// and a usage-tap fault, which they keep and count on the kernel's counter exactly as the root's
-/// steps do. The loop's own seats ([`Units`] below) answer from these same bodies.
 impl busbar_kernel::plane_driver::DriverSteps for TestUnits {
     fn arrival(&self, _ctx: &UnitCtx) -> Result<busbar_contract::caps::ArrivalRecord, Refusal> {
         step!(self, StepName::Arrival, arrival_record())
@@ -410,9 +345,6 @@ impl busbar_kernel::plane_driver::DriverSteps for TestUnits {
         _ctx: &UnitCtx,
         _principal: &PrincipalId,
     ) -> Result<Vec<VerifiedDestination>, Refusal> {
-        // The trust token the loop lends this step is what seals a destination, so the fixture
-        // seals one: a step that answered with the empty set would exercise the loop's
-        // no-destination path on every test rather than the one that names it.
         step!(
             self,
             StepName::Verify,
@@ -456,19 +388,15 @@ impl busbar_kernel::plane_driver::DriverSteps for TestUnits {
         if let Some(refusal) = self.refusal(StepName::Admit) {
             return Err(refusal);
         }
-        // The cap, on the door's own counter, exactly where a real door takes it: as part of the
-        // decision, before anything else is answered. A full group refuses, and the refusal is the
-        // rate-limited one the ratified table renders a concurrency cap as.
+
         if let Some(group) = &self.capped {
             let Some(counted) = group.count_one() else {
                 return Err(Refusal::new(ReasonCode::RateLimited));
             };
-            // And handed straight over, because the count is the cap and the cap has to outlive
-            // the call that took it.
+
             leases.holding(busbar_kernel::slice::DoorGrant::new(counted));
         }
-        // Named on the yes and only on the yes, exactly where the real door names them: after the
-        // decision, never as part of it.
+
         for group in &self.groups {
             leases.counted(group);
         }
@@ -477,8 +405,7 @@ impl busbar_kernel::plane_driver::DriverSteps for TestUnits {
             Door::Zero => Admission::ZeroHold,
             Door::Accrual(parent) => match parent.accrue_child(principal, admit) {
                 Ok(accrual) => Admission::Accrual(accrual),
-                // A refused accrual falls back to the child's own hold, which is what the loop
-                // does when the parent has already exited.
+
                 Err(_) => Admission::Own(Hold::open(admit, principal.clone())),
             },
         })
@@ -524,8 +451,6 @@ impl busbar_kernel::plane_driver::DriverSteps for TestUnits {
     }
 }
 
-/// The battery as the loop's own seats: each answers from the body above, stamped at its seat;
-/// decode, route and encode are the loop double's alone.
 impl busbar_kernel::teller::DoorSeats for TestUnits {
     fn arrival(&self, token: &Pass<Arrival>, ctx: &UnitCtx) -> SeatVerdict<Arrival> {
         seated(token, DriverSteps::arrival(self, ctx))

@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE PLANE SCRIPT'S PUBLIC URL AND SESSIONS LEG (`conformance/plane.rs`), over the loader's own
-//! plane fixture (`tests/fixtures/plane_door_plugin.rs`), linked and dropped in: `open` hands the
-//! deployment's public URL (the fixture then claims its session door), and the sessions leg drives
-//! a live session (its arrival, the caller's piece, `drive`, a collection, the far end's answer in
-//! two pieces, one met short, `project`) and a request unit (its ATTEMPT, an answer through a
-//! narrow reply buffer), each step at its pinned crossing count, the two folds equal, every step
-//! answering as its `want` states. RED: a moved count on any session step, a step answering
-//! otherwise than wanted, a want the suite does not know, and a piece called short that is not.
-
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use serde_json::Value;
@@ -37,12 +28,12 @@ const SESSIONS: &str = r#"[
       "piece": { "from": "far_end", "status": 200, "fields": [["x-up", "1"]], "bytes": "abc" },
       "want": { "outcome": "Ready", "emitted": "abc", "status": 200, "done": false,
                 "fields": [["x-plane", "door"]], "units": [[0, 3]] } },
-    { "label": "answer tail", "piece": { "from": "far_end", "last": true, "bytes": "de" },
-      "want": { "outcome": "Ready", "emitted": "de", "done": true, "units": [[0, 2]] } },
+    { "label": "answer tail", "piece": { "from": "far_end", "bytes": "de" },
+      "want": { "outcome": "Ready", "emitted": "de", "done": false, "units": [[0, 2]] } },
     { "label": "answer short",
-      "piece": { "from": "far_end", "last": true,
+      "piece": { "from": "far_end",
                  "bytes": [{ "repeat": "x", "times": 3 }], "short": "units" },
-      "want": { "outcome": "Ready", "emitted": "xxx", "done": true, "units": [[0, 3]] } },
+      "want": { "outcome": "Ready", "emitted": "xxx", "done": false, "units": [[0, 3]] } },
     { "label": "project", "project": { "target": "/upgrade", "body": "hi" },
       "want": { "outcome": "Ready", "rewritten": false, "body_has": ["hi"] } },
     { "label": "tick", "tick": { "now_ns": 1000 },
@@ -57,7 +48,21 @@ const SESSIONS: &str = r#"[
                 "target": "/up", "need": 0 } },
     { "label": "answer", "piece": { "from": "far_end", "status": 200, "last": true,
                                     "bytes": "abcdef" },
-      "want": { "outcome": "Ready", "emitted": "abcd", "more": 1, "done": false } } ] }
+      "want": { "outcome": "Ready", "emitted": "abcd", "more": 1, "done": false } } ] },
+  { "name": "terminal", "unit": 42, "stream": 42, "claim": 1, "steps": [
+    { "label": "upgrade", "arrive": { "method": "GET", "target": "/upgrade", "body": "hi" },
+      "want": { "outcome": "Ready", "route_flags": ["session"] } },
+    { "label": "answer head", "piece": { "from": "far_end", "status": 200, "bytes": "abc" },
+      "want": { "outcome": "Ready", "emitted": "abc", "done": false, "units": [[0, 3]] } },
+    { "label": "answer tail", "piece": { "from": "far_end", "last": true, "bytes": "de" },
+      "want": { "outcome": "Ready", "emitted": "de", "done": true, "units": [[0, 2]] } } ] },
+  { "name": "terminal-short", "unit": 43, "stream": 43, "claim": 1, "steps": [
+    { "label": "upgrade", "arrive": { "method": "GET", "target": "/upgrade", "body": "hi" },
+      "want": { "outcome": "Ready", "route_flags": ["session"] } },
+    { "label": "answer short",
+      "piece": { "from": "far_end", "last": true,
+                 "bytes": [{ "repeat": "x", "times": 3 }], "short": "units" },
+      "want": { "outcome": "Ready", "emitted": "xxx", "done": true, "units": [[0, 3]] } } ] }
 ]"#;
 
 fn subject() -> Subject {
@@ -68,7 +73,6 @@ fn subject() -> Subject {
     )
 }
 
-/// The fixture opened (under `url`), then the sessions leg over `sessions`, as one fold.
 fn fold_over(s: &Subject, leg: Leg, url: Option<&str>, all: &Value) -> Fold {
     let d = dispatcher();
     let p = load::<Plane>(s, leg, s.bind(&d, "plane")).expect("the plane fixture loads");
@@ -102,14 +106,10 @@ fn panics(f: impl FnOnce()) -> String {
         .unwrap_or_default()
 }
 
-/// The fixture's example `cdylib` in this target dir (`--lib` alone does not build it). A missing
-/// artifact is a failure naming the command that builds it, never a skip.
 fn dropped_built() -> std::path::PathBuf {
     crate::both_ways::example_cdylib("plane_door_plugin")
 }
 
-/// GREEN: both ways, every session step at its pin, the folds equal, every want met; the open
-/// under the public URL claims the session door.
 #[test]
 fn the_sessions_leg_runs_both_ways_at_its_pins_and_answers_as_wanted() {
     let s = subject();
@@ -128,14 +128,91 @@ fn the_sessions_leg_runs_both_ways_at_its_pins_and_answers_as_wanted() {
         "{}",
         linked[0].answer
     );
-    let short = linked
-        .iter()
-        .find(|st| st.label == "live answer short")
-        .expect("the short step ran");
-    assert_eq!((short.crossed, short.pinned), (2, 2), "{}", short.answer);
+    for label in ["live answer short", "terminal-short answer short"] {
+        let short = linked
+            .iter()
+            .find(|st| st.label == label)
+            .expect("the short step ran");
+        assert_eq!((short.crossed, short.pinned), (2, 2), "{}", short.answer);
+    }
 }
 
-/// With no public URL named, `open` hands none: the fixture claims no session door.
+#[test]
+fn a_terminal_session_refuses_another_piece_without_crossing_and_allows_a_fresh_unit() {
+    use super::{arrive, on_piece, Arrival, Given, Unit, CAP};
+    use crate::conformance::close;
+    use busbar_contract::abi::mechanism::call::Outcome;
+    use busbar_contract::abi::plane::{EMIT_DONE, FROM_FAR_END, PIECE_HAS_STATUS, PIECE_LAST};
+
+    dropped_built();
+    let s = subject();
+    for leg in [Leg::Linked, Leg::Dropped] {
+        let d = dispatcher();
+        let p = load::<Plane>(&s, leg, s.bind(&d, "terminal-session"))
+            .expect("the real plane fixture loads");
+        assert!(open(&p, b"{}", Some(PUBLIC_URL.as_bytes())).starts_with("Ready "));
+        let carried = Carried {
+            member: b"m1".to_vec(),
+            pool: Some(b"p1".to_vec()),
+            caller_ref: Some(b"c0ffee".to_vec()),
+            host: None,
+        };
+        let arrival = Arrival {
+            unit: 90,
+            claim: 1,
+            method: b"GET".to_vec(),
+            target: b"/upgrade".to_vec(),
+            fields: Vec::new(),
+            route: false,
+        };
+        assert!(arrive(&p, &arrival, b"hi").starts_with("Ready "));
+        let unit = Unit::mint(&d, 1024);
+        let terminal = Given {
+            unit: 90,
+            stream: 90,
+            claim: 1,
+            from: FROM_FAR_END,
+            flags: PIECE_HAS_STATUS | PIECE_LAST,
+            bytes: b"closed",
+            attempt_no: 0,
+            status: 200,
+            head: &[],
+        };
+        let first = on_piece(&p, &d, &unit, terminal, (CAP, CAP), &carried);
+        assert_eq!(first.called.outcome, Outcome::Ready);
+        assert_ne!(first.out().flags & EMIT_DONE, 0);
+        let before = crossings(&p).read();
+        let refused = on_piece(&p, &d, &unit, terminal, (CAP, CAP), &carried);
+        assert_eq!(refused.called.outcome, Outcome::Refused);
+        assert_eq!(refused.out().emitted, 0);
+        assert_eq!(crossings(&p).read(), before, "no post-DONE crossing");
+
+        assert!(arrive(&p, &arrival.for_unit(91), b"hi").starts_with("Ready "));
+        let fresh = Unit::mint(&d, 1024);
+        let before = crossings(&p).read();
+        let answered = on_piece(
+            &p,
+            &d,
+            &fresh,
+            Given {
+                unit: 91,
+                stream: 91,
+                bytes: b"fresh",
+                ..terminal
+            },
+            (CAP, CAP),
+            &carried,
+        );
+        assert_eq!(answered.called.outcome, Outcome::Ready);
+        assert_eq!(answered.out().emitted, 5);
+        assert_ne!(answered.out().flags & EMIT_DONE, 0);
+        assert_eq!(crossings(&p).read(), (before.0 + 1, before.1));
+        unit.end(&d);
+        fresh.end(&d);
+        assert_eq!(close(&p).outcome, Outcome::Ready);
+    }
+}
+
 #[test]
 fn absent_a_public_url_open_hands_none() {
     let s = subject();
@@ -148,7 +225,6 @@ fn absent_a_public_url_open_hands_none() {
     );
 }
 
-/// RED: a pinned count moved by one on any session step is refused by the exact comparator.
 #[test]
 fn red_a_moved_count_on_a_session_step_is_refused() {
     let f = fold(&subject(), Leg::Linked);
@@ -163,7 +239,6 @@ fn red_a_moved_count_on_a_session_step_is_refused() {
     }
 }
 
-/// The sessions inputs with step `label`'s want edited by `edit`.
 fn wanting(label: &str, edit: impl Fn(&mut Value)) -> Value {
     let mut all: Value = serde_json::from_str(SESSIONS).expect("the inputs are JSON");
     for s in all.as_array_mut().into_iter().flatten() {
@@ -177,8 +252,6 @@ fn wanting(label: &str, edit: impl Fn(&mut Value)) -> Value {
     all
 }
 
-/// RED: a step that answers otherwise than its want states fails the contract, naming the step:
-/// another count, another outcome, another ready stream, another body.
 #[test]
 fn red_a_session_step_answering_otherwise_than_wanted_is_refused() {
     let f = fold(&subject(), Leg::Linked);
@@ -204,7 +277,6 @@ fn red_a_session_step_answering_otherwise_than_wanted_is_refused() {
     }
 }
 
-/// RED: a want the suite does not know is refused, never read as met.
 #[test]
 fn red_a_want_the_suite_does_not_know_is_refused() {
     let f = fold(&subject(), Leg::Linked);
@@ -213,8 +285,6 @@ fn red_a_want_the_suite_does_not_know_is_refused() {
     assert!(text.contains("emited"), "{text}");
 }
 
-/// RED: a piece called short that the door answers with room to spare crosses once, not the
-/// pinned two, and its answer names no room needed.
 #[test]
 fn red_a_piece_called_short_that_is_not_is_refused() {
     let s = subject();
@@ -227,10 +297,6 @@ fn red_a_piece_called_short_that_is_not_is_refused() {
     assert!(text.contains("live uplink"), "{text}");
 }
 
-/// A session naming its own `member`: its ATTEMPT names that member, not `plane.member`, so a
-/// plane serving several far ends is driven against each one's answer (every declared
-/// class is reported by a case, and a class only one far end reports needs a case on that far end).
-/// RED: the same session naming no member is attempted on `plane.member` and fails its want.
 #[test]
 fn a_session_naming_its_member_is_attempted_on_that_member() {
     let s = subject();
@@ -254,8 +320,6 @@ fn a_session_naming_its_member_is_attempted_on_that_member() {
     assert!(text.contains("other attempt"), "{text}");
 }
 
-/// RED: two sessions sharing a name, or two steps of one sharing a label, are refused at once
-/// (the contract finds a step by its label).
 #[test]
 fn red_inputs_naming_a_step_twice_are_refused() {
     let mut all: Value = serde_json::from_str(SESSIONS).expect("the inputs are JSON");
@@ -272,8 +336,6 @@ fn red_inputs_naming_a_step_twice_are_refused() {
     .contains("share a label"));
 }
 
-/// THE PLANE SCRIPT DRIVES A UNIT'S PIECES AS THE KERNEL DOES (THE DESIGN §11.4, §11.12): every
-/// piece SUBMITTED on the unit's ticket, so a piece that waits answers PENDING and is RESUMED.
 mod pieces_on_tickets {
     use std::sync::atomic::{AtomicPtr, Ordering};
 
@@ -290,9 +352,6 @@ mod pieces_on_tickets {
     static REAL_ON_PIECE: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
     static SLOT: AtomicPtr<Door> = AtomicPtr::new(std::ptr::null_mut());
 
-    /// An `on_piece` that WAITS before it answers (as on a may-pend host service, or its own
-    /// upstream): every first invocation wakes its own ticket and answers PENDING; RESUMED, it is
-    /// the real piece (entered afresh). Ticket-less, its PENDING is a FAULT.
     struct OnPiecePends;
 
     impl TestOp for OnPiecePends {
@@ -350,9 +409,6 @@ mod pieces_on_tickets {
         }
     }
 
-    /// RED (audit loader-PL1 #9): a plane whose pieces wait passes the sessions leg at its pins,
-    /// every piece RESUMED on its unit's ticket and answering as wanted. Driven ticket-less, as
-    /// the script used to, every waiting piece is FAULT and the plane cannot pass.
     #[test]
     fn red_a_piece_that_waits_is_resumed_on_its_units_ticket_never_faulted_ticketless() {
         let s = Subject::of_raw(
@@ -369,6 +425,9 @@ mod pieces_on_tickets {
             "live answer head",
             "live answer tail",
             "live answer short",
+            "terminal answer head",
+            "terminal answer tail",
+            "terminal-short answer short",
             "request attempt",
             "request answer",
         ] {
@@ -381,8 +440,6 @@ mod pieces_on_tickets {
     }
 }
 
-/// RED: the cancel ends the session only because it names the ticket the session's pieces crossed
-/// on: a session cancelled naming no ticket still has output to collect.
 #[test]
 fn red_a_cancel_naming_no_session_ticket_ends_nothing() {
     let s = subject();
@@ -416,8 +473,6 @@ fn red_a_cancel_naming_no_session_ticket_ends_nothing() {
     assert!(f[3].answer.ends_with("ready=[50]"), "{}", f[3].answer);
 }
 
-/// RED: a session that cancels but crosses on no ticket of its own is refused at once: its cancel
-/// would name no op.
 #[test]
 fn red_a_cancel_in_a_session_with_no_ticket_is_refused() {
     let mut all: Value = serde_json::from_str(SESSIONS).expect("the inputs are JSON");
@@ -428,8 +483,6 @@ fn red_a_cancel_in_a_session_with_no_ticket_is_refused() {
     .contains("cancels on its ticket"));
 }
 
-/// RED: a tick the inputs say wakes its driver ticket, on a door whose tick wakes nothing, crosses
-/// once where two (the tick and the `drive` the wake calls) are pinned.
 #[test]
 fn red_a_tick_pinned_to_wake_that_wakes_nothing_is_refused() {
     let s = subject();
@@ -441,10 +494,6 @@ fn red_a_tick_pinned_to_wake_that_wakes_nothing_is_refused() {
     assert!(e.contains("live tick") && e.contains("pinned 2"), "{e}");
 }
 
-// ── THE HOST, THE LEDGER LANE, THE RECORD WRITES AND THE PROMPT TURNS ────────────────────────────
-
-/// The kernel services the fixture asks: `door:echo` entitled for unit 80 alone, the member `m1`'s
-/// `echo` approved.
 const HOST: &str = r#"{ "entitled": [{ "target": "door:echo", "units": [80, 82] }],
                         "trusted": [["m1", "echo", "none"]] }"#;
 
@@ -465,7 +514,6 @@ const SERVED: &str = r#"[
       "want": { "outcome": "Ready", "turns": [["user", "hi"]], "body_has": ["hi"] } } ] }
 ]"#;
 
-/// The fixture opened on a dispatcher serving `host`, then the sessions leg over `all`.
 fn served_fold(leg: Leg, host: &str, all: &Value) -> Fold {
     let s = subject();
     let host = super::host::Host::of(&serde_json::from_str(host).expect("JSON"))
@@ -488,9 +536,6 @@ fn served_fold(leg: Leg, host: &str, all: &Value) -> Fold {
     r.fold()
 }
 
-/// GREEN: on a host serving the inputs' tables, the granted unit's ATTEMPT is sent and its answer
-/// names its lane and record write, the ungranted unit's is refused, and `project` writes its
-/// turn; both ways, at their pins, the folds equal, every want met.
 #[test]
 fn the_host_tables_gate_the_unit_and_the_lane_records_and_turns_are_judged() {
     let all: Value = serde_json::from_str(SERVED).expect("JSON");
@@ -504,8 +549,6 @@ fn the_host_tables_gate_the_unit_and_the_lane_records_and_turns_are_judged() {
     same(&linked, &dropped).unwrap_or_else(|e| panic!("{e}"));
 }
 
-/// RED: the gate is the host's answer: the member's `echo` not approved, the granted unit's
-/// ATTEMPT is refused and its want fails.
 #[test]
 fn red_a_member_the_host_does_not_approve_is_not_sent_to() {
     let all: Value = serde_json::from_str(SERVED).expect("JSON");
@@ -518,8 +561,6 @@ fn red_a_member_the_host_does_not_approve_is_not_sent_to() {
     assert!(text.contains("granted attempt"), "{text}");
 }
 
-/// RED: a lane, a record write or a turn other than the answer's fails the contract, and so does
-/// wanting none where the answer carries one.
 #[test]
 fn red_a_lane_record_or_turn_other_than_answered_is_refused() {
     let f = served_fold(
@@ -567,8 +608,6 @@ fn red_a_lane_record_or_turn_other_than_answered_is_refused() {
     }
 }
 
-/// RED: a crossing of a unit the grant does not list is entitled to nothing, as the kernel answers
-/// a principal the grant does not hold.
 #[test]
 fn red_a_unit_the_grant_does_not_list_is_entitled_to_nothing() {
     let host = super::host::Host::of(&serde_json::from_str(HOST).expect("JSON")).expect("host");
@@ -598,8 +637,6 @@ fn red_a_unit_the_grant_does_not_list_is_entitled_to_nothing() {
     );
 }
 
-// ── THE ATTEMPT AND THE CALLER'S BODIES (`plane.attempt`, `plane.arrive_each`) ─────────────────
-
 fn step(label: &str, answer: &str) -> crate::conformance::Step {
     crate::conformance::Step {
         label: label.into(),
@@ -610,8 +647,6 @@ fn step(label: &str, answer: &str) -> crate::conformance::Step {
     }
 }
 
-/// A fold of the attempts, the bodies and (with `arrive_each`) the arrivals, the attempts going
-/// to the far end or not.
 fn attempts(far: bool, narrow_body: &str) -> Fold {
     let a = format!("Ready lease=false  emitted= more=0 to_far_end={far} done=false");
     let b = "Ready lease=false  emitted=req more=0 to_far_end=true done=false";
@@ -627,8 +662,6 @@ fn attempts(far: bool, narrow_body: &str) -> Fold {
     ]
 }
 
-/// GREEN and RED: an ATTEMPT taken with nothing sent passes only where the inputs say so, and with
-/// `arrive_each` every unit's body is judged as the claimed one's.
 #[test]
 fn the_attempt_and_every_arrived_units_body_are_judged() {
     let ok = "Ready lease=false  emitted=req more=0 to_far_end=true done=false";
@@ -638,7 +671,7 @@ fn the_attempt_and_every_arrived_units_body_are_judged() {
         &attempts(true, ok),
         &serde_json::json!({ "request_out": "req" }),
     );
-    // RED: taken, where the inputs do not say so.
+
     let text = panics(|| {
         super::attempts_and_bodies(
             &attempts(false, ok),
@@ -646,7 +679,7 @@ fn the_attempt_and_every_arrived_units_body_are_judged() {
         );
     });
     assert!(text.contains("attempt"), "{text}");
-    // RED: a unit that arrived whose body is not the request.
+
     let text = panics(|| {
         super::attempts_and_bodies(
             &attempts(
@@ -657,14 +690,13 @@ fn the_attempt_and_every_arrived_units_body_are_judged() {
         );
     });
     assert!(text.contains("narrow body"), "{text}");
-    // RED: `arrive_each` stated, a unit that never arrived.
+
     let mut f = attempts(false, ok);
     f.retain(|s| s.label != "short arrive");
     let text = panics(|| super::attempts_and_bodies(&f, &taken));
     assert!(text.contains("short arrive"), "{text}");
 }
 
-/// The plane inputs every `plane.request_unit` case shares, with `extra` merged in.
 fn request_unit_inputs(extra: Value) -> Value {
     let mut k = serde_json::json!({
         "bad_settings": [{ "nonsense": 1 }],
@@ -680,11 +712,6 @@ fn request_unit_inputs(extra: Value) -> Value {
     k
 }
 
-/// THE ONE-REQUEST UNIT IS OPTIONAL (row 132: a plane whose claims each open a session or are
-/// answered locally, as the streaming plane's mint answers a ticket busbar mints, serves none):
-/// `plane.request_unit: false` reads no request, far end, narrow, short or empty fixture, and a
-/// plane that states none keeps the one-request legs (the default). RED: `request_unit: false`
-/// beside a far end it would never drive is refused, never silently skipped.
 #[test]
 fn a_plane_with_no_request_unit_states_none_and_a_stray_fixture_is_refused() {
     let none = super::Inputs::of(&request_unit_inputs(serde_json::json!({

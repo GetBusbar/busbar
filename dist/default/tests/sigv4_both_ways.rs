@@ -29,8 +29,6 @@
 //! the secret access key beside the token. 1.5.5 minted the credential whatever
 //! the chain (v1.5.5 `crates/busbar/src/admin/mod.rs:919`, `:997-1000`, `:1103-1108`, `:1118`).
 #![cfg(unix)]
-// A bootable data plane with the bedrock path ingress, the admin listener, the admin-token door and
-// the SigV4 auth plugin must all be linked.
 #![cfg(all(
     linked_section_pools,
     feature = "root-admin",
@@ -50,17 +48,16 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use sha2::{Digest, Sha256};
 
 const ADMIN_TOKEN: &str = "sigv4-both-ways-admin";
-/// The bedrock lane's own AWS credential (`ACCESS:SECRET`), handed to busbar through this env var.
+
 const UPSTREAM_CREDS_ENV: &str = "SIGV4_E2E_UPSTREAM_CREDS";
 const UPSTREAM_AKID: &str = "AKIAUPSTREAMLANE0001";
 const UPSTREAM_SECRET: &str = "upstreamLaneSecret/0123456789+abcdefghijklmn";
-/// The client-facing model name, and the Bedrock modelId sent on the wire. The `:` in the wire id
-/// is what makes the canonical URI's double encoding observable (`%3A` on the wire, `%253A` signed).
+
 const MODEL: &str = "test-model";
 const WIRE_MODEL: &str = "anthropic.claude-test-v1:0";
 const REGION: &str = "us-east-1";
 const SERVICE: &str = "bedrock";
-/// Every bounded wait in this test.
+
 const BOOT_BUDGET: Duration = Duration::from_secs(60);
 const IO_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -95,7 +92,6 @@ fn sigv4_is_verified_inbound_and_signed_outbound() {
     };
     node.wait_listening(data_port, admin_port);
 
-    // ── the operator mints an AWS-capable virtual key through the admin API ─────────────────────
     let minted = node.mint_aws_key(admin_port);
     let vk_akid = minted["aws_access_key_id"]
         .as_str()
@@ -105,10 +101,7 @@ fn sigv4_is_verified_inbound_and_signed_outbound() {
         .as_str()
         .unwrap_or_else(|| node.fail(&format!("the mint carried no AWS secret: {minted}")))
         .to_string();
-    // 1.5.5's POST /keys credential bytes: the AccessKeyId is `AKIA` then 16 of
-    // [A-Z0-9], 20 in all, and the secret access key 40 of [A-Za-z0-9+/]. The shape is the linked
-    // signed-request row's own Statement marks; the host draws over it and names no format (RED before the
-    // row states it: the mint has no shape to draw and fails closed).
+
     if !(vk_akid.len() == 20
         && vk_akid.starts_with("AKIA")
         && vk_akid[4..]
@@ -133,7 +126,6 @@ fn sigv4_is_verified_inbound_and_signed_outbound() {
     let path = format!("/model/{MODEL}/converse");
     let body = br#"{"messages":[{"role":"user","content":[{"text":"hi"}]}]}"#.to_vec();
 
-    // ── 1. a correctly signed request is admitted, and the upstream gets a VALID outbound SigV4 ──
     let signed = sign_client_request(&vk_akid, &vk_secret, &host, &path, &body);
     let ok = send(data_port, &host, &path, &signed, &body);
     if ok.status != 200 {
@@ -152,7 +144,6 @@ fn sigv4_is_verified_inbound_and_signed_outbound() {
     let out = &seen[0];
     assert_outbound_signed(&node, out, &vk_akid);
 
-    // ── 2. one body byte changed: the signature no longer covers the body → refused ─────────────
     let mut tampered = body.clone();
     let at = tampered
         .windows(2)
@@ -181,7 +172,6 @@ fn sigv4_is_verified_inbound_and_signed_outbound() {
         "a refused request must never reach the upstream"
     );
 
-    // ── 3. an unknown AccessKeyId, correctly signed under its own secret → the SAME refusal ──────
     let unknown = sign_client_request(
         "AKIAUNKNOWNKEY000000",
         "notTheSecretOfAnyKeyBusbarHolds0123456789",
@@ -209,7 +199,6 @@ fn sigv4_is_verified_inbound_and_signed_outbound() {
          per-response request id and date may differ), or the refusal is an oracle"
     );
 
-    // ── 4. the key's own token as Bearer on the same route: the plugin passes, `keys` admits ──────
     let bearer = vec![
         ("authorization".to_string(), format!("Bearer {vk_token}")),
         ("content-type".to_string(), "application/json".to_string()),
@@ -231,11 +220,6 @@ fn sigv4_is_verified_inbound_and_signed_outbound() {
     }
     assert_outbound_signed(&node, &seen[1], &vk_akid);
 
-    // ── 5. over the cap, under a malformed SigV4 line: refused at the cap, before a verdict ──────
-    // The body a signed ingress buffers for the
-    // verifier is capped at `limits.request_body_max_bytes` BEFORE the buffer: a body over it is
-    // refused with the opaque auth refusal, the same bytes as a bad signature, and never buffered
-    // whole, never verified, never forwarded.
     let bogus = vec![
         (
             "authorization".to_string(),
@@ -264,9 +248,6 @@ fn sigv4_is_verified_inbound_and_signed_outbound() {
         "an over-cap request must never reach the upstream"
     );
 
-    // ── 6. the CAP refuses it, not the verdict: a CORRECTLY signed request over the cap ──────────
-    // The same key that was admitted in step 1 signs the over-cap body itself; the signature is
-    // good, so only the cap can refuse it — before the verifier is asked.
     let signed_over = sign_client_request(&vk_akid, &vk_secret, &host, &path, &over);
     let refused = send(data_port, &host, &path, &signed_over, &over);
     assert_eq!(
@@ -286,11 +267,6 @@ fn sigv4_is_verified_inbound_and_signed_outbound() {
     drop(node);
 }
 
-/// 1.5.5 MINTED THE AWS CREDENTIAL WHATEVER THE CHAIN: with an `auth.chain` that
-/// does not name `keys`, `POST /keys {"issue_aws_credential": true}` answers 201 with the token,
-/// the AccessKeyId and the secret access key in 1.5.5's shapes (v1.5.5
-/// `crates/busbar/src/admin/mod.rs:997-1000` mints `mint_signed_with_aws` on the flag alone, and
-/// `:1103-1108` writes both fields). A plain mint on the same node carries neither field.
 #[test]
 fn the_aws_credential_mints_when_the_chain_does_not_name_keys() {
     let dir = fixture_dir();
@@ -368,7 +344,6 @@ fn the_aws_credential_mints_when_the_chain_does_not_name_keys() {
         ));
     }
 
-    // A plain mint (no flag) on the same node carries neither AWS field.
     let plain = node.mint(admin_port, br#"{"name":"plain"}"#);
     if plain.status != 201 {
         node.fail(&format!(
@@ -401,11 +376,8 @@ fn the_aws_credential_mints_when_the_chain_does_not_name_keys() {
     drop(node);
 }
 
-/// The node's `limits.request_body_max_bytes`: the size gate the `HeadBody` buffer is bounded by.
 const BODY_CAP: usize = 64 * 1024;
 
-/// The request the upstream received carries busbar's OWN outbound SigV4 — the lane credential,
-/// the `bedrock` service — and that signature verifies under the lane secret over what arrived.
 fn assert_outbound_signed(node: &Node, out: &Captured, client_akid: &str) {
     let ctx = || format!("upstream received:\n{out:#?}\nlog:\n{}", node.log());
     let auth = out
@@ -467,9 +439,6 @@ fn assert_outbound_signed(node: &Node, out: &Captured, client_akid: &str) {
         );
     }
 
-    // RECOMPUTE the signature over what the upstream received: every header the signature names,
-    // the received path double-encoded (non-S3 SigV4 encodes the already-encoded path once more),
-    // no query, the received body's hash.
     let mut canonical_headers = String::new();
     for name in parsed.signed_headers.split(';') {
         let value = out.header(name).unwrap_or_else(|| {
@@ -503,10 +472,6 @@ fn assert_outbound_signed(node: &Node, out: &Captured, client_akid: &str) {
     );
 }
 
-// ── the client-side SigV4 signer and the shared SigV4 primitives ─────────────────────────────────
-
-/// Sign a Converse POST the way an AWS SDK does: `host;x-amz-content-sha256;x-amz-date`, service
-/// `bedrock`, the path double-encoded as the canonical URI. Returns every header to send.
 fn sign_client_request(
     akid: &str,
     secret: &str,
@@ -548,7 +513,6 @@ fn sign_client_request(
     ]
 }
 
-/// The SigV4 signature (hex) of `canonical_request` under `secret`'s derived signing key.
 fn signature(
     secret: &str,
     amzdate: &str,
@@ -569,7 +533,6 @@ fn signature(
     hex::encode(hmac_sha256(&k_signing, string_to_sign.as_bytes()))
 }
 
-/// HMAC-SHA256 (RFC 2104) over `sha2`, the digest this crate's tests already carry.
 fn hmac_sha256(key: &[u8], msg: &[u8]) -> Vec<u8> {
     const BLOCK: usize = 64;
     let mut k = if key.len() > BLOCK {
@@ -595,7 +558,6 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
-/// SigV4 URI encoding of a path: unreserved bytes and `/` pass, every other byte is `%XX`.
 fn uri_encode(path: &str) -> String {
     let mut out = String::with_capacity(path.len());
     for &b in path.as_bytes() {
@@ -609,7 +571,6 @@ fn uri_encode(path: &str) -> String {
     out
 }
 
-/// A canonical header value: trimmed, each run of ASCII spaces collapsed to one.
 fn canonical_value(v: &str) -> String {
     v.split(' ')
         .filter(|s| !s.is_empty())
@@ -617,7 +578,6 @@ fn canonical_value(v: &str) -> String {
         .join(" ")
 }
 
-/// `(YYYYMMDDTHHMMSSZ, YYYYMMDD)` for a Unix time, in UTC (civil-from-days).
 fn format_amz_time(epoch: u64) -> (String, String) {
     let days = (epoch / 86_400) as i64;
     let sod = epoch % 86_400;
@@ -675,8 +635,6 @@ fn parse_authorization(v: &str) -> Option<ParsedAuth> {
     })
 }
 
-// ── the node ─────────────────────────────────────────────────────────────────────────────────────
-
 struct Node {
     child: Child,
     dir: PathBuf,
@@ -702,7 +660,6 @@ impl Node {
         panic!("{why}\nbusbar log:\n{}", self.log())
     }
 
-    /// Both listeners accept, failing loud (with the log) if the process dies or the budget runs out.
     fn wait_listening(&mut self, data_port: u16, admin_port: u16) {
         let deadline = Instant::now() + BOOT_BUDGET;
         loop {
@@ -728,8 +685,6 @@ impl Node {
         }
     }
 
-    /// `POST /api/v1/admin/keys` with `body` under the admin token, retried only while the admin
-    /// listener answers nothing at all (bounded); whatever it answers is returned as answered.
     fn mint(&self, admin_port: u16, body: &[u8]) -> Response {
         let host = format!("127.0.0.1:{admin_port}");
         let headers = vec![
@@ -746,8 +701,6 @@ impl Node {
         }
     }
 
-    /// `POST /api/v1/admin/keys {"issue_aws_credential": true}` under the admin token, retried only
-    /// while the admin listener is not yet answering (bounded).
     fn mint_aws_key(&self, admin_port: u16) -> serde_json::Value {
         let host = format!("127.0.0.1:{admin_port}");
         let body = br#"{"name":"sigv4-both-ways","issue_aws_credential":true}"#;
@@ -794,7 +747,6 @@ fn fixture_dir() -> PathBuf {
     d
 }
 
-/// The node's configs; `chain` is the `auth.chain` value, verbatim YAML.
 fn write_configs(dir: &Path, data_port: u16, admin_port: u16, upstream_port: u16, chain: &str) {
     std::fs::write(
         dir.join("providers.yaml"),
@@ -809,8 +761,7 @@ fn write_configs(dir: &Path, data_port: u16, admin_port: u16, upstream_port: u16
         .expect("generate a signing key");
     assert!(signing_key.status.success(), "--generate-signing-key");
     std::fs::write(dir.join("signing.key"), &signing_key.stdout).unwrap();
-    // The at-rest key a recoverable credential is sealed under (`credentials.at_rest`, 1.6.0): a
-    // node with none refuses the AWS-credential mint. A fixed test key, 64 hex characters.
+
     std::fs::write(dir.join("at-rest.key"), "5a".repeat(32)).unwrap();
     std::fs::write(
         dir.join("config.yaml"),
@@ -851,8 +802,6 @@ models:
     .unwrap();
 }
 
-// ── the capturing upstream ───────────────────────────────────────────────────────────────────────
-
 #[derive(Debug, Clone)]
 struct Captured {
     method: String,
@@ -871,8 +820,6 @@ impl Captured {
     }
 }
 
-/// A Bedrock Converse stand-in on loopback: records every request it receives and answers each
-/// with a minimal Converse response, one request per connection.
 struct Upstream {
     port: u16,
     seen: Arc<Mutex<Vec<Captured>>>,
@@ -972,14 +919,11 @@ fn serve_one(mut stream: TcpStream, sink: &Mutex<Vec<Captured>>) {
     let _ = stream.flush();
 }
 
-// ── raw HTTP client ──────────────────────────────────────────────────────────────────────────────
-
 struct Response {
-    /// `0` means no status line arrived at all.
     status: u16,
     headers: Vec<(String, String)>,
     body: Vec<u8>,
-    /// The whole response as text, for failure messages and the byte-identity check.
+
     text: String,
 }
 
@@ -991,8 +935,6 @@ impl Response {
             .map(|(_, v)| v.as_str())
     }
 
-    /// The raw response with the two values that legitimately differ per response — the AWS
-    /// request id and the HTTP date — blanked; everything else is compared byte for byte.
     fn masked(&self) -> String {
         self.text
             .split("\r\n")
@@ -1009,7 +951,6 @@ impl Response {
     }
 }
 
-/// One POST on a fresh connection with exactly `headers` (plus Host, Content-Length, close).
 fn send(port: u16, host: &str, path: &str, headers: &[(String, String)], body: &[u8]) -> Response {
     let empty = Response {
         status: 0,
@@ -1067,7 +1008,6 @@ fn send(port: u16, host: &str, path: &str, headers: &[(String, String)], body: &
     }
 }
 
-/// The payload of a chunked body (the whole body was read to EOF first).
 fn dechunk(mut rest: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
     while let Some(eol) = rest.windows(2).position(|w| w == b"\r\n") {

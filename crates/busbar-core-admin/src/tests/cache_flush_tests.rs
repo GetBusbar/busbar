@@ -82,6 +82,15 @@ fn audit_outcomes(actor: &str) -> Vec<String> {
         .collect()
 }
 
+async fn accepted_audit(
+    observation: busbar_kernel_testkit::test_support::accepted_audit::AcceptedAdminAudit,
+) -> audit_ring::AuditEntry {
+    tokio::time::timeout(std::time::Duration::from_secs(5), observation.accepted())
+        .await
+        .expect("the credential flush audit must be published")
+        .expect("the accepted audit observer remains registered")
+}
+
 #[tokio::test]
 async fn a_failed_admin_or_data_refresh_is_not_a_successful_flush() {
     for (actor, admin_fails) in [("flush-error-admin", true), ("flush-error-data", false)] {
@@ -89,7 +98,7 @@ async fn a_failed_admin_or_data_refresh_is_not_a_successful_flush() {
         let later_admin = RefreshDoor::new(7, false);
         let data = RefreshDoor::new(5, !admin_fails);
         let later_data = RefreshDoor::new(11, false);
-        let auth = busbar_kernel::auth::AuthMiddleware::from_doors_for_test(vec![
+        let auth = busbar_kernel_testkit::test_support::auth_helpers::from_doors_for_test(vec![
             ("data".into(), data.clone()),
             ("later-data".into(), later_data.clone()),
         ]);
@@ -98,6 +107,12 @@ async fn a_failed_admin_or_data_refresh_is_not_a_successful_flush() {
             .admin_door("a-admin", admin.clone())
             .admin_door("z-later-admin", later_admin.clone())
             .build();
+        let audit =
+            busbar_kernel_testkit::test_support::accepted_audit::observe_accepted_admin_entry(
+                "auth.cache_flush",
+                "*",
+                actor,
+            );
         let (status, body) = flush(app, actor, None).await;
         assert_eq!(status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(body["error"]["code"], "internal");
@@ -112,6 +127,10 @@ async fn a_failed_admin_or_data_refresh_is_not_a_successful_flush() {
                 "every selected module is attempted"
             );
         }
+        assert_eq!(
+            accepted_audit(audit).await.outcome,
+            audit_ring::OUTCOME_REJECTED
+        );
         assert_eq!(audit_outcomes(actor), vec![audit_ring::OUTCOME_REJECTED]);
     }
 }
@@ -122,7 +141,7 @@ async fn a_filtered_flush_sums_both_chains_without_refreshing_other_modules() {
     let data = RefreshDoor::new(5, false);
     let omitted_admin = RefreshDoor::new(0, true);
     let omitted_data = RefreshDoor::new(0, true);
-    let auth = busbar_kernel::auth::AuthMiddleware::from_doors_for_test(vec![
+    let auth = busbar_kernel_testkit::test_support::auth_helpers::from_doors_for_test(vec![
         ("target".into(), data.clone()),
         ("omitted".into(), omitted_data.clone()),
     ]);
@@ -131,9 +150,18 @@ async fn a_filtered_flush_sums_both_chains_without_refreshing_other_modules() {
         .admin_door("target", admin.clone())
         .admin_door("omitted", omitted_admin.clone())
         .build();
+    let audit = busbar_kernel_testkit::test_support::accepted_audit::observe_accepted_admin_entry(
+        "auth.cache_flush",
+        "target",
+        "flush-filtered",
+    );
     let (status, body) = flush(app.clone(), "flush-filtered", Some("target")).await;
     assert_eq!(status, axum::http::StatusCode::OK);
     assert_eq!(body["flushed"], 8);
+    assert_eq!(
+        accepted_audit(audit).await.outcome,
+        audit_ring::OUTCOME_APPLIED
+    );
     assert_eq!(
         audit_outcomes("flush-filtered"),
         vec![audit_ring::OUTCOME_APPLIED]

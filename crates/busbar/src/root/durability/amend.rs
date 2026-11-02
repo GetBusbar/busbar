@@ -1,23 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE NODE AMENDMENT JOURNAL, BOUND TO THE ONE CHAIN.
-//!
-//! The node keeps one amendment journal (`busbar_kernel_audit::NodeAmendments`, the instance its
-//! governance owns and every `App` generation carries): every hook or export handed content leaves
-//! an access on it. Held in memory only, a restart dropped every one. (Pre-release builds also
-//! sealed count adjustments here; nothing writes or prices those now, and a chain that holds one
-//! still decodes and verifies.)
-//!
-//! So each amendment goes on the node's journal as it is sealed — an access as an `Access` record,
-//! a legacy adjustment as a `Transaction` record (the classes the journal unit names for them) — carrying
-//! every field its digest covers, and a boot rebuilds the node journal from the chain before
-//! anything can seal onto it, whenever the chain was resumed from the configured Store. A helper
-//! with no Store source rebuilds nothing.
-//!
-//! A private child module of `durability`, as `replay` is; the parent re-exports the two items that
-//! are part of its public surface.
-
 use super::*;
 use busbar_kernel_audit::amend::{
     self as amend, Access, Adjust, AmendBody, AmendClass, AmendSink, Amendment, ClassCounts,
@@ -26,23 +9,13 @@ use busbar_kernel_audit::amend::{
 use busbar_kernel_audit::record::OpClassId;
 use std::sync::{Arc, Mutex, Weak};
 
-/// THE NODE'S HELD AMENDMENT RUN (`journal`, the one its `App` carries), verified as it stands
-/// now — what `GET /admin/verify` reports. The boot restore verifies what it reads back; this sees
-/// an edit made after boot.
-///
-/// # Errors
-///
-/// The held run does not verify; the break, rendered.
 #[cfg(feature = "root-admin")]
 pub(crate) fn verify_held(journal: &NodeAmendments) -> Result<(), String> {
     journal.verify().map_err(|broken| broken.to_string())
 }
 
-/// The first field of every amendment record: names the shape, so no other record on the chain is
-/// read as one.
 const AMENDMENT: &str = "amend.v1";
 
-/// The journal record one amendment is written as.
 fn entry(amendment: &Amendment) -> Entry {
     let (class, wall) = match &amendment.body {
         AmendBody::Access(a) => (RecordClass::Access, a.wall),
@@ -51,7 +24,6 @@ fn entry(amendment: &Amendment) -> Entry {
     Entry::new(class, body(amendment)).at(wall, 0)
 }
 
-/// Every field the amendment's digest covers, plus the digest itself, in digest order.
 fn body(amendment: &Amendment) -> Vec<u8> {
     let mut body = BodyWriter::new();
     body.text(AMENDMENT)
@@ -84,8 +56,7 @@ fn body(amendment: &Amendment) -> Vec<u8> {
                 }
             }
             body.text(&a.authorised_by).text(&a.reason).num(a.wall);
-            // Q64/Q67: the pool, LAST and only when named — an unscoped adjustment's record is
-            // byte-for-byte the one written before the field existed.
+
             if let Some(pool) = &a.pool {
                 body.text(pool);
             }
@@ -94,7 +65,6 @@ fn body(amendment: &Amendment) -> Vec<u8> {
     body.finish()
 }
 
-/// The amendment a record written by [`entry`] carries, or `None` for any other record.
 fn from_record(record: &JournalRecord) -> Option<Amendment> {
     let mut body = BodyReader::new(&record.body);
     if body.text()? != AMENDMENT {
@@ -148,7 +118,7 @@ fn from_record(record: &JournalRecord) -> Option<Amendment> {
                 authorised_by: body.text()?.to_string(),
                 reason: body.text()?.to_string(),
                 wall: body.num()?,
-                // Absent on a record written before Q64/Q67: that adjustment reads UNSCOPED.
+
                 pool: body.text().map(str::to_string),
             })
         }
@@ -165,10 +135,6 @@ fn from_record(record: &JournalRecord) -> Option<Amendment> {
     })
 }
 
-/// THE CHAIN THE RECORDS HOLD, walked from the genesis: each amendment is kept only where it links
-/// to the one kept before it, at the next position, and its fields reproduce its digest. Answers the
-/// run and how many amendment records were set aside — a record a crash tore, or one a predecessor
-/// sealed on a chain it could not rebuild, is not silently spliced into the history.
 fn linked_run(records: &[JournalRecord]) -> (Vec<Amendment>, usize) {
     let (mut run, mut set_aside) = (Vec::<Amendment>::new(), 0);
     for record in records {
@@ -192,23 +158,6 @@ fn linked_run(records: &[JournalRecord]) -> (Vec<Amendment>, usize) {
 }
 
 impl Durability {
-    /// **THE BOOT'S REBUILD OF THE NODE AMENDMENT JOURNAL** `journal` (the node's one, which its
-    /// `App` carries), before anything can seal onto it: it becomes exactly the run this book's
-    /// chain holds, so every recorded content access
-    /// survives a restart. It runs whenever the chain
-    /// has a durable source ([`Durability::keeps_chain`]): the configured Store the chain was
-    /// resumed from. A helper with no Store source rebuilds nothing.
-    ///
-    /// An amendment record the walk cannot link is REPORTED on
-    /// [`Durability::restart_findings`], never spliced in. Once rebuilt, the book is the one
-    /// [`bind_amendments`] binds.
-    ///
-    /// # Errors
-    ///
-    /// The chain could not be read back, or does not verify. The boot refuses then, as it refuses a
-    /// store that would not read the chain back the first time: taken for an empty chain, the
-    /// failed read rebuilt no amendment and none sealed afterwards was journalled (audit R1#3,
-    /// audit root r4 B-2).
     pub fn restore_amendments(
         &mut self,
         journal: &NodeAmendments,
@@ -219,8 +168,7 @@ impl Durability {
         }
         let (run, set_aside) = match self.chain() {
             Ok(Ok(records)) => linked_run(&records),
-            // A chain that does not verify refuses the boot as the book's own build does: taken for
-            // an empty chain, nothing was rebuilt or bound (audit root r4 B-2).
+
             Ok(Err(broken)) => return Err(format!("the journal does not verify: {broken}")),
             Err(e) => return Err(self.unreadable(&e)),
         };
@@ -242,7 +190,6 @@ impl Durability {
     }
 }
 
-/// Journals each amendment the node journal seals onto the book it was rebuilt from.
 struct BookAmendments {
     book: Weak<Mutex<Durability>>,
     token: Grant<DurableWrite>,
@@ -254,8 +201,7 @@ impl AmendSink for BookAmendments {
             return;
         };
         let mut durability = book.lock().unwrap_or_else(|p| p.into_inner());
-        // A durability loss is retained and re-offered by the log like any other append; it is
-        // never a refusal of the read the amendment records.
+
         if let Err(lost) =
             durability
                 .journal
@@ -270,11 +216,6 @@ impl AmendSink for BookAmendments {
     }
 }
 
-/// **BIND THE BOOK THE NODE AMENDMENT JOURNAL `journal` WAS REBUILT FROM**: every amendment sealed
-/// on it from here on — and any sealed since the rebuild — goes on the book's journal as it is
-/// sealed. A no-op for a book
-/// that rebuilt nothing ([`Durability::restore_amendments`] never ran, or the chain has no durable
-/// source), which leaves the node journal memory-only.
 pub fn bind_amendments(book: &Arc<Mutex<Durability>>, journal: &NodeAmendments) {
     let Some(through) = book
         .lock()
@@ -283,8 +224,7 @@ pub fn bind_amendments(book: &Arc<Mutex<Durability>>, journal: &NodeAmendments) 
     else {
         return;
     };
-    // ONE durable-write grant, minted once: the sink journals under it, and the binding is made
-    // under it.
+
     let sink = Arc::new(BookAmendments {
         book: Arc::downgrade(book),
         token: busbar_kernel::teller::Kernel::new().durability_token(),

@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Datagram opener custody over the real data routes, kernel, pairing book and dropped plane.
-
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -56,8 +54,7 @@ impl FramerDoor for OpeningFramer {
             Call::Ingest(input, out) if !self.settled.swap(true, Ordering::SeqCst) => {
                 let crossed = self.recording.cross(Call::Ingest(&mut *input, &mut *out));
                 let frame_len = out.yielded.frame_len;
-                // The existing safe fixture writes one description piece into the host's loan.
-                // Its bytes preserve the local-user prefix of the terms already in that loan.
+
                 let mut echo: EmitIn = blank_in();
                 echo.framing = input.framing;
                 echo.bytes = DESCRIPTION.as_ptr();
@@ -144,7 +141,6 @@ impl LegSink for EmptyLeg {
     fn close(&self) {}
 }
 
-/// Once admission reports the barrier, release its worker even if a subsequent assertion fails.
 struct ReleaseJoin(Arc<std::sync::Barrier>);
 impl Drop for ReleaseJoin {
     fn drop(&mut self) {
@@ -164,12 +160,10 @@ fn assert_book(unit: u64, occupied: bool) {
     }
 }
 
-/// Read the existing fixture's OnPieces counter through its pure table, without minting another
-/// node unit. A session crossing proves its actual attachment callback has already returned.
 fn on_pieces(routes: &serving::DataRoutes) -> u64 {
     use busbar_contract::abi::mechanism::call::AbiStr;
     use busbar_contract::abi::plane::{slot, ArriveIn, ArriveOut, UnitCount};
-    const ON_PIECES: usize = 0; // The fixture's existing Stat::OnPieces.
+    const ON_PIECES: usize = 0;
     const STATS_TARGET: &[u8] = b"/stats";
     let mut units = vec![UnitCount::ZERO; routes.served.planes[0].facts.classes.len()];
     let method = axum::http::Method::POST;

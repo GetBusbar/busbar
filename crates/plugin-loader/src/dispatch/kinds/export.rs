@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE EXPORT KIND: `abi/export/`. Every kind op is checked by its `check_<op>`; `scrape` is the
-//! one op with a short-buffer path (`needed` above the host's `cap`). The Statement tail is read
-//! once at bind, through the kind's own `check_tail` / `check_tail_entries`, into [`ExportFacts`].
-
 use busbar_contract::abi::export::{
     self, slot, validate, CheckIn, CheckOut, DeliverIn, ExportStream, ScrapeIn, ScrapeOut, ServeIn,
     ServeOut, StatusOut, Tail,
@@ -38,7 +34,6 @@ pub struct ExportFacts {
     pub span_records: bool,
 }
 
-/// A `'static` Statement string, copied; `None` when malformed.
 fn owned(s: AbiStr) -> Option<String> {
     crate::dispatch::plugin::str_bytes(s).map(|b| String::from_utf8_lossy(b).into_owned())
 }
@@ -57,8 +52,6 @@ unsafe fn listed<'a, T>(ptr: *const T, len: usize) -> &'a [T] {
     unsafe { std::slice::from_raw_parts(ptr, len) }
 }
 
-/// One declared route, in the route vocabulary: its path, a method the vocabulary names and its
-/// `ROUTE_AUTH_*` bar (the tail's entry check bounded the code).
 fn route(r: &export::Route) -> Result<Route, String> {
     let path = owned(r.path).ok_or("an export route's path is over-long")?;
     let method = owned(r.method).ok_or("an export route's method is over-long")?;
@@ -81,11 +74,8 @@ fn route(r: &export::Route) -> Result<Route, String> {
     Ok(Route { path, method, auth })
 }
 
-/// The export tail's last frozen size: it has not grown since 1.6.0 froze it, so it is this host's
-/// (THE KIND TAIL GROWTH RULE, `abi::mechanism::door::tail_read_len`).
 const EXPORT_TAIL_FROZEN: usize = std::mem::size_of::<Tail>();
 
-/// Read and judge the export tail ([`validate::check_tail`], then [`validate::check_tail_entries`]).
 fn facts(st: &Statement) -> Result<ExportFacts, String> {
     // SAFETY: `Tail` is a `#[repr(C)]` kind tail of integers and pointers (all-zero valid: NULL
     // lists of length 0); a non-NULL kind tail is `'static` plugin data of its stated size.
@@ -171,9 +161,6 @@ impl Kind for Export {
         Ok(Some(Box::new(facts(st)?)))
     }
 
-    /// THE OPS A PUSH OR PULL SINK NEVER HEARS (export ABI defect 2): `scrape` when it carries no
-    /// `metrics` stream, `serve` when it declares no route, `deliver` when it carries no stream
-    /// but `metrics` (the host delivers every other stream, never `metrics`).
     fn optional_by_statement(s: u32, st: &Statement) -> bool {
         let Ok(f) = facts(st) else {
             return false;

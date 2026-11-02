@@ -45,8 +45,7 @@ fn a_consumed_reply_does_not_prevent_the_next_stream_on_a_resumed_operation() {
         .unwrap()
         .unwrap();
     assert_eq!(first.generation, 4);
-    // The host retains this input reply while stream 11's auth is PENDING. Its resume may
-    // discover stream 12, which must request its own selection rather than reuse/refuse it.
+
     assert!(open(&mut loans, ticket(1), 12, &reply, &leases)
         .unwrap()
         .is_none());

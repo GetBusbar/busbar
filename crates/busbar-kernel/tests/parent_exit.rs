@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A parent unit that exits while its child still runs.
-//!
-//! The child's accrual was spent against the parent's hold, and that hold goes with the parent. The
-//! loop converts the accrual to a hold of the child's own at the child's end, so the child settles
-//! against a reservation instead of posting late against nothing — or, where the door cannot back
-//! that hold, ends refused on the budget and its accrual still posts, late.
-
 mod common;
 
 use std::sync::Arc;
@@ -23,12 +16,11 @@ use busbar_kernel::teller::{exit, run_unit, AccrualMeter, Ended, Evidence, Kerne
 
 use common::{cell, ctx, principal, Door, TestUnits};
 
-/// A child whose parent exits, through the real exit path, while the child's Route step runs.
 struct ParentExitsMidRoute<'k> {
     child: TestUnits,
     kernel: &'k Kernel,
     parent: Arc<HoldCell>,
-    /// What this door answers when asked to back the converted hold.
+
     door_backs: Option<ReasonCode>,
 }
 
@@ -164,8 +156,6 @@ impl busbar_kernel::teller::UnitEnds for ParentExitsMidRoute<'_> {
     }
 }
 
-/// Run a child that pushes 250 against an open parent and spends 400, whose parent exits while
-/// its Route step runs. Hands back the end and the child's cell.
 fn child_outliving_its_parent(door_backs: Option<ReasonCode>) -> (Ended, HoldCell, Canary) {
     let kernel = Kernel::new();
     let parent = Arc::new(cell(&kernel));
@@ -208,8 +198,6 @@ fn child_outliving_its_parent(door_backs: Option<ReasonCode>) -> (Ended, HoldCel
     (ended, child_cell, canary)
 }
 
-/// THE CHILD'S ACCRUAL BECOMES ITS OWN HOLD. It posts the 400 it reported on a hold of its own,
-/// where it used to post the whole accrual late against nothing (LATE_ACCRUAL).
 #[test]
 fn a_parent_exit_converts_the_childs_accrual_to_its_own_hold() {
     let (ended, child_cell, canary) = child_outliving_its_parent(None);
@@ -236,9 +224,6 @@ fn a_parent_exit_converts_the_childs_accrual_to_its_own_hold() {
     assert_eq!(canary.balanced(), Ok(()));
 }
 
-/// A HOLD THE DOOR CANNOT BACK REFUSES THE CHILD ON THE BUDGET. The end is the door's refusal —
-/// the over-budget code, at the admission step — and the accrual still posts, late: the unit
-/// happened, and a refusal is never where a posting disappears.
 #[test]
 fn a_converted_hold_the_door_cannot_back_ends_the_child_over_budget() {
     let (ended, child_cell, canary) = child_outliving_its_parent(Some(ReasonCode::OverBudget));
@@ -259,7 +244,6 @@ fn a_converted_hold_the_door_cannot_back_ends_the_child_over_budget() {
     assert_eq!(canary.balanced(), Ok(()));
 }
 
-/// Run `units` as one unit on `cell`, under `parent` when it has one, counted on `canary`.
 fn run_on(
     kernel: &Kernel,
     units: &TestUnits,
@@ -285,7 +269,6 @@ fn run_on(
     )
 }
 
-/// A unit that spends and reports `amount` through `door`.
 fn spending(door: Door, amount: u64) -> TestUnits {
     TestUnits {
         door,
@@ -298,12 +281,6 @@ fn spending(door: Door, amount: u64) -> TestUnits {
     }
 }
 
-/// A CHILD FIRST RUN AFTER ITS PARENT SEALED NEVER WRITES THE PARENT'S LINE (a task's
-/// continuation: BUSBAR-1.6.0.md, the `work.*` row note — a child unit whose parent has exited,
-/// filed under the late-arm rules). The parent posts 300 on its own sealed line; the child, nested
-/// on that parent's cell and asking to accrue at zero the way the root door does, is refused the
-/// accrual and posts its own line of 400. The parent's cell is byte-identical before and after the
-/// child; the two lines total 700, each counted once.
 #[test]
 fn a_child_run_after_its_parent_sealed_posts_its_own_line_and_never_the_parents() {
     let kernel = Kernel::new();

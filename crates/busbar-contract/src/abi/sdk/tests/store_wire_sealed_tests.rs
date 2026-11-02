@@ -108,7 +108,6 @@ extern "C" fn write(_: HostCtx, input: *const c_void, out: *mut ServiceOut) -> R
         std::slice::from_raw_parts(input.buf, input.len)
     };
     script(|s| {
-        // These copies belong to the test host, simulating what the real host receives.
         s.offered.push(bytes.to_vec());
         match s.writes.pop_front().unwrap_or(Write::Take(usize::MAX)) {
             Write::Pending => RawOutcome::of(Outcome::Pending),
@@ -445,8 +444,6 @@ fn successful_output_growth_and_body_unwind_wipe_every_owned_allocation() {
     drop(retained.lock().unwrap().take());
     finish_probe(probe, 1);
 
-    // A panic while polling the parked body leaves its pending write owned by Running until
-    // unwind. The retained Wire below checks that Running retires output independently of Arc.
     struct Fault {
         body: Body<Answer>,
         fault: Arc<AtomicBool>,
@@ -480,7 +477,7 @@ fn successful_output_growth_and_body_unwind_wipe_every_owned_allocation() {
             panic!("restarted body")
         })
     }));
-    // The store door owns this final checkout cleanup after a fault.
+
     drop(op.into_parked());
     assert!(result.is_err());
     assert!(retained
@@ -537,8 +534,7 @@ fn growing_live_output_wipes_the_previous_credential_allocation() {
                 Poll::Ready(())
             })
             .await;
-            // The public append grows a buffer still holding the sealed bytes. Abandon both calls
-            // before drive services them: neither can authorize reuse of their connection.
+
             let public = [b'x'; 2048];
             let mut second = Box::pin(wire.write_all(&public));
             std::future::poll_fn(|cx| {

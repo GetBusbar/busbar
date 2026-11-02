@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! ONE ORACLE RUN IN N SHARDS IS AS STRICT AS ONE RUN. `bin/oracle shard-filter K N` gives every
-//! cell of cells.json to exactly one shard; `shard-cover N` refuses a split that misses or repeats a
-//! cell; `shard-verify K N <report>` refuses a shard whose report did not select every cell it owns
-//! (or wrote none). `bin/oracle shard-selftest` drives each refusal on a small corpus, and this test
-//! holds the real corpus to an exact cover.
-
 use std::path::Path;
 use std::process::Command;
 

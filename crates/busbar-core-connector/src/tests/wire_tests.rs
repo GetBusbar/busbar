@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The boot fold's admission of a transport entry: an entry is admitted under its first claim, and
-//! one that states no claim or names a transport it composes over is refused.
 
 use super::*;
 use crate::support::{Knobs, TestDoor};

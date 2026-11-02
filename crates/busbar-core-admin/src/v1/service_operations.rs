@@ -1,36 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! EVERY ADMIN v1 OPERATION — the one `impl AdminService` block, carved out of `service.rs`.
-//!
-//! The struct, the module-private helpers these methods call, and the view projectors they hand
-//! their results to all stay in [`super`]; what lives here is the operation surface itself, which
-//! was 1,570 of that file's 2,723 lines and pushed it over the `structure-lint:oversized` cap.
-//!
-//! A CHILD MODULE OF `service`, NOT A SIBLING — declared through `#[path]` the way the tree's other
-//! carved modules are. A child sees its ancestors' private items, so one `use super::*` restores
-//! every name these methods already resolved: `AdminService`'s own private fields, the private
-//! helpers (`dated_rate_history`, `catalog_cache`, `validate_plugin_filename`, the `App`
-//! builders), and the imports the parent module had already pulled in. That relationship is the
-//! reason the move needed no rewriting — nothing here changed except the two lines it took to say
-//! where the block now lives.
-
 use super::*;
 use busbar_kernel::admission::{Judged, PluginAdmission, Refusal, Stated};
 use busbar_kernel::config::groups::LimitMetric;
 
-/// THE ROOT'S PLUGIN ADMISSION — the one boot admits plugins under, carried on the snapshot
-/// (`App::plugin_admission`) — after warning about any malformed anti-downgrade floor, so every
-/// admin moment that judges a plugin (catalog, install, inspect, rollback) reaches boot's verdict
-/// and warns exactly as boot does. No policy is built here: the admission judges under the root's
-/// one trust builder over `app.plugins_cfg`.
 pub(crate) fn admission(app: &App) -> Result<&'static dyn PluginAdmission, String> {
     app.plugins_cfg.warn_invalid_floors();
     app.plugin_admission
         .ok_or_else(|| "no plugin trust policy is installed (the composition root's)".to_string())
 }
 
-/// A refusal of the root's admission, in the class the operator surface answers it with.
 fn refused(refusal: Refusal) -> AdminError {
     match refusal {
         Refusal::Validation(m) => AdminError::Validation(m),
@@ -38,10 +18,6 @@ fn refused(refusal: Refusal) -> AdminError {
     }
 }
 
-/// A failed durable operation is a server failure, not a malformed upload. Log only the operation
-/// and OS error classification: paths and arbitrary I/O error text never reach the response or log.
-/// A directory fsync can fail after rename/unlink, so neither the error nor this mapping promises
-/// that the artifact is unchanged, and the caller must not roll it back on that assumption.
 fn plugin_io_failed(operation: &'static str, error: std::io::Error) -> AdminError {
     diag_error!(
         ADMIN_STORE_OPERATION_FAILED,
@@ -61,24 +37,13 @@ impl AdminService {
         }
     }
 
-    /// The same service, resolving usage against `history` instead of the process's.
-    ///
-    /// The process's history is the kernel's rate dater's, installed once — so a test that needs to
-    /// drive the read against a history of its own naming pins it here rather than racing that
-    /// install. Every other caller reads the process's by construction.
     #[cfg(test)]
     pub(crate) fn with_rate_history(mut self, history: Arc<busbar_kernel::cost::History>) -> Self {
         self.rate_history = Some(history);
         self
     }
 
-    /// `GET /api/v1/admin/info` — version, the COMPILED-IN plugin sets (compliance-by-compilation proof),
-    /// uptime, and pool/model/provider topology. Read scope. Infallible today, but returns `Result`
-    /// for a uniform transport contract (every op is `Result<View, AdminError>`).
     pub(crate) async fn info(&self) -> Result<InfoView, AdminError> {
-        // The compiled-in plugin sets reflect the ACTUAL binary: the `keys` builtin and the linked
-        // auth rows, plus the ranking hooks. `weighted` is the one baked in
-        // (non-removable), so it appears as `weighted_floor` below, not in `hook_plugins`.
         let auth_modules = auth_modules_compiled_in();
         let hook_plugins = hook_plugins_compiled_in();
 
@@ -106,9 +71,6 @@ impl AdminService {
         })
     }
 
-    /// `GET /api/v1/admin/pools` — the pool topology (name + member models/weights). Read scope. Sorted
-    /// by name for a stable, diff-friendly listing. Live per-member
-    /// status is an additive follow-up.
     pub(crate) async fn list_pools(&self) -> Result<Page<PoolView>, AdminError> {
         let view = self.app.engine_tables_view();
         let mut pool_views: Vec<PoolView> = view
@@ -130,13 +92,9 @@ impl AdminService {
         Ok(Page::single(pool_views))
     }
 
-    /// `GET /api/v1/admin/pools/{name}` — the LIVE per-member status of one pool (breaker/concurrency/
-    /// latency/tallies), from the same store signals the routing seam ranks on. Read scope.
-    /// `not_found` if the pool is unknown.
     pub(crate) async fn get_pool(&self, name: &str) -> Result<PoolDetailView, AdminError> {
         let view = self.app.engine_tables_view();
-        // A pool is known iff it appears in the neutral pool label space (distinct from `pool_members`
-        // returning empty, which an unknown pool also does).
+
         if !view.pools().iter().any(|(n, _)| *n == name) {
             return Err(AdminError::not_found(format!("pool `{name}`")));
         }
@@ -144,30 +102,17 @@ impl AdminService {
         Ok(self.pool_detail(name, &members))
     }
 
-    /// Project one pool's LIVE member status — the shared core of `GET /pools/{name}` and
-    /// `GET /pools?detail=true` (one projection, two readers — the shapes can never diverge). Takes the
-    /// NEUTRAL `(lane idx, weight)` projection ([`EngineTablesView::pool_members`]), naming no plane type.
     fn pool_detail(&self, name: &str, members: &[(usize, u32)]) -> PoolDetailView {
         let view = self.app.engine_tables_view();
         let now = busbar_kernel::store::now();
         let members = members
             .iter()
             .map(|&(idx, weight)| {
-                // `snapshot` is the same release-exposed live summary `/stats` reads (ok/err/trips/
-                // dead/inflight — genuinely lane-GLOBAL counters); `available_permits` +
-                // `lane_latency_ms` round it out. `usable`/`cooldown_remaining_seconds` are NOT lane
-                // counters, though — routing ranks a member per-POOL, so this
-                // endpoint reports the per-pool breaker cell via `ready_in`/`cooldown_remaining_in`,
-                // NOT `snapshot`'s any-cell/max-cell lane aggregates (which would mislabel a member
-                // as usable in a pool where its OWN cell is tripped, or vice versa).
                 let snap = self.app.store.snapshot(idx, now);
                 PoolMemberStatusView {
                     model: lane_model(view, idx),
                     weight,
-                    // `ready_in`, NOT `usable_in`: `usable_in` delegates to the MUTATING `usable_for`,
-                    // which can transition an expired-Open cell to HalfOpen and CAS-steal the
-                    // single-flight recovery probe. `ready_in` is the pool cell's own
-                    // side-effect-free predicate — exactly what this read-only endpoint must report.
+
                     usable: self.app.store.ready_in(name, idx, now),
                     cooldown_remaining_seconds: self
                         .app
@@ -190,9 +135,6 @@ impl AdminService {
         }
     }
 
-    /// `GET /api/v1/admin/pools?detail=true` — the WHOLE topology with live member status in ONE
-    /// call (the summary + per-pool detail split forced an M+1 fan-out per dashboard refresh).
-    /// Same row shape as `GET /pools/{name}` via the shared projection. Sorted by name.
     pub(crate) async fn list_pools_detailed(&self) -> Result<Page<PoolDetailView>, AdminError> {
         let view = self.app.engine_tables_view();
         let mut pool_views: Vec<PoolDetailView> = view
@@ -204,8 +146,6 @@ impl AdminService {
         Ok(Page::single(pool_views))
     }
 
-    /// `GET /api/v1/admin/models` — every model lane + its upstream provider. Read scope. Sorted by
-    /// model name. No credentials.
     pub(crate) async fn list_models(&self) -> Result<Page<ModelView>, AdminError> {
         let view = self.app.engine_tables_view();
         let mut models: Vec<ModelView> = (0..view.lane_count())
@@ -220,8 +160,6 @@ impl AdminService {
         Ok(Page::single(models))
     }
 
-    /// `GET /api/v1/admin/providers` — distinct upstream providers + the count of model lanes routing
-    /// through each. Read scope. Sorted by provider name.
     pub(crate) async fn list_providers(&self) -> Result<Page<ProviderView>, AdminError> {
         let view = self.app.engine_tables_view();
         let mut counts: std::collections::BTreeMap<String, usize> =
@@ -241,8 +179,6 @@ impl AdminService {
         Ok(Page::single(providers))
     }
 
-    /// `GET /api/v1/admin/hooks` — the hook registry read. Read scope. Each entry
-    /// is the DEFINITION (kind/transport/grants/ordering/stage), never a secret. Sorted by name.
     pub(crate) async fn list_hooks(&self) -> Result<Page<HookView>, AdminError> {
         let mut hooks: Vec<HookView> = self
             .app
@@ -254,7 +190,6 @@ impl AdminService {
         Ok(Page::single(hooks))
     }
 
-    /// `GET /api/v1/admin/hooks/{name}` — one hook definition, or `not_found` if the name is unregistered.
     pub(crate) async fn get_hook(&self, name: &str) -> Result<HookView, AdminError> {
         self.app
             .hook_registry
@@ -263,11 +198,6 @@ impl AdminService {
             .ok_or_else(|| AdminError::not_found(format!("hook `{name}`")))
     }
 
-    /// `GET /api/v1/admin/<section>` — the GENERIC named-DEFINITION map read (`identity-providers`,
-    /// `export`; `tools`/`agents` later). ONE method for every section, parameterized by
-    /// [`NamedMapSection`] — the read half of the same "define once, reference by name" grammar the
-    /// config file speaks. Definitions only; never a secret (see [`NamedDefView`]). Sorted by name so
-    /// the read is stable regardless of the map's insertion order.
     pub(crate) async fn list_named_defs(
         &self,
         section: NamedMapSection,
@@ -285,15 +215,10 @@ impl AdminService {
                 .iter()
                 .map(|(name, cfg)| export_def_view(name, cfg))
                 .collect(),
-            // A plane section reads its registrations through the plane's `named_def_list` seam,
-            // so this arm names no plane crate's view or registry type; the empty vec for
-            // a plane compiled out is the seam's own `None`.
+
             NamedMapSection::Plane(_) => plane_named_def_list(section, &self.app),
         };
-        // Plus every overlay entry this binary could not parse, explicitly FLAGGED. They are stored
-        // but NOT live (dropped at each rebuild), and listing them here is what makes that
-        // discoverable to an operator inspecting state rather than boot logs. A name that is live
-        // wins — the registry only ever holds names the applier actually dropped.
+
         for (name, entry) in self.unparseable_overlay_entries(section).await? {
             if !defs.iter().any(|d| d.name == name) {
                 defs.push(unparseable_def_view(&name, &entry));
@@ -303,8 +228,6 @@ impl AdminService {
         Ok(Page::single(defs))
     }
 
-    /// `GET /api/v1/admin/<section>/{name}` — ONE named definition, or `not_found`. The single-entry
-    /// twin of [`AdminService::list_named_defs`].
     pub(crate) async fn get_named_def(
         &self,
         section: NamedMapSection,
@@ -321,16 +244,13 @@ impl AdminService {
                 .export_defs
                 .get(name)
                 .map(|cfg| export_def_view(name, cfg)),
-            // A plane section reads its one registration through the plane's `named_def_get`
-            // seam; `None` for a plane compiled out is the seam's own `None`.
+
             NamedMapSection::Plane(_) => plane_named_def_get(section, &self.app, name),
         };
         if let Some(view) = view {
             return Ok(view);
         }
-        // A stored-but-unparseable overlay entry answers the FLAGGED view rather than a 404: a 404
-        // for a name that is sitting in the operator's own overlay is precisely the silent drop
-        // this surfaces.
+
         self.unparseable_overlay_entries(section)
             .await?
             .get(name)
@@ -338,13 +258,6 @@ impl AdminService {
             .ok_or_else(|| AdminError::not_found(format!("{} `{name}`", section.singular())))
     }
 
-    /// The overlay entries of `section` this binary could not parse, read OFF THE ASYNC WORKER.
-    ///
-    /// Finding them reads the operator's Store overlay and parses all of it — every section, the
-    /// group tree a self-service mint grows among them — on a read-scope endpoint the admin limiter
-    /// does not meter. Inline, that Store read held the runtime worker the data plane shares for as
-    /// long as the Store took; on a blocking thread it holds nothing. A blocking task that fails to
-    /// join answers what a panic inside the handler always answered, the `500` `internal` envelope.
     async fn unparseable_overlay_entries(
         &self,
         section: NamedMapSection,
@@ -353,8 +266,7 @@ impl AdminService {
         AdminError,
     > {
         let overlay = self.app.overlay_path.clone();
-        // The caller's tracing dispatcher rides onto the blocking thread, so the corrupt-overlay
-        // warning the read raises still reaches it (the `GET /config/settings` read does the same).
+
         let dispatch = tracing::dispatcher::get_default(|d| d.clone());
         tokio::task::spawn_blocking(move || {
             tracing::dispatcher::with_default(&dispatch, || {
@@ -377,23 +289,11 @@ impl AdminService {
         .map_err(AdminError::Validation)
     }
 
-    /// `GET /api/v1/admin/groups` — the `groups:` limit tree read. Read scope. Each entry is the
-    /// DEFINITION (parent, enabled, limits, `child_default`), never a secret. Sorted by name (the
-    /// registry is already a BTreeMap, so iteration is name-ordered).
-    ///
-    /// Cursor-paginated by the SAME `{items, next_cursor}` envelope every other growable admin
-    /// collection uses (keys/audit/config-versions): unlike `/pools`/`/models`/`/hooks` (bounded by
-    /// static config, still a `Page::single`), the group tree GROWS at runtime — `plan_mint_group`
-    /// auto-provisions a leaf per self-service key mint — so it needs the same bound every other
-    /// growable list has. `start`/`limit` are the caller's already-decoded cursor offset and clamped
-    /// page size (see the JSON handler, which owns cursor parsing).
     pub(crate) async fn list_groups(
         &self,
         start: usize,
         limit: usize,
     ) -> Result<Page<GroupView>, AdminError> {
-        // Skip to the page BEFORE projecting: only the page's groups are built into their wire
-        // view, so a page costs its own size rather than the whole tree's.
         let registry = &self.app.groups_registry;
         let total = registry.len();
         let items: Vec<GroupView> = registry
@@ -407,7 +307,6 @@ impl AdminService {
         Ok(Page { items, next_cursor })
     }
 
-    /// `GET /api/v1/admin/groups/{name}` — one group definition, or `not_found` if the name is unknown.
     pub(crate) async fn get_group(&self, name: &str) -> Result<GroupView, AdminError> {
         self.app
             .groups_registry
@@ -416,10 +315,6 @@ impl AdminService {
             .ok_or_else(|| AdminError::not_found(format!("group `{name}`")))
     }
 
-    /// `GET /api/v1/admin/groups/{name}/usage` — the group's derived current-window usage per
-    /// enforcement bucket vs its caps. Read scope.
-    /// `not_found` for an unknown group; governance off = every bucket reads zero (the caps are
-    /// still projected — the definition exists even when nothing enforces).
     pub(crate) async fn get_group_usage(
         &self,
         name: &str,
@@ -429,9 +324,7 @@ impl AdminService {
             return Err(AdminError::not_found(format!("group `{name}`")));
         };
         let now = busbar_kernel::store::now();
-        // THE STORE READS RUN OFF THE ASYNC WORKER, all of the group's buckets in one blocking
-        // task (as `get_usage`'s are): a slow store never stalls the worker the admin surface and
-        // the data plane share. One read per bucket, in bucket order.
+
         let reads = match self.app.governance.clone() {
             Some(gov) => {
                 let cost = self.app.cost.clone();
@@ -443,11 +336,6 @@ impl AdminService {
                 tokio::task::spawn_blocking(move || {
                     wanted
                         .iter()
-                        // Include the flat per-request fee (`true`) — the group `/usage` read must
-                        // match ENFORCEMENT (`try_admit` counts the fee for EVERY chain bucket,
-                        // groups included). Passing `false` here understated spend and overstated
-                        // remaining budget, so operators saw more headroom than the enforcer
-                        // actually allows.
                         .map(|(id, window)| {
                             gov.derived_bucket_usage_priced(&cost, id, window, true, now)
                         })
@@ -478,7 +366,6 @@ impl AdminService {
                         );
                         AdminError::Internal
                     })?
-                    // An unpriced lane or class is NAMED (`unpriced_class`, 409 — Q25b).
                     .map_err(|e| usage_refusal("group_usage", &e))?,
                 None => Default::default(),
             };
@@ -495,7 +382,7 @@ impl AdminService {
                 tokens_cache_read_cap: b.class_cap(LimitMetric::TokensCacheRead),
                 tokens_cache_write_cap: b.class_cap(LimitMetric::TokensCacheWrite),
                 budget_cap: b.budget_cap,
-                // The headroom is the ledger's read-time arithmetic (THE DESIGN, Money), never this crate's.
+
                 budget_remaining_cents: b
                     .budget_cap
                     .map(|cap| busbar_kernel::cost::budget_remaining(cap, usage.spend_cents)),
@@ -509,27 +396,15 @@ impl AdminService {
         })
     }
 
-    /// `GET /api/v1/admin/plugins?type=auth|hooks|store|secret` — the plugin catalog for one TYPE.
-    /// Read scope. Lists COMPILED-IN plugins (feature-gated, from the binary — the same source as
-    /// `info`'s build proof), EXTERNAL plugins (registered over socket/webhook), and DYNAMIC-LIBRARY
-    /// plugins from `plugins.dir` (`store`/`secret`, and `auth` rows installed on disk, so every
-    /// kind has a real, manifest-backed row to carry `trust`/`schema_url`/`schema_error` on). An
-    /// unknown/absent `type` is an `invalid_request` (there is no unified cross-kind list; a caller
-    /// must pick one — busbar-ui makes up to FOUR separate `GET /plugins?type=X`
-    /// calls to build a full picture).
     pub(crate) async fn list_plugins(&self, ptype: &str) -> Result<Page<PluginView>, AdminError> {
         let mut plugins: Vec<PluginView> = Vec::new();
         match ptype {
             "auth" => {
-                // Compiled-in auth modules (feature-gated). Active = wired into its chain: `keys`
-                // is engine-handled (a flag, not a boxed module), the operator credential lives on the
-                // ADMIN chain, and anything else is a boxed data-plane chain module.
                 let chain = self.app.auth.chain_names();
                 for name in auth_modules_compiled_in() {
                     let active = if name == busbar_kernel::config::KEYS_MODULE {
                         self.app.auth.keys_in_chain
                     } else if name == busbar_kernel::config::operator_provider() {
-                        // By module: a provider of any name backed by the operator credential.
                         let op = &self.app.admin_modules.operator;
                         self.app.admin_chain.iter().any(|m| op.is(m))
                     } else {
@@ -543,11 +418,7 @@ impl AdminService {
                         None,
                     ));
                 }
-                // DYNAMIC auth modules: a `kind: auth` plugin loaded over the signed hybrid ABI and
-                // boxed into the data-plane chain. Its runtime name (`module.name()`, what
-                // `role_bindings.<module>` keys off) appears in `chain_names()` but is NOT
-                // compiled-in — report each such module as a loaded plugin, always `active` (it is
-                // in the chain by construction).
+
                 let compiled = auth_modules_compiled_in();
                 for name in &chain {
                     if !compiled.contains(&name.as_str()) {
@@ -560,18 +431,7 @@ impl AdminService {
                         ));
                     }
                 }
-                // External auth modules (runtime-registered over socket/webhook) — none until the
-                // auth-module registration endpoint lands; the catalog shape is ready.
 
-                // DYNAMIC-LIBRARY `kind: auth` plugins installed in `plugins.dir`: they get the
-                // same manifest-backed view `store` rows already get —
-                // version/publisher/interface_version/trust/schema_url/schema_error —
-                // rather than leaving every dynamic auth plugin as a bare name+active `basic` row).
-                // This is the SAME directory scan `type=store`/`type=secret` already run (cached,
-                // kind-agnostic), filtered down to `kind: auth` rows here. NOTE: an entry here is
-                // "installed on disk", not necessarily "currently wired into the live chain" — the
-                // `active: true` "plugin" rows above (from `chain_names()`) are the currently-active
-                // signal; correlating the two by manifest name is a real follow-on, not solved here.
                 let mut dynamic_auth: Vec<PluginView> = self
                     .store_plugin_catalog_async()
                     .await?
@@ -581,8 +441,6 @@ impl AdminService {
                 plugins.append(&mut dynamic_auth);
             }
             "hooks" => {
-                // The weighted SWRR floor is compiled in unconditionally (the non-removable default
-                // hook); activation is the per-pool default, not summarized here.
                 plugins.push(PluginView::basic(
                     "weighted".to_string(),
                     "hooks",
@@ -599,8 +457,7 @@ impl AdminService {
                         None,
                     ));
                 }
-                // External hooks = the configured registry entries (socket/webhook). Configured ⇒
-                // active; the transport target is projected (operator config, not a secret).
+
                 let mut externals: Vec<PluginView> = self
                     .app
                     .hook_registry
@@ -613,17 +470,7 @@ impl AdminService {
                 externals.sort_by(|a, b| a.name.cmp(&b.name));
                 plugins.append(&mut externals);
             }
-            // `store` (alias `db`) — DYNAMIC-LIBRARY plugins in the plugins directory. Always includes
-            // the compiled-in `memory` default; then every loadable library present, each vetted (ABI
-            // handshake) and its signed sidecar manifest read + re-evaluated against the running trust
-            // posture. The store the operator configured (`store.module`) is `active`.
-            //
-            // The underlying scan reads every kind in the shared `plugins.dir` in one pass (cached,
-            // kind-agnostic); each row is tagged with its OWN manifest kind (`scan_store_plugin_rows`),
-            // so filtering to `r#type == "store"` here is what makes `type=store` show only store
-            // plugins — a `secret`/`auth` kind tarball dropped in the same directory no longer leaks
-            // into this listing (it did before `type=secret`/richer `type=auth` rows existed, since
-            // nothing filtered the scan's mixed-kind output by the requested type).
+
             "store" | "db" => {
                 plugins.extend(
                     self.store_plugin_catalog_async()
@@ -632,11 +479,7 @@ impl AdminService {
                         .filter(|p| p.r#type == "store"),
                 );
             }
-            // DYNAMIC-LIBRARY `kind: secret` plugins: previously the ONLY accepted `type` values
-            // were `auth`, `hooks`, `store`, despite secret plugins being in scope throughout this
-            // design. Same directory scan as `store`/`auth`, filtered to `kind: secret`. No
-            // compiled-in default (unlike `store`'s `memory`) — there is no built-in secret module
-            // that needs a catalog row; `env`/`file` are handled inline by the engine, not as plugins.
+
             "secret" => {
                 plugins.extend(
                     self.store_plugin_catalog_async()
@@ -654,50 +497,7 @@ impl AdminService {
         Ok(Page::single(plugins))
     }
 
-    /// The DYNAMIC plugin catalog (`GET /api/v1/admin/plugins?type=store`): the compiled-in
-    /// `memory` default plus every signed plugin tarball in `plugins.dir`, each with its manifest
-    /// metadata and a re-evaluated trust verdict. Sorted by filename after the `memory` head.
-    ///
-    /// MANIFEST-ONLY INSPECTION (security): this endpoint NEVER `dlopen`s ANY plugin. Each tarball
-    /// is unpacked in memory, structurally validated, and trust-evaluated against the RUNNING
-    /// policy — pure data checks; no plugin code can run from listing the catalog. Pushing/listing
-    /// a plugin over the admin API therefore cannot bypass the trust model: loading only ever
-    /// happens through the boot pipeline, which re-runs the same three-phase validation.
-    ///
-    /// CACHED (see `catalog_cache`): `inventory_tarballs` fully re-reads and re-unpacks (gunzip +
-    /// untar + structural + trust) EVERY tarball on EVERY call — fine for a one-off boot scan, but
-    /// this backs an authenticated GET a caller can hit as often as it likes (reads are
-    /// deliberately unmetered by the admin rate limiter — see `admin/rate.rs`'s
-    /// `CONFIG_CLASS_RULES` and the mutation-only gate in `auth::classify_for_rate_limit`). A
-    /// legitimate admin polling this endpoint, or a misbehaving admin-token holder, would otherwise
-    /// pay a full directory re-scan per request with nothing bounding the rate. The cache is keyed
-    /// off a cheap directory fingerprint (name+size+mtime per entry, no read/decompress) plus the
-    /// trust config, so any real change — install, remove, rollback, or a `plugins:` config edit —
-    /// invalidates it on the very next call with no bespoke invalidation hook wired into any of
-    /// those mutation paths.
-    ///
-    /// SYNCHRONOUS, BLOCKING FILESYSTEM I/O — both the fingerprint read(s) and, on a cache miss, the
-    /// full tarball scan. Safe to call directly only from a context that is already off the Tokio
-    /// reactor: `reload_store_plugins` (always invoked inside a `txn.read_store` closure, which
-    /// `config_transaction`'s `apply()` runs via `spawn_blocking`), tests, and `--validate`/boot
-    /// paths. The `GET /plugins?type=store` request path goes through
-    /// [`Self::store_plugin_catalog_async`] instead — never this method directly.
-    ///
-    /// RACE: the fingerprint read and the scan are two independent,
-    /// non-atomic directory reads, so a concurrent install/remove between them could let a scan and
-    /// its "before" fingerprint observe different directory states. To narrow that window this
-    /// re-fingerprints the directory AFTER the scan and only memoizes when the two fingerprints
-    /// still match — but this is a NARROWING, not a CLOSING, of the race: an ABA sequence (the
-    /// directory changes and then changes back to the same fingerprint mid-scan — plausible on
-    /// filesystems with coarse mtime granularity) could still memoize a torn read. Self-healing
-    /// either way: the cache is a pure performance layer over a deterministic scan, so the worst
-    /// case is one extra rescan on the next call, never a wrong answer served indefinitely (the
-    /// fingerprint fix below is what actually prevents a wrong answer being served indefinitely).
     pub(super) fn store_plugin_catalog(&self) -> Vec<PluginView> {
-        // Every store this build LINKS is always present (the declared default among them), read
-        // off the root's linked rows; admin names no store. Which store backend is ACTIVE is a
-        // `store.module` config concern (read via `GET /config`), not summarized per-row here,
-        // the same posture the compiled-in hook rows take (`active: None`).
         let mut out = linked_store_rows();
         let Ok(admission) = admission(&self.app) else {
             return out;
@@ -707,31 +507,11 @@ impl AdminService {
         }
 
         let now = busbar_kernel::store::now();
-        // Bound the cache with the same TTL+`retain()` idiom
-        // `admin/mod.rs`'s `idempotency_cache` uses: prune before every read, not just on write, so
-        // an abandoned path's entry cannot sit forever just because nothing keeps writing to it.
-        // CLOCK SKEW: `saturating_sub` alone avoids an underflow PANIC if `inserted_at`
-        // is somehow in the future (a backward system-clock jump), but silently floors the computed
-        // age at 0 — which means the entry looks brand-new and never ages out, quietly defeating the
-        // TTL bound for exactly that entry until real time catches back up to `inserted_at`. Treating
-        // `inserted_at > now` as ALSO immediately-stale (rather than ageless) closes that: a clock
-        // that jumped backward means this entry's true age is UNKNOWN, and unknown age is treated the
-        // same as "old" — the safe default for a cache, same posture the fingerprint-freshness check
-        // above takes toward any signal it cannot trust.
+
         catalog_cache().lock().unwrap().retain(|_, e| {
             e.inserted_at <= now && now.saturating_sub(e.inserted_at) < CATALOG_CACHE_TTL_SECS
         });
 
-        // A real I/O error (NOT a missing directory — see the doc
-        // comment on `plugins_dir_fingerprint`) means the fingerprint cannot be trusted as a
-        // freshness signal at all. Skip the cache entirely (no read, no write) and fall through to
-        // the real scan, whose own `discover()` call fails the same way and surfaces the
-        // `INVALID: cannot read plugins dir` row — on EVERY call, honestly, until the directory
-        // becomes readable again, rather than silently serving whatever was cached before.
-        // Warn-once transition latch: this read runs on every catalog GET, so an unlatched warn
-        // would spam while the dir stays unreadable. Warn on entry into the failing state; hold
-        // subsequent failing reads at debug; clear on the next clean fingerprint so a future outage
-        // re-warns.
         static FINGERPRINT_WARNED: std::sync::atomic::AtomicBool =
             std::sync::atomic::AtomicBool::new(false);
         let before = match plugins_dir_fingerprint(&self.app.plugins_dir) {
@@ -761,10 +541,6 @@ impl AdminService {
         };
 
         if let Some(before) = before {
-            // Cache key: a cheap directory-content fingerprint PLUS the config that governs how
-            // each tarball is trust-evaluated. `inventory_tarballs` is a deterministic function of
-            // exactly those two things, so a match here is an EXACT cache hit, not a heuristic
-            // staleness window — nothing observable differs from re-running the scan.
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             before.hash(&mut hasher);
             format!("{:?}", self.app.plugins_cfg).hash(&mut hasher);
@@ -783,11 +559,6 @@ impl AdminService {
                 &self.app.plugins_cfg,
             );
 
-            // "After" fingerprint: only memoize if the directory still looks like it did before the
-            // scan started (see the race caveat in the doc comment above — this narrows, it does
-            // not close, the window). A mismatch, or the directory becoming unreadable mid-scan,
-            // just means this call doesn't memoize; the data returned below is still the real scan
-            // result, correct for THIS call either way.
             if matches!(plugins_dir_fingerprint(&self.app.plugins_dir), Ok(after) if after == before)
             {
                 let mut cache = catalog_cache().lock().unwrap();
@@ -819,22 +590,14 @@ impl AdminService {
         }
     }
 
-    /// The pure scan half of [`Self::store_plugin_catalog`]: run the admission's manifest-only
-    /// `inventory` and project each row to a [`PluginView`]. No cache read, no cache write — split out so both the
-    /// cache-miss path above and (indirectly, via the whole-method `spawn_blocking`)
-    /// [`Self::store_plugin_catalog_async`] share exactly one implementation of "what a scan is."
     fn scan_store_plugin_rows(
         dir: &Path,
         admission: &dyn PluginAdmission,
         cfg: &busbar_kernel::config::PluginsCfg,
     ) -> Vec<PluginView> {
-        // TEST-ONLY injection point: expands to nothing outside
-        // `#[cfg(test)]`, so the release path carries zero indirection. See
-        // `catalog_scan_test_hooks` above for what it does and why.
         catalog_scan_test_hook!(dir);
         let mut rows = Vec::new();
-        // The policy resolved a moment ago (the caller checked); a refusal here lists nothing
-        // beyond the linked rows, the same answer an unresolvable policy gets.
+
         let Ok(inventory) = admission.inventory(dir, cfg) else {
             return rows;
         };
@@ -855,9 +618,7 @@ impl AdminService {
                 .as_ref()
                 .map(|m| m.name.clone())
                 .unwrap_or_else(|| row.file.clone());
-            // Preserve every recognized manifest kind in the shared inventory. Unknown kinds and
-            // unreadable manifests retain the store fallback so broken uploads remain visible.
-            // `type=hooks` still lists the separate hook registry, not this directory inventory.
+
             let r#type = match row.stated.as_ref().map(|m| m.kind.as_str()) {
                 Some("secret") => "secret",
                 Some("auth") => "auth",
@@ -867,12 +628,7 @@ impl AdminService {
                 Some("plane") => "plane",
                 _ => "store",
             };
-            // `schema_url`/`schema_error`: non-null whenever the manifest
-            // declared a `settings_schema` at all, even unparseable (`schema_error` then explains
-            // why) — never folded into the same `null` a schema-less plugin gets. Always the
-            // admin-prefixed RELATIVE path to `GET /plugins/{name}/schema`, resolved by this
-            // plugin's real manifest `name` (what that endpoint resolves against), never the
-            // installed tarball's filename.
+
             let (schema_url, schema_error) = match row.stated.as_ref() {
                 Some(m) => manifest_schema_url_and_error(&name, m.settings_schema.as_deref()),
                 None => (None, None),
@@ -898,30 +654,6 @@ impl AdminService {
         rows
     }
 
-    /// The `GET /plugins?type=store` REQUEST-PATH entry point — the async, reactor-safe wrapper
-    /// around [`Self::store_plugin_catalog`]. The synchronous version
-    /// performs blocking filesystem I/O on EVERY call, not just a cache miss: the fingerprint
-    /// read(s) alone are a `read_dir` + a `metadata()`/`modified()` per entry, and a miss adds the
-    /// full `inventory_tarballs` unpack on top — none of it safe to run inline in an `async fn` on a
-    /// Tokio worker thread, on an endpoint this codebase deliberately leaves unmetered by the admin
-    /// rate limiter (see the doc comment above). Mirrors [`Self::get_usage`]'s `spawn_blocking`
-    /// wrapper shape.
-    ///
-    /// Serialized through [`CATALOG_SCAN_GATE`] (see its doc comment for why, and for the
-    /// acknowledged hit-path throughput trade-off): N callers that all miss at the same instant
-    /// (e.g. right after boot or a config reload, before any entry exists) single-flight into
-    /// exactly one real scan, and every other caller wakes up to find the cache already populated
-    /// rather than each independently unpacking every tarball.
-    ///
-    /// `reload_store_plugins` is UNCHANGED and does not go through here — it already runs inside a
-    /// `txn.read_store` closure on `spawn_blocking` (see `admin/v1/json/txn.rs`'s `apply()`), so it
-    /// calls the synchronous [`Self::store_plugin_catalog`] directly.
-    ///
-    /// GATE TIMEOUT: acquiring [`CATALOG_SCAN_GATE`] is bounded by
-    /// [`CATALOG_SCAN_GATE_WAIT`] — see that constant's doc comment for why an unbounded wait here
-    /// would be a permanent wedge, not a self-healing one, on an endpoint this rate limiter never
-    /// meters. A caller that cannot even START the scan within the bound gets a clear
-    /// [`AdminError::Unavailable`] rather than a hang.
     async fn store_plugin_catalog_async(&self) -> Result<Vec<PluginView>, AdminError> {
         let _gate = match tokio::time::timeout(CATALOG_SCAN_GATE_WAIT, CATALOG_SCAN_GATE.lock())
             .await
@@ -953,9 +685,7 @@ impl AdminService {
                     error = %join_err,
                     "admin blocking task failed"
                 );
-                // Fail soft to the always-true linked rows rather than an admin 500 for what is
-                // just a plugin CATALOG read — same posture `store_plugin_catalog` itself takes on
-                // an unparseable `plugins_cfg` (the policy not resolving) just above.
+
                 Ok(linked_store_rows())
             }
         }
@@ -984,20 +714,8 @@ impl AdminService {
         file: &str,
         tarball: &[u8],
     ) -> Result<crate::v1::contract::PluginInstallView, AdminError> {
-        // ── 1. filename sanity: a bare tarball filename ──
         let file = validate_plugin_filename(&self.app, file)?;
 
-        // ── 2–4b. THE ROOT'S ADMISSION, nothing written: STRUCTURAL (in-memory unpack + manifest
-        // completeness + integrity + abi, `400`); TRUST re-verified against the RUNNING posture
-        // server-side (an untrusted upload with no matching opt-in is a terminal `409` — retrying
-        // the same bytes cannot fix it; the refusal names the exact flag to set); CONFLICT with the
-        // already-installed loadable set (a corrupt installed tarball refuses rather than skipping
-        // the check, and a same-name upload under a DIFFERENT filename is refused because boot
-        // would reject two files claiming one plugin name, `409`); and THE ONE-VERSION RULE against
-        // the plugins this build LINKS (ARCHITECT C'), after trust: the same plugin at the same
-        // version is served by the linked row, so the install is an accepted no-op; another
-        // version is refused now, in the words boot would refuse it with, never published to brick
-        // the next boot.
         let admission = admission(&self.app).map_err(AdminError::Validation)?;
         let admitted = admission
             .admit_upload(&self.app.plugins_dir, &file, tarball, &self.app.plugins_cfg)
@@ -1006,7 +724,7 @@ impl AdminService {
         let (trust, publisher) = match &admitted.judged {
             Judged::Trusted { publisher } => ("trusted", Some(publisher.clone())),
             Judged::Allowed => ("unverified", Some(manifest.publisher.clone())),
-            // An admission never admits a rejected upload; the mapping stays total.
+
             Judged::Rejected { reason } => {
                 return Err(AdminError::Conflict(format!(
                     "plugin rejected by the trust policy: {reason}"
@@ -1027,17 +745,6 @@ impl AdminService {
         }
         self.validate_bootstrap_candidate("install", &file, manifest, tarball, admission)?;
 
-        // ── 5. atomic publish via the crate's ONE durable-write choke point ──
-        // Directory provisioning goes through the primitive too: `std::fs::create_dir_all` leaves the
-        // new directory's own entry non-durable, so the FIRST plugin installed into a not-yet-existing
-        // plugins dir could vanish with the directory on power loss — despite the response promising
-        // it was installed durably. The temp-in-same-dir → write → flush → fsync(file) → rename → fsync(dir) dance is the
-        // primitive's. Collapsing onto it FIXES the former leaked-`.tmp`-on-pre-rename-error class for
-        // free: the old `{ }` block returned early on a create/write/flush/fsync failure WITHOUT
-        // removing the temp (only the rename path cleaned up), so a full disk / I/O error orphaned a
-        // `.<file>.<stamp>.tmp` to accumulate across retries. The primitive's RAII guard removes the
-        // temp on EVERY error path. The pid+seq temp naming supersedes the bespoke pid+now stamp with
-        // the same per-call-uniqueness property.
         let dir = &self.app.plugins_dir;
         busbar_kernel::durable::create_dir_all(dir)
             .map_err(|e| plugin_io_failed("plugins.install.create_dir", e))?;
@@ -1104,8 +811,6 @@ impl AdminService {
             )));
         }
 
-        // Trust is REPORTED, never a refusal to answer — an untrusted/rejected candidate is exactly
-        // the case an operator most wants to preview before deciding whether to trust it at all.
         let (manifest, judged) = admission
             .inspect(tarball, &self.app.plugins_cfg)
             .map_err(refused)?;
@@ -1141,10 +846,6 @@ impl AdminService {
         }))
     }
 
-    /// `DELETE /api/v1/admin/plugins/{file}` — REMOVE a plugin tarball from the plugins directory.
-    /// Full scope. `404 not_found` if the file isn't present. A currently-loaded store keeps
-    /// running on its already-loaded handle until the next plugin (re)load — removing the file only
-    /// affects the NEXT load (folder = source of truth).
     pub(crate) fn remove_store_plugin(
         &self,
         file: &str,
@@ -1154,10 +855,7 @@ impl AdminService {
         if !lib_path.is_file() {
             return Err(AdminError::not_found(format!("plugin `{file}`")));
         }
-        // `durable::remove`, not a bare `remove_file`: the INSTALL fsyncs the plugins directory so
-        // the new artifact's directory entry survives a power loss, and a removal that skipped it was
-        // the asymmetric half -- a crash right after a delete could resurrect the artifact and load
-        // it on the next boot.
+
         busbar_kernel::durable::remove(&lib_path)
             .map_err(|e| plugin_io_failed("plugins.remove", e))?;
         Ok(crate::v1::contract::PluginRemoveView {
@@ -1166,16 +864,9 @@ impl AdminService {
         })
     }
 
-    /// `POST /api/v1/admin/plugins/reload` — re-scan the plugins directory and report the current
-    /// dynamic-library inventory (the SAME projection `GET /plugins?type=store` produces, minus the
-    /// compiled-in `memory` head). Full scope. Reconciles the reported set to the folder (folder =
-    /// source of truth), the exact sibling of `config/reload`. A store change still applies on the
-    /// next store (re)load, not as a hot swap.
     pub(crate) fn reload_store_plugins(
         &self,
     ) -> Result<crate::v1::contract::PluginReloadView, AdminError> {
-        // Reuse the store catalog projection, dropping the compiled-in `memory` head (reload reports
-        // only the on-disk dynamic set it reconciled).
         let plugins: Vec<PluginView> = self
             .store_plugin_catalog()
             .into_iter()
@@ -1191,18 +882,6 @@ impl AdminService {
         })
     }
 
-    /// The RESOLUTION half of an EXPLICIT plugin ROLLBACK (`POST /api/v1/admin/plugins/rollback`,
-    /// 1.5.0). Validate that `file` is a plugin tarball in the plugins dir, unpack + STRUCTURALLY
-    /// validate its manifest, and TRUST-verify it against a policy whose first-party floor is LOWERED to
-    /// the target's OWN version — so a validly-signed but OLDER artifact (exactly the rollback case)
-    /// clears trust here even though it would be an anti-downgrade reject on the automatic path. This is
-    /// where "automatic vs explicit" is made concrete: the rollback deliberately relaxes the floor to
-    /// the pinned target and only that target; a lower artifact still fails, and a signature/opt-in
-    /// failure is still fatal (a rollback can never launder an untrusted artifact). Returns the target
-    /// manifest identity (name/version/publisher) + the MERGED pin map (prior overlay pins with this
-    /// plugin's name set to the target version) the caller persists and re-derives the policy from.
-    ///
-    /// `prior_pins` is the current persisted `plugin_versions` overlay section (empty if none).
     pub(crate) fn resolve_plugin_rollback(
         &self,
         file: &str,
@@ -1215,25 +894,18 @@ impl AdminService {
         }
         let bytes = std::fs::read(&lib_path)
             .map_err(|e| AdminError::Validation(format!("cannot read plugin `{file}`: {e}")))?;
-        // The root's admission checks the target's structure and judges its trust with THIS
-        // plugin's floor LOWERED to the target's own version — the EXPLICIT relaxation. Anything the
-        // target does NOT satisfy (a broken signature, an un-opted-in third party) still fails: a
-        // rollback authenticates the OPERATOR, never the ARTIFACT.
+
         let admission = admission(&self.app).map_err(AdminError::Validation)?;
         let manifest = admission
             .rollback_target(&file, &bytes, &self.app.plugins_cfg)
             .map_err(refused)?;
         self.validate_bootstrap_candidate("rollback", &file, &manifest, &bytes, admission)?;
 
-        // Merge: this plugin's pin becomes the target version; other plugins' prior pins are preserved.
         let mut pins = prior_pins.clone();
         pins.insert(manifest.name.clone(), manifest.version.clone());
         Ok((manifest, pins))
     }
 
-    /// A dependency needed to open the overlay cannot use its own unread pin to lower bootstrap
-    /// trust. Reuse the ordinary admission under the operator's existing base policy, before any
-    /// pin is persisted. An explicit safe rollback of any other plugin keeps its existing path.
     fn validate_bootstrap_candidate(
         &self,
         operation: &str,
@@ -1277,8 +949,7 @@ impl AdminService {
                 linked: busbar_kernel::preflight::linked_rows(),
                 plugins: Some(&loaded.deploy.plugins),
                 data_dir: data_dir.as_deref(),
-                // The installed file may need repair. This inventory opens nothing; only the
-                // supplied candidate's own base trust and immutable pin authorize publication.
+
                 inventory_only: true,
             },
             &mut |_| {},
@@ -1317,9 +988,7 @@ impl AdminService {
                 .map_err(refused)?;
             let refused_reason = match verdict {
                 Judged::Rejected { reason } => Some(reason),
-                // A rollback names the exact installed artifact the base registry judged. An
-                // upload can repair that file with different bytes, so its old verdict cannot
-                // reject the replacement candidate.
+
                 _ if operation == "rollback" => rows
                     .skipped()
                     .into_iter()
@@ -1334,10 +1003,6 @@ impl AdminService {
         Ok(())
     }
 
-    /// `GET /api/v1/admin/config` — the EFFECTIVE running config, composed from the same redacted reads as
-    /// the individual endpoints (auth/pools/models/providers/hooks/global-hooks). Read scope. Carries
-    /// no secret. For drift detection + one-shot inspection; the base-vs-overlay source annotation
-    /// lands with the overlay substrate.
     pub(crate) async fn get_config(&self) -> Result<EffectiveConfigView, AdminError> {
         Ok(EffectiveConfigView {
             version: self.app.config_version,
@@ -1351,21 +1016,6 @@ impl AdminService {
         })
     }
 
-    /// `POST /api/v1/admin/config/validate` — DRY-RUN a proposed config: resolve (`config.yaml` deploy +
-    /// `providers.yaml` defs) then run the full boot-time `config_validate`, collecting every error at
-    /// once, WITHOUT applying anything. Always succeeds as an operation (`Result::Ok`) — the verdict is
-    /// in the view's `ok`/`errors`; a valid request describing an invalid config is `ok: false`, not an
-    /// error. Read scope (no mutation). Env interpolation is out of scope (structure + resolution only).
-    ///
-    /// OFF THE REACTOR, BEHIND THE SCAN GATE. The pre-flight scans the running `plugins.dir` (a
-    /// `read_dir` and a read of every tarball in it) and the resolve and validate passes before it
-    /// are CPU-bound over a caller-sized document; none of it may run inline on a Tokio worker,
-    /// which is shared with the data plane. So the whole dry run goes to `spawn_blocking`, behind
-    /// [`CATALOG_SCAN_GATE`] — the gate the catalog's own scan of the same directory already takes —
-    /// with the same bounded wait: a read-only token can no longer park a worker per request on a
-    /// slow or hung plugins mount, and a hung scan answers the next caller a retryable `503` instead
-    /// of queuing it forever. A blocking task that fails to join answers what a panic inside the
-    /// handler always answered, the `500` `internal` envelope.
     pub(crate) async fn validate_config(
         &self,
         deploy: DeployCfg,
@@ -1390,7 +1040,7 @@ impl AdminService {
             }
         };
         let plugins_dir = self.app.plugins_dir.to_string_lossy().into_owned();
-        // The running generation's root rules: a dry run judges what an apply would.
+
         let rules = std::sync::Arc::clone(&self.app.root_rules);
         match tokio::task::spawn_blocking(move || {
             validate_config_blocking(deploy, &defs, plugins_dir, &rules)
@@ -1410,32 +1060,14 @@ impl AdminService {
         }
     }
 
-    /// `GET /api/v1/admin/admin-auth` — the ADMIN-plane auth config (distinct from the ingress chain).
-    /// Read scope. Reports the live `admin_auth` chain — the SAME resource `PUT /api/v1/admin/admin-auth`
-    /// writes, so a read-after-write is coherent (previously this hard-coded `["admin-token"]` and
-    /// never reflected a PUT). Never a secret.
     pub(crate) async fn get_admin_auth(&self) -> Result<AdminAuthView, AdminError> {
         let modules = self.app.admin_chain.clone();
         Ok(AdminAuthView {
-            // An empty chain is the open (anonymous, full-authority) dev posture — NOT configured.
             configured: !modules.is_empty(),
             modules,
         })
     }
 
-    /// Validate an `?as_of` rate-card-history snapshot, or REFUSE.
-    ///
-    /// A seq ABOVE THE HEAD is an error and never a clamp. Clamping would answer a DIFFERENT
-    /// question under the name of the one that was asked, which is exactly the failure the
-    /// behaviour this replaces was recorded for: the parameter was ignored, the body was the
-    /// live-card reprice, and the response reported an `as_of` contradicting the URL — a caller
-    /// who guessed the parameter got a confident wrong answer. A refusal is the only answer that
-    /// cannot be mistaken for the snapshot.
-    ///
-    /// A node with NO history refuses for the same reason: there is no snapshot of a history that
-    /// does not exist, and serving the live figure under a snapshot's name would be that same
-    /// confident wrong answer. A refusal rather than an empty body, because an empty body is a
-    /// silent zero wearing a different hat (#42).
     fn validated_snapshot(
         history: Option<&busbar_kernel::cost::History>,
         seq: u64,
@@ -1458,26 +1090,6 @@ impl AdminService {
         Ok(busbar_kernel::cost::HistorySeq(seq))
     }
 
-    /// `GET /api/v1/admin/usage` — the fleet METERING read (FinOps surface): the current UTC-day
-    /// bucket's raw consumption, aggregated per (model, provider) and per key, each row carrying the
-    /// full token SPLIT plus a DERIVED `spend_micros` (raw counts are what's stored, so a consumer
-    /// with its own price catalog reconstructs cost from the split instead). The derivation is a
-    /// LOOKUP, not a reprice: under DECISION #79 each posting prices against the card in force at
-    /// ITS OWN arrival instant, resolved through the deployment's dated rate-card history, so
-    /// publishing a card never moves the figure for the window before its `effective_from` and a
-    /// signed back-dated correction moves exactly the window it names. `requests` counts DELIVERED
-    /// responses (the metering tap), not admissions; budget-enforcement state stays on
-    /// `GET /keys/{id}/usage`. Read scope. Empty aggregations when governance is disabled. The
-    /// store reads run on a blocking thread; never returns a secret — ids/names only.
-    /// `window`: a caller-selected PAST bucket start (validated: bucket-aligned, not in the
-    /// future); `None` = the current bucket. The response shape is pinned: always one bucket.
-    ///
-    /// `as_of`: a caller-selected SNAPSHOT of the dated rate-card history — the reproducibility
-    /// primitive. An invoice cut at a snapshot is re-derived by asking for that snapshot again,
-    /// because no entry is ever removed and no entry's number ever moves. `None` = the history as
-    /// it stands. A seq ABOVE THE HEAD is a REFUSAL, never a clamp
-    /// ([`Self::validated_snapshot`]). The `as_of` FIELD on the response is a different thing and
-    /// is unchanged: it is the instant the read was taken.
     pub(crate) async fn get_usage(
         &self,
         window: Option<u64>,
@@ -1504,13 +1116,9 @@ impl AdminService {
             start: bucket,
             end: bucket + busbar_kernel::governance::METERING_BUCKET_SECS,
         };
-        // DECISION #79 — THE DATED RATE-CARD HISTORY, taken ONCE for the whole read so every row of
-        // one response is answered at one snapshot. A card appended while this read is in flight
-        // must not price half its rows against one history and half against another.
+
         let history = self.rate_history.clone().or_else(dated_rate_history);
-        // The snapshot the caller named, VALIDATED BEFORE ANY BOOK IS READ, so a request for a
-        // state that does not exist is refused rather than quietly answered at some other state —
-        // including when governance is off and the read would otherwise return early.
+
         let snapshot = match as_of {
             None => None,
             Some(seq) => Some(Self::validated_snapshot(history.as_deref(), seq)?),
@@ -1519,7 +1127,7 @@ impl AdminService {
             window,
             as_of: now,
             currency: (),
-            // No row was read, so no card priced one.
+
             rate_card_version: None,
             total: UsageBreakdown::default(),
             by_model: Vec::new(),
@@ -1540,14 +1148,14 @@ impl AdminService {
             let rows = gov
                 .metering_for(bucket)
                 .map_err(|e| ("usage.metering", e))?;
-            // id → display name, for the by_key rows (a deleted key's history keeps its id).
+
             let names = gov
                 .all_keys()
                 .map_err(|e| ("usage.keys", e))?
                 .into_iter()
                 .map(|k| (k.id, k.name))
                 .collect();
-            // The day's root adjustments, folded into its rows below.
+
             let adjustments = gov
                 .usage_adjustments(bucket)
                 .map_err(|e| ("usage.adjustments", e))?;
@@ -1557,12 +1165,7 @@ impl AdminService {
         let cost = self.app.cost.clone();
         let (mut rows, names, adjustments) = match joined {
             Ok(Ok(f)) => f,
-            // The real store error is logged here — this is the only place it exists, and the wire
-            // body deliberately carries none of it so store internals never reach even an
-            // authenticated admin. Same `operation`/`error` field vocabulary as `internal_error`
-            // (`admin/mod.rs`), so a broken /usage read is greppable alongside every other admin
-            // store failure. `operation` distinguishes which of the two reads failed, since each has
-            // a different remediation.
+
             Ok(Err((operation, e))) => {
                 diag_error!(ADMIN_STORE_OPERATION_FAILED, operation, error = %e, "admin store operation failed");
                 return Err(AdminError::Internal);
@@ -1577,19 +1180,14 @@ impl AdminService {
                 return Err(AdminError::Internal);
             }
         };
-        // The snapshot this read is answered at: the one the caller named, or the history as it
-        // stands when no snapshot was named.
+
         let view = history.as_deref().map(|h| match snapshot {
             Some(at) => h.snapshot(at),
             None => h.current(),
         });
-        // THE VERSION THE RESPONSE WAS PRICED AT (#44, Q93): the highest history seq among the
-        // cards that priced its rows. It is RECORDED as each row's card resolves and never read back
-        // by the pricing: a row retains its served era and its amendment instant. `?as_of=<it>` re-derives
-        // every figure below, and a card published after these rows were earned leaves it as it was.
+
         let mut priced_by: Option<u64> = None;
-        // THE ROWS AS ADJUSTED: every root `adjust` of the day moves its rows' counts before any is
-        // priced, so the figures below are counts x card over the one ledger's adjusted counts.
+
         if let Err(why) = fold_adjustments(&mut rows, &adjustments) {
             diag_error!(
                 ADMIN_STORE_OPERATION_FAILED,
@@ -1599,52 +1197,33 @@ impl AdminService {
             );
             return Err(AdminError::Internal);
         }
-        // Aggregate in memory — a bucket is bounded by (keys × models) accumulation rows.
+
         let mut total = UsageBreakdown::default();
         let mut by_model: std::collections::BTreeMap<(String, String), UsageBreakdown> =
             std::collections::BTreeMap::new();
         let mut by_key: std::collections::BTreeMap<String, UsageBreakdown> =
             std::collections::BTreeMap::new();
         for r in &rows {
-            // THE ROW'S LANE: a non-pools plane's row is priced as that plane's (`row_lane`) — its
-            // requests at the plane's own fee, as the budget book charges them (#47).
             let lane = row_lane(&r.model, &r.provider);
-            // Spend derives PER ROW (the model is known here - the per-model rate applies), then
-            // aggregates ADDITIVELY into total/by_model/by_key, so every rollup is exact under a
-            // heterogeneous rate card.
+
             let mut row_view = UsageBreakdown {
                 tokens_input: r.tokens_input,
                 tokens_output: r.tokens_output,
                 tokens_cache_read: r.tokens_cache_read,
-                // `r` is a store MeteringRow (internal field: tokens_cache_write); UsageBreakdown
-                // is the public admin-API view struct and keeps its own JSON field name unchanged.
+
                 tokens_cache_creation: r.tokens_cache_write,
                 requests: r.requests,
                 spend_micros: 0,
                 classes: std::collections::BTreeMap::new(),
             };
-            // Resolve the row's served configuration era separately from its wall-clock correction
-            // instant. A late activation must not steal old-served counts in a later bucket, while
-            // deliberate amendments still resolve at that bucket's own first instant.
-            //
-            // ONE WAY TO FALL BACK: no source installed or no history resolved (a build with no
-            // root ledger in it) prices through the derivation this read has always used. A HOLE —
-            // a history that IS resolved but has no entry covering this row's instant — is NOT a
-            // fallback: it is `MoneyError::NoCardInForce`, a refusal like the other three (#42,
-            // item 374). Pricing a hole at the current card would answer for an instant with a
-            // card nobody put in force for it; the record has a gap and the read says so.
-            //
-            // The ledger resolves the entry and owns all pricing arithmetic. Both total and
-            // itemized classes use that same pinned entry without a second temporal lookup.
+
             let at = row_priced_at_ms(window.start, r.priced_from_ms);
             let resolved = view
                 .as_ref()
                 .map(|v| row_card(v, r, at))
                 .transpose()
                 .map_err(|e| usage_refusal("usage.price", &e))?;
-            // THE ROW'S LEDGERED CLASSES (`usage_units`) — every count the budget book holds that the
-            // token split does not (a plane's declared classes, a pools open class, a plane's session
-            // count) — price on the row's lane beside its tokens, as the budget book prices them.
+
             let classes: &std::collections::BTreeMap<String, u64> = &r.usage_units;
             let row_spend = match resolved {
                 Some((card_seq, card)) => {
@@ -1655,20 +1234,12 @@ impl AdminService {
                 }
                 None => derive_spend_micros_row_classes(&cost, &lane, &row_view, classes),
             };
-            // A REFUSED figure fails the read (#42, items 31 and 374): the card is present and
-            // silent about this row's model or class, no entry covers the row's instant, or the
-            // figure left the range (item 28). The response does not carry a number nobody
-            // priced; the refusal is logged with the row it came from.
-            // An unpriced lane or class is NAMED (`unpriced_class`, 409 — Q25b).
+
             let row_spend = match row_spend {
                 Ok(spend) => spend,
                 Err(e) => return Err(usage_refusal("usage.price", &e)),
             };
-            // EACH LEDGERED CLASS, ITS COUNT AND ITS COST: the class alone on the row's lane (no
-            // tokens, no requests), priced by the same one function at the same instant, so a
-            // class's cost is the share of `row_spend` it is and never a second pricing of its own.
-            // A pools-plane row itemizes none: its open classes are already in `row_spend`, and its
-            // view keeps 1.5.5's shape (`row_carries_classes`).
+
             let none = UsageBreakdown::default();
             let unitemized = std::collections::BTreeMap::new();
             let itemized = if row_carries_classes(&r.provider) {
@@ -1718,8 +1289,7 @@ impl AdminService {
                     );
                     return Err(AdminError::Internal);
                 }
-                // The ledger's rollup (THE DESIGN, Money), CHECKED like the one function it sums (item 28): a
-                // rollup past the range is a refused read, never a figure pinned at the ceiling.
+
                 b.spend_micros = match busbar_kernel::cost::sum_spend(b.spend_micros, row_spend) {
                     Ok(sum) => sum,
                     Err(_) => {
@@ -1750,9 +1320,7 @@ impl AdminService {
                 usage,
             })
             .collect();
-        // Bound the response (no memory/latency cliff at fleet scale):
-        // keep the TOP spenders (the rows a FinOps consumer actually wants first), ordered
-        // spend-desc then id for determinism, and SAY when the cap fired.
+
         const BY_KEY_CAP: usize = 1000;
         by_key.sort_by(|a, b| {
             b.usage
@@ -1761,8 +1329,7 @@ impl AdminService {
                 .then_with(|| a.id.cmp(&b.id))
         });
         let by_key_truncated = by_key.len() > BY_KEY_CAP;
-        // FinOps completeness: the tail beyond the cap is summed into an `others` bucket, so
-        // total == sum(by_key) + others and every unit stays attributable.
+
         let others = if by_key_truncated {
             let mut o = UsageBreakdown::default();
             for row in &by_key[BY_KEY_CAP..] {
@@ -1775,8 +1342,7 @@ impl AdminService {
                     .tokens_cache_creation
                     .saturating_add(row.usage.tokens_cache_creation);
                 o.requests = o.requests.saturating_add(row.usage.requests);
-                // The ledger's rollup (THE DESIGN, Money), CHECKED as the total's is: the tail sums to no more
-                // than the total, which summed, so a refusal here is a figure nothing served.
+
                 o.spend_micros =
                     busbar_kernel::cost::sum_spend(o.spend_micros, row.usage.spend_micros)
                         .map_err(|_| rollup_refused("the others spend rollup left the range"))?;
@@ -1805,16 +1371,6 @@ impl AdminService {
         })
     }
 
-    /// `GET /api/v1/admin/auth` — the ingress auth chain + upstream-credential mode. Read scope. Never a
-    /// secret: only module names and the mode. This is READ-ONLY at runtime — the ingress chain is
-    /// mutated through the config-plane write path (`PUT/POST /api/v1/admin/config`), not a dedicated PUT.
-    /// (The ADMIN-plane chain, by contrast, has `PUT /api/v1/admin/admin-auth`.)
-    ///
-    /// `open` is the 1.5.5 field: whether the BOXED chain is empty, i.e. whether `chain` above reads
-    /// `[]`. It is NOT `AuthMiddleware::is_open`, which is the admission predicate (`keys` closes the
-    /// door without installing a boxed module) and which the admin grant reads. Reporting that here
-    /// flipped `open` to `false` under `chain: [keys]` on every GET /auth, GET /config and config
-    /// reload — a customer-visible change no ruling covers. The grant keeps the strict predicate.
     pub(crate) async fn get_auth(&self) -> Result<AuthView, AdminError> {
         let chain = self.app.auth.chain_names();
         Ok(AuthView {
@@ -1827,10 +1383,6 @@ impl AdminService {
         })
     }
 
-    /// `GET /api/v1/admin/hooks/{name}/health` — best-effort transport reachability for one hook. Read
-    /// scope. `not_found` if the name is unregistered. NEVER fires the hook: for a socket it does a
-    /// short-timeout connect probe (`reachable = Some(_)`); for a webhook (or on non-unix) it reports
-    /// `reachable = None` with a note (webhooks are probed on demand at request time, not here).
     pub(crate) async fn hook_health(&self, name: &str) -> Result<HookHealthView, AdminError> {
         let cfg = self
             .app
@@ -1847,15 +1399,11 @@ impl AdminService {
         })
     }
 
-    /// Project a registry `HookCfg` into the wire `HookView` against the LIVE global wiring.
     fn hook_view(&self, name: &str, cfg: &HookCfg) -> HookView {
         project_hook_view(name, cfg, &self.app.global_hooks)
     }
 }
 
-/// THE LINKED STORE ROWS of the store catalog: one `compiled-in` row per store this build links, in
-/// the root's table order (none a default: a config names its store, Q-STORE = (B)). Read off the
-/// kernel's installed root rows, so admin names no store instance.
 fn linked_store_rows() -> Vec<PluginView> {
     let stores = busbar_kernel::preflight::root_rows().stores;
     let row = |s: &busbar_kernel::preflight::LinkedStore| {
@@ -1864,9 +1412,6 @@ fn linked_store_rows() -> Vec<PluginView> {
     stores.iter().map(row).collect()
 }
 
-/// Add one row's classes into a rollup's: counts summed saturating like the token columns, costs
-/// through the ledger's rollup, CHECKED like `spend_micros` (item 28) — `None` when a cost left the range, so the read refuses
-/// rather than serving a figure pinned at the ceiling.
 fn add_classes(
     into: &mut std::collections::BTreeMap<String, ClassUsage>,
     row: &std::collections::BTreeMap<String, ClassUsage>,
@@ -1879,8 +1424,6 @@ fn add_classes(
     Some(())
 }
 
-/// A usage rollup the ledger refused (it left the range), logged as every usage-read failure is and
-/// answered `internal`: the read serves no figure pinned at the ceiling.
 fn rollup_refused(error: &'static str) -> AdminError {
     diag_error!(
         ADMIN_STORE_OPERATION_FAILED,
@@ -1891,31 +1434,19 @@ fn rollup_refused(error: &'static str) -> AdminError {
     AdminError::Internal
 }
 
-/// The dry run itself, on a blocking thread (see [`AdminService::validate_config`]): resolve, the
-/// boot-time semantic validation, then the plugin and secret pre-flight over the running install's
-/// `plugins_dir`.
 fn validate_config_blocking(
     mut deploy: DeployCfg,
     defs: &std::collections::HashMap<String, ProviderDef>,
     plugins_dir: String,
     rules: &std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>,
 ) -> ConfigValidateView {
-    // Resolve first (cross-references config.yaml providers against providers.yaml defs); if that
-    // fails there is no RootCfg to hand to the semantic validator, so return the resolve errors.
     let root = match busbar_kernel::config::resolve(&deploy, defs) {
         Ok(root) => root,
         Err(errors) => return ConfigValidateView { ok: false, errors },
     };
-    // SECURITY (R3-B): the plugin pre-flight SCANS `plugins.dir` — `fs::read_dir` plus a read of
-    // every tarball it finds. On THIS endpoint `deploy` is CALLER-SUPPLIED, so honoring its
-    // `plugins.dir` turned validation into an arbitrary-path readability + directory-enumeration
-    // oracle for any token that can reach it (`plugins.dir: /root/.ssh`). PIN the scanned directory
-    // to the RUNNING install's plugins dir: every store/auth/hook/secret REFERENCE is still linted
-    // against the plugins that are ACTUALLY installed — the CI dry-run use case.
+
     deploy.plugins.dir = plugins_dir;
-    // THE ONE VALIDATOR (`config_validate::check`), the sequence boot and `--validate` run, with the
-    // composition root's rules an apply's build judges: a dry run never answers green for a
-    // configuration the apply or the CLI would refuse. Manifest-only: nothing is `dlopen`ed.
+
     let root_rules = |c: &busbar_kernel::config::RootCfg| rules.check(c);
     let checked = busbar_kernel::config_validate::check(
         &root,

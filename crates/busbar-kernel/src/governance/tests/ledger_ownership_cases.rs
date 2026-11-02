@@ -279,8 +279,7 @@ fn a_failed_era_row_retries_without_repeating_the_successful_plain_row() {
     let cm = minute_fee_model();
     store.put_key(&key).unwrap();
     gov.try_admit(&cm, &key, "", now).unwrap();
-    // An explicit dated fee is the same state admission creates when a dated card is active.
-    // Keep this fixture independent of the process-global rate-history singleton.
+
     {
         let mut cells = gov.budget.write(bucket);
         let cell = cells.get_mut(bucket).unwrap();
@@ -331,8 +330,7 @@ fn correction_hydration_preserves_an_older_inflight_eras_retry_and_group_owner()
         cell.fee_eras.charge(RawRateEra::legacy(42));
     }
     metered(&gov, &key.id, "m", 1, next);
-    // Isolate the older group-window flush. The key's all-time row is a different target
-    // whose own outstanding snapshot must independently exclude a correction.
+
     let key_snapshot = gov.budget.read(&key.id).get(&key.id).unwrap().clone();
     store
         .add_usage(&key.id, 0, &key_snapshot.unflushed())

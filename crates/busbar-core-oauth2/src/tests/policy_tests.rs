@@ -1,29 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! REGISTRATION IS NOT A GRANT. Adversarially, against a real server.
-//!
-//! Every test here drives `oauth_as::server::AuthorizationServer` built by the SAME code the boot
-//! path builds it with — `super::super::plane::AsPlane::build` — rather than a hand-assembled
-//! `ServerConfig` that could be configured more strictly than production is. A test that builds its
-//! own subject proves something about the test.
-//!
-//! THREE OF THE FIVE were watched to FAIL against a permissive build before they were watched to
-//! pass: `..._cannot_ask_for_more_than_the_default_grant`,
-//! `with_no_default_grant_configured_...` and `..._names_itself_after_the_deployment_...`, driven
-//! red by widening `RegistrationConfig::allowed_scopes` past the operator's ceiling and by removing
-//! the impersonation refusal. The fourth, `..._cannot_ask_for_the_client_credentials_grant`, could
-//! NOT be driven red; the limit that puts on what it proves is written at the test itself rather
-//! than glossed over here.
-
 use oauth_as::registration::{ClientMetadata, RegistrationFailure};
 
 use crate::config::{AsIdentity, OauthAsCfg};
 
 use crate::plane::AsPlane;
 
-/// A plane with the operator's ceiling set to `grant`. Registration needs no turning on: the
-/// rule is that it is on whenever the plane is.
 fn plane(grant: &[&str]) -> AsPlane {
     let cfg = OauthAsCfg {
         issuer: "https://gw.example.com".to_string(),
@@ -45,7 +28,6 @@ fn plane(grant: &[&str]) -> AsPlane {
     .expect("the plane builds")
 }
 
-/// One registration request, with whatever `scope` and `grant_types` the attacker chose.
 fn attempt(scope: Option<&str>, grant_types: Option<Vec<&str>>) -> ClientMetadata {
     ClientMetadata {
         redirect_uris: vec!["http://127.0.0.1:3000/callback".to_string()],
@@ -58,9 +40,6 @@ fn attempt(scope: Option<&str>, grant_types: Option<Vec<&str>>) -> ClientMetadat
     }
 }
 
-/// THE ESCALATION, ATTEMPTED. A client that registers itself and asks for more than the operator's
-/// `default_grant` must be REFUSED — not quietly narrowed, and not issued a client it then believes
-/// carries the scope it asked for.
 #[tokio::test]
 async fn a_self_registered_client_cannot_ask_for_more_than_the_default_grant() {
     let plane = plane(&["tools:read"]);
@@ -79,8 +58,6 @@ async fn a_self_registered_client_cannot_ask_for_more_than_the_default_grant() {
     );
 }
 
-/// THE DEFAULT CEILING IS EMPTY, so an operator who turned registration on without deciding what a
-/// registrant may reach has granted nothing. Any scope at all is refused.
 #[tokio::test]
 async fn with_no_default_grant_configured_every_requested_scope_is_refused() {
     let plane = plane(&[]);
@@ -92,9 +69,6 @@ async fn with_no_default_grant_configured_every_requested_scope_is_refused() {
     assert!(matches!(refusal, RegistrationFailure::Invalid(_)));
 }
 
-/// A REGISTRATION INSIDE THE CEILING SUCCEEDS. Without this, every test above would pass against a
-/// server that refuses everything, which proves nothing about the ceiling and everything about the
-/// endpoint being broken.
 #[tokio::test]
 async fn a_registration_within_the_default_grant_is_accepted() {
     let plane = plane(&["tools:read"]);
@@ -106,27 +80,10 @@ async fn a_registration_within_the_default_grant_is_accepted() {
     assert!(!info.client_id.is_empty());
 }
 
-/// THE OTHER ESCALATION: not a wider scope, a different GRANT. `client_credentials` mints a token
-/// with no resource owner in the loop at all, so a client that could register itself into it would
-/// never need the consent screen. Refused.
-///
-/// **HONEST LIMIT ON WHAT THIS TEST PROVES.** It was NOT possible to drive it red. Against a build
-/// whose `allowed_grant_types` included `ClientCredentials` — as a public client and again as a
-/// confidential one — the registration was still refused, so `oauth-as` refuses this shape for at
-/// least one further reason that this test does not isolate. What the test therefore establishes is
-/// that the refusal HAPPENS, which is the property that matters at the boundary; it does NOT
-/// establish that `allowed_grant_types` is what causes it, and it would keep passing if that list
-/// were widened by mistake. Recorded here rather than left implied, because a test nobody has
-/// watched fail is exactly what this project's standing rules call not-evidence.
 #[tokio::test]
 async fn a_self_registered_client_cannot_ask_for_the_client_credentials_grant() {
     let plane = plane(&["tools:read"]);
-    // A CONFIDENTIAL client, deliberately. `client_credentials` is a confidential-client grant, so
-    // a registration presenting `token_endpoint_auth_method: none` is refused for being public
-    // rather than for the grant it asked for — and a test refused for the wrong reason passes
-    // against a server that has no ceiling at all. Watched: with `token_endpoint_auth_method: none`
-    // this test PASSED against a build whose `allowed_grant_types` included `client_credentials`,
-    // which is the "green about something it never tested" defect, caught by running it red.
+
     let mut metadata = attempt(Some("tools:read"), Some(vec!["client_credentials"]));
     metadata.token_endpoint_auth_method = Some("client_secret_basic".to_string());
     let refusal = plane
@@ -140,9 +97,6 @@ async fn a_self_registered_client_cannot_ask_for_the_client_credentials_grant() 
     assert!(matches!(refusal, RegistrationFailure::Invalid(_)));
 }
 
-/// THE CONSENT SCREEN CANNOT BE MADE TO LIE. A registrant naming itself after the deployment is
-/// refused by the policy, because the screen shows the client's identity and a user asked to approve
-/// "busbar" cannot tell the gateway from a stranger who typed the word.
 #[tokio::test]
 async fn a_client_that_names_itself_after_the_deployment_is_refused() {
     let plane = plane(&["tools:read"]);
@@ -156,12 +110,6 @@ async fn a_client_that_names_itself_after_the_deployment_is_refused() {
     assert!(matches!(refusal, RegistrationFailure::Unauthorized));
 }
 
-/// REGISTRATION IS ON WHENEVER THE PLANE IS. THE FLIPPED PROOF: this test used to pin the
-/// opposite — registration absent-not-refusing when the operator left the toggle off — and the
-/// toggle was deleted, so the same three layers are now pinned in the ON direction:
-/// the derived path exists, the metadata document advertises the endpoint (`oauth-as` routes from
-/// that document, so an unadvertised endpoint would be an unrouted path), and a registration with
-/// no asked-for scope is ADMITTED under an untouched (empty-by-default is exercised above) ceiling.
 #[tokio::test]
 async fn registration_is_on_whenever_the_plane_is() {
     let cfg = OauthAsCfg {
@@ -199,9 +147,6 @@ async fn registration_is_on_whenever_the_plane_is() {
         .expect("registration is one of the three always-on mechanisms and must admit a client");
 }
 
-/// Open registration is throttled. Before the fix no limiter was installed, so
-/// `oauth-as` allowed every unauthenticated registration and each wrote a client nothing reclaimed.
-/// The shipped budget is 60 registrations a window, globally.
 #[tokio::test]
 async fn open_registration_is_throttled() {
     let plane = plane(&[]);
@@ -223,9 +168,6 @@ async fn open_registration_is_throttled() {
     );
 }
 
-/// A self-registered client that has held nothing for the idle period is reclaimed
-/// by the sweep, in this process's records. Before the fix a registered client was never deleted.
-/// One that still holds a live refresh token is kept, and so is a client nobody registered.
 #[tokio::test]
 async fn an_idle_self_registered_client_is_reclaimed_and_a_busy_one_kept() {
     use oauth_as::client::ClientId;

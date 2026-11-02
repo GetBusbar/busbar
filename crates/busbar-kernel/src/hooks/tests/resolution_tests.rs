@@ -151,8 +151,7 @@ fn environment(
             busbar_contract::abi::mechanism::kind::HOOK,
         )
     };
-    // Each builder registers one row; select one so secret/reference metadata belongs to the
-    // same row the hook resolves. The cases below exercise each declaration independently.
+
     assert!(secret.is_empty() || reference.is_empty());
     let rows = if reference.is_empty() {
         crate::test_support::rows::linked_only().with_dropped_secret_slots(row(), secret)
@@ -192,8 +191,6 @@ fn settings(value: Value) -> HookCfg {
     hook
 }
 
-/// These are real configure pushes through resolution, open and the hook's configure seam.
-/// A registry/settings identity stays fixed while the source rotates, disappears and recovers.
 #[tokio::test]
 async fn nested_references_refresh_on_every_configure_push() {
     let reference = source_reference();
@@ -222,14 +219,12 @@ async fn nested_references_refresh_on_every_configure_push() {
             json!({"servers": [{"url": reference}]}),
             "/servers/0/url",
         ),
-        // A literal key with siblings is ordinary data; it does not escape the sibling reference.
         (
             vec!["payload.token"],
             vec![],
             json!({"payload": {"literal": "label", "token": reference}}),
             "/payload/token",
         ),
-        // The resolver's declared-position walk also reaches references inside literal data.
         (
             vec!["payload.literal.token"],
             vec![],
@@ -262,7 +257,7 @@ async fn nested_references_refresh_on_every_configure_push() {
         {
             let opened = received.opened.lock().unwrap();
             let configured = received.configured.lock().unwrap();
-            // Boolean comparisons deliberately keep credential bytes out of assertion diagnostics.
+
             assert!(opened.len() == 2, "rotation must open a fresh transport");
             assert!(opened[0].pointer(pointer) == Some(&json!(ORIGINAL_VALUE)));
             assert!(opened[1].pointer(pointer) == Some(&json!(ROTATED_VALUE)));
@@ -286,7 +281,6 @@ async fn nested_references_refresh_on_every_configure_push() {
     }
 }
 
-/// Safe opaque data, including nested literal escapes, keeps single-flight publication and reuse.
 #[tokio::test]
 async fn opaque_and_literal_settings_still_reuse_the_opened_transport() {
     let reference = source_reference();

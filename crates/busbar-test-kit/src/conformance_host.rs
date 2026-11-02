@@ -72,40 +72,26 @@ use busbar_plugin_loader::dispatch::{
     load_linked, Bind, ConnTable, DispatchConfig, Dispatcher, LinkedRow, NoSink,
 };
 
-/// The framer doors a host serves, as the root links them: (claim, door). The plugin names them
-/// (the carrier and the framers its needs name), so busbar links no transport plugin.
 pub type Doors = &'static [(&'static str, MacroDoor)];
 
-/// The suite's `host:` seam, as the macro's `host` states it.
 pub use crate::conformance::Host;
 
-/// The suite's test CA: [`anchors`] is its certificate, [`far_end`] serves a leaf it signed.
 fn ca() -> &'static TestCa {
     static CA: OnceLock<TestCa> = OnceLock::new();
     CA.get_or_init(private_ca)
 }
 
-/// THE SUITE'S TEST TRUST ANCHORS (PEM), for `conformance_suite!`'s `tls:`.
 #[must_use]
 pub fn anchors() -> &'static str {
     &ca().ca_pem
 }
 
-/// The real leaf public-key pin served by [`far_end`] and [`far_end_on`].
-///
-/// # Panics
-/// The suite's generated leaf certificate has no readable subject-public-key info.
 #[must_use]
 pub fn peer_key_pin() -> String {
     busbar_core_connector::tls::client::peer_key_pin(&ca().leaf_der)
         .expect("the suite's leaf certificate contains subject-public-key info")
 }
 
-/// THE HOST CONNECTOR over `doors` (what [`conformance_host!`](crate::conformance_host)'s `host`
-/// answers for the suite's `host:`, a `conformance::Host`): one per leg.
-///
-/// # Panics
-/// The anchors do not parse, a transport door does not load or open, or the view does not compose.
 #[must_use]
 pub fn host(
     doors: Doors,
@@ -115,15 +101,12 @@ pub fn host(
     judged_host(doors, wake, anchors, Arc::new(loopback))
 }
 
-/// The host connector over `doors`, every dial judged by `judge`.
 fn judged_host(
     doors: Doors,
     wake: busbar_contract::conn::ConnWake,
     anchors: Option<&str>,
     judge: Arc<dyn DialJudge>,
 ) -> Arc<dyn DeclaredConns> {
-    // The reactor a socket a plugin opens from a dispatcher worker registers on, as the root
-    // installs it (`root::connector::io_reactor`): the connector's own I/O thread.
     busbar_core_connector::io::install_process_reactor(io_reactor());
     let trust = EgressTrust {
         extra_anchors: anchors.map(pem_certs).unwrap_or_default(),
@@ -136,10 +119,6 @@ fn judged_host(
     Arc::new(Connector::serving(view, judge, Some(Arc::new(tls)), wake))
 }
 
-/// THE GUARDED HOST CONNECTOR over `doors`: [`host`], every dial judged by the production
-/// destination guard at the deployment default (`busbar_core_connector::process`), so a plugin's
-/// outbound need meets exactly the judgement it meets in a running busbar. A refusal cell opens a
-/// plugin on it and names a destination the guard refuses.
 #[must_use]
 pub fn guarded_host(
     doors: Doors,
@@ -149,18 +128,11 @@ pub fn guarded_host(
     judged_host(doors, wake, anchors, production_judge())
 }
 
-/// THE GUARDED STREAM HOST: [`stream_host`], every dial judged by the production destination
-/// guard at the deployment default, the address it pinned dialled exactly.
 #[must_use]
 pub fn guarded_stream_host(wake: ConnWake, anchors: Option<&str>) -> Arc<dyn DeclaredConns> {
     Arc::new(stream_table(wake, anchors).judged(Arc::new(StreamGuard(production_judge()))))
 }
 
-/// THE PRODUCTION DIAL JUDGE: the deployment's one destination guard
-/// ([`process::dest_judge`](busbar_core_connector::process::dest_judge)) at the default
-/// configuration (`advanced.block_private_addresses` at its owner-signed default, nothing allowed,
-/// no metadata carve-out), joined to a dial as the process's connector joins it
-/// ([`process::judge`](busbar_core_connector::process::judge)), the system resolver answering names.
 fn production_judge() -> Arc<dyn DialJudge> {
     let d = Destinations {
         block_private_addresses: DEFAULT_BLOCK_PRIVATE_ADDRESSES,
@@ -171,9 +143,6 @@ fn production_judge() -> Arc<dyn DialJudge> {
     busbar_core_connector::process::judge(dest, &[])
 }
 
-/// The production judge as the stream table's ([`crate::tcp_conns::DialGuard`]): a pended
-/// judgement waited for, and its verdict answered as the connector answers it (a name that did not
-/// resolve FAILS, every other verdict is the guard's REFUSAL).
 struct StreamGuard(Arc<dyn DialJudge>);
 
 impl crate::tcp_conns::DialGuard for StreamGuard {
@@ -200,18 +169,11 @@ impl crate::tcp_conns::DialGuard for StreamGuard {
     }
 }
 
-/// THE STREAM HOST (`conformance::Host`, for plain stream needs): the test kit's stream table,
-/// each connection upgraded with the connector's client TLS. One per leg.
-///
-/// # Panics
-/// The anchors do not parse, or the connector's client TLS does not build.
 #[must_use]
 pub fn stream_host(wake: ConnWake, anchors: Option<&str>) -> Arc<dyn DeclaredConns> {
     Arc::new(stream_table(wake, anchors))
 }
 
-/// The stream table [`stream_host`] and [`guarded_stream_host`] serve: each connection upgraded
-/// with the connector's client TLS.
 fn stream_table(wake: ConnWake, anchors: Option<&str>) -> crate::tcp_conns::TcpConns {
     let trust = EgressTrust {
         extra_anchors: anchors.map(pem_certs).unwrap_or_default(),
@@ -222,8 +184,6 @@ fn stream_table(wake: ConnWake, anchors: Option<&str>) -> crate::tcp_conns::TcpC
     crate::tcp_conns::TcpConns::with_tls(wake, Arc::new(StreamTls(tls)))
 }
 
-/// The connector's client TLS as the stream table's dial: the handshake runs to completion on the
-/// blocking socket, verified against the trust it was built with.
 struct StreamTls(ClientTls);
 
 impl crate::tcp_conns::SecureDial for StreamTls {
@@ -234,14 +194,12 @@ impl crate::tcp_conns::SecureDial for StreamTls {
         tcp: TcpStream,
     ) -> std::io::Result<Box<dyn crate::tcp_conns::SecuredSock>> {
         if verify_off {
-            // The suite's needs always verify; an unverified upgrade is not served here.
             return Err(std::io::Error::other("an unverified upgrade is not served"));
         }
         Ok(Box::new(Secured(self.0.connect_std(server, tcp)?)))
     }
 }
 
-/// One secured stream.
 struct Secured(StdClientSession);
 
 impl Read for Secured {
@@ -270,8 +228,6 @@ impl crate::tcp_conns::SecuredSock for Secured {
     }
 }
 
-/// The connector's I/O thread: a single-threaded runtime of its own whose reactor drives every
-/// socket the plugin opens from a dispatcher worker. Built once.
 fn io_reactor() -> tokio::runtime::Handle {
     static IO: OnceLock<tokio::runtime::Handle> = OnceLock::new();
     IO.get_or_init(|| {
@@ -289,7 +245,6 @@ fn io_reactor() -> tokio::runtime::Handle {
     .clone()
 }
 
-/// THE DIAL JUDGE: a loopback address (a literal, or a name that resolves to one) and nothing else.
 fn loopback(dest: &str, _class: u32, _done: Judged) -> Option<Result<SocketAddr, Verdict>> {
     let refused = busbar_contract::abi::host::service::DEST_UNRESOLVABLE;
     let at = dest
@@ -299,7 +254,6 @@ fn loopback(dest: &str, _class: u32, _done: Judged) -> Option<Result<SocketAddr,
     Some(at.ok_or(refused))
 }
 
-/// Every certificate in `pem`, DER.
 fn pem_certs(pem: &str) -> Vec<Vec<u8>> {
     let certs = busbar_core_connector::test_support::certs_from_pem(pem);
     assert!(
@@ -309,9 +263,6 @@ fn pem_certs(pem: &str) -> Vec<Vec<u8>> {
     certs
 }
 
-/// The dispatcher the host's transport doors are adopted by. As the root's: its workers run inside
-/// the connector's I/O runtime, and a CARRIER door moves its bytes over the process's one host I/O
-/// (`io.*`, `busbar_core_connector::hostio::process`), the connector's.
 fn transport_dispatcher() -> &'static Arc<Dispatcher> {
     static ONE: OnceLock<Arc<Dispatcher>> = OnceLock::new();
     ONE.get_or_init(|| {
@@ -322,8 +273,6 @@ fn transport_dispatcher() -> &'static Arc<Dispatcher> {
     })
 }
 
-/// The framer entries: each door loaded through the one loader and opened through the connector
-/// with the default deployment settings, as the root opens a transport door.
 fn entries(doors: Doors) -> Vec<Entry> {
     doors
         .iter()
@@ -333,7 +282,7 @@ fn entries(doors: Doors) -> Vec<Entry> {
                 max_inflight_cap: 1024,
                 sink: Arc::new(NoSink),
                 dispatcher: transport_dispatcher().adopter(),
-                // A transport door is a framer the connector drives: it declares no need.
+
                 conns: ConnTable::NoNeeds,
             };
             let plugin = LinkedRow::of_macro(door)
@@ -356,18 +305,8 @@ fn entries(doors: Doors) -> Vec<Entry> {
         .collect()
 }
 
-// ---- the far end ----
-
-/// What a far end answers a connection: given every byte it has read so far, the bytes to send
-/// back and close (`Some`), or `None` to read on.
 pub type Answer = fn(&[u8]) -> Option<Vec<u8>>;
 
-/// THE SUITE'S TLS FAR END at `at` (started once; later calls are no-ops): every connection's
-/// handshake is busbar's test kit's, with a `localhost` certificate [`anchors`] trusts, and its
-/// bytes are answered by `answer`.
-///
-/// # Panics
-/// `at` cannot be bound.
 pub fn far_end(at: &'static str, answer: Answer) {
     static STARTED: OnceLock<()> = OnceLock::new();
     STARTED.get_or_init(|| {
@@ -377,20 +316,12 @@ pub fn far_end(at: &'static str, answer: Answer) {
     });
 }
 
-/// Serve an already bound listener over the suite's TLS identity. Each call starts its own far
-/// end; unlike [`far_end`], it does not share the process's first address. Binding loopback port
-/// zero before this call keeps ownership continuous while a test learns its endpoint.
-/// The server thread owns the listener for the process's lifetime, as with [`far_end`].
-///
-/// # Errors
-/// The listener's local address cannot be read.
 pub fn far_end_on(listener: TcpListener, answer: Answer) -> std::io::Result<std::net::SocketAddr> {
     let address = listener.local_addr()?;
     serve(listener, answer);
     Ok(address)
 }
 
-/// Serve `listener` over TLS with a leaf the test CA signed, answering each connection by `answer`.
 fn serve(listener: TcpListener, answer: Answer) {
     let tls = ServerTls::new(&[ca().leaf_der.clone()], &ca().key_der, None, &[])
         .unwrap_or_else(|e| panic!("the suite's far end has no TLS identity: {e}"));
@@ -426,18 +357,8 @@ fn reply(s: &mut StdServerSession, answer: Answer) {
     }
 }
 
-/// A far end's cleartext negotiation before TLS (a protocol's own StartTLS: Postgres's
-/// `SSLRequest` answered `S`, LDAP's StartTLS extended operation, ...): `true` = go on to TLS.
 pub type Preamble = fn(&mut TcpStream) -> bool;
 
-/// THE SUITE'S TLS FRONT at `at` (started once; later calls are no-ops): each connection's
-/// cleartext `preamble` runs, then the TLS handshake (busbar's test kit, a `localhost` certificate
-/// [`anchors`] trusts), then its bytes are carried both ways to the REAL backend at `upstream`
-/// (the plugin's live service, in the clear on loopback). What it proves: the plugin's own
-/// connection is secured by the HOST's TLS against the suite's anchors.
-///
-/// # Panics
-/// `at` cannot be bound.
 pub fn tls_front(at: &'static str, preamble: Preamble, upstream: &'static str) {
     static STARTED: OnceLock<()> = OnceLock::new();
     STARTED.get_or_init(|| {
@@ -455,8 +376,6 @@ pub fn tls_front(at: &'static str, preamble: Preamble, upstream: &'static str) {
     });
 }
 
-/// One connection through the TLS front: preamble, handshake, then both directions carried until
-/// either side ends.
 fn front(mut tcp: TcpStream, tls: &ServerTls, preamble: Preamble, upstream: &str) {
     if !preamble(&mut tcp) {
         return;
@@ -509,8 +428,6 @@ fn front(mut tcp: TcpStream, tls: &ServerTls, preamble: Preamble, upstream: &str
     }
 }
 
-// ---- the host's own proof, run with the suite (the macro's tests call these) ----
-
 const OWNER: InstanceId = InstanceId(7);
 
 fn need(transport: &str, class: u32) -> ReadNeed {
@@ -533,7 +450,6 @@ fn need(transport: &str, class: u32) -> ReadNeed {
     }
 }
 
-/// `f` until it answers other than PENDING, as a plugin's re-entries on its ticket would.
 fn settle<T>(mut f: impl FnMut() -> Result<T, ConnError>) -> Result<T, ConnError> {
     let until = Instant::now() + Duration::from_secs(10);
     loop {
@@ -546,7 +462,6 @@ fn settle<T>(mut f: impl FnMut() -> Result<T, ConnError>) -> Result<T, ConnError
     }
 }
 
-/// Read `id` to its completion (or `want` body bytes): its fields pieces' count and its body.
 fn drain(c: &dyn DeclaredConns, id: ConnId, want: usize) -> (usize, Vec<u8>) {
     let (mut fields, mut body) = (0, Vec::new());
     let mut buf = [0_u8; 256];
@@ -564,12 +479,10 @@ fn drain(c: &dyn DeclaredConns, id: ConnId, want: usize) -> (usize, Vec<u8>) {
     (fields, body)
 }
 
-/// Five bytes back for five bytes in: the TLS echo the host's own proof dials.
 fn echo(seen: &[u8]) -> Option<Vec<u8>> {
     (seen.len() >= 5).then(|| seen[..5].to_vec())
 }
 
-/// A raw `tcp` stream to a TLS echo, upgraded through the host's TLS: what came back.
 fn upgraded_echo(c: &dyn DeclaredConns, far: &str) -> Result<Vec<u8>, ConnError> {
     c.declare(
         OWNER,
@@ -599,7 +512,6 @@ fn upgraded_echo(c: &dyn DeclaredConns, far: &str) -> Result<Vec<u8>, ConnError>
     Ok(body)
 }
 
-/// A TLS echo on a port of its own; its address.
 fn tls_echo() -> String {
     let listener = TcpListener::bind("127.0.0.1:0").expect("a local listener");
     let at = listener.local_addr().expect("its address").to_string();
@@ -607,11 +519,6 @@ fn tls_echo() -> String {
     at
 }
 
-/// THE HOST'S TLS TRUSTS THE SUITE'S TEST ANCHORS: a stream to a far end whose certificate chains
-/// to the test CA is upgraded and round-trips (the anchors went to the host, never to the plugin).
-///
-/// # Panics
-/// When it does not.
 pub fn the_hosts_tls_upgrade_verifies_against_the_suites_test_anchors(host: Host) {
     let c = host(Arc::new(|_, _| {}), Some(anchors()));
     assert_eq!(
@@ -620,23 +527,12 @@ pub fn the_hosts_tls_upgrade_verifies_against_the_suites_test_anchors(host: Host
     );
 }
 
-/// RED: the same upgrade with the anchors withheld is refused: the platform roots alone do not
-/// trust the test CA.
-///
-/// # Panics
-/// When it is not.
 pub fn red_with_the_anchors_withheld_the_hosts_tls_upgrade_is_refused(host: Host) {
     let c = host(Arc::new(|_, _| {}), None);
     let answer = upgraded_echo(c.as_ref(), &tls_echo());
     assert!(answer.is_err(), "upgraded over an untrusted CA: {answer:?}");
 }
 
-/// AN `http` NEED THROUGH THE HOST'S FRAMER: declared on the host, opened at a local HTTP
-/// listener's URL, the request goes out framed by the linked http door over the tcp carrier and the
-/// answer comes back as one head and its body.
-///
-/// # Panics
-/// When it does not.
 pub fn an_http_need_reaches_a_local_http_listener_through_the_hosts_framer(host: Host) {
     use busbar_contract::abi::host::conn::connector::EGRESS_LOOPBACK_ALLOWED;
 
@@ -689,14 +585,6 @@ pub fn an_http_need_reaches_a_local_http_listener_through_the_hosts_framer(host:
     c.close(OWNER, id).expect("closed");
 }
 
-/// THE GUARDED HOST JUDGES AS PRODUCTION DOES (website security.md: "one guard judges every
-/// outbound connection"): on `guarded` (the macro's `guarded_host`), a private address and loopback
-/// are refused under the default class, cloud metadata is refused even under operator
-/// infrastructure (where private reach is allowed), and nothing refused is dialled; the control,
-/// loopback under operator infrastructure, reaches the same listener.
-///
-/// # Panics
-/// When it does not.
 pub fn the_conformance_host_guard_refuses_a_private_destination(guarded: Host) {
     use busbar_contract::abi::host::conn::connector::EGRESS_DEFAULT;
 
@@ -740,7 +628,7 @@ pub fn the_conformance_host_guard_refuses_a_private_destination(guarded: Host) {
         listener.accept().is_err(),
         "a destination the guard refuses was dialled"
     );
-    // CONTROL: operator infrastructure admits loopback, so the refusals above are the guard's.
+
     let id =
         open(EGRESS_OPERATOR_INFRASTRUCTURE, &at).expect("loopback under operator infrastructure");
     let until = Instant::now() + Duration::from_secs(5);

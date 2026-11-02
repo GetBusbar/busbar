@@ -1,21 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! CROSS-PLANE `config_validate` TESTS: each hands core's own validator a REAL plane section lifted
-//! by whichever test-linked plane declares it (`tests/linked/mod.rs`), which only type-checks with
-//! ONE `busbar_kernel` in the graph — see `plane_integration.rs`'s header. This file names no plane
-//! crate and no plane type.
-
 mod linked;
 
 use busbar_kernel::config;
 use std::collections::HashMap;
 
-/// THE `tools:` SECTION'S SECRET REFERENCES ARE ENUMERATED, so `--validate` and boot resolve each one
-/// (P3: the section is a door plane's, carried as written). Its owning plane's declaration
-/// names where references live — busbar's own RFC 8693 subject token, and a child process's
-/// environment values — and the section the registry lifted answers every reference at those paths,
-/// with its full config path, and nothing that is not a reference.
 #[test]
 fn the_tools_section_enumerates_every_secret_reference_its_plane_declares() {
     linked::install();
@@ -47,11 +37,6 @@ fn the_tools_section_enumerates_every_secret_reference_its_plane_declares() {
     );
 }
 
-/// THE `agents:` SECTION'S SECRET REFERENCES ARE ENUMERATED, so `--validate` and boot resolve each
-/// one (the section is a door plane's, carried as written). Its owning plane's declaration names
-/// where references live — the leased outbound delegation credential, and busbar's own client
-/// certificate and key for a mutual handshake — and the section the registry lifted answers every
-/// reference at those paths, with its full config path, and nothing that is not a reference.
 #[test]
 fn the_agents_section_enumerates_every_secret_reference_its_plane_declares() {
     linked::install();
@@ -84,13 +69,6 @@ fn the_agents_section_enumerates_every_secret_reference_its_plane_declares() {
     );
 }
 
-/// THE BILLING SWITCH'S MONEY-SACRED ARM, at boot: a plane section whose OWN card (`<section>.rate_card`, #47) is
-/// present — so that plane's billing is ON — and silent about one class the plane declares must
-/// refuse, naming that class, on the path boot and `--validate` both take (`deploy_from_yaml_str` →
-/// `resolve` → `config_validate::validate`). A card configuring every declared class, an explicit 0
-/// included, boots; no card at all is billing OFF and boots. Every test-linked plane that declares
-/// a priced class and is not the fallback is asked, addressed by its declaration; the classes are
-/// the plane's own, less its fee units (a fee unit is no class a card prices).
 #[test]
 fn a_plane_card_silent_about_a_declared_class_refuses_at_boot() {
     linked::install();
@@ -115,9 +93,7 @@ fn a_plane_card_silent_about_a_declared_class_refuses_at_boot() {
             .filter(|c| !d.fee_units.contains(c))
             .collect();
         let (unpriced, priced) = classes.split_last().expect("a priced class");
-        // A present card prices every registration the section bills (#42, #77(5)): its row is
-        // the registration's lane, `<the door's first scope kind>:<name>` (`DoorSection`'s
-        // ledger lanes), here the one registration `probe`.
+
         let lane = format!(
             "{}:probe",
             d.scope_kinds
@@ -160,8 +136,6 @@ fn a_plane_card_silent_about_a_declared_class_refuses_at_boot() {
             d.key
         );
 
-        // The other two arms ask the money rule only: whatever else the minimal document lacks,
-        // nothing about its card refuses.
         let card_refusals = |r: Result<(), Vec<String>>| -> Vec<String> {
             r.err()
                 .unwrap_or_default()

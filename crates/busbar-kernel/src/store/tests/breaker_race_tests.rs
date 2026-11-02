@@ -1,18 +1,8 @@
-//! Item 142 exit tests: the three races the admission-path breaker held before it was folded into
-//! the one breaker (`busbar-kernel-breaker`).
-//!
-//! Each test races a real transition against a real read on the kernel's `LaneRuntime` surface, many
-//! times over, with the two threads released together by a barrier and the cell reset while both are
-//! parked. A consistent breaker can only ever give the answers each test allows; the pre-fold FSM gave
-//! a third one whenever the transition landed inside its read.
-
 use super::*;
 
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::Barrier;
 
-/// Cycles per race. Each cycle is one reset, one release of both threads, one transition. Race 1's
-/// window is two adjacent loads wide, so it gets more rounds than the two admission races.
 const CYCLES: usize = 20_000;
 const CYCLES_RACE1: usize = 300_000;
 
@@ -20,10 +10,6 @@ fn one_lane() -> Arc<HealthState> {
     Arc::new(HealthState::new(vec![LaneData::for_test("m", "p", 4)]))
 }
 
-/// Run `cycles` rounds of: `reset` (both threads parked), then `transition` on this thread racing
-/// `observe` on another. `observe` is called repeatedly until the transition has finished and once
-/// more after, and returns `true` for an answer the breaker must never give. Returns how many such
-/// answers were seen.
 fn race(
     store: &Arc<HealthState>,
     reset: impl Fn(&HealthState),
@@ -72,10 +58,6 @@ fn race(
     bad.load(Ordering::Relaxed)
 }
 
-/// RACE 1 (pre-fold `breaker.rs:400`): the decoder read `cooldown_until` BEFORE `breaker_state`, while
-/// every writer stores the cooldown first and the state second. A read straddling a hard-down paired
-/// the fresh Open with the stale zero cooldown and decoded a cell parked for thirty minutes as an
-/// expired Open — `Open { until <= now }`, a state the cell was never in.
 #[test]
 fn race1_a_fresh_trip_is_never_read_with_a_stale_cooldown() {
     let store = one_lane();
@@ -96,9 +78,6 @@ fn race1_a_fresh_trip_is_never_read_with_a_stale_cooldown() {
     );
 }
 
-/// RACE 2 (pre-fold `breaker.rs:795`): an admission read the cell Open-and-expired without the lock,
-/// then took the lock and re-read; a recovery that closed the cell in between made the re-read see
-/// Closed, and the admission was DENIED — a Closed, ready cell refused as a probe in flight.
 #[test]
 fn race2_a_just_closed_cell_is_never_denied() {
     let store = one_lane();
@@ -117,10 +96,6 @@ fn race2_a_just_closed_cell_is_never_denied() {
     );
 }
 
-/// RACE 3 (pre-fold `availability.rs:355`): an admission that lost its probe acquisition reported
-/// `ProbeInFlight` whatever the reason — so when a hard-down parked the cell for thirty minutes
-/// between the verdict and the acquisition, the caller was told to retry in 250 ms against a
-/// 1,800,000 ms cooldown.
 #[test]
 fn race3_a_refusal_carries_the_cooldown_that_refused_it() {
     let store = one_lane();

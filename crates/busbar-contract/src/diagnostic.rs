@@ -2,24 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE DIAGNOSTIC SHAPES (DECISIONS #83: contract = shapes; #83a O3) — the catalog-entry struct a
-//! plane FILLS to own its codes, its class and severity, the `BUSBAR-NNNN` banner every emitter
-//! prints byte-for-byte, and the three emit macros that attach that banner as the shared
-//! `diag = "BUSBAR-NNNN"` log field.
-//!
-//! The CATALOG itself — the kernel's codes, the registry, the composition-root install seam and the
-//! docs renderers — is semantics and stays out of this crate. The one code that lives here is the
-//! one both sides of the codec seam print ([`USAGE_TAP_DECODE_FAILED`], #83a O5): a code a plane and
-//! the kernel both emit must be one constant, never two numbers.
-//!
-//! Relocated, module-path-only and byte-identical, from `busbar-substrate-values::diagnostics`,
-//! which re-exports every item under its historical path (and the three macros at its crate root),
-//! so every caller compiles unchanged.
-//!
-//! ## Codes
-//!
-//! `BUSBAR-NNNN`. The thousands digit is the [`Class`]; the last three are the member. Codes are
-//! append-only and immutable: retiring a diagnostic sets `retired: true` and keeps the number, so
-//! an operator's old logs stay resolvable. Never recycle a number.
 
 use std::fmt;
 
@@ -154,13 +136,6 @@ impl fmt::Display for Banner {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-// CROSS-CRATE EMIT MACROS. `#[macro_export]` hoists each to this crate's ROOT
-// (`busbar_contract::diag_warn!`). The expansion is `::tracing::warn!(diag = %DIAG.banner(), …)`:
-// the EXPANDING crate supplies `tracing`, so this crate takes no logging dependency, and the field
-// spelling is the shared log format every emitter writes.
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-
 /// `warn!` carrying the `diag = "BUSBAR-NNNN"` field. First arg is the [`Diagnostic`] const. The
 /// one spelling every crate emits through.
 #[macro_export]
@@ -184,10 +159,6 @@ macro_rules! diag_debug {
         ::tracing::debug!(diag = %$diag.banner(), $($rest)*)
     };
 }
-
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-// THE ONE SHARED CODE (#83a O5): emitted on BOTH sides of the codec seam, so its constant is a shape.
-// ─────────────────────────────────────────────────────────────────────────────────────────────
 
 /// Usage tap: read_response could not decode a same-protocol 2xx body. Warn-once (latched).
 pub const USAGE_TAP_DECODE_FAILED: Diagnostic = Diagnostic {

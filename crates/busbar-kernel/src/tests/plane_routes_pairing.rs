@@ -31,8 +31,6 @@ fn refusal(path: &str, method: RouteMethod) -> PlaneRefusalSpec {
     }
 }
 
-/// Every credentialed door route, request or session, pairs with exactly one refusal under its own
-/// identity; an open route needs none.
 #[test]
 fn paired_door_routes_and_refusals_pass() {
     let routes = [
@@ -48,8 +46,6 @@ fn paired_door_routes_and_refusals_pass() {
     assert_eq!(pair_door_refusals(&[], &[], &[]), Ok(()));
 }
 
-/// RED ARMS: a credentialed route with no refusal, a refusal naming no route (or an open one, or
-/// the right path under another method), and one route refused twice each refuse the boot.
 #[test]
 fn an_unpaired_door_route_or_refusal_refuses_the_boot() {
     let routes = [route("/v1/op", RouteMethod::Post, RouteAuth::Key)];

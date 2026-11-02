@@ -2,8 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The seals: the host's field taken out, each sealed value swapped for filler of its length in
-//! the field-value-safe alphabet, spliced back exactly once, and refused in the clear or when the
-//! framer rendered a filler twice.
 
 use super::*;
 use busbar_contract::conn::SEALED_FIELDS_FIELD;

@@ -35,7 +35,6 @@ fn a_ready_session_wakes_with_the_table_available_for_reentry() {
     let mut waiting = Box::pin(told.notified());
     assert!(waiting.as_mut().poll(&mut cx).is_pending());
 
-    // This is the production fan-out, including an unknown stream from an old session.
     wake_ready(&sessions, &[99, 7]);
     assert_eq!(reenter.wakes.load(Ordering::SeqCst), 1);
     assert!(waiting.as_mut().poll(&mut cx).is_ready());

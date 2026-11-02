@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DOCUMENT CHECKS, adversarially. The flow test proves a GOOD document admits a client end
-//! to end; every test here is a document that must NOT, each aimed at the specific escalation its
-//! member exists to close. These are busbar's own checks (the tree pins `oauth-as` 1.0.0, which
-//! ships a CIMD validator behind an off-by-default `cimd` feature this tree does not enable),
-//! so they are the whole of the enforcement today and must each be
-//! held red-able on their own.
-
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -26,8 +19,6 @@ fn ceiling() -> ScopeSet {
     ScopeSet::from_tokens(["read"]).expect("scope")
 }
 
-/// A well-formed document, which each refusal test below breaks in exactly one way — so a refusal
-/// is about the broken member and not about a second defect the test never meant to have.
 fn document() -> serde_json::Value {
     serde_json::json!({
         "client_id": URL,
@@ -46,9 +37,6 @@ fn materialized(doc: &serde_json::Value) -> Result<oauth_as::client::Client, Str
     )
 }
 
-/// The well-formed document materialises, and what it materialises is a PUBLIC client under the
-/// operator's ceiling. Without this, every refusal below could be a validator that refuses
-/// everything.
 #[test]
 fn a_well_formed_document_materialises_a_public_client_under_the_ceiling() {
     let client = materialized(&document()).expect("a well-formed document materialises");
@@ -65,8 +53,6 @@ fn a_well_formed_document_materialises_a_public_client_under_the_ceiling() {
     );
 }
 
-/// THE BINDING CHECK. A document whose `client_id` is not the URL it was fetched from is any
-/// attacker-controlled HTTPS URL claiming to be any client, which is the whole mechanism defeated.
 #[test]
 fn a_document_claiming_a_different_client_id_is_refused() {
     let mut doc = document();
@@ -78,8 +64,6 @@ fn a_document_claiming_a_different_client_id_is_refused() {
     materialized(&doc).expect_err("a document with no client_id describes nobody");
 }
 
-/// THE CEILING IS THE OPERATOR'S. A document asking past `default_grant` is REFUSED — not
-/// narrowed — exactly as a DCR registrant is, because the two mechanisms share one ceiling.
 #[test]
 fn a_document_asking_past_the_default_grant_is_refused() {
     let mut doc = document();
@@ -87,9 +71,6 @@ fn a_document_asking_past_the_default_grant_is_refused() {
     materialized(&doc).expect_err("a self-identified client cannot widen its own grant");
 }
 
-/// A CIMD client is PUBLIC by construction: a secret-bearing auth method names a credential
-/// nobody could have pre-shared, so believing it would make the URL's owner confidential by
-/// self-declaration.
 #[test]
 fn a_document_asking_for_a_secret_bearing_auth_method_is_refused() {
     let mut doc = document();
@@ -97,9 +78,6 @@ fn a_document_asking_for_a_secret_bearing_auth_method_is_refused() {
     materialized(&doc).expect_err("a metadata-document client cannot hold a secret");
 }
 
-/// THE GRANT ESCALATION, same as registration's: `client_credentials` mints a token with no
-/// resource owner in the loop, so a document that could ask for it converts "I exist at a URL"
-/// into "I am authorised".
 #[test]
 fn a_document_asking_for_client_credentials_is_refused() {
     let mut doc = document();
@@ -107,8 +85,6 @@ fn a_document_asking_for_client_credentials_is_refused() {
     materialized(&doc).expect_err("a self-identified client cannot mint unconsented tokens");
 }
 
-/// The consent screen must not be made to lie: the SAME impersonation refusal the registration
-/// policy applies holds for a document's `client_name`.
 #[test]
 fn a_document_impersonating_the_deployment_is_refused() {
     let mut doc = document();
@@ -116,8 +92,6 @@ fn a_document_impersonating_the_deployment_is_refused() {
     materialized(&doc).expect_err("a client naming itself after the deployment is phishing");
 }
 
-/// The redirect URIs are the document's or there are none: absent, empty, and fragment-carrying
-/// lists are refused, because they are what `oauth-as` exact-matches the request against.
 #[test]
 fn a_document_without_usable_redirect_uris_is_refused() {
     let mut doc = document();
@@ -133,9 +107,6 @@ fn a_document_without_usable_redirect_uris_is_refused() {
     materialized(&doc).expect_err("RFC 6749 §3.1.2: a redirection endpoint carries no fragment");
 }
 
-/// A redirect URI with a `\` or a userinfo names two hosts — the one a `/`-splitting reader shows on
-/// the consent screen and the one the browser sends the code to — so the document is refused. RED on
-/// the check that refused only a fragment and whitespace. A `@` in the path is not a userinfo.
 #[test]
 fn a_redirect_uri_with_a_backslash_or_a_userinfo_is_refused() {
     for uri in [
@@ -152,8 +123,6 @@ fn a_redirect_uri_with_a_backslash_or_a_userinfo_is_refused() {
     materialized(&doc).expect("a `@` in the path is not a userinfo");
 }
 
-/// What is a metadata-document `client_id` at all: HTTPS, parseable, fragment-free. Everything
-/// else stays an ordinary opaque identifier and never reaches the fetch.
 #[test]
 fn only_a_fragment_free_https_url_names_a_document() {
     assert!(is_cimd_client_id(URL));
@@ -166,10 +135,6 @@ fn only_a_fragment_free_https_url_names_a_document() {
     assert!(!is_cimd_client_id("https://"), "no host");
 }
 
-/// RED (audit core-oauth2#5): the draft's section 3 MUSTs on the identifier. No path, a dot
-/// segment, a query, an over-long URL, and an authority a WHATWG reader resolves elsewhere (a
-/// backslash, a percent-escape, an IPv4 address spelled as one number) name no document, so they
-/// never reach the fetch.
 #[test]
 fn an_identifier_the_draft_forbids_names_no_document() {
     for id in [
@@ -198,9 +163,6 @@ fn an_identifier_the_draft_forbids_names_no_document() {
     assert!(is_cimd_client_id("https://client.example:8443/v1.2/doc"));
 }
 
-/// RED (audit core-oauth2#5): the draft's section 4.1 MUSTs on the document. A shared secret or a
-/// key the server cannot register is refused, not dropped; a redirect URI must be absolute; and
-/// the list is bounded.
 #[test]
 fn a_document_the_draft_forbids_is_refused() {
     for (member, value) in [
@@ -225,7 +187,6 @@ fn a_document_the_draft_forbids_is_refused() {
     materialized(&doc).expect_err("more redirect_uris than a registration may hold");
 }
 
-/// A fetch stub that records whether it was consulted at all.
 struct Recording {
     called: AtomicBool,
     answer: Result<Vec<u8>, String>,
@@ -252,16 +213,12 @@ impl CimdFetch for Recording {
     }
 }
 
-/// THE PRECEDENCE AND THE GATE, at the store seam: a STORED client is answered without any fetch
-/// (whatever its id looks like), an opaque unknown id is `None` without any fetch, and a failed
-/// fetch is `None` — the same answer an unknown client gets, never an error an attacker can mint.
 #[tokio::test]
 async fn the_store_wins_and_every_cimd_failure_reads_as_an_unknown_client() {
     let fetch = Recording::refusing();
     let handle: Arc<Recording> = Arc::clone(&fetch);
     let store = CimdStore::new(MemoryStorage::new(), ceiling(), handle, Vec::new());
 
-    // An opaque id misses without consulting the fetch.
     let missed = store
         .get_client(&ClientId::new("flow-test-client"))
         .await
@@ -272,8 +229,6 @@ async fn the_store_wins_and_every_cimd_failure_reads_as_an_unknown_client() {
         "an opaque id is not a document URL and must never reach the fetch"
     );
 
-    // A stored client whose id IS a URL is answered from the store, not fetched: what the
-    // operator or the registration endpoint wrote cannot be overridden by what a URL serves.
     let stored = materialized(&document()).expect("valid");
     store.put_client(stored).await.expect("put");
     let found = store
@@ -287,8 +242,6 @@ async fn the_store_wins_and_every_cimd_failure_reads_as_an_unknown_client() {
         "a stored client answers without a fetch"
     );
 
-    // A URL-shaped id that is NOT stored consults the fetch, and a refused fetch is an unknown
-    // client — `Ok(None)`, indistinguishable from any other unknown id.
     let unknown = store
         .get_client(&ClientId::new("https://elsewhere.example/client"))
         .await
@@ -296,15 +249,6 @@ async fn the_store_wins_and_every_cimd_failure_reads_as_an_unknown_client() {
     assert!(unknown.is_none());
     assert!(fetch.called.load(Ordering::SeqCst));
 }
-
-// ═════════════════════════════════════════════════════════════════════════════════════════════
-// THE PRODUCTION FETCH ITSELF: one GET over the document need on the root Connector. The guard is
-// the connector's (`busbar-core-connector/src/guard.rs`, proven there); what is proven HERE is the
-// wiring that puts every fetch in front of it — the need it declares (outbound, `https`, the
-// `open-web` class, no configured target), the URL it opens verbatim, and that this crate decides
-// no destination itself: a refusal comes from the table or not at all. The table below is a
-// recording stand-in for the connector, so no socket is opened.
-// ═════════════════════════════════════════════════════════════════════════════════════════════
 
 use std::sync::Mutex;
 use std::task::{Context, Poll};
@@ -320,16 +264,13 @@ use busbar_contract::transport::ConnFacts;
 
 const OWNER: InstanceId = InstanceId(0);
 
-/// What one exchange answers: the open's verdict, then the pieces, in order.
 struct Script {
     open: Result<(), ConnError>,
     pieces: Vec<(PieceKind, Option<u32>, Vec<u8>)>,
 }
 
-/// One need the fetch declared: owner, need, spec, configured target.
 type Declared = (InstanceId, NeedId, ReadNeed, Option<String>);
 
-/// One open the fetch made: owner, need, target, method, head target.
 type Opened = (InstanceId, NeedId, String, Vec<u8>, Vec<u8>);
 
 /// A connection table that records what the fetch asked of it and answers from a [`Script`].
@@ -504,7 +445,6 @@ fn current_table() -> Option<crate::Table> {
     })
 }
 
-/// Fetch `url` over `table` through the PRODUCTION fetch.
 async fn fetch_over(table: &Arc<Recorder>, url: &str) -> Result<Vec<u8>, String> {
     TABLE.with(|t| *t.borrow_mut() = Some(Arc::clone(table)));
     let got = ConnectorFetch {
@@ -516,10 +456,6 @@ async fn fetch_over(table: &Arc<Recorder>, url: &str) -> Result<Vec<u8>, String>
     got
 }
 
-/// THE NEED THE FETCH DECLARES, asserted rather than assumed: outbound, over `https`, in the
-/// `open-web` class (public HTTPS only, private and metadata refused by the connector's guard),
-/// with no configured target (a configured target would lift the dial into operator
-/// infrastructure, where private addresses are allowed) and no auth.
 #[test]
 fn the_document_need_is_outbound_https_in_the_open_web_class() {
     let need = document_need();
@@ -539,9 +475,6 @@ fn the_document_need_is_outbound_https_in_the_open_web_class() {
     assert_eq!(FETCH_TIMEOUT, std::time::Duration::from_secs(10));
 }
 
-/// THE FETCH IS THE CONNECTOR'S: it declares the document need on the table under the table's
-/// owner, opens the `client_id` URL VERBATIM as a GET for its path, reads the document, and closes
-/// the connection.
 #[tokio::test]
 async fn the_fetch_declares_its_need_and_opens_the_client_id_on_the_table() {
     let table = Recorder::ok(200, br#"{"client_id":"x"}"#);
@@ -574,9 +507,6 @@ async fn the_fetch_declares_its_need_and_opens_the_client_id_on_the_table() {
     );
 }
 
-/// NO DESTINATION IS JUDGED HERE. The addresses the old local guard refused reach the TABLE, whose
-/// guard decides: the connector refusing the open is the refusal, and the client is unknown. A
-/// local check put back in front of the table would leave these unopened, and this goes red.
 #[tokio::test]
 async fn every_destination_is_the_tables_to_refuse() {
     for client_id in [
@@ -604,8 +534,6 @@ async fn every_destination_is_the_tables_to_refuse() {
     }
 }
 
-/// A table that will not carry the need (no transport serves `https`) refuses at declaration, and
-/// nothing is opened; with no table at all, the fetch fails closed.
 #[tokio::test]
 async fn no_carried_need_and_no_table_both_fail_closed() {
     let table = Arc::new(Recorder {
@@ -624,9 +552,6 @@ async fn no_carried_need_and_no_table_both_fail_closed() {
     assert!(why.contains("no connection table"), "{why}");
 }
 
-/// THE ANSWER'S BOUNDS: a redirect is refused (the document lives at its `client_id`), a non-2xx
-/// is refused, and a body past the document ceiling is refused while it arrives. Each one still
-/// closes the connection.
 #[tokio::test]
 async fn redirects_failures_and_oversized_documents_are_refused() {
     let big = vec![b'x'; MAX_DOCUMENT_BYTES + 1];
@@ -639,7 +564,7 @@ async fn redirects_failures_and_oversized_documents_are_refused() {
         assert!(why.contains(expected), "expected `{expected}`: {why}");
         assert_eq!(*table.closed.lock().unwrap(), vec![ConnId(7)]);
     }
-    // At the ceiling exactly, the document is kept.
+
     let at = vec![b'x'; MAX_DOCUMENT_BYTES];
     assert_eq!(
         fetch_over(&Recorder::ok(200, &at), URL)
@@ -650,8 +575,6 @@ async fn redirects_failures_and_oversized_documents_are_refused() {
     );
 }
 
-/// A document host that counts its fetches: it answers a valid document for whichever URL it is
-/// asked, or, `held`, never answers at all.
 struct Counting {
     fetches: std::sync::atomic::AtomicUsize,
     held: bool,
@@ -677,8 +600,6 @@ impl CimdFetch for Counting {
     }
 }
 
-/// RED (audit core-oauth2#4): a validated document answers for its client a while: two requests
-/// naming one metadata-document client fetch it once (before the fix, every request fetched).
 #[tokio::test]
 async fn a_validated_document_is_fetched_once_for_the_requests_naming_it() {
     let fetch = Arc::new(Counting {
@@ -701,9 +622,6 @@ async fn a_validated_document_is_fetched_once_for_the_requests_naming_it() {
     );
 }
 
-/// RED (audit core-oauth2#4): at most a fixed number of document fetches run at once, whoever
-/// names them; past it a request naming an uncached document is an unknown client at once, and
-/// no fetch is made for it (before the fix, every request started one more).
 #[tokio::test]
 async fn document_fetches_in_flight_are_bounded() {
     const IN_FLIGHT: usize = 16;
@@ -747,7 +665,6 @@ async fn document_fetches_in_flight_are_bounded() {
     );
 }
 
-/// A document host whose documents on one site never answer, and every other document at once.
 struct OneSlowSite {
     fetches: std::sync::atomic::AtomicUsize,
 }
@@ -772,10 +689,6 @@ impl CimdFetch for OneSlowSite {
     }
 }
 
-/// RED (audit core-oauth2 r4#4): one site that serves its documents slowly cannot hold every
-/// document fetch. A caller names sixteen documents on hosts under one site, each of which never
-/// answers; a metadata-document client on another site is still fetched and known. Before the fix
-/// the sixteen held every fetch permit, and every uncached client elsewhere read as unknown.
 #[tokio::test]
 async fn one_slow_site_cannot_hold_every_document_fetch() {
     let fetch = Arc::new(OneSlowSite {
@@ -796,7 +709,7 @@ async fn one_slow_site_cannot_hold_every_document_fetch() {
                 .await;
         });
     }
-    // Every request naming the slow site has been answered or is fetching.
+
     for _ in 0..1000 {
         tokio::task::yield_now().await;
     }
@@ -814,11 +727,6 @@ async fn one_slow_site_cannot_hold_every_document_fetch() {
     );
 }
 
-/// The per-site bound keys a document on what one owner holds. Every address of one
-/// IPv6 /64 is one site (before the fix each literal was its own, so one /64 minted unlimited
-/// sites); the tenants of a shared public suffix are each their own site (before the fix
-/// `alice.github.io` and `bob.github.io` shared one two-fetch share); and one owner's many names
-/// under its registrable domain are still one site.
 #[test]
 fn a_site_is_what_one_owner_holds() {
     let site = |host: &str| site_of(&format!("https://{host}/doc"));
@@ -847,7 +755,6 @@ fn a_site_is_what_one_owner_holds() {
     assert_ne!(site("192.0.2.7"), site("192.0.2.8"));
 }
 
-/// A document host whose documents under one IPv6 /64 never answer, and every other at once.
 struct OneSlowBlock {
     fetches: std::sync::atomic::AtomicUsize,
 }
@@ -872,9 +779,6 @@ impl CimdFetch for OneSlowBlock {
     }
 }
 
-/// A caller holding one IPv6 /64 cannot hold every document fetch by naming a
-/// document on each of sixteen of its addresses. Before the fix each address was a site of its own,
-/// the sixteen took every fetch permit, and a client on another site read as unknown.
 #[tokio::test]
 async fn one_slow_ipv6_block_cannot_hold_every_document_fetch() {
     let fetch = Arc::new(OneSlowBlock {
@@ -912,9 +816,6 @@ async fn one_slow_ipv6_block_cannot_hold_every_document_fetch() {
     );
 }
 
-/// A request that is dropped while it waits on a document fetch leaves no flight
-/// behind. Before the fix the flight was taken out only after the fetch answered, so a caller that
-/// named a fresh URL and hung up on every request grew the table of flights without a bound.
 #[tokio::test]
 async fn an_abandoned_fetch_leaves_no_flight_behind() {
     let fetch = Arc::new(Counting {
@@ -945,10 +846,6 @@ async fn an_abandoned_fetch_leaves_no_flight_behind() {
     assert_eq!(left, 0, "{left} abandoned flights are still held");
 }
 
-/// RED: a far end that never answers (an address that drops the connection attempt, a name whose
-/// resolution stalls: nothing the caller has to own) lets its fetch go within a few seconds, not
-/// at the ten-second ceiling a document that is arriving is held to. Before the fix it held its
-/// fetch permit for the whole ceiling.
 #[tokio::test(start_paused = true)]
 async fn a_far_end_that_never_answers_lets_its_fetch_go_early() {
     let table = Arc::new(Recorder {
@@ -970,7 +867,6 @@ async fn a_far_end_that_never_answers_lets_its_fetch_go_early() {
     );
 }
 
-/// GREEN twin: a far end that answers is read to the end of its document.
 #[tokio::test(start_paused = true)]
 async fn a_far_end_that_answers_is_read_to_its_end() {
     let table = Recorder::ok(200, br#"{"client_id":"x"}"#);
@@ -981,8 +877,6 @@ async fn a_far_end_that_answers_is_read_to_its_end() {
     assert_eq!(body, br#"{"client_id":"x"}"#);
 }
 
-/// A document host where no document at an address literal ever answers, and every document at a
-/// name answers at once.
 struct AddressesNeverAnswer {
     fetches: std::sync::atomic::AtomicUsize,
 }
@@ -1014,11 +908,6 @@ impl CimdFetch for AddressesNeverAnswer {
     }
 }
 
-/// RED: slow documents at addresses the caller does not have to own cannot hold every document
-/// fetch. A caller names two documents at each of eight addresses (four IPv4 addresses, four IPv6
-/// /64s), none of which ever answers; a metadata-document client at a name is still fetched and
-/// known. Before the fix each address was a site of its own, the sixteen took every fetch permit,
-/// and every uncached client elsewhere read as unknown.
 #[tokio::test]
 async fn documents_at_addresses_cannot_hold_every_document_fetch() {
     let fetch = Arc::new(AddressesNeverAnswer {
@@ -1059,7 +948,6 @@ async fn documents_at_addresses_cannot_hold_every_document_fetch() {
     );
 }
 
-/// A document host that answers every document at once, address literals included.
 struct AnswersAll;
 
 impl CimdFetch for AnswersAll {
@@ -1075,7 +963,6 @@ impl CimdFetch for AnswersAll {
     }
 }
 
-/// GREEN twin: a document at an address literal that answers is still fetched and known.
 #[tokio::test]
 async fn a_document_at_an_address_is_still_fetched() {
     let store = CimdStore::new(

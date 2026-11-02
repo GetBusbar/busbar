@@ -1,28 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **THE `traces` STREAM TO A COLLECTOR, AND WHICH DOORS MAY CARRY IT** — K9a S7 (BUSBAR-1.6.0
-//! 18b(d)) and K9e-2 end to end through the shipped binary: the kernel's traces producer turns
-//! closed request-path spans into `traces` records, and the OTLP sink (`module: otlp`,
-//! the sink's own repo at the root's pinned rev), LINKED on the export kind's memory ABI,
-//! posts them through the host's one connector to a collector as OTLP/HTTP protobuf requests. Every
-//! request body must be an OTLP `ExportTraceServiceRequest` by the OpenTelemetry project's own
-//! generated types, re-encoding to the very same bytes.
-//!
-//! The sink's one need is in the `loopback-allowed` egress class. The same sink's repo `cdylib`,
-//! dropped into `plugins/` by a third party (`acme`, unsigned) and admitted by the operator's
-//! `plugins.trust` opt-in, loads as 1.5.5 loaded it UNVERIFIED (OWNER 2026-10-24, oracle BOOT-W23:
-//! the operator's opt-in is the grant): `--validate` does not skip it, and a configuration naming
-//! it posts the request path's spans to its collector beside the linked one. (This binary embeds the real release key, whose
-//! private half no test holds, so a FIRST-PARTY dropped collector cannot be packed here; the loader's
-//! `export_conformance_tests` carry the same span through both doors byte for byte, under a release
-//! key of the test's own.)
-
 #![cfg(unix)]
-// The config serves `providers:`/`models:`, so the build must link the plane door that declares
-// `pools:` (`linked_section_pools`): the linked table's answer, never a feature name.
 #![cfg(linked_section_pools)]
-// The linked door is an export door: the test is that axis's, and its collector proves the sink.
 #![cfg(linked_axis_export_doors)]
 
 mod common;
@@ -35,21 +15,15 @@ use std::time::{Duration, Instant};
 
 include!(concat!(env!("OUT_DIR"), "/linked_transports.rs"));
 
-/// The dropped-in door's library: the sink repo's cdylib crate, snake-cased.
 const CDYLIB: &str = "busbar_export_otlp_plugin";
 
-/// The name the dropped-in tarball's manifest states.
 const DROPPED: &str = "k9e-dropped";
 
-/// The key of the wire the data door rides.
 const WIRE: &str = "tcp";
 
-/// The collector paths each door posts to.
 const LINKED_PATH: &str = "/linked/v1/traces";
 const DROPPED_PATH: &str = "/dropped/v1/traces";
 
-/// `config.yaml` and `providers.yaml` in `dir`: the linked instance, and the dropped one only when
-/// `name_dropped`.
 fn write_configs(dir: &Path, data_port: u16, admin_port: u16, collector: u16, name_dropped: bool) {
     let dropped = if name_dropped {
         format!(
@@ -94,7 +68,6 @@ models:
     .unwrap();
 }
 
-/// Kill the child when the test ends, however it ends.
 struct Reap(Child);
 impl Drop for Reap {
     fn drop(&mut self) {
@@ -103,7 +76,6 @@ impl Drop for Reap {
     }
 }
 
-/// One model request over a fresh connection: the status, or `None` before the listener is up.
 fn request(port: u16, body: &str) -> Option<u16> {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
     stream
@@ -123,7 +95,6 @@ fn request(port: u16, body: &str) -> Option<u16> {
 
 #[test]
 fn a_closed_span_reaches_an_otlp_collector_through_either_door() {
-    // A both-doors proof never skips: the dropped-in door's cdylib is built or the test fails.
     let lib = common::plugins::cdylib(CDYLIB)
         .unwrap_or_else(|| common::plugins::missing(CDYLIB, common::plugins::BUILD_PINNED));
     let dir = common::plugins::scratch("traces-both-doors");
@@ -136,8 +107,7 @@ fn a_closed_span_reaches_an_otlp_collector_through_either_door() {
     );
     let tarball = common::plugins::seal(manifest, &lib);
     std::fs::write(dir.join("plugins").join("otlp.tar.gz"), tarball).unwrap();
-    // THE WIRE UNDER THE DOOR. A build that does not link the wire's row boots only with it dropped
-    // in; one that links it would refuse the tarball as a second row on the same key.
+
     if !LINKED_TRANSPORTS.iter().any(|w| w.key == WIRE) {
         let (lib, _) = common::plugins::transport_cdylib_under(&[WIRE]).unwrap_or_else(|| {
             common::plugins::missing(&format!("{WIRE} transport"), common::plugins::BUILD_PINNED)
@@ -155,7 +125,6 @@ fn a_closed_span_reaches_an_otlp_collector_through_either_door() {
         c
     };
 
-    // 1. The scan admits the operator-trusted third party's collector: `--validate` skips nothing.
     let (data_port, admin_port) = (common::boot::free_port(), common::boot::free_port());
     write_configs(&dir, data_port, admin_port, collector_port, true);
     let out = busbar().arg("--validate").output().expect("run --validate");
@@ -170,14 +139,12 @@ fn a_closed_span_reaches_an_otlp_collector_through_either_door() {
         "{stdout}"
     );
 
-    // 2. Both collectors post the request path's spans.
     let log_path = dir.join("out.log");
     let read_log = || std::fs::read_to_string(&log_path).unwrap_or_default();
 
-    // Model requests whose upstream refuses: the request path's spans open and close regardless.
     let body =
         r#"{"model":"test-model","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}"#;
-    // The ports step 1 wrote: `free_port` holds each from the moment it chose it.
+
     let log = std::fs::File::create(&log_path).unwrap();
     let mut child = Reap(
         busbar()
@@ -199,7 +166,6 @@ fn a_closed_span_reaches_an_otlp_collector_through_either_door() {
         }
     }
 
-    // Delivery is off the request path, batched: wait until the spans settle.
     let spans_at = |path| common::otlp::spans(&common::otlp::requests(&seen, Some(path))).len();
     let deadline = Instant::now() + Duration::from_secs(30);
     while spans_at(LINKED_PATH) < 3 || spans_at(DROPPED_PATH) < 3 {

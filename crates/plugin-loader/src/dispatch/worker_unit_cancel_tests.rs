@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Real loaded Plane tables exercise the worker, ticket generations, replies and watchdog.
-//! These regressions are source-authored only; no local runtime qualification is claimed.
-
 use super::*;
 use crate::dispatch::kinds::plane::Plane;
 use crate::dispatch::{load_linked, Bind, ConnTable, LinkedRow, NoSink, NO_BLOB};
@@ -279,7 +276,7 @@ fn explicit_cancel_is_eager_and_retires_pending_and_queued_siblings() {
         0,
     );
     let cancel = d.cancel_plane_unit(&p, near, 74);
-    // No poll has occurred: worker entry is proof that submission was eager.
+
     until(|| c.entered.load(Ordering::Acquire));
     assert_eq!(answer(cancel).unwrap().writes.len(), 1);
     for done in [
@@ -424,13 +421,12 @@ fn cancel_watchdog_fault_keeps_both_lent_ranges_until_native_return() {
         b_owner.clone(),
     );
     until(|| d.is_pending(near) && d.is_pending(far));
-    // Keep one independent owner so a broken implementation cannot make the native
-    // callback read freed memory. Any additional strong owner belongs to dispatch custody.
+
     let cancel = d.cancel_plane_unit(&p, near, 81);
     until(|| c.entered.load(Ordering::Acquire));
     let (a_done, b_done) = (a.wait(WAIT).unwrap(), b.wait(WAIT).unwrap());
     let held = Arc::strong_count(&a_owner) > 1 && Arc::strong_count(&b_owner) > 1;
-    // Release before any assertion, so even a failing regression cannot strand the worker.
+
     c.release.store(true, Ordering::Release);
     assert!(held, "watchdog freed memory still lent to native cancel");
     assert_eq!(

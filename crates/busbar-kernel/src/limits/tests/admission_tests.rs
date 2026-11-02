@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-core/src/limits/admission.rs`.
-
 use super::*;
 
 #[test]
@@ -44,18 +42,10 @@ fn denied_entry_increments_the_gate_counter() {
     );
 }
 
-/// THE SHED CONTRACT: an arrival that finds the cap full is answered IMMEDIATELY — it never parks
-/// waiting for a slot. Pinned on the layer's own service (not just the gate) because the parking
-/// hazard lives in the service's `call`: a version that awaited a permit here left the over-cap
-/// callers hanging for as long as the admitted work took, which reads to a client as a hung
-/// gateway. The shed response's exact bytes are pinned too — status, `Retry-After`, content type,
-/// and body are the observable contract.
 #[tokio::test]
 async fn a_saturated_gate_sheds_instead_of_parking_the_caller() {
     use tower::{Service as _, ServiceExt as _};
 
-    // An inner service that never completes: if the layer ever awaits a permit behind this, the
-    // over-cap call cannot finish either, and the timeout below fires.
     #[derive(Clone)]
     struct NeverFinishes;
     impl tower::Service<axum::extract::Request> for NeverFinishes {
@@ -81,12 +71,10 @@ async fn a_saturated_gate_sheds_instead_of_parking_the_caller() {
     );
     let req = || axum::extract::Request::new(axum::body::Body::empty());
 
-    // The one permit goes to a call that will never resolve.
     let mut admitted = svc.clone();
     let admitted = tokio::spawn(async move { admitted.ready().await.unwrap().call(req()).await });
     tokio::task::yield_now().await;
 
-    // The next arrival must be answered NOW, not parked behind the in-flight one.
     let resp = tokio::time::timeout(
         std::time::Duration::from_secs(5),
         svc.ready().await.unwrap().call(req()),
@@ -121,11 +109,6 @@ async fn a_saturated_gate_sheds_instead_of_parking_the_caller() {
     admitted.abort();
 }
 
-/// CONCURRENT-CAP BOUNDARY at N > 1: a gate of N permits admits EXACTLY N in-flight holders and
-/// denies the (N+1)th — the instantaneous cap is N, not N-1 (off-by-one over-throttle) nor N+1
-/// (over-admit past the cap). Freeing exactly one held permit re-opens exactly one slot: the next
-/// `try_enter` admits, and the one after that is denied again. This is the shape of the group
-/// `{ concurrent: N }` gauge — an operator's in-flight cap must admit the full N they configured.
 #[test]
 fn concurrent_cap_admits_exactly_n_and_frees_one_at_a_time() {
     let gate = AdmissionGate::new(3, "test-concurrent-boundary");
@@ -162,7 +145,7 @@ fn concurrent_cap_admits_exactly_n_and_frees_one_at_a_time() {
 #[test]
 fn unbounded_sentinel_never_denies() {
     let gate = AdmissionGate::new(Semaphore::MAX_PERMITS, "test-unbounded");
-    // Hold a generous handful of permits; an unbounded gate must keep admitting.
+
     let held: Vec<_> = (0..1000).map(|_| gate.try_enter().unwrap()).collect();
     assert!(gate.try_enter().is_some());
     drop(held);

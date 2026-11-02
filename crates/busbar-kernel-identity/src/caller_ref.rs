@@ -2,15 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE CALLER REFERENCE a plane may attribute a request with, in place of the principal.
-//!
-//! A plane never sees the principal. Where its far end wants a stable per-caller identifier (an
-//! abuse-attribution header, say), the kernel lends it a reference instead: an HMAC-SHA256 of the
-//! principal id under a key derived from the node's signing-key material, in lowercase hex. The same
-//! principal always gets the same reference, on every node that shares the key material and across
-//! restarts, and the reference does not reveal the principal.
-//!
-//! The key is HKDF-SHA256 over the material, expanded under the label [`LABEL`]. The material is
-//! the caller's to supply and to dispose of. This type keeps only the derived key and never prints it.
 
 use ring::{hkdf, hmac};
 

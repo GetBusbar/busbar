@@ -1,11 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/plugin-loader/src/highwater.rs`.
-
 use super::*;
 
-/// True when the marks are backed by a data-dir file (so they survive a restart).
 fn is_persistent(marks: &HighWaterMarks) -> bool {
     marks.path.is_some()
 }
@@ -22,7 +19,6 @@ fn tmpdir() -> PathBuf {
     p
 }
 
-/// The child and its capture files are scoped to this case, including refusal and panic paths.
 struct Directory(PathBuf);
 
 impl Drop for Directory {
@@ -59,9 +55,6 @@ impl ChildGuard {
     }
 }
 
-/// PB-13: without a data dir the marks stay live in memory. Run in a private working directory to
-/// detect an accidental relative-path file, rather than inspecting an unused temporary directory.
-/// The post-exit check observes residual files, not transient creation/deletion or writes elsewhere.
 #[test]
 fn without_a_data_dir_the_store_creates_no_file() {
     const CHILD: &str = "BUSBAR_HIGHWATER_NO_DIRECTORY_CHILD";
@@ -105,7 +98,7 @@ fn without_a_data_dir_the_store_creates_no_file() {
     assert!(!is_persistent(&marks));
     assert!(marks.raise("busbar-store-gamma-plugin", "1.2.0"));
     marks.persist().expect("a memory-only persist is a no-op");
-    // The floor is live in memory regardless.
+
     assert_eq!(
         marks.marks().get("busbar-store-gamma-plugin").unwrap(),
         "1.2.0"
@@ -113,8 +106,6 @@ fn without_a_data_dir_the_store_creates_no_file() {
     println!("{FINISHED}");
 }
 
-/// WITH a data dir the floor survives a restart — which is what makes it an anti-replay control
-/// rather than a per-process one.
 #[test]
 fn with_a_data_dir_the_floor_survives_a_restart() {
     let dir = tmpdir();
@@ -132,8 +123,6 @@ fn with_a_data_dir_the_floor_survives_a_restart() {
     );
 }
 
-/// The mark is a HIGH-WATER mark: it rises and never falls. An explicit rollback loads an older
-/// artifact past its pin; it must not silently erase the floor every other node still enforces.
 #[test]
 fn the_mark_rises_and_never_falls() {
     let (mut marks, _) = HighWaterMarks::load(None);
@@ -148,9 +137,6 @@ fn the_mark_rises_and_never_falls() {
     assert_eq!(marks.marks().get("p").unwrap(), "1.3.0");
 }
 
-/// A mark that cannot be parsed is worse than no mark: `version_at_least` refuses an unparsable
-/// floor outright, so keeping one would refuse a good plugin forever on the strength of a corrupt
-/// byte. Unusable entries are DROPPED and the caller is told.
 #[test]
 fn unusable_entries_are_dropped_and_reported() {
     let dir = tmpdir();
@@ -168,9 +154,6 @@ fn unusable_entries_are_dropped_and_reported() {
     assert!(note.contains("BAD NAME"), "{note}");
 }
 
-/// FAIL-SOFT on a damaged file: an empty mark set is the same posture as a first boot, whereas
-/// refusing the boot would let anyone who can corrupt one JSON file take the node down. Loud, not
-/// fatal.
 #[test]
 fn a_corrupt_file_boots_with_no_floor_and_says_so() {
     let dir = tmpdir();
@@ -181,8 +164,6 @@ fn a_corrupt_file_boots_with_no_floor_and_says_so() {
     assert!(note.contains("NO first-party floor"), "{note}");
 }
 
-/// A missing file is the normal first-boot state, not a problem — and no floor, because a first
-/// install is not a downgrade.
 #[test]
 fn a_missing_file_is_a_clean_first_boot() {
     let dir = tmpdir();
@@ -192,8 +173,6 @@ fn a_missing_file_is_a_clean_first_boot() {
     assert!(is_persistent(&marks));
 }
 
-/// The persisted file is `0600`: an integrity floor is not a secret, but it is written with the same
-/// private mode as every other data-dir file.
 #[cfg(unix)]
 #[test]
 fn the_persisted_floor_is_private() {
@@ -207,6 +186,6 @@ fn the_persisted_floor_is_private() {
         .permissions()
         .mode();
     assert_eq!(mode & 0o777, 0o600, "got {:o}", mode & 0o777);
-    // The write is atomic: no temp file is left behind.
+
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
 }

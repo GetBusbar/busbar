@@ -11,14 +11,10 @@ thread_local! {
     static EXPOSED: Cell<bool> = const { Cell::new(false) };
 }
 
-// This witness must inspect ownership as well as text: borrowed caller bytes are not retired
-// by this owner, whereas an owned cleartext copy would violate the count-only path.
 #[allow(clippy::ptr_arg)]
 pub(super) fn retiring_count_text(text: &Cow<'_, str>) {
     if WATCH.with(Cell::get) {
         if let Cow::Owned(owned) = text {
-            // This is a live String's initialized prefix, observed immediately before its
-            // count-only owner is released. Borrowed input remains the caller's property.
             if owned.as_bytes().iter().any(|byte| *byte != 0) {
                 EXPOSED.with(|exposed| exposed.set(true));
             }

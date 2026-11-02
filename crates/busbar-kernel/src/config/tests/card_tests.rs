@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The card as the configuration spells it: stored bytes round-trip, a set replaces whole values,
-//! and the composed form a generation prices with reads back to the same card.
-
 use super::*;
 
 fn entry(input: f64) -> RateEntryCfg {

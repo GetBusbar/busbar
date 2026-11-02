@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Pending-only conditional publication, using the existing service-store operation epoch.
-
 use super::ticket::{InstanceWake, Waking};
 use busbar_contract::abi::mechanism::{
     call::{Blob, InHead, OutHead, Outcome, BLOB_OCTETS},
@@ -217,7 +215,6 @@ fn wake_commit(
     }
 }
 
-/// Pending publication may not also expose ordinary writes, an answer, or a queued session.
 fn isolated(a: &super::Answer) -> Result<(), ()> {
     use busbar_contract::abi::plane::{self, OnPieceOut, PlaneDriveOut, ServeOut};
     let clean = match a.slot {
@@ -300,8 +297,7 @@ pub(crate) unsafe fn answer(
             served.store.conditional_teardown(caller(wake));
         }
     }
-    // An optional, unnegotiated feature cannot inspect an unreadable legacy blob. An active
-    // exchange must fail closed instead; never form a slice larger than the shared ABI bound.
+
     let bytes = if head.extensions.len
         > busbar_contract::abi::mechanism::check::HARD_MAX_BYTES as usize
         || (head.extensions.len != 0 && head.extensions.ptr.is_null())
@@ -354,8 +350,7 @@ pub(crate) unsafe fn answer(
                 served
                     .store
                     .settlement_ack(caller(wake), &ack, outcome != Outcome::Failed)?;
-            // A SHORT/failed output never consumes custody. A successful ACK wakes the registered
-            // driver to finish any independent current cycle, without waking the retired origin.
+
             if consumed {
                 wake_driver(wake);
             }
@@ -376,7 +371,6 @@ pub(crate) unsafe fn answer(
             if outcome == Outcome::Ready {
                 s.store.conditional_finished(caller(wake), ticket);
             } else if outcome == Outcome::Refused {
-                // A terminal caller refusal cannot discard a store commit already submitted.
                 s.store.conditional_cancel(caller(wake), ticket);
             }
         }
@@ -411,7 +405,7 @@ pub(crate) unsafe fn answer(
         return Err(());
     }
     isolated(answer)?;
-    // Combining independent host effects in one candidate's output is never atomic.
+
     if busbar_contract::abi::mechanism::extensions::get(
         bytes,
         busbar_contract::abi::mechanism::inspection::EXT_REQUEST,

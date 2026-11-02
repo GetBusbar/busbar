@@ -135,8 +135,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 [[package]]
 name = "aws-lc-sys"
 version = "0.47.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8bfbe32ac36b3c428696ce315464181bc4029d689fd58e3f2a4e58c252242f52"
+source = "git+https://github.com/MattJackson/aws-lc-sys?rev=3469edb189e0cc2fab40e88f551713a828a5d867#3469edb189e0cc2fab40e88f551713a828a5d867"
 dependencies = [
  "cc",
  "cmake",
@@ -286,6 +285,7 @@ dependencies = [
  "busbar-kernel-identity",
  "busbar-kernel-ledger",
  "busbar-kernel-seams",
+ "busbar-kernel-testkit",
  "busbar-kernel-wal",
  "busbar-plugin-loader",
  "bytes",
@@ -307,6 +307,7 @@ dependencies = [
  "tokio-util",
  "tower",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]
@@ -355,6 +356,7 @@ dependencies = [
  "busbar-kernel",
  "busbar-kernel-egress",
  "busbar-kernel-seams",
+ "busbar-kernel-testkit",
  "flate2",
  "http-body-util",
  "reqwest",
@@ -365,6 +367,16 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "busbar-core-admin-testkit"
+version = "1.6.0"
+dependencies = [
+ "busbar-core-admin",
+ "busbar-kernel",
+ "schemars",
+ "serde_json",
 ]
 
 [[package]]
@@ -435,13 +447,13 @@ dependencies = [
  "base64 0.22.1",
  "bumpalo",
  "busbar-contract",
- "busbar-kernel",
  "busbar-kernel-audit",
  "busbar-kernel-breaker",
  "busbar-kernel-egress",
  "busbar-kernel-identity",
  "busbar-kernel-ledger",
  "busbar-kernel-seams",
+ "busbar-kernel-testkit",
  "busbar-kernel-wal",
  "bytes",
  "crc32fast",
@@ -536,8 +548,29 @@ dependencies = [
 name = "busbar-kernel-testkit"
 version = "1.6.0"
 dependencies = [
+ "axum",
  "busbar-contract",
  "busbar-kernel",
+ "busbar-kernel-egress",
+ "busbar-kernel-identity",
+ "bytes",
+ "crc32fast",
+ "futures",
+ "getrandom 0.3.4",
+ "hex",
+ "http",
+ "http-body-util",
+ "indexmap",
+ "metrics",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "sha2",
+ "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "zeroize",
 ]
 
 [[package]]
@@ -2041,9 +2074,9 @@ dependencies = [
 
 [[package]]
 name = "oauth-as"
-version = "1.0.0"
+version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4e3bf4c869f5d66f1a4254dd1bd2ddad2de1746bd0649186945fd17b391ee95e"
+checksum = "4108e472b60b51002c8848dab2e409206987c6e451bb0c1e10321678cc8f44b5"
 dependencies = [
  "base64 0.22.1",
  "bytes",

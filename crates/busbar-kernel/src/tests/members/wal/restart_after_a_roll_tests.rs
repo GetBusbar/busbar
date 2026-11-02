@@ -1,19 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! What a restart resumes from once the log has rolled past its first segment.
-//!
-//! Every other battery in this crate rolls IN PROCESS, where the marks and the chain head are still
-//! in memory and nothing has to be read back to know where the log ends. That is the one shape a
-//! production restart never has. A node that has been up long enough to fill a segment and is then
-//! restarted has to find the end of its log on the medium, and if it finds the end of the FIRST
-//! segment instead it resumes in the middle of its own history: the numbers it takes next are
-//! numbers it has already used, and a store that deduplicates on `(node, node_seq)` silently drops
-//! everything the node writes after the restart.
-//!
-//! So the assertions here are about identity and linkage across the whole log, not about the last
-//! segment: every `(node, node_seq)` appears once, and the chain read end to end verifies.
-
 use busbar_contract::caps::StepName;
 
 use busbar_kernel_wal::backend::{DirectoryFactory, MemoryFactory, SegmentFactory as _};
@@ -26,14 +13,10 @@ use busbar_kernel_wal::wal::{Mode, Wal};
 
 use super::fixtures::{durability_token, TempDir};
 
-/// Small enough that a few hundred records roll the log several times.
 const CEILING: u64 = 64 * FRAME_BYTES as u64;
 
-/// The node the journal writes as.
 const NODE: u64 = 9;
 
-/// Append `n` entries, one per call, so the run crosses a roll at an arbitrary point rather than at
-/// a batch boundary the test chose.
 fn write(journal: &mut Journal, n: usize, tag: u8) {
     let token = durability_token();
     for i in 0..n {
@@ -47,8 +30,6 @@ fn write(journal: &mut Journal, n: usize, tag: u8) {
     }
 }
 
-/// Every record in the log, oldest segment first — which is what "the chain" means once the log has
-/// more than one segment and no single segment holds all of it.
 fn whole_log(segments: Vec<Box<dyn busbar_kernel_wal::backend::SegmentBackend>>) -> Vec<Record> {
     let mut records = Vec::new();
     for backend in segments {
@@ -58,17 +39,12 @@ fn whole_log(segments: Vec<Box<dyn busbar_kernel_wal::backend::SegmentBackend>>)
     records
 }
 
-/// The chain, decoded and verified end to end. A restart that resumed in the wrong segment shows up
-/// here as a break, because the record it wrote first links to a head from the middle of the log.
 fn verified_chain(records: &[Record]) -> Vec<JournalRecord> {
     let decoded = decode_run(records).expect("every record in the log is a journal record");
     verify(&decoded).expect("the chain links end to end across the restart");
     decoded
 }
 
-/// No identity is used twice, anywhere in the log. This is the property the store depends on: a
-/// second record under a number some earlier record already carries is not stored, it is dropped as
-/// a duplicate, and the settlement it recorded is gone without an error anywhere.
 fn assert_no_identity_reuse(records: &[Record]) {
     let mut seen = std::collections::HashSet::new();
     for record in records {
@@ -80,10 +56,6 @@ fn assert_no_identity_reuse(records: &[Record]) {
     }
 }
 
-/// The assertions both backings share: the restart continued the chain instead of forking it.
-///
-/// `before` is where the first journal left the log; `resumed` is what the second one made of it
-/// the moment it opened, before it had written anything of its own.
 fn assert_resumed(before: ([u8; 32], u64, usize), resumed: ([u8; 32], u64), whole: &[Record]) {
     let (head_before, next_seq_before, count_before) = before;
     assert_eq!(
@@ -110,12 +82,6 @@ fn assert_resumed(before: ([u8; 32], u64, usize), resumed: ([u8; 32], u64), whol
     }
 }
 
-/// A restart of an on-disk node whose log has rolled resumes at the end of the log.
-///
-/// The FILE backing on purpose: the in-memory ones let a test hold the same factory across the
-/// restart, which is a convenience a real restart does not have. Here the second log is handed
-/// nothing but the directory, exactly as a node is handed nothing but its data directory, and
-/// everything it knows it has to read off the disk.
 #[test]
 fn a_file_backed_restart_after_a_roll_resumes_at_the_end_of_the_log() {
     let dir = TempDir::in_build_dir("restart-after-a-roll");
@@ -144,8 +110,6 @@ fn a_file_backed_restart_after_a_roll_resumes_at_the_end_of_the_log() {
     assert_resumed(before, resumed, &whole_log(segments));
 }
 
-/// The same claim on the memory backing, where the factory outlives the log the way a data
-/// directory outlives a process.
 #[test]
 fn a_memory_backed_restart_after_a_roll_resumes_at_the_end_of_the_log() {
     let factory = MemoryFactory::retaining();
@@ -174,9 +138,6 @@ fn a_memory_backed_restart_after_a_roll_resumes_at_the_end_of_the_log() {
     assert_resumed(before, resumed, &whole_log(segments));
 }
 
-/// A crash between a roll and the first commit into the segment it opened leaves a real but empty
-/// newest segment. Resuming there would find no tail at all and start the chain over from genesis,
-/// which is the same fork by a different route.
 #[test]
 fn a_restart_steps_back_over_a_segment_a_roll_opened_and_never_wrote_to() {
     let dir = TempDir::in_build_dir("roll-then-crash");
@@ -187,7 +148,6 @@ fn a_restart_steps_back_over_a_segment_a_roll_opened_and_never_wrote_to() {
     let last = journal.log().segments_used();
     drop(journal);
 
-    // What the roll would have left behind: the next segment's file, present and empty.
     let mut factory = DirectoryFactory::new(dir.path()).expect("the directory is there");
     drop(factory.open(last).expect("the next segment is created"));
     assert!(factory.segment_path(last).exists());
@@ -206,13 +166,6 @@ fn a_restart_steps_back_over_a_segment_a_roll_opened_and_never_wrote_to() {
     assert_resumed(before, resumed, &whole_log(segments));
 }
 
-/// THE CHAIN A RESTART READS BACK IS THE WHOLE LOG, not the segment it resumed in.
-///
-/// Resuming at the end of the log is half of a restart; the other half is everything a boot reads
-/// off the chain — the rate card a posting priced at, the holds a predecessor left open, the audit
-/// chain's start, the migration marker. Those can sit in any segment, so a replay that read only
-/// the newest one would reprice, re-open and re-number from the middle of the history, and verify
-/// clean while doing it, because a run cut at a segment boundary still links.
 #[test]
 fn a_file_backed_restart_after_a_roll_replays_every_segment_oldest_first() {
     let dir = TempDir::in_build_dir("replay-after-a-roll");
@@ -246,8 +199,6 @@ fn a_file_backed_restart_after_a_roll_replays_every_segment_oldest_first() {
     );
 }
 
-/// The same on the memory backing, read by a log that has not restarted: a roll in process must not
-/// hide what came before it from a reader of the chain either.
 #[test]
 fn a_memory_backed_replay_after_a_roll_reads_every_resident_segment() {
     let factory = MemoryFactory::retaining();

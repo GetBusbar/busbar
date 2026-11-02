@@ -47,6 +47,7 @@ hyper = { workspace = true }
 hyper-util = { workspace = true }
 tokio-util = { workspace = true }
 bytes = { workspace = true }
+zeroize = { workspace = true }
 tracing = { workspace = true }
 idna_adapter = { workspace = true }
 metrics = { workspace = true }
@@ -65,6 +66,10 @@ tikv-jemallocator = { workspace = true, features = ["disable_initial_exec_tls"] 
 default = ["root-admin"]
 root-admin = ["dep:tower"]
 test-harness = []
+
+[dev-dependencies]
+# External fixtures used by this source when the distribution runs its unit tests.
+busbar-kernel-testkit = { path = "../busbar-kernel-testkit" }
 
 [lints.rust]
 # The default distribution's build script sets a `linked_section_<section>` cfg per linked plane door;

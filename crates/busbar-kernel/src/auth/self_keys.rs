@@ -1,20 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The SELF-SERVE key SEAM (1.5.2 token-exchange).
-//!
-//! `POST /auth/token` and the hosted browser login flow depend ONLY on the [`SelfServeKeys`] trait —
-//! never on `TokenSigner`, the ed25519 envelope, the epoch, or any mint internal. The concrete
-//! [`DeterministicEd25519Keys`] holds the entire mechanism ("Model B" — see
-//! `GovState::issue_self`): a busbar-standard signed token whose SUBJECT id is derived
-//! deterministically so the mint is an idempotent upsert of the one `user:<sub>` binding, and
-//! Refresh bumps a per-principal epoch. Swapping the key scheme later is a new impl behind this
-//! trait; the endpoint, the login flow, the docs and the tests are unchanged.
-//!
-//! Identity ALWAYS comes from the VERIFIED principal ([`ChainVerdict::Identified`]'s `principal.id`),
-//! never from the request body — [`resolve_exchange`] takes the verdict, not any caller-supplied
-//! identity, so there is no seam through which a caller could self-scope a key to someone else.
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -85,21 +71,15 @@ pub(crate) trait SelfGroupProvisioner: Send + Sync {
     async fn ensure_leaf(&self, leaf: &str, parent: &str) -> Result<(), String>;
 }
 
-/// The concrete, GovState-backed scheme: deterministic ed25519 signed tokens ("Model B").
 pub(crate) struct DeterministicEd25519Keys {
     gov: Arc<GovState>,
-    /// The identity-provider instance that asserted the principal (the verdict's identifying
-    /// module). Recorded on the binding; another provider asserting the same subject is refused.
+
     provider: String,
-    /// The TEAM group the principal's role binds to (`role_bindings.<module>.<role>.group`) — the
-    /// PARENT under which the per-user `user:<sub>` leaf is auto-provisioned. Resolved by
-    /// [`resolve_exchange`] (guaranteed present: a self key must charge through a group).
+
     team: String,
-    /// The scopes this principal's bound roles grant, every kind (`None` = all, `Some([])` =
-    /// none). Resolved from `role_bindings` by [`resolve_exchange`] and carried onto the minted
-    /// binding.
+
     allowed_scopes: Option<Vec<busbar_contract::records::ScopeRef>>,
-    /// Provisions the `user:<sub>` leaf under `team` before the token is minted (the bug fix).
+
     provisioner: Arc<dyn SelfGroupProvisioner>,
 }
 
@@ -120,7 +100,6 @@ impl DeterministicEd25519Keys {
         }
     }
 
-    /// The `user:<sub>` leaf group this principal's key charges through.
     fn self_group(principal: &Principal) -> String {
         format!(
             "{}{}",
@@ -129,9 +108,6 @@ impl DeterministicEd25519Keys {
         )
     }
 
-    /// One self-serve mint (`issue` or `refresh`). FIX: provision the personal budget bucket under
-    /// the resolved team BEFORE minting, so the issued key resolves a real group at admission
-    /// instead of 429 MissingGroup. Idempotent (the leaf already exists on a refresh).
     async fn mint(
         &self,
         principal: &Principal,
@@ -144,9 +120,7 @@ impl DeterministicEd25519Keys {
             .ensure_leaf(&Self::self_group(principal), &self.team)
             .await
             .map_err(ExchangeError::MintFailed)?;
-        // Offloaded: `issue_self` / `refresh_self` hold a std::sync::Mutex across synchronous
-        // store I/O, so request-path callers must never invoke them directly on the reactor. See
-        // `governance::mint_self_offloaded`.
+
         let (binding, token) = crate::governance::mint_self_offloaded(
             self.gov.clone(),
             op,
@@ -158,8 +132,6 @@ impl DeterministicEd25519Keys {
         )
         .await
         .map_err(|e| match e {
-            // A disabled binding, or one another provider minted: 1.5.5's nearest refusal, the
-            // 403 "no self-serve grant for this identity".
             crate::governance::SelfMintError::Refused(_) => ExchangeError::Unbound,
             crate::governance::SelfMintError::Store(e) => ExchangeError::MintFailed(e.to_string()),
         })?;
@@ -193,14 +165,6 @@ impl SelfServeKeys for DeterministicEd25519Keys {
     }
 }
 
-/// The production [`SelfGroupProvisioner`]: mirrors the admin `POST /keys?parent=` auto-provision
-/// (`plan_mint_group` builds the leaf from the team's `child_default`; `persist_provisioned_group`
-/// commits it PERSIST-then-SWAP, rebuilding the cost model so the new bucket is enforceable on the
-/// next request and durable across restart) — but routed through the ONE config-mutation choke point
-/// [`crate::config::transaction::config_transaction`], exactly as the admin mint is. That is the single
-/// serialization point for EVERY config mutation, so this no longer needs (or has) its own lock: the
-/// transaction's `CONFIG_MUTATION_LOCK` serializes a first-login provision against a concurrent admin
-/// `config/apply`, closing the lost-update the previous ad-hoc `SELF_PROVISION_LOCK` could not.
 pub(crate) struct HandleProvisioner {
     handle: Arc<crate::state::AppHandle>,
     actor: String,
@@ -215,22 +179,12 @@ impl HandleProvisioner {
 #[async_trait]
 impl SelfGroupProvisioner for HandleProvisioner {
     async fn ensure_leaf(&self, leaf: &str, parent: &str) -> Result<(), String> {
-        // Route the provision through the ONE config-mutation transaction: it takes the mutation
-        // lock, hands the body a FRESH post-lock snapshot, and applies the plan as a single
-        // persist-then-swap. No `commit_and_swap` by hand, no second lock — the same door the admin
-        // mint (`create_key` auto-provision) walks through, so the two cannot lose a swap to each
-        // other. Both `config_transaction` and the group-provisioning logic are neutral core
-        // (`crate::config::transaction`, `crate::governance::group_provision` — 1.6.0 de-alias,
-        // stage 2a), so this seam no longer reaches into `admin::` at all. `TxnError` is mapped to
-        // the mint's `String` failure at the boundary, byte-identical to the prior `AdminError`
-        // mapping (`TxnError::message()` mirrors `AdminError::message()`).
         let leaf = leaf.to_string();
         let parent = parent.to_string();
         let actor = self.actor.clone();
         crate::config::transaction::config_transaction(&self.handle, move |txn| {
             let current = txn.app();
-            // Same plan the admin mint runs: build the leaf under `parent` from the nearest-ancestor
-            // `child_default`, or validate that an existing leaf still belongs to that parent.
+
             let Some(installed) = crate::governance::group_provision::plan_mint_group(
                 current,
                 &leaf,
@@ -238,11 +192,9 @@ impl SelfGroupProvisioner for HandleProvisioner {
                 &actor,
             )?
             else {
-                // Existing leaf, matching parent: no swap, overlay churn, or usage reset.
                 return Ok(txn.done(()));
             };
-            // PERSIST-then-SWAP the new leaf, fail-closed — routed through `commit_and_swap` by the
-            // transaction's sole apply site, never by hand here.
+
             let persist = crate::governance::group_provision::persist_provisioned_group(
                 installed.clone(),
                 leaf.clone(),
@@ -283,14 +235,6 @@ pub(crate) enum ExchangeError {
     MintFailed(String),
 }
 
-/// Reject a principal id that cannot safely become a `user:<sub>` self-serve subject. A
-/// module-namespaced subject (`oidc:<sub>`, `github:<login>`, `ldap:<dn>`, …) is LEGITIMATE and
-/// verified — the auth chain established it — so an INTERNAL `:` is ALLOWED: the self group is ALWAYS
-/// `user:` + the WHOLE sub, so an internal `:` cannot escape the `user:` namespace, and the derived
-/// `vk_` id is `HMAC(user:<sub>#epoch)` so it cannot alias another subject. What IS refused (fail
-/// closed): an empty sub, the `/` route separator, any control character, and a LEADING reserved
-/// bucket/real-key prefix (`vk_`, `user:`, `group:`) — the shapes that could alias a reserved bucket
-/// or a real key.
 fn sanitize_self_sub(sub: &str) -> Result<(), ExchangeError> {
     let leading_reserved =
         sub.starts_with("vk_") || sub.starts_with("user:") || sub.starts_with("group:");
@@ -310,32 +254,16 @@ fn sanitize_self_sub(sub: &str) -> Result<(), ExchangeError> {
     Ok(())
 }
 
-/// A self-serve mint the policy admitted: the verified principal, the TEAM it charges through, the
-/// pools it grants, and the lifetime the mint ceiling allows.
 pub(crate) struct SelfMint<'a> {
-    /// The verified principal (from the verdict, never a body).
     pub principal: &'a Principal,
-    /// The bound TEAM group the `user:<sub>` leaf is provisioned under.
+
     pub team: String,
-    /// The scopes the mint grants, every kind: the union across every granting binding (`None` =
-    /// all).
+
     pub granted_scopes: Option<Vec<busbar_contract::records::ScopeRef>>,
-    /// The key's lifetime: the self-serve default, clamped to the ceiling.
+
     pub ttl: Duration,
 }
 
-/// THE ONE DOOR EVERY SELF-SERVE MINT PASSES (X-1001): [`resolve_exchange`] and then the mint
-/// ceiling, the same `MintPolicy::check_mint` the admin `POST /keys` mint is held to. The ceiling is
-/// a kernel valve (`BUSBAR-1.6.0.md:157`, "the valves: ... the mint ceiling"), so it binds every
-/// mint path: without this `POST /auth/token` and the browser flow minted at `self_key_ttl` whatever
-/// `auth.policy.max_ttl` or the caller's role ceiling said.
-///
-/// The lifetime is the self-serve DEFAULT, never an explicit ask, so a ceiling below it CLAMPS the
-/// key's lifetime rather than refusing the mint (`apply_mint_ttl_ceiling`'s default arm). The pools
-/// are the bindings' union; a role ceiling that does not admit them refuses the mint
-/// ([`ExchangeError::OverCeiling`], 403), as it refuses the same pools on the admin path.
-/// The mode is the `user-bound` mode recorded on the self-serve binding, even when the caller
-/// names none: both the deployment's mode list and the caller's role ceilings must admit it.
 pub(crate) fn admit_self_mint<'a>(
     verdict: &'a ChainVerdict,
     role_bindings: &RoleBindings,
@@ -362,22 +290,6 @@ pub(crate) fn admit_self_mint<'a>(
     })
 }
 
-/// Decide whether a chain verdict may mint a self-serve key, and resolve the TEAM + pools to mint
-/// under. The identity comes SOLELY from the verdict's `principal` — never from any request body.
-/// Returns the verified principal, the bound TEAM group (the PARENT the per-user `user:<sub>` leaf is
-/// auto-provisioned under — always present, a self key must charge through a group), and the
-/// pool-union over EVERY granting binding, on success, or the typed refusal.
-///
-/// Both the group selection and the pool union mirror `synthesize_principal_key`'s (governance/mod.rs)
-/// scan of ALL granting bindings — not just the one binding the group happened to come from: the group
-/// is the first granting binding that carries one; the pools are the union of `allowed_pools` across
-/// every granting binding, where an OMITTED `allowed_pools` on any of them widens the union to ALL
-/// pools (`None`), and every one of them saying `allowed_pools: []` unions to the empty set. The one
-/// deliberate divergence from `synthesize_principal_key`: that function returns NO key at all for an
-/// empty-set union (an ad-hoc synthesized key that grants nothing is pointless), while this function
-/// still returns `Ok` with `Some(vec![])` — a self-serve key is a real, persisted binding for an
-/// admitted identity, and `GovState::issue_self`/`refresh_self` already encode `Some([])` as "mint the
-/// key, but it grants no pool".
 pub(crate) fn resolve_exchange<'a>(
     verdict: &'a ChainVerdict,
     role_bindings: &RoleBindings,
@@ -396,60 +308,35 @@ pub(crate) fn resolve_exchange<'a>(
             principal,
             resolved,
         } => {
-            // POLICY GATE (`auth.policy.self_mint`, 1.6.0): `Some(false)` DISABLES the self-serve mint
-            // path outright — an authenticated, otherwise-eligible identity is refused (403). `None`
-            // (the documented default: self-mint available whenever an IdP is configured) and
-            // `Some(true)` both leave the path open. Checked AFTER identity is established so an
-            // anonymous caller falls through to `Unauthorized` (401) below and this policy is not
-            // disclosed to the unauthenticated.
             if self_mint == Some(false) {
                 return Err(ExchangeError::SelfMintDisabled);
             }
-            // A STATIC busbar key was presented (the engine resolved a VirtualKey). Token-exchange
-            // is for IdP identities minting THEIR OWN key — not for re-wrapping an existing one.
+
             if resolved.is_some() {
                 return Err(ExchangeError::StaticKeyPresented);
             }
-            // role_bindings are nested BY MODULE; a role only grants under its identifying module.
+
             let table = role_bindings.get(module).ok_or(ExchangeError::Unbound)?;
-            // ALL of the principal's granting bindings in this module (mirrors
-            // `synthesize_principal_key`'s `granting` scan) — not just the first role that happens
-            // to have a binding. A principal can hold multiple roles; an earlier-listed role's
-            // binding may be groupless while a later one carries the group that actually admits it.
+
             let granting = crate::governance::granting_bindings(principal, table);
             if granting.is_empty() {
                 return Err(ExchangeError::Unbound);
             }
-            // parent = the FIRST granting binding that carries a group (scan ALL granting bindings,
-            // not just the first-matched role) — a self key MUST charge through a group (no
-            // unbounded self key), but that group may come from any one of the principal's roles.
+
             let team = granting
                 .iter()
                 .find_map(|b| b.group.clone())
                 .ok_or(ExchangeError::Unbound)?;
             sanitize_self_sub(&principal.id)?;
-            // POOLS: the UNION across ALL granting bindings — IDENTICAL to
-            // `synthesize_principal_key`'s pool-union loop (governance/mod.rs), not just the pools of
-            // the single binding the group was taken from. An OMITTED `allowed_pools` on ANY granting
-            // binding widens the union to ALL pools (`None`); otherwise the union is the de-duplicated
-            // concatenation of every granting binding's explicit list. Unlike `synthesize_principal_key`
-            // (which, for an ad-hoc synthesized key, returns no key at all when the union is the empty
-            // set), a self-serve key is always minted for an admitted identity — an every-binding-`[]`
-            // union yields `Some(vec![])`, the SAME "no pools" encoding `GovState::issue_self`/
-            // `refresh_self` already special-case ("C6 intent carried intact: None = all pools;
-            // Some([]) = none"), so the minted key exists but grants no data-plane pool. The union is
-            // over EVERY scope kind a binding grants (`allowed_pools` and the plane kinds'
-            // `allowed_{kind}s`), the same grant `synthesize_principal_key` carries (W9).
+
             let allowed_scopes = crate::governance::grant_union(&granting);
             Ok((principal, team, allowed_scopes))
         }
-        // No identity established (all-Pass default, or an explicit Reject) → 401.
+
         ChainVerdict::Open | ChainVerdict::Denied => Err(ExchangeError::Unauthorized),
     }
 }
 
-/// Issue (or refresh) via the SEAM — depends ONLY on `&dyn SelfServeKeys`, so the endpoint is
-/// key-scheme agnostic (a fake impl drives the same path in tests).
 pub(crate) async fn issue_key(
     keys: &dyn SelfServeKeys,
     principal: &Principal,

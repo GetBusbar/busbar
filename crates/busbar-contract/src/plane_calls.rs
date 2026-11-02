@@ -2,23 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE PLANE'S CALLS, AS THE HOST'S TWO HALVES SHARE THEM (`BUSBAR-1.6.0.md` Part 3, the plane
-//! driver): the [`PlaneCalls`] trait the plugin loader implements over one loaded plane instance
-//! and the kernel's plane driver calls through. The kernel names this, the loader names this, and neither
-//! names the other. Nothing here crosses the plugin boundary: the plane's ABI is `abi::plane`.
-//!
-//! A duplex session's pieces ride two request tickets, one per side; its unsolicited output is
-//! named by the instance's one driver ticket's `drive` ([`PlaneCalls::ready`]).
-//!
-//! The pure ops (`arrive`, `refusal`, `project`) are ticketless. Unit cancellation is ordered on
-//! the request tickets' worker and awaited; its one plugin callback never pends.
-//! `on_piece` and `serve` are submitted on a request ticket and cross on that ticket's worker; the
-//! answer is a future, so the caller's task awaits it and no thread is parked.
-//!
-//! THE LENT MEMORY (ARCHITECT ruling 2026-09-29, every kind): an `on_piece` `in` names the unit's
-//! host buffers by raw pointer, and a crossing the watchdog answers FAULT may still be running on
-//! its abandoned thread. So `on_piece` takes the buffers' owner ([`Lent`]) and the host keeps it
-//! until the crossing has returned, never only until the answer. The pure ops need none: they cross
-//! on the caller's own thread, which stays inside the crossing until it returns.
 
 use std::any::Any;
 use std::future::Future;
@@ -51,12 +34,9 @@ pub trait PieceInFlight: Future<Output = Answered> + Send + Unpin {
     fn settled(&mut self) -> Option<Answered>;
 
     /// The `out` the answer carried; `None` before the answer, or when the op was faulted
-    /// mid-crossing.
     fn out(&self) -> Option<OnPieceOut>;
 
     /// The record writes of the `cancel` that ended the op (its client-drop path: a deadline, a
-    /// cut or a reload while it was in flight), copied out of the cancel's buffers; empty when no
-    /// cancel ended it or it wrote none (SEAM-L(r)).
     fn cancel_writes(&self) -> Vec<CancelWrite> {
         Vec::new()
     }
@@ -89,7 +69,6 @@ pub struct Cancelled {
 
 impl CancelWrite {
     /// Each of the first `written` writes of `records`, its spans read in `arena` (a span past
-    /// it reads empty).
     #[must_use]
     pub fn owned(
         records: &[crate::abi::plane::RecordWrite],
@@ -119,16 +98,13 @@ impl CancelWrite {
 /// One `serve` in flight on its ticket. Dropping it before it answered is a client drop.
 pub trait ServeInFlight: Future<Output = Answered> + Send + Unpin {
     /// The `out` the answer carried; `None` before the answer, or when the op was faulted
-    /// mid-crossing.
     fn out(&self) -> Option<ServeOut>;
 }
 
 /// Grow the host buffers a short answer named, re-pointing the `in` at them, before the one
-/// re-call.
 pub type Grow<'a, I, O> = &'a mut dyn FnMut(&O, &mut I);
 
 /// The owner of the host memory an op's `in` points into: kept alive by the host until the op's
-/// last crossing returned.
 pub type Lent = Arc<dyn Any + Send + Sync>;
 
 /// A door's own `validate` over a whole section (its settings, JSON): `Ok`, or the door's words.
@@ -148,8 +124,6 @@ pub struct DoorFacing {
 }
 
 /// A door's facing for a section, its other owned sections (one JSON object keyed by section name,
-/// as `PlaneOpenIn::owned`; empty = none), a public base URL and the dialect facts of the providers
-/// the section references (`PlaneOpenIn::providers`): the snapshot a probe instance of it publishes.
 pub type FacingProbe = Arc<
     dyn Fn(&[u8], &[u8], Option<&str>, &[DialectFacts]) -> Result<DoorFacing, String> + Send + Sync,
 >;
@@ -168,10 +142,6 @@ pub struct DialectFacts {
 }
 
 /// THE ONE BUILDER OF A DOOR PLANE'S OPEN-TIME PROVIDER LIST, for its served instance and its probe
-/// alike: each provider `section`'s reserved model map references (`models.<m>.provider`), once, in
-/// the order first referenced, with the `protocol` and `error_map` `lookup` resolves it to (a name
-/// `lookup` does not know is skipped: the configuration's `resolve` refused it). An empty
-/// `error_map` is absent.
 pub fn dialect_facts(
     section: &serde_yaml::Value,
     lookup: impl Fn(&str) -> Option<(String, std::collections::BTreeMap<String, String>)>,
@@ -217,9 +187,9 @@ pub struct StatedAdminRoute {
     pub audit_verb: &'static str,
 }
 
-/// THE REGISTRY FACTS A PLANE DOOR STATES (ARCHITECT RULING 2026-10-03 on a deleted plane's
-/// declaration; spec #49 and R2-C: a plane's config section, scope kinds and the rest are DERIVED
-/// from its Statement, never declared in the root). The loader reads them off a door's Statement
+/// Registry facts derived from a plane door's
+/// Statement, never declared separately in the root.
+/// The loader reads them off the Statement
 /// (`sections`) and its plane tail, linked or dropped alike, and the kernel folds them into its
 /// plane registry before the config prepass (`busbar_kernel::plane_driver::door::fold`). Every word
 /// is kept for the process.
@@ -246,7 +216,7 @@ pub struct PlaneRegistration {
     /// the map at that point (each registration, each entry). The kernel enumerates the references
     /// they name in its section, so `--validate` and boot resolve every one.
     pub secret_refs: Vec<&'static str>,
-    /// The admin routes its tail states (ARCHITECT Q-L3B-VERBS): the kernel's row mounts each on
+    /// The admin routes its tail states: the kernel's row mounts each on
     /// the admin router, served by the instance's `serve` op.
     pub admin_routes: Vec<StatedAdminRoute>,
     /// Their OpenAPI path fragment, each path relative to the admin mount (JSON); `None` = none.
@@ -266,8 +236,8 @@ pub struct PlaneRegistration {
     /// The tail's dialects, in order (the plane's wire formats).
     pub dialects: Vec<&'static str>,
     /// Each dialect's `DIALECT_*` flags (its `dialect_auth` line's), parallel to
-    /// [`Self::dialects`]: whether a provider's `protocol` may name it (ARCHITECT ruling
-    /// 2026-10-16, item 3).
+    /// [`Self::dialects`]: whether a provider's
+    /// `protocol` may name it.
     pub dialect_flags: Vec<u32>,
     /// The tail's scope kinds.
     pub scope_kinds: Vec<&'static str>,
@@ -285,7 +255,7 @@ pub struct PlaneRegistration {
     /// falls through to, and its card is the flat one (at most one registered plane).
     pub fallback: bool,
     /// The provider-key descriptor its Statement states under
-    /// [`crate::provider_keys::EXT_PROVIDER_KEYS`] (row 155 B1c): the `providers:` entry keys the
+    /// [`crate::provider_keys::EXT_PROVIDER_KEYS`]: the `providers:` entry keys the
     /// plane owns, per form, in their frozen order and the neutral shape vocabulary; `None` = it
     /// states none. The kernel's door fold keeps it; nothing parses an entry from it yet.
     pub provider_keys: Option<crate::provider_keys::ProviderKeys>,
@@ -357,7 +327,6 @@ pub trait PlaneCalls: Send + Sync {
     fn now_ns(&self) -> u64;
 
     /// `arrive`, ticketless. A short answer calls `grow` and is re-called once; a second short
-    /// answer is FAULT. `input` and `out` hold what the last call was handed and answered.
     fn arrive(
         &self,
         input: &mut ArriveIn,
@@ -365,30 +334,22 @@ pub trait PlaneCalls: Send + Sync {
         grow: Grow<'_, ArriveIn, ArriveOut>,
     ) -> Outcome;
 
-    /// The pool a READY `arrive` named ([`ArriveOut::pool`], ARCHITECT Q-SW6), copied out of the
-    /// plane's memory while that answer is the instance's last; `None` when it named none.
+    /// The pool a READY `arrive` named ([`ArriveOut::pool`]), copied out of the
     fn arrived_pool(&self, out: &ArriveOut) -> Option<Vec<u8>>;
 
-    /// The sticky-routing key a READY `arrive` stated ([`ArriveOut::affinity`], ARCHITECT Q1
-    /// ArriveOut), copied out of the plane's memory while that answer is the instance's last;
-    /// `None` when it stated none. Opaque: the kernel only hashes it.
+    /// The sticky-routing key a READY `arrive` stated ([`ArriveOut::affinity`]), copied out of
     fn arrived_affinity(&self, out: &ArriveOut) -> Option<Vec<u8>> {
         let _ = out;
         None
     }
 
     /// The trust facts a READY `arrive` stated ([`ArriveOut::trust_counterparty`],
-    /// [`ArriveOut::trust_item`], [`ArriveOut::trust_digest`]), copied out of the plane's
-    /// memory while that answer is the instance's last: `None` when it stated no counterparty.
-    /// Opaque: the kernel's Approve judges them against its trust book.
     fn arrived_trust(&self, out: &ArriveOut) -> Option<ArrivedTrust> {
         let _ = out;
         None
     }
 
     /// The words a REFUSED `arrive` stated in its `head.error` (abi/plane "A refused arrival"),
-    /// copied out of the plane's memory while that answer is the instance's last; `None` when it
-    /// stated none. Opaque: the kernel hands them to the plane's `refusal` unparsed.
     fn arrived_refusal(&self, out: &ArriveOut) -> Option<Vec<u8>> {
         let _ = out;
         None
@@ -403,8 +364,6 @@ pub trait PlaneCalls: Send + Sync {
     ) -> Outcome;
 
     /// `catalog`, ticketless, with the same one re-call as [`PlaneCalls::arrive`]: a catalog
-    /// route's listing of the names the kernel hands it, rendered by the plane with no unit
-    /// (ARCHITECT ruling 2026-10-16, 3b C). An instance that serves none answers REFUSED.
     fn catalog(
         &self,
         input: &mut crate::abi::plane::CatalogIn,
@@ -416,8 +375,6 @@ pub trait PlaneCalls: Send + Sync {
     }
 
     /// `project`, ticketless, with the same one re-call as [`PlaneCalls::arrive`]: the hook kind's
-    /// view of the unit's request (once per unit, when a hook is bound), and again with a
-    /// request-stage hook's rewrite for the plane to apply and re-project.
     fn project(
         &self,
         input: &mut ProjectIn,
@@ -426,24 +383,14 @@ pub trait PlaneCalls: Send + Sync {
     ) -> Outcome;
 
     /// The host's own ticketless `cancel` of `ticket`, the ticket of the unit keyed `unit` (its
-    /// `ArriveIn::unit`; `0` for none): the disposition it answered and the record writes it
-    /// carried (SEAM-L(r)), or `None` when it did not answer READY.
     fn cancel(&self, ticket: Ticket, unit: u64) -> Option<Cancelled>;
 
     /// Bind this live request-ticket generation to an admitted nonzero unit before submitting
-    /// any work. All tickets of one unit must be minted on the same worker (`mint_beside`).
-    /// Submission is eager and nonblocking. The binding lasts until that generation is recycled.
     fn bind_unit(&self, ticket: Ticket, unit: u64) {
         let _ = (ticket, unit);
     }
 
     /// Eagerly enqueue one logical unit cancellation on its request worker, then await it.
-    /// Pending and queued sibling tickets are retired together. Exactly one result owns the
-    /// record writes; repeated cancellation of a closed generation never calls the plugin again.
-    /// `None` means FAULT, a stale/unbound generation, or a unit that already completed normally.
-    /// The caller retains this future until completion, including when its request is abandoned.
-    /// The default serves simple synchronous test implementations; a dispatcher implementation
-    /// must override it to preserve worker ordering.
     fn cancel_unit(
         &self,
         ticket: Ticket,
@@ -457,8 +404,6 @@ pub trait PlaneCalls: Send + Sync {
     fn mint(&self) -> Option<Ticket>;
 
     /// A second request ticket of the unit `beside` was minted for (a session's other leg), on the
-    /// same worker as `beside`, so the unit's crossings stay on one worker; `None` when none can be
-    /// minted. By default, [`Self::mint`]'s.
     fn mint_beside(&self, beside: Ticket) -> Option<Ticket> {
         let _ = beside;
         self.mint()
@@ -471,13 +416,9 @@ pub trait PlaneCalls: Send + Sync {
     fn declared(&self) -> InstanceDecl;
 
     /// The instance's ONE driver ticket, minted: persistent, owned by the instance, outside
-    /// `max_inflight`; every wake on it calls `drive`. `None` when none can be minted.
     fn driver(&self) -> Option<Ticket>;
 
     /// Lifecycle `tick` at `now_ns`, submitted on `driver` (the instance's driver ticket, which
-    /// its head carries, so a service that pends inside `tick` is woken through `drive`): the
-    /// `next_tick_ns` a READY or PENDING answer names (`0` = no tick scheduled until the driver
-    /// ticket's next wake, R-PUSH), or `None` for any other answer.
     fn tick(
         &self,
         driver: Ticket,
@@ -485,25 +426,17 @@ pub trait PlaneCalls: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Option<u64>> + Send>>;
 
     /// THE DRIVER TICKET'S WAKES (R-PUSH): resolves `true` once a wake of the instance's driver
-    /// ticket has run its `drive`, one resolution per run (wakes that land together may share one);
-    /// the host then re-polls `tick`. `false` when the instance has no wake channel (it is not
-    /// open, or the calls have none): nothing will wake it, and a schedule waiting only on a wake
-    /// ends. The default has no channel.
     fn woke(&self) -> Pin<Box<dyn Future<Output = bool> + Send>> {
         Box::pin(std::future::ready(false))
     }
 
     /// THE READY SESSIONS (R-B): the streams the instance's `drive` named on its driver ticket
-    /// since the last call, each once, waiting until one is named. Empty when the instance is not
-    /// open: nothing more will be named.
     fn ready(&self) -> Pin<Box<dyn Future<Output = Vec<u64>> + Send>>;
 
     /// The client of `ticket` went away: an op in flight on it is cancelled on its worker, and its
-    /// answer carries the disposition. A message, never a crossing on the calling thread.
     fn drop_client(&self, ticket: Ticket);
 
     /// Submit `on_piece` on `ticket`; it crosses on the ticket's worker. `lent` owns the host
-    /// buffers `input` names; it is held until the crossing returns, even past a FAULT answer.
     fn on_piece(
         &self,
         ticket: Ticket,
@@ -513,7 +446,6 @@ pub trait PlaneCalls: Send + Sync {
     ) -> Box<dyn PieceInFlight>;
 
     /// Submit `serve` (one of the snapshot's admin routes) on `ticket`, as [`PlaneCalls::on_piece`]
-    /// is submitted: on the ticket's worker, `lent` held until the crossing returns.
     fn serve(
         &self,
         ticket: Ticket,

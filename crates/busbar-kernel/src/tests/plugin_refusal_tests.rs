@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A PLUGIN THE TRUST POLICY SKIPS AT BOOT IS AUDITED (owner rule: every refusal is audited and
-//! explained; nothing silent). The skip was a WARN line (BUSBAR-6002) and nothing on the chain.
-
 use super::{log_build, BuildNote};
 use crate::audit::auditlog::{
     ensure_global_audit_stream_registered, plugin_refusal_resource, PluginRefusal, AUDIT_LOG,
@@ -14,7 +11,7 @@ use crate::test_support::rows::{skipped, Rows};
 #[test]
 fn a_trust_policy_skip_seals_one_plugin_trust_record() {
     ensure_global_audit_stream_registered();
-    // The evaluator's words carry manifest bytes, a `|` among them: none of it reaches the chain.
+
     let mut row = skipped(
         "bind-audit-probe",
         "bind-audit-probe",
@@ -49,13 +46,6 @@ fn a_trust_policy_skip_seals_one_plugin_trust_record() {
     assert_eq!(sealed[0].principal, PLUGIN_REFUSAL_PRINCIPAL);
 }
 
-/// A PLUGIN LOADED AS UNVERIFIED IS AUDITED (lead ruling, security report 2026-10-29, item 1):
-/// `plugins.trust.allow_unsigned` loads an UNSIGNED plugin as UNVERIFIED code, with the BUSBAR-6003
-/// warning (1.5.5's line, unchanged) AND one `plugin.trust` record on the chain, outcome `degraded`:
-/// the plugin loaded, and nothing vouches for its bytes. The evaluator's reason stays in the
-/// warning; the chain holds the host's category, `unverified`. (A RETIRED-key signature no longer
-/// reaches this path: owner-signed 2026-10-30, it is refused even under allow_unsigned; see the
-/// test below.)
 #[test]
 fn an_unverified_load_seals_one_degraded_plugin_trust_record() {
     use busbar_contract::plugin_rows::Trust;
@@ -92,9 +82,6 @@ fn an_unverified_load_seals_one_degraded_plugin_trust_record() {
     assert_eq!(sealed[0].principal, PLUGIN_REFUSAL_PRINCIPAL);
 }
 
-/// A RETIRED-KEY SIGNATURE UNDER `allow_unsigned` IS A REFUSAL, AUDITED LIKE EVERY OTHER TRUST SKIP
-/// (owner-signed 2026-10-30, SEC-ALLOWUNS): the boot skips it and seals one `plugin.trust` record,
-/// outcome `rejected`, under the `retired_key` category, never a `degraded` unverified load.
 #[test]
 fn a_retired_key_skip_seals_one_rejected_plugin_trust_record() {
     ensure_global_audit_stream_registered();

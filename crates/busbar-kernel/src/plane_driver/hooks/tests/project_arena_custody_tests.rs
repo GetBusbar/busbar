@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A passive owner observes registered initialized bytes immediately before its Vec is freed.
-
 use std::cell::RefCell;
 use std::future::Future;
 use std::ops::{Deref, DerefMut};
@@ -73,8 +71,6 @@ impl DerefMut for ObservedArena {
 
 impl zeroize::Zeroize for ObservedArena {
     fn zeroize(&mut self) {
-        // Preserve the initialized length so the passive destructor can inspect it safely.
-        // Production uses Vec's Zeroize implementation, which also wipes spare capacity.
         zeroize::Zeroize::zeroize(self.bytes.as_mut_slice());
     }
 }
@@ -101,7 +97,6 @@ impl Drop for ObservedArena {
                     .iter()
                     .all(|byte| *byte == 0);
         });
-        // This observer never wipes or asserts. The ordinary Vec is freed after this returns.
     }
 }
 

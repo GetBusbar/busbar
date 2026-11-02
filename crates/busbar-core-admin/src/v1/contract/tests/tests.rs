@@ -1,10 +1,6 @@
 use super::*;
 use axum::http::Method;
 
-/// GOLDEN WIRE LITERALS: the mount constants pinned byte-for-byte. Everything else in the app
-/// DERIVES paths from these constants (no hand-written absolute path anywhere) — so this pin is
-/// the ONE place a path change must be made deliberately, and the tripwire that catches an
-/// accidental edit sailing through the derived code.
 #[test]
 fn mount_constants_are_the_frozen_wire_literals() {
     assert_eq!(API_ROOT, "/api");
@@ -15,8 +11,6 @@ fn mount_constants_are_the_frozen_wire_literals() {
     );
 }
 
-/// The authorization matrix, test-locked (1.5.2 scope collapse): reads (+ the two dry-run POSTs)
-/// are read-only, every mutation is full. Unknown methods fail closed to full.
 #[test]
 fn required_scope_matrix() {
     for path in [
@@ -32,7 +26,7 @@ fn required_scope_matrix() {
             "{path}"
         );
     }
-    // The two stateless dry-run POSTs stay read-only.
+
     assert_eq!(
         required_scope(&Method::POST, "/api/v1/admin/config/validate"),
         Scope::ReadOnly
@@ -41,7 +35,7 @@ fn required_scope_matrix() {
         required_scope(&Method::POST, "/api/v1/admin/plugins/inspect"),
         Scope::ReadOnly
     );
-    // Every mutation is now full — hooks, keys, config, groups alike.
+
     for (method, path) in [
         (Method::POST, "/api/v1/admin/hooks"),
         (Method::DELETE, "/api/v1/admin/hooks/my-hook"),
@@ -65,8 +59,6 @@ fn required_scope_matrix() {
     );
 }
 
-/// `parse` drops the retired delegated tokens (they now resolve to `None`, i.e. no grant), while
-/// `read-only`/`full` still round-trip.
 #[test]
 fn scope_parse_drops_mint_and_hooks_register() {
     assert!(Scope::parse("mint").is_none());
@@ -78,8 +70,6 @@ fn scope_parse_drops_mint_and_hooks_register() {
     assert_eq!(Scope::Full.as_str(), "full");
 }
 
-/// The two-rung chain: `ReadOnly` does not satisfy a `Full` requirement, `Full` satisfies both, and
-/// a `Full` grant capped by a `ReadOnly` ceiling collapses to read-only.
 #[test]
 fn readonly_not_allow_full_full_allows_readonly() {
     assert!(!Scope::ReadOnly.allows(Scope::Full));
@@ -87,12 +77,10 @@ fn readonly_not_allow_full_full_allows_readonly() {
     assert!(Scope::Full.allows(Scope::ReadOnly));
     assert!(Scope::Full.allows(Scope::Full));
 
-    // Grants: a Full grant capped by a ReadOnly ceiling authorizes reads but not mutations.
     let capped = Grants::of(Scope::Full).capped_by(Scope::ReadOnly);
     assert!(capped.allows(Scope::ReadOnly));
     assert!(!capped.allows(Scope::Full));
 
-    // `with` is a union over `allows`, and `dominates`/`meet` derive from the same seam.
     for a in Scope::ALL {
         for b in Scope::ALL {
             let union = Grants::of(a).with(b);
@@ -110,8 +98,6 @@ fn readonly_not_allow_full_full_allows_readonly() {
     assert!(!Scope::ReadOnly.dominates(Scope::Full));
 }
 
-/// The stable error taxonomy is locked: each variant's `code` + HTTP status is the frozen wire
-/// contract tooling branches on. A change here is a breaking change to v1 and must fail this test.
 #[test]
 fn admin_error_codes_and_statuses_are_frozen() {
     let cases = [
@@ -150,11 +136,6 @@ fn admin_error_codes_and_statuses_are_frozen() {
     }
 }
 
-/// CONTRACT: the admin usage response ALWAYS serializes `currency: "USD"`, sourced from the
-/// single `USAGE_CURRENCY` const (so a future removal is one line). Emitted ONLY on `UsageView`
-/// (the `GET /api/v1/admin/usage` surface); the per-key/per-model ledger views stay
-/// currency-agnostic. Regression guard: dropping this field breaks the contract and the
-/// committed openapi.json.
 #[test]
 fn usage_view_serializes_currency_from_const() {
     let view = UsageView {
@@ -175,7 +156,7 @@ fn usage_view_serializes_currency_from_const() {
         "usage response must carry the currency field from the USAGE_CURRENCY const"
     );
     assert_eq!(USAGE_CURRENCY, "USD");
-    // The per-model / per-key ledger rows stay currency-agnostic (no currency key).
+
     let row = UsageBreakdown::default();
     let rv: serde_json::Value = serde_json::to_value(row).expect("serialize breakdown");
     assert!(
@@ -184,9 +165,6 @@ fn usage_view_serializes_currency_from_const() {
     );
 }
 
-/// THE `classes` CONTRACT (new in 1.6.0, PLANE-FLIP ruling): a usage row's plane-declared classes
-/// serialize as an object keyed by class name, each `{count, cost}`, flattened onto a by-model row
-/// beside its token columns; a row with none carries no `classes` key at all (1.5.5's shape).
 #[test]
 fn a_usage_rows_classes_serialize_keyed_by_class_each_count_and_cost() {
     let row = ModelUsageView {

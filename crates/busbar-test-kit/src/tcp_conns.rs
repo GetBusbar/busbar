@@ -1,20 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A TEST STAND-IN FOR THE HOST'S CONNECTION TABLE: [`TcpConns`] serves the stream transport its
-//! facts name ([`StreamFacts`], data the conformance case supplies) to a plugin's declared needs,
-//! so a store (or any kind) that reaches a real backend over the host's connector can be opened on
-//! a [`Dispatcher`](crate::dispatch::Dispatcher) in a test without the process's connector. As the
-//! connector does, it dials `host:port` (bounded by the open's timeout), a target under its local
-//! prefix (`<prefix>/absolute/path`) over a domain socket on Unix. On other platforms the local
-//! fixture uses `<prefix><numeric-loopback-address>:<port>` over TCP. It secures a stream on
-//! `upgrade_secure` with the TLS a test hands it ([`TcpConns::with_tls`], a [`SecureDial`]): TLS
-//! stays in the connector and this crate names no TLS library, so a test hands it a double of the
-//! connector's (whose real `upgrade_secure` its own suite proves). A read with nothing ready
-//! answers PENDING and wakes the ticket shortly after, so a plugin's pending path is exercised. A
-//! test double: it never ships (`test-support`; and `conformance`, the published suite's table, a
-//! plugin repo's dev-dependency).
-
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 #[cfg(unix)]
@@ -30,20 +16,11 @@ use busbar_contract::conn::{
 use busbar_contract::ids::StreamId;
 use busbar_contract::transport::ConnFacts;
 
-/// How long after a read found nothing its ticket is woken to look again.
 const POLL: Duration = Duration::from_millis(1);
 
 use crate::stand_in::StreamFacts;
 
-/// The TLS a table secures a stream with on `upgrade_secure`, handed to it by a test
-/// ([`TcpConns::with_tls`]): the connector's, never this crate's.
 pub trait SecureDial: Send + Sync {
-    /// Secure the blocking `tcp` for `server` to a completed handshake: verifying the peer against
-    /// the trust this dial was built with, or, on `verify_off`, checking no certificate (only the
-    /// handshake's signature).
-    ///
-    /// # Errors
-    /// `server` is unusable, or the handshake failed.
     fn secure(
         &self,
         server: &str,
@@ -52,34 +29,22 @@ pub trait SecureDial: Send + Sync {
     ) -> std::io::Result<Box<dyn SecuredSock>>;
 }
 
-/// THE DESTINATION JUDGE a table dials through ([`TcpConns::judged`]), handed to it by a test: the
-/// connector's (its production guard), never this crate's. A table with none judges nothing.
 pub trait DialGuard: Send + Sync {
-    /// Judge `target` (`host:port`) under the dialling need's egress class `class`: the one
-    /// address to dial, or the refusal ([`ConnError::Refused`] for the guard's, [`ConnError::Fault`]
-    /// for a name that did not resolve, as the connector answers them).
-    ///
-    /// # Errors
-    /// The destination is refused, or does not resolve.
     fn judge(&self, target: &str, class: u32) -> Result<std::net::SocketAddr, ConnError>;
 }
 
-/// A stream [`SecureDial::secure`] secured: its bytes, the socket under it, and its close.
 pub trait SecuredSock: Read + Write + Send {
-    /// The socket under the session.
     fn tcp(&self) -> &TcpStream;
-    /// Send the close alert, flush it and shut the socket down.
+
     fn close(&mut self);
 }
 
-/// One connection's socket.
 enum Sock {
     Tcp(TcpStream),
     #[cfg(unix)]
     Unix(UnixStream),
     Tls(Box<dyn SecuredSock>),
-    /// Not dialled yet ([`TcpConns::dialling_late`]): the table's local prefix, the dial timeout,
-    /// and whether [`DeclaredConns::landed`] was asked.
+
     Late {
         prefix: String,
         timeout_ms: u64,
@@ -124,25 +89,23 @@ impl Write for Sock {
 
 struct Conn {
     sock: Sock,
-    /// The target as the plugin named it (a secured stream's server name).
+
     target: String,
-    /// What is dialled: the target, or the one address the table's judge pinned for it.
+
     at: String,
 }
 
-/// THE TEST CONNECTION TABLE.
 pub struct TcpConns {
-    /// The transport it stands in for: the claim it serves and its local-socket prefix.
     facts: StreamFacts,
     slab: ConnSlab<Mutex<Conn>>,
     wake: busbar_contract::conn::ConnWake,
     tls: Option<Arc<dyn SecureDial>>,
     timeouts: Mutex<Vec<u64>>,
-    /// Each declared need's egress class and default dial timeout, by owner and need.
+
     classes: Mutex<std::collections::HashMap<(InstanceId, NeedId), (u32, u64)>>,
-    /// An open answers with its dial still to make ([`TcpConns::dialling_late`]).
+
     late: bool,
-    /// The destination judge every dial meets first ([`TcpConns::judged`]).
+
     guard: Option<Arc<dyn DialGuard>>,
 }
 
@@ -153,7 +116,6 @@ impl std::fmt::Debug for TcpConns {
 }
 
 impl TcpConns {
-    /// Each open's dial timeout, milliseconds (`0` = none stated), in order.
     #[must_use]
     pub fn dial_timeouts(&self) -> Vec<u64> {
         self.timeouts
@@ -162,7 +124,6 @@ impl TcpConns {
             .clone()
     }
 
-    /// How many needs have been declared on this table, by every owner.
     #[must_use]
     pub fn declarations(&self) -> usize {
         self.classes
@@ -171,15 +132,11 @@ impl TcpConns {
             .len()
     }
 
-    /// A table waking a parked read's ticket through `wake` (the dispatcher's
-    /// [`conn_waker`](crate::dispatch::Dispatcher::conn_waker)); `upgrade_secure` is refused.
     #[must_use]
     pub fn new(wake: busbar_contract::conn::ConnWake) -> Self {
         Self::serving(StreamFacts::stand_in(), wake)
     }
 
-    /// A table standing in for the stream transport `facts` names, its parked reads woken through
-    /// `wake`.
     #[must_use]
     pub fn serving(facts: StreamFacts, wake: busbar_contract::conn::ConnWake) -> Self {
         Self {
@@ -194,10 +151,6 @@ impl TcpConns {
         }
     }
 
-    /// [`TcpConns::new`], an open answering at once with its dial IN FLIGHT, as the host's
-    /// connector answers one: the connect is made when [`DeclaredConns::landed`] is first asked
-    /// again (the first ask answers PENDING, its ticket woken shortly), or by the stream's first
-    /// read or write, where a refused connect fails that read or write.
     #[must_use]
     pub fn dialling_late(wake: busbar_contract::conn::ConnWake) -> Self {
         Self {
@@ -206,9 +159,6 @@ impl TcpConns {
         }
     }
 
-    /// This table, every network dial judged first by `guard` under the need's declared egress
-    /// class (the default class where none was declared), the address it pinned dialled exactly;
-    /// a refused destination is never dialled. A local-socket target is not a network dial.
     #[must_use]
     pub fn judged(self, guard: Arc<dyn DialGuard>) -> Self {
         Self {
@@ -217,7 +167,6 @@ impl TcpConns {
         }
     }
 
-    /// [`TcpConns::new`], securing a stream on `upgrade_secure` with `tls`.
     #[must_use]
     pub fn with_tls(wake: busbar_contract::conn::ConnWake, tls: Arc<dyn SecureDial>) -> Self {
         Self {
@@ -234,7 +183,6 @@ fn io(e: &std::io::Error) -> ConnError {
     }
 }
 
-/// The host of a `host:port` (or `[v6]:port`) target.
 fn host_of(target: &str) -> String {
     let t = target.rsplit_once(':').map_or(target, |(h, _)| h);
     t.trim_start_matches('[').trim_end_matches(']').to_owned()
@@ -252,8 +200,6 @@ fn dial(target: &str, local_prefix: &str, timeout_ms: u64) -> Result<Sock, ConnE
     }
     #[cfg(not(unix))]
     let target = if let Some(address) = local {
-        // The portable local fixture remains local: no DNS or remote address may bypass the
-        // network destination judge merely by carrying the local prefix.
         let at: std::net::SocketAddr = address.parse().map_err(|_| ConnError::Refused)?;
         if !at.ip().is_loopback() {
             return Err(ConnError::Refused);
@@ -265,8 +211,6 @@ fn dial(target: &str, local_prefix: &str, timeout_ms: u64) -> Result<Sock, ConnE
     let s = if timeout_ms == 0 {
         TcpStream::connect(target).map_err(|_| ConnError::Refused)?
     } else {
-        // Every address the name resolves to, in order, as the connector tries them.
-        // A never-shipped test stand-in that judges no names: its unmapped resolve is intended.
         let addrs: Vec<_> = target
             .to_socket_addrs()
             .map_err(|_| ConnError::Refused)?
@@ -292,7 +236,6 @@ fn dial(target: &str, local_prefix: &str, timeout_ms: u64) -> Result<Sock, ConnE
     Ok(Sock::Tcp(s))
 }
 
-/// Make a late connection's dial ([`TcpConns::dialling_late`]), once.
 fn land(c: &mut Conn) -> Result<(), ConnError> {
     if let Sock::Late {
         prefix, timeout_ms, ..
@@ -414,7 +357,6 @@ impl Conns for TcpConns {
             }),
             Err(e) if e.kind() == ErrorKind::WouldBlock => {
                 if ticket != 0 {
-                    // Look again shortly: the ticket is woken, and the read made again.
                     let wake = self.wake.clone();
                     std::thread::spawn(move || {
                         std::thread::sleep(POLL);
@@ -431,10 +373,6 @@ impl Conns for TcpConns {
         Err(ConnError::Refused)
     }
 
-    /// A stream secured by `upgrade_secure` reports a certificate, as the host's `FACTS` reads
-    /// security off one (the TLS double does not name the far end's; a stand-in does); a clear one
-    /// reports none, so a credential that must go out secured (`Cred::secure_required`) is refused
-    /// on it as the host refuses it.
     fn facts(&self, caller: InstanceId, conn: ConnId) -> Result<ConnFacts, ConnError> {
         let (_, c) = self.slab.get(caller, conn)?;
         let secured = matches!(
@@ -478,8 +416,6 @@ impl DeclaredConns for TcpConns {
         require_secure: bool,
         dial_timeout_ms: u64,
     ) -> Result<ConnId, ConnError> {
-        // This terminal fixture carries raw streams: its open timeout bounds the dial alone.
-        // Framed whole-request bounds are served by a framed table, never this one.
         let dial_timeout_ms = if dial_timeout_ms == 0 {
             self.classes
                 .lock()
@@ -527,10 +463,6 @@ impl DeclaredConns for TcpConns {
         self.slab.check_need(owner, need).ok().map(Ok)
     }
 
-    /// TLS from the stream's next byte, through the table's TLS ([`TcpConns::with_tls`]):
-    /// verifying, or, on `verify_off` (an operator-infrastructure need's only, as the connector
-    /// rules), checking no certificate; the handshake runs to completion here (a test double may
-    /// block its caller). A table without TLS refuses every upgrade.
     fn upgrade_secure(
         &self,
         caller: InstanceId,
@@ -574,8 +506,6 @@ impl DeclaredConns for TcpConns {
         !transport.is_empty() && transport == self.facts.transport
     }
 
-    /// A late connection's dial ([`TcpConns::dialling_late`]): PENDING on its first ask, its
-    /// ticket woken shortly; made on the next. Any other connection landed when it opened.
     fn landed(&self, caller: InstanceId, conn: ConnId, ticket: u64) -> Result<(), ConnError> {
         let (_, c) = self.slab.get(caller, conn)?;
         let mut c = c.lock().unwrap_or_else(PoisonError::into_inner);

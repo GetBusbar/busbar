@@ -1,61 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The COST + LIMIT MODEL: rate-card resolution, ledger-to-spend derivation, and the resolved
-//! `groups:` limit topology the generic limit engine (governance) enforces. This is the ONE module
-//! the engine calls for anything cost- or limit-shaped; the `Store` trait (in `busbar-api`) stays
-//! the persistence seam and carries ONLY tokens.
-//!
-//! Principles (the 1.5.0 redesign):
-//! - TOKENS ARE THE LEDGER; dollars are ALWAYS derived, never stored as truth. Every spend figure
-//!   is computed here at read time as `ledger x current rate card`, so correcting a rate is a
-//!   config edit + reload - past and future derived figures instantly become right. (Honest limit:
-//!   repricing cannot un-make PAST admit/reject decisions taken under a wrong rate.)
-//! - NO CURRENCY in the core. Rates are ABSTRACT cost units (micro-units per token in config,
-//!   integer NANO-units per token internally); `_cents` fields are abstract minor units. Currency
-//!   is a display concern owned entirely by the consumer.
-//! - ALL-OR-NOTHING pricing: `rate_card` absent => every model prices at 0 (only the flat
-//!   per-request fee counts); present => authoritative + complete (validated at boot).
-//! - INTEGER MATH ONLY on the hot path: config floats convert ONCE, at the config intake
-//!   (`RateEntryCfg::raw_tier_rates`), to exact nano-units per token;
-//!   derivation is a few u128 multiply-adds over the models a bucket actually used.
-//! - GROUPS are the ONE limit tree: a group's generic limits (requests / tokens / budget per
-//!   window, plus the instantaneous `concurrent` gauge) resolve here into per-(group, window)
-//!   ENFORCEMENT BUCKETS; keys are pure auth and contribute no caps of their own.
-//!
-//! A `CostModel` is resolved from config at boot / config-apply and lives on `App` (rebuilt on
-//! apply), while the `GovState` token ledger survives the apply - which is exactly what makes
-//! reprice-on-reload work.
-
 use std::collections::{BTreeMap, HashMap};
 
 use busbar_contract::records::ScopeRef;
 
 use crate::config::groups::{AdmissionMode, LimitMetric};
 
-/// THE KERNEL'S FACADE OVER THE LEDGER'S MONEY TYPES (#36): the cleanliness crates reach the dated
-/// rate-card history, the card, the row read and the one pricing function by THIS path, never by
-/// naming the ledger crate. Each name is the ledger's own item re-exported as it is: the same type
-/// and the same function, so a figure priced through this path is the ledger's figure.
 pub use busbar_kernel_ledger::cost::{
     budget_remaining, plane_fee_lane, price_ledger, sum_spend, Author, CardEntryDraft, EntryId,
     History, HistorySeq, HistoryView, LedgerEntry, MeteredRow, MoneyError, PlaneFees, RateCard,
     RawRateEra, TierRates, PER_SESSION,
 };
 
-/// The prefix namespacing GROUP bucket ids in the store, so a group named like a key id can never
-/// collide with a real key's bucket. Key buckets use the bare key id. A group's per-window buckets
-/// are `group:<name>@<window>` - one ledger row per (group, window granularity), so a group with
-/// limits in several windows never double-counts a flush into one row. A SCOPE-QUALIFIED bucket
-/// (limits carrying `pool: <name>`, i.e. `scope: { kind: "pool", value: <name> }`) appends
-/// `#<kind>:<value>`: `group:<name>@<window>#pool:<name>` - its own ledger row, accounting only
-/// the traffic dispatched through that scope. (Generic-admission-topology generalization: the
-/// scheme was `#<pool>` before this widened to carry the kind; safe to change with no migration
-/// since no store persists this literal string durably yet.)
 pub const GROUP_BUCKET_PREFIX: &str = "group:";
 
-/// The persisted enforcement identity, shared with candidate validation. Existing unambiguous
-/// identities stay stable; validation refuses distinct components that would spell one identity.
 pub(crate) fn group_bucket_id(name: &str, window: &str, scope: Option<&ScopeRef>) -> String {
     match scope {
         Some(scope) => format!(
@@ -77,16 +36,6 @@ pub struct RateNanos {
 }
 
 impl RateNanos {
-    /// Project the NEUTRAL tier-rate view ([`busbar_contract::billing::RawTierRates`]) — the four
-    /// exact nano-per-token rates in canonical reserved order — to this nano-rate. Core reads rates
-    /// through this NEUTRAL view so the projection names no plane config type.
-    ///
-    /// THERE IS NO CONVERSION HERE, AND THAT IS THE POINT. This used to be a SECOND copy of the
-    /// decimal-to-money conversion, and the two drifted (a `1e300` rate priced as zero in the book
-    /// and as `u64::MAX` nanos here). The view now carries the integers the config intake converted
-    /// once (`RateEntryCfg::raw_tier_rates`, the ledger's `representable_nano_rate`), so this is a
-    /// copy of four integers: a rate the card cannot hold (`None`) reads as the zero the ledger's
-    /// `nano_rate` gives it, exactly as before.
     pub fn from_raw(raw: &busbar_contract::billing::RawTierRates) -> Self {
         Self {
             input: raw.input.unwrap_or(0),
@@ -96,19 +45,11 @@ impl RateNanos {
         }
     }
 
-    /// Project a core `RateEntryCfg` by first taking its neutral exact view (the intake), then
-    /// [`from_raw`](Self::from_raw). A thin adapter kept while the `rate_card:` grammar
-    /// still lives in core (S2a). Once the grammar relocates
-    /// to the owning plane (S2b) this adapter goes and callers hand [`from_raw`] the plane-filled view.
     pub fn from_cfg(r: &crate::config::RateEntryCfg) -> Self {
         Self::from_raw(&r.raw_tier_rates())
     }
 }
 
-/// The enforcement book's per-model unit map, handed to the one function VERBATIM (item 123, #71):
-/// every class the plane declared, the reserved four and the open ones alike, as exact whole counts.
-/// The card decides what each prices at — and a present card silent about a class the traffic hit
-/// REFUSES (#42) — so no class is filtered out here to be priced as nothing.
 fn unit_counts(
     units: &BTreeMap<String, u64>,
 ) -> impl Iterator<Item = (&str, busbar_kernel_ledger::cost::Count)> + '_ {
@@ -170,8 +111,6 @@ pub struct ClassCap {
 }
 
 impl GroupBucket {
-    /// The cap configured under `metric` on this bucket, if any: the admin view's read of one
-    /// per-class cap.
     pub fn class_cap(&self, metric: LimitMetric) -> Option<u64> {
         (self.class_caps.iter())
             .find(|c| c.metric == metric)
@@ -222,25 +161,12 @@ pub(crate) struct ChainBucket<'a> {
 }
 
 impl ChainBucket<'_> {
-    /// Whether this bucket participates in a request dispatched through `pool` - group-wide
-    /// buckets always do; a pool-scoped bucket only for its own pool. Every enforcement walk
-    /// (admit / charge / refund / accrue / headroom) keys off this ONE predicate so the paths
-    /// can never disagree on what was charged vs what is refunded. Hardcodes `kind: "pool"`
-    /// deliberately - THIS call site is the one that knows it is checking pool admission (see
-    /// `ScopeRef`'s doc: each admission site names the kind it expects, `ScopeRef` itself stays
-    /// kind-agnostic).
     pub fn applies_to_pool(&self, pool: &str) -> bool {
         self.scope
             .is_none_or(|s| s.kind == "pool" && s.value == pool)
     }
 }
 
-/// A resolved enforcement chain: the key's attribution bucket plus every ancestor group's
-/// per-window buckets, innermost group first. Sized by the chain actually walked (the tree is
-/// unbounded by policy; a chain can never exceed the number of groups — cycles are a validate
-/// error and the walk clamps there defensively). Also carries the GROUP INDICES walked (for the
-/// `enabled` freeze check and the `concurrent` gauges, which are per group, not per window
-/// bucket).
 pub(crate) struct Chain<'a> {
     buckets: Vec<ChainBucket<'a>>,
     groups: Vec<usize>,
@@ -255,51 +181,29 @@ impl<'a> Chain<'a> {
         self.buckets.len()
     }
 
-    /// The `CostModel::groups()` indices of the chain's groups, innermost first.
     pub fn group_indices(&self) -> &[usize] {
         &self.groups
     }
 }
 
-/// The resolved cost model: the effective integer rate table + the group limit topology + the
-/// flat per-request fee. Immutable once resolved; rebuilt with the config on apply/reload.
 pub struct CostModel {
-    /// THE CARD, in the one function's own type (items 104, 25). ABSENT = `rate_card` absent =
-    /// token pricing 0 for every model, fee still posts. PRESENT = the AUTHORITATIVE effective
-    /// table, straight from the top-level `rate_card:` (the ONLY cost source). It used to be a
-    /// private `HashMap<String, RateNanos>` that this module priced with its own copy of the
-    /// arithmetic; every figure is now `busbar_kernel_ledger::cost::Tally` over this card.
     card: busbar_kernel_ledger::cost::RateCard,
-    /// Configured routing prices by opaque lane and class, in micro-units. Routing preserves
-    /// configured floats; the separate integer card remains the authority for billing/knownness.
+
     routing_prices: std::sync::Arc<BTreeMap<String, BTreeMap<String, f64>>>,
     groups: Vec<GroupRuntime>,
     group_idx: HashMap<String, usize>,
-    /// The ids of every LIVE bucket that still carries at least one windowed cap — the exact set
-    /// `project_groups` just emitted, indexed for O(1) membership. This is what makes
-    /// "does this ledger cell still back an enforced cap?" an IDENTITY question (is this id one of
-    /// the ids the model produces?) instead of a parse of the id's internal structure.
+
     capped_bucket_ids: std::collections::HashSet<String>,
-    /// This model's GENERATION: unique to each constructed model and moved by every card edit, so
-    /// the scrape's money-view memo (`governance::money_view`) knows the card changed without
-    /// comparing cards. Never reused, so a new model at a freed address cannot pass as the old one.
+
     generation: u64,
 }
 
 impl CostModel {
-    /// Resolve from config. Assumes `config_validate` has already passed (completeness, acyclic
-    /// groups, valid limit shapes); this is a pure projection and is defensive, never panicking,
-    /// on anything validation should have caught.
     pub fn resolve_parts(
         rate_card: Option<&std::collections::BTreeMap<String, crate::config::RateEntryCfg>>,
         per_request_fee: i64,
         groups_cfg: &std::collections::BTreeMap<String, crate::config::GroupCfg>,
     ) -> Self {
-        // rate_card is the ONLY cost source: no per-entry cost override lives anywhere else in
-        // config. Each rate was converted ONCE, exactly, at the intake (`raw_tier_rates`); the card is
-        // built by the one constructor that owns card-building — the class fan-out, the unpriced
-        // placement of an unrepresentable rate (item 22) and the fee's clamp are all
-        // `RateCard::from_config`'s, so the door and the bill hold ONE card.
         let card = busbar_kernel_ledger::cost::RateCard::from_config(
             rate_card.map(|card| {
                 card.iter().map(|(model, r)| {
@@ -317,7 +221,6 @@ impl CostModel {
             }),
             per_request_fee,
         )
-        // THE OPEN CLASSES (item 123), exact integer nano-unit rates beside the reserved four.
         .with_unit_rates(rate_card.into_iter().flatten().flat_map(|(model, r)| {
             r.units.iter().map(move |(class, rate)| {
                 (
@@ -356,10 +259,6 @@ impl CostModel {
         }
     }
 
-    /// Rebuild the model with a NEW groups map, reusing the resolved rate card + flat fee unchanged.
-    /// The Admin-API group-mutation seam (`build_with_group` / `build_without_group`): a runtime
-    /// group change must reproject enforcement buckets WITHOUT re-parsing the rate card (which the
-    /// mutation never touched). Pure — assumes the caller already re-ran `validate_groups`.
     pub fn with_groups(
         &self,
         groups_cfg: &std::collections::BTreeMap<String, crate::config::GroupCfg>,
@@ -375,9 +274,6 @@ impl CostModel {
         }
     }
 
-    /// Index the ids of every projected bucket that carries at least one windowed cap. Built from
-    /// the SAME `GroupBucket`s the engine enforces against, so the set can never disagree with the
-    /// model about which cells are load-bearing.
     fn capped_bucket_ids(groups: &[GroupRuntime]) -> std::collections::HashSet<String> {
         groups
             .iter()
@@ -392,16 +288,10 @@ impl CostModel {
             .collect()
     }
 
-    /// Whether `bucket_id` is, RIGHT NOW, the id of a live bucket that still enforces at least one
-    /// windowed cap. Pure identity: the id either is one the live model produces or it is not, so
-    /// no assumption about `@`/`#` being delimiters (or a group name avoiding them) exists here.
     pub fn bucket_enforces_a_cap(&self, bucket_id: &str) -> bool {
         self.capped_bucket_ids.contains(bucket_id)
     }
 
-    /// Project a `GroupCfg` map into the runtime enforcement form: sorted `GroupRuntime` vec + a
-    /// name→index map (parents resolved to indices). Shared verbatim by `resolve_parts` (boot/apply)
-    /// and `with_groups` (runtime group mutation) so the two paths can never drift.
     fn project_groups(
         groups_cfg: &std::collections::BTreeMap<String, crate::config::GroupCfg>,
     ) -> (Vec<GroupRuntime>, HashMap<String, usize>) {
@@ -416,12 +306,7 @@ impl CostModel {
             .iter()
             .map(|name| {
                 let g = &groups_cfg[name.as_str()];
-                // Project the group's generic limits into per-(window, pool) enforcement buckets.
-                // A bucket materialises on first use (config order); a metric repeated for the
-                // same window + pool scope keeps the MOST RESTRICTIVE (minimum) amount - AND
-                // semantics inside one group, same as across the chain. A pool-qualified limit
-                // gets its OWN bucket (its own ledger row), so `budget: 5000 pool: frontier` and
-                // `budget: 5000 pool: value` account independently.
+
                 let mut buckets: Vec<GroupBucket> = Vec::new();
                 let mut concurrent_cap: Option<u64> = None;
                 for l in &g.limits {
@@ -475,9 +360,7 @@ impl CostModel {
                                 }
                                 LimitMetric::Budget => {
                                     let amount = i64::try_from(l.amount).unwrap_or(i64::MAX);
-                                    // The MOST RESTRICTIVE budget's exhaustion behavior governs:
-                                    // it is the cap that actually blocks, so its downgrade (or
-                                    // its absence = block) is what fires.
+
                                     if bucket.budget_cap.is_none_or(|c| amount < c) {
                                         bucket.downgrade_to = l.downgrade_to.clone();
                                     }
@@ -491,8 +374,7 @@ impl CostModel {
                                 LimitMetric::Concurrent => unreachable!("matched above"),
                             }
                         }
-                        // A windowed metric with no `per` cannot deserialize (LimitCfg enforces the
-                        // shape at parse); defensively skip rather than panic.
+
                         (_, None) => {}
                     }
                 }
@@ -501,8 +383,7 @@ impl CostModel {
                     enabled: g.enabled,
                     concurrent_cap,
                     buckets,
-                    // A missing parent is a validate error; defensively resolve to None here so a
-                    // bad config that somehow booted degrades to a shorter chain, never a panic.
+
                     parent: g.parent.as_deref().and_then(|p| group_idx.get(p).copied()),
                 }
             })
@@ -510,7 +391,6 @@ impl CostModel {
         (groups, group_idx)
     }
 
-    /// A minimal model for tests / governance-off paths: no card, no groups, the given flat fee.
     #[cfg(any(test, feature = "test-support"))]
     pub fn flat(price_per_request_cents: i64) -> Self {
         Self {
@@ -523,29 +403,19 @@ impl CostModel {
         }
     }
 
-    /// Resolve a CONFIGURED name to its rate-card key. Today the rate card is keyed by the
-    /// caller-supplied name itself, so this is the identity - kept as the one seam every
-    /// consumer resolves through, so a future re-aliasing lands in one place.
     pub fn resolve_model_alias<'a>(&'a self, model: &'a str) -> &'a str {
         model
     }
 
-    /// Whether a rate card is configured (token pricing active).
-    ///
-    /// `pub` (was crate-private): the first of the two questions the pre-admission pricing guard
-    /// asks.
     pub fn pricing_enabled(&self) -> bool {
         self.card.pricing_enabled()
     }
 
-    /// The per-request fee of the plane keyed `plane` (#47): its own `fees.per_request`, `0` when it
-    /// configured none; the empty key is the pools plane's — `per_request_fee:`.
     pub fn request_fee_on(&self, plane: &str) -> i64 {
         let lane = busbar_kernel_ledger::cost::plane_fee_lane(plane);
         self.card.plane_lane(&lane).0.fee()
     }
 
-    /// Put each other plane's own fees (#47) on the card, by plane registry key.
     #[must_use]
     pub fn with_plane_fees(mut self, fees: &crate::config::PlaneFeesMap) -> Self {
         self.card = self
@@ -555,19 +425,14 @@ impl CostModel {
         self
     }
 
-    /// This model's generation (see the field).
     pub fn generation(&self) -> u64 {
         self.generation
     }
 
-    /// The card every figure this model derives is priced against — the one function's own type.
     pub fn card(&self) -> &busbar_kernel_ledger::cost::RateCard {
         &self.card
     }
 
-    /// The configured routing price for an opaque lane/class, preserving the original float.
-    /// Missing, disabled or unrepresentable card cells remain unknown, including at zero weight.
-    /// This estimate is never used to price a ledger line, fee, cap or admission.
     pub fn routing_price(&self, lane: &str, class: &str) -> Option<f64> {
         let pricing = self.card.lane_pricing(lane);
         if !pricing.card.pricing_enabled()
@@ -593,14 +458,6 @@ impl CostModel {
         self.group_idx.get(name).map(|&i| &self.groups[i])
     }
 
-    /// PRICE a neutral [`busbar_contract::billing::Usage`] for `model` into nano-units — the
-    /// kernel's one pricing entry point.
-    ///
-    /// **THE ONE FUNCTION** over one row at this card: `None` is every refusal it can give — a
-    /// present card that does not name the model, a hit class it cannot price (#42), an overflow
-    /// (item 28) — and the caller fails closed on it. Card absent ⇒ `Some(0)`. Every class the usage
-    /// carries reaches the row (item 123): an open class the card prices is charged, one it does not
-    /// refuses.
     pub fn price_usage_nanos(
         &self,
         model: &str,
@@ -619,11 +476,6 @@ impl CostModel {
         busbar_kernel_ledger::cost::nanos_of_exact(tally.exact().ok()?).ok()
     }
 
-    /// THE `admission: estimate` GUESS (the design's budget modes): the plane's expected units priced by the one money function at each of `models` (the
-    /// destinations verify allowed), the HIGHEST of them, in whole minor units rounded UP once.
-    /// A guess by design ("It's an estimate. It will never be right."), rounded conservatively because it only ever gates an admission; it is never stored and never bills
-    /// (a line carries only far-end-reported units). No model or no expected unit is `Some(0)`.
-    /// `None` when a model cannot price an expected class (#42): the caller fails closed.
     pub fn estimate_minor(&self, models: &[&str], expected: &BTreeMap<String, u64>) -> Option<i64> {
         if expected.values().all(|n| *n == 0) {
             return Some(0);
@@ -639,30 +491,17 @@ impl CostModel {
         Some(i64::try_from(minor).unwrap_or(i64::MAX))
     }
 
-    /// Whether a request for `model` must be REJECTED because the rate card is present but has no
-    /// entry (an arbitrary passthrough model string not in the configured rate card). Fail-closed and
-    /// consistent with the completeness rule: you either price nothing or price everything.
-    ///
-    /// `pub` (was crate-private): the second of the pricing guard's two questions, answered for a
-    /// plane over the same card.
     #[inline]
     pub fn model_unpriced(&self, model: &str) -> bool {
         self.card.lane_unpriced(model)
     }
 
-    /// Resolve the ENFORCEMENT CHAIN for a key: [key's attribution bucket] -> key.group's window
-    /// buckets -> parent's -> ... root, innermost first. Borrows the key + this model's group
-    /// table; allocates only the chain vectors themselves.
-    ///
-    /// `Err(missing)` when the key names a `group` that does not exist in config - the
-    /// FAIL-CLOSED outcome (mint validates the group; boot re-checks; this arm covers a shared
-    /// durable store whose keys reference a group another node's config no longer has).
     pub(crate) fn chain_for<'a>(
         &'a self,
         key: &'a busbar_contract::records::VirtualKey,
     ) -> Result<Chain<'a>, &'a str> {
         let mut buckets: Vec<ChainBucket<'a>> = Vec::with_capacity(8);
-        // The key's own attribution bucket: uncapped, unscoped, all-time.
+
         buckets.push(ChainBucket {
             bucket_id: &key.id,
             window: crate::governance::WINDOW_TOTAL,
@@ -675,8 +514,6 @@ impl CostModel {
             .transpose()?;
         while let Some(i) = next {
             if groups.len() >= self.groups.len() {
-                // A distinct-node walk cannot exceed the group count without revisiting one, i.e.
-                // a cycle. Cycles are a validate error; clamp defensively (never loop).
                 break;
             }
             let g = &self.groups[i];

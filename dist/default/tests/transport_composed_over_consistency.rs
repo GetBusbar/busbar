@@ -1,22 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Every linked wire is built over nothing, as the boot seal records it. A transport is linked only
-//! as its memory-ABI door, and the host serves a door over its own sockets: the door is
-//! refused at its build if it names a transport it composes over (`HostWire::new`), so the seal's
-//! rows record no layer (`composed_over: None`, which the registry's boot check,
-//! `busbar_contract::transport::registry::check_composition`, holds against each declaration). This
-//! is the witness that the linked wires agree with that — built by the same bottom-up fold the boot
-//! seal (`busbar::root::registry::compose`) runs over the linked transport table, which build.rs
-//! hands this test as data (`$OUT_DIR/linked_transports.rs`), and checked against the shipped fold
-//! (`src/root/tests/fixtures/transport_fold.txt`, the same rows the root's own fold test reads). The
-//! test names no transport: every key it holds is one a linked row declared.
-
 use busbar_contract::transport::TransportSettings;
 
 include!(concat!(env!("OUT_DIR"), "/linked_transports.rs"));
 
-/// The shipped fold: `<wire key> <layer it was composed over, or ->`, in build order.
 const TRANSPORT_FOLD: &str =
     include_str!("../../../crates/busbar/src/root/tests/fixtures/transport_fold.txt");
 
@@ -32,10 +20,7 @@ fn shipped_fold() -> Vec<(&'static str, Option<&'static str>)> {
 #[test]
 fn every_real_transport_answers_composed_over_consistently_with_its_construction() {
     let shipped = shipped_fold();
-    // Every linked transport row is built: the fold's rows plus the rows this build leaves unlinked
-    // are the shipped table, so a row dropped from the manifest is a row missing here.
-    // A row registers every scheme its entry claims (ONE ENTRY PER PLUGIN: an entry's second scheme
-    // is its own claim, not a row), so the shipped fold has one row per CLAIM of a linked row.
+
     let claimed: usize = LINKED_TRANSPORTS.iter().map(|r| (r.claims)().len()).sum();
     assert_eq!(
         claimed + LINKED_TRANSPORTS_OFF,
@@ -61,9 +46,7 @@ fn every_real_transport_answers_composed_over_consistently_with_its_construction
             row.key
         );
     }
-    // NO TRANSPORT NAMES ANOTHER: the carrier
-    // is the connector's choice from the target's scheme, so no shipped wire is built over another
-    // and the shipped fold names no layer.
+
     assert!(
         shipped.iter().all(|(_, over)| over.is_none()),
         "the shipped fold names a layer"

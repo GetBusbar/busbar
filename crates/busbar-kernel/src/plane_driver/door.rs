@@ -1,55 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DOOR PLANES' REGISTRY FOLD (ARCHITECT RULING 2026-10-03, Q-DEL-A2A-DECL; `BUSBAR-1.6.0.md`
-//! #49, OWNER-LOCKED: "the config SECTION name for a plane comes from that plane's Statement
-//! `sections.owns`"; R2-C: duplicate declarations are derived, not declared).
-//!
-//! A plane served through its memory-ABI door states everything its registry row holds: its
-//! declaring section, and in its plane tail its scope kinds, nouns, signing, billable classes, fee
-//! units, record kinds, trust keys and passthrough refusal. The loader reads those facts off a door,
-//! linked or dropped alike, as a [`PlaneRegistration`]; [`fold`] turns one into the kernel's
-//! [`PlaneDecl`], so the composition root installs it beside the linked rows BEFORE the config
-//! prepass, and the prepass lifts the plane's section from the registry like any other. No root row
-//! and no plane literal: every word here is the door's.
-//!
-//! What the row DOES:
-//! * its section parses through the door's own `validate` and is carried as written
-//!   ([`DoorSection`]), so a section the door refuses fails `--validate` and boot in the door's words;
-//! * when the section is one of the 1.5.3 named-definition maps (the kernel's frozen
-//!   `NAMED_MAP_SECTIONS`: a registration per key beside the reserved section words), the admin
-//!   named-map CRUD (`/<section>/{name}`) is generated from the row: the reads
-//!   ([`PlaneDecl::named_def_list`], `named_def_get`, `registry_contains`) project each registration
-//!   onto the shared view (its trust keys read by the kernel, which owns them), and a write is
-//!   judged by the door's `validate` over a one-entry section, in the 1.5.3 named-map wording;
-//! * the per-registration hook attach is re-resolved from the section's `hooks:` lists.
-//!
-//! * its runtime slot holds what the door faces the world with for the generation (the snapshot a
-//!   probe instance of the door publishes over the section and the public base URL): the kernel mounts the
-//!   door's claims by their literal prefix and binds its audience from it, so a credential at the
-//!   door is judged for that resource and a refusal there is the resource's RFC 6750 challenge.
-//!
-//! What it does NOT do: build an engine runtime or serve a route. The door's routes are mounted by
-//! the serve row, and the door serves them.
-//!
-//! THE DOOR IS IN THE ROW. A registry row's hooks are plain `fn` pointers, which carry no state; a
-//! hook that reads its plane's own row is handed it, and a folded door's row carries the door it was
-//! folded from ([`PlaneDecl::door`], a [`DoorRow`]). The kernel holds no table of folded doors, and
-//! the door hooks are one set, shared by every door.
-
 use busbar_contract::plane::{BillableClass, PlaneDeclaration, TrustKeyDecl, TrustRole};
 use busbar_contract::plane_calls::PlaneRegistration;
 
 use crate::config::plane_sections::{ContainerGateInputs, PlaneCfg};
 use crate::plane_driver::registry::{BuildCtx, PlaneDecl, PlaneHooks};
 
-/// ONE FOLDED DOOR: the registration the loader read off it, and the dialect lists its row's hooks
-/// answer. Folded once into its row ([`fold`]) and carried by it ([`PlaneDecl::door`]): the row is
-/// the only place it lives.
 pub struct DoorRow {
     reg: PlaneRegistration,
     dialects: &'static [&'static str],
-    /// The dialects its tail flags `DIALECT_PROVIDER`, in its order.
+
     provider_dialects: &'static [&'static str],
 }
 
@@ -62,19 +23,10 @@ impl std::fmt::Debug for DoorRow {
     }
 }
 
-/// The door `decl` was folded from, if it is a door's row.
 fn row(decl: &PlaneDecl) -> Option<&'static DoorRow> {
     decl.door
 }
 
-/// FOLD a door plane's registration into a registry row, carrying the door it came from
-/// ([`PlaneDecl::door`]). Every fold is its own row: the composition root folds each door once and
-/// owns the rows it folded; a test folds the rows it uses.
-///
-/// # Errors
-///
-/// A registration that names no key or no section (a plane is installed by its name and configured
-/// by its section).
 pub fn fold(reg: PlaneRegistration) -> Result<&'static PlaneDecl, String> {
     if reg.key.is_empty() || reg.section.is_empty() {
         return Err(format!(
@@ -84,8 +36,7 @@ pub fn fold(reg: PlaneRegistration) -> Result<&'static PlaneDecl, String> {
         ));
     }
     let declaration = declaration_of(&reg);
-    // The named-map surface is the 1.5.3 named-definition maps' (the frozen section list), so a
-    // door plane whose verb is one of them answers its CRUD and any other answers none.
+
     let named = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS.contains(&reg.section);
     let hooks = door_hooks(named, !reg.owns.is_empty(), !reg.admin_routes.is_empty());
     let dialects: &'static [&'static str] = reg.dialects.clone().leak();
@@ -105,7 +56,6 @@ pub fn fold(reg: PlaneRegistration) -> Result<&'static PlaneDecl, String> {
     Ok(Box::leak(Box::new(decl)))
 }
 
-/// The registration's contract declaration, every word the door's.
 fn declaration_of(reg: &PlaneRegistration) -> PlaneDeclaration {
     PlaneDeclaration {
         key: reg.key,
@@ -134,32 +84,21 @@ fn declaration_of(reg: &PlaneRegistration) -> PlaneDeclaration {
     }
 }
 
-/// Whether `decl` is a folded door's registry row (a plane served through its memory-ABI door).
 #[must_use]
 pub fn is_door(decl: &PlaneDecl) -> bool {
     decl.door.is_some()
 }
 
-/// The sections a folded door's Statement CONSUMES (`PlaneRegistration::consumes`): sections
-/// another owner declares that the plane reads. Empty for a row no door folded.
 #[must_use]
 pub fn consumed_sections(decl: &PlaneDecl) -> &'static [&'static str] {
     row(decl).map_or(&[], |d| d.reg.consumes.as_slice())
 }
 
-/// Response media types a loaded plane declares for streamed delivery.
 #[must_use]
 pub fn streaming_content_types(decl: &PlaneDecl) -> &'static [&'static str] {
     row(decl).map_or(&[], |d| d.reg.streaming_content_types.as_slice())
 }
 
-/// THE PROVIDER-KEY DESCRIPTOR a door of `decls` states (`PlaneRegistration::provider_keys`, row 155
-/// B1c): the `providers:` entry keys its plane owns, per form, in their frozen order and the neutral
-/// shape vocabulary; the first door row that states one, `None` when none does. The kernel names
-/// none of those keys: this is their only source.
-///
-/// Provider-entry parsing reads these shapes for plane-owned fields before carrying their
-/// values into the resolved opaque provider table.
 #[must_use]
 pub fn provider_keys(
     decls: &[&'static PlaneDecl],
@@ -169,11 +108,6 @@ pub fn provider_keys(
         .find_map(|d| d.reg.provider_keys.as_ref())
 }
 
-/// THE JUDGE OF ONE PROVIDER ENTRY'S OPTIONS (`config::providers::judge_options`): the door row of
-/// the registered planes ([`crate::plane_driver::registry::plane_decls`]) whose tail flags the
-/// provider's dialect a provider dialect validates `{"providers": {<name>: <table>}}`, the entry as
-/// the plane receives it at open, and answers in its own words. `None` when no registered door
-/// speaks that dialect.
 #[must_use]
 pub fn judge_provider(
     name: &str,
@@ -192,8 +126,6 @@ pub fn judge_provider(
             .and_then(|bytes| (door.reg.validate)(&bytes)),
     )
 }
-
-// ── THE SECTION ───────────────────────────────────────────────────────────────────────────────
 
 /// A DOOR PLANE'S SECTION, as written: the door judged it (`validate`) and is handed it raw; the
 /// kernel reads only the words it owns (the registrations' names, their trust keys and `hooks:`
@@ -217,8 +149,6 @@ pub struct DoorSection {
 }
 
 impl DoorSection {
-    /// This section as the declared-sections map a plane's `build` reads (`BuildCtx::plane_defs`),
-    /// keyed by its config section.
     #[must_use]
     pub fn as_defs(
         &self,
@@ -230,10 +160,6 @@ impl DoorSection {
         )])
     }
 
-    /// The section `section` as written, parsed through `door` (the door that declares it), with the
-    /// secret references it holds at the door's declared paths (`settings.<segment>…`, `*` every key
-    /// of the map there) read out, so `--validate` and boot resolve each one as they resolve every
-    /// other reference.
     #[must_use]
     pub fn new(
         door: Option<&'static DoorRow>,
@@ -277,7 +203,6 @@ impl DoorSection {
         crate::trust::section::registrations(&self.value)
     }
 
-    /// A hook list under `hooks:` in `v`, as written (non-strings skipped: the door refused them).
     fn hooks_of(v: &serde_yaml::Value) -> Vec<String> {
         v.as_mapping()
             .and_then(|m| m.get(busbar_contract::plugin::Kind::Hook.root()))
@@ -293,7 +218,6 @@ impl DoorSection {
 
 impl PlaneCfg for DoorSection {
     fn secret_refs(&self) -> Vec<(String, &busbar_contract::secret_ref::SecretRef)> {
-        // The references at the door's declared paths, so `--validate` and boot resolve each one.
         self.refs.iter().map(|(at, r)| (at.clone(), r)).collect()
     }
 
@@ -324,7 +248,7 @@ impl PlaneCfg for DoorSection {
         if let Some(m) = self.value.as_mapping_mut() {
             m.insert(serde_yaml::Value::String(name.to_string()), entry);
         }
-        // The written entry's references are the section's too.
+
         *self = Self::new(self.door, self.section, std::mem::take(&mut self.value));
         Ok(())
     }
@@ -339,10 +263,6 @@ impl PlaneCfg for DoorSection {
         }
     }
 
-    /// THE WHOLE EFFECTIVE SECTION, judged by its door: the file's entries and every entry the
-    /// management surface wrote, in one `validate` — the rules no single entry can see (one
-    /// registration's published name colliding with another's) run here, at `resolve`, which boot,
-    /// `--validate` and every config-apply rebuild pass through. An absent section is nothing to judge.
     fn validate_registry(&self) -> Result<(), String> {
         if !self.is_present() {
             return Ok(());
@@ -356,12 +276,6 @@ impl PlaneCfg for DoorSection {
         )?)
     }
 
-    /// THE LANES A PRESENT CARD OF THE DOOR'S PLANE IS HELD TO (#42, #77(5)): each registration of
-    /// the section, ledgered under the resource a grant and an audit row name it by (the door's
-    /// first scope kind and its name, `<kind>:<name>`), qualified by the plane's key. The
-    /// registration set is config, so the config validator refuses a present card silent about one
-    /// at boot and on every apply, rather than a unit ledgered on a lane no card prices. A door
-    /// that states no scope kind, or prices no class beside its fee units, bills no registration.
     fn ledger_lanes(&self) -> Vec<String> {
         let Some(decl) = crate::plane_driver::registry::plane_decl_for_config_section(self.section)
             .filter(|d| is_door(d))
@@ -379,10 +293,6 @@ impl PlaneCfg for DoorSection {
             .collect()
     }
 
-    /// Every `<section>.models.<m>.provider` reference the section's reserved model map makes
-    /// (`busbar_contract::section::RESERVED_MODELS_KEY`), in the order written: `resolve` checks each
-    /// names a configured connection and, for a door that consumes the connections, speaks one of
-    /// its dialects ([`Self::known_dialects`]). A section with no model map makes none.
     fn model_provider_refs(&self) -> Vec<(String, String)> {
         use busbar_contract::section::{MODEL_PROVIDER_KEY, RESERVED_MODELS_KEY};
         self.value
@@ -404,9 +314,6 @@ impl PlaneCfg for DoorSection {
             .collect()
     }
 
-    /// The door's stated dialects, when it consumes the connections section (the transport kind's
-    /// root): the members it reaches there must speak one of them (#51: a plane handed a dialect it
-    /// does not speak fails closed). A door that consumes no connection restricts none.
     fn known_dialects(&self) -> Option<&'static [&'static str]> {
         let connections = busbar_contract::plugin::Kind::Transport.root();
         self.door
@@ -436,9 +343,6 @@ impl PlaneCfg for DoorSection {
     }
 }
 
-/// Every secret reference under `value` at `segments` (a `*` segment is every key of the map there),
-/// each with its config path. A value at the path that is not a reference (a plain scalar beside
-/// references in one map) is not one: the door's own `validate` judged the section's shape.
 fn collect_refs(
     value: &serde_yaml::Value,
     segments: &[&str],
@@ -475,34 +379,21 @@ fn collect_refs(
     }
 }
 
-/// The section as the door's `validate` reads it: JSON, in the order it was written.
-/// THE BLOB A DOOR'S `validate` IS HANDED, in the one shape stage 3g deals it
-/// (`config_validate::deal`, `Seat::Verbs`): `{<section>: <section as written>}` for the section the
-/// door declares. Every kernel-side judge (a section's parse, an admin write's one-entry section,
-/// the effective registry at `resolve`) hands the door that shape, so a door reads one blob shape
-/// whoever asks. An absent section stays the empty blob (nothing written).
 fn dealt(section: &str, settings: Vec<u8>) -> Result<Vec<u8>, String> {
     if settings.is_empty() {
         return Ok(settings);
     }
     let value: serde_json::Value =
         serde_json::from_slice(&settings).map_err(|e| format!("the section is not JSON: {e}"))?;
-    // The section crosses as the deal hands it: its reserved core-owned sub-keys (its `pools`
-    // among them) are the kernel's and are taken off first, by the one strip every crossing uses.
+
     let value = crate::config_validate::deal::strip(section, value, &mut Vec::new());
     serde_json::to_vec(&serde_json::json!({ section: value })).map_err(|e| e.to_string())
 }
 
-/// The section `key` as it crosses to the door (its `validate`, its facing probe): JSON, in the order
-/// it was written, a secret reference at every credential position `${VAR}` filled (a plane never
-/// receives secret bytes, THE DESIGN §6; [`crate::config::filled::plane_bound`]); empty when absent.
 fn settings_of(key: &str, value: &serde_yaml::Value) -> Result<Vec<u8>, String> {
     crate::config::filled::plane_bound_bytes(&[key], value)
 }
 
-/// One registration projected onto the shared named-definition view: its name, and the trust keys
-/// the kernel owns (the pin's mechanism and whether a fingerprint is approved, the re-verification
-/// cadence as written or its declared default); `None` for a key the plane does not declare.
 fn view_of(
     name: &str,
     entry: &serde_yaml::Value,
@@ -545,8 +436,6 @@ fn view_of(
     }
 }
 
-// ── THE HOOKS, ONE SET SHARED BY EVERY DOOR, EACH READING ITS OWN ROW ───────────────────────────
-
 fn wire_formats(decl: &PlaneDecl) -> &'static [&'static str] {
     row(decl).map_or(&[], |d| d.dialects)
 }
@@ -569,9 +458,6 @@ pub struct DoorSlot {
     pub opened: bool,
 }
 
-/// THE GENERATION'S OPEN OUTCOME, off a configured plane's runtime slot: a door plane's slot answers
-/// whether its open for this generation succeeded; any other plane's slot was built only when the
-/// plane opened (a plane that will not open builds none), so its presence is the outcome.
 #[must_use]
 pub fn opened(slot: &dyn std::any::Any) -> bool {
     slot.downcast_ref::<DoorSlot>().is_none_or(|s| s.opened)
@@ -590,8 +476,7 @@ fn build(
         .filter(|s| mine(s))
     {
         Some(s) => s.clone(),
-        // ITS ENDPOINT BLOCK ALONE CONFIGURES IT (LAW 7): an owned block carried as written, with no
-        // registration in the section, builds the slot over the section as absent and that block.
+
         None if ctx
             .endpoint_slot
             .as_deref()
@@ -610,22 +495,19 @@ fn build(
             s
         }
     };
-    // The slot's section carries the door it was built by, whoever parsed it.
+
     let section = DoorSection {
         door: Some(d),
         ..section
     };
-    // A door that will not face the world with this section claims nothing this generation (its
-    // section already passed its `validate`); the refusal is logged, naming it.
-    // Its owned sections, as its endpoint block was carried (`DoorOwned`): handed beside its section.
+
     let owned = ctx
         .endpoint_slot
         .as_deref()
         .and_then(|slot| slot.downcast_ref::<DoorOwned>())
         .map(DoorOwned::bytes)
         .unwrap_or_default();
-    // The dialect facts of the providers its section references, through the one builder the
-    // served instance's open uses (THE DESIGN section 4): the plane resolves model to dialect itself.
+
     let dialects = busbar_contract::plane_calls::dialect_facts(&section.value, |name| {
         ctx.providers?.get(name).map(|p| {
             (
@@ -652,8 +534,6 @@ fn build(
     }))
 }
 
-/// The path a claim mounts at: the target up to its first `{name}` segment (a pattern answers under
-/// its literal prefix), without a trailing slash.
 fn mount_of(target: &str) -> String {
     let literal = target.split("/{").next().unwrap_or(target);
     literal.trim_end_matches('/').to_string()
@@ -682,12 +562,6 @@ fn admission(slot: &dyn std::any::Any) -> Option<crate::plane_driver::dispatch::
     })
 }
 
-/// THE NAMES THE DOOR PLANES' GENERATIONS LIST that `key` may see (THE DESIGN section 2:
-/// `/v1/models` appends each plane generation's listed names), read off each door slot in `slots`
-/// (the slot carries the door it was built from), in the plane registry's order and then the
-/// door's own order; a slot no door built lists nothing. A name is visible as the door's admission judges a direct route to it:
-/// ungoverned (`key` `None`) or a door that states no scope kind scopes nothing; otherwise the
-/// key's grant of the door's first scope kind names it. No door lists any name: empty.
 pub fn listed<'a>(
     slots: &'a std::collections::BTreeMap<
         &'static str,
@@ -700,8 +574,7 @@ pub fn listed<'a>(
         .iter()
         .filter_map(|(k, s)| s.downcast_ref::<DoorSlot>().map(|slot| (*k, slot)))
         .collect();
-    // The registry's order (the order the root folded and installed its doors); a slot whose plane
-    // the registry does not hold follows, in key order.
+
     doors.sort_by_key(|(k, _)| {
         registered
             .iter()
@@ -710,7 +583,6 @@ pub fn listed<'a>(
     });
     let mut out = Vec::new();
     for (_, slot) in doors {
-        // A slot no door built (its section carries no door) lists nothing.
         let Some(door) = slot.section.door else {
             continue;
         };
@@ -729,7 +601,6 @@ pub fn listed<'a>(
     out
 }
 
-/// The generation's slot of the door `decl` was folded from, off the neutral slot seam.
 fn slot_of(
     decl: &PlaneDecl,
     slots: &dyn crate::plane_driver::slots::PlaneSlots,
@@ -804,10 +675,6 @@ fn reresolve_gates(decl: &PlaneDecl, next: &mut dyn crate::plane_driver::slots::
     next.reresolve_container_gates(d.reg.key, &containers, &gates.section_hooks);
 }
 
-/// An admin write of one registration, judged by the door over a one-entry section. The door's
-/// value rule speaks for itself (it names its registration, `` `<section>.<name>`: ``); any other
-/// refusal is a shape refusal and reads as the 1.5.3 named-map sentence the in-core sections speak
-/// (`invalid `<section>.<name>` definition: …`).
 fn config_validate(decl: &PlaneDecl, name: &str, def: &serde_json::Value) -> Result<(), String> {
     let Some(d) = row(decl) else {
         return Ok(());
@@ -835,9 +702,6 @@ pub struct DoorOwned {
 }
 
 impl DoorOwned {
-    /// The owned sections as `PlaneOpenIn::owned` carries them: one JSON object keyed by section
-    /// name, a secret reference at every credential position `${VAR}` filled; empty when the
-    /// section is absent or not representable.
     #[must_use]
     pub fn bytes(&self) -> Vec<u8> {
         if self.value.is_null() {
@@ -908,13 +772,6 @@ fn default_section(decl: &PlaneDecl) -> Box<dyn PlaneCfg> {
     ))
 }
 
-// ── THE ADMIN ROUTES ITS STATEMENT STATES ───────────────────────────────────────────────────────
-
-/// The door's stated admin routes as the admin router mounts them (ARCHITECT Q-L3B-VERBS): each
-/// non-public route at its stated verb and target, a read at `read-only` and anything else at
-/// `full`, audited under its stated word; every one served by the instance's own `serve` op
-/// (`ServeTables::served_at` over the live generation's table), its answer framed in the admin
-/// taxonomy.
 fn admin_routes(
     decl: &PlaneDecl,
     _slot: &dyn std::any::Any,
@@ -962,11 +819,8 @@ fn admin_routes(
         .collect()
 }
 
-/// The key of the door's admin OpenAPI blob that is no path: the component schemas its paths'
-/// `$ref`s name, stated as data because a door links no schema generator (ARCHITECT Q2).
 const OPENAPI_COMPONENTS: &str = "components";
 
-/// The door's stated admin OpenAPI blob as an object (empty when it states none).
 fn openapi_blob(decl: &PlaneDecl) -> serde_json::Map<String, serde_json::Value> {
     match row(decl)
         .and_then(|d| d.reg.admin_openapi)
@@ -977,8 +831,6 @@ fn openapi_blob(decl: &PlaneDecl) -> serde_json::Map<String, serde_json::Value> 
     }
 }
 
-/// The door's stated admin OpenAPI fragment, its paths keyed under the admin mount (its
-/// `components` key is no path; [`stated_schemas`] reads it).
 fn openapi(decl: &PlaneDecl) -> serde_json::Value {
     serde_json::Value::Object(
         openapi_blob(decl)
@@ -989,10 +841,7 @@ fn openapi(decl: &PlaneDecl) -> serde_json::Value {
     )
 }
 
-/// The door's stated `components.schemas`: the bodies its paths' `$ref`s name (the paths already
-/// carry those `$ref`s, as [`openapi`] keyed them). The admin document's generator inserts them
-/// ([`crate::plane_driver::registry::stated_schemas_hook`]); a build that generates no document reads none.
-#[allow(dead_code)] // read only by the document generator's hook, which a non-generating build omits
+#[allow(dead_code)]
 pub(crate) fn stated_schemas(
     decl: &PlaneDecl,
 ) -> Option<serde_json::Map<String, serde_json::Value>> {
@@ -1005,7 +854,6 @@ pub(crate) fn stated_schemas(
     }
 }
 
-/// `target` with its `{name}` segment filled by the decoded `name`, encoded as one path segment.
 fn filled(target: &str, name: &str) -> String {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
     let mut encoded = String::with_capacity(name.len());
@@ -1031,12 +879,6 @@ fn filled(target: &str, name: &str) -> String {
         .join("/")
 }
 
-/// ONE STATED ADMIN ROUTE, SERVED: by the published instance's `serve` op; its answer as the admin
-/// shim frames it: a success's body verbatim, a `404` the taxonomy's not-found, a `400` a
-/// validation refusal in the plane's words (condition-tagged when its reply names the condition,
-/// [`busbar_contract::plane::ADMIN_CONDITION_FIELD`]), anything else internal. A refusal is audited
-/// as rejected when the plane's answer asks for an audit row, and is not audited when it asks for
-/// none (a refusal before anything was judged). No published instance answers is the not-found.
 async fn admin_reply(
     verb: &'static str,
     target: &'static str,
@@ -1044,8 +886,7 @@ async fn admin_reply(
 ) -> crate::admin_verbs::AdminReply {
     use crate::admin_verbs::{AdminReply, PlaneVerbError};
     let path = filled(target, &ctx.name);
-    // The request as the auth gate admitted it: what it consumed is struck before the plane sees
-    // the head, the query rides the target, and the plane's audit rows name the principal.
+
     let req = crate::plane_driver::serve::AdminServe {
         method: verb,
         path: &path,
@@ -1083,7 +924,6 @@ async fn admin_reply(
     }
 }
 
-/// The admin taxonomy condition a served reply's head fields name, if they name one.
 fn condition_of(
     fields: &crate::plane_driver::HeadFields,
 ) -> Option<crate::admin_verbs::PlaneAdminCond> {
@@ -1101,9 +941,6 @@ fn condition_of(
     }
 }
 
-/// A door's registry row hooks: the one shared set, and nothing a door plane does not do; the
-/// named-map surface only when `named`, the endpoint block only when it `owns` a section, the admin
-/// surface only when it states `admin` routes.
 fn door_hooks(named: bool, owns: bool, admin: bool) -> PlaneHooks {
     PlaneHooks {
         wire_format_names: wire_formats,

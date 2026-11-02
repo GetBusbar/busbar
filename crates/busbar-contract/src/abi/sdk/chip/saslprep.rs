@@ -2,9 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! SASLprep with guarded owned character buffers. The Unicode primitives only
-//! read static tables; the allocating normalization iterators are not used.
-//! The small Unicode-version compatibility delta uses Unicode data under the
-//! accompanying `UNICODE-LICENSE.txt`; all other tables remain in dependencies.
 
 use stringprep::tables;
 use unicode_normalization::char::{canonical_combining_class, compose, decompose_compatible};
@@ -23,17 +20,16 @@ pub(super) fn password(bytes: &[u8]) -> Option<Zeroizing<String>> {
         if tables::commonly_mapped_to_nothing(c) {
             continue;
         }
-        // A newer decomposition table must not turn a Unicode 3.2 unassigned
-        // scalar into an assigned one before the stored-string rejection.
+
         if tables::unassigned_code_point(c) {
             return None;
         }
         decompose_compatible(unicode_3_2_decomposition(c), |d| push_wiping(&mut chars, d));
     }
     if chars.is_empty() {
-        return None; // PostgreSQL rejects a password which maps to an empty string.
+        return None;
     }
-    // Canonical ordering is stable and in place: no sorting scratch allocation.
+
     for i in 1..chars.len() {
         let class = canonical_combining_class(chars[i]);
         if class == 0 {
@@ -45,7 +41,7 @@ pub(super) fn password(bytes: &[u8]) -> Option<Zeroizing<String>> {
             j -= 1;
         }
     }
-    // Canonical composition, including Hangul, with UAX #15 blocking rules.
+
     let mut starter = None;
     let mut last_class = 0;
     let mut written = 0;
@@ -82,7 +78,7 @@ pub(super) fn password(bytes: &[u8]) -> Option<Zeroizing<String>> {
     if chars.iter().copied().any(tables::unassigned_code_point) {
         return None;
     }
-    // Exact UTF-8 capacity prevents String growth from abandoning a password copy.
+
     let len = chars
         .iter()
         .try_fold(0_usize, |n, c| n.checked_add(c.len_utf8()))?;
@@ -97,7 +93,7 @@ fn push_wiping(chars: &mut Zeroizing<Vec<char>>, c: char) {
     if chars.len() == chars.capacity() {
         let mut next = Zeroizing::new(Vec::with_capacity(chars.len().saturating_mul(2).max(4)));
         next.extend_from_slice(chars);
-        *chars = next; // Drop wipes the old allocation before it is freed.
+        *chars = next;
     }
     chars.push(c);
 }
@@ -115,10 +111,6 @@ fn prohibited(c: char) -> bool {
         || tables::tagging_character(c)
 }
 
-// RFC 4013 fixes the profile at Unicode 3.2. NormalizationCorrections.txt lists
-// exactly these five corrections introduced in 4.0; F951 was already corrected
-// in 3.2. No other decomposition or combining-class change affects its assigned
-// repertoire. See https://www.unicode.org/Public/UNIDATA/NormalizationCorrections.txt
 fn unicode_3_2_decomposition(c: char) -> char {
     match c {
         '\u{2f868}' => '\u{2136a}',
@@ -130,10 +122,6 @@ fn unicode_3_2_decomposition(c: char) -> char {
     }
 }
 
-// Compatibility delta from official UnicodeData 3.2 to unicode-bidi 0.3.18's
-// Unicode 16 data. RandAL changes only at 06DD/070F, both prohibited above.
-// A.1 rejects newly assigned scalars before modern tables can transform them.
-// Unicode data license: UNICODE-LICENSE.txt (https://www.unicode.org/license.txt).
 fn unicode_3_2_bidi_l(c: char) -> bool {
     match c {
         '\u{0cbf}'
@@ -224,7 +212,7 @@ mod tests {
             "\u{0627}1",
             "a\u{0627}b",
             "\u{0221}",
-            "\u{1d2c}", // Assigned after 3.2; modern NFKC would map it to ASCII A.
+            "\u{1d2c}",
             "\u{e000}",
         ] {
             assert!(password(input.as_bytes()).is_none());

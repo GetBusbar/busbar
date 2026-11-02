@@ -8,8 +8,6 @@ use serde::ser::{Serialize, SerializeMap, SerializeSeq, Serializer};
 use super::{Bucket, Decoded, DecodedCandidate, Stage, User};
 use crate::signal::SignalValue;
 
-// The old JSON value sorted every object and kept the last duplicate signal. These maps contain
-// borrowed serialization descriptors only; prompt text, signal values and candidates stay borrowed.
 enum Field<'a> {
     EmptyObject,
     Null,

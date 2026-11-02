@@ -286,8 +286,7 @@ fn a_pending_cancel_or_invalid_output_revokes_the_operations_unpublished_loans()
 #[test]
 fn control_only_more_and_pending_progress_share_the_operations_existing_byte_budget() {
     use std::mem::size_of;
-    // Spend most of the existing budget on initialized scratch, then grant streams with no
-    // payload at all. The remaining grants exceed the byte budget without a new numeric cap.
+
     let prefix = MORE_BYTES as usize / FRAME_CAP - 1;
     let limit = prefix + FRAME_CAP / size_of::<Open>() + MORE_STALLS;
     for (timer, pending) in [(false, false), (true, false), (false, true)] {

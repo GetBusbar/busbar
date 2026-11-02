@@ -36,7 +36,6 @@ fn timer_off_is_zero_sized() {
 
 #[test]
 fn timeit_off_expands_to_unit() {
-    // Binding `timeit!(..)` yields `()` — the macro produced a unit value, not a guard.
     let t: () = timeit!("expands_to_unit");
     assert_eq!(t, ());
 }
@@ -54,8 +53,6 @@ fn instrumented_matches_bare() {
 
 #[test]
 fn off_entry_points_are_noops() {
-    // These compile and do nothing; the point is they exist with the same signatures as the
-    // feature-on build so call sites are source-identical across the feature.
     record("noop", 123);
     let v = scope("noop", || 7);
     assert_eq!(v, 7);

@@ -1,31 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DATA LISTENER SERVED THROUGH ITS FRAMER'S ACCEPT SIDE (`BUSBAR-1.6.0.md`, inbound
-//! listeners: per accepted connection the framer's accept side runs, under the connection security
-//! the connector prepared; INBOUND-LISTEN).
-//!
-//! The data listener's framer is found by facts ([`data_framer`]): the framer the connector serves
-//! the listener's scheme with, whose tail states it accepts (`FACT_ACCEPTS`). Each connection the
-//! listener admits is secured as before (the connector's prepared connection security), then
-//! FRAMED: its bytes go to the framer's `ingest`, the framer's wire bytes go back to the socket, and
-//! the framer's pieces are the requests. The framing is begun on `SIDE_ACCEPT`, lent the listener's
-//! guest list: ONE line whose auth is `none`, taking every method on every path, whose ref is the
-//! host's ([`busbar_plugin_loader::dispatch::auth_handle::lend_none_line`]). The data router's own
-//! auth judges every request, as it always has.
-//!
-//! Each request's head comes up as one field block with its method, target and authority in the
-//! stream's head slots; its body as the pieces that follow. The request is served by the data
-//! router in process, on its own task, and its answer goes down through the framer: the head as a
-//! field block with the status on the same emit, then the body bytes, the last ending the frame.
-//! An answer that switches protocols to an admitted session hands the connection, as it was sent,
-//! to the framer that claims the upgrade (`detach`, then that framer's `adopt`), and the session's
-//! messages ride it.
-//!
-//! The body time bounds are the listener's ([`super::TimeoutBody`]), the close lingers as the hyper
-//! loop's did ([`super::Lingering`]), and a draining listener ends each connection once nothing is
-//! in flight on it.
-
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -45,37 +20,24 @@ use http_body::{Body as _, Frame};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::{mpsc, oneshot};
 
-/// The scheme the data listener is framed under, by the claim its framer answers.
 pub const DATA_SCHEME: &str = "http";
 
-/// The claim of the framer an admitted session's upgrade is handed to, in the clear and secured.
 const UPGRADE_CLAIMS: [&str; 2] = ["ws", "wss"];
 
-/// The one guest-list line the data listener lends its framer.
 pub const DATA_LINE: u32 = 1;
 
-/// The id of that line's auth ref: the host's, owner-scoped to the framer's instance.
 pub const DATA_LINE_REF: u64 = 0x6461_7461_6c69_6e65;
 
-/// How many socket bytes one read takes.
 const READ_CHUNK: usize = 16 * 1024;
 
-/// The most bytes held for the socket before the next answer is framed: past it, answers wait for
-/// the socket to drain.
 const WRITE_ROOM: usize = 256 * 1024;
 
-/// THE FIRST-BYTE BOUND: a connection that sends no byte within it is closed, unanswered, as the
-/// hyper loop's HTTP/1 header read bound (30 s) closed one. An accepting framer states no deadline
-/// at `begin`, so the bound is the listener's.
 pub const FIRST_BYTE_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// The status an answer that switches protocols carries.
 const SWITCHING_PROTOCOLS: u16 = 101;
 
-/// HTTP refusal used when a request exceeds its admitted listener body ceiling.
 const BODY_LIMIT_REFUSAL: u32 = axum::http::StatusCode::PAYLOAD_TOO_LARGE.as_u16() as u32;
 
-/// The framer the connector serves a scheme with, where it serves one.
 pub type FramerFor = Arc<dyn Fn(&str) -> Option<Arc<dyn FramerDoor>> + Send + Sync>;
 
 /// THE DATA LISTENER'S FRAMER: the framer entry, its instance, and the protocols its accepting
@@ -99,14 +61,10 @@ impl std::fmt::Debug for DataFramer {
     }
 }
 
-/// THE DATA LISTENER'S FRAMER, FOUND BY FACTS: the framer `framer_for` answers [`DATA_SCHEME`]
-/// with, a stream FRAMER whose tail states it accepts, opened by the host (it has an instance).
-/// `None` = the build serves no such framer.
 pub fn data_framer(framer_for: FramerFor) -> Option<DataFramer> {
     configured_framer(framer_for, DATA_SCHEME, None)
 }
 
-/// An accepting listener over its declared transport and generation-bound guest-list policy.
 pub fn listener_framer(
     framer_for: FramerFor,
     scheme: &str,
@@ -153,26 +111,19 @@ fn configured_framer(
 }
 
 impl DataFramer {
-    /// Validate this listener's policy before exposing its socket.
-    ///
-    /// # Errors
-    /// The published generation is missing or its selected guest list is invalid.
     pub fn validate_policy(&self) -> Result<(), String> {
         self.listener.validate()
     }
 
-    /// The framer entry.
     #[must_use]
     pub fn door(&self) -> &Arc<dyn FramerDoor> {
         &self.door
     }
 
-    /// The configured listener policy for the generation published at this accept.
     pub(in crate::root) fn guests(&self) -> Option<Arc<GuestLines>> {
         self.listener.guests()
     }
 
-    /// Whether the protocol at 1-based `position` of the accepting offer is HTTP/2.
     fn is_h2(&self, position: u32) -> bool {
         position != 0
             && self
@@ -182,35 +133,38 @@ impl DataFramer {
     }
 }
 
-// ── one stream's asks of its connection ──────────────────────────────────────────────────────────
-
-/// What a stream's task asks of its connection, in order.
 enum Op {
-    /// The answer's head: its status and field block; `end` = no body follows.
     Head {
         status: u32,
         fields: Vec<u8>,
         end: bool,
         done: oneshot::Sender<bool>,
     },
-    /// Body bytes; `end` = the answer is whole.
+
     Data {
         bytes: Bytes,
         end: bool,
         done: oneshot::Sender<bool>,
     },
-    /// Final field block, after every body byte; the framer owns its wire rendering.
+
     Trailers {
         fields: Vec<u8>,
         done: oneshot::Sender<bool>,
     },
-    /// The stream failed before or after its head: the framer ends it.
-    Refuse { status: u32, head_sent: bool },
-    /// The connection switches to the upgrade's framer, the admitted session carried over it.
+
+    Admit {
+        reply: oneshot::Sender<bool>,
+    },
+
+    Refuse {
+        status: u32,
+        head_sent: bool,
+    },
+
     Switch {
         pipe: busbar_kernel::plane_routes::SessionPipe,
     },
-    /// The stream's task ended.
+
     Ended {
         scope: Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
     },
@@ -257,7 +211,6 @@ impl Emitter {
     }
 }
 
-/// A stream's end, however its task ends (answered, failed, or aborted).
 struct StreamEnd(
     Emitter,
     Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
@@ -271,10 +224,8 @@ impl Drop for StreamEnd {
     }
 }
 
-/// A request body's error, as the router reads one.
 type BodyError = Box<dyn std::error::Error + Send + Sync>;
 
-/// One request's inflow: where its body pieces go, and its task.
 struct Inflow {
     body: Option<mpsc::UnboundedSender<Result<Bytes, BodyError>>>,
     task: tokio::task::AbortHandle,
@@ -285,7 +236,6 @@ struct Inflow {
     head_sent: bool,
 }
 
-/// A REQUEST BODY as its pieces arrive on the connection.
 struct InboundBody {
     pieces: mpsc::UnboundedReceiver<Result<Bytes, BodyError>>,
     ended: bool,
@@ -329,12 +279,8 @@ impl http_body::Body for InboundBody {
     }
 }
 
-/// WHERE AN ADMITTED SESSION'S PIPE IS LEFT for the framed connection to carry
-/// ([`busbar_kernel::plane_routes::FramedSession`]), one per request.
 type SessionSlot = busbar_kernel::plane_routes::FramedSession;
 
-/// A connection SWITCHED to a session's framer: the caller's messages on their way to the session,
-/// the frames the session writes toward the caller, and the frame being written.
 struct Session {
     stream: u64,
     from: Option<mpsc::Sender<Vec<u8>>>,
@@ -366,8 +312,6 @@ impl Session {
         }
     }
 
-    /// Drain only the pieces already yielded by one ingest before reading more socket bytes.
-    /// Waiting on this exclusively switched pipe does not park unrelated multiplexed streams.
     fn deliver(&mut self, cx: &mut Context<'_>) -> Option<bool> {
         let mut moved = false;
         loop {
@@ -406,7 +350,6 @@ impl Session {
     }
 }
 
-/// Contextless fixtures and the legacy data listener use the existing resolved body ceiling.
 fn configured_body_limit() -> u64 {
     busbar_kernel::config::limits::installed().map_or(
         busbar_kernel::config::limits::DEFAULT_REQUEST_BODY_MAX_BYTES as u64,
@@ -414,10 +357,6 @@ fn configured_body_limit() -> u64 {
     )
 }
 
-// ── one connection ───────────────────────────────────────────────────────────────────────────────
-
-/// SERVE ONE CONNECTION'S (already secured) bytes `io` through `framer`'s accept side, each request
-/// by `router`, until the connection ends; `stop` flips when the listener drains.
 pub(super) async fn serve<I>(
     io: I,
     framer: DataFramer,
@@ -451,6 +390,7 @@ pub(super) async fn serve<I>(
         }
     };
     let (tx, ops) = mpsc::unbounded_channel();
+    let (admission_tx, admissions) = mpsc::unbounded_channel();
     let mut conn = Conn {
         io: super::Lingering(Some(io)),
         framing: Some(framing),
@@ -468,6 +408,10 @@ pub(super) async fn serve<I>(
         ops,
         tx,
         pending: VecDeque::new(),
+        admission_tx,
+        admissions,
+        staged: None,
+        prewire: false,
         full: HashSet::new(),
         deadline: None,
         session: None,
@@ -487,7 +431,6 @@ pub(super) async fn serve<I>(
     }
 }
 
-/// One connection's serving state ([`serve`]).
 struct Conn<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> {
     io: super::Lingering<I>,
     framing: Option<Framing>,
@@ -496,33 +439,63 @@ struct Conn<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> {
     secured: bool,
     established: Established,
     timeout: std::time::Duration,
-    /// Bytes owed to the socket.
+
     out: VecDeque<u8>,
-    /// The far end ended its side.
+
     read_done: bool,
-    /// The framer said no frame follows.
+
     ended: bool,
-    /// Each stream's head slots, until its head piece is served.
+
     heads: HashMap<u64, Head>,
     inflows: HashMap<u64, Inflow>,
     tasks: tokio::task::JoinSet<()>,
     ops: mpsc::UnboundedReceiver<(u64, Op)>,
     tx: mpsc::UnboundedSender<(u64, Op)>,
     pending: VecDeque<(u64, Op)>,
-    /// The streams the framer answered full.
+
+    admission_tx: mpsc::UnboundedSender<busbar_kernel::plane_routes::SessionAdmission>,
+    admissions: mpsc::UnboundedReceiver<busbar_kernel::plane_routes::SessionAdmission>,
+    staged: Option<StagedUpgrade>,
+    prewire: bool,
+
     full: HashSet<u64>,
     deadline: Option<Pin<Box<tokio::time::Sleep>>>,
     session: Option<Session>,
-    /// The protocol the framer last stated it agreed (a 1-based position in its offer).
+
     agreed: u32,
     stopping: bool,
-    /// The framing or the socket failed: the connection is over.
+
     failed: bool,
-    /// The first-byte bound ([`FIRST_BYTE_BOUND`]), until the far end sends a byte.
+
     first_byte: Option<Pin<Box<tokio::time::Sleep>>>,
 }
 
-/// What applying one op came to.
+enum UpgradePhase {
+    Adopting(oneshot::Sender<bool>),
+    Admitted,
+    Committing(busbar_kernel::plane_routes::SessionPipe),
+}
+
+struct StagedUpgrade {
+    phase: UpgradePhase,
+    stream: u64,
+    yielded: Vec<Yielded>,
+    incoming: Vec<zeroize::Zeroizing<Vec<u8>>>,
+    incoming_len: usize,
+    bound: Pin<Box<tokio::time::Sleep>>,
+}
+
+impl StagedUpgrade {
+    fn take_incoming(&mut self) -> zeroize::Zeroizing<Vec<u8>> {
+        let mut bytes = zeroize::Zeroizing::new(Vec::with_capacity(self.incoming_len));
+        for chunk in self.incoming.drain(..) {
+            bytes.extend_from_slice(&chunk);
+        }
+        self.incoming_len = 0;
+        bytes
+    }
+}
+
 enum Step {
     Done,
     Wait,
@@ -532,6 +505,24 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
     fn poll(&mut self, cx: &mut Context<'_>) -> Poll<()> {
         loop {
             let mut moved = false;
+            let abandoned = self
+                .staged
+                .as_mut()
+                .is_some_and(|stage| match &mut stage.phase {
+                    UpgradePhase::Adopting(reply) => reply.poll_closed(cx).is_ready(),
+                    _ => false,
+                });
+            if (self.stopping || abandoned) && self.staged.is_some() {
+                self.abandon_stage();
+            }
+            while let Poll::Ready(Some(admission)) = self.admissions.poll_recv(cx) {
+                self.pending.push_back((
+                    admission.stream,
+                    Op::Admit {
+                        reply: admission.reply,
+                    },
+                ));
+            }
             while let Poll::Ready(Some(op)) = self.ops.poll_recv(cx) {
                 self.pending.push_back(op);
             }
@@ -556,9 +547,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                         self.ended = true;
                         self.session = None;
                         self.tasks.abort_all();
-                        // This connection belonged exclusively to the switched session. Finish
-                        // its framing before any later socket or timer output can become a new
-                        // request after that session has gone.
+
                         return self.close(cx);
                     }
                 }
@@ -579,6 +568,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
             let idle = self.tasks.is_empty()
                 && self.pending.is_empty()
                 && self.session.is_none()
+                && self.staged.is_none()
                 && !self.framing.as_ref().is_some_and(Framing::parked);
             if self.failed || (idle && (self.ended || self.read_done || self.stopping)) {
                 return self.close(cx);
@@ -589,7 +579,6 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
         }
     }
 
-    /// Close: the framing finishes, what it still owes is written, the socket shut (lingering).
     fn close(&mut self, cx: &mut Context<'_>) -> Poll<()> {
         if let Some(framing) = self.framing.take() {
             let reason = if self.stopping {
@@ -598,7 +587,10 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 CLOSE_NORMAL
             };
             let y = framing.finish(reason);
-            self.out.extend(y.wire.iter().copied());
+            let staged = self.staged.take().is_some();
+            if !self.prewire && !staged {
+                self.out.extend(y.wire.iter().copied());
+            }
         }
         while !self.out.is_empty() && !self.failed {
             match self.write_some(cx) {
@@ -613,8 +605,6 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
         Poll::Ready(())
     }
 
-    /// Take what the framer answered: wire bytes to the socket, head slots and pieces to the
-    /// streams, its deadline to the timer, its end to the connection.
     fn absorb(&mut self, mut y: Yielded) {
         self.out.extend(y.wire.iter().copied());
         for head in std::mem::take(&mut y.heads) {
@@ -649,14 +639,20 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
         }
     }
 
-    /// A framer op's answer: absorbed, or the connection failed.
     fn took(&mut self, r: Result<Yielded, framer::Refused>) -> bool {
         match r {
             Ok(y) => {
-                self.absorb(y);
+                if self.staged.is_some() {
+                    self.receive_stage(y);
+                } else {
+                    self.absorb(y);
+                }
                 true
             }
             Err(e) => {
+                if self.staged.is_some() {
+                    self.abandon_stage();
+                }
                 tracing::debug!(error = %e, "data door: the framing failed");
                 self.failed = true;
                 false
@@ -664,7 +660,6 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
         }
     }
 
-    /// Re-drive the ops parked on their tickets.
     fn parked(&mut self, cx: &mut Context<'_>) -> bool {
         let Some(framing) = self.framing.as_mut().filter(|f| f.parked()) else {
             return false;
@@ -675,8 +670,10 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
         }
     }
 
-    /// Read what the socket holds into the framer.
     fn read(&mut self, cx: &mut Context<'_>) -> bool {
+        if self.staged.is_some() {
+            return self.read_staged(cx);
+        }
         if self.framing.as_ref().is_some_and(Framing::begin_parked)
             || self.session.as_ref().is_some_and(Session::read_blocked)
         {
@@ -698,7 +695,6 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 let r = framing.ingest(&buf[..n], end);
                 self.took(r);
                 if end {
-                    // Nothing more arrives: every body still open ends here.
                     for inflow in self.inflows.values_mut() {
                         inflow.body = None;
                     }
@@ -717,7 +713,71 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
         }
     }
 
-    /// Write what the socket will take now.
+    fn read_staged(&mut self, cx: &mut Context<'_>) -> bool {
+        let adopting = self
+            .staged
+            .as_ref()
+            .is_some_and(|stage| matches!(stage.phase, UpgradePhase::Adopting(_)));
+        let writable = !self.framing.as_ref().is_some_and(Framing::parked);
+        if adopting && writable {
+            let incoming = self
+                .staged
+                .as_mut()
+                .map(StagedUpgrade::take_incoming)
+                .unwrap_or_default();
+            if !incoming.is_empty() {
+                if let Some(framing) = self.framing.as_mut() {
+                    let received = framing.ingest(&incoming, false);
+                    self.took(received);
+                }
+                return true;
+            }
+        }
+        if self
+            .staged
+            .as_ref()
+            .is_none_or(|stage| stage.incoming_len >= WRITE_ROOM)
+        {
+            return false;
+        }
+        let remaining = self
+            .staged
+            .as_ref()
+            .map_or(0, |stage| WRITE_ROOM - stage.incoming_len);
+        let mut bytes = [0_u8; READ_CHUNK];
+        let mut buffer = ReadBuf::new(&mut bytes[..remaining.min(READ_CHUNK)]);
+        match Pin::new(&mut self.io).poll_read(cx, &mut buffer) {
+            Poll::Ready(Ok(())) if buffer.filled().is_empty() => {
+                self.read_done = true;
+                self.abandon_stage();
+                true
+            }
+            Poll::Ready(Ok(())) => {
+                if let Some(stage) = self.staged.as_mut() {
+                    stage
+                        .incoming
+                        .push(zeroize::Zeroizing::new(buffer.filled().to_vec()));
+                    stage.incoming_len += buffer.filled().len();
+                }
+
+                true
+            }
+            Poll::Ready(Err(_)) => {
+                self.abandon_stage();
+                true
+            }
+            Poll::Pending => false,
+        }
+    }
+
+    fn abandon_stage(&mut self) {
+        self.staged.take();
+        if let Some(framing) = self.framing.take() {
+            let _ = framing.finish(CLOSE_NORMAL);
+        }
+        self.ended = true;
+    }
+
     fn flush(&mut self, cx: &mut Context<'_>) -> bool {
         let mut moved = false;
         while !self.out.is_empty() {
@@ -733,7 +793,6 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
         moved
     }
 
-    /// One socket write: `Ready(true)` = some went, `Ready(false)` = the socket failed.
     fn write_some(&mut self, cx: &mut Context<'_>) -> Poll<bool> {
         let (front, _) = self.out.as_slices();
         match Pin::new(&mut self.io).poll_write(cx, front) {
@@ -750,8 +809,16 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
         }
     }
 
-    /// The framer's deadline: at it, its `timer`.
     fn timer(&mut self, cx: &mut Context<'_>) -> bool {
+        if let Some(stage) = self.staged.as_mut() {
+            if std::future::Future::poll(stage.bound.as_mut(), cx).is_ready() {
+                self.abandon_stage();
+                return true;
+            }
+            if self.framing.as_ref().is_some_and(Framing::parked) {
+                return false;
+            }
+        }
         let Some(sleep) = self.deadline.as_mut() else {
             return false;
         };
@@ -767,7 +834,6 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
         true
     }
 
-    /// One frame piece off the framer.
     fn piece(&mut self, piece: Got) {
         if self.failed {
             return;
@@ -806,14 +872,13 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                     scope.stream_ended(piece.stream);
                 }
             }
-            // A piece of a stream no task holds (answered, or never served): dropped.
+
             None => {}
             Some(inflow) => {
                 if inflow.refused {
                     return;
                 }
                 if piece.failed {
-                    // The far side gave the stream up: its body fails and its task ends.
                     if let Some(body) = inflow.body.take() {
                         let reason = String::from_utf8_lossy(&piece.bytes).into_owned();
                         let _ = body.send(Err(BodyError::from(reason)));
@@ -821,7 +886,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                     inflow.task.abort();
                     return;
                 }
-                // A trailer block of the request is not read: the router reads data.
+
                 if !piece.fields && !piece.bytes.is_empty() {
                     if inflow
                         .body
@@ -856,7 +921,6 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
         }
     }
 
-    /// A request head on `piece`'s stream: the request built and served on its own task.
     fn head(&mut self, piece: &Got) {
         let stream = piece.stream;
         let mut body_limit = configured_body_limit();
@@ -872,7 +936,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
             stream,
             tx: self.tx.clone(),
         };
-        let slot = SessionSlot::default();
+        let slot = SessionSlot::with_admission(self.admission_tx.clone(), stream);
         let scope = self.framing.as_ref().and_then(Framing::scope).cloned();
         let request = request_of(
             &head,
@@ -934,16 +998,14 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 req.extensions_mut()
                     .insert(super::listener_scheme(self.secured));
                 req.extensions_mut().insert(slot.clone());
-                // An HTTP/2 request of a method whose body has no defined meaning, its stream still
-                // open, is not dispatched until its stream is complete (as the hyper loop held it).
+
                 let defer = h2
                     && !end
                     && matches!(
                         *req.method(),
                         Method::GET | Method::HEAD | Method::OPTIONS | Method::TRACE
                     );
-                // Own retirement before spawn: an abort can drop this future before its first
-                // poll when another piece in the same batch refuses or resets this stream.
+
                 let end = StreamEnd(out.clone(), scope);
                 self.tasks.spawn(serve_stream(
                     self.router.clone(),
@@ -977,7 +1039,6 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
         );
     }
 
-    /// Apply the first runnable op, preserving stream order and connection-wide switches.
     fn apply_front(&mut self) -> Step {
         let mut blocked = HashSet::new();
         let mut next = None;
@@ -992,13 +1053,11 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                     Op::Head { .. } | Op::Data { .. } | Op::Trailers { .. } | Op::Switch { .. }
                 )
             {
-                // These writes will be discarded, so neither output room nor a stalled stream
-                // may keep them in front of the terminal size refusal.
                 next = Some(index);
                 break;
             }
-            // Nothing crosses a switch: it waits for every earlier queued op and parked crossing.
-            if matches!(op, Op::Switch { .. }) {
+
+            if matches!(op, Op::Switch { .. } | Op::Admit { .. }) {
                 if index == 0 && !framing.is_some_and(Framing::parked) {
                     next = Some(index);
                 }
@@ -1008,7 +1067,6 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 || matches!(op, Op::Head { .. } | Op::Data { .. } | Op::Trailers { .. })
                     && (self.out.len() >= WRITE_ROOM || self.full.contains(stream));
             if waits || blocked.contains(stream) {
-                // Later work on this stream, including refusal/retirement, cannot overtake it.
                 blocked.insert(*stream);
                 continue;
             }
@@ -1032,13 +1090,25 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                     return Step::Done;
                 }
                 Op::Switch { .. } => return Step::Done,
+                Op::Admit { reply } => {
+                    let _ = reply.send(false);
+                    return Step::Done;
+                }
                 _ => {}
             }
+        }
+        if let Op::Admit { reply } = op {
+            self.stage_upgrade(stream, reply);
+            return Step::Done;
+        }
+        if matches!(op, Op::Head { .. } | Op::Refuse { .. }) {
+            self.staged.take();
         }
         let Some(framing) = self.framing.as_mut() else {
             return Step::Done;
         };
         match op {
+            Op::Admit { .. } => unreachable!("admission is processed before the framing borrow"),
             Op::Head {
                 status,
                 fields,
@@ -1076,6 +1146,13 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
             }
             Op::Switch { pipe } => self.switch(stream, pipe),
             Op::Ended { scope } => {
+                if self
+                    .staged
+                    .as_ref()
+                    .is_some_and(|stage| stage.stream == stream)
+                {
+                    self.abandon_stage();
+                }
                 self.inflows.remove(&stream);
                 self.full.remove(&stream);
                 if let Some(scope) = scope {
@@ -1086,50 +1163,170 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
         Step::Done
     }
 
-    /// SWITCH the connection to the framer that claims the upgrade: the data framing detaches,
-    /// handing back the connection as it was sent (the upgrade request first, unanswered), and
-    /// the upgrade's framer adopts it, answers the upgrade itself and frames the session.
-    fn switch(&mut self, stream: u64, pipe: busbar_kernel::plane_routes::SessionPipe) {
+    fn stage_upgrade(&mut self, stream: u64, reply: oneshot::Sender<bool>) {
+        if self.staged.is_some() || self.session.is_some() {
+            let _ = reply.send(false);
+            return;
+        }
         let claim = UPGRADE_CLAIMS[usize::from(self.secured)];
         let Some(door) = (self.framer.upgrade)(claim) else {
-            tracing::debug!(claim, "data door: no framer claims the session's upgrade");
-            self.failed = true;
+            let _ = reply.send(false);
             return;
         };
-        let Some(framing) = self.framing.take() else {
+        let Some(framing) = self.framing.as_mut() else {
+            let _ = reply.send(false);
             return;
         };
-        let leftover = match framing.detach() {
+        let leftover = match framing.try_detach() {
             Ok(left) => left,
+            Err(e)
+                if e.outcome == busbar_contract::abi::mechanism::call::Outcome::Refused
+                    && framing.token() != 0 =>
+            {
+                if let Some(inflow) = self.inflows.get_mut(&stream) {
+                    inflow.refused = true;
+                }
+                let refused = framing.refuse(Some(stream), &[], 400, false);
+                self.took(refused);
+                let _ = reply.send(false);
+                return;
+            }
             Err(e) => {
-                tracing::debug!(error = %e, "data door: the framer would not let the connection go");
+                tracing::debug!(error = %e, "data door: the framer would not release the opening");
                 self.failed = true;
                 return;
             }
         };
-        self.heads.clear();
-        self.full.clear();
-        self.deadline = None;
+        drop(self.framing.take());
         self.established.claim = door.facts().claims.first().map(|c| (*c).to_owned());
-        match Framing::adopt_detached(door, SIDE_ACCEPT, leftover, &self.established) {
-            Ok((framing, y)) => {
+        match Framing::adopt_detached_staged(door, SIDE_ACCEPT, leftover, &self.established) {
+            Ok((framing, yielded)) => {
                 self.framing = Some(framing);
-                let mut session = Session::over(stream, pipe);
-                if let Some(inflow) = self.inflows.get(&stream) {
-                    session.body_limit = inflow.body_limit;
-                }
-                self.session = Some(session);
-                self.absorb(y);
+                self.prewire = true;
+                self.deadline = None;
+                self.staged = Some(StagedUpgrade {
+                    phase: UpgradePhase::Adopting(reply),
+                    stream,
+                    yielded: Vec::new(),
+                    incoming: Vec::new(),
+                    incoming_len: 0,
+                    bound: Box::pin(tokio::time::sleep(self.timeout)),
+                });
+                self.receive_stage(yielded);
             }
             Err(e) => {
-                tracing::debug!(error = %e, "data door: the upgrade's framer would not adopt");
+                tracing::debug!(error = %e, "data door: the session opening was refused");
                 self.failed = true;
             }
         }
     }
 
-    /// Pump a switched connection's session: the frames it writes go out as the socket's room
-    /// allows. `Some(moved)` while it runs; `None` once the session has ended.
+    fn receive_stage(&mut self, yielded: Yielded) {
+        let Some(stage) = self.staged.as_mut() else {
+            return;
+        };
+        if let Some(deadline) = yielded.deadline_ns {
+            self.deadline = Some(Box::pin(tokio::time::sleep_until(
+                tokio::time::Instant::from_std(framer::instant_of(deadline)),
+            )));
+        }
+
+        stage.yielded.push(yielded);
+        if self.framing.as_ref().is_some_and(Framing::parked) {
+            return;
+        }
+        let accepted = stage
+            .yielded
+            .iter()
+            .flat_map(|batch| &batch.pieces)
+            .any(|piece| {
+                piece.stream == stage.stream
+                    && piece.fields
+                    && piece.end_of_frame
+                    && piece.status_code == Some(u32::from(SWITCHING_PROTOCOLS))
+                    && piece.status_class == busbar_contract::abi::transport::STATUS_SUCCESS
+                    && !piece.failed
+            });
+        if stage.yielded.iter().any(|batch| batch.ended) {
+            if matches!(stage.phase, UpgradePhase::Adopting(_)) && !accepted {
+                let Some(stage) = self.staged.take() else {
+                    return;
+                };
+                if let Some(inflow) = self.inflows.get_mut(&stage.stream) {
+                    inflow.refused = true;
+                }
+                if let UpgradePhase::Adopting(reply) = stage.phase {
+                    let _ = reply.send(false);
+                }
+
+                for batch in stage.yielded {
+                    self.absorb(batch);
+                }
+            } else {
+                self.abandon_stage();
+            }
+            return;
+        }
+        if matches!(stage.phase, UpgradePhase::Adopting(_)) {
+            if !accepted {
+                return;
+            }
+            for batch in &mut stage.yielded {
+                batch.pieces.retain(|piece| !piece.fields);
+                batch.heads.clear();
+            }
+            let phase = std::mem::replace(&mut stage.phase, UpgradePhase::Admitted);
+            if let UpgradePhase::Adopting(reply) = phase {
+                if reply.send(true).is_err() {
+                    self.abandon_stage();
+                }
+            }
+            return;
+        }
+        if matches!(stage.phase, UpgradePhase::Committing(_)) {
+            let Some(mut stage) = self.staged.take() else {
+                return;
+            };
+            let incoming = stage.take_incoming();
+            let UpgradePhase::Committing(pipe) = stage.phase else {
+                return;
+            };
+            self.heads.clear();
+            self.full.clear();
+            let mut session = Session::over(stage.stream, pipe);
+            if let Some(inflow) = self.inflows.get(&stage.stream) {
+                session.body_limit = inflow.body_limit;
+            }
+            self.session = Some(session);
+            self.prewire = false;
+            for batch in stage.yielded {
+                self.absorb(batch);
+            }
+            if !incoming.is_empty() {
+                if let Some(framing) = self.framing.as_mut() {
+                    let received = framing.ingest(&incoming, false);
+                    self.took(received);
+                }
+            }
+        }
+    }
+
+    fn switch(&mut self, stream: u64, pipe: busbar_kernel::plane_routes::SessionPipe) {
+        let Some(stage) = self.staged.as_mut().filter(|stage| {
+            stage.stream == stream && matches!(stage.phase, UpgradePhase::Admitted)
+        }) else {
+            self.failed = true;
+            return;
+        };
+        stage.phase = UpgradePhase::Committing(pipe);
+        let Some(framing) = self.framing.as_mut() else {
+            self.abandon_stage();
+            return;
+        };
+        let committed = framing.emit_head(stream, &[], true, u32::from(SWITCHING_PROTOCOLS));
+        self.took(committed);
+    }
+
     fn pump_session(&mut self, cx: &mut Context<'_>) -> Option<bool> {
         let mut moved = self.session.as_mut()?.deliver(cx)?;
         loop {
@@ -1165,11 +1362,6 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
     }
 }
 
-// ── one stream ───────────────────────────────────────────────────────────────────────────────────
-
-/// THE REQUEST a head states: its method, its target, its field lines in order, `body`. With an
-/// authority and no `host` line (an HTTP/2 head), the target is made absolute under the listener's
-/// scheme, as the hyper loop read it. `None` = a head no request can carry.
 fn request_of(
     head: &Head,
     block: &[u8],
@@ -1213,8 +1405,6 @@ fn request_of(
     Some(req)
 }
 
-/// ONE STREAM, SERVED: its request by the data router in process, its answer written through the
-/// connection; an admitted session's answer switches the connection.
 async fn serve_stream(
     router: Router,
     req: Request<AxumBody>,
@@ -1250,7 +1440,6 @@ async fn serve_stream(
     respond(&out, response).await;
 }
 
-/// Read a deferred request's body to its end, at most the translate cap.
 async fn read_whole(mut body: AxumBody) -> Result<Bytes, axum::http::StatusCode> {
     let cap = busbar_kernel_egress::upstream::max_translate_body_bytes();
     let mut whole = bytes::BytesMut::new();
@@ -1270,9 +1459,6 @@ async fn read_whole(mut body: AxumBody) -> Result<Bytes, axum::http::StatusCode>
     }
 }
 
-/// THE ANSWER'S HEAD as the framer is handed it: every field line in the answer's order, with the
-/// length the body states where its size is known and no line states one, as the hyper loop stated
-/// it (never on a `1xx`, `204` or `304`, or beside a `transfer-encoding`).
 fn head_block(status: u16, headers: &HeaderMap, exact: Option<u64>) -> Vec<u8> {
     let mut block = field_block(headers);
     let bodyless = status < 200 || status == 204 || status == 304;
@@ -1289,7 +1475,6 @@ fn head_block(status: u16, headers: &HeaderMap, exact: Option<u64>) -> Vec<u8> {
     block
 }
 
-/// Copy neutral field lines, preserving repeated values for the transport.
 fn field_block(headers: &HeaderMap) -> Vec<u8> {
     let mut block = Vec::new();
     for (name, value) in headers {
@@ -1301,8 +1486,6 @@ fn field_block(headers: &HeaderMap) -> Vec<u8> {
     block
 }
 
-/// Write `response` through the connection: its head, then its body as it comes; a body that
-/// fails after the head ends the stream failed.
 async fn respond(out: &Emitter, response: Response<AxumBody>) {
     let (parts, mut body) = response.into_parts();
     let status = parts.status.as_u16();

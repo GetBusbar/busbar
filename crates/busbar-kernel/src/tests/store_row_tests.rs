@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A store crate's `linked::STORE` in either shape reads as the one row the root installs (status
-//! rows 159 and 194): the door-function row as it is, the `MACRO_DOOR` row as the door function it
-//! names.
-
 use super::{LinkedStore, LinkedStoreDoor, StoreRow};
 use crate::test_support::store_double;
 

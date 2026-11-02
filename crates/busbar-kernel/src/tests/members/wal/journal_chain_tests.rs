@@ -1,14 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The one journal: the fixed record, the chain over it, the bound on the buffer, and the two
-//! postures a restart has to survive.
-//!
-//! Each of these is a claim somebody could otherwise only take on trust. A chain that "detects
-//! tampering" is worth nothing until a test edits a record and watches it break at that record; a
-//! buffer that is "bounded" is worth nothing until a test fills it and reads back what the node
-//! decided to do about it.
-
 use busbar_contract::caps::StepName;
 
 use busbar_kernel_wal::journal::{
@@ -28,9 +20,6 @@ fn entries(class: RecordClass, n: usize, tag: u8) -> Vec<Entry> {
         .collect()
 }
 
-/// The header is a fixed table of offsets, and a build that moved one would be a build that reads
-/// every record already written at the wrong place. Pinned as numbers rather than as a `size_of`,
-/// because the claim is about the MEDIUM and not about this compiler's layout.
 #[test]
 fn the_record_header_is_fixed() {
     assert_eq!(JOURNAL_HEADER_BYTES, 160);
@@ -67,14 +56,12 @@ fn the_record_header_is_fixed() {
     assert_eq!(u32::from_le_bytes(bytes[56..60].try_into().unwrap()), 6);
     assert_eq!(&bytes[JOURNAL_HEADER_BYTES..], b"a body");
 
-    // And it comes back exactly as it went down.
     assert_eq!(
         JournalRecord::decode(&bytes).expect("decodes"),
         ack.sealed[0]
     );
 }
 
-/// Every unit's records go on ONE chain, in the order they were sealed, and the run verifies.
 #[test]
 fn one_chain_carries_every_unit() {
     let mut journal =
@@ -100,13 +87,12 @@ fn one_chain_carries_every_unit() {
     assert_eq!(replayed[2].class, RecordClass::Checkpoint);
     assert_eq!(replayed[4].class, RecordClass::Migration);
     assert_eq!(replayed[6].class, RecordClass::Access);
-    // One numbering across all four, which is what "one journal" means in practice.
+
     let seqs: Vec<u64> = replayed.iter().map(|r| r.node_seq).collect();
     assert_eq!(seqs, (1..=8).collect::<Vec<u64>>());
     assert_eq!(replayed.last().expect("a record").hash, journal.head());
 }
 
-/// The chain catches a record whose BODY was edited, at that record.
 #[test]
 fn chain_verification_catches_a_mutated_body() {
     let mut journal =
@@ -128,8 +114,6 @@ fn chain_verification_catches_a_mutated_body() {
     assert_eq!(broken.kind, JournalBreakKind::BodyDigestMismatch);
 }
 
-/// And a record whose HEADER was edited — which is why the chain hash covers the whole fixed header
-/// and not only the identity and the two digests.
 #[test]
 fn chain_verification_catches_a_mutated_header() {
     let mut journal =
@@ -144,14 +128,11 @@ fn chain_verification_catches_a_mutated_header() {
         .expect("ships nowhere")
         .sealed;
 
-    // Re-classing a settlement as an access would be the interesting edit: same money, different
-    // story about what it was.
     run[1].class = RecordClass::Access;
     let broken = verify(&run).expect_err("an edited class must not verify");
     assert_eq!(broken.at_index, 2);
     assert_eq!(broken.kind, JournalBreakKind::ChainDigestMismatch);
 
-    // The same for a moved clock, which is how a record is made to look like it happened elsewhen.
     let mut run = journal
         .append(
             &token,
@@ -169,21 +150,6 @@ fn chain_verification_catches_a_mutated_header() {
     );
 }
 
-/// A GAP IN THE NUMBERING IS ITS OWN BREAK, and it is the one the other three cannot see.
-///
-/// The digests catch a record that was edited and the link catches one that was removed, because
-/// both change bytes the chain hash covers. A restart that resumed from the correct head but at the
-/// WRONG NUMBER changes nothing after the fact: every record it seals is internally consistent, its
-/// `prev_hash` links onto the record before it, and the run verifies against the first three checks
-/// exactly as a healthy one does. What it has done is skip identities — and the log answers an
-/// identity it already holds by passing the record over and reporting success, so the settlements in
-/// the gap are on no medium and every append said `Ok`.
-///
-/// So the fixture is built the way the defect is: a real journal, sealed properly, continued from its
-/// own head at a number two past where it stopped — each continuing record sealed exactly as the
-/// journal seals one (body digest, link onto the head, chain hash over the header), so the ONLY
-/// thing wrong with the run is the numbering. Nothing is edited after sealing, which is what makes
-/// this a different failure from the three above.
 #[test]
 fn chain_verification_catches_a_gap_in_the_numbering() {
     let token = durability_token();
@@ -200,7 +166,6 @@ fn chain_verification_catches_a_gap_in_the_numbering() {
         .sealed;
     assert_eq!(journal.next_seq(), 4, "the log ended on three");
 
-    // A node coming back up from the right head but at the wrong number: it skips 4 and 5.
     let mut head = journal.head();
     let after: Vec<JournalRecord> = entries(RecordClass::Transaction, 2, 2)
         .into_iter()
@@ -226,7 +191,6 @@ fn chain_verification_catches_a_gap_in_the_numbering() {
         .collect();
     assert_eq!(after[0].node_seq, 6, "the fixture really did skip two");
 
-    // The run links and digests perfectly, and is still wrong.
     let mut run = first.clone();
     run.extend(after);
     let broken = verify(&run).expect_err("a skipped identity must not verify");
@@ -240,17 +204,13 @@ fn chain_verification_catches_a_gap_in_the_numbering() {
     );
     assert_eq!(broken.at_index, 4, "reported at the record that jumped");
 
-    // And it is NOT reported as one of the other three: the whole point is that a reader is told a
-    // gap happened rather than being sent looking for an edit that never occurred.
     assert_ne!(broken.kind, JournalBreakKind::LinkMismatch);
     assert_ne!(broken.kind, JournalBreakKind::BodyDigestMismatch);
     assert_ne!(broken.kind, JournalBreakKind::ChainDigestMismatch);
 
-    // The healthy prefix on its own still verifies, so the break is at the gap and not before it.
     verify(&first).expect("everything up to the gap is sound");
 }
 
-/// A record REMOVED from the middle breaks the link rather than passing as a shorter history.
 #[test]
 fn chain_verification_catches_a_removed_record() {
     let mut journal =
@@ -270,7 +230,6 @@ fn chain_verification_catches_a_removed_record() {
     assert_eq!(broken.kind, JournalBreakKind::LinkMismatch);
 }
 
-/// A memory-buffered journal ships its chain without leaving a file in its working directory.
 #[test]
 fn without_a_data_dir_the_journal_creates_no_file() {
     super::no_disk_tests::in_empty_working_directory(
@@ -299,8 +258,6 @@ fn without_a_data_dir_the_journal_creates_no_file() {
     );
 }
 
-/// Without a data directory, what the store took IS the chain: the shipped batches decode, verify
-/// end to end, and end at the node's own head and number.
 #[test]
 fn without_a_data_dir_what_the_store_took_is_the_chain_to_the_nodes_head() {
     let shipper = KeepingShipper::new();
@@ -321,7 +278,6 @@ fn without_a_data_dir_what_the_store_took_is_the_chain_to_the_nodes_head() {
         (journal.head(), journal.next_seq())
     };
 
-    // The node is gone. Everything it had is what the store took.
     let shipped = decode_run(&shipper.records()).expect("the shipped bytes are journal records");
     assert_eq!(shipped.len(), 9);
     verify(&shipped).expect("what the store holds is a chain that verifies");
@@ -330,8 +286,6 @@ fn without_a_data_dir_what_the_store_took_is_the_chain_to_the_nodes_head() {
     assert_eq!(next_seq, next_before);
 }
 
-/// With a data directory the journal replays to the same head it had before the restart, off its own
-/// segments and with no store involved at all.
 #[test]
 fn with_a_data_dir_the_journal_replays_to_the_same_head() {
     let dir = TempDir::new("journal-on-disk");
@@ -380,8 +334,6 @@ fn with_a_data_dir_the_journal_replays_to_the_same_head() {
     assert_eq!(replayed.last().expect("a record").hash, head_before);
 }
 
-/// The buffer is bounded, and reaching the bound is a DECISION with a record for it — never a silent
-/// drop, and never a refusal.
 #[test]
 fn a_full_buffer_seals_a_chain_break_rather_than_dropping_silently() {
     let mut journal =
@@ -390,7 +342,6 @@ fn a_full_buffer_seals_a_chain_break_rather_than_dropping_silently() {
     assert_eq!(journal.capacity(), 4);
     let token = durability_token();
 
-    // The store refuses, so the batch is retained. That is the buffer filling.
     journal
         .append(
             &token,
@@ -404,8 +355,6 @@ fn a_full_buffer_seals_a_chain_break_rather_than_dropping_silently() {
         "the bound is not reached yet"
     );
 
-    // Three more against a bound of four, and the break record sealed to account for the drop is a
-    // record the buffer holds too: seven wanting four, so three of the oldest go.
     journal
         .append(
             &token,
@@ -427,7 +376,6 @@ fn a_full_buffer_seals_a_chain_break_rather_than_dropping_silently() {
     assert_eq!(overflows[0].first, (4, 1), "the OLDEST go, not the newest");
     assert_eq!(overflows[0].last, (4, 3));
 
-    // And the loss is on the chain, as the class the contract already has for it.
     let on_the_medium =
         decode_run(&journal.log().read_back().expect("readable").records).expect("journal records");
     let breaks: Vec<&JournalRecord> = on_the_medium
@@ -443,19 +391,6 @@ fn a_full_buffer_seals_a_chain_break_rather_than_dropping_silently() {
     assert_eq!(breaks[0].node_seq, overflows[0].chain_break_seq);
 }
 
-/// B57 — THE RECORD THAT SAYS RECORDS WERE DROPPED SURVIVES A RETENTION PASS.
-///
-/// The overflow's `ChainBreak` was sealed with a bare `Entry::new(...)`, which stamps `wall: 0` —
-/// 1970. Retention in this tree is everywhere the same predicate over a record's own instant
-/// (`purge_plane_records_before` drops any row with `r.ts < before`; every `compact(before)` above
-/// it is that call), so a record dated 0 is older than EVERY positive cutoff and the FIRST sweep at
-/// any window deletes it. The evidence of loss was itself the first thing lost — the exact defect
-/// already fixed on the plane-record path, where `append_scoped` hardcoded `ts: 0`.
-///
-/// This crate ships opaque `Record` bytes and owns no purge of its own (the chain's time axis is
-/// decoded only on replay), so the sweep is applied here as the predicate every caller uses, against
-/// a cutoff safely in the PAST of the batch that caused the break. A break dated to the batch
-/// outlives it; a break dated to 1970 does not.
 #[test]
 fn the_overflow_break_is_dated_so_a_retention_pass_does_not_delete_the_evidence() {
     let mut journal =
@@ -463,7 +398,6 @@ fn the_overflow_break_is_dated_so_a_retention_pass_does_not_delete_the_evidence(
             .with_capacity(4);
     let token = durability_token();
 
-    // The store refuses, so the batch is retained. That is the buffer filling toward the bound.
     journal
         .append(
             &token,
@@ -472,8 +406,6 @@ fn the_overflow_break_is_dated_so_a_retention_pass_does_not_delete_the_evidence(
         )
         .expect_err("a store that refuses is a durability loss on a node with no data directory");
 
-    // This batch reaches the bound and seals the break. Its clocks are the moment the displacement
-    // happened, and the break must take them.
     let batch = entries(RecordClass::Transaction, 3, 2);
     let batch_wall = batch
         .iter()
@@ -496,8 +428,6 @@ fn the_overflow_break_is_dated_so_a_retention_pass_does_not_delete_the_evidence(
         .find(|r| r.class == RecordClass::ChainBreak)
         .expect("the overflow sealed a break");
 
-    // THE RETENTION PASS. The cutoff is safely BEFORE the batch, so nothing this test wrote is old
-    // enough to go — the same `record instant < cutoff` test every purge in this tree applies.
     let cutoff = batch_wall - 1_000_000;
     assert!(
         cutoff > 0,
@@ -515,7 +445,6 @@ fn the_overflow_break_is_dated_so_a_retention_pass_does_not_delete_the_evidence(
          sweep deletes the one record saying entries were lost"
     );
 
-    // And the instant it survives on is the one it actually marks, not merely some non-zero value.
     assert_eq!(
         brk.wall, batch_wall,
         "the break takes the appending batch's own wall clock"
@@ -523,9 +452,6 @@ fn the_overflow_break_is_dated_so_a_retention_pass_does_not_delete_the_evidence(
     assert_eq!(brk.mono, batch_mono, "and its monotonic clock too");
 }
 
-/// A single batch bigger than the whole capacity has nothing already buffered to evict, but the
-/// bound was still reached and still has to seal a break — not silently accept a buffer left over
-/// the bound for as long as the outage lasts.
 #[test]
 fn a_batch_bigger_than_the_capacity_still_seals_a_chain_break() {
     let mut journal =
@@ -563,12 +489,6 @@ fn a_batch_bigger_than_the_capacity_still_seals_a_chain_break() {
     assert_eq!(breaks[0].body, overflows[0].body());
 }
 
-/// The overflow history is a window plus a running total, not one entry per overflowing append.
-///
-/// Once the buffer is full EVERY append overflows, so an unbounded history is a per-request memory
-/// cost for the whole length of a store outage — growth that starts precisely when the node is
-/// already degraded. The detail the window forgets is not lost: it is in the sealed `ChainBreak`
-/// record, which is where it was always the durable answer.
 #[test]
 fn overflow_history_is_a_window_while_the_dropped_total_keeps_rising() {
     let mut journal =
@@ -620,7 +540,6 @@ fn overflow_history_is_a_window_while_the_dropped_total_keeps_rising() {
         "the window keeps the NEWEST overflows, not the first ones the run made"
     );
 
-    // And the durable side is untouched: a break is still sealed for every single overflow.
     let on_the_medium =
         decode_run(&journal.log().read_back().expect("readable").records).expect("journal records");
     let breaks: Vec<&JournalRecord> = on_the_medium
@@ -634,14 +553,6 @@ fn overflow_history_is_a_window_while_the_dropped_total_keeps_rising() {
     );
 }
 
-/// A TAIL THIS BUILD CANNOT READ MUST NOT MAKE THE NEXT RECORD VANISH.
-///
-/// The log seeds its idempotence marks from the tail it recovered whether or not the journal could
-/// decode those bytes — a segment written by a layout version this build does not read, or by a
-/// record class it does not know, both of which is what a rollback looks like from underneath. A
-/// chain that then numbered from one would seal records under identities the log already holds, and
-/// the log answers a held identity by passing the record over and reporting success. The settlement
-/// would be on no medium and the append would say `Ok`.
 #[test]
 fn a_tail_this_build_cannot_read_does_not_make_the_next_record_vanish() {
     use busbar_kernel_wal::backend::MemoryFactory;
@@ -662,7 +573,6 @@ fn a_tail_this_build_cannot_read_does_not_make_the_next_record_vanish() {
         .expect("a memory segment cannot fail to open")
     };
 
-    // A tail the log took and the journal cannot read back as its own records.
     {
         let mut log = open(&factory);
         log.append_batch(

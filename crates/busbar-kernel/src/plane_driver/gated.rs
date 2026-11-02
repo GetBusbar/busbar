@@ -55,43 +55,32 @@ pub struct GatedScan {
     pub generation: u64,
 }
 
-/// THE HOOKS ONE GATE-FIRST UNIT BINDS: the entry's decision gates and rewrite chain, the caller's
-/// governance key and the scan substrate.
 pub struct GatedHooks {
-    /// The unit's correlation id: every hook payload of the unit carries it.
     pub request_id: u64,
-    /// The decision gates attached to the entry, as resolved.
+
     pub gates: Vec<(u16, ResolvedPolicy)>,
-    /// The rewrite chain attached to the entry.
+
     pub rewrites: RewriteChain,
-    /// The caller's governance key (its `id` binds the incremental scan's clearance).
+
     pub key: Option<Arc<busbar_contract::records::VirtualKey>>,
-    /// The incremental scan's substrate; `None` = every request is screened whole.
+
     pub scan: Option<GatedScan>,
-    /// Where a hook handed the unit's content leaves its access amendment: the node's amendment
-    /// journal, through the generation's own seat on it.
+
     pub reads: HookRead,
 }
 
-/// The CURRENT generation's engine host, read per unit (a config apply replaces it).
 pub type GenerationHost = Arc<dyn Fn() -> Arc<dyn crate::plane_driver::EngineHost> + Send + Sync>;
 
-/// A governance key lookup by the principal the kernel verified.
 pub type PrincipalKeys =
     Arc<dyn Fn(&str) -> Option<Arc<busbar_contract::records::VirtualKey>> + Send + Sync>;
 
-/// THE GATE-FIRST BINDER OVER THE DEPLOYMENT'S OWN HOOK CONFIGURATION: the hooks the deployment
-/// attached to the plane `plane_key`'s entries (its per-entry `hooks:`), read off the current
-/// generation, with the caller's governance key.
 pub struct HostGatedHooks {
-    /// The current generation's engine host.
     pub host: GenerationHost,
-    /// The plane's registry key: the per-entry hooks are filed under it.
+
     pub plane_key: String,
-    /// The caller's governance key, by the principal the kernel verified.
+
     pub keys: PrincipalKeys,
-    /// The plane's dialect names, in its tail's order: the label an in-session hook of the unit is
-    /// told (its `ingress_protocol`) and the op its access amendment records, as at the screen.
+
     pub dialects: Vec<String>,
 }
 
@@ -137,9 +126,6 @@ impl HookBinder for HostGatedHooks {
 }
 
 impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
-    /// THE GATE-FIRST REQUEST STAGE (module doc): the entry's gates over the projection, then its
-    /// rewrite chain. Nothing is bound for the entry: the unit pays nothing more. The hooks it ran
-    /// are reported to the driver's hook journal however it ended.
     pub(crate) async fn gated_stage(&self, binder: &dyn HookBinder) -> Result<(), Stopped> {
         let mut ran = Vec::new();
         let stage = self.run_gated_stage(binder, &mut ran).await;
@@ -147,7 +133,6 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         stage
     }
 
-    /// [`Self::gated_stage`], each hook that ran pushed onto `ran` as it answered.
     async fn run_gated_stage(
         &self,
         binder: &dyn HookBinder,
@@ -162,8 +147,7 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 st.decoded.as_ref().map_or(0, |d| d.route),
             )
         };
-        // A UNIT ROUTED BY SCOPE recorded its plane's candidate list, never an entry: its entry is
-        // the one the kernel's Verify resolved the scope to (`None` = none resolved yet).
+
         let scoped = matches!(route, ROUTE_SCOPE | ROUTE_SCOPE_LOCAL);
         let resolved = if scoped {
             self.steps.scope_entry()
@@ -172,16 +156,8 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         };
         let mut view: Projection = match first {
             Ok(view) => view,
-            // The plane answered FAULT to the unit's first `project`: where the entry the kernel
-            // recorded has a rewrite hook configured, v1.5.5 materialized the document before any
-            // hook ran (`proxy/engine/mod.rs:728`, `:749`) and answered the shared 500, no hook
-            // invoked. Anywhere else 1.5.5's gates judged a Null body and the request proceeded
-            // (`:957-961`): the entry's gates judge a view with no body, and the unit goes on.
+
             Err(Stopped::Unparseable { marked }) => {
-                // The entry the kernel recorded at decode; a unit that recorded none, or one that
-                // is not UTF-8, binds the empty entry, as `bound_entry` reads an unnamed one.
-                // A scope's unit binds the entry its scope resolved to (its recorded bytes are the
-                // candidate list, no entry's name).
                 let named = if scoped {
                     resolved.as_deref()
                 } else {
@@ -191,12 +167,11 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                     .unwrap_or_default()
                     .to_string();
                 let hooks = binder.bind_gated(&entry, principal.as_deref());
-                // A configured rewrite: the shared 500 for every FAULT, marked or not (v1.5.5
-                // `:728`, `:749`), no hook invoked.
+
                 if hooks.as_ref().is_some_and(|h| !h.rewrites.is_empty()) {
                     return Err(super::fault_veto());
                 }
-                // An unmarked FAULT is a broken plane, never 1.5.5's Null body: unreadable.
+
                 if !marked {
                     return Err(Stopped::Unreadable);
                 }
@@ -211,8 +186,7 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             }
             Err(other) => return Err(other),
         };
-        // THE ENTRY THE KERNEL RECORDED at decode, never the plane's later word: a projection naming
-        // another entry is refused before any entry's gates are bound.
+
         let holds = |pool: &[u8], member: &str| self.steps.pool_holds(pool, member);
         let bound = if scoped {
             scoped_entry(recorded.as_deref(), resolved.as_deref(), &view)?
@@ -226,16 +200,14 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         let Some(mut hooks) = binder.bind_gated(&entry, principal.as_deref()) else {
             return Ok(());
         };
-        // The unit's own correlation id, where its host minted one (status row 173).
+
         if let Some(id) = self.lock().request_id {
             hooks.request_id = id;
         }
         super::record_request_id(hooks.request_id);
 
-        // 1. THE DECISION GATES, over the projected invocation, keyed on the view's session.
         self.screen_gates(&hooks, &view, ran).await?;
 
-        // 2. THE ENTRY'S REWRITE CHAIN, each rewrite applied by the plane and projected again.
         for (timeout, hook) in &hooks.rewrites {
             let req = view.request(hooks.request_id, &view.pool, true, None);
             if req.prompt.is_some() {
@@ -249,11 +221,7 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                     let bytes = super::rewrite_bytes(&rw);
                     let next = match self.project(Some(&bytes), true) {
                         Ok(next) if next.rewritten.is_some() || rw.messages.is_empty() => next,
-                        // The rewrite does not apply to the unit, in the plane's own word (READY,
-                        // no rewritten body, `PROJECT_REWRITE_NOT_APPLICABLE`): its operation has
-                        // no conversation to frame one into. The audited pass-through, held to
-                        // the bound entry like any re-projection: the view and the body stand as
-                        // they were, the hook is on record as a pass.
+
                         Ok(next) if next.rewrite_not_applicable => {
                             if next.pool != entry && !(scoped && next.pool.is_empty()) {
                                 return Err(Stopped::Unreadable);
@@ -266,17 +234,15 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                             );
                             continue;
                         }
-                        // A FAULT project: the shared 500, never the hook's `on_error`.
+
                         Err(fault @ Stopped::Veto(_)) => return Err(fault),
-                        // A rewrite naming messages the plane answered with no rewritten body and
-                        // no word that it does not apply, or refused: not applied, refused.
+
                         Ok(_) | Err(_) => {
                             let (status, message) = refused_rewrite(&**hook, &view.pool, ran);
                             return Err(veto_by(status, message, hook.name()));
                         }
                     };
-                    // The re-projection is held to the same bound entry (a scope's unit's
-                    // projection may still name none: its entry is the kernel's resolution).
+
                     if next.pool != entry && !(scoped && next.pool.is_empty()) {
                         return Err(Stopped::Unreadable);
                     }
@@ -303,8 +269,6 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         Ok(())
     }
 
-    /// THE ENTRY'S DECISION GATES over `view`, the projected invocation, keyed on the view's
-    /// session: the first rejecting gate refuses the unit.
     async fn screen_gates(
         &self,
         hooks: &GatedHooks,
@@ -314,8 +278,6 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         if !hooks.gates.is_empty() {
             let now_ms = crate::store::now_ms();
             let door = DoorSubject {
-                // The plane's own body, or none: a gate granted the content never screens an
-                // absent body as empty content (`decide_door`, audit Q128 p15#3).
                 projected: view.projected.as_deref(),
                 container: &view.pool,
                 dialect: &view.dialect,
@@ -328,7 +290,7 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                     now_ms,
                 }),
                 reads: &*hooks.reads,
-                // THE DESIGN Appendix B.9 l.5436-5437: the hook view's plane-derived fields.
+
                 plane: crate::hooks::gate::DoorShape {
                     max_tokens: view.max_tokens,
                     stream: view.stream,
@@ -354,22 +316,6 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
     }
 }
 
-/// THE ENTRY A GATE-FIRST UNIT'S HOOKS ARE BOUND OVER: the one its `arrive` named and the kernel
-/// recorded at decode (`Decoded::pool`; none named is the empty entry). The plane's `project`
-/// states an entry too, and it must be the same one: a projection naming another is the plane's
-/// fault and refuses the unit, so the gates the operator attached to the routed entry can never be
-/// traded for another entry's by the plane's later word (audit kernel-K2 leftover A4; ARCHITECT
-/// 2026-10-07). Two units bind otherwise:
-///
-/// - a unit routed over a POOL (`ROUTE_POOL`, a pool named) recorded the pool, and hooks are
-///   attached to its members: the entry is the member the plane's projection names, as 1.5.5
-///   bound its hooks, admitted only when it is a member of the recorded pool (`holds`, the
-///   generation's own record of the pool's members); any other entry, the empty one included,
-///   refuses the unit (THE DESIGN §1 l.183-187: the hook gate applies to every plane the same
-///   way);
-/// - a projection that names no entry and states no body (a task's continuation, whose call was
-///   screened at the unit that created the task) has nothing for a gate to screen: `None`, nothing
-///   is bound.
 fn bound_entry<'v>(
     recorded: Option<&'v [u8]>,
     route: u8,
@@ -394,21 +340,6 @@ fn bound_entry<'v>(
         .map_err(|_| Stopped::Unreadable)
 }
 
-/// THE ENTRY A GATE-FIRST UNIT ROUTED BY SCOPE (`ROUTE_SCOPE`, `ROUTE_SCOPE_LOCAL`) IS BOUND OVER:
-/// the ONE entry the kernel's Verify resolved its scope to (`resolved`), never an entry the
-/// plane's projection names. Its `arrive` recorded no entry: `candidates` is the plane's CANDIDATE
-/// LIST joined by `ROUTE_SCOPE_SEPARATOR` (`None` or empty = every entry is a candidate), and the
-/// plane's `project` cannot know which one the scope resolves to, so it names none. The binding
-/// guarantee of [`bound_entry`] holds the same way:
-///
-/// - the resolved entry must be one the recorded candidate list holds (a whole member, never a
-///   widening of the list); any other refuses the unit;
-/// - a projection may name no entry, or the resolved one; naming any other refuses the unit, so
-///   the plane's later word never trades the resolved entry's gates for another's;
-/// - a scope that resolved no entry (zero or several reach) binds nothing: the door refuses that
-///   unit `no_destination` before anything is admitted (`abi::plane::ROUTE_SCOPE`), so no hop runs
-///   ungated; a projection naming an entry for it is still refused;
-/// - a projection that names no entry and states no body binds nothing, as for any route.
 fn scoped_entry<'v>(
     candidates: Option<&[u8]>,
     resolved: Option<&'v [u8]>,
@@ -437,26 +368,6 @@ fn scoped_entry<'v>(
     Ok(Some(entry))
 }
 
-/// A REWRITE THE PLANE DID NOT APPLY (it refused the rewrite, or answered with no rewritten body
-/// and no [`PROJECT_REWRITE_NOT_APPLICABLE`]: one naming a model other than the routed one, a body
-/// the splice cannot place it in, a rewrite it cannot read): THE REQUEST IS REFUSED, never
-/// forwarded as the caller sent it. A rewrite the plane says does not apply to the unit (the mark
-/// set: a dialect or operation with no conversation to frame it into) is not this: it is the
-/// audited pass-through, [`rewrite_not_applicable`]. A rewrite hook rewrites to redact, compress
-/// or police; relaying the un-rewritten body upstream is the fail-open the hook exists to prevent,
-/// whatever its `on_error` says (that answers the hook's OWN failure to answer, not busbar's
-/// failure to apply what it answered).
-///
-/// A load-bearing hook (`on_error: reject`) is refused with the refusal a failed call of the same
-/// hook answers, [`REQUIRED_HOOK_UNAVAILABLE_STATUS`] and its shared words; every other hook with
-/// [`PROJECT_FAULT_STATUS`] and 1.5.5's own words for this case, [`PROJECT_FAULT_MESSAGE`]. The
-/// refusal is logged at error naming the hook and the entry, and the hook's entry in the unit's
-/// record (its "hooks applied") is rewritten to a failed veto ([`mark_unapplied`]).
-///
-/// [`REQUIRED_HOOK_UNAVAILABLE_STATUS`]: crate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS
-/// [`PROJECT_FAULT_STATUS`]: busbar_contract::abi::plane::PROJECT_FAULT_STATUS
-/// [`PROJECT_FAULT_MESSAGE`]: busbar_contract::abi::plane::PROJECT_FAULT_MESSAGE
-/// [`PROJECT_REWRITE_NOT_APPLICABLE`]: busbar_contract::abi::plane::PROJECT_REWRITE_NOT_APPLICABLE
 pub(super) fn refused_rewrite(
     hook: &dyn busbar_contract::hooks::RoutingPolicy,
     entry: &str,
@@ -484,15 +395,6 @@ pub(super) fn refused_rewrite(
     )
 }
 
-/// A REWRITE THAT DOES NOT APPLY TO THE UNIT, in the plane's own word
-/// ([`PROJECT_REWRITE_NOT_APPLICABLE`] on a READY `project` with no rewritten body: the unit's
-/// operation has no conversation to frame one into): the audited pass-through. The unit goes on
-/// with its view and body as they stood; the hook's entry in the unit's record, pushed as a rewrite
-/// when it answered, is rewritten to what happened: a pass that did not fail. The caller warns
-/// naming the hook and the entry. Never inferred from a missing body: without the mark, an
-/// unapplied rewrite is [`refused_rewrite`].
-///
-/// [`PROJECT_REWRITE_NOT_APPLICABLE`]: busbar_contract::abi::plane::PROJECT_REWRITE_NOT_APPLICABLE
 pub(super) fn rewrite_not_applicable(hook: &str, ran: &mut [HookApplied]) {
     if let Some(last) = ran.iter_mut().rev().find(|h| h.hook == hook) {
         last.head = HookHead::Pass;
@@ -500,8 +402,6 @@ pub(super) fn rewrite_not_applicable(hook: &str, ran: &mut [HookApplied]) {
     }
 }
 
-/// The hook's entry in the unit's record, pushed as a rewrite when it answered, rewritten to what
-/// happened: a failed veto.
 fn mark_unapplied(hook: &str, ran: &mut [HookApplied]) {
     if let Some(last) = ran.iter_mut().rev().find(|h| h.hook == hook) {
         last.head = HookHead::Veto;
@@ -509,12 +409,6 @@ fn mark_unapplied(hook: &str, ran: &mut [HookApplied]) {
     }
 }
 
-/// A REWRITE'S REFUSAL, as the caller is answered (SEAM-L(q), predev parity): a status the hook
-/// chose is clamped to the client-error range and its words sanitized; the seam's OWN failed
-/// verdict (a load-bearing hook, `on_error: reject`, that could not answer) keeps predev's
-/// [`REQUIRED_HOOK_UNAVAILABLE_STATUS`] and its shared words, never clamped to a 4xx.
-///
-/// [`REQUIRED_HOOK_UNAVAILABLE_STATUS`]: crate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS
 pub(super) fn rewrite_refusal(status: u16, message: &str) -> (u16, String) {
     use crate::hooks::{REQUIRED_HOOK_UNAVAILABLE_MESSAGE, REQUIRED_HOOK_UNAVAILABLE_STATUS};
     if status == REQUIRED_HOOK_UNAVAILABLE_STATUS && message == REQUIRED_HOOK_UNAVAILABLE_MESSAGE {

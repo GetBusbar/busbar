@@ -1,42 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE PUBLISHED RECIPE, CHECKED BY SOMETHING THAT CANNOT SEE THE IMPLEMENTATION.
-//!
-//! ## The failure this exists to catch, which no other test in this crate can
-//!
-//! Every other recipe test in this crate asks the code what the answer is. That is fine for
-//! "does the chain agree with itself", and it is worthless for the one failure that matters here:
-//! the node's field order drifting from the order the DOCUMENT publishes. When that happens the
-//! node still agrees with itself perfectly — `the_published_recipe_hashes_to_the_digest_the_chain_seals`
-//! stays green, every chain verifies, nothing looks wrong — and the chain has silently become
-//! unverifiable by anybody outside this repository. A signed chain only they can check is a claim,
-//! not evidence, which is the whole of why the recipe is published at all.
-//!
-//! So the check here rebuilds the digest preimage from the PUBLISHED ARTIFACTS ONLY: the field
-//! table in `docs/audit-chain-digest-v3.md`, and the worked example and key set that document
-//! quotes. It frames them itself, hashes them itself, and compares against the digest the document
-//! and the build each claim.
-//!
-//! The reconstruction below must stay independent of the implementation's recipe helpers: calling
-//! them would ask the same code for both the actual and expected order. The tests read the published
-//! fields and examples and compare the resulting bytes and digests.
-//!
-//! ## What is fair to use
-//!
-//! SHA-256 and ed25519 themselves, and the chain's own `seal`/`expose` to produce a fresh artifact
-//! to check. Those are the hash primitive, the signature primitive, and the thing under test's
-//! output. None of them is the RECIPE — the field order, the framing and the preimage spelling are
-//! re-derived here from the document, byte for byte, exactly as an outside reader would have to.
-
 use sha2::{Digest as _, Sha256};
 
-/// Where the published contract lives. The ONE input this check is allowed to trust.
 fn published_spec() -> String {
     published_page("audit-chain-digest-v4.md")
 }
 
-/// One published recipe page, by file name.
 fn published_page(name: &str) -> String {
     std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -55,12 +25,6 @@ enum Kind {
     Num,
 }
 
-/// THE FIELD ORDER, READ OFF THE PUBLISHED TABLE — never off the code.
-///
-/// Parses the `| # | Field | Kind |` rows of the document's field-order section. A row the parser
-/// cannot read is a row an outside reader could not have read either, so this is deliberately
-/// strict rather than lenient: it is checking that the published table is usable, and a parser that
-/// skipped what it did not understand would be checking nothing.
 fn published_field_order(doc: &str) -> Vec<(String, Kind)> {
     let mut order = Vec::new();
     let mut expected_position = 1usize;
@@ -113,8 +77,6 @@ enum Numbers {
     AsJson,
 }
 
-/// A recipe number's published text, read back by the page's rule: unsigned ASCII digits, no sign,
-/// no leading zero but `"0"` itself, no whitespace, fits a `u64`.
 fn canonical_decimal(s: &str) -> Option<u64> {
     let canonical =
         !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()) && (s == "0" || !s.starts_with('0'));
@@ -125,11 +87,6 @@ fn canonical_decimal(s: &str) -> Option<u64> {
     }
 }
 
-/// One field, framed exactly as the document's framing section specifies.
-///
-/// Written out here rather than delegated, because the framing is half of what is being checked.
-/// Length-prefixed, never separator-joined: `be_u64(len) ‖ bytes` for text, `be_u64(8) ‖ be_u64(v)`
-/// for a number. The kind comes off the page's table, never off the JSON type.
 fn frame(out: &mut Vec<u8>, value: &serde_json::Value, kind: Kind, numbers: Numbers) {
     match kind {
         Kind::Text => {
@@ -153,12 +110,6 @@ fn frame(out: &mut Vec<u8>, value: &serde_json::Value, kind: Kind, numbers: Numb
     }
 }
 
-/// Rebuild one record's preimage from the published order and the published members.
-///
-/// The repeated groups are handled the way the document says they can be: a field named
-/// `group[].member` belongs to the array published under `group`, and `group[]` with no member is
-/// an array of bare values. The run of consecutive fields sharing a prefix IS the element's shape,
-/// so no knowledge beyond the table itself is needed — which is the property being checked.
 fn preimage_from_published(
     order: &[(String, Kind)],
     record: &serde_json::Value,
@@ -177,7 +128,7 @@ fn preimage_from_published(
             continue;
         };
         let array_name = &name[..marker];
-        // The run of consecutive rows naming this array is the element's member list.
+
         let mut members: Vec<(String, Kind)> = Vec::new();
         while i < order.len() && order[i].0.starts_with(&format!("{array_name}[]")) {
             let member = order[i].0[array_name.len() + 2..].trim_start_matches('.');
@@ -206,12 +157,10 @@ fn preimage_from_published(
     out
 }
 
-/// Lowercase hex, written out so the check owes the implementation nothing at all.
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// The digest of one published record, computed only from the published table.
 fn digest_from_published(
     order: &[(String, Kind)],
     record: &serde_json::Value,
@@ -222,7 +171,6 @@ fn digest_from_published(
     )))
 }
 
-/// Pull the nth fenced `json` block out of the published spec.
 fn spec_json_block(doc: &str, nth: usize) -> serde_json::Value {
     let block = doc
         .split("```json")
@@ -234,16 +182,6 @@ fn spec_json_block(doc: &str, nth: usize) -> serde_json::Value {
     serde_json::from_str(block).expect("the published spec's example is valid JSON")
 }
 
-// ── THE CHECKS ───────────────────────────────────────────────────────────────────────────────────
-
-/// THE PUBLISHED TABLE, APPLIED TO THE PUBLISHED EXAMPLE, PRODUCES THE PUBLISHED DIGEST.
-///
-/// Entirely over committed artifacts: no chain is sealed, no record is rendered, nothing in this
-/// crate's source is consulted. This is the document checking out on its own terms — an outside
-/// reader with the page and nothing else gets the hash the page claims.
-///
-/// If it fails, the page is wrong, and every third-party verification built from it would fail
-/// while looking, to the third party, exactly like a tampered chain.
 #[test]
 fn the_published_table_reproduces_the_published_examples_digest() {
     let doc = published_spec();
@@ -262,13 +200,6 @@ fn the_published_table_reproduces_the_published_examples_digest() {
     );
 }
 
-/// THE V1 PAGE STILL CHECKS OUT ON ITS OWN TERMS, AND IT STILL CARRIES THE PRICED FIELDS V2 DROPPED.
-///
-/// `v2` was published BESIDE `v1`, not over it: a `v1` body anybody pulled is checked by the `v1`
-/// page, so that page must stay followable — its table reproduces its own example's digest — and
-/// must still be the `v1` recipe, three priced fields and all. And the `v2` table is the `v1` table
-/// with exactly `pre_tier`, `priced` and `hooks[].priced_delta` taken out, in the same order and
-/// kinds: read off the two pages, never off the code.
 #[test]
 fn the_v1_page_is_kept_and_v2_is_v1_less_the_three_priced_fields() {
     let v1 = published_page("audit-chain-digest-v1.md");
@@ -300,12 +231,6 @@ fn the_v1_page_is_kept_and_v2_is_v1_less_the_three_priced_fields() {
     );
 }
 
-/// THE V2 PAGE STILL CHECKS OUT ON ITS OWN TERMS, AND V3 IS V2 LESS `currency` (#34).
-///
-/// `v3` was published BESIDE `v2`: a record sealed under `v2` is checked by the `v2` page, so that
-/// page must stay followable — its table reproduces its own example's digest, its example still
-/// names `v2` — and the `v3` table is the `v2` table with exactly `currency` taken out, in the same
-/// order and kinds. Read off the two pages, never off the code.
 #[test]
 fn the_v2_page_is_kept_and_v3_is_v2_less_currency() {
     let v2 = published_page("audit-chain-digest-v2.md");
@@ -336,13 +261,6 @@ fn the_v2_page_is_kept_and_v3_is_v2_less_currency() {
     );
 }
 
-/// THE V3 PAGE STILL CHECKS OUT ON ITS OWN TERMS, AND V4 IS V3 PLUS `incarnation` AND `node`.
-///
-/// The `v3` page stays published as the history of the field list, so its table must still
-/// reproduce its own example's digest and its example must still name `v3`. The `v4` table is the
-/// `v3` table with exactly `incarnation` (a number) inserted after `unit_key`, `node` (a number)
-/// inserted after `mono`, and each hook's `head` (text) and `failed` (a number) inserted after its
-/// key. Read off the two pages, never off the code.
 #[test]
 fn the_v3_page_is_kept_and_v4_is_v3_plus_incarnation_and_node() {
     let v3 = published_page("audit-chain-digest-v3.md");
@@ -369,8 +287,7 @@ fn the_v3_page_is_kept_and_v4_is_v3_plus_incarnation_and_node() {
             + 1
     };
     let mut v3_plus = v3_order.clone();
-    // Inserting at the later positions first keeps the earlier ones: `hooks[].hook` sits after
-    // `mono`, which sits after `unit_key`.
+
     let hook = after("hooks[].hook");
     v3_plus.insert(hook, ("hooks[].failed".to_string(), Kind::Num));
     v3_plus.insert(hook, ("hooks[].head".to_string(), Kind::Text));
@@ -387,13 +304,6 @@ fn the_v3_page_is_kept_and_v4_is_v3_plus_incarnation_and_node() {
     );
 }
 
-/// AND THE PUBLISHED TABLE STILL DESCRIBES WHAT THIS BUILD ACTUALLY SEALS.
-///
-/// The canary the rest of the suite cannot be: a build whose field order drifted from the document
-/// agrees with itself perfectly, so every self-referential test stays green. This one seals a real
-/// record, takes the body the range read publishes for it, and recomputes the digest **from the
-/// document's order** — so a build that reordered, added or dropped a field disagrees with the
-/// page here and nowhere else.
 #[test]
 fn the_published_table_still_describes_what_this_build_seals() {
     use busbar_contract::caps::{Audit as AuditStep, KernelSeal, Pass};
@@ -431,13 +341,6 @@ fn the_published_table_still_describes_what_this_build_seals() {
     );
 }
 
-/// THE PUBLISHED KEY SET AND PREIMAGE SPELLING ARE ENOUGH TO CHECK A SIGNATURE.
-///
-/// The second half of "the page is followable": the document says the preimage is the domain, one
-/// zero byte, then the digest's hex, and says the key identifier is the first eight bytes of the
-/// key's SHA-256. Both are re-derived here from the page rather than from this crate's constants,
-/// and the signature in the page's own example is checked against the key in the page's own key
-/// set.
 #[test]
 fn the_published_key_set_checks_the_published_examples_signature() {
     let doc = published_spec();
@@ -445,7 +348,6 @@ fn the_published_key_set_checks_the_published_examples_signature() {
     let keys = spec_json_block(&doc, 2);
     let record = &range["records"][0];
 
-    // The domain comes off the published body, not off this crate's constant.
     let domain = range["signature_domain"]
         .as_str()
         .expect("the published body names its signature domain");
@@ -458,7 +360,6 @@ fn the_published_key_set_checks_the_published_examples_signature() {
         *slot = u8::from_str_radix(&key_hex[i * 2..i * 2 + 2], 16).expect("the key is hex");
     }
 
-    // The identifier is DERIVED, so a reader can recompute it rather than be told it.
     assert_eq!(
         &hex(&Sha256::digest(key_bytes))[..16],
         published_key["key_id"]
@@ -489,12 +390,6 @@ fn the_published_key_set_checks_the_published_examples_signature() {
         .expect("the published example's signature does not verify under the published recipe");
 }
 
-/// AND IT SAYS NO. The same recomputation, over the example with one field altered, disagrees.
-///
-/// Without this the check above could be vacuous — a preimage builder that ignored its inputs
-/// would match anything. The field altered is the monotonic clock: the one with the best claim to
-/// being cosmetic, the one a reader never looks at, and the one an editor would most expect to get
-/// away with.
 #[test]
 fn the_recomputation_rejects_the_published_example_with_one_cosmetic_field_altered() {
     let doc = published_spec();
@@ -516,13 +411,6 @@ fn the_recomputation_rejects_the_published_example_with_one_cosmetic_field_alter
     );
 }
 
-/// A WINDOW WITH RECORDS MISSING FROM ITS END IS VISIBLE IN THE PUBLISHED BODIES ALONE.
-///
-/// A tail truncation is invisible to anyone reading only the records: the survivors link and
-/// number perfectly among themselves, because dropping the last one leaves a shorter chain that is
-/// otherwise flawless. What makes it visible is that the range read says which window it is
-/// ANSWERING and the head read says how far the chain actually goes — so a window that stops short
-/// of both has records missing. This asserts those two members are published and do say so.
 #[test]
 fn the_published_bodies_expose_a_window_that_stops_short() {
     use busbar_contract::caps::{Audit as AuditStep, KernelSeal, Pass};
@@ -539,8 +427,6 @@ fn the_published_bodies_expose_a_window_that_stops_short() {
         })
         .collect();
 
-    // The node answers a request for 1..5 with only the first four. Nothing about those four is
-    // wrong — they link, they number, they hash. The run is just short at the end.
     let short: serde_json::Value = serde_json::from_str(&busbar_kernel_audit::expose::range_body(
         &chain,
         &records[..4],

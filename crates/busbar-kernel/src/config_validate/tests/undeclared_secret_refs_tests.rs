@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The undeclared-reference refusal `--validate` and boot share (OWNER RULING, CHIP-REVIEW-v4
-//! change 2; overturns Q123).
-
 use std::sync::Arc;
 
 use busbar_contract::plugin_rows::PluginRows;
@@ -11,8 +8,6 @@ use serde_json::json;
 
 use super::undeclared_secret_refs;
 
-/// A store plugin declaring the exact path `dsn` and the wildcard path `replicas.*.password`, and
-/// an auth plugin standing in for busbar-auth-github, declaring only `client_secret`.
 fn rows() -> Arc<dyn PluginRows> {
     crate::test_support::rows::Rows::new()
         .with_dropped_secret_slots(
@@ -74,8 +69,6 @@ fn references_at_a_declared_exact_path_and_a_declared_wildcard_path_are_accepted
     assert_eq!(undeclared_secret_refs(rows().as_ref(), &cfg), Ok(()));
 }
 
-/// THE Q123 CELL: a GitHub base URL written as a reference was resolved in place by the kernel and
-/// logged in (OWNER Q123, 2026-09-30). The plugin declares only `client_secret`, so it is refused.
 #[test]
 fn q123_a_github_base_written_as_a_reference_is_refused() {
     let mut cfg = store_with(json!({}));
@@ -104,8 +97,6 @@ fn q123_a_github_base_written_as_a_reference_is_refused() {
     assert!(e.contains("'github'"), "{e}");
 }
 
-/// Core's own typed fields are not plugin settings: the provider's `api_key` reference is not
-/// looked at here.
 #[test]
 fn core_fields_are_not_plugin_settings() {
     assert_eq!(
@@ -114,10 +105,6 @@ fn core_fields_are_not_plugin_settings() {
     );
 }
 
-/// REFERENCE-CAPABLE FIELDS (lead ruling item 7a): a 1.5.5 config writing a store's, a hook's or an
-/// exporter's `url` as `{env: VAR}` is NOT refused as undeclared when the plugin names `url` in its
-/// Statement's reference-capable list: the postgres, valkey and mysql stores, the webrequest hook,
-/// and the otlp and request-log-webhook exporters. A reference elsewhere in the same block still is.
 #[test]
 fn a_reference_at_a_reference_capable_url_is_accepted_and_elsewhere_refused() {
     let rows = || {

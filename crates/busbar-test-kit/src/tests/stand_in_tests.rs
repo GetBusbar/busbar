@@ -6,10 +6,9 @@ use busbar_contract::conn::DeclaredConns;
 use std::sync::Arc;
 
 #[path = "https_timeout_tests.rs"]
-#[allow(unsafe_code)] // Restates the loader's real test door; every service uses its real context.
+#[allow(unsafe_code)]
 mod https_timeout_tests;
 
-/// `stand_in.json` reads, and states a transport for each double.
 #[test]
 fn the_stand_in_facts_read_from_data() {
     let (stream, framed) = (StreamFacts::stand_in(), FramedFacts::stand_in());
@@ -18,8 +17,6 @@ fn the_stand_in_facts_read_from_data() {
     assert_ne!(stream.transport, framed.transport);
 }
 
-/// RED: each double serves exactly the transport its facts name. Handed planted facts, it serves
-/// the planted word and refuses the one `stand_in.json` names, so no word is the code's own.
 #[test]
 fn a_double_serves_only_the_transport_its_facts_name() {
     let framed = crate::https_conns::HttpsConns::framing(FramedFacts {
@@ -46,10 +43,6 @@ fn a_double_serves_only_the_transport_its_facts_name() {
     assert!(default.serves_scheme(&FramedFacts::stand_in().transport));
 }
 
-/// RED: a scheme the deployment serves beside the framed one, named unreached, passes the boot's
-/// scheme match, and a need over it is DECLARED as the connector declares a need over a loaded
-/// transport (the loader refuses the load on a refused config-free need, kind-secret K17), while
-/// every open on it is refused, so no open reaches anything; a scheme not named stays unserved.
 #[test]
 fn an_unreached_scheme_is_served_at_boot_and_reaches_nothing() {
     use busbar_contract::abi::mechanism::rendering::{ReadBlob, ReadNeed};
@@ -96,10 +89,6 @@ fn an_unreached_scheme_is_served_at_boot_and_reaches_nothing() {
     );
 }
 
-/// AN UNREACHED SCHEME IS A NAMED, REASONED, COVERED CLAIM, or the suite fails (row 114: no silent
-/// skip). Each entry names its scheme, says why, and cites the `path::fn` test cells in the
-/// plugin's own repo that exercise it; the scheme is one a declared need names and not the framed
-/// table's own. RED before the fix: the entries were bare names, judged by nothing.
 #[test]
 fn an_unreached_scheme_is_named_reasoned_and_covered() {
     use crate::https_conns::judge_unreached;
@@ -183,8 +172,6 @@ fn an_unreached_scheme_is_named_reasoned_and_covered() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// AN OPEN ON AN UNREACHED SCHEME IS COUNTED, so the suite can assert none was made: the claim is
-/// that the fold never touches the scheme. RED before the fix: such an open left no trace.
 #[test]
 fn an_open_on_an_unreached_scheme_is_counted() {
     use busbar_contract::abi::mechanism::rendering::{ReadBlob, ReadNeed};
@@ -223,12 +210,6 @@ fn an_open_on_an_unreached_scheme_is_counted() {
     );
 }
 
-/// THE FRAMED TABLE DECLARES AS THE CONNECTOR DECLARES (busbar-core-connector `declare`): a
-/// member-target need (`settings.*.<key>`) is pinned by no one target, each member's route being
-/// sealed at its own, so it is declared with none, and a member-scoped or OWNED (optional) trust
-/// path that resolved to nothing leaves the public roots alone; a single-target need whose target
-/// resolved to nothing is still refused. RED before the fix: the suite's table refused every need
-/// whose paths resolved to nothing, so a plane's member needs could never be opened in its suite.
 #[test]
 fn a_member_need_is_declared_with_no_one_target_as_the_connector_declares_it() {
     use busbar_contract::abi::mechanism::rendering::{ReadBlob, ReadNeed};
@@ -277,9 +258,6 @@ fn a_member_need_is_declared_with_no_one_target_as_the_connector_declares_it() {
     );
 }
 
-/// RED: THE FAR-END TABLE REACHES ONLY WHAT IT DECLARES. A member need opens each URL the plugin
-/// names; a declared far end answers, and a URL or host the table does not declare is refused as
-/// an unreachable far end is, so no dial in a suite reaches anything its inputs did not state.
 #[test]
 fn an_undeclared_far_end_is_refused() {
     use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;

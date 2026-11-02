@@ -23,30 +23,22 @@ fn service(
     let config = dir.join("config.yaml");
     let providers = dir.join("providers.yaml");
     std::fs::write(&providers, "{}").unwrap();
-    std::fs::write(
-        &config,
-        serde_json::to_vec(&serde_json::json!({
-            "providers": {}, "models": {}, "store": {"module":anchor,"settings":store_settings},
-            "plugins": {"enabled":true,"dir":plugins,"min_versions":{(target):base_floor}}
-        }))
-        .unwrap(),
-    )
-    .unwrap();
     let mut live = strict_posture();
     live.enabled = true;
     live.dir = plugins.to_string_lossy().into_owned();
-    // The running generation already carries the explicit lower pin. The operator's base policy
-    // remains distinct and must be the policy used to judge bootstrap availability.
+
     live.min_versions.insert(target.into(), "1.4.0".into());
-    let mut rows = vec![busbar_kernel::test_support::rows::row(
+    let mut rows = vec![busbar_kernel_testkit::test_support::rows::row(
         "acme-anchor",
         "anchor-alias",
         "store",
     )];
     if target != "acme-anchor" {
-        rows.push(busbar_kernel::test_support::rows::row(target, alias, kind));
+        rows.push(busbar_kernel_testkit::test_support::rows::row(
+            target, alias, kind,
+        ));
     }
-    busbar_kernel::test_support::rows::drop_in(&plugins, rows, Vec::new());
+    busbar_kernel_testkit::test_support::rows::drop_in(&plugins, rows, Vec::new());
     let mut bytes = fake_tarball(target, alias, "1.4.0", "rollback-only");
     if kind != "store" {
         let mut manifest: serde_json::Value =
@@ -55,7 +47,21 @@ fn service(
         bytes = FAKE_HEAD.to_vec();
         bytes.extend(serde_json::to_vec(&manifest).unwrap());
     }
-    std::fs::write(plugins.join("target.tar.gz"), bytes).unwrap();
+    let archive_pin = busbar_contract::redacted::sha256_hex(&bytes);
+    std::fs::write(plugins.join("target.tar.gz"), &bytes).unwrap();
+
+    std::fs::write(
+        &config,
+        serde_json::to_vec(&serde_json::json!({
+            "providers": {}, "models": {}, "store": {"module":anchor,"settings":store_settings},
+            "plugins": {
+                "enabled":true,"dir":plugins,"min_versions":{(target):base_floor},
+                "fetch":[{"url":"https://plugins.example/target.tar.gz","sha256":archive_pin}]
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
     let app = crate::new_test_app()
         .plugins_dir(plugins)
         .plugins_cfg(live)
@@ -110,7 +116,7 @@ fn safe_anchor_and_nonanchor_rollbacks_preserve_the_existing_pin_merge() {
 
 #[test]
 fn a_secret_plugin_needed_to_open_the_anchor_cannot_rely_on_its_unread_store_pin() {
-    let anchor = busbar_kernel::test_support::stand_in_store().module;
+    let anchor = busbar_kernel_testkit::test_support::stand_in_store().module;
     let (_dir, service) = service(
         &anchor,
         "acme-vault",

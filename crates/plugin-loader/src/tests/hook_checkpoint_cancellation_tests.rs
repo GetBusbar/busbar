@@ -18,8 +18,6 @@ async fn signal(receiver: std::sync::mpsc::Receiver<()>) {
         .unwrap();
 }
 
-/// Poll only far enough to submit. For one arm the plugin is still crossing at drop; for the
-/// other its READY is already queued and its reply waker has fired, but the caller never repolls.
 #[tokio::test]
 async fn a_configure_result_lost_before_or_after_ready_cannot_restore_an_older_checkpoint() {
     for queued_ready in [false, true] {

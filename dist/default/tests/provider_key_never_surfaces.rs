@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! SECRETS NEVER LOGGED, END TO END (website: "secrets never logged"; plugins page: secret-free
-//! logs). The real binary boots with one provider credential spread over three providers: one far
-//! end that serves, one that answers 401, one that closes without replying after reading the key. A keyed caller asks each
-//! of them, a caller with a wrong token is refused, and then every read surface an operator has is
-//! collected: the node's whole log at `debug`, every error body the callers got, the `/metrics`
-//! scrape and the admin API's read endpoints. The credential's value is in none of them.
 #![cfg(unix)]
 #![cfg(linked_section_pools)]
 
@@ -20,11 +14,9 @@ use std::time::{Duration, Instant};
 
 const ADMIN_TOKEN: &str = "provider-key-never-surfaces-admin";
 
-/// The provider credential the test watches for: distinctive, so a hit is never a coincidence.
 const PROVIDER_KEY: &str = "sk-leakcheck-7f3a9c41d2e8b605";
 const CALL_TEXT: &str = "provider-key-witness-7f3a9c41";
 
-/// A whole message in the provider's dialect.
 fn served_answer() -> serde_json::Value {
     serde_json::json!({
         "id": "msg_leakcheck",
@@ -38,7 +30,6 @@ fn served_answer() -> serde_json::Value {
     })
 }
 
-/// Read the credential on every request, then answer or close without a response.
 fn far_end(answer: Option<(u16, serde_json::Value)>) -> (u16, Receiver<bool>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind the far end");
     let port = listener.local_addr().unwrap().port();
@@ -250,7 +241,6 @@ fn a_provider_key_never_appears_in_logs_errors_or_stats() {
         .unwrap_or_else(|| panic!("the admin API must mint a key: {minted}"))
         .to_string();
 
-    // Every answer a caller or an operator can read, labelled.
     let mut surfaces: Vec<(String, u16, String, String)> = Vec::new();
     for model in ["ok-model", "refused-model", "dead-model"] {
         let body = format!(

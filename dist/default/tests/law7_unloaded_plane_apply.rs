@@ -1,29 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A FIRST SECTION OF AN UNLOADED PLANE, END TO END (u67 BLOCK 2 item 2, ruled (iv)).
-//! BUSBAR-1.6.0.md Law 7 (l.547): "A plane loads iff its verb is present", read at start; §6
-//! item 8 (l.980-982): a reload that fails a check "is refused, leaving the running generation
-//! serving".
-//!
-//! The shipped binary boots on a 1.5.5-shaped config, so a linked plane that config does not use is
-//! discovered and not loaded. The operator then writes that plane's sections into the config file
-//! and reloads, and posts the same document to `config/apply`: both are refused whole with one
-//! pinned sentence naming the section and the plane, and nothing changes. The live generation's
-//! effective config and version are the same, the plane serves nothing, and no file busbar keeps is
-//! written. The restart that follows loads the plane, and its section is served.
-//!
-//! Every word about the plane (its name, its sections, its admin path and its door) is DATA, and
-//! each is read where the tree already states it rather than spelled again: the declaring section
-//! and the admin path are `tests/fixtures/unloaded_plane.txt`; the plane is the linked door row
-//! whose declaring section that is (the manifest's `linked-section` and `linked` rows), named by its
-//! package; its own section and its door path are the tool plane's fixtures
-//! (`tool_plane_section.yaml`, `tool_plane_wire.txt`), and the declaring section's body is
-//! `unloaded_plane_sections.yaml`. This source names no plane, and no fixture repeats a plane word
-//! another already holds.
-//!
-//! RED before the fix: no rule judged the document, so the parse refused the section as an unknown
-//! field, without saying the plane was not loaded or that a restart takes it.
 #![cfg(unix)]
 #![cfg(linked_every_plane_door)]
 
@@ -36,28 +13,22 @@ use std::time::{Duration, Instant};
 
 const ADMIN_TOKEN: &str = "law7-unloaded-plane-admin";
 
-/// The provider catalog row is test data (`fixtures/mock_provider.yaml`), not a literal here.
 const MOCK_PROVIDER: &str = include_str!("fixtures/mock_provider.yaml");
 
-/// The unloaded plane's own section (the tool plane's, as its integrity suite configures it) and
-/// its declaring section's body, as DATA, with `{data_port}` and `{admin_port}` to fill.
 const PLANE_SECTIONS: [&str; 2] = [
     include_str!("fixtures/tool_plane_section.yaml"),
     include_str!("fixtures/unloaded_plane_sections.yaml"),
 ];
 
-/// The kind prefix every plane package carries; the rest of the package name is the plane's name.
 const PLANE_PREFIX: &str = "busbar-plane-";
 
-/// The unloaded plane, as DATA (`tests/fixtures/unloaded_plane.txt` and the manifest).
 struct Plane {
-    /// The plane's name, as the refusal names it.
     name: String,
-    /// The section of it the refusal names.
+
     section: &'static str,
-    /// An admin path the plane serves once loaded.
+
     admin: &'static str,
-    /// The data-listener path of the plane's door.
+
     door: &'static str,
 }
 
@@ -86,7 +57,7 @@ fn plane() -> Plane {
     };
     assert_eq!(rows.len(), 2, "unloaded_plane.txt lost or gained a row");
     let section = fact("section");
-    // THE PLANE IS THE LINKED DOOR ROW THAT DECLARES THIS SECTION, named by its package.
+
     let rows: Vec<String> = common::manifest_table("package.metadata.busbar.linked-section")
         .into_iter()
         .filter(|(_, s)| s == section)
@@ -114,8 +85,6 @@ fn plane() -> Plane {
     }
 }
 
-/// The tool plane's wire, as DATA (`tests/fixtures/tool_plane_wire.txt`): one `key = value` per
-/// line.
 fn tool_plane_wire(key: &str) -> &'static str {
     include_str!("fixtures/tool_plane_wire.txt")
         .lines()
@@ -128,8 +97,6 @@ fn tool_plane_wire(key: &str) -> &'static str {
         .unwrap_or_else(|| panic!("tests/fixtures/tool_plane_wire.txt has no `{key}` row"))
 }
 
-/// The pinned refusal, as the running process answers a document that first writes the plane's
-/// section.
 fn refusal(plane: &Plane) -> String {
     format!(
         "`{section}:` is the section of the `{name}` plane, which this process did not load \
@@ -163,7 +130,6 @@ fn read_to_string(path: &Path) -> String {
     s
 }
 
-/// The 1.5.5 shape: one provider, one model, keys on the data plane, an admin token.
 fn base_config(dir: &Path, data: u16, admin: u16) -> String {
     format!(
         r#"listen: "127.0.0.1:{data}"
@@ -192,7 +158,6 @@ models:
     )
 }
 
-/// The unloaded plane's sections, filled with this run's ports.
 fn plane_sections(data: u16, admin: u16) -> String {
     PLANE_SECTIONS
         .concat()
@@ -274,8 +239,6 @@ fn admin(b: &Booted, method: &str, path: &str, body: Option<&str>) -> (u16, Stri
     )
 }
 
-/// Every file in `dir` busbar may keep (the config and providers files the operator owns and the
-/// logs excluded), with its bytes: what a refused change must leave as it was.
 fn kept_files(dir: &Path) -> Vec<(String, Vec<u8>)> {
     let mut out: Vec<(String, Vec<u8>)> = std::fs::read_dir(dir)
         .unwrap()
@@ -292,8 +255,6 @@ fn kept_files(dir: &Path) -> Vec<(String, Vec<u8>)> {
     out
 }
 
-/// The shape a mounted plane door answers an unauthenticated caller with (RFC 6750), as opposed to
-/// the catch-all plane's protocol-native envelope.
 fn is_plane_door(body: &str) -> bool {
     body.contains("error_description")
 }
@@ -321,7 +282,6 @@ fn a_first_section_of_an_unloaded_plane_is_refused_whole_and_served_after_a_rest
     let base = base_config(&dir, data, admin_port);
     std::fs::write(dir.join("config.yaml"), &base).unwrap();
 
-    // ── BOOT on the 1.5.5 shape: the plane is discovered, not loaded, and serves nothing.
     let b = boot(&dir, data, admin_port, "first");
     let unmounted = admin(&b, "GET", "/no-such-path", None);
     assert_eq!(
@@ -333,7 +293,6 @@ fn a_first_section_of_an_unloaded_plane_is_refused_whole_and_served_after_a_rest
     assert_eq!(before.0, 200, "{before:?}");
     let kept_before = kept_files(&dir);
 
-    // ── RELOAD a config file that first writes the plane's sections: refused whole, pinned.
     let with_plane = format!("{base}{}", plane_sections(data, admin_port));
     std::fs::write(dir.join("config.yaml"), &with_plane).unwrap();
     let (status, body) = admin(&b, "POST", "/config/reload", None);
@@ -343,7 +302,6 @@ fn a_first_section_of_an_unloaded_plane_is_refused_whole_and_served_after_a_rest
         "the reload names the section and the plane in the pinned sentence: {body}"
     );
 
-    // ── APPLY the same document: refused whole with the same sentence.
     let doc: serde_yaml::Value = serde_yaml::from_str(&with_plane).unwrap();
     let providers: serde_yaml::Value = serde_yaml::from_str(MOCK_PROVIDER).unwrap();
     let apply = serde_json::json!({
@@ -357,7 +315,6 @@ fn a_first_section_of_an_unloaded_plane_is_refused_whole_and_served_after_a_rest
         "the apply names the section and the plane in the pinned sentence: {body}"
     );
 
-    // ── NOTHING CHANGED: the live generation, the plane's surface and every file busbar keeps.
     assert_eq!(
         admin(&b, "GET", "/config", None),
         before,
@@ -380,7 +337,6 @@ fn a_first_section_of_an_unloaded_plane_is_refused_whole_and_served_after_a_rest
     );
     drop(b);
 
-    // ── RESTART on the config file: the plane is loaded and its section is served.
     let b = boot(&dir, data, admin_port, "restart");
     assert_eq!(
         admin(&b, "GET", plane.admin, None).0,

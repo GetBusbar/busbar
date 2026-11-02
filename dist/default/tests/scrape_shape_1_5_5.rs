@@ -1,24 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Binding: a pure 1.5.5-shaped config (no `data_dir`, no `peers`, no `keyset_ref`, no plane
-//! section at all) exposes NO series named `busbar_plane_*`, `busbar_ledger_*`,
-//! `busbar_journal_*`, `busbar_hold_*` or `busbar_wal_*` on `/metrics` — checked against the
-//! WHOLE exposition, not a request-path subset — even though the binary this test boots has
-//! EVERY plane compiled in. The plane code being present in the binary
-//! must not leak a single series onto a deployment that never configured a plane, which is
-//! exactly what distinguishes "compiled in, unmounted" from "mounted and idle".
-//!
-//! The list of absent families is DERIVED from the shadow-oracle golden's own metrics-absence
-//! cells (`ops.scrape|metrics|*` and `neutrality|metrics-*`, whose `body_lines` regex names them)
-//! rather than re-typed here, so the gate and the golden cannot drift into checking different sets.
-//!
-//! This is the closed-set half of the alarm/dispute tripwire in
-//! `busbar_kernel::tests::alarm_silence_tests` (that one captures `tracing` + scans the exposition
-//! from in-process; this one boots the real shipped binary end to end so the plane crates'
-//! actual `Cargo.toml` feature wiring, not a unit-test fixture, is what is under test).
 #![cfg(unix)]
-// This fixture describes the full distribution with every plane door enabled.
 #![cfg(linked_every_plane_door)]
 
 mod common;
@@ -28,7 +11,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-/// A fresh, isolated fixture directory (pid + nanos, like the sibling harnesses).
 fn fixture_dir() -> PathBuf {
     let d = std::env::temp_dir().join(format!(
         "busbar-scrape-shape-1-5-5-{}-{}",
@@ -53,9 +35,6 @@ fn free_port() -> u16 {
     common::boot::free_port()
 }
 
-/// The 1.5.5 shape: one provider, one model, keys on the data plane, an admin token, prometheus
-/// export, the default store. No section a later plane owns, no
-/// `data_dir`, no `peers`, no `keyset_ref` anywhere — nothing 1.6.0-additive.
 fn write_configs(dir: &Path, data_port: u16, admin_port: u16) {
     std::fs::write(
         dir.join("providers.yaml"),
@@ -104,8 +83,6 @@ models:
 
 const ADMIN_TOKEN: &str = "scrape-shape-1-5-5-admin";
 
-/// The repository root, so the golden can be read from where it lives rather than from the CWD the
-/// test runner happened to pick.
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -113,16 +90,6 @@ fn repo_root() -> PathBuf {
         .expect("the repository root must exist")
 }
 
-/// THE GOLDEN is the authority on which metric families a 1.5.5 deployment does not expose, and it
-/// already says so in a form a test can read: the shadow-oracle cells that assert an ABSENCE carry a
-/// `body_lines` regex naming exactly the families whose lines must not appear. Re-typing those names
-/// here as a `const` would fork the claim — the golden could grow a sixth family and this gate would
-/// go on checking five, reporting green about a set it no longer describes. So the list is DERIVED.
-///
-/// The cells consulted are the metrics-absence cells: `ops.scrape|metrics|*` (the scrape family's
-/// own ledger check) and `neutrality|metrics-*` (the plane-prefixed extension of it, which the
-/// `ops.scrape` cell's `why` explicitly names as the same contract). Their union is what the golden
-/// as a whole asserts is absent, and the union is what this gate enforces.
 fn plane_series_prefixes() -> Vec<String> {
     let cells_path = repo_root().join("testing/shadow-oracle/cells.json");
     let raw = std::fs::read_to_string(&cells_path).unwrap_or_else(|e| {
@@ -153,8 +120,6 @@ fn plane_series_prefixes() -> Vec<String> {
         }
     }
 
-    // Non-vacuity: a cells.json whose shape drifted (renamed key, restructured ids) would silently
-    // yield an empty list and turn this gate into an assertion about nothing.
     assert!(
         prefixes.len() >= 4,
         "derived only {} metric-family prefix(es) from the golden's metrics-absence cells at \
@@ -164,10 +129,6 @@ fn plane_series_prefixes() -> Vec<String> {
     prefixes
 }
 
-/// Expand a golden `body_lines` anchored alternation into literal prefixes:
-/// `^busbar_(ledger|journal|hold|wal)_` becomes `busbar_ledger_`, `busbar_journal_`, ... . Only this
-/// one shape is understood; anything else returns nothing, so an unrecognised pattern shows up as a
-/// short list and trips the floor above rather than being silently dropped.
 fn expand_alternation(pattern: &str) -> Vec<String> {
     let body = pattern.strip_prefix('^').unwrap_or(pattern);
     let Some(open) = body.find('(') else {
@@ -181,7 +142,7 @@ fn expand_alternation(pattern: &str) -> Vec<String> {
     }
     let head = &body[..open];
     let tail = &body[close + 1..];
-    // A tail carrying regex metacharacters is not a literal prefix; refuse rather than guess.
+
     if tail.contains(|c: char| "[]{}()*+?|\\^$.".contains(c)) {
         return Vec::new();
     }
@@ -213,7 +174,7 @@ fn a_1_5_5_shaped_config_exposes_no_plane_series_with_every_plane_compiled_in() 
             .spawn()
             .expect("spawn busbar"),
     );
-    // Any panic from here on prints the node's whole log (its stdout and stderr) with it.
+
     let _dump = common::boot::DumpOnPanic(&log_path);
 
     let booted = wait_for(Duration::from_secs(30), || {
@@ -231,7 +192,6 @@ fn a_1_5_5_shaped_config_exposes_no_plane_series_with_every_plane_compiled_in() 
         read_to_string(&log_path)
     );
 
-    // Mint one virtual key through the admin API, exactly as an operator would.
     let (_, minted) = http_request(
         &format!("127.0.0.1:{admin_port}"),
         "POST",
@@ -245,9 +205,7 @@ fn a_1_5_5_shaped_config_exposes_no_plane_series_with_every_plane_compiled_in() 
         .and_then(|rest| rest.split('"').next())
         .unwrap_or_else(|| panic!("the admin API must mint a key: {minted}"))
         .to_string();
-    // One request through the whole request path first (the provider is unreachable, so it ends
-    // as an upstream failure): the exposition then carries the request-path series, which is
-    // exactly where a leaked plane series would first register.
+
     let chat = http_request(
         &format!("127.0.0.1:{data_port}"),
         "POST",
@@ -257,9 +215,7 @@ fn a_1_5_5_shaped_config_exposes_no_plane_series_with_every_plane_compiled_in() 
         ),
         Some(&token),
     );
-    // The scrape (key-authenticated on the data listener in 1.5.5). Until the recorder is installed
-    // the scrape is REFUSED with 503 (never an empty 200); that window is milliseconds, so the test
-    // retries through it and then holds the answer to exactly 200 with a full exposition.
+
     let mut attempt = 0;
     let (status, body) = loop {
         let (status, body) = http_request(
@@ -285,8 +241,6 @@ fn a_1_5_5_shaped_config_exposes_no_plane_series_with_every_plane_compiled_in() 
          {chat:?}; mint answered {minted}; exposition:\n{body}"
     );
 
-    // Assert the WHOLE exposition: every non-comment line, checked against every prefix the GOLDEN
-    // says is absent — not just the lines the chat request happened to touch.
     let plane_series = plane_series_prefixes();
     let leaked: Vec<&str> = body
         .lines()
@@ -316,9 +270,6 @@ fn a_1_5_5_shaped_config_exposes_no_plane_series_with_every_plane_compiled_in() 
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// SELF-TEST: the derivation actually reads the golden and actually expands it. The boot test above
-/// is expensive and answers a different question, so the cheap half — "is the list the golden's, and
-/// is it the right list" — is proved separately and always runs.
 #[test]
 fn the_absent_series_list_comes_from_the_golden() {
     assert_eq!(
@@ -336,9 +287,6 @@ fn the_absent_series_list_comes_from_the_golden() {
         "a pattern with no alternation carries no prefix list and must not be guessed at"
     );
 
-    // The real derivation, over the real cells.json: both metrics-absence cells must contribute, so
-    // the union carries the plane family (from `neutrality|metrics-no-plane-series`) as well as the
-    // four storage families (from `ops.scrape|metrics|no-ledger-series`).
     let derived = plane_series_prefixes();
     for expected in [
         "busbar_plane_",
@@ -354,7 +302,6 @@ fn the_absent_series_list_comes_from_the_golden() {
     }
 }
 
-/// One HTTP request against the booted process: (status, body text).
 fn http_request(
     addr: &str,
     method: &str,
@@ -386,7 +333,6 @@ fn http_request(
     })
 }
 
-/// Poll `cond` until it returns true or `budget` elapses; returns whether it became true.
 fn wait_for(budget: Duration, mut cond: impl FnMut() -> bool) -> bool {
     let deadline = Instant::now() + budget;
     while Instant::now() < deadline {
@@ -398,7 +344,6 @@ fn wait_for(budget: Duration, mut cond: impl FnMut() -> bool) -> bool {
     cond()
 }
 
-/// Read a file to a String, tolerating a not-yet-flushed/partial log (returns what's there).
 fn read_to_string(path: &Path) -> String {
     let mut s = String::new();
     if let Ok(mut f) = std::fs::File::open(path) {

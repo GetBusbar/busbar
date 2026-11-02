@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE FLEET-SHARED RATE-CARD HISTORY, against a store the test holds (MONEY-DESIGN section 3a,
-//! PR-B1; owner ruling 2026-10-26: the configuration is the source of the card): every change of a
-//! node's card prepares an immutable entry and activates only after Store confirmation; the card in force
-//! and every instant's card survive a restart and a new node id (T1-card); a doubtful write is
-//! pending with old prices retained, and re-put to READY before explicit activation (T8); two nodes running different cards are both
-//! recorded and converge on one history, each pricing with its own entry (T13); a joining node's
-//! own card is recorded (T19); a far-future head never delays a change and `card void` clears it
-//! (T22); and the journal's cards migrate under time keys.
-
 use std::collections::BTreeMap;
 use std::sync::{Arc, Barrier};
 use std::time::{Duration, Instant};
@@ -48,7 +39,6 @@ fn booted(store: &RecordSlots, node: u64, card: &CardFields) -> Arc<CardStore> {
     cs
 }
 
-/// The id and card resolved at each instant.
 fn resolved(cs: &CardStore, at: &[u64]) -> Vec<(String, Option<CardFields>)> {
     let history = cs.history().expect("a history");
     at.iter()
@@ -143,7 +133,7 @@ fn actual_root_rate_apply_retains_old_prices_through_refusal_prepare_drop_and_re
     store.rescan(None).unwrap();
     assert_eq!(store.own(), old);
     assert!(!store.entries().contains(&original));
-    drop(prepared); // cancellation after candidate confirmation cannot publish or forget it
+    drop(prepared);
     assert_eq!(store.pending(), Some(key));
     let confirmed = holder
         .prepare(&edited, &edited.rates().raw(), "commit exact original")
@@ -247,7 +237,7 @@ fn saved_candidate_and_activation_intent_survive_restart_without_automatic_activ
     let old = first.own();
     let prepared = first.prepare(&edited, "durable candidate").unwrap();
     let key = first.pending().unwrap();
-    slots.take_then_refuse(1); // retain activation intent but refuse its canonical marker
+    slots.take_then_refuse(1);
     assert!(prepared.confirm_activation().is_err());
     assert_eq!(first.own(), old);
     let scan = crate::root::card_store::scan(slots.calls().as_ref(), None).unwrap();
@@ -399,7 +389,7 @@ fn reload_resolves_unknown_activation_and_confirms_a_successor_to_the_old_desire
         old,
         "no predecessor is published while its successor is prepared"
     );
-    drop(successor); // interruption before publication keeps both confirmed facts
+    drop(successor);
     assert_eq!(store.lock().pending.len(), 2);
     holder
         .prepare_recovery(&boot, &boot.rates().raw(), "retry authoritative reload")
@@ -807,9 +797,6 @@ fn a_panicking_reput_releases_ownership_for_the_next_pending_write() {
     assert!(entries.entries.iter().any(|entry| entry.key == first));
 }
 
-/// **T1-card.** Spend, a mid-window card change (a reload), spend, restart — and restart under a
-/// NEW node id. The card in force and the card of every priced instant are identical; a restart on
-/// the same configuration appends nothing.
 #[test]
 fn t1_card_the_card_in_force_and_every_instants_card_survive_a_restart_and_a_new_node() {
     let store = RecordSlots::new();
@@ -862,8 +849,6 @@ fn t1_card_the_card_in_force_and_every_instants_card_survive_a_restart_and_a_new
     assert_eq!(elsewhere.own(), Some((key, edited)));
 }
 
-/// **T8.** A doubtful candidate stays pending with old prices active. Only the exact confirmed
-/// retry can authorize activation; another configuration cannot replace its custody.
 #[test]
 fn t8_a_doubtful_put_is_pending_and_reput_to_ready_without_a_directory() {
     let store = RecordSlots::new();
@@ -893,10 +878,6 @@ fn t8_a_doubtful_put_is_pending_and_reput_to_ready_without_a_directory() {
     assert_eq!(restarted.own().map(|(key, _)| key), Some(next));
 }
 
-/// **T13.** Two nodes load DIFFERENT cards at once, extending the same head: nothing is refused,
-/// both entries are recorded, both nodes converge on the same ordered history, each prices with its
-/// OWN entry, a time-based read takes the later, every node alarms naming the differing fields, and
-/// no instant before the changes is repriced.
 #[test]
 fn t13_two_nodes_running_different_cards_are_both_recorded_and_each_prices_its_own() {
     let store = RecordSlots::new();
@@ -956,9 +937,6 @@ fn t13_two_nodes_running_different_cards_are_both_recorded_and_each_prices_its_o
     );
 }
 
-/// **T19.** A node joining with the fleet's card adopts the entry in force and appends nothing; a
-/// node joining with a DIFFERENT file card records it as a change, effective from its boot, and
-/// the earlier instants keep their card.
 #[test]
 fn t19_a_joining_node_adopts_the_card_in_force_or_records_its_own() {
     let store = RecordSlots::new();
@@ -984,9 +962,6 @@ fn t19_a_joining_node_adopts_the_card_in_force_or_records_its_own() {
     assert_eq!(resolved(&joined, &[before])[0].1.as_ref(), Some(&edited));
 }
 
-/// **T22.** A far-future head (a fast clock) alarms, naming the entry and its writer, and never
-/// delays a change: the change is effective from this node's now. Voiding the head while
-/// its start is in the future, and its id stays known.
 #[test]
 fn t22_a_far_future_head_never_delays_a_change_and_card_void_clears_it() {
     let store = RecordSlots::new();
@@ -1033,8 +1008,6 @@ fn t22_a_far_future_head_never_delays_a_change_and_card_void_clears_it() {
     );
 }
 
-/// Two nodes opening an empty history at once: the LOWEST key wins and the other opening is never
-/// in force.
 #[test]
 fn racing_openings_resolve_to_the_lowest_key() {
     let store = RecordSlots::new();
@@ -1097,7 +1070,6 @@ fn racing_different_confirmed_openings_keep_each_nodes_pin_era_and_counts_on_its
         let barrier = barrier.clone();
         let writes = AtomicUsize::new(0);
         move || {
-            // Both initial scans finish before either opening's first Store write can land.
             if writes.fetch_add(1, Ordering::AcqRel) < 2 {
                 barrier.wait();
             }
@@ -1158,9 +1130,6 @@ fn racing_different_confirmed_openings_keep_each_nodes_pin_era_and_counts_on_its
     }
 }
 
-/// **THE MIGRATION.** Every chain's journalled cards are copied under time keys; a duplicate by
-/// (card, `effective_from`) collapses to the lowest key and only the oldest opening is kept; the
-/// card at every instant is the card the journal priced it at.
 #[test]
 fn the_journals_cards_migrate_under_time_keys_and_collapse_duplicates() {
     use crate::root::kernel::{card_from_raw, CardApplied, CardForm};
@@ -1223,17 +1192,13 @@ fn the_journals_cards_migrate_under_time_keys_and_collapse_duplicates() {
     );
     assert_eq!(resolved(&cs, &[4_999])[0].1.as_ref(), Some(&boot));
     assert_eq!(resolved(&cs, &[5_000])[0].1.as_ref(), Some(&edit));
-    // Idempotent: a second boot copies nothing again.
+
     let puts = store.puts();
     let again = CardStore::new(store.calls(), 9);
     again.boot(&edit, "boot", migrated).unwrap();
     assert_eq!(store.puts(), puts);
 }
 
-/// **B1: A UNIT PRICES WITH ITS NODE'S OWN CARD.** Two holders kept in one store load different
-/// cards; each one's `pin()` (what a unit is admitted under) prices now with its OWN card, while the
-/// fleet read (`history()`) takes the later change. Without the node resolution, the node that
-/// changed first priced with the other's card after its next rescan.
 #[test]
 fn t13_each_nodes_pin_prices_with_its_own_card_after_the_other_changes() {
     use crate::root::kernel::RootHistory;
@@ -1279,8 +1244,6 @@ fn t13_each_nodes_pin_prices_with_its_own_card_after_the_other_changes() {
     );
 }
 
-/// **B2: A NODE WHOSE CARD IS NOT THE FLEET'S ALARMS**, naming the differing fields, even when the
-/// two entries do not extend one head.
 #[test]
 fn a_node_whose_card_differs_from_the_card_in_force_alarms() {
     let store = RecordSlots::new();
@@ -1299,10 +1262,6 @@ fn a_node_whose_card_differs_from_the_card_in_force_alarms() {
         .all(|m| !m.contains("this node prices with rate card entry")));
 }
 
-/// **B3: THE MIGRATION PRICES EVERY INSTANT AS DEV'S REBUILD DID**, a REFUSED correction included:
-/// one sealed over a card its chain does not hold at that number is left out, as dev's boot left
-/// it out, and a valid one is rebuilt over its own base. Spend equality, card for card.
-// The correction records are the admin plane's (`units_admin`).
 #[cfg(feature = "root-admin")]
 #[test]
 fn the_migration_prices_every_instant_as_devs_rebuild_did_with_a_refused_correction() {
@@ -1405,8 +1364,7 @@ fn oversized_original_changes_and_amendments_recover_exactly_over_the_same_store
             .records_for(own)
             .expect("u64 chunk indices accept the original");
         assert!(entry.value().len() > usize::from(COMMIT_PART) * busbar_contract::MAX_RECORD_BYTES);
-        // Simulate destruction after the Store accepted the complete intent, before the canonical
-        // commit. All writes cross the actual StoreCalls API; no local spool participates.
+
         assert_eq!(
             put_all(
                 store.calls().as_ref(),
@@ -1568,7 +1526,7 @@ fn an_uncertain_opening_commit_recovers_the_same_original_in_a_fresh_host() {
         per_request_fee: 3,
         ..Default::default()
     };
-    // An absent card's opening JSON occupies one data chunk, then intent and commit.
+
     store.take_then_refuse(2);
     assert!(first.boot(&boot, "first opening", Vec::new()).is_err());
     assert!(!first.is_loaded());

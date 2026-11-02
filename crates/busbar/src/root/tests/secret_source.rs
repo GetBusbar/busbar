@@ -1,42 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A SECRET'S SOURCE NEVER REACHES A CALLER: on every door plane this build links,
-//! a secret reference that does not resolve leaves the caller-facing status line, headers and body
-//! free of its source (the variable's name, the file's path, the reference as written) and of the
-//! words a source's refusal is phrased in ("environment variable", "is unset", the file source's
-//! own phrase, "No such file"). The operator's surfaces keep naming the source (the boot's and the apply's text,
-//! 1.5.5's bytes): the boot refusal is asserted to name it, so a fix that blinded the operator too
-//! would be caught here as well.
-//!
-//! Each linked door is driven where a failing reference can meet a caller:
-//! * at REQUEST time, a member program whose `env` reference does not resolve (the loader declares
-//!   the reference, the connector resolves it at the SPAWN and refuses the open with its
-//!   fixed-class refusal), unresolvable at compose, or gone by an apply after its spawn;
-//! * at COMPOSE time, a member's credential (a token exchange's subject token, a provider's
-//!   `api_key`): the boot is refused with the operator's text and nothing is served;
-//! * across an APPLY, the same credential gone: the door keeps the generation it serves, and the
-//!   caller is served by it.
-//!
-//! [`every_linked_door_plane_is_driven`] keeps the set whole: a door this build links (a plane
-//! flipped onto the driver) with no driver here fails until it has one.
-
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use axum::http::{HeaderMap, StatusCode};
 use busbar_contract::secret_ref::{SecretRef, SECRET_MODULE_FILE};
 
 use crate::root::door_steps::tests::tool_door::{
-    send_headed, surface, three_tools, tool_digest, tool_server_listing, try_rig_tools, Rig, CALL,
+    send_headed, surface, three_tools, tool_digest, try_rig_tools, Rig, TlsToolServer, CALL,
 };
 use crate::root::serve::planes_tests::PUBLISHING;
 
-/// The words a secret source's own refusal is phrased in (the linked `env` and `file` sources',
-/// the OS's), matched without case. The file source's phrase is built from its module name
-/// ([`source_in`]): this neutral crate spells no secret plugin's name.
 const SOURCE_WORDS: [&str; 3] = ["environment variable", "is unset", "no such file"];
 
-/// Everything a caller is handed: the status line, every header, the body.
 fn rendered(status: StatusCode, headers: &HeaderMap, body: &[u8]) -> String {
     let mut out = format!(
         "{} {}\n",
@@ -55,8 +31,6 @@ fn rendered(status: StatusCode, headers: &HeaderMap, body: &[u8]) -> String {
     out
 }
 
-/// What of `secret`'s source `render` carries: its source's words, the reference as written and
-/// every setting it names (the variable, the path). Empty when the render is clean.
 fn source_in(render: &str, secret: &SecretRef) -> Vec<String> {
     let lower = render.to_ascii_lowercase();
     let mut needles: Vec<String> = SOURCE_WORDS.iter().map(|w| (*w).to_string()).collect();
@@ -75,11 +49,7 @@ fn source_in(render: &str, secret: &SecretRef) -> Vec<String> {
         .collect()
 }
 
-/// THE CONTROL: `secret` does not resolve, and the text its source refuses with names it (the
-/// operator's text), so a clean render is a render that withheld it, not one that never had it.
 pub(super) fn refused_naming_its_source(secret: &SecretRef) -> String {
-    // Asked at CONFIG TIME, as boot and an apply ask it (R4, BUSBAR-1.6.0.md l.1464-1469): a request
-    // path's form is refused by a disk-reading source before the source says anything of its own.
     let text = busbar_kernel::config::secret::resolve_linked_string_at_config(
         secret,
         &busbar_contract::config_time::ConfigScope::config_time(),
@@ -92,7 +62,6 @@ pub(super) fn refused_naming_its_source(secret: &SecretRef) -> String {
     text
 }
 
-/// The caller's render is clean of `secret`'s source; the measurement row is printed.
 pub(super) fn assert_clean(
     case: &str,
     status: StatusCode,
@@ -109,14 +78,12 @@ pub(super) fn assert_clean(
     );
 }
 
-/// A variable name no environment sets: one per case (the tests of one binary share a process).
 pub(super) fn unset(case: &str) -> String {
     let var = format!("BUSBAR_SECRET_SOURCE_{case}_{}", std::process::id());
     std::env::remove_var(&var);
     var
 }
 
-/// A path no file is at.
 pub(super) fn missing(case: &str) -> String {
     std::env::temp_dir()
         .join(format!(
@@ -127,8 +94,6 @@ pub(super) fn missing(case: &str) -> String {
         .to_string()
 }
 
-/// The tool door's `tools:` section: one member, `fs`, that is the program
-/// `program_member::script` serves, its environment's `TOKEN` the reference `secret`.
 fn program_section(secret: &SecretRef) -> serde_yaml::Value {
     let mut fs = serde_yaml::Mapping::new();
     fs.insert(
@@ -138,6 +103,14 @@ fn program_section(secret: &SecretRef) -> serde_yaml::Value {
             .into(),
     );
     fs.insert("command".into(), "/bin/sh".into());
+    fs.insert(
+        "cwd".into(),
+        std::env::current_dir()
+            .expect("an absolute fixture cwd")
+            .to_str()
+            .expect("a UTF-8 fixture cwd")
+            .into(),
+    );
     fs.insert(
         "args".into(),
         serde_yaml::Value::Sequence(vec![
@@ -156,7 +129,7 @@ fn program_section(secret: &SecretRef) -> serde_yaml::Value {
     }
     fs.insert(
         "pin".into(),
-        serde_yaml::from_str("{ mechanism: pinned_pubkey, key: \"sha256/K=\" }").expect("a pin"),
+        serde_yaml::from_str("{ mechanism: local_program, key: \"/bin/sh\" }").expect("a pin"),
     );
     fs.insert(
         "tools_allow".into(),
@@ -171,34 +144,35 @@ fn program_section(secret: &SecretRef) -> serde_yaml::Value {
     serde_yaml::Value::Mapping(tools)
 }
 
-/// The tool door's `tools:` section: one member, `fs`, at loopback `port`, bound by a token
-/// exchange whose subject token is the reference `secret`.
-fn exchange_section(port: u16, secret: &SecretRef) -> serde_yaml::Value {
-    let mut tools: serde_yaml::Value = serde_yaml::from_str(&format!(
-        "fs:\n  url: \"http://127.0.0.1:{port}/rpc\"\n  \
-         pin: {{ mechanism: pinned_pubkey, key: \"sha256/K=\" }}\n  \
-         allow_private: true\n  aud: \"http://127.0.0.1:{port}\"\n  \
-         token_exchange:\n    token_url: \"https://as.example/token\"\n  \
-         tools_allow:\n    read_file: {{ schema_hash: \"{}\" }}\n    \
-         write_file: {{ schema_hash: \"{}\" }}\n    stat: {{ schema_hash: \"{}\" }}\n",
-        tool_digest(),
+fn exchange_section(server: &TlsToolServer, secret: &SecretRef) -> serde_yaml::Value {
+    let mut tools = server.section();
+    tools["fs"]["allow_private"] = true.into();
+    tools["fs"]["aud"] = format!("https://127.0.0.1:{}", server.port).into();
+    tools["fs"]["tools_allow"]["write_file"] = serde_yaml::from_str(&format!(
+        "{{ schema_hash: \"{}\" }}",
         surface("write_digest"),
+    ))
+    .expect("an approval");
+    tools["fs"]["tools_allow"]["stat"] = serde_yaml::from_str(&format!(
+        "{{ schema_hash: \"{}\" }}",
         surface("stat_digest"),
     ))
-    .expect("a section");
-    tools["fs"]["token_exchange"]["subject_token"] = serde_yaml::to_value(serde_json::json!({
-        "module": secret.module,
-        "settings": secret.settings,
+    .expect("an approval");
+    tools["fs"]["token_exchange"] = serde_yaml::to_value(serde_json::json!({
+        "token_url": "https://as.example/token",
+        "subject_token": {
+            "module": secret.module,
+            "settings": secret.settings,
+        },
     }))
-    .expect("a reference");
+    .expect("an exchange with a reference");
     tools
 }
 
-/// One `tools/call` through `rig`'s door, by its own key.
 async fn call(rig: &Rig) -> (StatusCode, HeaderMap, Vec<u8>) {
     send_headed(
         &rig.router,
-        Some(&rig.token),
+        Some(&rig.bound_token()),
         CALL,
         "tools/call",
         Some("fs_read_file"),
@@ -206,7 +180,6 @@ async fn call(rig: &Rig) -> (StatusCode, HeaderMap, Vec<u8>) {
     .await
 }
 
-/// The Statement name a linked door states.
 fn statement_name(door: busbar_contract::abi::mechanism::door::DoorFn) -> String {
     let row = crate::root::loader::dispatch::LinkedRow::of(door).expect("the door states itself");
     busbar_contract::abi::mechanism::rendering::read(&row.statement)
@@ -214,9 +187,7 @@ fn statement_name(door: busbar_contract::abi::mechanism::door::DoorFn) -> String
         .name
 }
 
-/// The doors this file drives, by Statement name.
 fn driven() -> Vec<String> {
-    // Mutated only where the build links a door beyond the line door.
     #[allow(unused_mut)]
     let mut names = vec![statement_name(
         crate::root::door_steps::tests::tool_door::line_door(),
@@ -225,15 +196,13 @@ fn driven() -> Vec<String> {
     names.push(super::door_tests::decisions_name());
     #[cfg(linked_section_streams)]
     names.extend(super::door_tests::session_door::name());
-    // The door planes whose own root cells drive the scan (each plane crate's `tests/root/`).
+
     names.extend(super::door_cells_secret_driven());
     #[cfg(linked_driver_proofs)]
     names.push(statement_name(super::hook_seat_tests::pools_door()));
     names
 }
 
-/// EVERY DOOR THIS BUILD LINKS IS DRIVEN HERE: a plane flipped onto the driver joins the scan, or
-/// this fails naming it.
 #[test]
 fn every_linked_door_plane_is_driven() {
     let driven = driven();
@@ -248,9 +217,6 @@ fn every_linked_door_plane_is_driven() {
     }
 }
 
-/// THE TOOL DOOR, REQUEST TIME: a member program whose `env` reference does not resolve (an unset variable,
-/// a missing file) is never spawned, and a caller's call to its tool is refused with nothing of the
-/// reference's source.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn tool_door_a_program_members_unresolved_env_reaches_the_caller_without_its_source() {
     let _one = PUBLISHING.lock().await;
@@ -293,10 +259,6 @@ async fn tool_door_a_program_members_unresolved_env_reaches_the_caller_without_i
     }
 }
 
-/// THE TOOL DOOR, ACROSS AN APPLY: a member program served while its `env` reference resolved, the variable
-/// then gone and the configuration applied: the apply resolves the reference again and holds the
-/// refusal for the member's NEXT spawn, but the program already spawned keeps serving the unchanged
-/// member, and the caller's render carries nothing of its source.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn tool_door_a_program_members_env_gone_by_an_apply_reaches_the_caller_without_its_source() {
     let _one = PUBLISHING.lock().await;
@@ -324,16 +286,15 @@ async fn tool_door_a_program_members_env_gone_by_an_apply_reaches_the_caller_wit
     );
 }
 
-/// THE TOOL DOOR, COMPOSE TIME: a token exchange whose subject token does not resolve refuses the boot with
-/// the operator's text, which names the source (1.5.5's bytes); nothing is served to a caller.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn tool_door_an_unresolved_subject_token_refuses_the_boot_naming_its_source() {
     let _one = PUBLISHING.lock().await;
     let instance = "tools-exchange-compose";
     let secret = SecretRef::env(unset("TOOLS_EXCHANGE_COMPOSE"));
     refused_naming_its_source(&secret);
-    let (port, _heard) = tool_server_listing(Arc::new(std::sync::Mutex::new(three_tools()))).await;
-    let Err(refusal) = try_rig_tools(instance, port, exchange_section(port, &secret)) else {
+    let mut server = TlsToolServer::listing(Arc::new(Mutex::new(three_tools()))).await;
+    let Err(refusal) = server.try_rig(instance, exchange_section(&server, &secret), &|app| app)
+    else {
         panic!("a subject token that does not resolve refuses the composition");
     };
     println!("SECRET-SOURCE {instance}: compose refused (operator): {refusal}");
@@ -341,11 +302,13 @@ async fn tool_door_an_unresolved_subject_token_refuses_the_boot_naming_its_sourc
         !source_in(&refusal, &secret).is_empty(),
         "the operator's refusal names the source: {refusal}"
     );
+    assert!(
+        server.heard.try_recv().is_err(),
+        "the unresolved subject token refuses before any upstream request"
+    );
+    server.close().await;
 }
 
-/// THE TOOL DOOR, ACROSS AN APPLY: a token-exchange member served while its subject token resolved, the
-/// variable then gone and the configuration applied: the door keeps the generation it serves (the
-/// operator is told in the log), and the caller is served by it, its render clean of the source.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn tool_door_a_subject_token_gone_by_an_apply_reaches_the_caller_without_its_source() {
     let _one = PUBLISHING.lock().await;
@@ -353,9 +316,8 @@ async fn tool_door_a_subject_token_gone_by_an_apply_reaches_the_caller_without_i
     let var = unset("TOOLS_EXCHANGE_APPLY");
     std::env::set_var(&var, "busbar-own-subject-token");
     let secret = SecretRef::env(&var);
-    let (port, _heard) = tool_server_listing(Arc::new(std::sync::Mutex::new(three_tools()))).await;
-    let rig =
-        try_rig_tools(instance, port, exchange_section(port, &secret)).expect("the door composes");
+    let server = TlsToolServer::listing(Arc::new(Mutex::new(three_tools()))).await;
+    let rig = server.rig(instance, exchange_section(&server, &secret), &|app| app);
     let (status, _, body) = call(&rig).await;
     assert_eq!(
         status,
@@ -363,6 +325,9 @@ async fn tool_door_a_subject_token_gone_by_an_apply_reaches_the_caller_without_i
         "served while it resolves: {}",
         String::from_utf8_lossy(&body)
     );
+    let answer: serde_json::Value = serde_json::from_slice(&body).expect("a JSON-RPC answer");
+    assert_eq!(answer["id"], 30);
+    assert_eq!(answer["result"]["content"][0]["text"], "from the server");
     let before = rig.live.current().generation;
     std::env::remove_var(&var);
     refused_naming_its_source(&secret);
@@ -382,10 +347,9 @@ async fn tool_door_a_subject_token_gone_by_an_apply_reaches_the_caller_without_i
     assert_eq!(answer["id"], 30);
     assert_eq!(answer["result"]["content"][0]["text"], "from the server");
     assert_clean(instance, status, &headers, &body, &secret);
+    server.close().await;
 }
 
-/// DECISIONS, COMPOSE TIME: a provider whose `api_key` does not resolve refuses the boot with the
-/// operator's text, which names the source; nothing is served to a caller.
 #[cfg(linked_section_decisions)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn decisions_an_unresolved_provider_key_refuses_the_boot_naming_its_source() {
@@ -412,9 +376,6 @@ async fn decisions_an_unresolved_provider_key_refuses_the_boot_naming_its_source
     );
 }
 
-/// DECISIONS, ACROSS AN APPLY: a provider served while its `api_key` file was there, the file then
-/// gone and the configuration applied: the door keeps the generation it serves, and the caller is
-/// served by it, its render clean of the source.
 #[cfg(linked_section_decisions)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn decisions_a_provider_key_gone_by_an_apply_reaches_the_caller_without_its_source() {
@@ -455,14 +416,10 @@ async fn decisions_a_provider_key_gone_by_an_apply_reaches_the_caller_without_it
     assert_clean(instance, status, &headers, &body, &secret);
 }
 
-/// THE SESSION DOOR'S CELLS, compiled where the build links that door: a door not found is a
-/// failure, never a skip.
 #[cfg(linked_section_streams)]
 mod session_door_cells {
     use super::*;
 
-    /// THE SESSION DOOR, COMPOSE TIME: a provider whose `api_key` does not resolve refuses the boot
-    /// with the operator's text, which names the source; nothing is served to a caller.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn session_door_an_unresolved_provider_key_refuses_the_boot_naming_its_source() {
         let _one = PUBLISHING.lock().await;
@@ -487,9 +444,6 @@ mod session_door_cells {
         );
     }
 
-    /// THE SESSION DOOR, ACROSS AN APPLY: a provider served while its `api_key` file was there, the
-    /// file then gone and the configuration applied: the door keeps the generation it serves, and the
-    /// caller's mint is served by it, its render clean of the source.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn session_door_a_provider_key_gone_by_an_apply_reaches_the_caller_without_its_source() {
         let _one = PUBLISHING.lock().await;
@@ -527,8 +481,6 @@ mod session_door_cells {
     }
 }
 
-/// THE POOLS DOOR, COMPOSE TIME: a provider whose `api_key` does not resolve refuses the boot with the
-/// operator's text, which names the source; nothing is served to a caller.
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pools_door_an_unresolved_provider_key_refuses_the_boot_naming_its_source() {
@@ -564,9 +516,6 @@ async fn pools_door_an_unresolved_provider_key_refuses_the_boot_naming_its_sourc
     );
 }
 
-/// THE POOLS DOOR, ACROSS AN APPLY: a provider served while its `api_key` file was there, the file then
-/// gone and the configuration applied: the door keeps the generation it serves, and the caller is
-/// served by it, its render clean of the source.
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pools_door_a_provider_key_gone_by_an_apply_reaches_the_caller_without_its_source() {
@@ -609,6 +558,5 @@ async fn pools_door_a_provider_key_gone_by_an_apply_reaches_the_caller_without_i
     assert_eq!(status, StatusCode::OK, "the kept generation serves");
 }
 
-// The scan's fixed-class half and its kept RED arm.
 #[path = "secret_source_class.rs"]
 mod class;

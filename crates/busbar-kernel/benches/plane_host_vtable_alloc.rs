@@ -51,9 +51,6 @@ use std::hint::black_box;
 use std::os::raw::c_void;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-/// Counts allocations ONLY while [`ARMED`], delegating to the system allocator otherwise. The window
-/// is armed around the isolated host-call batch and nowhere else, so criterion's own churn is
-/// never counted.
 struct CountingAlloc;
 
 static ARMED: AtomicBool = AtomicBool::new(false);
@@ -82,9 +79,6 @@ unsafe impl GlobalAlloc for CountingAlloc {
 #[global_allocator]
 static GLOBAL: CountingAlloc = CountingAlloc;
 
-/// The host service under measurement: `clock.now` on the one service call shape, reading its
-/// [`ClockNowIn`] by pointer and writing the [`ClockReading`] into the caller's buffer. It allocates
-/// nothing — the whole point.
 extern "C" fn host_clock_now(
     _ctx: HostCtx,
     input: *const c_void,
@@ -100,8 +94,6 @@ extern "C" fn host_clock_now(
     RawOutcome::of(Outcome::Ready)
 }
 
-/// A [`HostSlots`] table with `clock_now` populated and every other slot `None` — see the perf
-/// instrument's `armed_vtable` for the soundness of the zeroed construction.
 fn armed_vtable() -> HostSlots {
     // SAFETY: every field of `HostSlots` is valid all-zero (an integer header; `Option<extern "C"
     // fn>` slots whose `None` is the null-pointer niche).
@@ -112,8 +104,6 @@ fn armed_vtable() -> HostSlots {
     vt
 }
 
-/// The `clock.now` call's `in`, the reading it names and the host's `out`, built once before the
-/// armed window so the batch itself builds nothing.
 struct ClockCall {
     reading: ClockReading,
     input: ClockNowIn,
@@ -143,7 +133,6 @@ fn clock_call() -> Box<ClockCall> {
     call
 }
 
-/// THE ALLOC-BUDGET ASSERTION — zero allocations across the isolated POD host-call batch.
 fn assert_zero_alloc_pod_batch() {
     let null: HostCtx = HostCtx::NONE;
     let vt = armed_vtable();
@@ -155,15 +144,12 @@ fn assert_zero_alloc_pod_batch() {
     let clock_now = vt.clock_now.expect("clock_now slot is armed");
     let mut sink: u64 = 0;
 
-    // POD_HOST_CALL_BATCH: arm the counter, cross the seam N times, disarm. Nothing but the crossing
-    // runs inside the armed window.
     ALLOC_COUNT.store(0, Ordering::Relaxed);
     ARMED.store(true, Ordering::Relaxed);
     for _ in 0..100_000u32 {
         let answered = unsafe { clock_now(null, black_box(input), black_box(out)) };
         sink = sink.wrapping_add(u64::from(answered.0));
         if inject {
-            // The RED shape: an allocation inside the isolated batch, which the budget forbids.
             let v: Vec<u8> = Vec::with_capacity(16);
             sink = sink.wrapping_add(black_box(v).capacity() as u64);
         }
@@ -193,8 +179,6 @@ fn hot_path_alloc(c: &mut Criterion) {
         });
     });
 
-    // The gating assertion runs once per invocation: any allocation in the armed window takes the
-    // process down non-zero.
     assert_zero_alloc_pod_batch();
 }
 

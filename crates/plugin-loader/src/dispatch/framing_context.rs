@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Host-owned framing identity, independent of operation tickets.
-
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
@@ -15,7 +13,6 @@ use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::transport::guest_policy::Open;
 use busbar_contract::framing_scope::{AdoptionSource, FramingScope, SessionTransfer};
 
-/// A service did not belong to the live framing that crossed the plugin.
 pub const CONTEXT_REFUSED: &str = "the service does not belong to this live host framing";
 
 static NEXT_LEG: AtomicU64 = AtomicU64::new(1);
@@ -38,7 +35,6 @@ struct StreamOperations {
     cancelled: HashSet<Ticket>,
 }
 
-/// One host framing leg. Jobs may retain it after logical end without retaining authority.
 pub struct FramingContext {
     owner: u64,
     listener: u64,
@@ -69,11 +65,6 @@ impl std::fmt::Debug for FramingContext {
 }
 
 impl FramingContext {
-    /// Create a leg for the actual loaded owner and registered listener. `connection == 0`
-    /// starts a physical connection; a host-authorized adoption retains its prior incarnation.
-    ///
-    /// # Errors
-    /// A missing owner or an exhausted host identity space.
     pub fn new(
         owner: u64,
         listener: u64,
@@ -113,12 +104,6 @@ impl FramingContext {
         }))
     }
 
-    /// Stage a detached source's admitted session for this destination owner.
-    /// The original listener registration remains the source's; it is not looked up under
-    /// the adopting owner. No ordinary service is permitted before READY confirmation.
-    ///
-    /// # Errors
-    /// An unsealed source, missing admission, or unavailable destination identity.
     pub fn adopt(
         owner: u64,
         source: Arc<dyn FramingScope>,
@@ -166,35 +151,26 @@ impl FramingContext {
         }))
     }
 
-    /// The actual loaded plugin owner.
     #[must_use]
     pub fn owner(&self) -> u64 {
         self.owner
     }
 
-    /// The listener registration, assigned by the host before acceptance.
     #[must_use]
     pub fn listener(&self) -> u64 {
         self.listener
     }
 
-    /// The physical connection incarnation, retained across authorized adoption.
     #[must_use]
     pub fn connection(&self) -> u64 {
         self.connection
     }
 
-    /// The framing leg incarnation, never an operation ticket or plugin-local token.
     #[must_use]
     pub fn leg(&self) -> u64 {
         self.leg
     }
 
-    /// Check the calling owner and local token. Opening services may provisionally name the
-    /// token; only a READY opening confirms it. Closing permits teardown services alone.
-    ///
-    /// # Errors
-    /// A foreign owner, inconsistent token, ended leg, or ordinary service during closing.
     pub fn check(&self, owner: u64, conn: u64, teardown: bool) -> Result<(), &'static str> {
         if owner != self.owner || conn == 0 {
             return Err(CONTEXT_REFUSED);
@@ -215,10 +191,6 @@ impl FramingContext {
         }
     }
 
-    /// Confirm the token returned by a READY Begin/Adopt, including any provisional claim.
-    ///
-    /// # Errors
-    /// An inconsistent/zero token or a leg no longer opening.
     pub fn confirm(&self, conn: u64) -> Result<(), &'static str> {
         let first = {
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -266,10 +238,6 @@ impl FramingContext {
         Ok(())
     }
 
-    /// Seal a confirmed source without releasing its admitted request.
-    ///
-    /// # Errors
-    /// The source is not ready or was retired during detachment.
     pub fn detach(&self) -> Result<(), &'static str> {
         let token = {
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -296,7 +264,6 @@ impl FramingContext {
         }
     }
 
-    /// Stop admitting ordinary work before cancellation and the final Finish crossing.
     pub fn closing(&self) {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         *state = match *state {
@@ -307,8 +274,6 @@ impl FramingContext {
         };
     }
 
-    /// End authority exactly once. The owner calls this independently of ticket/Arc disposal;
-    /// notification occurs after releasing the state lock.
     pub fn end(&self) {
         let notify = {
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -693,8 +658,6 @@ thread_local! {
     static CURRENT: RefCell<Option<Arc<dyn FramingScope>>> = const { RefCell::new(None) };
 }
 
-/// The framing explicitly installed for this crossing, captured into owned worker metadata
-/// before submission and reinstalled on its worker/FFI thread.
 #[must_use]
 pub fn current() -> Option<Arc<dyn FramingScope>> {
     CURRENT.with(|c| c.borrow().clone())
@@ -718,7 +681,6 @@ impl Drop for CurrentGuard {
     }
 }
 
-/// Install owned context for a synchronous crossing/submission and restore the prior scope.
 pub fn with_context<R>(context: Option<Arc<dyn FramingScope>>, call: impl FnOnce() -> R) -> R {
     let _scope = enter(context);
     call()

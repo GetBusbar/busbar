@@ -1,14 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Store-owned rate-card history. Legacy `busbar.card.v1` entries remain readable;
-//! new entries use `busbar.card.v2`: original EntryKey, tagged u64 data indices,
-//! then an INTENT and canonical COMMIT with identical version/ownership/count/length/digest
-//! metadata. Existing v2 commits remain active; new own-card metadata version 3 additionally
-//! requires a matching activation intent and commit. A complete candidate intent
-//! preserves the exact original and own-selection for restart retry, without a host file.
-//! Physical durability is the configured Store's responsibility (memory Store is ephemeral).
-
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::Arc;
@@ -21,9 +13,8 @@ use busbar_kernel::config::card::CardFields;
 use busbar_kernel_ledger::cost::{EntryKey, ENTRY_KEY_LEN};
 use serde::{Deserialize, Serialize};
 
-/// The record schema the history is kept under.
 pub const CARD_SCHEMA: &str = "busbar.card.v2";
-/// The legacy Store schema, read but never newly written.
+
 pub const LEGACY_CARD_SCHEMA: &str = "busbar.card.v1";
 
 const DATA_TAG: u8 = 0;
@@ -35,7 +26,7 @@ const RETIREMENT_TAG: u8 = 5;
 const RETIREMENT_COMMIT_TAG: u8 = 6;
 const RETIREMENT_VERSION: u8 = 1;
 const RECORD_VERSION: u8 = 2;
-/// Own-card candidates require a separate authorized activation. Version two remains readable.
+
 const PREPARED_RECORD_VERSION: u8 = 3;
 const ACTIVATION_VERSION: u8 = 1;
 const ACTIVATION_TIME_OFFSET: usize = 1;
@@ -43,19 +34,14 @@ const ACTIVATION_DIGEST_OFFSET: usize = ACTIVATION_TIME_OFFSET + std::mem::size_
 const ACTIVATION_BYTES: usize = ACTIVATION_DIGEST_OFFSET + 32;
 const META_BYTES: usize = 50;
 
-/// The legacy part number of an entry's commit part. New entries use u64 indices.
 pub const COMMIT_PART: u16 = 0xFE00;
 
-/// The tag byte that follows a voided key in a VOID record's key.
 pub const VOID_TAG: u8 = 0xFF;
 
-/// The clock skew a writer tolerates in the history's head (MONEY-DESIGN section 3a).
 pub const SKEW_MS: u64 = 5 * 60 * 1000;
 
-/// How long a card write waits for READY before it goes pending; no host lock is held.
 pub const IN_LOCK_BOUND: Duration = Duration::from_secs(2);
 
-/// The bytes one data part carries.
 const PART_BYTES: usize = busbar_contract::MAX_RECORD_BYTES;
 
 /// Why an entry exists.
@@ -137,7 +123,6 @@ struct EntryJson {
 }
 
 impl StoredEntry {
-    /// The entry's value, as one byte string before it is split into parts.
     #[must_use]
     pub fn value(&self) -> Vec<u8> {
         let card: serde_json::Value =
@@ -158,11 +143,6 @@ impl StoredEntry {
         serde_json::to_vec(&json).unwrap_or_default()
     }
 
-    /// The entry from its key and value.
-    ///
-    /// # Errors
-    ///
-    /// The value is not an entry.
     pub fn from_value(key: EntryKey, value: &[u8]) -> Result<Self, String> {
         let json: EntryJson = serde_json::from_slice(value)
             .map_err(|e| format!("card entry {key}: not an entry: {e}"))?;
@@ -201,16 +181,10 @@ impl StoredEntry {
         })
     }
 
-    /// Data chunks, the immutable intent, then the canonical commit, in put order.
-    ///
-    /// # Errors
-    ///
-    /// A size cannot be represented on this platform. There is no card admission-size cap.
     pub fn records(&self) -> Result<Records, String> {
         self.records_for(false)
     }
 
-    /// Encode this exact original and whether it selects its writer's own card.
     pub(crate) fn records_for(&self, own: bool) -> Result<Records, String> {
         value_records(self.key, &self.value(), own)
     }
@@ -233,7 +207,6 @@ pub struct VoidRecord {
 }
 
 impl VoidRecord {
-    /// The key it is written under.
     #[must_use]
     pub fn record_key(&self) -> Vec<u8> {
         let mut key = EntryKey::parse_hex(&self.voided)
@@ -244,11 +217,6 @@ impl VoidRecord {
         key
     }
 
-    /// The record it is written as.
-    ///
-    /// # Errors
-    ///
-    /// The record does not fit one record.
     pub fn record(&self) -> Result<(Vec<u8>, RecordBytes), String> {
         let value = serde_json::to_vec(self).map_err(|e| e.to_string())?;
         Ok((
@@ -258,7 +226,6 @@ impl VoidRecord {
     }
 }
 
-/// The store key of `part` of entry `key`.
 #[must_use]
 pub fn part_key(key: &EntryKey, part: u16) -> Vec<u8> {
     let mut out = Vec::with_capacity(ENTRY_KEY_LEN + 2);
@@ -269,7 +236,6 @@ pub fn part_key(key: &EntryKey, part: u16) -> Vec<u8> {
 
 use busbar_kernel::config::card::sha256;
 
-/// The records one write puts, in order: `(store key, value)`.
 pub type Records = Vec<(Vec<u8>, RecordBytes)>;
 
 /// A complete Store intent. Its bytes and identity remain immutable across retries.
@@ -303,7 +269,6 @@ pub struct Activation {
 }
 
 impl Activation {
-    /// Bounded intent and commit records bind this cutover to the exact original candidate.
     pub fn records(&self, entry: &StoredEntry) -> Result<Records, String> {
         let mut value = vec![ACTIVATION_VERSION];
         value.extend_from_slice(&self.effective_from.to_be_bytes());
@@ -345,7 +310,6 @@ fn is_opening_author(author: &EntryAuthor) -> bool {
     )
 }
 
-/// Bind retirement to the exact saved candidate, never an overwrite or deletion of it.
 pub(crate) fn retirement_records(entry: &StoredEntry) -> Result<Records, String> {
     let mut value = vec![RETIREMENT_VERSION];
     value.extend_from_slice(&sha256(&entry.value()));
@@ -425,7 +389,6 @@ fn value_records(key: EntryKey, value: &[u8], own: bool) -> Result<Records, Stri
     Ok(records)
 }
 
-/// Validate all metadata and every chunk, including extra and empty chunks, before decoding.
 fn assemble(parts: &BTreeMap<u64, Vec<u8>>, meta: &[u8]) -> Result<(Vec<u8>, bool), &'static str> {
     if meta.len() != META_BYTES
         || !matches!(meta[0], RECORD_VERSION | PREPARED_RECORD_VERSION)
@@ -466,8 +429,6 @@ fn assemble(parts: &BTreeMap<u64, Vec<u8>>, meta: &[u8]) -> Result<(Vec<u8>, boo
 }
 
 impl Scanned {
-    /// Decode either record protocol. Conflicting duplicate keys invalidate their owner,
-    /// independent of row order; identical duplicates are harmless.
     #[must_use]
     pub fn of(records: Records) -> Self {
         let mut grouped: BTreeMap<EntryKey, Parts> = BTreeMap::new();
@@ -728,7 +689,6 @@ impl Scanned {
     }
 }
 
-/// Wait for `fut` on this thread until `deadline`; `None` past it (the future is dropped).
 pub fn wait_until<F: Future>(fut: F, deadline: Option<Instant>) -> Option<F::Output> {
     struct Unpark(std::thread::Thread);
     impl Wake for Unpark {
@@ -759,11 +719,6 @@ pub fn wait_until<F: Future>(fut: F, deadline: Option<Instant>) -> Option<F::Out
     }
 }
 
-/// Read the whole history: every record of the schema.
-///
-/// # Errors
-///
-/// The store failed or refused the scan, or did not answer by `deadline`.
 pub fn scan(calls: &dyn StoreCalls, deadline: Option<Instant>) -> Result<Scanned, String> {
     let mut records = scan_records(calls, LEGACY_CARD_SCHEMA, deadline)?;
     records.extend(scan_records(calls, CARD_SCHEMA, deadline)?);
@@ -794,7 +749,6 @@ fn scan_records(
             return Err("rate-card scan returned a key outside its prefix".into());
         }
         if u32::try_from(rows.len()).ok() == Some(u32::MAX) {
-            // Keep a possible row exactly at this prefix, then partition every longer key.
             records.extend(rows.into_iter().filter(|(key, _)| *key == prefix));
             for byte in (0..=u8::MAX).rev() {
                 let mut next = prefix.clone();
@@ -819,8 +773,6 @@ pub enum PutOutcome {
     Doubtful(String),
 }
 
-/// Put `records` in order, awaiting each ack, until `deadline`. `first` says whether this is the
-/// write's first attempt: only a first attempt's REFUSED is a refusal.
 #[must_use]
 pub fn put_all(
     calls: &dyn StoreCalls,
@@ -832,8 +784,6 @@ pub fn put_all(
     put_from(calls, records, &progress, deadline, first)
 }
 
-/// Resume a candidate at its first unacknowledged record. A timeout or unknown outcome leaves
-/// that exact record owed. Progress is per immutable owner, never a new key or an entry-size cap.
 pub(crate) fn put_from(
     calls: &dyn StoreCalls,
     records: &[(Vec<u8>, RecordBytes)],
@@ -847,15 +797,12 @@ pub(crate) fn put_from(
         if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             return PutOutcome::Doubtful("rate-card write deadline elapsed".into());
         }
-        // Generic record_put is an upsert. Never overwrite a different immutable original,
-        // including during retry after an unknown outcome. Callbacks run without host locks.
+
         match wait_until(calls.record_get(CARD_SCHEMA, key), deadline) {
             Some(Ok(Some(held))) if held != *value => {
                 return PutOutcome::Doubtful("conflicting immutable rate-card Store record".into());
             }
             Some(Ok(Some(_))) => {
-                // An exact immutable readback positively confirms a previously unknown put.
-                // Reissuing an upsert is unnecessary and cannot improve this confirmation.
                 progress.store(i + 1, Ordering::Release);
                 continue;
             }
@@ -891,14 +838,10 @@ pub(crate) fn put_from(
     PutOutcome::Ready
 }
 
-/// This boot's random key half: fresh entropy every boot, so keys never collide across nodes or
-/// restarts.
 #[must_use]
 pub fn boot_rand() -> [u8; 8] {
     let mut rand = [0u8; 8];
     if getrandom::fill(&mut rand).is_err() {
-        // No entropy: the boot's wall clock in nanoseconds still separates boots and nodes far
-        // better than a constant.
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos());

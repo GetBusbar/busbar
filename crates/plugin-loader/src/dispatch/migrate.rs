@@ -1,31 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE HOST'S SIDE OF THE DOOR'S OPTIONAL `migrate` (`busbar_contract::abi::mechanism::lifecycle`,
-//! MIGRATE; owner ruling 2026-10-27: each plugin migrates its own settings section).
-//!
-//! `busbar --migrate-config` hands each configured plugin's current build its settings section as
-//! the operator wrote it and the busbar version the configuration came from, and reads back the
-//! plugin's [`Migrated`]: the new section, its report lines and the needs it raises against keys
-//! core owns. The call is made with no instance and no ticket (it may not pend), on a permanent FFI
-//! worker, through the door's tail: a door that states no `migrate` is not called, and its section
-//! passes through unchanged ([`migrate_door`] answers `None`).
-
 use busbar_contract::abi::mechanism::call::{Blob, BLOB_JSON, BLOB_OCTETS};
 use busbar_contract::abi::mechanism::door::Door;
 use busbar_contract::abi::mechanism::lifecycle::{slot, ValidateIn};
 use busbar_contract::abi::sdk::door::RawDoorFn;
 use busbar_contract::abi::sdk::migrate::{read_answer, Migrated};
 
-/// How many bytes the host lends a plugin's `migrate` for its answer.
 pub const ANSWER_CAP: usize = 4 * 1024 * 1024;
 
-/// Call `door`'s `migrate` on `settings` (the plugin's section as written; `null` for none), from
-/// the busbar version `from`. `None` when the door states no `migrate`.
-///
-/// # Errors
-/// The door is refused by the host's door checks, or the plugin's `migrate` refused (its reason),
-/// faulted, or answered something that is not a migration.
 pub fn migrate_door(
     door: RawDoorFn,
     settings: &serde_json::Value,
@@ -87,12 +70,6 @@ pub fn migrate_door(
     read_answer(outcome, bytes).map(Some)
 }
 
-/// [`migrate_door`] over a dropped-in plugin's VERIFIED library bytes (the bytes its signed
-/// manifest's `sha256` names): staged by the loader's one staging path, opened, its door's `migrate`
-/// called, and the library closed again on the plugin thread. `display` labels a refusal.
-///
-/// # Errors
-/// The library does not load or exports no door, or [`migrate_door`]'s.
 pub fn migrate_library(
     bytes: &[u8],
     display: &str,

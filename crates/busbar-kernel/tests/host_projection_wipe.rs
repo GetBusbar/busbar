@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Observe only registered, initialized projection payloads before their allocation is released.
-
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::future::Future;

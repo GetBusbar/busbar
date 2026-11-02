@@ -1,18 +1,6 @@
-//! Tests for the observation source (`metrics/source.rs`): what it snapshots is what 1.5.5's recorder
-//! (`metrics-exporter-prometheus` 0.18.3, kept here as a dev-dependency and nowhere else) held, so a
-//! scrape sink handed the snapshot renders the 1.5.5 exposition from it. The comparison reads both
-//! snapshots through one stable test view ([`rendered`]) rather than through a scrape sink (R-FIX3:
-//! the kernel's tests name no export plugin; the scrape sink's own rendering of a snapshot is proven
-//! where it is linked, `crates/busbar/src/root/tests/linked.rs`).
-
 use super::*;
 use metrics_exporter_prometheus::formatting as reference;
 
-/// THE STABLE TEST VIEW of `families`: families by kind, then by name; within a family its series
-/// (the samples sharing one label set once `le` / `quantile` are set aside) by their labels, each
-/// series' own lines in the order the recorder wrote them — then rendered as the test view
-/// (`test_support::export_axis::lines`). Both recorders hand families and series over in their maps'
-/// hash order, which differs from run to run; the same held metrics must read the same here.
 fn rendered(families: &[Family]) -> String {
     let mut ordered = families.to_vec();
     ordered.sort_by(|a, b| a.kind.cmp(&b.kind).then_with(|| a.name.cmp(&b.name)));
@@ -33,9 +21,6 @@ fn rendered(families: &[Family]) -> String {
     crate::test_support::export_axis::lines(&ordered)
 }
 
-/// One workload, every shape the emit sites write: described and undescribed counters, labelled
-/// and not, label values and HELP text that need escaping, a name the data model must sanitize,
-/// gauges of every magnitude, and distributions with many samples.
 fn workload() {
     metrics::describe_counter!(
         "busbar_eq_requests_total",
@@ -71,10 +56,6 @@ fn workload() {
     let _registered_only = metrics::histogram!("busbar_eq_idle_seconds");
 }
 
-/// THE BYTE PROOF: the same workload written to 1.5.5's recorder and to the source reads, through
-/// one stable test view, as the same exposition — every family, series, label, value and HELP line.
-/// The 1.5.5 side is its own text read back through the snapshot reader; the view orders both the
-/// same stable way, so this compares what the recorders HOLD, not their hash order.
 #[test]
 fn the_source_holds_what_1_5_5s_recorder_held() {
     let width = Duration::from_secs(20);
@@ -111,8 +92,6 @@ fn the_source_holds_what_1_5_5s_recorder_held() {
     );
 }
 
-/// The escaping and sanitizing are 1.5.5's own, character for character, over the inputs that
-/// differ: quotes, line feeds, lone, doubled and trailing backslashes, and names outside the model.
 #[test]
 fn escapes_and_names_are_1_5_5s() {
     for s in [
@@ -162,9 +141,6 @@ fn escapes_and_names_are_1_5_5s() {
     }
 }
 
-/// THE ROLLING WINDOW: a sample older than every span still counts toward `_count` and `_sum` but
-/// leaves the quantiles once its span is past the window; a sample inside the newest span is placed
-/// there.
 #[test]
 fn the_window_rolls_while_count_and_sum_never_reset() {
     let (width, n) = (Duration::from_secs(10), 3);
@@ -187,7 +163,6 @@ fn the_window_rolls_while_count_and_sum_never_reset() {
 }
 
 fn identity_source() -> &'static Source {
-    // These fixtures do not exercise expiry; use the process's existing retention values.
     Box::leak(Box::new(Source::new(
         crate::snapshot::GAUGE_IDLE_TIMEOUT,
         crate::snapshot::SUMMARY_BUCKETS,
@@ -240,8 +215,7 @@ fn raw_label_values_that_share_presentation_keep_both_series() {
         assert_eq!(identity_values(&first, SUMMARY_SUM), ["17", "23"]);
         assert_eq!(identity_values(&first, SUMMARY_COUNT), ["1", "1"]);
         let summary = first.iter().find(|family| family.name == SUMMARY).unwrap();
-        // Each raw histogram retains its own complete quantile/sum/count block even though both
-        // blocks still carry ambiguous historical presentation labels.
+
         let expected_names: Vec<_> = [17, 23]
             .iter()
             .flat_map(|_| {
@@ -314,8 +288,7 @@ fn raw_duplicate_labels_keep_registry_identity_and_existing_display_semantics() 
 fn series_order_remains_presentation_order_with_deterministic_raw_ties() {
     const COUNTER: &str = "busbar_identity_order";
     let source = identity_source();
-    // A raw line feed sorts before quote, but its escaped presentation sorts after it. The two
-    // slash inputs share presentation, so their raw keys break that tie.
+
     metrics::with_local_recorder(&source, || {
         for (label, value) in [("\n", 19), ("\"", 17), ("\\\\", 23), ("\\", 31)] {
             metrics::counter!(COUNTER, "identity" => label).increment(value);

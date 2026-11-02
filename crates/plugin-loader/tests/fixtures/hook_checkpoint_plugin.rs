@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Old-API fixture: the existing extension/secret-lease mechanism carries the checkpoint bytes.
-//! This deliberately does not depend on the new SDK checkpoint type or configure adapter.
-
 use std::marker::PhantomData;
 use std::sync::Mutex;
 
@@ -25,7 +22,7 @@ pub static BLOCK_CONFIGURE: Mutex<
     Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
 > = Mutex::new(None);
 pub struct Gate {
-    applied: Mutex<(u64, u64, u64)>, // limit, version, revision
+    applied: Mutex<(u64, u64, u64)>,
     mode: String,
 }
 

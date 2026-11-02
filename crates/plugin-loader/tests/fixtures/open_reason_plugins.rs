@@ -1,22 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE OPEN-REASON WITNESS — a store whose `open` never succeeds, built with its kind's SDK door
-//! (`store_door!`), so the reason rides the SDK's own failed-open path into the host's lent reason
-//! buffer (`OpenIn::err_buf`).
-//!
-//! The settings ARE the reason: `open` fails with the settings text verbatim, and with NO text
-//! when the settings are absent or `{}`.
-//!
-//! One source, compiled into plugin-loader's test build as a module (the LINKED door) and built as
-//! the `open_reason_store_door` example cdylib behind one `export_door!` line (the DROPPED door).
-//!
-//! The `life` witness is a kind built on the SDK's generic lifecycle (`lifecycle: life(L)`), whose
-//! `validate` and `open` both refuse with an OWNED reason: no instance exists to keep it, so the
-//! SDK writes it into the reason buffer the host lent the call.
 #![allow(dead_code)]
 
-/// The reason a witness fails its `open` with: its settings, verbatim; none for absent settings.
 fn reason(settings: &str) -> String {
     match settings {
         "" | "{}" => String::new(),
@@ -24,7 +10,6 @@ fn reason(settings: &str) -> String {
     }
 }
 
-/// The store witness: a store that never opens, so no other slot is ever reached.
 pub mod store {
     use busbar_contract::abi::sdk::conn::Host;
     use busbar_contract::abi::sdk::store::{Op, OpResult, Scanned, Step, StoreSlots, Tail};
@@ -35,10 +20,8 @@ pub mod store {
         PlaneSelector, RecordStoreResult, UsageDelta, UsageLedger, VirtualKey,
     };
 
-    /// Its Statement name: the name the host knows it by.
     pub const NAME: &str = "open-reason-store";
 
-    /// A store that never opens.
     pub struct NeverOpens;
 
     impl StoreSlots for NeverOpens {
@@ -274,18 +257,14 @@ pub mod store {
     busbar_contract::store_door!(NeverOpens, NAME, "0", 1);
 }
 
-/// The generic-lifecycle witness: a secret kind whose `validate` and `open` refuse in their own
-/// (owned) words.
 pub mod life {
     use busbar_contract::abi::mechanism::call::Outcome;
     use busbar_contract::abi::sdk::life::{Held, Life, Refreshed, Refusal};
     use busbar_contract::abi::sdk::{Instance, Lent, Out, SafeSlot};
     use busbar_contract::abi::secret::{ResolveIn, ResolveOut};
 
-    /// Its Statement name: the name the host knows it by.
     pub const NAME: &str = "open-reason-life";
 
-    /// A state that never opens.
     pub struct Words;
 
     impl Life for Words {
@@ -309,7 +288,6 @@ pub mod life {
         }
     }
 
-    /// `resolve`: unreachable, since no instance ever exists.
     pub struct Resolve;
     impl SafeSlot for Resolve {
         type In = ResolveIn;

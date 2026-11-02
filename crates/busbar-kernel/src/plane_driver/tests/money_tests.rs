@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE PRODUCTION MONEY SEAM over the real governance book (an in-memory store) and a real cost
-//! model: the end ledgers the far-end-reported counts once, in the arrival window; an estimate never
-//! bills; a cancel bill is ledgered and the later end ledgers nothing twice; an undelivered end
-//! refunds the flat fee; finish-unit never cuts and cut-stream cuts at the tightest budget; an
-//! abandoned end goes to the root's posting site.
-
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -39,13 +33,10 @@ fn ctx(key: u64) -> UnitCtx {
     }
 }
 
-/// A cost model: one group `g` capping spend at `budget_cents` over all time, a card pricing model
-/// `m`'s input at 1 micro-unit per token, and a flat fee of `fee` cents per request.
 fn cost(budget_cents: Option<u64>, fee: i64) -> Arc<CostModel> {
     Arc::new(cost_model(budget_cents, fee))
 }
 
-/// [`cost`], unshared.
 fn cost_model(budget_cents: Option<u64>, fee: i64) -> CostModel {
     let limits = budget_cents
         .map(|amount| {
@@ -74,7 +65,7 @@ fn cost_model(budget_cents: Option<u64>, fee: i64) -> CostModel {
         output_utok: 1.0,
         ..Default::default()
     };
-    // `m2` is the member a failed-over unit is served by.
+
     let card = BTreeMap::from([("m".to_string(), rate()), ("m2".to_string(), rate())]);
     CostModel::resolve_parts(Some(&card), fee, &groups)
 }
@@ -105,12 +96,10 @@ struct Rig {
     posted: Arc<Posted>,
     cost: Arc<CostModel>,
     key: Arc<VirtualKey>,
-    /// The unit 1 the rig opened, before any admission charged it.
+
     unit: UnitMoney,
 }
 
-/// Admit unit 1 through the real admission (its fee charged), and re-open it carrying that charge,
-/// as the composition root opens a unit it has admitted.
 fn admit(r: &Rig) {
     let grant = (r.gov.try_admit(&r.cost, &r.key, "", NOW)).expect("admitted, the fee charged");
     let unit = UnitMoney {
@@ -163,7 +152,6 @@ fn reported(amount: u64) -> [UnitCount; 1] {
     }]
 }
 
-/// The key bucket's ledgered tokens, and its spend in cents (the flat fee included).
 fn usage(r: &Rig) -> (u64, i64) {
     let u = r
         .gov
@@ -245,8 +233,6 @@ fn a_delivered_end_keeps_the_flat_fee() {
     assert_eq!(usage(&r).1, 5);
 }
 
-// A plane new in 1.6.0 decides its fee refund through its own fee-unit report; the class at index 2 is its declared fee unit.
-
 const FEE_UNIT: u32 = 2;
 
 fn plane_fees() -> FeeRefund {
@@ -261,8 +247,6 @@ fn fee_reported(amount: u64) -> UnitCount {
     }
 }
 
-/// The plane reported no fee unit: the fee charged at admission is refunded, whatever the status.
-/// RED: under the caller-status rule a 200 end keeps the fee.
 #[test]
 fn a_plane_that_reports_no_fee_unit_has_its_fee_refunded() {
     let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
@@ -272,8 +256,6 @@ fn a_plane_that_reports_no_fee_unit_has_its_fee_refunded() {
     assert_eq!(usage(&r).1, 0, "the plane decides: no fee unit, no fee");
 }
 
-/// The plane reported its fee unit: the fee stays, even on a non-2xx end (the plane decides, not
-/// the caller status). RED: under the caller-status rule a 503 end refunds it.
 #[test]
 fn a_plane_that_reports_its_fee_unit_keeps_the_fee() {
     let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
@@ -283,9 +265,6 @@ fn a_plane_that_reports_its_fee_unit_keeps_the_fee() {
     assert_eq!(usage(&r).1, 5, "the plane reported its fee unit");
 }
 
-/// RED arm: a fee unit's count is never ledgered as usage. The card prices `input` and
-/// `output` only, so a fee count reaching the ledger as usage would make the bucket's spend a
-/// refusal (#42) and its tokens would not be the input alone.
 #[test]
 fn a_fee_unit_count_is_never_ledgered_as_usage() {
     let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
@@ -307,12 +286,6 @@ fn a_fee_unit_count_is_never_ledgered_as_usage() {
     );
 }
 
-// ── F25 rows 380, 626, 718: the arrival window and the fee unit, rehomed from the legacy engine's
-// money tests onto the served money seam (the rule the root opens every plane unit under:
-// `FeeRefund::PlaneFeeUnits`, door_steps.rs).
-
-/// The rig's group `g` month bucket (its budget window), read at `at`: its tokens and its spend in
-/// cents, the flat fee included.
 fn group_month(r: &Rig, at: u64) -> (u64, i64) {
     let u = r
         .gov
@@ -327,8 +300,6 @@ fn group_month(r: &Rig, at: u64) -> (u64, i64) {
     (u.tokens, u.spend_cents)
 }
 
-/// The wall clock, asserted to fall in a different budget window than the unit's arrival, or the
-/// window attribution under test is masked.
 fn a_later_window() -> u64 {
     let today = crate::store::now();
     assert_ne!(
@@ -339,10 +310,6 @@ fn a_later_window() -> u64 {
     today
 }
 
-/// F25 row 380: rehomed from the retired engine crate's src/engine/tests/ingress_integration_tests.rs::
-/// test_flat_fee_charge_and_refund_use_charged_at_window (#29, flat-fee side). The admission
-/// charges the 30-cent flat fee into the ARRIVAL (`charged_at`) window; a non-2xx end refunds it in
-/// that SAME window (net 0 there), and nothing ever lands in the wall clock's window.
 #[test]
 fn test_flat_fee_charge_and_refund_use_charged_at_window() {
     let r = rig_with(
@@ -375,10 +342,6 @@ fn test_flat_fee_charge_and_refund_use_charged_at_window() {
     );
 }
 
-/// F25 row 626: rehomed from the retired engine crate's src/engine/tests/usage_tap_tests.rs::
-/// test_nonstream_token_fee_uses_charged_at_window_not_clock (#29, token side). A completion's
-/// 600 input + 400 output tokens ledger into the ARRIVAL (`charged_at`) window of the bound group's
-/// windowed bucket, never the wall clock's, and the key's all-time bucket holds all 1000.
 #[test]
 fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
     let r = rig_with(Some(1_000_000), 0, ExhaustionMode::FinishUnit, plane_fees());
@@ -415,11 +378,6 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
     );
 }
 
-/// F25 row 718: rehomed from the retired engine crate's src/unit/tests/meter.rs::
-/// the_fee_unit_is_one_per_delivered_request_that_routed_upstream. One flat fee per delivered
-/// request that routed upstream, at the ledger: a delivered 2xx whose plane reported its fee unit
-/// keeps the 5 cents; delivered with no upstream leg (no fee unit reported), routed but
-/// undelivered (502, 404) and neither (503, nothing reported) each end at 0.
 #[test]
 fn the_fee_unit_is_one_per_delivered_request_that_routed_upstream() {
     for (status, report, fee, why) in [
@@ -440,10 +398,6 @@ fn the_fee_unit_is_one_per_delivered_request_that_routed_upstream() {
     }
 }
 
-// THE SERVING MEMBER (v1.5.5 crates/busbar/src/proxy/usage.rs `record_resp_usage` :31-40 and
-// `ledger_and_meter` :99-106): a delivered response meters one request against the SERVING lane's
-// config model and provider, tokens or none, and its tokens ledger under that model.
-
 fn metering_rows(r: &Rig) -> Vec<busbar_contract::records::MeteringRow> {
     r.gov.flush_metering();
     r.gov
@@ -451,8 +405,6 @@ fn metering_rows(r: &Rig) -> Vec<busbar_contract::records::MeteringRow> {
         .expect("metering read")
 }
 
-/// A delivered unit that reported no token still meters ONE request against its serving member.
-/// RED: without the end's metering the row is absent.
 #[test]
 fn a_delivered_zero_token_unit_meters_one_request() {
     let r = rig(None, 0, ExhaustionMode::FinishUnit);
@@ -468,15 +420,6 @@ fn a_delivered_zero_token_unit_meters_one_request() {
     assert_eq!((row.tokens_input, row.tokens_output), (0, 0));
 }
 
-/// A DOOR UNIT ARRIVING IN THE LAST SECOND OF A METERING BUCKET IS METERED IN THAT BUCKET. Door
-/// successor of `crates/busbar/src/root/tests/plane_node.rs::a_unit_arriving_at_a_window_boundary_bills_in_the_window_it_arrived_in`
-/// (the governance half its door port could not reach): the money seam the door opens every unit
-/// on files the unit's metering row under the ARRIVAL it was opened with, never a clock read at its
-/// end. The arrival is placed on the last second of the bucket before [`NOW`]'s, the one instant
-/// where a second clock read disagrees; the row is looked for in the bucket the unit arrived in,
-/// and the next bucket is checked to be empty, because a figure that leaked forward would land
-/// there. As the original pinned: one row in the arrival's bucket, none in the next.
-/// RED: the metering row keyed off a fresh clock read (or the arrival's next second).
 #[test]
 fn a_door_unit_arriving_at_a_bucket_boundary_is_metered_in_the_bucket_it_arrived_in() {
     use crate::governance::metering_bucket;
@@ -523,14 +466,6 @@ fn a_door_unit_arriving_at_a_bucket_boundary_is_metered_in_the_bucket_it_arrived
     );
 }
 
-/// A STREAM ITS FAR END CUT BILLS AND METERS WHAT ITS PLANE LEDGERED, AND KEEPS ITS FEE (owner
-/// ruling 2026-10-20: "spend is what it is. if spend occurred it occurred. null is not a fix."): a
-/// unit whose 2xx stream the far end cut after the plane reported 40 input tokens ledgers those
-/// 40, writes their metering row against the serving member, and keeps the fee its plane
-/// reported. The cut is a fact of the end, never a reason for core to override the plane's
-/// ledger.
-/// RED: the cut stream's reported tokens dropped, or its metering row skipped (status row 183, as
-/// #1282 wrote it).
 #[test]
 fn a_stream_cut_by_its_far_end_bills_and_meters_what_its_plane_ledgered() {
     let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
@@ -574,8 +509,6 @@ fn a_stream_cut_by_its_far_end_bills_and_meters_what_its_plane_ledgered() {
     assert_eq!(u.requests, 1, "the request unit counts once");
 }
 
-/// A unit that failed over ledgers AND meters under the member that served it, never the model
-/// it was opened under. RED: without `served` the tokens sit under `m` and nothing meters.
 #[test]
 fn a_failed_over_unit_ledgers_and_meters_under_the_serving_member() {
     let r = rig(None, 0, ExhaustionMode::FinishUnit);
@@ -606,8 +539,6 @@ fn a_failed_over_unit_ledgers_and_meters_under_the_serving_member() {
     );
 }
 
-/// A plane-qualified lane meters its request on the row the class mirror keys it by:
-/// `(subject, plane)`, never a second row under the qualified string.
 #[test]
 fn a_plane_lane_unit_meters_on_the_planes_row() {
     let r = rig(None, 0, ExhaustionMode::FinishUnit);
@@ -625,11 +556,6 @@ fn a_plane_lane_unit_meters_on_the_planes_row() {
     );
 }
 
-/// SEAM-L(j), THE LEDGER LANE IS NOT THE ROUTE ENTRY: a unit opened on its plane's route entry
-/// (`tp\u{1f}srv`) whose plane names the lane `srv_read` ledgers, meters and prices under the
-/// plane-qualified lane `tp\u{1f}srv_read`, its row `(srv_read, tp)`; the serving member that
-/// answers after it does not take it back, and a lane naming a control character (the qualifier's
-/// separator among them) names nothing. RED: the unit ledgered and metered under its route entry.
 #[test]
 fn a_plane_named_lane_is_the_units_ledger_lane_not_its_route_entry() {
     let r = rig(None, 0, ExhaustionMode::FinishUnit);
@@ -678,12 +604,6 @@ fn a_plane_named_lane_is_the_units_ledger_lane_not_its_route_entry() {
     );
 }
 
-/// THE PLANE'S DECLARED CLASSES REACH ITS ROW (#71; /status row 123, the rigs' `h2-class-price`): a
-/// served unit of a plane that declares a count class and a byte class, reporting one call and the
-/// answer's length beside its fee unit, meters ONE request on the plane's row `(lane, plane)` and
-/// that row carries both counts, which the admin usage read prices (`classes.<class>.{count,cost}`).
-/// The fee unit says only whether the fee was incurred: it is never a counted class. RED: counts
-/// lost on the way to the row read 0 under the declared classes and only the flat fee is charged.
 #[test]
 fn a_plane_units_declared_class_counts_reach_its_metering_row() {
     const CALLS: u32 = 0;
@@ -741,7 +661,6 @@ fn a_plane_units_declared_class_counts_reach_its_metering_row() {
     );
 }
 
-/// A unit whose plane names no lane is laned by its route entry, as before (the serving member's).
 #[test]
 fn a_unit_naming_no_lane_keeps_its_route_entry() {
     let r = rig(None, 0, ExhaustionMode::FinishUnit);
@@ -753,7 +672,6 @@ fn a_unit_naming_no_lane_keeps_its_route_entry() {
     );
 }
 
-/// An undelivered end meters nothing (1.5.5 metered delivered responses only).
 #[test]
 fn an_undelivered_end_meters_nothing() {
     let r = rig(None, 0, ExhaustionMode::FinishUnit);
@@ -762,7 +680,6 @@ fn an_undelivered_end_meters_nothing() {
     assert!(metering_rows(&r).is_empty());
 }
 
-/// A cancelled stream meters only when its bill carries a reported count (1.5.5's drop path).
 #[test]
 fn a_cancelled_stream_meters_only_a_reported_bill() {
     let bill = |billed: Vec<(u32, u64)>| CancelBill {
@@ -783,7 +700,6 @@ fn a_cancelled_stream_meters_only_a_reported_bill() {
     assert_eq!((rows.len(), rows[0].tokens_input), (1, 30));
 }
 
-/// finish-unit (the default, 1.5.5) never cuts, however far past the budget the unit runs.
 #[test]
 fn finish_unit_never_cuts() {
     let r = rig(Some(1), 0, ExhaustionMode::FinishUnit);
@@ -793,8 +709,6 @@ fn finish_unit_never_cuts() {
     );
 }
 
-/// cut-stream cuts once the reported counts, priced at the card, reach the tightest budget left:
-/// 1 cent = 10 000 micro-units = 10 000 input tokens at 1 micro-unit each.
 #[test]
 fn cut_stream_cuts_at_the_tightest_budget() {
     let r = rig(Some(1), 0, ExhaustionMode::CutStream);
@@ -819,7 +733,6 @@ fn cut_stream_cuts_at_the_tightest_budget() {
     );
 }
 
-/// A unit with no budget in play never runs dry.
 #[test]
 fn cut_stream_without_a_budget_never_cuts() {
     let r = rig(None, 0, ExhaustionMode::CutStream);
@@ -851,8 +764,6 @@ fn bill(cause: ReasonCode, amount: u64) -> CancelBill {
     }
 }
 
-/// A report whose counts do not add up in a u64 is a plane fault: never kept, never billed wrapped,
-/// and the unit is cut (fail closed) whatever its mode.
 #[test]
 fn a_report_that_overflows_is_cut_and_never_kept() {
     for mode in [ExhaustionMode::FinishUnit, ExhaustionMode::CutStream] {
@@ -880,7 +791,6 @@ fn a_report_that_overflows_is_cut_and_never_kept() {
     }
 }
 
-/// The sum that bills is checked, and a fail-closed ledger saturates: never wrapped, never zero.
 #[test]
 fn class_sums_are_checked_and_the_fallback_saturates() {
     let classes = ["input".to_string()];
@@ -896,11 +806,8 @@ fn class_sums_are_checked_and_the_fallback_saturates() {
     );
 }
 
-/// EXACTLY ONCE, every path: complete (and a second end), abandon after the route finished, abandon
-/// mid-route then its cancel bill (either order), cancel then end. Every path closes the unit.
 #[test]
 fn every_path_ledgers_a_unit_exactly_once_and_closes_it() {
-    // Complete, then a second end.
     let r = rig(None, 0, ExhaustionMode::FinishUnit);
     let _ = r.money.checkpoint(&ctx(1), &reported(10));
     r.money.finished(&ctx(1));
@@ -908,7 +815,6 @@ fn every_path_ledgers_a_unit_exactly_once_and_closes_it() {
     r.money.settle_end(UnitKey::new(1), 200);
     assert_eq!((usage(&r).0, r.money.open_units()), (10, 0), "complete");
 
-    // The route finished, then the caller left during the exit.
     let r = rig(None, 0, ExhaustionMode::FinishUnit);
     let _ = r.money.checkpoint(&ctx(1), &reported(20));
     r.money.finished(&ctx(1));
@@ -920,7 +826,6 @@ fn every_path_ledgers_a_unit_exactly_once_and_closes_it() {
         "abandon after finish"
     );
 
-    // The caller left mid-route: the end is posted, then the sweep's cancel bill.
     let r = rig(None, 0, ExhaustionMode::FinishUnit);
     let _ = r.money.checkpoint(&ctx(1), &reported(30));
     r.money.abandoned(&ctx(1), Ended::AlreadySettled);
@@ -939,7 +844,6 @@ fn every_path_ledgers_a_unit_exactly_once_and_closes_it() {
         "abandon then bill"
     );
 
-    // The bill first, then the posted end.
     let r = rig(None, 0, ExhaustionMode::FinishUnit);
     let _ = r.money.checkpoint(&ctx(1), &reported(30));
     r.money
@@ -951,7 +855,6 @@ fn every_path_ledgers_a_unit_exactly_once_and_closes_it() {
         "bill then abandon"
     );
 
-    // A cancel the unit returns from (a deadline), then its end.
     let r = rig(None, 0, ExhaustionMode::FinishUnit);
     let _ = r.money.checkpoint(&ctx(1), &reported(30));
     r.money
@@ -964,9 +867,6 @@ fn every_path_ledgers_a_unit_exactly_once_and_closes_it() {
     );
 }
 
-/// A cancelled unit that returns undelivered (a deadline before any answer: the caller gets a
-/// non-2xx) is refunded its flat fee, as 1.5.5 refunded every non-2xx finish; a unit whose caller
-/// went away is refunded nothing.
 #[test]
 fn a_cancelled_undelivered_unit_is_refunded_once_and_an_abandoned_one_never() {
     let r = rig(None, 5, ExhaustionMode::FinishUnit);
@@ -1004,9 +904,6 @@ fn floor(class: u32, amount: u64) -> UnitCount {
     }
 }
 
-/// THE USAGE FLOOR (Q24/Q28): a delivered reply whose far-end usage could not be read bills the
-/// plane's floor, never 0, exactly as a reported count does. RED: a filter that bills only
-/// `UNITS_REPORTED` drops the floor and the unit ledgers 0.
 #[test]
 fn a_floor_count_bills_like_a_reported_one() {
     let r = rig(None, 0, ExhaustionMode::FinishUnit);
@@ -1015,8 +912,6 @@ fn a_floor_count_bills_like_a_reported_one() {
     assert_eq!(usage(&r).0, 51, "the floor bills, once");
 }
 
-/// A cancelled stream bills its floor counts as it bills its reported ones (the four cancel rules
-/// still decide WHETHER anything bills); an estimate beside them never bills.
 #[test]
 fn a_cancel_bill_carries_the_floor_counts_and_never_an_estimate() {
     let facts = crate::plane_driver::cancel::Facts {
@@ -1040,8 +935,6 @@ fn a_cancel_bill_carries_the_floor_counts_and_never_an_estimate() {
     assert_eq!(bill.billed, vec![(INPUT, 40)]);
 }
 
-/// A plane whose fee unit arrives as a floor count of 1 keeps its fee, as a reported 1 does: the
-/// one billing rule ([`busbar_contract::abi::plane::units_bill`]) decides the fee unit too.
 #[test]
 fn a_fee_unit_floor_count_keeps_the_fee() {
     let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
@@ -1051,17 +944,12 @@ fn a_fee_unit_floor_count_keeps_the_fee() {
     assert_eq!(usage(&r).1, 5, "a floor fee unit keeps the fee");
 }
 
-/// THE SESSION MONEY GUARD, kept by K6-4: a session on a unit whose money facts the root never
-/// opened is refused at its open, as `Unpriced`: no session runs unbilled.
 #[test]
 fn a_session_on_a_unit_with_no_money_facts_is_refused() {
     let r = rig(None, 5, ExhaustionMode::FinishUnit);
     assert_eq!(r.money.session_opened(&ctx(2)), Err(ReasonCode::Unpriced));
 }
 
-/// K6-4 (THE DESIGN §7, "A session is one unit with one line"): each turn's cumulative counts are a
-/// checkpoint, never a line; the session's end writes ONE line of its last cumulative counts, and
-/// the unit's own end then ledgers nothing twice.
 #[test]
 fn a_session_writes_one_line_of_its_last_cumulative_counts_at_its_end() {
     let r = rig(None, 0, ExhaustionMode::FinishUnit);
@@ -1081,10 +969,6 @@ fn a_session_writes_one_line_of_its_last_cumulative_counts_at_its_end() {
     assert_eq!(r.money.open_units(), 0, "the unit's end closes it");
 }
 
-/// A cancel on either side of a session bills nothing of its own: the near side's facts never
-/// see the far end answer, so its cancel bill is empty, and a session that took it as its line
-/// would serve audio and bill none. The session's end bills its last cumulative counts. RED before
-/// K6-4: the side's empty bill was the session's only line.
 #[test]
 fn a_cancelled_side_does_not_replace_the_sessions_line() {
     for cause in [ReasonCode::ClientGone, ReasonCode::OverBudget] {
@@ -1108,8 +992,6 @@ fn a_cancelled_side_does_not_replace_the_sessions_line() {
     }
 }
 
-/// The caller went away before the session's cleanup ran: its end is posted once, and the
-/// session's one line is written by the cleanup, which closes the unit.
 #[test]
 fn an_abandoned_session_is_billed_by_its_cleanup_and_closes() {
     let r = rig(None, 0, ExhaustionMode::FinishUnit);
@@ -1123,7 +1005,6 @@ fn an_abandoned_session_is_billed_by_its_cleanup_and_closes() {
     assert_eq!(r.money.open_units(), 0);
 }
 
-/// A session's estimate never bills, and its floor counts bill like reported ones.
 #[test]
 fn a_sessions_line_carries_reported_and_floor_counts_never_an_estimate() {
     let r = rig(None, 0, ExhaustionMode::FinishUnit);
@@ -1143,11 +1024,6 @@ fn a_sessions_line_carries_reported_and_floor_counts_never_an_estimate() {
     assert_eq!(usage(&r).0, 7);
 }
 
-/// A SESSION'S FEE IS REFUNDED WHEN ITS OPEN FAILS, AS ITS OWN FEE UNIT (ARCHITECT Q-L5-FEE (A);
-/// Q17-6): a session plane declares `per_session` as its fee unit and a billable class.
-/// A session whose far end never answered reports no fee unit, and its end gives back ONE
-/// `per_session` from the plane's fee lane; a session whose far end answered reports it `1` and
-/// keeps its fee. The fee unit is never ledgered as usage.
 #[test]
 fn a_session_whose_open_failed_is_refunded_its_per_session_fee() {
     use busbar_contract::plane::PER_SESSION;
@@ -1188,7 +1064,7 @@ fn a_session_whose_open_failed_is_refunded_its_per_session_fee() {
                 charge: Default::default(),
             },
         );
-        // The session's fee, charged at its open on the plane's fee lane.
+
         gov.record_usage(&cost, &key(), "", &plane_fee_lane("sp"), &one, NOW);
         assert_eq!(spend(&gov), 40, "the session fee charged");
         assert_eq!(money.session_opened(&ctx(1)), Ok(()));
@@ -1205,11 +1081,6 @@ fn a_session_whose_open_failed_is_refunded_its_per_session_fee() {
     }
 }
 
-/// EVERY VERIFIED PRINCIPAL IS LENT A STABLE, NON-EMPTY CALLER REFERENCE (row 159 H2): a book with
-/// no signing material (an OIDC or plugin-auth chain names no `auth.signing_key`) lends one keyed by
-/// the deployment keyset it binds, through the live slot every plane driver holds, so two principals
-/// get two references and one principal gets one reference on every node of the deployment. Before
-/// the keyset is bound (or when none is), the node's per-boot key lends them, never nothing.
 #[test]
 fn red_a_book_with_no_signing_key_lends_every_principal_its_own_reference() {
     let node = |material: Option<[u8; 32]>| {
@@ -1228,8 +1099,7 @@ fn red_a_book_with_no_signing_key_lends_every_principal_its_own_reference() {
         };
         (lent("oidc:alice"), lent("oidc:bob"))
     };
-    // Nothing bound: the per-boot key still lends two principals two non-empty references, and
-    // they are not the deployment keyset's.
+
     let (boot_alice, boot_bob) = node(None);
     assert!(!boot_alice.is_empty() && !boot_bob.is_empty());
     assert_ne!(boot_alice, boot_bob);
@@ -1240,9 +1110,9 @@ fn red_a_book_with_no_signing_key_lends_every_principal_its_own_reference() {
         "a verified principal was lent nothing"
     );
     assert_ne!(alice, bob, "two principals share one reference");
-    // A second node of the same deployment binds the same keyset: the same references.
+
     assert_eq!(node(Some(keyset)), (alice.clone(), bob));
-    // Another deployment's keyset gives another reference.
+
     assert_ne!(node(Some([8u8; 32])).0, alice);
     assert_ne!(
         boot_alice, alice,
@@ -1250,12 +1120,6 @@ fn red_a_book_with_no_signing_key_lends_every_principal_its_own_reference() {
     );
 }
 
-/// A NODE WITH NO SIGNING KEY AND A NON-SIGNING AUDIT CHAIN STILL LENDS EVERY VERIFIED PRINCIPAL ITS
-/// OWN REFERENCE (residual of a5d0098cc3, row 159 H2; ARCHITECT ruling: a verified principal is never
-/// lent the empty reference). Such a node binds no deployment keyset (`AuditChain::derived_secret`
-/// answers `None`), so the reference is keyed by a per-boot random key the node generates at start.
-/// RED: nothing bound means nothing lent, and the plane reads the empty reference as the one
-/// ungoverned owner, so two verified callers share one session owner.
 #[test]
 fn red_a_node_with_no_signing_key_and_no_signing_chain_lends_two_principals_two_references() {
     let gov = Arc::new(GovState::new(Arc::new(MemoryStore::new()), None).expect("gov"));
@@ -1277,8 +1141,6 @@ fn red_a_node_with_no_signing_key_and_no_signing_chain_lends_two_principals_two_
     assert_eq!(lent("oidc:alice"), alice, "one principal, one reference");
 }
 
-/// The signing material, when the node has one, still keys the reference (it wins over the
-/// deployment keyset), and a reload that drops it falls back to the keyset, never to nothing.
 #[test]
 fn the_signing_material_keys_the_reference_and_the_keyset_backs_it() {
     let gov = Arc::new(GovState::new(Arc::new(MemoryStore::new()), None).expect("gov"));
@@ -1300,13 +1162,11 @@ fn the_signing_material_keys_the_reference_and_the_keyset_backs_it() {
     );
 }
 
-/// The signer every reference test below keys by.
 fn signer_nine() -> Option<crate::governance::signing::TokenSigner> {
     use crate::governance::signing::TokenSigner;
     Some(TokenSigner::from_secret_bytes(&[9u8; 32], "k"))
 }
 
-/// The reference the node's live slot lends principal `p`, empty when the slot holds no key.
 fn lent_to_p(gov: &GovState) -> String {
     gov.caller_ref_slot()
         .read()
@@ -1316,15 +1176,11 @@ fn lent_to_p(gov: &GovState) -> String {
         .unwrap_or_default()
 }
 
-/// One boot of a node over a fresh book, built with `signer`.
 fn booted(signer: Option<crate::governance::signing::TokenSigner>) -> GovState {
     let store = Arc::new(MemoryStore::new());
     GovState::new_with_signer(store, None, signer).expect("gov")
 }
 
-/// A node BUILT with a signer keys the reference by that signer from its first unit, never by its
-/// per-boot key: two boots with the same signer lend one principal one reference, and it is the
-/// reference a signer set after a keyless start lends.
 #[test]
 fn a_node_built_with_a_signer_keys_the_reference_by_it_not_by_the_boot_key() {
     let first_boot = booted(signer_nine());
@@ -1343,8 +1199,6 @@ fn a_node_built_with_a_signer_keys_the_reference_by_it_not_by_the_boot_key() {
     assert_eq!(lent_to_p(&keyless), by_signer);
 }
 
-/// A reload that drops the signer on a node with no deployment keyset falls back to this boot's
-/// key, never to the empty reference: the reference is the one the node lent before the signer.
 #[test]
 fn dropping_the_signer_with_no_keyset_falls_back_to_the_boot_key_never_to_nothing() {
     let gov = booted(None);
@@ -1368,10 +1222,6 @@ fn dropping_the_signer_with_no_keyset_falls_back_to_the_boot_key_never_to_nothin
     );
 }
 
-/// THE CHECKPOINT'S CHECK BUILDS NOTHING (row 159 K2#4): `adds_up` answers exactly what the checked
-/// sums by class name answer — an undeclared class is never added, two indices naming one class
-/// add together, and a class whose counts overflow a `u64` does not add up — without the counts
-/// vector or the sums map the piece path used to build.
 #[test]
 fn the_checkpoint_check_agrees_with_the_checked_sums() {
     let unit = |class: u32, amount: u64| UnitCount {
@@ -1404,8 +1254,6 @@ fn the_checkpoint_check_agrees_with_the_checked_sums() {
     }
 }
 
-/// EVERY OPEN UNIT IS ONE UNIT, whichever lock holds it (row 159 K2#4): units spread over the
-/// shards are each counted open, each takes its running report, and each is closed by its end.
 #[test]
 fn units_over_every_shard_are_counted_and_closed() {
     let r = rig(None, 0, ExhaustionMode::FinishUnit);

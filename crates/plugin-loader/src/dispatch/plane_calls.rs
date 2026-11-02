@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! ONE LOADED PLANE INSTANCE AS THE KERNEL CALLS IT: [`PlaneInstance`] implements the contract's
-//! `PlaneCalls` over the one dispatcher's plane handle, so the kernel's plane driver reaches a
-//! compiled-in and a dropped-in plane through the same table without naming this crate. The
-//! composition root builds it and hands it to the driver.
-
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -42,8 +37,6 @@ pub struct PlaneInstance {
 }
 
 impl PlaneInstance {
-    /// `plugin` (owned, or shared through its `Arc`), adopted by `dispatcher`, its driver ticket
-    /// minted on `worker` and its unit tickets on every worker in turn from `worker` on.
     pub fn new(
         plugin: impl Into<Arc<Plugin<Plane>>>,
         dispatcher: Arc<Dispatcher>,
@@ -57,21 +50,16 @@ impl PlaneInstance {
         }
     }
 
-    /// The worker the next unit ticket is minted on: every worker of the dispatcher in turn.
     fn next_worker(&self) -> u32 {
         let workers = self.dispatcher.workers().max(1);
         let turn = self.minted.fetch_add(1, Ordering::Relaxed) % workers;
         (self.worker % workers + turn) % workers
     }
 
-    /// The refusal statuses the plane's tail states, for the driver's config.
     pub fn refusal_statuses(&self) -> Vec<RefusalStatus> {
         self.plugin.refusal_statuses().to_vec()
     }
 
-    /// A ticketless call of `s` with the one re-call a short answer earns. It crosses on the
-    /// caller's own thread ([`Plugin::call`]), which the watchdog can fault but never abandon: the
-    /// caller is inside the crossing until it returns, so the buffers it lends need no owner.
     fn pure<I: InFrame, O: OutFrame>(
         &self,
         s: u32,
@@ -158,8 +146,6 @@ impl PlaneCalls for PlaneInstance {
     }
 
     fn cancel(&self, ticket: Ticket, unit: u64) -> Option<Cancelled> {
-        // Legacy synchronous test-double seam. Production cancellation must be ordered with
-        // every sibling crossing; callers use `cancel_unit` and retain its completion instead.
         let _ = (ticket, unit);
         None
     }
@@ -181,7 +167,6 @@ impl PlaneCalls for PlaneInstance {
         self.dispatcher.mint(self.next_worker())
     }
 
-    /// On the worker `beside` was minted on: one unit's tickets cross on one worker.
     fn mint_beside(&self, beside: Ticket) -> Option<Ticket> {
         let (worker, _) = super::ticket::decode(beside.slot);
         self.dispatcher.mint(worker)
@@ -247,10 +232,7 @@ impl PlaneCalls for PlaneInstance {
         lent: Lent,
     ) -> Box<dyn PieceInFlight> {
         input.head = in_head();
-        // The unit's buffers ride with the job: a crossing the watchdog answered FAULT still owns
-        // them until it returns. A piece of an admitted unit is never refused for the instance's
-        // `max_inflight` ([`Dispatcher::submit_unit`]): refused mid-answer, it would end a stream
-        // its caller was already answered on.
+
         let reply = self.dispatcher.submit_unit(
             &*self.plugin,
             ticket,
@@ -271,7 +253,7 @@ impl PlaneCalls for PlaneInstance {
         lent: Lent,
     ) -> Box<dyn ServeInFlight> {
         input.head = in_head();
-        // As `on_piece`'s: the request's buffers ride with the job, on its admitted unit's ticket.
+
         let reply = self.dispatcher.submit_unit(
             &*self.plugin,
             ticket,
@@ -285,13 +267,11 @@ impl PlaneCalls for PlaneInstance {
     }
 }
 
-/// A ticketed op in flight (`on_piece`, `serve`): its reply, then its answer.
 struct InFlight<I, O> {
     reply: Reply<I, O>,
     done: Option<Done<I, O>>,
 }
 
-// Nothing in it is structurally pinned: the answer's frame is a plain copy, never polled.
 impl<I, O> Unpin for InFlight<I, O> {}
 
 fn answered<I, O>(d: &Done<I, O>) -> Answered {

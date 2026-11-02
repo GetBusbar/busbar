@@ -1,16 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **THE SECRET AXIS OVER THE ONE DISPATCHER**: [`SecretRows`] holds the kind's
-//! REAL plugin (the env source, reached by KIND through `[package.metadata.busbar.both-ways]`, as
-//! `secret_door_conformance_tests` reaches it) LINKED (its door) and DROPPED IN (its `cdylib`, as
-//! the registry discovers it), and the kernel's calls — `answers`, `linked`, `shared`, `open`, and
-//! `resolve` on what they open — answer the same through either origin.
-//!
-//! RED arms: a name no linked row answers has no shared instance; a dropped-in plugin is not linked
-//! and has no shared instance; a dropped set replaced by an empty one answers nothing; a door of
-//! another kind is refused.
-
 use std::sync::Arc;
 
 use busbar_contract::abi::mechanism::KindCode;
@@ -30,13 +20,11 @@ use secret_fixture::NAME;
 #[path = "secret_shared_close_tests.rs"]
 mod shared_close;
 
-/// The material the hit's variable holds.
 const MATERIAL: &str = "s3cr3t-secret-calls";
-/// The variable the hit names (set) and the one the miss names (never set).
+
 const HIT: &str = "BUSBAR_LOADER_SECRET_CALLS_HIT";
 const MISS: &str = "BUSBAR_LOADER_SECRET_CALLS_MISS";
 
-/// The process environment the env source reads: the hit set, the miss unset.
 fn environment() {
     std::env::set_var(HIT, MATERIAL);
     std::env::remove_var(MISS);
@@ -48,17 +36,14 @@ fn dispatcher() -> Arc<Dispatcher> {
         .clone()
 }
 
-/// The env source's module settings: it holds none, so any object opens it.
 fn settings() -> serde_json::Value {
     serde_json::json!({})
 }
 
-/// A resolver no plugin reference reaches (the env source states no `secret_refs`).
 fn unreached(r: &SecretRef) -> Result<busbar_contract::redacted::Secret<Vec<u8>>, String> {
     panic!("no secret reference to resolve: {}", r.describe())
 }
 
-/// Two resolves through `opened`: the hit and the miss.
 fn resolves(opened: &dyn busbar_contract::secret::SecretCalls) -> Vec<String> {
     let spell = |r: Result<busbar_contract::redacted::Secret<Vec<u8>>, SecretRefused>| match r {
         Ok(m) => format!(
@@ -73,7 +58,6 @@ fn resolves(opened: &dyn busbar_contract::secret::SecretCalls) -> Vec<String> {
     ]
 }
 
-/// What `axis` answers for the plugin: its open over [`settings`] and two resolves.
 fn transcript(axis: &dyn SecretAxis) -> Vec<String> {
     let opened = axis
         .open(NAME, &settings(), &unreached)
@@ -81,8 +65,6 @@ fn transcript(axis: &dyn SecretAxis) -> Vec<String> {
     resolves(opened.as_ref())
 }
 
-/// A linked door is answered by name, opened per module configuration through the one dispatcher,
-/// and its refusal carries the plugin's own code and text.
 #[test]
 fn a_linked_secret_plugin_answers_and_resolves_through_the_axis() {
     environment();
@@ -97,13 +79,12 @@ fn a_linked_secret_plugin_answers_and_resolves_through_the_axis() {
         "{}",
         t[1]
     );
-    // The shared instance opens with no settings (the env source holds none) and answers as the
-    // configured one does.
+
     let shared = rows
         .shared(NAME)
         .expect("the linked env source has a shared instance");
     assert_eq!(resolves(shared.as_ref()), t);
-    // RED: a name no linked row answers has no shared instance.
+
     let refused = rows
         .shared("absent")
         .err()
@@ -126,7 +107,6 @@ fn dropped_secret_candidate() -> Candidate {
     .expect("the rendering reads back")
 }
 
-/// A dropped-in plugin answers as the linked one does, is not linked, and leaves with its set.
 #[test]
 fn a_dropped_in_secret_plugin_is_the_same_plugin_through_the_axis() {
     environment();
@@ -148,7 +128,6 @@ fn a_dropped_in_secret_plugin_is_the_same_plugin_through_the_axis() {
         "the two origins differ"
     );
 
-    // RED: the set replaced by an empty one answers nothing.
     rows.set_dropped(std::iter::empty());
     assert!(!rows.answers(NAME));
 }
@@ -273,7 +252,7 @@ fn a_retired_inflight_checker_load_neither_blocks_nor_repopulates_the_new_set() 
             .unwrap();
         assert!(state.0, "the old check reaches its loader callback");
     }
-    // This admission happens while the old candidate is selected but not yet loaded.
+
     rows.admit_dropped([replacement])
         .expect("the replacement has no name or sugar conflict");
     let (done_tx, done) = std::sync::mpsc::channel();
@@ -284,7 +263,7 @@ fn a_retired_inflight_checker_load_neither_blocks_nor_repopulates_the_new_set() 
         })
     };
     let current = done.recv_timeout(std::time::Duration::from_secs(5));
-    // Always release and join the old load before any outcome assertion.
+
     drop(release);
     let old_result = first.join().expect("old checker thread returns");
     second.join().expect("current checker thread returns");
@@ -305,7 +284,6 @@ fn a_retired_inflight_checker_load_neither_blocks_nor_repopulates_the_new_set() 
     );
 }
 
-/// RED: a door of another kind is refused on the secret axis.
 #[test]
 fn a_door_of_another_kind_is_refused() {
     let mut rows = SecretRows::new(dispatcher, || None);
@@ -315,12 +293,9 @@ fn a_door_of_another_kind_is_refused() {
     assert!(err.contains("not a secret one"), "{err}");
 }
 
-/// How many times [`gated_dispatcher`] was asked for, and whether its first ask is released.
 static GATE: (std::sync::Mutex<(usize, bool)>, std::sync::Condvar) =
     (std::sync::Mutex::new((0, false)), std::sync::Condvar::new());
 
-/// The dispatcher, asked for inside a shared instance's open: the FIRST ask waits until the test
-/// releases it (an open wedged in its plugin); every later ask answers at once.
 fn gated_dispatcher() -> Arc<Dispatcher> {
     let (lock, cv) = &GATE;
     let mut g = lock.lock().unwrap();
@@ -335,9 +310,6 @@ fn gated_dispatcher() -> Arc<Dispatcher> {
     dispatcher()
 }
 
-/// RED (THE DESIGN §11.13 M1): a linked module's shared instance is opened with the shared map's
-/// lock let go, so an open wedged in its plugin holds no other caller: a second caller opens and
-/// answers while the first is still wedged, and the first then answers the instance installed.
 #[test]
 fn a_wedged_shared_open_holds_no_other_caller() {
     environment();
@@ -378,7 +350,6 @@ fn a_wedged_shared_open_holds_no_other_caller() {
     assert!(Arc::ptr_eq(&first, &again), "one shared instance is kept");
 }
 
-/// The directory the test's `plugins.logs` names (a `fn` pointer reads it, as the root's does).
 static LOG_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
 
 fn log_config() -> crate::dispatch::PluginLogConfig {
@@ -392,11 +363,6 @@ fn log_config() -> crate::dispatch::PluginLogConfig {
     .expect("the plugins.logs words resolve")
 }
 
-/// THE DESIGN §11.2 (every plugin logs to its own `<dir>/<instance>.log`) and §11.12 H2 (`instance`
-/// is the configured instance LABEL): each opened secret instance is bound to a plugin-log sink
-/// under its own label, so two instances of one plugin (two words one plugin answers to) get two
-/// files, and the shared linked instance gets its own. A sink under a named directory opens its
-/// file when it binds, so the files exist before any record is written.
 #[test]
 fn each_secret_instance_logs_to_its_own_file_under_its_own_label() {
     environment();
@@ -435,10 +401,6 @@ fn each_secret_instance_logs_to_its_own_file_under_its_own_label() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// RED (Part 2 #54, coordinator ruling 2026-10-14): a resolved `Secret` is revealed to a plugin
-/// only under the seal the host lent the dispatcher. On a dispatcher lent NONE the open that would
-/// hand the plugin its material is REFUSED before any crossing (fail closed), naming why; on a lent
-/// one the reveal is made and nothing refuses for want of a seal.
 #[test]
 fn a_dispatcher_lent_no_seal_refuses_the_reveal() {
     use crate::dispatch::{load_linked, Bind, LinkedRow, NoSink};
@@ -469,9 +431,6 @@ fn a_dispatcher_lent_no_seal_refuses_the_reveal() {
     }
 }
 
-/// RED (S2): a reference its plugin's `check` refuses is refused on the axis, at config time and
-/// with no instance opened, in the plugin's own words; one it accepts passes. Before, the slot was
-/// never called, so `--validate` passed a reference that then failed at its first resolve.
 #[test]
 fn a_reference_the_plugins_check_refuses_is_refused_on_the_axis() {
     use crate::secret_door_conformance_tests::secret_door_plugin::{
@@ -490,13 +449,10 @@ fn a_reference_the_plugins_check_refuses_is_refused_on_the_axis() {
         rows.check(CHECKING_NAME, &serde_json::json!({ "path": "/run/key" })),
         Ok(())
     );
-    // A module no row answers is the registry's to refuse, not the axis's.
+
     assert_eq!(rows.check("absent", &serde_json::json!({})), Ok(()));
 }
 
-/// A secret plugin whose value grows between the host's two reads: every `resolve` answers short,
-/// naming one byte more than the buffer it was lent (a file rotated between the reads, a
-/// Kubernetes `..data` swap).
 pub struct Grows;
 
 impl busbar_contract::abi::sdk::life::Life for Grows {
@@ -519,7 +475,6 @@ impl busbar_contract::abi::sdk::life::Life for Grows {
     }
 }
 
-/// Its `resolve`: short, always, by one byte more than it was lent.
 pub struct GrowingResolve;
 
 impl busbar_contract::abi::sdk::SafeSlot for GrowingResolve {
@@ -550,10 +505,6 @@ mod growing {
     }
 }
 
-/// RED: a value that grew between the host's first read and its one re-call (the second answer
-/// short again) is a NAMED, TRANSIENT refusal: UNAVAILABLE, naming the module and what happened,
-/// so the caller retries. RED before: the dispatcher's FAULT for the second short answer reached
-/// the caller as a generic "answered Fault to resolve", INTERNAL.
 #[test]
 fn a_value_that_grew_between_the_two_reads_is_a_named_transient_refusal() {
     let mut rows = SecretRows::new(dispatcher, || None);

@@ -1,23 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A LANE'S CREDENTIAL, BOUND BY THE AUTH PLUGIN THAT SERVES ITS STYLE (BUSBAR-1.6.0.md THE DESIGN
-//! §6 steps 2-5, "Auth points and guest lists" step 5; P2 D1, the auth split).
-//!
-//! The kernel holds no auth style. A lane's credential is opened as a binding on the auth plugin
-//! whose tail states the lane's style ([`busbar_contract::auth_calls::AuthAxis::serving`], then
-//! `open_outbound`), and the plugin keeps the binding and its cache (a header built once, a minted
-//! token refreshed ahead of expiry on `tick`, a SigV4 day key); the kernel keeps only the handle.
-//! For every request the lane's writer asks [`CredentialProvider::headers_for`], which is ONE
-//! memory-ABI call (`fields`) to that plugin; a binding whose answer cannot vary per request (a
-//! style that presents the key over the head alone) is asked once, at boot, as the lane froze a
-//! static header before ([`prebuild_auth`]). The writer then adds the dialect's own static fields.
-//!
-//! [`CredentialProvider`] is the shape the request path asks; this module holds no credential
-//! logic of its own: a binding no plugin serves is [`NoCredential`] (no auth header, so the
-//! upstream answers 401, the fail-closed answer), and a protocol that declares its own builder
-//! ([`busbar_contract::protocol::ProtocolDecl::egress_auth_headers`]) is that builder.
-
 use std::sync::Arc;
 
 use busbar_contract::abi::auth::{AuthPoint, AuthPoints, STYLE_NEEDS_HEADERS};
@@ -29,42 +12,22 @@ use http::{HeaderName, HeaderValue};
 
 use busbar_contract::protocol::SigningContext;
 
-/// Produces the outbound auth headers for a single upstream request.
-///
-/// `key` is the per-request credential the caller resolved — the lane's configured key for
-/// [`UpstreamCreds::Own`], or the forwarded caller token for `Passthrough`. A self-minting
-/// credential ignores `key`. `ctx` carries the host / canonical-uri / body / timestamp a signer
-/// needs, plus the `Own | Passthrough` mode.
 pub trait CredentialProvider: Send + Sync {
-    /// The headers, in order.
     fn headers_for(&self, key: &str, ctx: &SigningContext) -> Vec<(HeaderName, HeaderValue)>;
 
-    /// Whether this credential can currently produce a usable auth header. A self-minting
-    /// credential is NOT ready before its first mint completes — `headers_for` returns no header
-    /// then, so an active health probe would send an unauthenticated request and a guaranteed 401
-    /// could HardDown-park a healthy lane. The prober consults this to skip a not-yet-minted lane
-    /// until its token is live. Default: always ready.
     fn is_ready(&self) -> bool {
         true
     }
 
-    /// Whether `headers_for` is LANE-CONSTANT: a pure function of the resolved credential string
-    /// and the `Own`/`Passthrough` mode. `true` lets the boot path prebuild this lane's exact auth
-    /// header set once ([`prebuild_auth`]). Default `false` — fail closed.
     fn is_lane_constant(&self) -> bool {
         false
     }
 
-    /// Whether this credential builds its header FROM the `key` it is handed. True for every static
-    /// and signing style; false for a self-minting credential, which ignores `key` entirely and
-    /// presents its own minted token. Callers use this to decide that an EMPTY key means "there is
-    /// no credential to present, so send no auth header". Default: true.
     fn uses_key(&self) -> bool {
         true
     }
 }
 
-/// Fail-closed credential: emits no auth header (the upstream answers 401).
 pub struct NoCredential;
 
 impl CredentialProvider for NoCredential {
@@ -72,22 +35,17 @@ impl CredentialProvider for NoCredential {
         Vec::new()
     }
     fn is_lane_constant(&self) -> bool {
-        true // constantly nothing
+        true
     }
 }
 
-/// A credential a PROTOCOL DECLARED its own builder for
-/// ([`busbar_contract::protocol::ProtocolDecl::egress_auth_headers`]): the plane's builder, behind
-/// the one shape the request path asks.
 pub struct DeclaredBuilder {
-    /// The plane's builder.
     pub headers_for: EgressAuthHeaders,
-    /// Whether it reads only `(key, mode)` (`ProtocolDecl::egress_auth_lane_constant`).
+
     pub lane_constant: bool,
 }
 
 impl CredentialProvider for DeclaredBuilder {
-    /// The plane's field pairs as headers, in order; a pair that is not a legal header is dropped.
     fn headers_for(&self, key: &str, ctx: &SigningContext) -> Vec<(HeaderName, HeaderValue)> {
         (self.headers_for)(key, ctx)
             .into_iter()
@@ -122,37 +80,23 @@ pub struct StyleBinding {
     pub sent: Vec<(String, String)>,
 }
 
-/// One lane's credential, bound on the auth plugin serving its style: the handle `open_outbound`
-/// answered, the points the style is called at, and the sent head fields it reads.
 pub struct BoundCredential {
     auth: Arc<dyn OutboundAuth>,
     handle: u64,
     points: AuthPoints,
     uses_key: bool,
     statics: &'static [(&'static str, &'static str)],
-    /// The binding's `sent` fields when the style declares `STYLE_NEEDS_HEADERS`; empty otherwise.
+
     headers: Vec<(Vec<u8>, Vec<u8>)>,
 }
 
 impl BoundCredential {
-    /// Whether the plugin's answer for this binding in `Own` mode is a pure function of the bound
-    /// credential: a style that presents the key (it does not mint) and reads only the head (it
-    /// does not sign the body). The lane's writer then asks once, at boot ([`prebuild_auth`]),
-    /// exactly as it froze a static scheme's header before.
     fn lane_constant(&self) -> bool {
         self.uses_key && !self.points.has(AuthPoint::HeadBody)
     }
 }
 
 impl BoundCredential {
-    /// The one `fields` request for `ctx`: a POST of the body to the path the lane sends (the request
-    /// a lane's writer signs), at the style's request point, with the sent head fields a style that
-    /// needs them reads, and the caller's credential for a passthrough request on a style that
-    /// presents the key.
-    ///
-    /// `ctx.canonical_uri` is the SigV4 canonical path, the sent path URI-encoded once more (non-S3
-    /// SigV4); the call's `path` is the path as sent, so it is the canonical path decoded once, and
-    /// a signing style's own re-encode yields the canonical path 1.5.5 signed.
     fn request(&self, key: &str, ctx: &SigningContext) -> FieldsRequest {
         let point = if self.points.has(AuthPoint::HeadBody) {
             AuthPoint::HeadBody
@@ -178,13 +122,8 @@ impl BoundCredential {
 
 impl CredentialProvider for BoundCredential {
     fn headers_for(&self, key: &str, ctx: &SigningContext) -> Vec<(HeaderName, HeaderValue)> {
-        // ONE CALL, on the spot: a cached header, a fresh minted token or a signature answers in
-        // place. A plugin that cannot answer now (a token refreshing after it expired) presents
-        // nothing for this request, as 1.5.5's lane did while its refresh was failing.
         let answered = self.auth.fields_now(self.handle, &self.request(key, ctx));
-        // Every field the plugin answers is credential material: its header is marked sensitive,
-        // so `http`'s `Debug` never prints it and an h2 encoder never indexes it in HPACK. The
-        // bytes are unchanged. The dialect's statics below are not credentials and stay unmarked.
+
         let mut headers: Vec<(HeaderName, HeaderValue)> = match answered {
             Some(Fields::Ready(fields)) if !fields.iter().any(|f| f.require_secure) => fields
                 .into_iter()
@@ -218,13 +157,6 @@ impl CredentialProvider for BoundCredential {
     }
 }
 
-/// BIND `credential` under `binding` on the auth plugin `axis` reaches for the style (THE DESIGN
-/// §6 step 3).
-///
-/// # Errors
-///
-/// No linked or dropped-in auth plugin serves the style, or the serving plugin refused the
-/// binding (its own words).
 pub fn bind(
     axis: &dyn AuthAxis,
     binding: &StyleBinding,
@@ -260,9 +192,6 @@ pub fn bind(
     }))
 }
 
-/// Prebuild a lane's `Own`-mode egress auth headers at boot, or `None` when the credential is not
-/// lane-constant. THE SAME CALL the request path makes — `headers_for` with an `Own`-mode context —
-/// so the map a request clones is byte-identical to what it would have built live.
 pub fn prebuild_auth(
     credential: &Arc<dyn CredentialProvider>,
     api_key: &str,
@@ -271,8 +200,7 @@ pub fn prebuild_auth(
     if !credential.is_lane_constant() {
         return None;
     }
-    // NO CREDENTIAL ⇒ NO AUTH HEADER: an empty key means there is nothing to present (a keyless
-    // local upstream); the same rule is applied per request by the lane's writer.
+
     if api_key.is_empty() && credential.uses_key() {
         return Some(http::header::HeaderMap::new());
     }

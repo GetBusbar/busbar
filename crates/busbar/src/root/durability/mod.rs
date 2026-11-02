@@ -1,42 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The node's journal and the audit unit's record chain, kept by the configured Store.
-//!
-//! ## What the journal carries, and what it does not
-//!
-//! The journal unit owns the chain: fixed records, one numbering, one head. The records bound to it
-//! here are the **audit unit's sealed records**, the **node amendment journal** (content accesses),
-//! the **dated rate-card history** (`Policy` records, until the card history moves to the store),
-//! the operator's chain breaks and the admin idempotency claims.
-//!
-//! It carries NO MONEY. Money is the ledger's counts — the usage and metering rows in the
-//! configured store — priced by the rate card, in core, at read time (MONEY-DESIGN §3). There is no
-//! second ledger here: no holds, no postings, no unit marks, no checkpoints and no book rebuilt at
-//! boot, so a unit's settlement never takes this journal's lock (owner ruling 2026-10-25: no
-//! process-wide lock around `fsync`). A chain a pre-release build wrote may still hold such
-//! records; they verify as chain links and are read as nothing else.
-//!
-//! The journal never opens a local file. `data_dir` remains an accepted configuration field, but
-//! does not select journal persistence. Only a Store owns how its records are physically kept.
-//!
-//! ## Where the records go, and how a restart gets them back
-//!
-//! The production boot builds the journal over the configured store ([`build_on_store`]). Each
-//! record is written through the store's v3 `record_put` slot under the journal schema, keyed
-//! `(node, node_seq)` big-endian so `record_scan` returns chain order ([`store_chain`]). The write
-//! is WRITE-BEHIND on the host's one bounded lane ([`JournalLane`]). Every production boot
-//! RESUMES the chain from the store: the audit records, the dated rate-card history and the
-//! amendment journal are rebuilt from it ([`Durability::keeps_chain`]).
-//!
-//! **What a full lane means.** While the lane has room a store that refuses costs nothing a client
-//! sees. When it is full the journal's next batch is retained by the log, which re-offers it on the
-//! next append, and the node FAILS CLOSED for the records still on the journal
-//! ([`Durability::refuses_money`]) until the store takes what waits. No record is dropped.
-//!
-//! A configured store that does not offer the record slots at all cannot keep a journal, and the
-//! boot refuses it, naming the store and the slots (`root::boot::book`).
-
 use std::path::PathBuf;
 
 use busbar_contract::caps::{DurabilityLost, DurableWrite, Grant, StepName};
@@ -49,69 +13,53 @@ use busbar_kernel_wal::{
     RecordClass, Shipper,
 };
 
-/// The journal kept in the configured store: its schema and keys, the boot's read-back and the
-/// host's write-behind lane. A private child module; its public items are re-exported here.
 mod store_chain;
 pub use store_chain::{read_chain, JournalLane, RECORD_SLOTS};
-// Its one caller is the admin append's wait on the store (`units_admin`), compiled with `root-admin`.
+
 #[cfg(feature = "root-admin")]
 pub use store_chain::ACK_DEADLINE;
-// The admin record sink's wait on the store, and the admin unit's ledger reads and adjust, reach
-// the store off the runtime (`units_admin`), compiled with `root-admin`.
+
 #[cfg(feature = "root-admin")]
 pub(crate) use store_chain::{off_runtime, wait_for};
-// What the tests read the store's rows back by.
+
 #[cfg(test)]
 pub use store_chain::{part_key, JOURNAL_SCHEMA};
 
 mod conditional;
-/// Who a node is and the key it signs with, kept in the configured store: the node registry, the
-/// deployment keyset, and the walk `/admin/verify` makes of every stored chain.
+
 mod store_identity;
 pub use store_identity::{host_identity, keep_keyset, stored_keyset, take_node};
-// The host registry's own id, read by the boot through `take_node`; the tests reach it directly.
+
 #[cfg(test)]
 pub use store_identity::node_id;
-// Its callers are the admin verify (`units_admin`, `root-admin`) and the tests.
+
 #[cfg(any(test, feature = "root-admin"))]
 pub use store_identity::walk_stored_chains;
-// Every other node's chain, read by the boot's rate-card migration (`root::card_history`).
+
 pub use store_identity::stored_chains;
 
-/// The node amendment journal bound to the chain: each sealed amendment journalled, and the node
-/// journal rebuilt from the chain at boot. A private child module, as `replay` is.
 mod amend;
-// Re-exported for its one production caller, `main`'s boot-book open, which a build runs only when a
-// root leg opens the book; the unit tests reach it through `amend` directly.
+
 pub use amend::bind_amendments;
-// Its one caller is the admin verify (`units_admin`), compiled with `root-admin`.
+
 #[cfg(feature = "root-admin")]
 pub(crate) use amend::verify_held;
 
-/// The fixed audit chain's seams on the book: sealing a unit's one record, the cache rebuilt at boot,
-/// a window read back off the journal, and the walk `GET /admin/verify` reports. A private child
-/// module, as `replay` is; its methods are `Durability`'s own.
 mod audit;
 mod audit_heads;
-// Its one caller is the admin unit's audit range read (`units_admin`), compiled with `root-admin`.
+
 #[cfg(feature = "root-admin")]
 pub use audit::AuditWindowAt;
 
-/// The two disaster-recovery verbs over the node's journal and the configured store (status row
-/// 187): the operator's chain break on the chain, the restore refused. A private child module, as
-/// `replay` is; its public items are re-exported here.
 mod recovery;
 pub use recovery::{node_verb_store, report_operator_breaks};
 
-/// The first-party anti-downgrade floor the store keeps per host.
 mod plugin_floor;
 pub use plugin_floor::{
     check as check_plugin_floor, check_candidate as check_plugin_floor_candidate,
     hold as hold_plugin_floor, release_keys_floor,
 };
 
-/// How many sealed audit records a node keeps in memory: a CACHE of the newest, never the record.
-/// The journal holds every one (`audit.v4`), and a window older than this is read back off it.
 pub const AUDIT_RING: usize = 1_024;
 
 /// The accepted journal configuration. Persistence is always owned by the configured Store.
@@ -121,55 +69,34 @@ pub struct DurabilityConfig {
     pub data_dir: Option<PathBuf>,
 }
 
-/// The durability stack the root owns: the journal and the audit record chain.
 pub struct Durability {
-    /// The memory-buffered journal, its records kept by the configured store through
-    /// [`Durability::lane`]. A bare-shipper helper keeps no restart-durable source.
     pub journal: Journal,
-    /// The new fixed record's chain.
+
     pub record: AuditChain,
-    /// THE NEWEST SEALED AUDIT RECORDS, oldest first, at most [`AUDIT_RING`]: a cache over the
-    /// journal, which keeps every record this chain ever sealed. Rebuilt from the journal at boot.
+
     pub audit_records: Vec<AuditRecord>,
-    /// What the boot could not read back of the audit chain: a journalled record that does not
-    /// decode, or names a class nobody declares here. Each is a restart finding.
+
     pub audit_findings: Vec<String>,
-    /// THE FIRST AUDIT POSITION SEALED WHILE A KEY WAS BOUND: from here on every record must carry
-    /// a signature, and an unsigned one is a `/verify` finding. `None` while no record was sealed
-    /// under a key.
+
     pub audit_signed_from: Option<u64>,
-    /// WHICH BOOT OF THIS JOURNAL this process is: one more than the highest any record on the
-    /// chain was written under, and 1 on a chain that holds none. Every audit record and claim
-    /// carries the incarnation that wrote it.
+
     pub incarnation: u64,
-    /// What the boot found it could not read back or verify: a quarantined segment, an audit record
-    /// that does not decode, an amendment that does not link, a refused rate correction. Empty is
-    /// the only good answer.
+
     pub restart_findings: Vec<String>,
-    /// The idempotency claims a predecessor took, VOIDED at this boot so a client's retry is not
-    /// answered with a unit that never ran. Oldest first.
+
     pub voided_claims: Vec<String>,
-    /// WHAT BOOT RECOVERY SET ASIDE from a corrupt journal segment: each entry names the segment
-    /// file, the byte offset, the byte count and the quarantine file the damaged remainder went to.
-    /// Logged at `ERROR` and counted on `busbar_journal_quarantined_total` when the journal is
-    /// built; put on the chain as a `ChainBreak` record by [`Durability::journal_quarantines`].
+
     pub quarantined: Vec<busbar_kernel_wal::Quarantine>,
-    /// THE HOLDER WHOSE DATED HISTORY THIS JOURNAL REBUILT FROM ITS CHAIN at boot (#79), and so the
-    /// one whose later applies it journals ([`crate::root::kernel::RootHistory::bind_journal`]).
+
     pub(crate) cards_from: Option<&'static crate::root::kernel::RootHistory>,
-    /// THE POSITION OF THE NEWEST AMENDMENT this journal rebuilt the node amendment journal from
-    /// ([`Durability::restore_amendments`]), and so the journal whose later amendments are
-    /// journalled ([`bind_amendments`]). `None` on every journal that rebuilt nothing.
+
     amendments_through: Option<u64>,
-    /// THE HOST'S LANE TO THE CONFIGURED STORE the journal ships through, on a journal built over
-    /// one ([`build_on_store`]). `None` on a journal built over a bare shipper.
+
     lane: Option<JournalLane>,
-    /// The memory-buffered journal was RESUMED from the chain the configured store kept, so the
-    /// chain has a verified Store source. This includes a Store whose chain is initially empty.
+
     resumed: bool,
 }
 
-/// [`Durability::chain`] over a borrowed journal and the lane its chain is kept through, if any.
 fn chain_of(
     journal: &Journal,
     store_kept: Option<&JournalLane>,
@@ -180,30 +107,17 @@ fn chain_of(
     }
 }
 
-/// What a read of the whole chain answers: the records oldest first, or why it could not be read.
 pub type ChainRead = std::io::Result<Result<Vec<JournalRecord>, busbar_kernel_wal::JournalBreak>>;
 
-/// THE CHAIN AS OF ONE HOLD OF THE BOOK'S LOCK, to be read after letting go of it
-/// ([`Durability::chain_at`]). On a journal resumed from the store, reading the whole chain scans
-/// the store through its plugin, a wait per block of the chain; the book's lock is the one every
-/// unit's open, settle and seal takes on the request path, so a read off the request path takes
-/// this under the lock and reads it without (THE DESIGN §11.2: no blocking on the hot path).
 pub struct ChainAt(ChainSource);
 
-/// Where a [`ChainAt`] reads from.
 enum ChainSource {
-    /// Already read, under the lock: a journal with no store behind it reads no plugin.
     Read(ChainRead),
-    /// What the node holds of a chain the store keeps; the store is read by [`ChainAt::read`].
+
     Stored(store_chain::HeldChain),
 }
 
 impl ChainAt {
-    /// The chain as of the hold it was taken under: [`Durability::chain`]'s answer for that moment.
-    ///
-    /// # Errors
-    ///
-    /// The chain could not be read back.
     pub fn read(self) -> ChainRead {
         match self.0 {
             ChainSource::Read(read) => read,
@@ -211,7 +125,6 @@ impl ChainAt {
         }
     }
 
-    /// The configured store the chain is read from, on a journal resumed from one.
     fn store(&self) -> Option<&str> {
         match &self.0 {
             ChainSource::Read(_) => None,
@@ -220,7 +133,6 @@ impl ChainAt {
     }
 }
 
-/// WHY A CHAIN READ FAILED, as [`Durability::unreadable`] says it, for a chain kept in `store`.
 fn unreadable_in(store: Option<&str>, e: &std::io::Error) -> String {
     match store {
         Some(store) => format!("the journal could not be read back from the store `{store}`: {e}"),
@@ -238,37 +150,20 @@ impl std::fmt::Debug for Durability {
 }
 
 impl Durability {
-    /// Whether the journal medium is a disk. Every builder in this module answers false.
     #[must_use]
     pub fn on_disk(&self) -> bool {
         matches!(self.journal.mode(), Mode::OnDisk)
     }
 
-    /// WHETHER THE CHAIN HAS A DURABLE SOURCE: resumed from the configured store. The
-    /// chain-rebuilt state — the dated history, the amendment journal, an audit window older than
-    /// the cache — is rebuilt from it then, and only then.
     #[must_use]
     pub fn keeps_chain(&self) -> bool {
         self.resumed
     }
 
-    /// THE WHOLE CHAIN, read back oldest first and verified: every chain read after boot goes
-    /// through here. A journal with no Store behind it reads its in-process log. A journal
-    /// resumed from the configured Store reads the Store chain joined to
-    /// what the node has not handed it yet ([`store_chain::whole_chain`]): the memory log keeps
-    /// only its newest segment resident, so its own replay is a suffix once the chain outgrows one.
-    ///
-    /// # Errors
-    ///
-    /// The chain could not be read back.
     pub fn chain(&self) -> ChainRead {
         self.chain_at().read()
     }
 
-    /// [`Durability::chain`] in two halves: what the node holds of the chain, taken here under the
-    /// book's lock, and the store read by [`ChainAt::read`] once the lock is let go. A read off the
-    /// request path takes this rather than the whole chain, so no unit waits on the store plugin
-    /// for it (THE DESIGN §11.2).
     #[must_use]
     pub fn chain_at(&self) -> ChainAt {
         ChainAt(match self.store_kept() {
@@ -280,27 +175,19 @@ impl Durability {
         })
     }
 
-    /// The lane the chain is kept through, on a journal resumed from the store.
     fn store_kept(&self) -> Option<&JournalLane> {
         self.lane.as_ref().filter(|_| self.resumed)
     }
 
-    /// WHY A CHAIN READ FAILED, in the words the boot refuses with: the same refusal
-    /// [`build_on_store`] gives a store that would not read the chain back the first time. A boot
-    /// step that reads the chain again never takes a failed read for an empty chain.
     pub(crate) fn unreadable(&self, e: &std::io::Error) -> String {
         unreadable_in(self.store_kept().map(JournalLane::store), e)
     }
 
-    /// The host's lane to the configured store, on a book built over one.
     #[must_use]
     pub fn lane(&self) -> Option<&JournalLane> {
         self.lane.as_ref()
     }
 
-    /// What `/admin/verify` needs to walk every chain the store keeps, taken under the book's lock
-    /// so the walk itself runs without it: the lane to the store, this node's id and the keys this
-    /// node signs with. `None` on a book with no store behind it.
     #[must_use]
     pub fn stored_walk_inputs(
         &self,
@@ -309,43 +196,26 @@ impl Durability {
         Some((lane.clone(), self.journal.node(), keyset_of(&self.record)))
     }
 
-    /// Whether this journal resumes and writes its chain through the configured Store.
-    /// A durable verb then answers only once the store acknowledged its record.
     #[must_use]
     pub fn durable_in_store(&self) -> bool {
         self.store_kept().is_some()
     }
 
-    /// WHY A NEW MONEY-BEARING UNIT IS REFUSED (ARCHITECT 2026-10-07 H3 ruling): the store is where
-    /// this journal is kept and the lane to it is full, so admitting more work would grow what the
-    /// node holds for the store without bound. A bare-shipper helper has no Store lane.
     #[must_use]
     pub fn refuses_money(&self) -> Option<String> {
         self.lane.as_ref().and_then(JournalLane::refuses_money)
     }
 
-    /// RE-OFFER WHAT THE JOURNAL HOLDS BACK FROM THE STORE, and answer how many records it still
-    /// holds back. A batch the full lane turned away waits in the journal, outside the lane, until
-    /// an append re-offers it; an append of nothing does that and seals nothing. Never calls the
-    /// store: the lane takes the batch or turns it away. 0 at once on a book whose durability is not
-    /// its store, and on one that holds nothing back.
     pub fn offer_held_back(&mut self) -> usize {
         if !self.durable_in_store() || self.journal.buffered() == 0 {
             return 0;
         }
         let token = busbar_kernel::teller::Kernel::new().durability_token();
-        // Turned away again, the batch stays retained; the count below says so.
+
         let _ = self.journal.append(&token, StepName::Meter, &[]);
         self.journal.buffered()
     }
 
-    /// Put a durable `ChainBreak` record on the journal for every segment remainder boot recovery
-    /// quarantined, naming the segment file, the byte offset, the byte count and the quarantine
-    /// file. `wall` is seconds since the Unix epoch. `Ok(None)` when nothing was set aside.
-    ///
-    /// # Errors
-    ///
-    /// The journal could not make the records durable.
     pub fn journal_quarantines(
         &mut self,
         token: &Grant<DurableWrite>,
@@ -355,12 +225,6 @@ impl Durability {
         self.journal.record_quarantines(token, at, wall)
     }
 
-    /// RECORD AN IDEMPOTENCY CLAIM, before the unit behind it runs. A boot voids every claim a
-    /// predecessor took ([`Durability::voided_claims`]): no unit's state outlives its process here.
-    ///
-    /// # Errors
-    ///
-    /// The journal could not make the record durable; it is retained and re-offered by the log.
     pub fn journal_claim(
         &mut self,
         claim: ClaimBalance,
@@ -383,8 +247,6 @@ impl Durability {
         self.journal.append(token, at, &[entry])
     }
 
-    /// VOID every idempotency claim a predecessor took and nobody voided. The void is a record of
-    /// its own on the chain, so no later boot voids it again and a reader can see it happened.
     fn void_claims(&mut self, unheld: Vec<ClaimTaken>) {
         if unheld.is_empty() {
             return;
@@ -397,16 +259,13 @@ impl Durability {
             };
             let entry = Entry::new(RecordClass::Transaction, record.body())
                 .at(record.taken.wall, record.taken.mono);
-            // A durability loss is retained and re-offered like any other append; the claim is
-            // void in this process either way, and a boot that finds no void record voids it again.
+
             let _ = self.journal.append(&token, StepName::Admit, &[entry]);
             self.voided_claims.push(record.taken.claim);
         }
     }
 }
 
-/// The public half of the key this chain signs with, as a set — empty when the chain was given
-/// none, because a set must never carry a key the node does not sign with.
 #[must_use]
 pub fn keyset_of(chain: &AuditChain) -> AuditKeySet {
     let mut keys = AuditKeySet::new();
@@ -419,9 +278,8 @@ pub fn keyset_of(chain: &AuditChain) -> AuditKeySet {
     keys
 }
 
-/// The record tag of a claim taken.
 const CLAIM_TAKEN: &str = "claim.taken";
-/// The record tag of a claim voided at boot.
+
 const CLAIM_VOIDED: &str = "claim.voided";
 
 /// The balance a claim is journalled on: its bucket, its dimension and its scope as a tag and a
@@ -534,8 +392,6 @@ impl ClaimRecord {
     }
 }
 
-/// The claims a chain holds that nobody voided, in chain order, and the highest incarnation any
-/// claim names.
 fn open_claims(records: &[JournalRecord]) -> (Vec<ClaimTaken>, u64) {
     let mut open: Vec<ClaimTaken> = Vec::new();
     let mut incarnation = 0;
@@ -550,32 +406,16 @@ fn open_claims(records: &[JournalRecord]) -> (Vec<ClaimTaken>, u64) {
     (open, incarnation)
 }
 
-/// The journal body of a sealed audit record: the whole record, `audit.v4`
-/// ([`journal_body`]), so the journal can answer for it after the cache has let
-/// it go. Content is not in it for the same reason it is not in the record: the journal is a
-/// financial record exempt from erasure, so anything put in it can never be taken out.
-///
-/// # Errors
-///
-/// A text field does not fit the body's length prefix: refused whole, never cut.
 pub fn audit_body(record: &AuditRecord) -> Result<Vec<u8>, busbar_kernel_audit::FieldTooLong> {
     journal_body(record)
 }
 
-/// The journal entry a sealed audit record goes on the chain as: its whole body, stamped with its
-/// own two clocks and the epochs it ran under.
 fn audit_entry(record: &AuditRecord) -> Result<Entry, busbar_kernel_audit::FieldTooLong> {
     Ok(Entry::new(RecordClass::Transaction, audit_body(record)?)
         .at(record.wall, record.mono)
         .under(record.controls.lease_epoch, record.controls.policy_epoch))
 }
 
-/// Read one journal record back as the sealed audit record it keeps, if it keeps one. A usage
-/// line's class resolves against the registered vocabulary; one that does not is an error.
-///
-/// # Errors
-///
-/// The record is an `audit.v4` body that does not decode, or names a class nobody declares here.
 pub fn decode_audit(record: &JournalRecord) -> Result<Option<AuditRecord>, String> {
     if record.class != RecordClass::Transaction {
         return Ok(None);
@@ -583,21 +423,12 @@ pub fn decode_audit(record: &JournalRecord) -> Result<Option<AuditRecord>, Strin
     from_journal_body(&record.body, &busbar_kernel::Registration::meter_class)
 }
 
-/// THE NODE'S ONE JOURNAL, and the disaster-recovery verbs' store that goes with it.
 pub struct NodeBook {
-    /// The journal and the audit record chain, behind the one lock the audit seal and the views
-    /// take. A unit's settlement never takes it.
     pub durability: std::sync::Arc<std::sync::Mutex<Durability>>,
-    /// The disaster-recovery verbs' store, as the admin verbs unit reaches it ([`node_verb_store`]):
-    /// this journal for the chain break and the store it is shipped to for the epoch floor (row
-    /// 187). `None` on a node with no configured store (row 113, ruling (B)).
+
     pub verb_store: crate::root::kernel::VerbStoreHandle,
 }
 
-/// A journal with no store behind it: memory-buffered over the null shipper, reading no data
-/// directory, keeping its chain for the life of the process and no longer. The boot never builds
-/// one — a 1.6.0 configuration names its store (Q-STORE = (B)) — so this is for a caller with no
-/// store to ship to by construction: a tool, a test.
 #[must_use]
 pub fn node_book() -> NodeBook {
     let durability = build(
@@ -611,11 +442,6 @@ pub fn node_book() -> NodeBook {
     }
 }
 
-/// Build the journal and the audit record chain, as node zero.
-///
-/// # Errors
-///
-/// As [`build_for_node`].
 pub fn build(
     cfg: &DurabilityConfig,
     shipper: Box<dyn Shipper<busbar_kernel_wal::Record>>,
@@ -623,16 +449,6 @@ pub fn build(
     build_for_node(cfg, 0, shipper)
 }
 
-/// Build the journal and the audit record chain.
-///
-/// A bare shipper has no read-back contract: this helper keeps its journal in RAM, regardless of
-/// `data_dir`. Production uses [`build_on_store`] to resume a verified Store chain.
-///
-/// `node` is the identity the journal's records carry: half of the pair the log deduplicates on.
-///
-/// # Errors
-///
-/// Rebuilding the supplied card holder could not append its initial record.
 pub fn build_for_node(
     cfg: &DurabilityConfig,
     node: u64,
@@ -641,13 +457,6 @@ pub fn build_for_node(
     build_with_cards(cfg, node, shipper, Some(&crate::root::kernel::ROOT_CARD))
 }
 
-/// [`build_for_node`], naming the holder whose DATED HISTORY the journal rebuilds from its chain
-/// (#79). The production boot names the process holder; a holder that was not armed
-/// ([`crate::root::kernel::RootHistory::arm_journal`]) is left as it is.
-///
-/// # Errors
-///
-/// As [`build_for_node`].
 pub fn build_with_cards(
     cfg: &DurabilityConfig,
     node: u64,
@@ -657,14 +466,6 @@ pub fn build_with_cards(
     build_inner(cfg, node, shipper, None, cards)
 }
 
-/// THE JOURNAL OVER THE CONFIGURED STORE — the production boot's: the journal ships through `lane`
-/// to the store's record slots and always RESUMES from the chain the store kept ([`read_chain`]),
-/// keeping every record at its bound. `data_dir` is never read or opened.
-///
-/// # Errors
-///
-/// As [`build_for_node`], and: the store would not read its journal back, or the chain it holds
-/// could not be seeded.
 pub fn build_on_store(
     cfg: &DurabilityConfig,
     node: u64,
@@ -677,7 +478,7 @@ pub fn build_on_store(
             lane.store()
         )))
     })?;
-    // Establish the independent-head migration barrier before build_inner can enqueue a record.
+
     let decoded = busbar_kernel_wal::decode_run(&resume)
         .and_then(|records| busbar_kernel_wal::verify_journal(&records).map(|()| records))
         .map_err(|broken| {
@@ -692,8 +493,6 @@ pub fn build_on_store(
     build_inner(cfg, node, shipper, Some((lane, resume, heads)), cards)
 }
 
-/// The one construction every builder above shares. `over_store` is `Some` on a journal over the
-/// configured store: the lane to it and the records the journal is seeded with (possibly none).
 fn build_inner(
     _cfg: &DurabilityConfig,
     node: u64,
@@ -705,7 +504,6 @@ fn build_inner(
     )>,
     cards: Option<&'static crate::root::kernel::RootHistory>,
 ) -> Result<Durability, OpenError> {
-    // The journal is handed the root's wall clock: the log unit reads none of its own.
     let clock = busbar_kernel::store::now_ms;
     let (lane, resume, retained_heads) = over_store
         .map_or((None, None, None), |(lane, records, heads)| {
@@ -721,9 +519,7 @@ fn build_inner(
 
     let mut durability = Durability {
         journal,
-        // Every record this chain seals names this node. On a chain the store keeps, that is the
-        // id the store assigned this host; otherwise it is the node half of every op id the kernel
-        // mints in this process.
+
         record: AuditChain::new().sealing_as(if resumed {
             node
         } else {
@@ -732,7 +528,7 @@ fn build_inner(
         audit_records: Vec::new(),
         audit_findings: Vec::new(),
         audit_signed_from: None,
-        // Set from the chain below, before anything can write under it.
+
         incarnation: 0,
         restart_findings: Vec::new(),
         voided_claims: Vec::new(),
@@ -743,8 +539,6 @@ fn build_inner(
         resumed,
     };
 
-    // Preserve the log's recovery findings if it supplies any. Store chain corruption is refused
-    // below; this builder never opens or quarantines a local segment.
     durability.quarantined = durability.journal.log().quarantined().to_vec();
     for q in &durability.quarantined {
         tracing::error!(
@@ -758,16 +552,12 @@ fn build_inner(
         metrics::counter!(busbar_kernel::snapshot::JOURNAL_QUARANTINED_TOTAL).increment(1);
     }
 
-    // A RESUMED chain is read from what the store returned rather than off the seeded buffer: the
-    // buffer keeps its newest memory segment resident, the store keeps all of it.
     let chain = match resume.filter(|_| resumed) {
         Some(records) => Ok(busbar_kernel_wal::decode_run(&records)
             .and_then(|decoded| busbar_kernel_wal::verify_journal(&decoded).map(|()| decoded))),
         None => durability.journal.replay(),
     };
-    // A CHAIN THE BOOT CANNOT VERIFY REFUSES THE BOOT, naming the break, as a store that would not
-    // read it back does ([`build_on_store`]). Taken for an empty chain, the boot would go on sealing
-    // onto it from position one again.
+
     let records = match chain {
         Ok(Ok(records)) => records,
         Ok(Err(broken)) => {
@@ -788,12 +578,11 @@ fn build_inner(
         .collect();
     if let Some(cards) = cards {
         let records = durability.keeps_chain().then_some(records.as_slice());
-        // A boot card the journal will not take refuses the boot (MONEY-AUDIT D-6).
+
         let refused = cards
             .rebuild_from_chain(&mut durability, records)
             .map_err(|refused| OpenError::Io(std::io::Error::other(refused.to_string())))?;
-        // A signed rate correction the dated history's rebuild refused: its base is not on the
-        // rebuilt history, so it is reported rather than rebuilt over a card nobody signed (#79).
+
         findings.extend(refused.into_iter().map(|refused| refused.to_string()));
     }
     durability.resume_audit(&records);
@@ -809,8 +598,7 @@ fn build_inner(
             .iter()
             .map(|why| format!("audit chain: {why}")),
     );
-    // THE INCARNATION: one past the highest any record names. A sealed audit record and a claim
-    // each name the boot that wrote them.
+
     let (open, claimed) = open_claims(&records);
     let audited = durability
         .audit_records
@@ -819,8 +607,7 @@ fn build_inner(
         .max()
         .unwrap_or(0);
     durability.incarnation = claimed.max(audited).saturating_add(1);
-    // EVERY IDEMPOTENCY CLAIM A PREDECESSOR TOOK IS VOIDED, so a client's retry is answered by
-    // running the unit rather than by a unit that never ran here.
+
     durability.void_claims(open);
     findings.dedup();
     for finding in &findings {

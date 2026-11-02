@@ -1,26 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! ONE TERMINAL PER UNIT, counted on the metric the ingress terminal already emits.
-//!
-//! Every request this plane answers ends at `finish_inner` exactly once, through whichever door it
-//! left by: the destination guard's refusal, the admission door's refusal, or the caller's
-//! post-admission finish. A path that ended a unit twice would still return the right bytes, so the
-//! bytes are not the proof; the count is. `busbar_requests_total` is that count: one increment per
-//! terminal. The recorder is process-global, so each test speaks an `ingress_protocol` label nothing
-//! else in this binary uses and asserts the exact delta on it. The pool label cannot carry that
-//! isolation: a refusal labels its pool through `pool_label`, which bounds any pool the fallback
-//! plane's view does not name to the shared `unresolved` label, and the neutral test plane has no
-//! view.
-
 use super::*;
 use crate::test_support::{metric_sum, LaneSpec, TestApp};
 use axum::response::IntoResponse;
 use busbar_contract::records::{PlaneRequestCtx, ScopeRef, VirtualKey};
 
-/// A deployment whose only pool is `pool`. The lane's protocol is a neutral name: the neutral test
-/// plane builds no runtime from it, and no test here dispatches. (`known_protocols()` is empty when
-/// these tests run alone, so it cannot supply one.)
 fn deployment(pool: &str) -> Arc<App> {
     crate::test_support::register_neutral_test_plane();
     crate::snapshot::init();
@@ -34,7 +19,6 @@ fn deployment(pool: &str) -> Arc<App> {
         .build()
 }
 
-/// A caller whose key grants exactly `pools`.
 fn caller(pools: &[&str]) -> PlaneRequestCtx {
     PlaneRequestCtx {
         key: Some(Arc::new(VirtualKey {
@@ -46,7 +30,6 @@ fn caller(pools: &[&str]) -> PlaneRequestCtx {
     }
 }
 
-/// How many terminals units spoken in `proto` have been through so far.
 fn terminals(proto: &str) -> u64 {
     metric_sum(
         crate::snapshot::REQUESTS_TOTAL,
@@ -55,8 +38,6 @@ fn terminals(proto: &str) -> u64 {
     .round() as u64
 }
 
-/// The destination guard's refusal IS the unit's terminal: it ends the unit once, and the caller
-/// that receives the refusal must not end it again.
 #[test]
 fn a_destination_refusal_ends_the_unit_exactly_once() {
     let pool = "ingress-terminal-acl-pool";
@@ -81,8 +62,6 @@ fn a_destination_refusal_ends_the_unit_exactly_once() {
     );
 }
 
-/// An admitted unit has NOT ended at the door: the guard posts nothing, and the caller's
-/// post-admission finish is the one terminal.
 #[test]
 fn an_admitted_unit_ends_once_at_its_finish_and_never_at_the_door() {
     let pool = "ingress-terminal-admitted-pool";
@@ -114,7 +93,6 @@ fn an_admitted_unit_ends_once_at_its_finish_and_never_at_the_door() {
     );
 }
 
-/// Each finish door is one terminal per call: a unit routed through either ends exactly once.
 #[test]
 fn each_finish_door_is_one_terminal() {
     let pool = "ingress-terminal-doors-pool";
@@ -145,10 +123,6 @@ fn each_finish_door_is_one_terminal() {
     assert_eq!(terminals(proto) - before, 2, "the charged door");
 }
 
-/// F25 row 702: rehomed from the retired engine crate's src/unit/tests/chain.rs::the_refused_terminal_labels_a_configured_pool_with_its_name.
-/// Pins: the live pre-admission guard's refusal (403) against a CONFIGURED pool ends its unit on a
-/// terminal labelled with that pool's own name, and a refusal against a name no deployment
-/// configured is labelled with the reserved `unresolved` label — the bound is unchanged.
 #[test]
 fn the_refused_terminal_labels_a_configured_pool_with_its_name() {
     let pool = "ingress-terminal-label-pool";
@@ -159,7 +133,6 @@ fn the_refused_terminal_labels_a_configured_pool_with_its_name() {
         "the fixture's pool is configured, so the live label is its name"
     );
 
-    // LEG 1 — a configured pool the key may not reach: 403, one terminal, labelled by name.
     let proto = "ingress-terminal-label-proto";
     let labelled = |label: &str| {
         metric_sum(
@@ -186,7 +159,6 @@ fn the_refused_terminal_labels_a_configured_pool_with_its_name() {
         "the refusal's terminal is labelled with the configured pool's name"
     );
 
-    // LEG 2 — a name nothing configured: the bound still reads it back as `unresolved`.
     let unknown = "ingress-terminal-no-such-pool";
     assert_eq!(
         pool_label(&app, unknown),

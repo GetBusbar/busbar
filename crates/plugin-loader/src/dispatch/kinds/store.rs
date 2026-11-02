@@ -1,30 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE STORE KIND: `abi/store/`. Every op whose `out` states something beyond the mechanism's head
-//! is checked by its validator in `abi/store/check.rs`, through the contract's one call per answer,
-//! `store::check_answer`:
-//!
-//! * the request-path results written into host buffers (`record_get`/`get_plane_record`'s bytes,
-//!   `list_plane_records` and `record_scan`'s lists), each of which has a short-buffer path;
-//! * the off-path results held under a lease (single records, record lists, string lists);
-//! * the token verdicts and the lifecycle `cancel`'s disposition;
-//! * the purge's [`CountOut`].
-//!
-//! Every slice a plugin-reported count names (list items, rows, entries, leased items) is built
-//! through `check::reported` against the host's own capacity (the leased lists, which have none,
-//! against `LIST_ITEMS_HARD_MAX`), so a count above it is FAULT before any slice exists.
-//!
-//! Every validator runs on every outcome and decides for itself which fields that outcome states.
-//! The only READY gate left here guards building a slice from plugin memory, which is live only
-//! under a READY answer's lease.
-//!
-//! The ops whose `out` is a bare `OutHead` are answered by the head only and checked by the
-//! mechanism (the table's list on `abi::store::OPS`), and `check_answer` passes them: `put_key`,
-//! `delete_key`, `put_usage`, `put_credential`, `put_key_with_credential`, `revoke_credential`,
-//! `add_denylist`, `upsert_plane_record`, `append_plane_record`, `delete_plane_record`,
-//! `record_put`, `add_usage_batch`, `add_metering_batch`, and every lifecycle slot but `cancel`.
-
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::mechanism::check::Fault;
 use busbar_contract::abi::mechanism::door::Statement;
@@ -40,8 +16,6 @@ use busbar_contract::abi::store::{
 
 use crate::dispatch::{lifecycle_name, Answer, InFrame, Kind, OutFrame};
 
-/// The store tail's last frozen size: it has not grown, so it is this host's (THE KIND TAIL
-/// GROWTH RULE, `abi::mechanism::door::tail_read_len`).
 const STORE_TAIL_FROZEN: usize = std::mem::size_of::<store::StoreTail>();
 
 /// The store kind.
@@ -98,8 +72,6 @@ pub struct StoreFacts {
     pub credential_rewrap: bool,
 }
 
-/// The store's tail, read from the Statement: a whole [`store::StoreTail`] whose flags are `0` or
-/// `1`. A store states one: the flags are what the host reads instead of a load-time guess.
 fn store_facts(st: &Statement) -> Result<StoreFacts, String> {
     // SAFETY: `StoreTail` is a `#[repr(C)]` kind tail of integers (all-zero valid); a non-NULL kind
     // tail is `'static` plugin data of its stated size.
@@ -123,7 +95,6 @@ fn store_facts(st: &Statement) -> Result<StoreFacts, String> {
         })?
         .secret_refs;
     Ok(StoreFacts {
-        // One Statement: `ephemeral` is the Statement's mark, not a tail fact.
         ephemeral: st.marks & busbar_contract::abi::mechanism::door::MARK_EPHEMERAL != 0,
         durable_plane: flag(t.durable_plane, "durable_plane")?,
         fork_refusal: flag(t.fork_refusal, "fork_refusal")?,

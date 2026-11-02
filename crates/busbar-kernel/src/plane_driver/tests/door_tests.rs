@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DOOR PLANES' REGISTRY FOLD (ARCHITECT RULING 2026-10-03, Q-DEL-A2A-DECL): a registration a
-//! door states becomes a registry row whose every word is the door's, whose section is judged by
-//! the door's own `validate`, and whose named-map surface is generated from the row.
-
 use std::sync::Arc;
 
 use busbar_contract::plane::{PinMechanismDecl, TrustKeyDecl, TrustRole};
@@ -12,7 +8,6 @@ use busbar_contract::plane_calls::PlaneRegistration;
 
 use super::*;
 
-/// A 1.5.3 named-definition section, read off the frozen list (no literal here).
 const NAMED: &str = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[3];
 
 #[test]
@@ -34,9 +29,6 @@ fn an_admin_capture_stays_one_encoded_path_segment() {
     }
 }
 
-/// A registration as a door states one: a named-definition section `fleet`, a pin and a cadence,
-/// and a `validate` that refuses an entry without `url` in its own value-rule words and anything
-/// that is not a mapping as a shape refusal.
 fn registration(key: &'static str, section: &'static str) -> PlaneRegistration {
     PlaneRegistration {
         key,
@@ -86,7 +78,7 @@ fn registration(key: &'static str, section: &'static str) -> PlaneRegistration {
             if bytes.is_empty() {
                 return Ok(());
             }
-            // The blob is dealt as stage 3g deals it: `{<section>: <section as written>}`.
+
             let dealt: serde_json::Value =
                 serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
             let doc = dealt.get(section).cloned().unwrap_or_default();
@@ -160,11 +152,6 @@ fn a_door_registration_folds_into_a_row_every_word_of_which_is_the_doors() {
     assert!(is_door(decl), "the row carries the door it was folded from");
 }
 
-/// EVERY FOLD IS ITS OWN ROW, AND EACH ROW'S HOOKS READ THE DOOR IT CARRIES: the kernel holds no
-/// table of folded doors, so a second fold under one key is not answered with the first's row. Two
-/// folds under one key from two registrations that state different dialects are two rows, each
-/// answering its own registration's words. While the folded doors lived in one process-wide table
-/// keyed by plane, the second fold answered the first's row and its dialects were never read.
 #[test]
 fn two_folds_under_one_key_are_two_rows_each_reading_its_own_door() {
     let first = fold(registration("door-fold-twice", NAMED)).expect("folds");
@@ -193,7 +180,7 @@ fn two_folds_under_one_key_are_two_rows_each_reading_its_own_door() {
             format!("`{NAMED}.zed`: `url:` must name the endpoint"),
         );
     }
-    // A door's hook over a row that carries no door answers nothing, not another row's door.
+
     let doorless = PlaneDecl::assemble(
         declaration_of(&registration("door-fold-twice", NAMED)),
         door_hooks(true, false, false),
@@ -202,8 +189,6 @@ fn two_folds_under_one_key_are_two_rows_each_reading_its_own_door() {
     assert!((first.wire_format_names)(&doorless).is_empty());
 }
 
-/// NO CAP ON THE DOORS ONE PROCESS FOLDS: with no per-index hook table there is no sixteen-door
-/// cap; a seventeenth door folds, carrying its own door, and answers its own registration's words.
 #[test]
 fn a_seventeenth_door_folds() {
     let rows: Vec<&'static PlaneDecl> = (0..17)
@@ -222,9 +207,6 @@ fn a_seventeenth_door_folds() {
     assert_eq!((last.wire_format_names)(last), &["first", "second"]);
 }
 
-/// THE PROVIDER-KEY DESCRIPTOR A DOOR STATES is kept by the fold and read back whole through the
-/// kernel's accessor (row 155 B1c, dormant): every key, shape and flag is the door's, and a door that
-/// states none adds none.
 #[test]
 fn the_provider_keys_a_door_states_are_kept_by_the_fold() {
     use busbar_contract::provider_keys::{Key, ProviderKeys, Shape, Table};
@@ -266,10 +248,6 @@ fn the_provider_keys_a_door_states_are_kept_by_the_fold() {
     );
 }
 
-/// CONFIG-REQ (ARCHITECT 2026-09-27, Law 7): the sections a door's Statement marks required
-/// (`SECTION_REQUIRED`, carried as `requires`) are the folded row's `required_config_sections`, in
-/// Statement order, so the config pre-pass watches for them as it does a linked plane's. RED ARM:
-/// the fold wrote `&[]`, so a door plane required nothing.
 #[test]
 fn the_sections_a_door_requires_are_the_folded_rows_required_sections() {
     let decl = fold(PlaneRegistration {
@@ -279,7 +257,7 @@ fn the_sections_a_door_requires_are_the_folded_rows_required_sections() {
     })
     .expect("folds");
     assert_eq!(decl.required_config_sections, ["catalog_a", "catalog_b"]);
-    // The sections it consumes are read off the same fold (a plane's migration is handed them).
+
     assert_eq!(consumed_sections(decl), ["catalog_b"]);
     let none = fold(registration("door-requiring-none", "door_requiring_none")).expect("folds");
     assert!(none.required_config_sections.is_empty());
@@ -418,9 +396,7 @@ fn a_door_rows_claims_and_audience_are_what_its_open_faced_the_world_with() {
         (decl.admission)(&unbound).is_none(),
         "no public base, no audience"
     );
-    // R2, ADMITTED BY THE KEY CHAIN: a door that binds no audience still mounts its claims, and
-    // the kernel's key-verify chain admits them; with no key chain there is no admission path at
-    // all, and the boot is refused.
+
     assert!(
         !(decl.claims)(&unbound).is_empty(),
         "an unbound door mounts its claims"
@@ -439,18 +415,13 @@ fn a_door_rows_claims_and_audience_are_what_its_open_faced_the_world_with() {
         keyed.admission_for("/fleet").is_none(),
         "admitted by the key chain, the claim binds no audience"
     );
-    // RED ARM: no audience and no key chain is no admission path at all.
+
     let refused = crate::plane_driver::registry::build_dispatch(&[decl], &slots, false)
         .expect_err("a door claim with no admission path refuses the boot");
     assert!(refused.contains("bound no admission"), "{refused}");
     assert!((decl.claims)(&"not a door slot").is_empty());
 }
 
-/// A DOOR'S OWNED SECTION (its endpoint block beside its verb, the Statement's non-declaring
-/// section): the row owns it (`owned_config_sections`), carries it as written through its endpoint
-/// hooks (`DoorOwned`, the door judges it at its open), and its build hands it to the door's facing
-/// as `PlaneOpenIn::owned` does, one JSON object keyed by section name, beside the section the door
-/// judged off the `tools:`-or-`agents:` carrier. A door that owns nothing has no endpoint hooks.
 #[test]
 fn a_doors_owned_section_is_carried_and_handed_to_its_facing() {
     let owned_key: &'static str = "door_fold_owned_block";
@@ -502,15 +473,6 @@ fn a_doors_owned_section_is_carried_and_handed_to_its_facing() {
     assert!(plain.parse_endpoint.is_none() && plain.lower_endpoint.is_none());
 }
 
-// ── /healthz WITH NO MODEL LANE (ARCHITECT 2026-10-07 K5-H1 ruling; PB-43, pending OWNER signature) ──
-//
-// A deployment with no model lane is ready iff a configured plane OPENED this generation. The open
-// is the one the kernel records when a door row builds its generation's slot (`DoorSlot::opened`),
-// driven here through the row's own `build` over a door whose open answers or refuses.
-
-/// The `/healthz` handler's status and body on a LANE-LESS fixture that configures exactly
-/// `sections`, with `door`'s slot for the generation built through its row's own `build` over a
-/// present section (none when `door` is `None`).
 fn lane_less_healthz(
     door: Option<&'static PlaneDecl>,
     sections: &[&'static str],
@@ -550,12 +512,10 @@ fn lane_less_healthz(
         })
 }
 
-/// A door whose open answers for the generation.
 fn opening_door(key: &'static str, section: &'static str) -> &'static PlaneDecl {
     fold(registration(key, section)).expect("folds")
 }
 
-/// A door whose open REFUSES for the generation (its section passed its `validate`).
 fn refusing_door(key: &'static str, section: &'static str) -> &'static PlaneDecl {
     let mut reg = registration(key, section);
     reg.facing = Arc::new(
@@ -566,8 +526,6 @@ fn refusing_door(key: &'static str, section: &'static str) -> &'static PlaneDecl
     fold(reg).expect("folds")
 }
 
-/// RED on the 1.5.5 rule (503 whenever there is no lane): a tools-only deployment whose plane
-/// opened is ready.
 #[test]
 fn healthz_with_no_model_lane_is_ready_when_a_configured_plane_opened() {
     let door = opening_door("door-healthz-opened", "door_healthz_opened");
@@ -578,7 +536,6 @@ fn healthz_with_no_model_lane_is_ready_when_a_configured_plane_opened() {
     );
 }
 
-/// The same deployment, its plane's generation refused to open: not ready, in 1.5.5's words.
 #[test]
 fn healthz_with_no_model_lane_is_unready_when_the_planes_open_refused() {
     let door = refusing_door("door-healthz-refused", "door_healthz_refused");
@@ -589,7 +546,6 @@ fn healthz_with_no_model_lane_is_unready_when_the_planes_open_refused() {
     );
 }
 
-/// An empty deployment (no plane configured, no lane) stays unready, as in 1.5.5.
 #[test]
 fn healthz_with_no_plane_configured_stays_unready() {
     assert_eq!(
@@ -599,10 +555,6 @@ fn healthz_with_no_plane_configured_stays_unready() {
     );
 }
 
-/// THE NAMES A DOOR'S GENERATION LISTS (THE DESIGN section 2, `/v1/models`): read off its slot's
-/// facing in its own order, filtered as its admission judges a direct route. Ungoverned sees every
-/// name; a key granting the door's scope kind sees the names it grants; a key granting only another
-/// kind sees none. A slot that lists nothing, or a slot of no folded door, adds nothing.
 #[test]
 fn a_doors_listed_names_are_scope_filtered_as_its_admission_judges() {
     use busbar_contract::records::{ScopeRef, VirtualKey};
@@ -653,7 +605,7 @@ fn a_doors_listed_names_are_scope_filtered_as_its_admission_judges() {
         std::sync::Arc<dyn std::any::Any + Send + Sync>,
     > = std::collections::BTreeMap::new();
     assert!(listed(&empty, None).is_empty());
-    // A slot no door built (its section carries no door) lists nothing.
+
     let doorless: std::collections::BTreeMap<
         &'static str,
         std::sync::Arc<dyn std::any::Any + Send + Sync>,
@@ -670,11 +622,6 @@ fn a_doors_listed_names_are_scope_filtered_as_its_admission_judges() {
     assert!(listed(&doorless, None).is_empty());
 }
 
-/// RED, THE PROBE IS HANDED ITS PROVIDERS' DIALECT FACTS (THE DESIGN section 4): a door's build
-/// hands its probe's open the providers its section's `models.<m>.provider` entries reference,
-/// once each in the order first referenced, with their resolved `protocol` and `error_map`, through
-/// the one builder the served open uses; a plane that resolves each model's dialect from them
-/// states its claims from them. A build with no resolved providers hands none.
 #[test]
 fn a_doors_probe_is_handed_its_referenced_providers_dialect_facts() {
     let mut reg = registration("door-fold-dialects", NAMED);

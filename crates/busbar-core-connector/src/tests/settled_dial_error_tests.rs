@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A wait reports interest readiness; the following read must still see a spent dial's error.
-//! Drive the real connection table with a controlled judge and the carrier crossing's outcomes.
 
 use super::*;
 use crate::carrier::{Carry, Side};
@@ -133,7 +132,7 @@ impl Rig {
             dials: AtomicUsize::new(0),
             cancels: AtomicUsize::new(0),
         });
-        // Plain framed traffic reaches the proxy route without requiring a TLS configuration.
+
         let framing = Arc::new(TestDoor::new(
             "frames",
             &["frames"],
@@ -299,8 +298,6 @@ fn a_terminal_dial_spends_a_deadline_that_expires_during_its_crossing() {
         let held = rig.c.slab.get(OWNER, id).unwrap().1;
         let expiring = Arc::clone(&held);
         *rig.carrier.on_dial.lock().unwrap() = Some(Box::new(move || {
-            // The read/wait admitted the request before its deadline; the carrier completes
-            // with a fault after it. Expire the original bound without sleeping or racing time.
             expiring.due.lock().unwrap().as_mut().unwrap().at = std::time::Instant::now();
         }));
         rig.judge.answer(TARGET, Ok(pinned()));

@@ -1,17 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE HEALTH PROBE UNIT (`BUSBAR-1.6.0.md` Part 3, "Nested units, work continuations and probes
-//! are units of their own"; §B item 14, K7): a kernel-originated unit pinned to one member. The
-//! driver calls `arrive` with the probe claim, pushes the ATTEMPT piece alone, and sends the probe
-//! request the plane emits through the member's far end, whose status table classifies the answer
-//! as it classifies organic traffic. The unit is a tick: zero-billed, no lease (§1's exempt
-//! origins), and it passes no kernel step.
-//!
-//! [`PlaneProbes`] binds the probe service's schedule ([`crate::probe`]) to one plane instance's
-//! driver and egress: the composition root builds one for a plane whose tail states
-//! `TAIL_PROBES`, and for no other.
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -27,7 +16,6 @@ use crate::probe::ProbeTarget;
 use crate::registry::Generation;
 use crate::teller::{Kernel, UnitCtx};
 
-/// A probe has no caller: what the plane answers it goes nowhere.
 struct NoCaller;
 
 impl CallerEnd for NoCaller {
@@ -39,9 +27,6 @@ impl CallerEnd for NoCaller {
 }
 
 impl PlaneDriver {
-    /// ONE HEALTH PROBE through `far`, a far end pinned to the probed member
-    /// ([`Egress::probe`]), as unit `key`, bounded by `timeout`. A plane that refuses the probe
-    /// arrival, or emits no request, sends nothing and nothing is recorded.
     pub async fn probe<F: FarEnd>(
         &self,
         kernel: &Kernel,
@@ -49,7 +34,6 @@ impl PlaneDriver {
         far: &F,
         timeout: Duration,
     ) {
-        // The probe is its own request (#74): one call, and the Route pass it presents is bound to it.
         let ctx = UnitCtx {
             call: kernel.next_call(),
             key,
@@ -70,15 +54,13 @@ impl PlaneDriver {
             fields: Vec::new(),
             body: bytes::Bytes::new(),
         };
-        // What the units before it left owing ([`super::close`]): a plane only probed, with no
-        // caller's unit arriving to pay it, still has its probes' units closed.
+
         self.sweep();
         let units = self.unit(&(), far, &NoCaller, arrival, deadline_ns);
         let Some(decoded) = units.arrive(key.get()) else {
             return;
         };
-        // A refusal ABOUT AN ENTRY decodes as the entry it names, but it is still a refusal: the
-        // plane refused the probe, so nothing goes out.
+
         if units.declined_status().is_some() {
             return;
         }
@@ -90,15 +72,12 @@ impl PlaneDriver {
         let mut run = Pumping::new(self, &token, &units.state, &ctx, ticket, deadline_ns, body);
         run.lend_unit(CLAIM_PROBE, decoded.dialect, &[], 0);
         if let route::End::Cancel(_, None) = units.attempts(&mut run, None).await {
-            // The deadline or a reload between crossings: the driver's own ticketless cancel.
             let _ = run.cancel_now().await;
         }
         run.finish();
     }
 }
 
-/// THE PROBE SERVICE'S TARGET for one plane instance: its driver, its egress, and the members the
-/// schedule indexes, in the schedule's order.
 pub struct PlaneProbes {
     driver: Arc<PlaneDriver>,
     egress: Arc<Egress>,
@@ -108,8 +87,6 @@ pub struct PlaneProbes {
 }
 
 impl PlaneProbes {
-    /// The target for a plane whose tail flags are `tail_flags`; `None` unless the plane states
-    /// [`TAIL_PROBES`]: a plane that does not answer probes is never sent one.
     #[must_use]
     pub fn new(
         tail_flags: u32,

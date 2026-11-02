@@ -5,7 +5,8 @@ use super::super::{fold_adjustments, AdminService};
 use crate::v1::contract::{AdminError, UsageView};
 use busbar_contract::records::{MeteringDelta, MeteringRow, RecordStore, VirtualKey, UNIT_INPUT};
 use busbar_kernel::cost::{CostModel, History, RateCard, TierRates};
-use busbar_kernel::governance::{Adjustment, GovState, MemoryStore, UsageAdjustment};
+use busbar_kernel::governance::{Adjustment, GovState, UsageAdjustment};
+use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -71,8 +72,7 @@ impl Fixture {
                 usage_units: BTreeMap::new(),
             })
             .expect("metering row");
-        // The count boundary must remain observable without making a money figure overflow.
-        // Both pricing paths derive zero from an explicit zero rate, without storing money.
+
         let cost = zero_cost();
         let card = RateCard::from_config(
             Some([(

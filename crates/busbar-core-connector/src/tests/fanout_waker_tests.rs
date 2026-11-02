@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Public reader wakers can run user code when their last Arc is dropped. Replacing or removing
-//! one must allow a public wait on the same line to complete before that destructor returns.
 
 use super::*;
 use std::sync::{atomic::AtomicBool, Mutex, Weak};
@@ -40,8 +39,6 @@ struct ReenterOnDrop {
     observed: Arc<Observed>,
 }
 
-// The last Arc's Drop reenters the public wait API to prove retirement occurs outside its
-// guards. Waker::noop has no owner or destructor and would remove that proof.
 #[allow(clippy::manual_noop_waker)]
 impl Wake for ReenterOnDrop {
     fn wake(self: Arc<Self>) {}
@@ -62,8 +59,7 @@ impl Drop for ReenterOnDrop {
             result
         });
         entered.recv().unwrap();
-        // On old code this times out, then lets the destructor return and release the mutex.
-        // The blocked public call can then finish and is joined before outcome assertions.
+
         self.observed
             .timely
             .store(done.recv_timeout(CALLBACK_WAIT).is_ok(), Ordering::SeqCst);
@@ -109,8 +105,7 @@ fn fan_waker_retirement(removal: bool) {
         };
         let first = c.open(OWNER, NEED, &desc).unwrap();
         let (socket, _) = listener.accept().await.unwrap();
-        // The single h2 offer establishes prior knowledge, so the pool shares this live line.
-        // No protocol bytes are fabricated: the existing test framer answers its own crossings.
+
         let second = removal.then(|| c.open(OWNER, NEED, &desc).unwrap());
         assert_eq!(
             carrier

@@ -127,7 +127,6 @@ fn main() {
     std::fs::write(dest.join("diagnostics_catalog.rs"), out).expect("write the catalog");
 }
 
-/// A one-line TOML basic string's value: `"…"` with `\"` and `\\` its only escapes.
 fn basic_string(raw: &str) -> Option<String> {
     let inner = raw.strip_prefix('"')?.strip_suffix('"')?;
     let mut out = String::with_capacity(inner.len());

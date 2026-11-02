@@ -507,11 +507,9 @@ fn pending_export_batch_keeps_its_target_and_credentials_after_same_instance_ref
                 .any(|field| field == &serde_json::json!(["authorization", basic])));
         }
 
-        // Retiring the old ticket releases its declaration without holding a host guard across
-        // the table's callback into the same plugin's STATUS slot.
         let reentered = Arc::new(AtomicUsize::new(0));
         let calls = reentered.clone();
-        // Keep the callback cycle-free; acquire an owner for each reentrant crossing.
+
         let callback_sink = Arc::downgrade(&sink);
         *far.on_forget.lock().unwrap() = Some(Arc::new(move |_| {
             let callback_sink = callback_sink
@@ -597,8 +595,7 @@ fn cancelled_export_connector_batch_does_not_resume_on_a_reused_ticket_after_ref
         let reused = d.inline_ticket().unwrap();
         assert_eq!(reused.ticket().slot, old_ticket.slot);
         assert_ne!(reused.ticket().generation, old_ticket.generation);
-        // The far end had captured its wake before cancellation. It may still deliver it after
-        // this slot serves a different generation; the host must discard that completion.
+
         far.waker.get().unwrap()(late.0, late.1);
         let mut current = batch(b"{\"n\":12}\n", 9);
         let initial =
@@ -689,7 +686,7 @@ fn refresh_enters_at_full_export_capacity_old_batches_resume_and_new_batches_wai
             }
         }));
         let mut unblock = Unblock(Some(release));
-        // The refresh thread retains the instance across its whole crossing.
+
         let refresh_sink = Arc::clone(&sink);
         let (result, ready) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -700,8 +697,7 @@ fn refresh_enters_at_full_export_capacity_old_batches_resume_and_new_batches_wai
                     let _ = result.send(answer);
                     break;
                 }
-                // Far records the last stalled read before that crossing has returned. Let
-                // its first-entry guard leave before asking REFRESH to take the admission.
+
                 std::thread::yield_now();
             }
         });
@@ -871,8 +867,7 @@ fn pending_export_disk_append_keeps_old_path_and_cancelled_late_reply_cannot_rea
         until("the reused ticket disk append is held", || {
             disk.0.lock().unwrap().len() == 2
         });
-        // An already issued disk write may finish after CANCEL. Its completion belongs to the
-        // old ticket and cannot settle or replay the new generation's append.
+
         assert_eq!(disk.complete(), b.display().to_string());
         assert_eq!(
             sink.plugin()
@@ -946,8 +941,6 @@ fn forgotten_pending_refresh_wakes_after_the_callers_state_lock_is_released() {
         .admit(wake, export_slot::DELIVER, WAITING_DELIVERY)
         .is_none());
 
-    // Ticket retirement is called with a worker state guard held. Its returned cleanup may drop
-    // after that guard; the routed wake is a caller callback and must observe the unlocked state.
     let state = route.state.lock().unwrap();
     let forgotten = wake.exports.forget(wake, REFRESH_TICKET);
     drop(state);

@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The `settings:` grammar of an `export.<name>.module: request-log-webhook` instance — config
-//! grammar, tracked by the config-schema gate here, where the sink that reads it lives (K9c).
-
 use serde::Deserialize;
 
 /// `settings:` of an `export.<name>.module: request-log-webhook` instance — relocated from the retired
@@ -39,9 +36,8 @@ pub struct ExportAuthHeader {
     pub value: String,
 }
 
-/// The default in-flight bound per instance.
 pub const DEFAULT_MAX_INFLIGHT: usize = 64;
-/// The default per-delivery deadline (seconds).
+
 pub const DEFAULT_TIMEOUT_SECS: u64 = 2;
 
 fn default_max_inflight() -> usize {

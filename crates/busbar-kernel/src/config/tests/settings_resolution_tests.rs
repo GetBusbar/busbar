@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-core/src/config/secret.rs`.
-
 use super::*;
 
 fn declared(paths: &[&str]) -> Vec<String> {
@@ -16,8 +14,6 @@ fn obj(pairs: &[(&str, serde_json::Value)]) -> serde_json::Map<String, serde_jso
         .collect()
 }
 
-/// A SecretRef-shaped setting (the `{ env: … }` sugar for a `licenseKey`) is RESOLVED to its
-/// value before delivery, while a plain sibling setting passes through verbatim.
 #[test]
 fn resolves_secret_ref_settings_and_passes_plain_through() {
     let var = format!("BUSBAR_PLUGIN_LICENSE_TEST_{}", std::process::id());
@@ -37,12 +33,12 @@ fn resolves_secret_ref_settings_and_passes_plain_through() {
         &busbar_contract::config_time::ConfigScope::config_time(),
     )
     .unwrap();
-    // The ref resolved to the raw secret (trailing newline trimmed) — a plain STRING now.
+
     assert_eq!(
         out.get("licenseKey").unwrap(),
         &serde_json::json!("LIC-123")
     );
-    // Non-ref settings are untouched.
+
     assert_eq!(
         out.get("endpoint").unwrap(),
         &serde_json::json!("https://example.test")
@@ -51,8 +47,6 @@ fn resolves_secret_ref_settings_and_passes_plain_through() {
     std::env::remove_var(&var);
 }
 
-/// An ordinary settings OBJECT that is not a secret reference (its keys aren't a ref's keys) is
-/// left untouched — resolution only fires on a genuine ref shape.
 #[test]
 fn leaves_non_ref_object_settings_untouched() {
     let resolver = SecretResolver::builtins_only();
@@ -72,9 +66,6 @@ fn leaves_non_ref_object_settings_untouched() {
     );
 }
 
-/// FAIL-CLOSED: a SecretRef setting that cannot resolve (unset env) is a hard error naming the
-/// FIELD — never a silently-empty or dangling value handed to the plugin. The error text does not
-/// echo any secret value.
 #[test]
 fn unresolvable_secret_ref_setting_fails_closed_naming_field() {
     let var = format!("BUSBAR_PLUGIN_LICENSE_MISSING_{}", std::process::id());
@@ -94,14 +85,11 @@ fn unresolvable_secret_ref_setting_fails_closed_naming_field() {
     assert!(err.contains("did not resolve"), "fail-closed: {err}");
 }
 
-/// An unknown secret module in a plugin setting is FAIL-CLOSED when no secret plugin can resolve
-/// it (built-ins-only resolver), never handed through.
 #[test]
 fn unknown_secret_module_in_setting_fails_closed() {
     let resolver = SecretResolver::builtins_only();
     let settings = obj(&[(
         "licenseKey",
-        // settings-leak-lint: allow — test fixture: a `kind: secret` module reference, not a response body.
         serde_json::json!({ "module": "vault", "settings": { "path": "kv/license" } }),
     )]);
     let err = resolve_settings(
@@ -119,18 +107,12 @@ fn unknown_secret_module_in_setting_fails_closed() {
     );
 }
 
-/// #40: a plugin setting shaped like a reference is AMBIGUOUS by nature, and the coercion used
-/// to be silent — a plugin whose own config is `{ file: /var/lib/db }` (a PATH it opens) or
-/// `{ env: HOME }` (a variable NAME it reads) had the value swapped for the file's contents /
-/// the variable's value, with no diagnostic. `{ literal: … }` is the escape hatch: the inner
-/// value is delivered verbatim and never resolved.
 #[test]
 fn literal_wrapper_opts_a_setting_out_of_secret_coercion() {
     let path = std::env::temp_dir().join(format!("busbar-lit-{}.txt", std::process::id()));
     std::fs::write(&path, b"THE-SECRET").unwrap();
     let resolver = SecretResolver::builtins_only();
 
-    // Un-wrapped, the ref shape IS coerced (the documented ADR-0010 behaviour).
     let mut settings = serde_json::Map::new();
     settings.insert(
         "licenseKey".to_string(),
@@ -147,7 +129,6 @@ fn literal_wrapper_opts_a_setting_out_of_secret_coercion() {
     .expect("resolves");
     assert_eq!(out["licenseKey"], serde_json::json!("THE-SECRET"));
 
-    // WRAPPED, the very same object is delivered verbatim — the plugin sees its own config.
     let mut settings = serde_json::Map::new();
     settings.insert(
         "db".to_string(),
@@ -168,7 +149,6 @@ fn literal_wrapper_opts_a_setting_out_of_secret_coercion() {
         "a `literal:`-wrapped object is passed through untouched, never dereferenced"
     );
 
-    // The wrapper is not limited to ref-shaped objects, and it is exactly one level deep.
     let mut settings = serde_json::Map::new();
     settings.insert("n".to_string(), serde_json::json!({ "literal": 42 }));
     settings.insert("plain".to_string(), serde_json::json!({ "db_path": "x" }));
@@ -187,8 +167,6 @@ fn literal_wrapper_opts_a_setting_out_of_secret_coercion() {
     let _ = std::fs::remove_file(&path);
 }
 
-/// A resolver that answers ONLY at config time: the request-path forms refuse, so a settings
-/// resolution that took them would fail.
 struct ConfigTimeOnly;
 
 impl busbar_contract::secret::SecretResolve for ConfigTimeOnly {
@@ -227,10 +205,6 @@ impl busbar_contract::secret::SecretResolve for ConfigTimeOnly {
     }
 }
 
-/// THE CONFIG-TIME ROUTE (THE DESIGN §11.11 R4, OWNER 2026-10-13): a plugin's settings resolve at
-/// boot, apply or refresh, so `resolve_settings` asks through the config-time form with the proof
-/// it was handed. A resolution that fell back to the request-path form would meet the source's
-/// refusal here.
 #[test]
 fn settings_resolve_through_the_config_time_form_with_the_proof() {
     let settings = obj(&[(
@@ -249,8 +223,6 @@ fn settings_resolve_through_the_config_time_form_with_the_proof() {
     assert_eq!(out["licenseKey"], serde_json::json!("AT-CONFIG"));
 }
 
-/// The kernel's own resolver forwards the config-time forms: a linked built-in answers the same
-/// bytes through either, so every source that does not read the disk is unchanged.
 #[test]
 fn the_kernel_resolver_answers_the_same_at_config_time_for_a_built_in() {
     let var = format!("BUSBAR_CONFIG_TIME_SAME_{}", std::process::id());
@@ -273,9 +245,6 @@ fn the_kernel_resolver_answers_the_same_at_config_time_for_a_built_in() {
     std::env::remove_var(&var);
 }
 
-/// OWNER RULING (CHIP-REVIEW-v4 change 2, overturning Q123): at boot a reference at a field the
-/// plugin did not declare secret is REFUSED, never resolved in place, wherever it sits; the
-/// sentence names the field and the plugin and says to write the value itself.
 #[test]
 fn boot_refuses_a_reference_at_an_undeclared_field() {
     let resolver = SecretResolver::builtins_only();
@@ -313,8 +282,6 @@ fn boot_refuses_a_reference_at_an_undeclared_field() {
     assert!(err.contains("settings.servers.a.headers.X"), "{err}");
 }
 
-/// A reference at a declared EXACT path and one at a declared WILDCARD path both resolve in place;
-/// a setting beside them that no declared path names is left as written.
 #[test]
 fn boot_resolves_references_at_declared_exact_and_wildcard_paths() {
     let var = format!("BUSBAR_DECLARED_FIELD_{}", std::process::id());
@@ -344,10 +311,6 @@ fn boot_resolves_references_at_declared_exact_and_wildcard_paths() {
     std::env::remove_var(&var);
 }
 
-/// EVERY SECRET IS A REFERENCE, NEVER A LITERAL (security.md:316), for a plugin's declared secret
-/// fields too: a plain value written at a path the plugin declares secret refuses the boot, in the
-/// same non-echoing words a core secret field answers, naming the setting's position and never a
-/// byte of the value. A scalar of any type and a `{ literal: … }` wrapper are both literals there.
 #[test]
 fn a_literal_at_a_declared_secret_path_is_refused_without_echo() {
     let resolver = SecretResolver::builtins_only();
@@ -361,7 +324,7 @@ fn a_literal_at_a_declared_secret_path_is_refused_without_echo() {
             ("bind_service_password", value),
             ("url", serde_json::json!("ldaps://ldap.example")),
         ]);
-        // Matched, not `expect_err`: that would print the resolved settings (the literal).
+
         let Err(err) = resolve_settings(
             &settings,
             &declared(&["bind_service_password"]),
@@ -385,7 +348,7 @@ fn a_literal_at_a_declared_secret_path_is_refused_without_echo() {
         );
         assert!(!err.contains(shown), "the value is echoed: {err}");
     }
-    // An UNSET declared field is not a literal: there is nothing to refuse.
+
     let unset = obj(&[("url", serde_json::json!("ldaps://ldap.example"))]);
     resolve_settings(
         &unset,
@@ -398,11 +361,6 @@ fn a_literal_at_a_declared_secret_path_is_refused_without_echo() {
     .expect("an unset declared field is not a literal");
 }
 
-/// EVERY SECRET IS A REFERENCE, NEVER A LITERAL, AT A WILDCARD PATH TOO (security.md:316, lead
-/// ruling item 7b): a plain value at a position a declared WILDCARD path names refuses the boot
-/// exactly as one at a declared EXACT path does, in the same non-echoing words, naming the
-/// position (`settings.servers.a.env.LOG`) and never a byte of the value. A scalar of any type and a
-/// `{ literal: … }` wrapper are both literals there; an unset (`null`) match is not.
 #[test]
 fn a_literal_at_a_wildcard_declared_secret_path_is_refused_without_echo() {
     let resolver = SecretResolver::builtins_only();
@@ -419,7 +377,7 @@ fn a_literal_at_a_wildcard_declared_secret_path_is_refused_without_echo() {
             "servers",
             serde_json::json!({ "a": { "env": { "LOG": value }, "command": "run" } }),
         )]);
-        // Matched, not `expect_err`: that would print the resolved settings (the literal).
+
         let Err(err) = resolve_settings(
             &settings,
             &declared(&["servers.*.env.*"]),
@@ -443,7 +401,7 @@ fn a_literal_at_a_wildcard_declared_secret_path_is_refused_without_echo() {
         );
         assert!(!err.contains(shown), "the value is echoed: {err}");
     }
-    // A wildcard that matches nothing, or matches `null`, has no literal to refuse.
+
     let unset = obj(&[(
         "servers",
         serde_json::json!({ "a": { "env": { "LOG": null }, "command": "run" } }),
@@ -459,10 +417,6 @@ fn a_literal_at_a_wildcard_declared_secret_path_is_refused_without_echo() {
     .expect("an unset wildcard match is not a literal");
 }
 
-/// REFERENCE-CAPABLE, NOT-SECRET FIELDS (lead ruling item 7a): a store, exporter or hook `url` its
-/// plugin names in the Statement's reference-capable list resolves a 1.5.5 `{env: VAR}` IN PLACE
-/// to the variable's string, and a literal url there passes as written (never refused as a secret
-/// literal). The postgres, valkey and mysql stores' and the webrequest hook's `url` alike.
 #[test]
 fn a_reference_capable_url_resolves_a_reference_and_passes_a_literal() {
     let var = format!("BUSBAR_T_REFCAP_URL_{}", std::process::id());
@@ -509,9 +463,6 @@ fn a_reference_capable_url_resolves_a_reference_and_passes_a_literal() {
     std::env::remove_var(&var);
 }
 
-/// A reference-capable field resolves fail-closed as a secret one does (an unset variable refuses,
-/// naming the field), a secret field beside it still refuses its literal, and a path in both lists
-/// is refused.
 #[test]
 fn a_reference_capable_field_fails_closed_and_leaves_the_secret_rules_whole() {
     let var = format!("BUSBAR_T_REFCAP_UNSET_{}", std::process::id());
@@ -595,10 +546,6 @@ impl busbar_contract::secret::SecretResolve for Recorded {
     }
 }
 
-/// RED (S4): a resolved setting reaches the plugin's bag MOVED out of the resolver's zeroizing
-/// holder, never copied into a second plain `String` (the bag wipes what it holds when it drops;
-/// a copy made on the way would be a second home for the secret). Both a declared secret and a
-/// reference-capable field.
 #[test]
 fn a_resolved_setting_is_moved_into_the_bag_never_copied() {
     let reference =
@@ -622,8 +569,6 @@ fn a_resolved_setting_is_moved_into_the_bag_never_copied() {
     assert_eq!(held, handed, "each value is the resolver's own allocation");
 }
 
-/// RED (S4): a refusal keeps the source's `error_kind` through the kernel's resolver: a linked
-/// source's (an unset variable is NOT_FOUND) and a plugin's (its own code), its text unchanged.
 #[test]
 fn a_refusal_carries_its_error_kind_through_the_resolver() {
     use busbar_contract::abi::secret::{ERROR_KIND_DENIED, ERROR_KIND_NOT_FOUND};

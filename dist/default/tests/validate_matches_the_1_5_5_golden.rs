@@ -1,36 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **`--validate` REFUSES AS THE PUBLISHED 1.5.5 BINARY DID** — every case of the golden captured
-//! from it (`tests/v1.5.5-validate/`: `cases.txt` the configurations, `refusals.txt` what 1.5.5's
-//! `--validate` printed for each, captured from the release binary by `capture.sh`, at ba24944479).
-//!
-//! Each case's `export:` block is validated by this build and its refusal's item lines (`  - …`) must
-//! equal 1.5.5's, byte for byte and in order; a case 1.5.5 accepted must validate clean. The header
-//! line is not compared: 1.6.0 prefixes it with a `BUSBAR-NNNN:` code (CHANGELOG, Improvements).
-//!
-//! A case naming an export module this build does not serve (its sink not linked) is not this
-//! build's to answer, and is skipped — the refusal is the unknown-exporter one, pinned by
-//! `export_unknown_module_lists_what_links.rs`. The default build serves every case.
-//!
-//! A SKIP IS DECIDED BY THE BINARY'S OWN LIST, NOT BY THE REFUSAL TEXT, AND ZERO JUDGED IS RED. Which
-//! modules this build serves is read from its own unknown-exporter refusal (the list of the modules
-//! it links); a case is skipped only when it names a module outside that list, every other case must
-//! be judged, and a run that judged no case at all fails (Law 8: a check that compared nothing is
-//! not a pass). The file compiles only where a linked row carries the export-door axis the golden's
-//! module rides, so a build with no such sink has no test here rather than a vacuous one.
-
 #![cfg(linked_axis_export_doors)]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The golden directory, at the repository root beside the migration corpus.
 fn golden() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/v1.5.5-validate")
 }
 
-/// `(case, 1.5.5's item lines)` in golden order.
 fn cases() -> Vec<(String, Vec<String>)> {
     let text = std::fs::read_to_string(golden().join("refusals.txt")).expect("the golden");
     let mut out: Vec<(String, Vec<String>)> = Vec::new();
@@ -47,8 +26,6 @@ fn cases() -> Vec<(String, Vec<String>)> {
     out
 }
 
-/// The export modules this build serves, as its own `--validate` lists them when asked for a module
-/// nothing serves.
 fn linked_modules(dir: &Path) -> Vec<String> {
     let out = validate(dir, "  x: { module: nosuch }\\n");
     out.lines()
@@ -57,7 +34,6 @@ fn linked_modules(dir: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Every module a golden case names (`module: <name>`).
 fn modules_of(case: &str) -> Vec<String> {
     case.split("module: ")
         .skip(1)
@@ -70,14 +46,12 @@ fn modules_of(case: &str) -> Vec<String> {
         .collect()
 }
 
-/// This build's `--validate` over the case: its whole output.
 fn validate(dir: &Path, case: &str) -> String {
-    // `\n` and `\"` are the golden's escapes (printf %b in capture.sh).
     let block = case.replace("\\n", "\n").replace("\\\"", "\"");
     std::fs::write(dir.join("providers.yaml"), "").unwrap();
     std::fs::write(
         dir.join("config.yaml"),
-        // The store 1.5.5 ran this case on, named: the golden's lines are unchanged.
+
         format!(
             "listen: \"127.0.0.1:0\"\nstore: {{module: memory}}\nproviders: {{}}\nmodels: {{}}\nexport:\n{block}"
         ),
@@ -113,7 +87,6 @@ fn validate_refuses_every_golden_case_as_1_5_5_did() {
         assert!(!named.is_empty(), "a golden case names no module: {case}");
         let out = validate(&dir, case);
         if named.iter().any(|m| !linked.contains(m)) {
-            // Not this build's to answer, and the binary must say so the one way it does.
             assert!(
                 out.contains("unknown exporter"),
                 "{case}: names a module outside {linked:?} and was not refused as unknown:\n{out}"

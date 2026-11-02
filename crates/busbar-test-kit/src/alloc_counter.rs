@@ -1,8 +1,4 @@
 //! A per-thread allocation counter, installed only by binaries that declare [`Counting`] as their
-//! global allocator. An optional scoped observer checks initialized payload prefixes at deallocation;
-//! it never scans spare capacity, padding, or unrelated allocations. A separate metadata-only
-//! observer can witness the lifetime of one allocation selected by its exact layout size.
-
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::{Cell, RefCell};
 use std::marker::PhantomData;
@@ -54,9 +50,6 @@ pub struct AllocationLifetimeProbe {
 
 impl AllocationLifetimeProbe {
     /// Observe allocations whose complete `Layout::size()` equals `size` on this thread.
-    ///
-    /// # Panics
-    /// Panics if `size` is zero or another lifetime probe is already active on this thread.
     #[must_use]
     pub fn start_exact_size(size: usize) -> Self {
         assert!(
@@ -90,8 +83,6 @@ impl Drop for AllocationLifetimeProbe {
     }
 }
 
-// These allocator callbacks use only Copy state in const-initialized TLS. They neither allocate
-// bookkeeping nor dereference an allocation; addresses stay private and are compared only.
 fn lifetime_allocated(address: usize, size: usize) {
     if address == 0 {
         return;
@@ -377,8 +368,7 @@ fn read_payload(memory: &File, payload: &mut ObservedPayload) {
             payload.read_error = Some(std::io::ErrorKind::InvalidInput);
             return;
         };
-        // The kernel copies the registered range into initialized stack storage. No Rust reference
-        // or load is formed from the allocation passed to GlobalAlloc::dealloc.
+
         match memory.read_at(&mut chunk[..count], offset) {
             Ok(0) => {
                 payload.read_error = Some(std::io::ErrorKind::UnexpectedEof);
@@ -489,6 +479,6 @@ pub fn allocations_with<R>(f: impl FnOnce() -> R) -> (u64, R) {
 }
 
 #[cfg(test)]
-#[allow(unsafe_code)] // REVIEWED: scoped registration of initialized owned test payloads
+#[allow(unsafe_code)]
 #[path = "tests/alloc_counter_tests.rs"]
 mod tests;

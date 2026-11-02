@@ -2,10 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE EMPTY DECLARATION IS NEVER A GRANT. A plugin builds a contract struct as
-//! `T { …, ..T::ZERO }`, so a field it leaves out — or one the contract appends later — reads as
-//! its zero. Where that zero would mean something to the host (a point set, a role, a size, a
-//! direction, a code), the host's own check must REFUSE a value built from `ZERO`, or read it as
-//! nothing declared. Each test below holds one such field to the existing contract check.
 
 use std::mem::size_of;
 

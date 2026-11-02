@@ -17,5 +17,5 @@ hex = { workspace = true }
 ring = { workspace = true }
 
 [features]
-# Test builds only; a shipped build never enables it.
-stand-in = []
+# Exposes only explicit metadata injection; fixture values and auth rows remain caller-owned.
+test-support = []

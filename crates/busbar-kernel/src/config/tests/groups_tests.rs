@@ -1,15 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-core/src/config/groups.rs`.
-
 use super::*;
 
-/// A group round-trips through YAML (deserialize -> serialize -> deserialize) unchanged. This is
-/// the property the config OVERLAY relies on: a group budget written through the overlay must re-parse
-/// identically at boot. Exercises every limit shape: windowed metrics, the windowless `concurrent`,
-/// a per-pool budget (future `pool:` qualifier is additive; this covers today's shape), and the
-/// parent chain.
 #[test]
 fn group_yaml_round_trips_exactly() {
     let src = "\
@@ -31,7 +24,7 @@ child_default:
             .is_some_and(|c| c.limits.len() == 1),
         "child_default template parses"
     );
-    // Serialize back out, then parse again — the two parsed values must be identical.
+
     let out = serde_yaml::to_string(&g1).expect("serialize group");
     let g2: GroupCfg = serde_yaml::from_str(&out).expect("re-parse serialized group");
     assert_eq!(
@@ -39,8 +32,6 @@ child_default:
         "group must survive a serialize/deserialize round-trip"
     );
 
-    // Spot-check the serialized shape is the canonical `{ <metric>: <amount>, per: <window> }`,
-    // not some derived tagged form — a drift here would silently corrupt the overlay format.
     assert!(
         out.contains("budget: 1000"),
         "budget metric key preserved: {out}"
@@ -60,8 +51,6 @@ child_default:
     );
 }
 
-/// A group with no `child_default` omits it from the serialized form (skip_serializing_if) — an
-/// overlay-written group must not carry a spurious `child_default: null` that then fails re-parse.
 #[test]
 fn group_without_child_default_omits_it() {
     let g: GroupCfg = serde_yaml::from_str("limits: [ { budget: 10, per: day } ]").unwrap();
@@ -70,7 +59,7 @@ fn group_without_child_default_omits_it() {
         !out.contains("child_default"),
         "no spurious child_default key: {out}"
     );
-    // ..Default::default() construction matches a bare parse (the anti-smell property).
+
     assert_eq!(
         GroupCfg {
             limits: g.limits.clone(),
@@ -81,8 +70,6 @@ fn group_without_child_default_omits_it() {
     );
 }
 
-/// The windowless `concurrent` limit serializes WITHOUT a `per` key (len 1 map), and windowed
-/// limits serialize WITH it (len 2) — the custom Serialize mirrors the custom Deserialize.
 #[test]
 fn limit_serialize_shape_matches_deserialize() {
     let concurrent: LimitCfg = serde_yaml::from_str("{ concurrent: 3 }").unwrap();
@@ -97,16 +84,8 @@ fn limit_serialize_shape_matches_deserialize() {
     assert_eq!(budget, back);
 }
 
-/// D4: serialize↔deserialize SYMMETRY over EVERY `LimitMetric`. `as_str` (used by `Serialize`) and
-/// the deserializer's key match are hand-written in SEPARATE places, so a spelling drift between
-/// them would only surface at the next boot (fail-closed via the `unknown_field` catch-all, but a
-/// real gap). This pins them: for every variant, `as_str` yields a key the deserializer maps back
-/// into the SAME variant, and each metric survives a serialize→re-parse round-trip — including the
-/// four per-tier `tokens_*` metrics.
 #[test]
 fn every_limit_metric_serde_round_trips() {
-    // An EXHAUSTIVE match: adding a `LimitMetric` variant without extending this arm fails to
-    // compile, so the symmetry check can never silently miss a metric.
     fn spelling(m: LimitMetric) -> &'static str {
         match m {
             LimitMetric::Requests => "requests",
@@ -131,10 +110,9 @@ fn every_limit_metric_serde_round_trips() {
     ];
     for m in all {
         let key = spelling(m);
-        // `as_str` must equal the canonical spelling the deserializer keys on.
+
         assert_eq!(m.as_str(), key, "as_str spelling for {m:?}");
-        // The minimal valid limit for this metric (`concurrent` takes no `per`; the others
-        // require one).
+
         let src = if m == LimitMetric::Concurrent {
             format!("{{ {key}: 7 }}")
         } else {
@@ -143,7 +121,7 @@ fn every_limit_metric_serde_round_trips() {
         let parsed: LimitCfg =
             serde_yaml::from_str(&src).unwrap_or_else(|e| panic!("parse `{src}`: {e}"));
         assert_eq!(parsed.metric, m, "deserialize `{key}` -> variant");
-        // serialize -> re-parse must be identical (the overlay round-trip property).
+
         let out = serde_yaml::to_string(&parsed).expect("serialize");
         let back: LimitCfg = serde_yaml::from_str(&out).expect("re-parse");
         assert_eq!(parsed, back, "round-trip for `{key}`");
@@ -154,12 +132,6 @@ fn every_limit_metric_serde_round_trips() {
     }
 }
 
-/// THE `LimitCfg` wire-compat contract test: `pool: <name>` / `downgrade_to:
-/// <name>` in YAML — the entire existing config surface — decodes to `scope`/`downgrade_to:
-/// Some(ScopeRef { kind: "pool", value: <name> })` in memory, and serializes back out as the
-/// EXACT SAME bare `pool: <name>` / `downgrade_to: <name>` YAML keys, byte-for-byte — no
-/// `kind`/`value` object ever appears on the wire. This is the property that makes the
-/// `ScopeRef` generalization invisible to every existing `groups.yaml`.
 #[test]
 fn limit_pool_and_downgrade_to_wire_shape_is_byte_identical_to_pre_generalization() {
     let l: LimitCfg = serde_yaml::from_str(
@@ -191,9 +163,6 @@ fn limit_pool_and_downgrade_to_wire_shape_is_byte_identical_to_pre_generalizatio
     );
 }
 
-/// THE BUDGET MODES (`BUSBAR-1.6.0.md` §7): `admission` and
-/// `on_exhaustion` parse on a budget limit, default to `exact` and `finish-unit` when absent, and
-/// round-trip exactly.
 #[test]
 fn budget_modes_parse_default_and_round_trip() {
     let bare: LimitCfg = serde_yaml::from_str("{ budget: 5000, per: month }").expect("parses");
@@ -233,8 +202,6 @@ fn budget_modes_parse_default_and_round_trip() {
     assert_eq!(spelled.on_exhaustion, Some(ExhaustionMode::FinishUnit));
 }
 
-/// The budget modes are BUDGET behaviors: every other metric refuses them by name, and an unknown
-/// mode refuses.
 #[test]
 fn budget_modes_refuse_on_a_non_budget_limit_and_an_unknown_mode() {
     for (limit, key) in [
@@ -265,9 +232,6 @@ fn budget_modes_refuse_on_a_non_budget_limit_and_an_unknown_mode() {
     .is_err());
 }
 
-/// `on_exhaust: downgrade` and `on_exhaustion: cut-stream` COEXIST: the first
-/// decides a unit arriving at an exhausted budget, at admission; the second a unit already running
-/// when the budget dries, mid-stream. Both set on one limit parse, and each keeps its own meaning.
 #[test]
 fn downgrade_and_cut_stream_coexist_on_one_limit() {
     let l: LimitCfg = serde_yaml::from_str(
@@ -280,8 +244,6 @@ fn downgrade_and_cut_stream_coexist_on_one_limit() {
     assert_eq!(l.on_exhaustion, Some(ExhaustionMode::CutStream));
 }
 
-/// An org → team tree where engineering sets its own child_default, accounting inherits the org's,
-/// and an isolated group has none anywhere up the chain.
 fn tree() -> BTreeMap<String, GroupCfg> {
     serde_yaml::from_str(
         "
@@ -303,19 +265,19 @@ isolated:
 #[test]
 fn resolve_child_default_walks_to_nearest_ancestor() {
     let g = tree();
-    // engineering sets its own → used directly.
+
     assert_eq!(
         resolve_child_default(&g, "engineering").unwrap().limits[0].amount,
         2000
     );
-    // accounting has none → nearest ancestor with a template is acme (500).
+
     assert_eq!(
         resolve_child_default(&g, "accounting").unwrap().limits[0].amount,
         500
     );
-    // no template anywhere up the chain → None (inherit-only).
+
     assert!(resolve_child_default(&g, "isolated").is_none());
-    // unknown parent → None, not a panic.
+
     assert!(resolve_child_default(&g, "nonexistent").is_none());
 }
 
@@ -334,12 +296,10 @@ fn provision_child_builds_leaf_from_nearest_default() {
     );
     assert!(eng.enabled, "a provisioned leaf is enabled");
 
-    // accounting inherits acme's company-wide default.
     let acct = provision_child(&g, "accounting");
     assert_eq!(acct.parent.as_deref(), Some("accounting"));
     assert_eq!(acct.limits[0].amount, 500);
 
-    // isolated: no ancestor template → inherit-only leaf (empty limits, capped only by the chain).
     let iso = provision_child(&g, "isolated");
     assert_eq!(iso.parent.as_deref(), Some("isolated"));
     assert!(
@@ -347,14 +307,11 @@ fn provision_child_builds_leaf_from_nearest_default() {
         "inherit-only leaf carries no own limits"
     );
 
-    // unknown parent → graceful inherit-only leaf bound to that (to-be-created) parent.
     let unknown = provision_child(&g, "nope");
     assert_eq!(unknown.parent.as_deref(), Some("nope"));
     assert!(unknown.limits.is_empty());
 }
 
-/// Candidate validation sees exactly the identities governance will use, including ambiguous
-/// boundaries between a group's name, its window and a pool containing a window suffix.
 #[test]
 fn distinct_groups_cannot_share_a_generated_enforcement_identity() {
     let mut groups: BTreeMap<String, GroupCfg> = serde_yaml::from_str(
@@ -373,8 +330,6 @@ a:
     assert_eq!(errors.len(), 1, "{errors:?}");
     assert!(errors[0].contains("group:a@day#pool:x@day"), "{errors:?}");
 
-    // Repeated metrics of the same bucket keep their existing merge behavior. Punctuation is
-    // allowed where it does not make an actual collision, and existing bucket IDs stay stable.
     let other = groups.remove("a@day#pool:x").unwrap();
     groups.insert("a@day#pool:other".into(), other);
     errors.clear();

@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The per-pool config SHAPES: the pool itself (`PoolCfg`, with its hand-written `hooks:` list
-//! split), its members, the ranking strategy, the breaker/failover/affinity blocks and the
-//! structured `on_exhausted:` value plus its runtime form. Plain serde data with pure accessors.
-//! The `pools:` SECTION reader (which lifts the reserved section keys) stays in busbar-core, which
-//! re-exports every item here at its historical `config::` path.
-
 use serde::Deserialize;
 
 use super::hooks::ON_ERROR_WEIGHTED;
@@ -63,10 +57,6 @@ pub struct PoolCfg {
     pub repeatable: Vec<String>,
 }
 
-/// Whether `name` is one of the native ordering strategies (usable BARE in a pool `hooks:` list).
-/// The strategy set is fixed + known at parse time; any OTHER bare name is a hook-NAME reference
-/// (1.5.3: no inline instances — a hook is defined in the top-level `hooks:` map and referenced by
-/// bare name here).
 pub fn is_strategy_name(name: &str) -> bool {
     matches!(
         name,
@@ -78,7 +68,6 @@ pub fn is_strategy_name(name: &str) -> bool {
     )
 }
 
-/// Preserve a strategy's declared word; only `weighted` selects the inline floor.
 pub fn parse_strategy(name: &str) -> PoolPolicy {
     match name {
         STRATEGY_CHEAPEST => PoolPolicy::Cheapest,
@@ -90,17 +79,11 @@ pub fn parse_strategy(name: &str) -> PoolPolicy {
     }
 }
 
-/// Manual `Deserialize` for [`PoolCfg`]: the `hooks: [...]` list is THE pool form — one ORDERED list
-/// mixing an optional built-in ordering strategy (bare `cheapest`/… ) and hook NAMES (bare names
-/// referencing the top-level `hooks:` DEFINITION map, 1.5.3 — no inline instances). The strategy sets
-/// the base ordering; every other bare name is a hook reference stored in `gates` (validated to exist
-/// and be a `kind: gate` at startup).
 impl<'de> Deserialize<'de> for PoolCfg {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        // Deny unknown keys so a typo'd pool key fails boot.
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct RawPoolCfg {
@@ -134,8 +117,6 @@ impl<'de> Deserialize<'de> for PoolCfg {
 
         let raw = RawPoolCfg::deserialize(deserializer)?;
 
-        // Split the `hooks:` list into (base policy, referenced hook names). A strategy name sets
-        // the base ordering (at most one); every other name is a hook reference.
         let (policy, gates, base_named) = if let Some(entries) = raw.hooks {
             let mut policy: Option<PoolPolicy> = None;
             let mut gates: Vec<String> = Vec::new();
@@ -216,10 +197,6 @@ pub enum PoolPolicy {
 }
 
 impl PoolPolicy {
-    /// The ranking-registry name for this strategy (`plugins::hooks::ranking::native_policy`).
-    /// `weighted` returns `None` — it IS the zero-cost inline-SWRR default and constructs no policy
-    /// object. Engine-level `STRATEGY_*` consts (not the ranking plugin's constants) so this
-    /// compiles when the `hooks-ranking` plugin is removed; the plugin matches the same names.
     pub fn native_name(&self) -> Option<&str> {
         match self {
             PoolPolicy::Weighted => None,
@@ -232,10 +209,6 @@ impl PoolPolicy {
     }
 }
 
-/// The native ranking-strategy names — shared by the pool `hooks:` classifier/parser,
-/// `PoolPolicy::native_name`, `RESERVED_HOOK_NAMES`, and the config validator's built-in-strategy
-/// check, so the vocabulary cannot drift. `weighted` is NOT listed here: it is the zero-cost
-/// inline-SWRR floor and its name is owned by `ON_ERROR_WEIGHTED` in the hooks shapes.
 pub const STRATEGY_CHEAPEST: &str = "cheapest";
 pub const STRATEGY_FASTEST: &str = "fastest";
 pub const STRATEGY_LEAST_BUSY: &str = "least_busy";
@@ -271,26 +244,18 @@ pub struct PoolMember {
 }
 
 impl PoolMember {
-    /// The plane-neutral reader of the member's referenced name (the bare name that resolves into a
-    /// plugin noun — `models:`/`tools:`/`agents:`). The struct field is spelled `model` for the
-    /// model-plane hot path; this is the name every plane-neutral caller (kind inference, the
-    /// validator) uses.
     pub fn name(&self) -> &str {
         &self.model
     }
 }
 
-/// Manual `Deserialize` for [`PoolMember`]: the 1.6.0 uniform grammar admits a member written as a
-/// BARE NAME (`- gpt4o-openai`) on EVERY plane, while the model plane also still accepts the legacy
-/// rich object (`{ model: gpt4o, weight: 3, tier: large, ... }`). A bare name lowers to the same
-/// struct with every knob defaulted — identical to writing `{ model: <name> }`.
 impl<'de> Deserialize<'de> for PoolMember {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
         #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)] // a typo'd pool-member key must fail boot, not be silently ignored.
+        #[serde(deny_unknown_fields)]
         struct RichMember {
             model: String,
             #[serde(default = "default_weight")]
@@ -307,10 +272,6 @@ impl<'de> Deserialize<'de> for PoolMember {
             tags: Vec<String>,
         }
 
-        // A hand-written visitor (NOT `#[serde(untagged)]`): untagged would swallow the rich
-        // object's `deny_unknown_fields` diagnostic into a generic "did not match any variant",
-        // hiding the exact typo'd key. The visitor dispatches on the YAML node shape and forwards a
-        // MAP straight to `RichMember`, so a bad key still fails boot with its own name.
         struct MemberVisitor;
         impl<'de> serde::de::Visitor<'de> for MemberVisitor {
             type Value = PoolMember;
@@ -352,8 +313,6 @@ impl<'de> Deserialize<'de> for PoolMember {
     }
 }
 
-/// The serde default for a pool member's `weight:` — `1`, the plain unweighted member. Also the
-/// sentinel `resolve` reads to tell "left at the default" from an explicit per-member weight.
 pub fn default_weight() -> u32 {
     1
 }
@@ -403,13 +362,12 @@ pub fn default_trip_mode() -> BreakerTripMode {
     BreakerTripMode::ErrorRate
 }
 
-/// Default sliding-window length in seconds for the breaker trip evaluation (ADR-0002).
 pub const DEFAULT_BREAKER_WINDOW_SECS: u64 = 30;
-/// Default error-rate threshold for tripping the breaker (fraction in (0.0, 1.0]).
+
 pub const DEFAULT_BREAKER_THRESHOLD: f64 = 0.5;
-/// Default minimum request count before the error-rate breaker can trip.
+
 pub const DEFAULT_BREAKER_MIN_REQUESTS: usize = 5;
-/// Default consecutive-failure streak length for `BreakerTripMode::Consecutive`.
+
 pub const DEFAULT_BREAKER_CONSECUTIVE_N: u32 = 3;
 
 pub fn default_window_secs() -> u64 {
@@ -440,17 +398,11 @@ pub struct BreakerCfg {
     pub trip: Option<BreakerTripConfig>,
 }
 
-// `Eq` by hand: the one float (`trip.threshold`) is refused at validation unless it lies in
-// (0.0, 1.0], so a configured block never holds a NaN, and the pool carriers that embed a block
-// (`CandidatePoolCfg`) keep the `Eq` they had.
 impl Eq for BreakerTripConfig {}
 impl Eq for BreakerCfg {}
 
 impl Default for BreakerCfg {
     fn default() -> Self {
-        // Delegate to the serde-default fns so the `breaker:`-omitted path (this `Default`) and the
-        // per-field-omitted path (`#[serde(default = ...)]`) share a single source of truth for the
-        // cooldown literals and cannot drift. See `breaker_cfg_default_matches_serde_default_fns`.
         Self {
             base_cooldown_secs: default_cooldown(),
             max_cooldown_secs: default_max_cooldown(),
@@ -459,17 +411,11 @@ impl Default for BreakerCfg {
     }
 }
 
-/// Default base cooldown (seconds) for the escalating breaker back-off (ADR-0002). Single source
-/// of truth for both `BreakerCfg::default()` and the `#[serde(default)]` path.
 pub const DEFAULT_BREAKER_BASE_COOLDOWN_SECS: u64 = 15;
-/// Default maximum cooldown (seconds) for the escalating breaker back-off (ADR-0002).
+
 pub const DEFAULT_BREAKER_MAX_COOLDOWN_SECS: u64 = 120;
 
 pub fn default_cooldown() -> u64 {
-    // Single source of truth for the base cooldown: both `BreakerCfg::default()` (used when a pool
-    // omits the `breaker:` block) and `#[serde(default = "default_cooldown")]` (used when the block
-    // is present but omits `base_cooldown_secs`) route through here, so the value is a consistent
-    // 15s on every path.
     DEFAULT_BREAKER_BASE_COOLDOWN_SECS
 }
 
@@ -523,7 +469,6 @@ pub enum OnExhaustedCfg {
 }
 
 impl OnExhaustedCfg {
-    /// The executable behavior this config value selects.
     pub fn to_runtime(&self) -> OnExhausted {
         match self {
             OnExhaustedCfg::Reject => OnExhausted::Status503,
@@ -568,10 +513,6 @@ impl<'de> Deserialize<'de> for OnExhaustedCfg {
                 ))),
             },
             v @ serde_yaml::Value::Mapping(_) => {
-                // A structured `on_exhausted` mapping is DISAMBIGUATED by its key set rather than
-                // force-fit into `FallbackBody` — peek the top-level keys so `fallback_pool` and
-                // `queue` route to distinct variants, both keys present is an explicit error, and an
-                // unrecognized mapping still gets the actionable "one of …" message.
                 let has_fallback = v.get("fallback_pool").is_some();
                 let has_queue = v.get("queue").is_some();
                 match (has_fallback, has_queue) {
@@ -651,19 +592,10 @@ pub struct AffinityCfg {
     pub header_name: Option<String>,
 }
 
-// ── The FAILOVER BUDGET numeric defaults/bounds, beside the `FailoverCfg` shape whose serde
-//    defaults (`default_failover_timeout`/`default_max_hops`) read them. `config` re-exports each at
-//    its historical `crate::config::*` path, so `appbuild`/`config_validate`/`test_support` call
-//    sites are untouched.
-/// Default failover wall-clock budget (seconds) when a pool doesn't set `failover.timeout_secs`.
 pub const DEFAULT_FAILOVER_DEADLINE_SECS: u64 = 120;
-/// Upper bound (seconds) on a pool's `failover.timeout_secs`. 24h is already absurdly long for a
-/// per-request failover budget — anything larger is a fat-finger typo (extra zeros). Enforced at
-/// `--validate`/boot so a merely-oversized value fails CLOSED with an actionable message instead of
-/// being accepted and later feeding `RequestCtx::new` a duration large enough to overflow the
-/// monotonic-clock `Instant` math.
+
 pub const MAX_FAILOVER_DEADLINE_SECS: u64 = 86_400;
-/// Default maximum failover hops per request when a pool doesn't set `failover.max_hops`.
+
 pub const DEFAULT_FAILOVER_CAP: usize = 3;
 
 /// ONE POOL OF INTERCHANGEABLE UPSTREAMS, as the operator writes it — the ENTIRE config vocabulary
@@ -698,7 +630,7 @@ pub const DEFAULT_FAILOVER_CAP: usize = 3;
 /// `retry: always`: an operator who wants `send_email` repeated has to write `send_email` down next
 /// to the operations they thought about, which is a different act from flipping a switch (the failover walk's `Stage`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)] // a typo'd key must fail boot, not silently un-declare a safety rule.
+#[serde(deny_unknown_fields)]
 pub struct CandidatePoolCfg {
     /// The interchangeable registrations, by bare name, resolved against whichever registry the
     /// owning plugin keeps its own registrations in. ORDERED: the first is the

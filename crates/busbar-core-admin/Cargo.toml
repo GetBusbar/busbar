@@ -26,10 +26,11 @@ schemars = { workspace = true, optional = true }
 
 [features]
 default = []
-test-support = ["busbar-kernel/test-support"]
+test-support = []
 openapi-schema = ["dep:schemars", "busbar-kernel/openapi-schema"]
 
 [dev-dependencies]
+busbar-kernel-testkit = { path = "../busbar-kernel-testkit" }
 http-body-util = { workspace = true }
 busbar-kernel = { path = "../busbar-kernel", default-features = false, features = ["test-support"] }
 busbar-kernel-egress = { path = "../busbar-kernel-egress" }

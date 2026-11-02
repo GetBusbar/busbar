@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The arrival span's callsite: one per name, opened at the hot-path level with no fields, and none
-//! for an empty name.
-
 use std::sync::{Arc, Mutex};
 
 use tracing_subscriber::layer::{Context, SubscriberExt as _};
@@ -11,7 +8,6 @@ use tracing_subscriber::Layer;
 
 use super::ArrivalSpan;
 
-/// One span opened: its name, its level and how many fields its callsite declares.
 type OpenedSpan = (&'static str, tracing::Level, usize);
 
 /// Every span opened under it.
@@ -56,20 +52,17 @@ fn an_arrival_span_is_one_callsite_per_name_opened_at_the_hot_path_level() {
     );
 }
 
-/// RED: a claim that states no name opens no span.
 #[test]
 fn an_empty_name_opens_no_span() {
     assert!(ArrivalSpan::named("").is_none());
 }
 
-/// One span opened with its fields: its name and each field's value as written.
 type Recorded = (&'static str, Vec<(&'static str, String)>);
 
 /// Every span opened under it, with the values it opened with.
 #[derive(Clone, Default)]
 struct Values(Arc<Mutex<Vec<Recorded>>>);
 
-/// A field visitor: every field's name and its value as written.
 struct Seen<'a>(&'a mut Vec<(&'static str, String)>);
 
 impl tracing::field::Visit for Seen<'_> {
@@ -98,7 +91,6 @@ impl<S: tracing::Subscriber> Layer<S> for Values {
     }
 }
 
-/// The spans an arrival opens under `spans`, by its claim, verb, raw path and head fields.
 fn opened(
     spans: &super::EntrySpans,
     claim: u32,
@@ -117,11 +109,6 @@ fn opened(
     seen
 }
 
-/// THE ENTRY SPAN AN ARRIVAL OPENS: the first fact of its verb the request meets,
-/// in the snapshot's order (an entry fact by its head fields and its path pattern, a raw affix by
-/// its affixes), else its routed claim's own. An entry fact that states no span ends the reading
-/// with none; a named path segment is recorded, percent-decoded, as the span's field. A fact is no
-/// routed claim: an arrival on its index opens nothing of its own.
 #[test]
 fn an_arrival_opens_the_first_fact_it_meets_else_its_claims_span() {
     use busbar_contract::abi::plane::{CLAIM_ENTRY, CLAIM_RAW_AFFIX};

@@ -1,20 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE UNIT RECORD (`BUSBAR-1.6.0.md` THE DESIGN, §6): what the kernel holds for each unit in
-//! flight, keyed by the unit key it minted. The one place a request's verified principal lives
-//! while its unit runs; a host service called inside a crossing that serves the unit answers from
-//! it.
-//!
-//! The unit's admission writes the record once, after Authenticate: the principal, or `None` for
-//! an ungoverned deployment. The unit's end removes it. A unit never admitted, or already ended,
-//! has no record, and every question asked of it is answered fail-closed.
-//!
-//! THE UNIT'S HOOK STAGE rides beside its record ([`UnitRecords::staged`]): the driver states it
-//! when the unit's route leg starts (the plane instance, the pool the kernel routes it over, the
-//! configuration generation's hooks), and `hook.call` / `content.scan` run over it, never over
-//! anything the plane names. The unit's end removes it with the record.
-
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -46,18 +32,13 @@ pub enum StageAnswer {
     Failed(&'static str),
 }
 
-/// Where a stage's answer goes: called once, from any thread.
 pub type StageDone = Box<dyn FnOnce(StageAnswer) + Send>;
 
-/// THE HOOK STAGE ONE UNIT BINDS, for its in-session sub-operations: the hooks of the unit's
-/// kernel-recorded plane and pool, at the configuration generation the unit was bound under. Each
-/// call runs off the caller's thread and answers through `done`.
 pub trait UnitHookStage: Send + Sync {
-    /// The label of the plane instance the unit runs on.
     fn instance(&self) -> &str;
-    /// `hook.call`: run `ask`.
+
     fn call(self: Arc<Self>, ask: HookAsk, done: StageDone);
-    /// `content.scan`: pass `content` through the unit's gates.
+
     fn scan(self: Arc<Self>, content: Vec<u8>, done: StageDone);
 }
 
@@ -85,8 +66,6 @@ struct UnitEntry {
     ticket: Option<Option<Vec<u8>>>,
 }
 
-/// Every unit in flight, by unit key, split across the in-flight table's shards by the key so a
-/// request takes one shard's lock, never a process-wide one.
 pub struct UnitRecords {
     shards: Vec<Mutex<HashMap<u64, UnitEntry>>>,
 }
@@ -112,18 +91,14 @@ impl UnitRecords {
             .unwrap_or_else(|e| e.into_inner())
     }
 
-    /// The unit `unit` is admitted with `record`.
     pub fn admitted(&self, unit: u64, record: UnitRecord) {
         self.lock(unit).entry(unit).or_default().record = Some(Arc::new(record));
     }
 
-    /// The unit `unit` ended: its record goes, its hook stage, and the credential it lent.
     pub fn ended(&self, unit: u64) {
         self.lock(unit).remove(&unit);
     }
 
-    /// The unit `unit` was admitted by `ticket`: `Some` the record of the ticket the gate spent
-    /// admitting it, `None` a key. Only a unit in flight holds one (`false` otherwise).
     pub fn ticketed(&self, unit: u64, ticket: Option<Vec<u8>>) -> bool {
         match self.lock(unit).get_mut(&unit) {
             Some(entry) if entry.record.is_some() => {
@@ -134,22 +109,14 @@ impl UnitRecords {
         }
     }
 
-    /// TAKE what admitted `unit`, once: `Some(Some(record))` a ticket's record, `Some(None)` a key,
-    /// and `None` for a unit not in flight or one already taken.
     pub fn take_ticket(&self, unit: u64) -> Option<Option<Vec<u8>>> {
         self.lock(unit).get_mut(&unit)?.ticket.take()
     }
 
-    /// The caller of `unit` presented `credential`: lent, while the unit runs, to a passthrough
-    /// member's auth call made inside it (a request the plane makes on its own need included: the
-    /// connector keys a binding by (instance, need, member, target origin); a request naming no
-    /// member gets no binding).
     pub fn lend(&self, unit: u64, credential: busbar_contract::redacted::Secret<Vec<u8>>) {
         self.lock(unit).entry(unit).or_default().lent = Some(credential);
     }
 
-    /// The route leg of `unit` states its hook stage. Only a unit in flight holds one: for any
-    /// other the stage is dropped (`false`). The first stage stated stands.
     pub fn staged(&self, unit: u64, stage: Arc<dyn UnitHookStage>) -> bool {
         match self.lock(unit).get_mut(&unit) {
             Some(entry) if entry.record.is_some() => {
@@ -160,7 +127,6 @@ impl UnitRecords {
         }
     }
 
-    /// The hook stage of `unit`, while it is in flight and its route leg stated one.
     #[must_use]
     pub fn stage(&self, unit: u64) -> Option<Arc<dyn UnitHookStage>> {
         let shard = self.lock(unit);
@@ -168,7 +134,6 @@ impl UnitRecords {
         entry.stage.clone()
     }
 
-    /// The record of `unit`, while it is in flight.
     #[must_use]
     pub fn get(&self, unit: u64) -> Option<Arc<UnitRecord>> {
         self.lock(unit).get(&unit)?.record.clone()

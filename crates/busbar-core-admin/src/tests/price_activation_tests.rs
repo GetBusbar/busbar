@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Real admin/transaction publication tests. The installed rate hook uses the existing record
-//! Store fixture for its two confirmations; root's CardStore tests own the history encoding itself.
-
 use super::*;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
@@ -45,10 +42,9 @@ struct Scenario {
 
 impl Scenario {
     fn install(fee: i64) -> Arc<Self> {
-        // Install through the existing test RootInstall carrier, as the shipped root does.
         let _fixture = crate::new_test_app();
         let holder = holder();
-        busbar_kernel::test_support::rate_holders::install_rate_apply(holder);
+        busbar_kernel_testkit::test_support::rate_holders::install_rate_apply(holder);
         let scenario = Arc::new(Self {
             candidate: TestOverlayStore::new(),
             activation: TestOverlayStore::new(),
@@ -99,8 +95,6 @@ struct Prepared {
 
 struct Confirmed(Prepared);
 
-/// Exercise actual conditional-record refusal, unknown receipt replay and Pending behavior through
-/// the existing fixture. This hook deliberately owns no duplicate card-history representation.
 fn confirm(store: &TestOverlayStore, fee: i64) -> Result<(), String> {
     let (_recovered, doc) = store.backend().reopen_for_reload()?;
     if doc
@@ -108,8 +102,6 @@ fn confirm(store: &TestOverlayStore, fee: i64) -> Result<(), String> {
         .and_then(|root| root.per_request_fee)
         != Some(fee)
     {
-        // The long-lived fixture carrier owns any unknown receipt; the temporary read carrier
-        // must never become its only owner on an error.
         persist_root(
             Some(&store.backend()),
             &RootSettings {
@@ -209,7 +201,7 @@ impl Drop for Inputs {
 }
 
 fn settings_handle(tag: &str) -> (Inputs, TestOverlayStore, Arc<AppHandle>) {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let (dir, config_path, providers_path) = write_reset_fixture(tag);
     let overlay = TestOverlayStore::new();
     let mut app = crate::new_test_app()
@@ -246,7 +238,7 @@ fn stored_fee(backend: &OverlayStore) -> Option<i64> {
 
 #[tokio::test]
 async fn settings_refuses_unconfirmed_prices_then_reload_confirms_the_exact_candidate_once() {
-    let _limits = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
+    let _limits = busbar_kernel_testkit::limits::LIMITS_TEST_LOCK.lock().await;
     for (fee, activation, unknown) in [
         (REFUSED_CANDIDATE_FEE, false, false),
         (UNKNOWN_CANDIDATE_FEE, false, true),
@@ -287,8 +279,6 @@ async fn settings_refuses_unconfirmed_prices_then_reload_confirms_the_exact_cand
         let submitted = failing.candidates();
         assert_eq!(submitted.len(), 1);
 
-        // Both persisted mutations and live-only config apply must respect the old carrier's
-        // quarantine. A diagnostic read does not authorize another generation.
         assert!(persist_root(Some(&overlay.backend()), &RootSettings::default()).is_err());
         assert_eq!(put(&handle, fee).await.status(), StatusCode::BAD_REQUEST);
         let applied = crate::v1::json::apply_config(
@@ -300,8 +290,6 @@ async fn settings_refuses_unconfirmed_prices_then_reload_confirms_the_exact_cand
         assert!(Arc::ptr_eq(&handle.load(), &before));
         assert_eq!(failing.candidates().len(), submitted.len());
 
-        // A semantic rebuild failure after the loader opens a candidate carrier must not clear
-        // quarantine on the carrier still owned by the live App.
         let config_path = inputs.0.join("config.yaml");
         let original = std::fs::read(&config_path).unwrap();
         std::fs::write(&config_path,
@@ -343,7 +331,6 @@ async fn settings_refuses_unconfirmed_prices_then_reload_confirms_the_exact_cand
         );
         assert!(persist_root(Some(&overlay.backend()), &RootSettings::default()).is_err());
 
-        // An unchanged card and a non-price edit neither create an era nor need another Store write.
         scenario.candidate.fail_writes(true);
         scenario.activation.fail_writes(true);
         assert_eq!(reload(&handle).await.status(), StatusCode::OK);
@@ -368,7 +355,7 @@ async fn settings_refuses_unconfirmed_prices_then_reload_confirms_the_exact_cand
 
 #[tokio::test]
 async fn an_absent_card_and_unchanged_prices_allow_a_successful_settings_handler() {
-    let _limits = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
+    let _limits = busbar_kernel_testkit::limits::LIMITS_TEST_LOCK.lock().await;
     let (_inputs, overlay, handle) = settings_handle("no-configured-price-card");
     let before = handle.load();
     assert_eq!(put(&handle, BASE_FEE).await.status(), StatusCode::OK);
@@ -385,7 +372,7 @@ async fn an_absent_card_and_unchanged_prices_allow_a_successful_settings_handler
 
 #[tokio::test]
 async fn config_refusal_or_unknown_reply_never_attempts_price_activation() {
-    let _limits = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
+    let _limits = busbar_kernel_testkit::limits::LIMITS_TEST_LOCK.lock().await;
     for (fee, unknown) in [(REFUSED_CONFIG_FEE, false), (UNKNOWN_CONFIG_FEE, true)] {
         let scenario = Scenario::install(fee);
         let (_inputs, overlay, handle) = settings_handle(&format!("unconfirmed-config-{fee}"));
@@ -411,7 +398,7 @@ async fn config_refusal_or_unknown_reply_never_attempts_price_activation() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pending_activation_and_canceled_handler_keep_the_old_generation_until_confirmation() {
-    let _limits = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
+    let _limits = busbar_kernel_testkit::limits::LIMITS_TEST_LOCK.lock().await;
     let scenario = Scenario::install(PENDING_ACTIVATION_FEE);
     let (_inputs, _overlay, handle) = settings_handle("pending-price-activation");
     let before = handle.load();
@@ -502,10 +489,10 @@ static PANIC_PLANE: busbar_kernel::plane_driver::registry::PlaneDecl =
             fallback: false,
             config_section: PRE_PUBLICATION_PLANE,
             scope_kinds: &[],
-            ..busbar_kernel::test_support::NEUTRAL_FALLBACK.declaration
+            ..busbar_kernel_testkit::test_support::NEUTRAL_FALLBACK.declaration
         },
         on_swap: Some(before_publication),
-        ..busbar_kernel::test_support::NEUTRAL_FALLBACK
+        ..busbar_kernel_testkit::test_support::NEUTRAL_FALLBACK
     };
 
 struct ClearPanicPath;
@@ -517,10 +504,10 @@ impl Drop for ClearPanicPath {
 
 #[tokio::test]
 async fn callback_panics_preserve_one_coherent_published_price_generation() {
-    let _limits = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
+    let _limits = busbar_kernel_testkit::limits::LIMITS_TEST_LOCK.lock().await;
     let scenario = Scenario::install(PRE_PUBLICATION_PANIC_FEE);
     let (_inputs, overlay, handle) = settings_handle("before-price-publication");
-    busbar_kernel::test_support::planes::register_test_plane(&PANIC_PLANE);
+    busbar_kernel_testkit::test_support::planes::register_test_plane(&PANIC_PLANE);
     let before = handle.load();
     let before_limits = busbar_kernel::config::limits::installed();
     *PRE_PANIC_PATH.lock().unwrap() = before.config_path.clone();
@@ -567,7 +554,6 @@ async fn callback_panics_preserve_one_coherent_published_price_generation() {
             assert!(Arc::ptr_eq(&weak.upgrade().unwrap().load(), next));
             assert_eq!(scenario.live().fee, POST_PUBLICATION_PANIC_FEE);
             if first.swap(false, std::sync::atomic::Ordering::SeqCst) {
-                // Registration is safe inside an applier: no host callback mutex is held.
                 weak.upgrade().unwrap().on_apply(Box::new(|_| {}));
                 panic!("injected post-publication applier panic");
             }

@@ -1,57 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The busbar-SIGNED virtual-key TOKEN (1.5.0). A minted key is a compact token
-//! `<b64url(payload)>.<b64url(sig)>` where the payload is the JSON `{ sub, exp, kid }`:
-//!
-//! - `sub` - the STABLE subject id (the key's `vk_...` id). Policy (group, allowed_pools, labels)
-//!   is resolved from the store/config BY `sub` at verify time - mutable without reissuing the key.
-//! - `exp` - the Unix-seconds expiry. Keys now EXPIRE (the one new user-facing thing vs 1.4.x).
-//! - `kid` - the signing-key id, so a future keyset can select the verifying key. 1.5.0 is
-//!   single-key; the verify path is written so a keyset slots in (verify tries the key whose id
-//!   matches `kid`).
-//!
-//! VERIFY is STATELESS except a denylist read: signature valid + not expired + `sub` not revoked =
-//! identified. A tampered or expired token is rejected; a token signed by key A verifies under key
-//! A and fails after a rotation to key B (the `kid` no longer matches, and even a replayed `kid`
-//! fails the signature check under the new key).
-//!
-//! The token is NOT a JWT (no alg-confusion surface, no header): a single fixed algorithm
-//! (ed25519), two base64url segments, busbar on both ends. Small and unambiguous.
-//!
-//! ## Home: the NEUTRAL crypto primitive, GOVERNED by core
-//!
-//! [`TokenSigner`] lives HERE, in this module (`governance::signing`), as a pure crypto primitive:
-//! it holds the ed25519 secret and turns a claims payload (`sub`/`exp`/`kid` plus the optional
-//! generation/audience) into signed bytes, and verifies them. It decides NOTHING about WHO gets a
-//! token or WHAT they may do. The mint POLICY (which subject, which expiry, which audience, which
-//! grants) and the durable key/binding state are owned by the rest of `governance`, which drives
-//! this signer. The module carries the primitive; governance is the governor.
-
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
-/// The token prefix, so a busbar key is visually distinct from an opaque bearer and a quick
-/// structural pre-check can reject an obviously-non-busbar credential before any crypto.
 pub const TOKEN_PREFIX: &str = "bbk_";
 
-/// THE TICKET AUDIENCE: the audience claim every host-minted TICKET carries (row 132, the ARCHITECT
-/// ticket ruling). A ticket verifies only where the gate expects exactly this audience, on a route
-/// that takes a ticket; the plain data plane, which expects none, refuses it.
 pub const TICKET_AUDIENCE: &str = "busbar:ticket";
 
-/// The DER prefix of an Ed25519 SubjectPublicKeyInfo, RFC 8410 section 4: `SEQUENCE { SEQUENCE {
-/// OID 1.3.101.112 }, BIT STRING }`. Fixed-length and fully determined; prefixed to the 32 raw key
-/// bytes to render busbar's PUBLIC card-issuer key in the ONE spelling the verifier accepts.
 const ED25519_KEY_INFO_PREFIX: [u8; 12] = [
     0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
 ];
 
-/// The signing-key id carried in every token's `kid`. Single-key for 1.5.0; a keyset later maps
-/// several ids to several verifying keys. Stable so a token minted before a restart still names a
-/// key the (persisted) signing key answers to.
 pub const DEFAULT_KID: &str = "k1";
 
 /// The signed token PAYLOAD: subject + expiry + signing-key id. Serialized compactly (short field
@@ -132,8 +94,6 @@ impl std::fmt::Display for VerifyError {
     }
 }
 
-/// The busbar signing key + its id: mints tokens and verifies its own. Holds the ed25519 secret;
-/// its `Debug` never prints key bytes.
 pub struct TokenSigner {
     key: SigningKey,
     kid: String,
@@ -149,7 +109,6 @@ impl std::fmt::Debug for TokenSigner {
 }
 
 impl TokenSigner {
-    /// Build a signer from raw ed25519 secret-key bytes (32 bytes) and a kid.
     pub fn from_secret_bytes(bytes: &[u8; 32], kid: impl Into<String>) -> Self {
         Self {
             key: SigningKey::from_bytes(bytes),
@@ -157,11 +116,6 @@ impl TokenSigner {
         }
     }
 
-    /// Generate a fresh random signing key (first-boot, dev zero-config path) from 32 bytes of the
-    /// OS CSPRNG. An ed25519 secret key IS 32 uniformly-random bytes, so drawing them directly from
-    /// `getrandom` (the same fail-closed entropy source key secrets use) is exactly the standard
-    /// generation - no `rand` dependency needed. Fails closed: a `getrandom` failure aborts
-    /// first-boot key generation (never a request path) rather than mint a guessable key.
     pub fn generate(kid: impl Into<String>) -> Result<Self, getrandom::Error> {
         let mut bytes = [0u8; 32];
         getrandom::fill(&mut bytes)?;
@@ -171,56 +125,27 @@ impl TokenSigner {
         })
     }
 
-    /// This signer's kid (the `kid` it stamps into every token).
     pub fn kid(&self) -> &str {
         &self.kid
     }
 
-    /// The raw 32-byte ed25519 secret (for PERSISTING the generated key 0600). Secret-equivalent:
-    /// callers must write it 0600 and never log it.
     pub fn secret_bytes(&self) -> [u8; 32] {
         self.key.to_bytes()
     }
 
-    /// The verifying (public) key, for a stateless verifier that holds only public material.
     pub fn verifying_key(&self) -> VerifyingKey {
         self.key.verifying_key()
     }
 
-    /// A DOMAIN-SEPARATED SUBKEY SEED derived from this signer's secret.
-    ///
-    /// busbar holds one long-lived ed25519 secret and a plane may need a signing key of its own
-    /// (to sign a document it serves, so an external caller has something to pin busbar by).
-    /// Handing it THIS key would put the credential-minting secret on a path that
-    /// signs documents somebody else largely authored. Handing them a second CONFIGURED key would
-    /// be a second secret an operator can fail to generate, hold or rotate — and a zero-config
-    /// first boot would then serve unsigned cards.
-    ///
-    /// A one-way derivation is the answer to both: the subkey is not this key, and compromise of a
-    /// subkey does not walk back to this one, while a deployment still holds exactly one secret and
-    /// a rotation of it rotates every subkey with it. `domain` MUST be a versioned constant (the
-    /// plane declares it) so that changing a derivation is a new key rather than a silently
-    /// different one under the same name.
-    ///
-    /// The secret NEVER leaves this method: callers get 32 derived bytes, not
-    /// [`Self::secret_bytes`].
     pub fn derived_subkey_seed(&self, domain: &str) -> [u8; 32] {
         subkey_seed(&self.key.to_bytes(), domain)
     }
 
-    /// SIGN `input` with this signer's DOMAIN-DERIVED subkey — the host-owned signing primitive
-    /// behind the neutral `sign_in_domain` host service. Deterministic Ed25519 over the plane-framed
-    /// signing input; the subkey is expanded from [`Self::derived_subkey_seed`] and the secret NEVER
-    /// leaves this method — the plane receives only the 64 signature bytes.
     pub fn sign_with_subkey(&self, domain: &str, input: &[u8]) -> [u8; 64] {
         let key = SigningKey::from_bytes(&self.derived_subkey_seed(domain));
         key.sign(input).to_bytes()
     }
 
-    /// BUSBAR'S PUBLISHED KEY for `domain`, as base64 SubjectPublicKeyInfo — the string a
-    /// counterparty pins busbar by. The PUBLIC half of the same domain-derived subkey
-    /// [`Self::sign_with_subkey`] signs with, rendered through the ONE Ed25519 SPKI spelling the
-    /// verifier accepts, so a value emitted here and a value that verifier reads back cannot drift.
     pub fn subkey_key_info_base64(&self, domain: &str) -> String {
         let key = SigningKey::from_bytes(&self.derived_subkey_seed(domain));
         let mut der = Vec::with_capacity(ED25519_KEY_INFO_PREFIX.len() + 32);
@@ -229,9 +154,6 @@ impl TokenSigner {
         base64::engine::general_purpose::STANDARD.encode(der)
     }
 
-    /// Mint a signed token for `sub` expiring at `exp` (Unix seconds), stamped with the binding
-    /// GENERATION it is issued against (see [`TokenClaims::generation`]). Returns the full token
-    /// string, shown to the caller ONCE.
     pub fn mint(&self, sub: &str, exp: u64, generation: Option<&str>) -> String {
         self.sign_claims(TokenClaims {
             sub: sub.to_string(),
@@ -244,16 +166,6 @@ impl TokenSigner {
         })
     }
 
-    /// Mint an AUDIENCE-BOUND token (1.6.0, the substrate's generic audience-scoped mint): identical
-    /// to [`Self::mint`] plus the `aud` scoping claim and the optional `cid` client attribution. Such
-    /// a token verifies ONLY where the verifier expects exactly this audience; the plain data-plane
-    /// verify rejects it (see [`TokenClaims::aud`]).
-    ///
-    /// Test-only: no release surface mints an audience-bound token (`docs/mcp.md`), so it is not
-    /// compiled into a release build. The boundary tests exercise it against the real verifier. Gated on
-    /// `test-support` too so the crates whose test binaries link this one (core, and any plane
-    /// tests dual-compiled into core) can name it — the same cross-crate test-only seam the
-    /// metrics initializer uses.
     #[cfg(any(test, feature = "test-support"))]
     pub fn mint_for_audience(
         &self,
@@ -274,10 +186,6 @@ impl TokenSigner {
         })
     }
 
-    /// Mint a TICKET's signed BODY (row 132): `<b64url(payload)>.<b64url(sig)>`, the claims bound to
-    /// [`TICKET_AUDIENCE`] and naming `ticket`, with no prefix. The host prepends the issued-id
-    /// prefix the minting plane declares; the gate strips it and verifies the body with
-    /// [`TokenVerifier::verify_body`].
     pub fn mint_ticket_body(
         &self,
         sub: &str,
@@ -296,13 +204,10 @@ impl TokenSigner {
         })
     }
 
-    /// Serialize + sign a claims payload into the two-segment token form. The ONE signing site,
-    /// so every mint variant produces the identical wire shape.
     fn sign_claims(&self, claims: TokenClaims) -> String {
         format!("{TOKEN_PREFIX}{}", self.sign_body(&claims))
     }
 
-    /// The two signed segments of a claims payload, `<b64url(payload)>.<b64url(sig)>`.
     fn sign_body(&self, claims: &TokenClaims) -> String {
         let payload = serde_json::to_vec(claims).expect("TokenClaims serializes");
         let sig: Signature = self.key.sign(&payload);
@@ -322,28 +227,12 @@ pub struct TokenVerifier {
 }
 
 impl TokenVerifier {
-    /// A single-key verifier (the 1.5.0 case): kid -> key.
     pub fn single(kid: impl Into<String>, key: VerifyingKey) -> Self {
         let mut keys = std::collections::HashMap::new();
         keys.insert(kid.into(), key);
         Self { keys }
     }
 
-    /// PARSE + verify + expiry + AUDIENCE, returning the claims. Does NOT consult the denylist -
-    /// the caller pairs this with a `sub`-denylist read (kept separate so the crypto is pure and
-    /// testable and the revocation read is the only state touched). `now` is Unix seconds.
-    ///
-    /// `expected_aud` is the BOUNDARY the token is being presented on (1.6.0): `None` = the plain
-    /// data plane, which rejects a token
-    /// carrying ANY audience; `Some(uri)` = an audience-checked ingress, which
-    /// rejects a token whose audience is absent or different. Enforced HERE in the verifier, not
-    /// per handler, so a route added later cannot forget the boundary.
-    ///
-    /// Order: structural parse -> kid lookup -> signature -> expiry -> audience. Signature is
-    /// checked BEFORE expiry so an attacker cannot learn a real `sub`'s existence by probing
-    /// expiries on a forged token (both a bad signature and an expiry reject opaquely upstream
-    /// anyway, but checking the signature first means the claims are only trusted once
-    /// authenticated).
     pub fn verify(
         &self,
         token: &str,
@@ -356,12 +245,6 @@ impl TokenVerifier {
         self.verify_body(body, now, expected_aud)
     }
 
-    /// [`Self::verify`] over the two signed segments alone, the prefix already stripped by the
-    /// caller: a ticket's body, whose prefix is the minting plane's declared one.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::verify`].
     pub fn verify_body(
         &self,
         body: &str,
@@ -371,7 +254,6 @@ impl TokenVerifier {
         self.verify_body_at(body, Some(now), expected_aud)
     }
 
-    /// Authenticate a ticket; its store checks the signed deadline without trusting node time.
     pub(crate) fn verify_ticket_body(&self, body: &str) -> Result<TokenClaims, VerifyError> {
         self.verify_body_at(body, None, Some(TICKET_AUDIENCE))
     }
@@ -395,14 +277,10 @@ impl TokenVerifier {
             .map_err(|_| VerifyError::Malformed)?;
         let signature = Signature::from_bytes(&sig_arr);
 
-        // Decode the claims to read the `kid` BEFORE trusting anything: the kid selects which
-        // verifying key to check the signature against. A claims blob that does not even parse is
-        // malformed; a well-formed one whose kid is unknown is UnknownKid (a rotated-away token).
         let claims: TokenClaims =
             serde_json::from_slice(&payload).map_err(|_| VerifyError::Malformed)?;
         let key = self.keys.get(&claims.kid).ok_or(VerifyError::UnknownKid)?;
 
-        // Authenticate the payload bytes. Only AFTER this succeeds are the claims trusted.
         key.verify(&payload, &signature)
             .map_err(|_| VerifyError::BadSignature)?;
 
@@ -410,33 +288,17 @@ impl TokenVerifier {
             return Err(VerifyError::Expired);
         }
 
-        // THE AUDIENCE BOUNDARY (fail-closed, both directions): a token is admissible exactly on the
-        // boundary whose audience it carries. No arm falls through.
         match (expected_aud, claims.aud.as_deref()) {
-            // Plain data-plane token on the plain data plane.
             (None, None) => {}
-            // Audience-bound token on the ingress expecting exactly that audience.
+
             (Some(expected), Some(aud)) if expected == aud => {}
-            // Everything else: an audience-bound token on the data plane, a plain token on an
-            // audience-checked ingress, or a different audience URI.
+
             _ => return Err(VerifyError::AudienceMismatch),
         }
         Ok(claims)
     }
 }
 
-/// The domain-separated derivation itself, as a free function so it can be asserted on directly.
-///
-/// `SHA-256(context ‖ secret ‖ domain)`. The secret is a FIXED 32 bytes and sits in the middle, so
-/// the boundary between it and the domain string is unambiguous without a length prefix — two
-/// different domains cannot produce one pre-image by moving the boundary.
-///
-/// This is generic busbar KEY HYGIENE, not the property of any one plane. It lives here, beside the
-/// root secret it derives from, because the planes that ask for a subkey are its CALLERS: a
-/// derivation that lived on one of them would make every other plane's subkey a dependency on that
-/// plane, for a function whose body mentions none of them. The context string is versioned, so
-/// changing this derivation is a new key rather than a silently different one under the same name —
-/// which is also why the bytes it emits are pinned by known-answer vectors in the tests below.
 fn subkey_seed(secret: &[u8; 32], domain: &str) -> [u8; 32] {
     busbar_contract::abi::sdk::digest::sha256(
         &[&b"busbar/subkey/v1"[..], secret, domain.as_bytes()].concat(),

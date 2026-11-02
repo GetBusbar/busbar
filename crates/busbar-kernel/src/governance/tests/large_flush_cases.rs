@@ -56,8 +56,6 @@ impl RecordStore for ChunkStore {
         self.inner.put_usage(id, window, row)
     }
     fn add_usage(&self, id: &str, window: u64, delta: &UsageDelta) -> RecordStoreResult<()> {
-        // LoadedStore's ordinary API assigns a fresh identity for each invocation. Model that
-        // real API here so a caller that reconstructs an uncertain write cannot hide duplication.
         self.add_usage_batch_deduped(crate::door::op_id(), &[(id, window, delta.clone())])
     }
     fn add_metering(&self, delta: &MeteringDelta) -> RecordStoreResult<()> {
@@ -126,8 +124,6 @@ fn input(store: &dyn RecordStore, bucket: &str, window: u64) -> u64 {
         .sum()
 }
 fn accrue_dated(gov: &GovState, key: &VirtualKey, count: u64, now: u64) {
-    // A dated raw-accrual fixture using the cell's real accrual operation. This avoids changing
-    // the process-wide rate-history holder shared by parallel tests.
     let window = super::super::budget_window(super::super::WINDOW_TOTAL, now);
     let mut cells = gov.budget.write(&key.id);
     let cell = cells
@@ -401,8 +397,7 @@ fn ordinary_large_negative_debt_uses_the_full_signed_range() {
     accrue_dated(&gov, &key, u64::MAX, now);
     gov.flush_budgets();
     store.batches.lock().unwrap().clear();
-    // Seed the final raw state of refunds after the acknowledged accrual. The real flusher must
-    // carry this valid negative debt; iterating u64::MAX single-unit refunds is unnecessary.
+
     {
         let mut cells = gov.budget.write(&key.id);
         let cell = cells.get_mut(&key.id).unwrap();
@@ -713,7 +708,7 @@ fn final_flush_joins_active_ordinary_runner(reply: Reply, legacy: bool) {
     });
     started_rx.recv().unwrap();
     let early_result = finished_rx.recv_timeout(EARLY_RETURN_OBSERVATION);
-    // Always release and join both threads before assertions, including against the old runner.
+
     release_tx.send(()).unwrap();
     let periodic_result = periodic.join();
     final_flush.join().unwrap();

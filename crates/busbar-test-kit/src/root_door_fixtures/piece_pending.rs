@@ -48,7 +48,6 @@ struct Observation {
 pub struct Watching(Arc<Observation>);
 
 impl Watching {
-    /// Install a fresh observation. A second simultaneous observation is rejected.
     #[must_use]
     pub fn install() -> Self {
         let observation = Arc::new(Observation::default());
@@ -58,7 +57,6 @@ impl Watching {
         Self(observation)
     }
 
-    /// Arm waiter observation after the delayed owner has entered its actual piece callback.
     pub fn arm_after_owner_held(&self) {
         assert_ne!(
             self.0.owner.load(Ordering::SeqCst),
@@ -68,7 +66,6 @@ impl Watching {
         self.0.armed.store(true, Ordering::SeqCst);
     }
 
-    /// Whether another eligible unit's real callback returned Pending after arming.
     #[must_use]
     pub fn waiter_pending(&self) -> bool {
         self.0.waiter.load(Ordering::SeqCst) != 0
@@ -135,10 +132,6 @@ impl Wrapped {
     }
 }
 
-/// Select the observed door only while watching, after checking the root selected this exact
-/// macro-origin function. Unobserved fixtures receive their real door unchanged.
-///
-/// One original plane is supported per process; another original is rejected before any crossing.
 #[must_use]
 pub fn select(proven: MacroDoor, selected: DoorFn) -> DoorFn {
     assert!(

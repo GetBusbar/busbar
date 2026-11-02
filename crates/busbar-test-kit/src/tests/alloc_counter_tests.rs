@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The counting allocator counts per thread. This crate's own test binary installs [`super::Counting`] as its
-//! `#[global_allocator]` (`lib.rs`).
-
 use super::{
     allocations, allocations_of, allocations_with, reset, AllocationLifetimeObservations,
     AllocationLifetimeProbe,
@@ -65,7 +62,7 @@ fn allocation_lifetime_probe_rejects_multiple_matches_even_after_address_reuse()
     let probe = AllocationLifetimeProbe::start_exact_size(SIZE);
     let first = std::hint::black_box(Vec::<u8>::with_capacity(SIZE));
     drop(first);
-    // The system may reuse the first address. A second allocation event is still ambiguous.
+
     let second = std::hint::black_box(Vec::<u8>::with_capacity(SIZE));
     drop(second);
     let observations = probe.finish();
@@ -139,9 +136,6 @@ fn allocation_lifetime_probe_refuses_zero_size() {
     let _probe = AllocationLifetimeProbe::start_exact_size(0);
 }
 
-/// The counter counts: this crate's own test binary installs [`super::Counting`] as its
-/// `#[global_allocator]` (`lib.rs`), so a heap allocation moves this thread's count and a call
-/// that allocates nothing does not.
 #[test]
 fn the_counter_counts_this_threads_allocations() {
     let one = allocations_of(|| {
@@ -174,7 +168,6 @@ fn the_counter_counts_this_threads_allocations() {
     assert_eq!(allocations(), 0);
 }
 
-/// Per thread: another thread's allocations do not reach this thread's count.
 #[test]
 fn another_threads_allocations_are_not_counted_here() {
     let here = allocations_of(|| {
@@ -186,15 +179,13 @@ fn another_threads_allocations_are_not_counted_here() {
             });
         });
     });
-    // Spawning the scoped thread allocates on THIS thread (its handle and packet), but none of
-    // the spawned thread's 32 boxes is counted here.
+
     assert!(
         here < 32,
         "{here} allocations counted on the spawning thread"
     );
 }
 
-/// `allocations_with` hands back the closure's value beside its count.
 #[test]
 fn allocations_with_returns_the_value_and_the_count() {
     let (n, v) = allocations_with(|| std::hint::black_box(vec![1_u8; 64]));

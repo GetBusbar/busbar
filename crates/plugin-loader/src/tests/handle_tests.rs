@@ -1,15 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The instance handle's own arithmetic and its one check (#74), each judged against a latch of the
-//! test's own so no case here moves the process's. The forged context refused at the host's
-//! entries is `host_services_tests::a_forged_context_is_refused_before_it_names_an_instance`; the
-//! quarantine, the FAULT of the forging op and the entropy refusal at boot are `dispatch_tests`'.
-
 use super::*;
 
-/// The SipHash-2-4 reference vectors (Aumasson and Bernstein, `vectors.h`): key `00..0f`, message
-/// `00..len-1`, for the empty, 8-byte and 16-byte messages.
 #[test]
 fn siphash24_is_the_reference_function() {
     let k = (0x0706_0504_0302_0100, 0x0f0e_0d0c_0b0a_0908);
@@ -28,8 +21,6 @@ fn leaked() -> &'static InstanceWake {
     Box::leak(Box::default())
 }
 
-/// A minted handle names its instance and no address; every handle the host did not mint names
-/// none and is counted; no context is no context, and is not counted.
 #[test]
 fn only_a_minted_handle_names_an_instance() {
     let latch = Latch::new();
@@ -74,8 +65,6 @@ fn only_a_minted_handle_names_an_instance() {
     }
 }
 
-/// A REVOKED handle (its instance quarantined, faulted, closed or let go) names nothing, and is not
-/// a forgery: its tag is the host's own.
 #[test]
 fn a_revoked_handle_names_nothing_and_is_no_forgery() {
     let latch = Latch::new();
@@ -94,9 +83,6 @@ fn a_revoked_handle_names_nothing_and_is_no_forgery() {
     );
 }
 
-/// THE LATCH: off-crossing forgeries name no instance to quarantine, so they count; at
-/// `LATCH_AT` every resolve outside a crossing is refused, the honest one included, while a
-/// crossing's own still resolves.
 #[test]
 fn the_latch_trips_at_k_and_refuses_every_off_crossing_resolve() {
     let latch = Latch::new();
@@ -125,8 +111,6 @@ fn the_latch_trips_at_k_and_refuses_every_off_crossing_resolve() {
     );
 }
 
-/// The key comes from the OS random source or not at all: a source that cannot answer is a
-/// refusal ([`LoadError::Entropy`]), never a fallback key.
 #[test]
 fn a_failing_entropy_source_is_a_refusal_not_a_weaker_key() {
     let refused = draw(|_| Err("no entropy".to_string()));
@@ -141,9 +125,6 @@ fn a_failing_entropy_source_is_a_refusal_not_a_weaker_key() {
     );
 }
 
-/// THE TICKET PERMUTATION IS A BIJECTION, exhausted at a reduced width (8-bit domain, 4-bit
-/// halves): every nonzero value maps to a distinct nonzero value and back, so uniqueness per slot
-/// is exact, as the counter's was, under every key and tweak tried.
 #[test]
 fn the_ticket_permutation_is_a_bijection_of_the_nonzero_values() {
     for (key, tweak) in [
@@ -166,13 +147,10 @@ fn the_ticket_permutation_is_a_bijection_of_the_nonzero_values() {
     }
 }
 
-/// The dispatcher's ticket key, as a dispatcher draws it at boot.
 fn tkey() -> TicketKey {
     ticket_key().expect("the OS random source answers")
 }
 
-/// Consecutive mints of one slot have varied strides, while the inverse names each count exactly.
-/// This finite sample is a regression witness for exposing the counter, not a proof of unpredictability.
 #[test]
 fn consecutive_ticket_generations_hide_their_counter() {
     let k = tkey();
@@ -196,10 +174,6 @@ fn consecutive_ticket_generations_hide_their_counter() {
     );
 }
 
-/// RED (#74, WORKER-TWEAK SEPARATION): the same slot index on two workers runs two unrelated
-/// sequences, and a generation one worker minted inverts, on the other, to no count it reached. A
-/// tweak that left the worker out would give every worker's slot `idx` one sequence: a ticket a
-/// plugin held on worker 0, re-addressed to worker 1's slot, would pass there as a stale wake.
 #[test]
 fn red_two_workers_share_no_ticket_sequence() {
     let k = tkey();
@@ -210,8 +184,7 @@ fn red_two_workers_share_no_ticket_sequence() {
         same <= 1,
         "worker 0 and worker 1 share slot 5's sequence at {same} of 64 mints"
     );
-    // Worker 0's first 64 generations, judged on worker 1's slot 5 having reached count 64: each
-    // inverts past 64 (a forgery there), but for a 64-in-2^32 chance per generation.
+
     let passed = w0
         .iter()
         .filter(|g| (1..=64).contains(&ticket_count(k, 1, 5, **g)))
@@ -222,9 +195,6 @@ fn red_two_workers_share_no_ticket_sequence() {
     );
 }
 
-/// RED (#74, NO SUPPLIER): a forged ticket generation the host itself woke (a connector's
-/// readiness: no instance supplied it) counts toward the latch; one an instance supplied
-/// quarantines that instance and does NOT count toward it. Judged against this test's own latch.
 #[test]
 fn red_a_forged_ticket_with_no_supplier_counts_toward_the_latch() {
     let latch = Latch::new();
@@ -241,8 +211,7 @@ fn red_a_forged_ticket_with_no_supplier_counts_toward_the_latch() {
         (2, 1),
         "a supplied forged ticket was counted as unattributed"
     );
-    // The supplied forgery above counts nothing toward the trip, so the supplier-less count is
-    // still 1 here: LATCH_AT - 2 more leave it one short, and the LATCH_AT-th trips it.
+
     for _ in 1..LATCH_AT - 1 {
         forged_ticket(None, &latch);
     }

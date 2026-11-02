@@ -1,16 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The host calls a door's optional `migrate` and reads the plugin's own migration back; a door
-//! that states none is not called.
-
 use busbar_contract::abi::sdk::migrate::{Migrate, MigrateNeed, Migrated};
 
 use super::migrate_door;
 use crate::dispatch::load::raw;
 
-/// The stub plugin's migration: renames `signing-secret` to `signing_secret` and asks core to allow
-/// the host its `url` names.
 pub(crate) struct Stub;
 impl Migrate for Stub {
     fn migrate(mut settings: serde_json::Value, from: &str) -> Migrated {

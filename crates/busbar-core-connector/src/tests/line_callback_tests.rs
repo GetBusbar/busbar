@@ -6,8 +6,6 @@ use crate::callback_waker::Probe;
 
 #[test]
 fn every_busy_line_poll_owns_raw_wakers_before_taking_state() {
-    // This is the state while the real hand-off's owner is in a carrier. Exercise every waiting
-    // entry point; a clone callback can inspect both host locks without blocking this test.
     let line = Arc::new(Line {
         state: Mutex::new(State {
             conn: None,

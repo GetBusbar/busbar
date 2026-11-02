@@ -56,61 +56,22 @@ use tokio::sync::oneshot;
 pub struct CallRef(pub u64);
 
 impl CallRef {
-    /// The reserved "no call" ref. Never minted; a plane returns it (or `None`) to say a frame
-    /// correlates to nothing.
     pub const NONE: CallRef = CallRef(0);
 
-    /// `true` when this is the reserved [`CallRef::NONE`].
     #[must_use]
     pub fn is_none(self) -> bool {
         self.0 == 0
     }
 }
 
-/// How long EOF waits for in-flight handlers to finish before the loop returns anyway. Long enough
-/// for the ordinary one-shot invocation (a frame whose answer is computed in milliseconds, with EOF
-/// already on the pipe) and short enough that a handler that cannot or will not finish does not hold
-/// the loop open. A supervising launcher's close-then-wait-then-kill reads a bound this size as
-/// prompt.
 const EOF_DRAIN: std::time::Duration = std::time::Duration::from_secs(3);
 
-/// How many of ONE session's inbound frames may be in a handler at the same time. A peer writes as
-/// fast as it likes and the handling is concurrent, so without a cap a flood mints one task per frame
-/// and the node's memory is the peer's to spend. Wide enough that ordinary interleaved work never
-/// touches it, and reached only by a peer outrunning its own answers.
-///
-/// The cap is on the HANDLER, never on the reader's routing: a classified REPLY is delivered before
-/// this gate, so a handler parked in [`DuplexHandle::issue`] is always reachable by the answer it is
-/// waiting for, however many siblings hold permits.
 const MAX_INFLIGHT_HANDLERS: usize = 256;
 
-/// How many of ONE session's inbound non-reply frames may be WAITING for a handler permit. This is
-/// the second half of the rule the permit cap states: the reader must never be the thing that waits
-/// for a permit, because the reader is the only path to the frames the permit-holders are waiting
-/// for. A session whose handlers all park in [`DuplexHandle::issue`] holds every permit; if the next
-/// frame off the wire is not a reply and the reader stops to acquire a permit for it, the replies
-/// those handlers need are queued behind a reader that will never move again, and the session is
-/// wedged for good — no timeout, no EOF, nothing but the peer eventually giving up.
-///
-/// So the reader HANDS OFF instead of waiting: a non-reply frame is parked here and a separate
-/// dispatcher does the waiting, leaving the reader free to keep classifying and routing replies. The
-/// depth matches the handler cap, so a peer must have every handler in flight AND this many more
-/// frames outstanding before the bound is reached at all.
 const MAX_QUEUED_FRAMES: usize = MAX_INFLIGHT_HANDLERS;
 
-/// The queue's actual depth. A frame occupies a slot from the moment the reader accepts it until the
-/// dispatcher has spawned its handler, and the reader runs ahead of the dispatcher — so the slots a
-/// session may legitimately hold at once are the ones the handlers are running on PLUS the ones
-/// genuinely waiting for a permit. Sizing the channel to only the waiting half would refuse a peer
-/// that is merely within both bounds but faster than the dispatcher's next poll.
 const QUEUE_DEPTH: usize = MAX_INFLIGHT_HANDLERS + MAX_QUEUED_FRAMES;
 
-/// The largest ONE inbound frame may be on the byte path. A frame is a line, so a peer that never
-/// writes the terminator is writing a single frame that grows for as long as it keeps typing — with
-/// no cap, until the allocation fails. The bar is the same one an inbound request body is held to
-/// ([`crate::config::limits::DEFAULT_REQUEST_BODY_MAX_BYTES`]): a payload this transport carries may
-/// not be larger than one the gateway would accept through its front door. Reaching it is a framing
-/// fault, not a big frame, and the session ends there.
 const MAX_FRAME_BYTES: usize = crate::config::limits::DEFAULT_REQUEST_BODY_MAX_BYTES;
 
 /// The two callbacks a plane supplies to bind this transport. The transport is generic over the
@@ -140,41 +101,15 @@ pub struct DuplexHandle {
 }
 
 impl DuplexHandle {
-    /// Write ONE frame under the single write lock, framed however the bound [`FrameSink`] frames.
-    /// Over the newline byte sink (the [`serve`] path) that is the bytes then the `0x0A` terminator, so
-    /// a caller composing such a frame must not embed a newline; over the message sink (the
-    /// [`serve_messages`] path) the frame IS one whole message and no terminator is added. The handle
-    /// stays framing-agnostic: it hands the sink one frame and the sink decides the wire shape.
-    ///
-    /// `Err` means the frame did NOT reach the far end. The transport does not decide what that
-    /// costs — only the caller knows what it was writing, and the answers genuinely differ: an
-    /// answer to a request the far end is blocked on is a lost obligation (the caller must say so),
-    /// while a fire-and-forget notification is a line worth a diagnostic and nothing more. What the
-    /// transport must NOT do is what it used to: discard the error and report success.
     pub async fn emit(&self, frame: Vec<u8>) -> std::io::Result<()> {
         let mut out = self.shared.sink.lock().await;
         out.send(frame).await
     }
 
-    /// Mint a fresh, non-zero [`CallRef`] for a call this side is about to issue. Monotonic for the
-    /// life of the channel; never returns [`CallRef::NONE`].
     pub fn mint(&self) -> CallRef {
         CallRef(self.shared.next_ref.fetch_add(1, Ordering::Relaxed))
     }
 
-    /// Issue a call: register `call` as awaiting an answer, [`emit`](Self::emit) `frame`, and await
-    /// the reply frame the reader routes back when [`DuplexPlane::classify`] later names this
-    /// `call`. `None` when the channel closes before an answer arrives.
-    ///
-    /// The caller mints `call` with [`mint`](Self::mint) and embeds it into `frame` however its wire
-    /// spells a correlation id; the registration happens BEFORE the frame is written, so a reply
-    /// that races back cannot find an empty table.
-    ///
-    /// The registration is owned by THIS future for as long as it lives: dropping the future — the
-    /// ordinary end of a caller that wrapped the await in a `tokio::time::timeout`, or of any
-    /// `select!` losing arm — takes the entry back out. Nothing else can: only a routed reply or the
-    /// caller itself ever knows the call is over, so a cancelled await that left its entry in place
-    /// would strand one dead sender per abandoned call for the life of the channel.
     pub async fn issue(&self, call: CallRef, frame: Vec<u8>) -> Option<Vec<u8>> {
         let (tx, rx) = oneshot::channel();
         self.shared.pending.lock().unwrap().insert(call.0, tx);
@@ -182,22 +117,16 @@ impl DuplexHandle {
             shared: self.shared.clone(),
             call: call.0,
         };
-        // THIS caller's policy: a call whose frame never reached the far end can never be answered,
-        // so waiting on it is waiting for nothing — the call fails NOW rather than at whatever
-        // deadline the caller happens to be holding; the guard withdraws the registration.
+
         if let Err(e) = self.emit(frame).await {
             tracing::debug!(error = %e, call = call.0, "duplex: the frame issuing a call could not be written; failing the call");
             return None;
         }
-        // `Err` is the channel closing (EOF dropped the sender) before an answer arrived; either way
-        // the guard clears the entry as this frame unwinds.
+
         rx.await.ok()
     }
 }
 
-/// The lifetime of ONE call's registration in the correlation table, tied to the [`DuplexHandle::issue`]
-/// future's own frame. On drop it removes the entry — whether the call was answered, the channel
-/// closed under it, or the awaiting future was cancelled.
 struct PendingCall {
     shared: Arc<Shared>,
     call: u64,
@@ -209,45 +138,19 @@ impl Drop for PendingCall {
     }
 }
 
-/// The shared spine of one channel: the locked sink, the correlation table, the ref mint, and the
-/// in-flight handler registry. Non-generic over the sink — it is type-erased at the entry point
-/// ([`serve`] or [`serve_messages`]) so a [`DuplexHandle`] a plane holds carries neither the writer
-/// type nor the framing it speaks.
 struct Shared {
-    /// ONE sink, ONE lock — see the module header, rule 2. Type-erased to a boxed [`FrameSink`] so a
-    /// [`DuplexHandle`] a plane holds carries neither the concrete writer type nor which framing
-    /// (newline bytes vs one-message-per-frame) the bound transport speaks.
     sink: tokio::sync::Mutex<Box<dyn FrameSink>>,
-    /// Calls issued on this side awaiting their answer, keyed on the raw [`CallRef`] number.
+
     pending: Mutex<HashMap<u64, oneshot::Sender<Vec<u8>>>>,
-    /// The monotonic mint; starts at 1 so [`CallRef::NONE`] (`0`) is never handed out.
+
     next_ref: AtomicU64,
-    /// In-flight per-frame handlers, keyed on a private sequence so each removes itself on
-    /// completion (bounded memory) and the drain can tell whether any are still running. The key is
-    /// RESERVED under the lock before the handler is spawned, so a handler that finishes first can
-    /// only ever remove a key that already exists — the dispatcher never writes an entry back in
-    /// behind it.
-    ///
-    /// Deliberately carries no abort handle: EOF drain stops waiting on a straggling handler rather
-    /// than forcing it, per the hold-discipline rule against `JoinHandle::abort` (see
-    /// [`drain_and_flush`]'s cooperative stop for why).
+
     inflight: Mutex<std::collections::HashSet<u64>>,
-    /// The private sequence behind the `inflight` keys.
+
     next_inflight: AtomicU64,
-    /// THIS SESSION'S handler permits — [`MAX_INFLIGHT_HANDLERS`] of them. A permit is taken before
-    /// the handler is spawned and released when it finishes, so a saturated session parks the
-    /// DISPATCHER rather than spawning into it, and the flood lands back on the peer's own transport
-    /// by way of the queue filling and then the session ending. The reader itself never touches this
-    /// semaphore — see [`MAX_QUEUED_FRAMES`] for why that separation is the whole point.
+
     handlers: Arc<tokio::sync::Semaphore>,
-    /// Non-reply frames the reader has handed off but the dispatcher has not yet turned into a
-    /// spawned handler. Counted so the end-of-session drain can tell "nothing left to do" apart from
-    /// "the handoff has not been polled yet": a one-shot invocation is one frame and then EOF, and
-    /// its handler may well not exist at the instant the reader sees the close.
-    ///
-    /// The invariant the drain relies on: a frame is counted here from the moment the reader accepts
-    /// it until the moment the dispatcher has RESERVED its `inflight` slot, so the union of the two
-    /// is never momentarily empty while work remains.
+
     queued: std::sync::atomic::AtomicUsize,
 }
 
@@ -266,8 +169,6 @@ trait FrameSink: Send {
     async fn flush(&mut self) -> std::io::Result<()>;
 }
 
-/// The BYTE framing: a frame is its bytes then the `0x0A` terminator — byte-for-byte the wire the
-/// stdio pump always spoke. Wraps any `AsyncWrite`.
 struct NewlineSink<W> {
     writer: W,
 }
@@ -276,8 +177,7 @@ struct NewlineSink<W> {
 impl<W: AsyncWrite + Unpin + Send> FrameSink for NewlineSink<W> {
     async fn send(&mut self, mut frame: Vec<u8>) -> std::io::Result<()> {
         frame.push(b'\n');
-        // The write AND the flush both carry: a `write_all` that succeeded into a buffer the flush
-        // then failed to drain is a line that never reached the far end, which is the same loss.
+
         self.writer.write_all(&frame).await?;
         self.writer.flush().await
     }
@@ -286,9 +186,6 @@ impl<W: AsyncWrite + Unpin + Send> FrameSink for NewlineSink<W> {
     }
 }
 
-/// The MESSAGE framing: a frame IS one whole message, emitted with no terminator. Wraps any
-/// `Sink<Vec<u8>>` — the already-upgraded write half of a message duplex (e.g. a WebSocket, whose
-/// text/binary payloads a caller has mapped to frame bytes at the upgrade site).
 struct MessageSink<Sk> {
     sink: Sk,
 }
@@ -296,10 +193,6 @@ struct MessageSink<Sk> {
 #[async_trait::async_trait]
 impl<Sk: Sink<Vec<u8>> + Unpin + Send> FrameSink for MessageSink<Sk> {
     async fn send(&mut self, frame: Vec<u8>) -> std::io::Result<()> {
-        // `SinkExt::send` feeds then flushes; the message is one frame, so there is no terminator to
-        // add. A closed sink REFUSES the frame, and says so: the caller's own policy decides what
-        // that costs, exactly as on the byte path. The sink's error type is the caller's and carries
-        // no bound this module can name, so the loss is reported without it.
         self.sink
             .send(frame)
             .await
@@ -313,12 +206,8 @@ impl<Sk: Sink<Vec<u8>> + Unpin + Send> FrameSink for MessageSink<Sk> {
     }
 }
 
-/// What a message sink's own (unnameable) error becomes on the way out. In practice it is always the
-/// same condition: the far end closed and the sink will accept nothing more.
 const SINK_REFUSED: &str = "the message sink refused the frame (the channel is closed)";
 
-/// Assemble the shared spine over a chosen (type-erased) [`FrameSink`]. The mint starts at 1 so
-/// [`CallRef::NONE`] (`0`) is never handed out.
 fn new_shared(sink: Box<dyn FrameSink>) -> Arc<Shared> {
     Arc::new(Shared {
         sink: tokio::sync::Mutex::new(sink),
@@ -343,15 +232,6 @@ enum Offered {
     Overrun,
 }
 
-/// OFFER ONE inbound frame to the session, WITHOUT EVER WAITING. A REPLY the plane recognises goes
-/// straight to the caller awaiting it and reaches no handler; everything else is handed to the
-/// dispatcher through the bounded queue. Shared by both entry points so the correlation contract is
-/// written once, regardless of framing.
-///
-/// This function is deliberately synchronous. It is called from the reader loop, and the reader loop
-/// is the only path to the frames that in-flight handlers are parked waiting for; anything the reader
-/// waits on is therefore something a peer can choose never to release. Waiting for a handler permit
-/// here is exactly that mistake — see [`MAX_QUEUED_FRAMES`].
 fn offer_frame<P: DuplexPlane>(
     shared: &Arc<Shared>,
     plane: &Arc<P>,
@@ -362,12 +242,10 @@ fn offer_frame<P: DuplexPlane>(
         if let Some(tx) = shared.pending.lock().unwrap().remove(&call.0) {
             let _ = tx.send(frame);
         }
-        // A reply to a call nobody is waiting on is dropped: with no plane-side meaning to consult,
-        // the transport has nothing to answer it with.
+
         return Offered::Accepted;
     }
-    // Counted BEFORE the handoff so the drain never sees an empty union while this frame is in the
-    // air; withdrawn again if the queue refuses it.
+
     shared
         .queued
         .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
@@ -385,17 +263,6 @@ fn offer_frame<P: DuplexPlane>(
     }
 }
 
-/// START THE DISPATCHER for one session: the task that does the waiting the reader must not do. It
-/// takes queued non-reply frames in the order the reader accepted them, acquires a handler permit for
-/// each (parking here, where parking costs nothing but the queue backing up), and spawns the handler
-/// under a private key so it clears itself on completion and the EOF path can tell when the drain is
-/// done.
-///
-/// Returns the sender the reader hands frames to, the dispatcher's own handle, and a STOP signal the
-/// end of the session raises instead of aborting the task (see [`drain_and_flush`]). The dispatcher
-/// races the stop against EVERY await point in its loop body — the queue receive AND the permit
-/// acquire — so raising it always lands promptly regardless of which one it is currently parked in;
-/// nothing here needs `JoinHandle::abort` to stop the dispatcher on a bound.
 fn spawn_dispatcher<P: DuplexPlane>(
     shared: &Arc<Shared>,
     handle: &DuplexHandle,
@@ -412,17 +279,13 @@ fn spawn_dispatcher<P: DuplexPlane>(
     let plane = plane.clone();
     let task = tokio::spawn(async move {
         loop {
-            // `biased`: on every poll, prefer noticing the stop over taking on more work, so a
-            // session already told to wind down never spawns one more handler than it has to.
             let frame = tokio::select! {
                 biased;
                 _ = stop_rx.changed() => return,
                 frame = rx.recv() => frame,
             };
             let Some(frame) = frame else { return };
-            // `Err` is a closed semaphore, which nothing here ever does; racing the stop here too is
-            // what keeps a dispatcher parked on a saturated session's permits from outliving the
-            // drain bound.
+
             let permit = tokio::select! {
                 biased;
                 _ = stop_rx.changed() => return,
@@ -435,8 +298,6 @@ fn spawn_dispatcher<P: DuplexPlane>(
     (tx, task, stop_tx)
 }
 
-/// SPAWN ONE handler for one frame, holding the permit it was admitted on. The permit rides into the
-/// task and is released when the handler finishes or is aborted.
 fn spawn_handler<P: DuplexPlane>(
     shared: &Arc<Shared>,
     handle: &DuplexHandle,
@@ -445,33 +306,19 @@ fn spawn_handler<P: DuplexPlane>(
     permit: tokio::sync::OwnedSemaphorePermit,
 ) {
     let key = shared.next_inflight.fetch_add(1, Ordering::Relaxed);
-    // RESERVE the slot before the handler exists. This runs on the dispatcher's task and the handler
-    // on the runtime's, so a handler that finishes first would otherwise clear a key not yet
-    // written — and the write would then land on a slot nobody will ever remove again, growing the
-    // registry for the life of the session.
+
     shared.inflight.lock().unwrap().insert(key);
-    // The frame is now accounted for by `inflight` instead of by the queue counter; releasing it only
-    // AFTER the reservation lands is what keeps the union of the two non-empty across the handoff.
+
     shared
         .queued
         .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
     let plane = plane.clone();
     let handle = handle.clone();
     let for_cleanup = shared.clone();
-    // No abort handle is kept: `plane.handle` is a plane-supplied future this transport does not
-    // control the inside of, and `JoinHandle::abort` can interrupt it between ANY two of its own
-    // `.await`s — exactly the kind of forced, uncontracted mid-flight interruption the hold-discipline
-    // rule this crate holds itself to exists to rule out. If EOF's bounded drain (`drain_and_flush`)
-    // elapses before this finishes, the session stops WAITING on it rather than killing it; the task
-    // keeps the `Arc<Shared>` (and its permit) alive and runs to its own natural completion, detached.
+
     tokio::spawn(async move {
         let _permit = permit;
-        // THE SLOT IS RELEASED BY A DROP GUARD, not by a statement after the `.await`. `plane.handle`
-        // is plane code: if it panics, the task unwinds past any statement written after it, and a
-        // key left behind here is one the EOF drain waits the full `EOF_DRAIN` on, then reports as
-        // a phantom straggler — for every later drain of the session. The guard runs on normal
-        // completion and on unwind alike (the sibling boundary in `host_work::handle_engine` catches the
-        // equivalent plane callback for the same reason).
+
         let _slot = InflightSlot {
             shared: for_cleanup,
             key,
@@ -480,10 +327,6 @@ fn spawn_handler<P: DuplexPlane>(
     });
 }
 
-/// ONE handler's reservation in [`Shared::inflight`], released when the handler task ends — by
-/// returning OR by unwinding out of a panicking plane callback. The release recovers a poisoned
-/// lock rather than unwrapping it: this drop can run DURING an unwind, where a second panic aborts
-/// the whole process.
 struct InflightSlot {
     shared: Arc<Shared>,
     key: u64,
@@ -499,20 +342,13 @@ impl Drop for InflightSlot {
     }
 }
 
-/// END OF SESSION: DRAIN the in-flight handlers under a bound, then STOP WAITING on the remainder
-/// (cooperatively, never forced) and flush. A one-shot invocation (one frame, then EOF/close) has its
-/// answer computed after the far end goes away, so a straight abort would serve nothing to exactly the
-/// caller who asked for one thing. Shared by both entry points.
 async fn drain_and_flush(
     shared: &Arc<Shared>,
     dispatcher: tokio::task::JoinHandle<()>,
     stop_dispatcher: tokio::sync::watch::Sender<bool>,
 ) {
     let deadline = tokio::time::Instant::now() + EOF_DRAIN;
-    // "Still working" is the UNION of frames the dispatcher has not yet spawned and handlers already
-    // running. Reading only the second would end a one-shot invocation before its single handler ever
-    // existed: the reader accepts the frame and sees the close in the same breath, and the dispatcher
-    // has not been polled once in between.
+
     let working = || {
         shared.queued.load(std::sync::atomic::Ordering::Acquire) > 0
             || !shared.inflight.lock().unwrap().is_empty()
@@ -520,18 +356,10 @@ async fn drain_and_flush(
     while working() && tokio::time::Instant::now() < deadline {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    // Stop admitting: anything still queued is a frame this session will not get to, and letting the
-    // dispatcher keep spawning past the drain would start handlers nobody is left to answer. This
-    // RAISES a signal the dispatcher races against every one of its own await points rather than
-    // aborting its task, so it always winds down on its own terms — see [`spawn_dispatcher`]. The
-    // watch send cannot fail (this fn holds the receiver's task handle, so the receiver is alive),
-    // and joining afterwards is bounded by that same race rather than by `plane.handle` finishing.
+
     let _ = stop_dispatcher.send(true);
     let _ = dispatcher.await;
-    // Whatever handlers are STILL in `inflight` past the bound above are not killed — see
-    // [`spawn_handler`] for why forcing them is exactly the interruption hold-discipline rules out.
-    // They keep the `Arc<Shared>` alive and finish on their own; this session simply stops waiting for
-    // them so a wedged handler never holds `serve`/`serve_messages` open past its bound.
+
     let stragglers = shared.inflight.lock().unwrap().len();
     if stragglers > 0 {
         tracing::debug!(
@@ -540,19 +368,12 @@ async fn drain_and_flush(
              finish in the background rather than forcing them"
         );
     }
-    // END-OF-SESSION policy: whatever is still buffered is already unanswerable — the session is
-    // over and there is no one left to tell — so a failed final flush is a diagnostic, not a
-    // failure. Recorded rather than discarded: a channel that regularly ends with undrained bytes
-    // is a real symptom, and it used to leave no trace at all.
+
     if let Err(e) = shared.sink.lock().await.flush().await {
         tracing::debug!(error = %e, "duplex: the end-of-session flush failed; buffered bytes were lost");
     }
 }
 
-/// SERVE one inbound byte-duplex channel over any `AsyncRead`/`AsyncWrite` pair until EOF, driving
-/// `plane`'s two callbacks. Returns when the reader reaches EOF (or errors) and the bounded in-flight
-/// drain completes. Generic so a plane serves its real process stdin/stdout and a test drives an
-/// in-memory duplex through the identical path.
 pub async fn serve<R, W, P>(reader: R, writer: W, plane: Arc<P>)
 where
     R: AsyncRead + Unpin,
@@ -568,10 +389,7 @@ where
     let mut buf: Vec<u8> = Vec::new();
     loop {
         buf.clear();
-        // One frame per line, split on 0x0A, and never more than one frame's worth of bytes: the read
-        // is limited to the cap plus the terminator, so a peer that never writes one cannot make this
-        // buffer grow past it. EOF — zero bytes read — ends the session; a final unterminated line is
-        // still one frame.
+
         let read = (&mut lines)
             .take((MAX_FRAME_BYTES + 1) as u64)
             .read_until(b'\n', &mut buf)
@@ -584,13 +402,10 @@ where
         if buf.last() == Some(&b'\n') {
             buf.pop();
         } else if buf.len() > MAX_FRAME_BYTES {
-            // The cap was reached with no terminator in sight: these bytes are not a frame and no
-            // later byte can make them one. A framing fault ends the session — there is no plane-side
-            // meaning to refuse it with, and reading on would only buffer more of the same.
             break;
         }
         if buf.iter().all(u8::is_ascii_whitespace) {
-            continue; // a blank line is not a frame
+            continue;
         }
         if offer_frame(&shared, &plane, &frames, std::mem::take(&mut buf)) == Offered::Overrun {
             break;
@@ -599,16 +414,6 @@ where
     drain_and_flush(&shared, dispatcher, stop_dispatcher).await;
 }
 
-/// SERVE one inbound MESSAGE-duplex channel until the stream ends, driving the SAME `plane` callbacks,
-/// correlation table and drain lifecycle as [`serve`] — the difference is framing, and nothing else.
-///
-/// Where [`serve`] frames a byte stream on `0x0A`, this takes a channel that is ALREADY
-/// message-oriented: `stream` yields one frame per message and `sink` accepts one message per frame,
-/// with no newline convention. That is exactly the shape of an already-upgraded WebSocket, whose HTTP
-/// upgrade, routing and message-kind handling (text/binary vs ping/pong/close) a caller performs at
-/// the upgrade site and reduces to `Vec<u8>` frames here — so the neutral pump names no protocol and
-/// stays out of the transport handshake. The stream ending (the peer's close, or a dropped sender)
-/// ends the session, mirroring EOF on the byte path.
 pub async fn serve_messages<St, Sk, P>(mut stream: St, sink: Sk, plane: Arc<P>)
 where
     St: Stream<Item = Vec<u8>> + Unpin,
@@ -620,8 +425,7 @@ where
         shared: shared.clone(),
     };
     let (frames, dispatcher, stop_dispatcher) = spawn_dispatcher(&shared, &handle, &plane);
-    // One frame per message, no framing to strip. The stream ending (close / dropped sender) is the
-    // message-duplex analogue of EOF.
+
     while let Some(frame) = stream.next().await {
         if offer_frame(&shared, &plane, &frames, frame) == Offered::Overrun {
             break;

@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE INSTANCE'S RECORD WRITES BEHIND THE DRIVER (ruling H2 U10, `BUSBAR-1.6.0.md` Appendix B
-//! 2026-09-30; THE DESIGN §11.11 H4/H5): write-behind is bounded (a flush cadence of at most 1 s,
-//! at most N writes a batch), a piece's record write is durable before the unit that carried it
-//! completes, and a store that hangs never holds a reload or the shutdown drain past its deadline.
-//! Run against the contract-level double of `plane_driver.rs`.
-
 use std::sync::atomic::AtomicUsize;
 use std::sync::Condvar;
 
@@ -47,14 +41,12 @@ impl Gate {
     }
 }
 
-/// The memory store's records, every put held at `gate`.
 struct Gated {
     rows: Rows,
     gate: Arc<Gate>,
 }
 
 impl RecordRows for Gated {
-    /// One writer in this test: every claim is the first.
     fn claim(
         &self,
         _kind: &str,
@@ -83,7 +75,6 @@ impl RecordRows for Gated {
     }
 }
 
-/// Runs every job on its own thread, so a store that hangs holds no runtime thread.
 struct Threads;
 
 impl Offload for Threads {
@@ -104,7 +95,6 @@ impl Offload for RefusesFirst {
     }
 }
 
-/// One job a pool was handed.
 type Job = Box<dyn FnOnce() + Send>;
 
 /// Holds every job until the test runs them; its clones share the jobs.
@@ -126,8 +116,6 @@ impl Offload for Held {
     }
 }
 
-/// The kernel's records services over a memory store read through `rows`, on `pool`, with "inst"
-/// admitted keeping `task` records.
 fn services_over(
     rows: impl FnOnce(Arc<MemoryStore>) -> Arc<dyn RecordRows>,
     pool: Arc<dyn Offload>,
@@ -144,7 +132,6 @@ fn services_over(
     (Arc::new(s), store)
 }
 
-/// `inst`'s stored value of `key`, or `None` when the store has not taken it.
 fn stored(store: &MemoryStore, key: &[u8]) -> Option<Vec<u8>> {
     store
         .record_get(task(), &record_key("inst", key))
@@ -156,7 +143,6 @@ fn completed(o: &busbar_contract::caps::Outcome) -> bool {
     matches!(o, busbar_contract::caps::Outcome::Completed)
 }
 
-/// The answers writes got, and the `Acked` that records each.
 type Answers = Arc<Mutex<Vec<Result<(), &'static str>>>>;
 
 fn answers() -> (Answers, impl Fn() -> Acked) {
@@ -168,12 +154,6 @@ fn answers() -> (Answers, impl Fn() -> Acked) {
     })
 }
 
-// ── (a) bounded: the cadence and the batch ───────────────────────────────────────────────────────
-
-/// RED (a), PAST THE TICK: a write whose flush the pool refused, with no later write and an
-/// instance whose own tick schedule has ended, is flushed by the kernel's cadence within one
-/// [`FLUSH_INTERVAL`]. Before: only a plane's `tick` restarted a flush, so the write waited forever
-/// and the unit that carried it never completed.
 #[tokio::test]
 async fn a_write_left_queued_is_flushed_within_one_interval_whatever_the_planes_ticks() {
     let (s, store) = services_over(|m| Arc::new(Rows(m)), Arc::new(RefusesFirst::default()));
@@ -189,7 +169,7 @@ async fn a_write_left_queued_is_flushed_within_one_interval_whatever_the_planes_
     let started = Instant::now();
     let unit = write(&driver, b"a=1");
     tokio::pin!(unit);
-    // Queued: the overlay answers the instance at once; the store has not taken it.
+
     assert!(
         tokio::time::timeout(Duration::from_millis(100), &mut unit)
             .await
@@ -212,8 +192,6 @@ async fn a_write_left_queued_is_flushed_within_one_interval_whatever_the_planes_
     cadence.abort();
 }
 
-/// RED (a), PAST N: a burst of more than [`BATCH_CAP`] writes queued behind one flush is carried by
-/// that flush, batch after batch, every write answered only once the store took it.
 #[test]
 fn a_burst_past_one_batch_is_carried_by_the_one_flush() {
     let held = Held::default();
@@ -240,11 +218,6 @@ fn a_burst_past_one_batch_is_carried_by_the_one_flush() {
     );
 }
 
-// ── (b) durable before the answer ────────────────────────────────────────────────────────────────
-
-/// RED (b): A PIECE'S RECORD WRITE IS DURABLE BEFORE ITS UNIT COMPLETES. While the store holds the
-/// put, the instance already reads its write (the overlay) but the unit has not completed; it
-/// completes only once the store took it.
 #[tokio::test]
 async fn a_pieces_record_write_is_in_the_store_before_its_unit_completes() {
     let gate = Arc::new(Gate::default());
@@ -283,8 +256,6 @@ async fn a_pieces_record_write_is_in_the_store_before_its_unit_completes() {
     assert_eq!(stored(&store, b"a"), Some(b"1".to_vec()));
 }
 
-/// RED (b): `records.claim` answers only after the store decided it: answered WON, the token is
-/// already spent in the store, so a fresh host over the same store (a crash) answers TAKEN.
 #[test]
 fn a_claim_is_spent_in_the_store_before_it_answers() {
     let (s, store) = services_over(|m| Arc::new(Rows(m)), Arc::new(Threads));
@@ -314,12 +285,6 @@ fn a_claim_is_spent_in_the_store_before_it_answers() {
     assert_eq!(again.value, svc::CLAIM_TAKEN);
 }
 
-// ── (c) a hung store holds neither a reload nor the shutdown drain ─────────────────────────────
-
-/// RED (c), THE DESIGN §11.11 H5: with the store hung on a unit's record write, a reload ends the
-/// unit at once (it never waits on the store), the shutdown drain gives up at its own deadline,
-/// and the write itself runs on: once the store answers it is kept (write-behind is never
-/// cancelled by a reload) and a later drain completes.
 #[tokio::test]
 async fn a_hung_store_holds_neither_the_reload_nor_the_drain() {
     let gate = Arc::new(Gate::default());

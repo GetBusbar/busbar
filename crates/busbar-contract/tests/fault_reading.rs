@@ -2,13 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A TRANSPORT THAT STATES NO FAULT READING READS AS NONE.
-//!
-//! A transport built before the fault byte was named (a carrier, whose pieces carry
-//! no status at all) wrote that byte as alignment padding, always `0`, and its tail stops short of
-//! the appended fault table, which the host then reads as absent. Both read as "no reading": the
-//! byte is `FAULT_NONE`, and `FAULT_NONE` is no `WireFault`, which the breaker reads as the
-//! caller's (it records nothing). Every stated reading round-trips; a byte no reading names is
-//! none, never a guess.
 
 use busbar_contract::abi::transport::{
     FramePiece, FAULT_CALLER, FAULT_HARD, FAULT_HEALTHY, FAULT_NONE, FAULT_TRANSIENT,

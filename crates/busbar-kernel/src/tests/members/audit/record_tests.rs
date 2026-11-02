@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The fixed audit record: one shape, no content, and a chain that catches an edit.
-
 use crate::test_support::tokens::pass;
 use busbar_contract::caps::{
     Audit as AuditStep, KernelSeal, Origin, OriginKind, Outcome, ReasonCode, StepName, UnitKey,
@@ -74,8 +72,6 @@ fn inputs(unit: u64) -> AuditInputs {
     }
 }
 
-/// The fully-populated record both frozen digests below are taken over: the enum arms that carry
-/// payloads, because those are the ones whose encoding is easiest to move by accident.
 fn frozen_record() -> busbar_kernel_audit::record::AuditRecord {
     let mut chain = AuditChain::new().sealing_as(FROZEN_NODE);
     let mut with_payloads = inputs(1);
@@ -86,17 +82,10 @@ fn frozen_record() -> busbar_kernel_audit::record::AuditRecord {
     chain.seal(with_payloads, &pass::<AuditStep>())
 }
 
-/// The node [`frozen_record`] is sealed by.
 const FROZEN_NODE: u64 = 9;
 
-/// The `v2` digest [`frozen_record`]'s fields froze when `busbar.audit.digest.v2` was published,
-/// with `currency` `"USD"` in the preimage. Pinned, never re-captured: a record sealed under `v2`
-/// carries exactly this and must keep verifying by it.
 const FROZEN_V2: &str = "ea279d25a42d6345875b06b44fa7bb558f0d05655f985d376cd37fe2e0422293";
 
-/// [`frozen_record`] AS A `v2` NODE SEALED AND STORED IT: the same fields, the `currency` text the
-/// `v2` preimage framed, and the `v2` digest. This is what "an existing record" is on a node that
-/// sealed before `v3` (#34): nothing is rewritten, it is read back and verified by its own recipe.
 fn frozen_v2_record() -> busbar_kernel_audit::record::AuditRecord {
     let mut record = frozen_record();
     record.recipe = busbar_kernel_audit::recipe::Recipe::V2 {
@@ -106,27 +95,6 @@ fn frozen_v2_record() -> busbar_kernel_audit::record::AuditRecord {
     record
 }
 
-/// THE SEALED DIGEST IS A FROZEN VALUE, not whatever today's encoder happens to produce.
-///
-/// Every record a deployment has already written is verified by recomputing this digest, so a
-/// change that moves it makes every persisted chain report itself TAMPERED at the next boot. The
-/// hex below is a value to preserve, never one to re-capture from a failing run.
-///
-/// History, and the rule it set. Moved once, before any release wrote a chain, when the record's
-/// position entered the digest. Moved a second time when the recipe became
-/// `busbar.audit.digest.v2` (#43, #71, #77(3): the record stores counts, never a price), a third
-/// when it became `busbar.audit.digest.v3` (#34: `currency` leaves the signed digest), and a fourth
-/// when it became `busbar.audit.digest.v4` (the boot's `incarnation` enters after `unit_key`). Moved
-/// a fifth time, IN PLACE, when the sealing `node` entered `v4` after `mono` (THE DESIGN §1: "when
-/// (wall + monotonic, node)"): `v4` had not shipped, and until the 1.6.0 tag a first version is
-/// edited in place with its golden regenerated in the same commit (owner, 2026-09-28). The v2 value
-/// is still pinned by [`a_record_sealed_under_v2_still_verifies_by_the_v2_rules`] and the v1 value
-/// by [`the_v1_frozen_digest_is_reproduced_by_v1_rules_from_a_v2_record`]. Moved a sixth time, in
-/// place under the same rule, when each hook that ran gained its decision `head` and its `failed`
-/// mark beside its key (audit root#3; THE DESIGN §1: "controls (... hooks applied)"): the new hex
-/// was derived outside this crate, from the published table's framing over this fixture's values,
-/// and that derivation reproduces the previous hex `05669b6c…a654` with the two fields left out.
-/// From the 1.6.0 tag on, the next move needs a new recipe beside these.
 #[test]
 fn the_sealed_digest_of_a_fully_populated_record_is_the_frozen_hex() {
     let record = frozen_record();
@@ -138,9 +106,6 @@ fn the_sealed_digest_of_a_fully_populated_record_is_the_frozen_hex() {
     );
 }
 
-/// A `v4` PREIMAGE NAMES NO CURRENCY (#34), and it is `v2` less exactly `currency`, plus
-/// `incarnation` straight after `unit_key` and `node` straight after `mono`, both numbers, and each
-/// hook's `head` (text) and `failed` (number) straight after its key. Nothing else moves.
 #[test]
 fn a_new_record_is_sealed_under_v4_and_its_preimage_is_v2_less_currency_plus_incarnation_and_node()
 {
@@ -190,13 +155,6 @@ fn a_new_record_is_sealed_under_v4_and_its_preimage_is_v2_less_currency_plus_inc
     assert!(AuditChain::verify_chain(std::slice::from_ref(&frozen_record())).is_ok());
 }
 
-/// THE RECORD NAMES THE NODE THAT SEALED IT, and the node is in the digest, the signature and the
-/// range read (THE DESIGN §1: the fixed record's WHEN is "wall + monotonic, node").
-///
-/// Two nodes sealing the same unit's facts seal two different records; a record relabelled to
-/// another node stops hashing to its sealed digest, so its signature cannot be lifted onto the
-/// other node; and the range read publishes the node beside `mono`, as a number, so a verifier
-/// attributes each record without asking.
 #[test]
 fn a_record_names_the_node_that_sealed_it_in_its_digest_and_its_range_read() {
     let seal = |node: u64| {
@@ -228,9 +186,6 @@ fn a_record_names_the_node_that_sealed_it_in_its_digest_and_its_range_read() {
     assert_eq!(body["records"][0]["node"], serde_json::json!("11"));
 }
 
-/// TWO BOOTS THAT MINT THE SAME UNIT KEY SEAL TWO DIFFERENT RECORDS. A unit key restarts with the
-/// process; the incarnation does not. Everything else equal, the digests differ and each record
-/// verifies on its own, so a record from one boot can never stand in for the other's.
 #[test]
 fn two_boots_minting_the_same_unit_key_seal_distinct_verified_records() {
     let seal = |incarnation: u64| {
@@ -253,10 +208,6 @@ fn two_boots_minting_the_same_unit_key_seal_distinct_verified_records() {
     );
 }
 
-/// AN EXISTING RECORD STILL VERIFIES, BY THE RECIPE IT WAS SEALED UNDER (#34).
-///
-/// A `v2` record read back after the upgrade recomputes to the `v2` digest it froze, and walks as a
-/// chain — the recipe change did not make a single stored record report itself tampered.
 #[test]
 fn a_record_sealed_under_v2_still_verifies_by_the_v2_rules() {
     let record = frozen_v2_record();
@@ -264,12 +215,6 @@ fn a_record_sealed_under_v2_still_verifies_by_the_v2_rules() {
     assert!(AuditChain::verify_chain(std::slice::from_ref(&record)).is_ok());
 }
 
-/// TAMPERING FAILS UNDER EITHER RECIPE — and so does moving a record between them.
-///
-/// The RED arms. A `v2` record whose frozen `currency` text is edited, a `v2` record relabelled as
-/// `v4` (dropping `currency`, adding `incarnation` and `node`), a `v4` record relabelled as `v2`,
-/// and a count, an incarnation or a node edited: each must stop hashing to its sealed digest. The relabelling
-/// arms are why the recipe does not itself need to be digested.
 #[test]
 fn tampering_fails_under_either_recipe_and_so_does_relabelling_one() {
     use busbar_kernel_audit::recipe::Recipe;
@@ -310,15 +255,6 @@ fn tampering_fails_under_either_recipe_and_so_does_relabelling_one() {
     }
 }
 
-/// THE V1 FROZEN DIGEST SURVIVES THE V2 RECIPE, and it is reproduced here from a v2 record.
-///
-/// `busbar.audit.digest.v1` is `v2` plus three priced fields at three fixed places: `pre_tier` and
-/// `priced` (text) after the usage lines and before `tier_bp`, and `hooks[].priced_delta` (text)
-/// after each `hooks[].hook`. Putting the figures the v1 record carried (600, 540, -10) back at
-/// those places and framing the list must give the v1 value this crate froze before v2 existed.
-/// That says two things at once: a v1 record is still verifiable by the v1 rules its page
-/// publishes, and v2 differs from v1 by exactly those three fields and nothing else — a v2 that
-/// had also reordered, renamed or dropped a field would not reproduce the v1 bytes.
 #[test]
 fn the_v1_frozen_digest_is_reproduced_by_v1_rules_from_a_v2_record() {
     use busbar_kernel_audit::recipe::{digest_fields, digest_over, DigestField, DigestValue};
@@ -375,8 +311,7 @@ fn the_correlation_label_is_hashed_and_the_label_itself_is_gone() {
         busbar_kernel_audit::digest::sha256_hex(b"customer-order-99"),
         "the record carries the digest of the label"
     );
-    // And the label is nowhere in the record. Checked over the whole rendered record rather than
-    // field by field, because the point is that there is NO path that keeps it.
+
     let rendered = format!("{record:?}");
     assert!(
         !rendered.contains("customer-order-99"),
@@ -400,7 +335,6 @@ fn editing_any_recorded_fact_is_caught() {
         .map(|i| chain.seal(inputs(i), &pass::<AuditStep>()))
         .collect();
 
-    // Every one of these is a fact somebody would have a reason to change.
     let edits: Vec<(&str, Edit)> = vec![
         ("the tier", |r| r.usage.tier_bp += 1),
         ("the fee count", |r| r.usage.fee_count += 1),
@@ -462,7 +396,6 @@ fn editing_any_recorded_fact_is_caught() {
         assert_eq!(brk.at_index, 2);
     }
 
-    // And a record removed from the middle breaks the link rather than the digest.
     records.remove(1);
     let brk = AuditChain::verify_chain(&records).unwrap_err();
     assert_eq!(brk.kind, AuditBreakKind::LinkMismatch);
@@ -470,8 +403,6 @@ fn editing_any_recorded_fact_is_caught() {
 
 #[test]
 fn two_nodes_do_not_digest_the_same() {
-    // A subject whose identity was left out of the digest would let one node's record stand in for
-    // another's.
     let mut chain = AuditChain::new();
     let mut a = inputs(1);
     a.subject = Subject::Node(1);
@@ -485,15 +416,12 @@ fn two_nodes_do_not_digest_the_same() {
 
 #[test]
 fn a_plane_contributes_exactly_two_identifiers() {
-    // The claim the fixed record is FOR. A caller says what kind of operation this was and how it
-    // finished; every other field is the same shape whichever door the request came in through.
     let mut chain = AuditChain::new();
     let mut other_plane = inputs(1);
     other_plane.what.op_class = OpClassId::new("tool.call");
     other_plane.outcome.finish = FinishClass::TurnComplete;
     let record = chain.seal(other_plane, &pass::<AuditStep>());
 
-    // Same shape, different two ids.
     assert_eq!(record.what.op_class.as_str(), "tool.call");
     assert_eq!(record.outcome.finish, FinishClass::TurnComplete);
     assert_eq!(record.recipe, busbar_kernel_audit::recipe::Recipe::V4);
@@ -516,8 +444,6 @@ fn a_chain_resumed_from_a_persisted_tail_continues_it() {
     assert!(AuditChain::verify_chain(&all).is_ok());
 }
 
-/// A record carries WHERE it sits, and the position is digested — so a run cannot be renumbered to
-/// hide a hole, and a walk can tell a contiguous run from one with records taken out of it.
 #[test]
 fn a_record_carries_its_position_and_the_position_is_digested() {
     let mut chain = AuditChain::new();
@@ -528,9 +454,7 @@ fn a_record_carries_its_position_and_the_position_is_digested() {
         records.iter().map(|r| r.seq).collect::<Vec<_>>(),
         vec![1, 2, 3]
     );
-    // Renumbering is caught twice over: the walk sees a position that is not the next one, and the
-    // record no longer hashes to its own fields — so nobody can close a hole by renumbering what is
-    // left of a run.
+
     let mut renumbered = records.clone();
     renumbered[1].seq = 7;
     assert_eq!(
@@ -547,9 +471,6 @@ fn a_record_carries_its_position_and_the_position_is_digested() {
     );
 }
 
-/// HEAD truncation: the oldest records dropped. What is left links and numbers perfectly among
-/// itself, and the only thing that says anything is missing is that the run does not begin where
-/// the chain does — which is exactly what the genesis-anchored entry point requires.
 #[test]
 fn a_run_missing_its_oldest_records_does_not_verify_against_the_genesis() {
     let mut chain = AuditChain::new();
@@ -564,13 +485,9 @@ fn a_run_missing_its_oldest_records_does_not_verify_against_the_genesis() {
         "the break is at the record that should be the genesis"
     );
 
-    // The same run read as a WINDOW of a longer chain is fine: a bounded store's oldest retained
-    // record has legitimately lost its predecessor.
     assert!(AuditChain::verify_window(&records[1..]).is_ok());
 }
 
-/// A cut INSIDE a window is still caught, so the window anchor excuses the missing head and
-/// nothing else.
 #[test]
 fn a_window_verifies_a_contiguous_middle_run_and_not_a_gapped_one() {
     let mut chain = AuditChain::new();
@@ -588,14 +505,10 @@ fn a_window_verifies_a_contiguous_middle_run_and_not_a_gapped_one() {
 
 #[test]
 fn an_empty_run_verifies_and_the_limit_is_deliberate() {
-    // Nothing in the records themselves can tell "no records" from "every record deleted", so
-    // claiming otherwise would be claiming a guarantee this cannot provide.
     assert!(AuditChain::verify_chain(&[]).is_ok());
 }
 
-/// One hand-edit to a sealed record.
 type Edit = fn(&mut busbar_kernel_audit::record::AuditRecord);
 
-/// What a break SAYS, and the two halves of the checks that find one.
 #[path = "break_reporting_tests.rs"]
 mod break_reporting_tests;

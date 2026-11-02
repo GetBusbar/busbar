@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Actual loaded door controls for the private queued-answer custody. These use the existing
-//! public submit/wait/Future/release API; the caller-owned Done contract must not change.
-
 use super::*;
 use crate::dispatch::{load_linked, Bind, ConnTable, Kind, LinkedRow, NoSink, NO_BLOB};
 use busbar_contract::abi::mechanism::{
@@ -318,8 +315,7 @@ fn cancelled_call_releases_cancel_answer_once_and_late_wake_cannot_commit() {
     until(|| state.released.load(Ordering::SeqCst) == 1);
     assert_eq!(state.cancels.load(Ordering::SeqCst), 1);
     wake(&p, ticket);
-    // A later op on the same worker is a processing barrier for the late-wake message.
-    // Exactly that new op may commit; the canceled operation must never run again.
+
     let barrier = d.mint(0).unwrap();
     let done = d
         .submit(&p, barrier, slot::TICK, frame(0), DeadlineClass::Call, 0)
@@ -481,7 +477,6 @@ fn unread_short_or_ticket_abandon_returns_once_outside_locks() {
         if end == "unread" {
             drop(reply);
         } else {
-            // The unread completion is still alive: the ticket owner must retire independently.
             until(|| state.released.load(Ordering::SeqCst) == 1);
             drop(reply);
         }
@@ -501,7 +496,7 @@ fn replacing_a_worker_retires_completed_and_late_short_storage() {
     for late in [false, true] {
         let (d, p, ptr) = rig();
         let state = unsafe { &*ptr };
-        // Always unblock a crossing on unwind, before Dispatcher joins its threads.
+
         struct Unblock<'a>(&'a AtomicBool);
         impl Drop for Unblock<'_> {
             fn drop(&mut self) {
@@ -524,8 +519,7 @@ fn replacing_a_worker_retires_completed_and_late_short_storage() {
             assert!(reply.wait(WAIT).unwrap().short);
         }
         let worker = d.worker(0).unwrap();
-        // The watchdog's actual retirement operation, applied while the fixture's crossing
-        // is either complete or explicitly held; retired entries drop after the lock.
+
         let gone = {
             let mut st = worker.lock();
             st.dead = true;

@@ -1,21 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE BOOT INSTALLS ITS LOGGING ONCE — over the REAL binary, in the two boot shapes the shadow
-//! oracle's `BOOT-130` (a refusal raised after logging is up) and `BOOT-W14` (a clean boot's
-//! in-memory store warning) cells record.
-//!
-//! The host's logging is two process-wide installs: the `tracing` subscriber, and `tracing-log`'s
-//! `LogTracer` as the `log` logger (`BUSBAR-1.6.0.md` THE DESIGN, "Plugin logging": "the plugin
-//! image installs it, and so does the host"). In a build with plugins compiled in, the plugin image
-//! IS the host image, so the door macro's call capture and the host share one `log` logger slot.
-//! Loading the config runs the configured export instance's door (the oracle baseline configures
-//! one, `metrics` over the compiled-in `prometheus` plugin) before the subscriber goes up, so the
-//! capture's best-effort install took the slot first and the host's combined install then failed
-//! and printed `tracing subscriber already initialized`. Each install now happens once, and a
-//! failure of either is reported as itself.
-//!
-//! RED before the fix: both boots printed the line.
 #![cfg(unix)]
 #![cfg(linked_section_pools)]
 #![cfg(feature = "export-prometheus")]
@@ -26,12 +11,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
-/// The line a second install printed.
 const DOUBLE_INIT: &str = "tracing subscriber already initialized";
-/// The line the `log` bridge prints when another logger already holds the slot.
+
 const BRIDGE_TAKEN: &str = "the `log` bridge is not installed";
 
-/// Kill the child when the test ends, however it ends.
 struct Reap(Child);
 
 impl Drop for Reap {
@@ -61,8 +44,6 @@ fn fixture_dir(tag: &str) -> PathBuf {
     d
 }
 
-/// A minimal config whose `store:` is `store`, with the oracle baseline's export instance, plus the
-/// providers catalog beside it.
 fn write_configs(dir: &Path, store: &str) {
     std::fs::write(
         dir.join("providers.yaml"),
@@ -93,8 +74,6 @@ models:
     .unwrap();
 }
 
-/// Boot the binary over `dir`'s config with stdout and stderr in one file, and return that file's
-/// text once `done` holds for it or the process has exited (at most 60 s), and the exit code if any.
 fn boot_until(dir: &Path, done: impl Fn(&str) -> bool) -> (String, Option<i32>) {
     let log = dir.join("out.log");
     let out = std::fs::File::create(&log).unwrap();
@@ -127,8 +106,6 @@ fn boot_until(dir: &Path, done: impl Fn(&str) -> bool) -> (String, Option<i32>) 
     }
 }
 
-/// `BOOT-130`'s shape: a plugin store with the plugin subsystem off is refused AFTER logging is up.
-/// The refusal is the only error; the logging went up once.
 #[test]
 fn a_refusal_after_logging_is_up_reports_no_second_init() {
     let dir = fixture_dir("boot-130");
@@ -150,8 +127,6 @@ fn a_refusal_after_logging_is_up_reports_no_second_init() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// `BOOT-W14`'s shape: a clean boot over the in-memory store warns that the store is ephemeral, a
-/// line written after logging is up, and logs no second init on the way.
 #[test]
 fn a_clean_boot_reports_no_second_init() {
     const W14: &str = "store: in-memory (ephemeral)";

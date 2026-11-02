@@ -1,21 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE IDENTITY-AND-GRANT JUDGEMENT ([`validate_visibility`]) and the standing-permission
-//! primitive ([`Standing`], with [`Snapshot`], [`Lapsed`] and the [`GovResolve`] re-resolution
-//! trait), plus the one generation source ([`next_generation`]). The [`GovResolve`] impl over
-//! [`crate::governance::GovState`] re-resolves a principal by id against the live registry;
-//! `Standing::still_permitted` drives it, so the primitive names no governance type.
-
 use std::sync::Arc;
 
 use busbar_contract::records::VirtualKey;
 
-/// Core-side [`GovResolve`]: re-resolve a principal by its stable subject id against the LIVE
-/// governance registry. This is the one core capability a [`Standing`] re-ask needs; threading it as
-/// a trait keeps the standing primitive itself transport-neutral (it holds an `id`, re-asks through
-/// this, and never names `GovState`). An in-memory index read — no store round trip, nothing to
-/// await — exactly as the pre-relocation `Standing::still_permitted` performed inline.
 impl GovResolve for crate::governance::GovState {
     fn resolve_by_sub(&self, sub: &str) -> Option<Arc<VirtualKey>> {
         self.lookup_by_sub(sub)
@@ -30,31 +19,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::TrustState;
 
-/// THE GENERATION SOURCE. Monotonic, process-global, taken once per snapshot BUILD.
-///
-/// One counter for every snapshot in the process rather than one per protocol, because the value's
-/// only job is to be different after a change and a second counter is a second thing to keep
-/// monotonic. Starts at 1 so `0` is never live and can be used as an unambiguous "nothing selected".
 static GENERATION: AtomicU64 = AtomicU64::new(1);
 
-/// Take the next generation. Called once per snapshot build; never on a request path.
 pub fn next_generation() -> u64 {
     GENERATION.fetch_add(1, Ordering::Relaxed)
 }
 
-/// THE STABLE REFUSAL WORDS, RE-EXPORTED FROM THE ONE AUDIT VOCABULARY.
-///
-/// **Nothing is defined here.** The words are `crate::audit::vocab`'s, and that is the right home
-/// rather than a compromise: they are the tokens a chained record carries, so they belong to the
-/// evidence rather than to the gate that happens to produce them. Two streams spelling one refusal
-/// two ways is precisely what the audit unification existed to end, and a validator that defined its
-/// own copy would have re-opened it from the other side.
-///
-/// The re-export exists so this module reads as one thing — [`Refusal::reason`] is total over the
-/// arms below, and a reader checking that every arm has a word should not have to leave the file.
-///
-/// A NEW WORD GOES TO `audit::vocab` AND IS RE-EXPORTED HERE, never added here. `IDENTITY_NOT_LIVE`
-/// is this unit's, and it is defined there with its reasoning beside the words it sits with.
 pub mod reason {
     pub use crate::audit::vocab::{
         REASON_ARTIFACT_DRIFTED as ARTIFACT_DRIFTED, REASON_EGRESS_DENIED as EGRESS_DENIED,
@@ -98,7 +68,6 @@ pub enum Refusal {
 }
 
 impl Refusal {
-    /// The stable word, named once so a new arm cannot land without one.
     pub fn reason(&self) -> &'static str {
         match self {
             Refusal::IdentityNotLive { .. } => reason::IDENTITY_NOT_LIVE,
@@ -112,9 +81,6 @@ impl Refusal {
         }
     }
 
-    /// WHICH STEP refused, `1..=4`. Read by the tests that pin the ORDER, which is the property this
-    /// module exists to hold: an assertion that a given input is refused proves nothing about
-    /// sequencing, and an assertion about WHICH step refused it proves everything.
     pub fn step(&self) -> u8 {
         match self {
             Refusal::IdentityNotLive { .. } => 1,
@@ -204,8 +170,6 @@ pub struct Generations {
 }
 
 impl Generations {
-    /// ADMISSION: there is no earlier snapshot to have outlived, because this is the one the request
-    /// is arriving on. The step still runs; it just cannot fail yet.
     pub fn at_admission(live: u64) -> Self {
         Self {
             admitted: live,
@@ -213,26 +177,16 @@ impl Generations {
         }
     }
 
-    /// DISPATCH: the request was admitted under `admitted` and the live snapshot is `live` now.
     pub fn since(admitted: u64, live: u64) -> Self {
         Self { admitted, live }
     }
 }
 
-/// IDENTITY, THEN GRANT: the one identity check and the one grant evaluator in busbar.
-///
-/// Identity first, because a principal that no longer exists has no grant to read; grant before
-/// anything about the target, so a refusal never leaks the thing it refuses. Whether a counterparty
-/// and its items are trusted is the kernel's Approve ([`super::book::TrustBook::judge`]), asked
-/// separately.
 pub fn validate_visibility(
     principal: Option<&VirtualKey>,
     now: u64,
     grants: &[Grant<'_>],
 ) -> Result<(), Refusal> {
-    // ── 1. IDENTITY ─────────────────────────────────────────────────────────────────────────────
-    // A tombstoned principal's row survives forever so billing and audit keep resolving it, which
-    // means liveness is the check and the row's existence is not.
     if let Some(p) = principal {
         if !p.is_live() || !p.enabled || p.expires_at.is_some_and(|exp| now >= exp) {
             return Err(Refusal::IdentityNotLive {
@@ -241,13 +195,9 @@ pub fn validate_visibility(
         }
     }
 
-    // ── 2. GRANT ────────────────────────────────────────────────────────────────────────────────
     for grant in grants {
         match grant {
             Grant::Scope { kind, name } => {
-                // With no principal there is no grant to narrow. That is the same posture the rest
-                // of the tree takes for an ungoverned deployment, and it is stated once, here,
-                // rather than at each call site as a skipped call.
                 let held = principal.is_none_or(|p| p.scope_allowed(kind, name));
                 if !held {
                     return Err(Refusal::NotGranted {
@@ -268,25 +218,9 @@ pub fn validate_visibility(
     Ok(())
 }
 
-// ── THE STANDING-PERMISSION PRIMITIVE (D3, relocated from busbar-core) ────────────────────────────
-//
-// A long-lived response re-asks its principal per frame rather than carrying a resolved
-// `Arc<VirtualKey>` into a `'static` future. The ONE thing that names governance, the
-// re-resolution, is threaded through the [`GovResolve`] trait (implemented over `GovState` above),
-// so a holder of a `Standing` re-asks it without ever naming governance.
-
-/// The governance re-resolution a [`Standing`] performs each frame: re-resolve a principal by its
-/// stable id. Implemented over `crate::governance::GovState` (the one governance type this
-/// primitive would otherwise name), so [`Standing::still_permitted`] stays transport-neutral.
 pub trait GovResolve {
-    /// Re-resolve the principal with subject id `sub` against the LIVE registry, or `None` when it is
-    /// gone. An in-memory index read — no store round trip, nothing to await.
     fn resolve_by_sub(&self, sub: &str) -> Option<std::sync::Arc<VirtualKey>>;
 
-    /// Re-derive a ROLE-BOUND principal's key from the LIVE `role_bindings.<module>`, or `None` when
-    /// no binding grants it any more (removed, or narrowed to no pools). A synthesized key is never
-    /// in the registry, so [`resolve_by_sub`](Self::resolve_by_sub) cannot re-check it. The default
-    /// answers `None`: a resolver that cannot see the bindings fails a bound principal CLOSED.
     fn resolve_bound(
         &self,
         _module: &str,
@@ -363,7 +297,6 @@ pub enum Lapsed {
 }
 
 impl Standing {
-    /// OPEN. Takes the principal only to read its ID off — the value is deliberately not stored.
     pub fn opened(
         principal: Option<&VirtualKey>,
         snapshot: Snapshot,
@@ -380,14 +313,6 @@ impl Standing {
         }
     }
 
-    /// RE-ASK, and hand back the principal AS IT IS NOW.
-    ///
-    /// The returned key is what the frame's grant must be read from. Returning it rather than a bare
-    /// `Ok(())` is what stops a caller re-checking here and then reading a stale copy anyway.
-    ///
-    /// `governance` is the LIVE registry, threaded as a [`GovResolve`] so this names no core type;
-    /// `None` is a deployment with governance disabled. Byte-identical to the pre-relocation core
-    /// method: the same expiry → generation → identity order, the same `Lapsed` on each miss.
     pub fn still_permitted(
         &self,
         governance: Option<&dyn GovResolve>,
@@ -406,14 +331,9 @@ impl Standing {
             }
         }
         let Some(admitted) = self.principal.as_ref() else {
-            // Governance is off, so there is no principal and nothing to re-resolve.
             return Ok(None);
         };
-        // Fail CLOSED on a governance runtime that has gone away underneath an open response: a
-        // principal that was enforced at open and cannot be re-resolved now is not a principal this
-        // frame may be written under. A registry key re-resolves by id; a role-bound key re-runs
-        // through the live bindings (a binding removed or narrowed to nothing ends it here, and a
-        // changed pool/group comes back as the principal as it is now).
+
         let (id, resolved) = match admitted {
             Admitted::Registry(id) => (id, governance.and_then(|g| g.resolve_by_sub(id))),
             Admitted::Bound { module, principal } => (

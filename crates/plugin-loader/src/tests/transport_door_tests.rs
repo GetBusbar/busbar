@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A DROPPED-IN TRANSPORT DOOR THROUGH THE REGISTRY: the neutral frame door's `cdylib`, signed
-//! first-party into a `plugins/` directory, is scanned, trusted, staged, `dlopen`ed once and
-//! admitted through the one dispatcher's door validation — its tail read into the claims the
-//! connector's registry view serves. A manifest outside the transport's version window is refused at
-//! the structural gate, and a library with no door is refused outright: the HOT transport lane is
-//! deleted (row 84), so a door is the only way a transport loads.
-
 use std::sync::Arc;
 
 use crate::both_ways::{dropped, statement};
@@ -19,15 +12,10 @@ use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::abi::transport::ROLE_FRAMER;
 
-/// The neutral frame door (`tests/fixtures/neutral_frame_door.rs`): a dropped-in transport door
-/// that frames the host's socket, built beside the test binary as this crate's example `cdylib`.
-/// A missing artifact is a failure naming the command that builds it, never a skip.
 fn fixture() -> Vec<u8> {
     std::fs::read(fixture_path()).expect("read the cdylib")
 }
 
-/// Where [`fixture`] is: the neutral frame door example, which admits against its own Statement
-/// rendering as a transport composing over nothing.
 fn fixture_path() -> std::path::PathBuf {
     let p = crate::both_ways::example_cdylib("neutral_frame_door");
     assert!(
@@ -59,8 +47,6 @@ fn bind() -> Bind {
     }
 }
 
-/// A plugin log directory of this test binary's own, named (`plugins.logs.dir`), so every sink
-/// bound under it opens its file as it is bound.
 fn log_config() -> crate::dispatch::PluginLogConfig {
     static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
     let dir = DIR.get_or_init(|| {
@@ -82,8 +68,6 @@ fn log_config() -> crate::dispatch::PluginLogConfig {
     .expect("the named directory resolves")
 }
 
-/// The fixture's manifest, stating the door's Statement rendering as its signed manifest does (the
-/// door is admitted against it).
 fn manifest() -> crate::sign::Manifest {
     let rendering = crate::dispatch::rendering_of_library(&fixture_path())
         .ok()
@@ -99,7 +83,6 @@ fn manifest() -> crate::sign::Manifest {
     }
 }
 
-/// The manifest as the structural gate reads a packed one: an artifact digest present.
 fn packed() -> crate::sign::Manifest {
     crate::sign::Manifest {
         sha256: crate::sign::sha256_hex(b"lib"),
@@ -148,9 +131,6 @@ fn a_manifest_outside_the_transport_version_window_is_refused() {
     assert!(validate_structure(&newer, b"lib", &crate::supported_abi, "").is_err());
 }
 
-/// RED: a transport library with no memory-ABI door is refused, naming the door, rather than read
-/// over another lane. The 1.5.5-shaped library exports the frozen handshake and no
-/// `busbar_plugin_door`, which is what a HOT-lane transport image was.
 #[test]
 fn a_transport_library_with_no_door_is_refused() {
     let lib = std::fs::read(crate::both_ways::example_cdylib("json_contract_auth"))
@@ -172,7 +152,6 @@ fn a_transport_library_with_no_door_is_refused() {
     );
 }
 
-/// A configuration that uses the URL schemes `schemes` and nothing else.
 fn uses(schemes: &[&str]) -> crate::boot::Uses {
     crate::boot::Uses {
         schemes: schemes.iter().map(|s| (*s).to_string()).collect(),
@@ -180,13 +159,6 @@ fn uses(schemes: &[&str]) -> crate::boot::Uses {
     }
 }
 
-/// LAW 7 FOR A DROPPED-IN TRANSPORT (`BUSBAR-1.6.0.md` l.1908-1910: "Core loads a plugin **iff** its
-/// configuration section is present. No verb configured → that plugin is never loaded."; l.351:
-/// "Select picks a dropped-in transport from the signed manifest without opening it").
-///
-/// RED before the registry opened only the transports a configured URL's scheme selects: every
-/// admitted `kind: transport` image was staged, loaded and opened, whatever the configuration
-/// dialled, so its library initialisers ran in a node that never named its scheme.
 #[test]
 fn a_dropped_transport_no_configured_scheme_selects_is_never_opened() {
     let lib = fixture();
@@ -205,13 +177,6 @@ fn a_dropped_transport_no_configured_scheme_selects_is_never_opened() {
     assert_eq!(entries.doors.len(), 1, "the scheme it claims selects it");
 }
 
-/// A DROPPED-IN TRANSPORT WRITES ITS OWN PLUGIN LOG (`BUSBAR-1.6.0.md` THE DESIGN §11.2, "Plugin
-/// logging": "all plugins should log to their plugin's log file. no logs for plugins is not an
-/// option ... The HOST writes it to that plugin instance's own log file").
-///
-/// RED before an opened transport door was bound to its instance's log file: every dropped-in
-/// transport took the bind's sink (the root's `NoSink`), so what it logged went nowhere and no
-/// transport plugin log file was ever opened.
 #[test]
 fn a_dropped_transport_is_bound_to_its_own_plugin_log_file() {
     let lib = fixture();

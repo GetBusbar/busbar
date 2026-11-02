@@ -1,30 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! STORE-OR-RAM (1.5.3) end-to-end proof: a real busbar process writes NO side-car state file.
-//!
-//! Before the state-file removal, the periodic snapshotter's first tick (which
-//! fires immediately after boot) AND the graceful-shutdown write both wrote `busbar-state.json`
-//! (or `$BUSBAR_STATE_FILE`), which the next boot restored — that is exactly what carried learned
-//! reliability state (breakers, cooldowns, latency EWMAs, hard-down latches) across a restart. This
-//! test boots the REAL binary through to "listening", sends `SIGTERM`, waits for a clean drain, and
-//! asserts the fixture directory tree is byte-for-byte the same SET OF FILES it was before boot.
-//! A green run proves the snapshotter and the shutdown write are gone, so reliability state is
-//! RAM-only (re-learned on the next boot) and the old file-restore path cannot exist.
-//!
-//! The proof is an ENUMERATION, not a pair of filenames. "No file called `busbar-state.json`" and
-//! "no file" are different claims, and only the second is the invariant: a reintroduced snapshotter
-//! under any other name is the same regression, and a check that names the two paths the old code
-//! used would report green while it happened.
-//!
-//! Unix-only: it drives the process lifecycle with `SIGTERM`, the signal busbar's graceful shutdown
-//! listens for.
 #![cfg(unix)]
-// The fixture boots a REAL busbar with a provider on a linked wire dialect; a `--no-default-features`
-// build has no wire codec compiled in and fail-closes at boot (BUSBAR-9007), which is correct product
-// behavior, not a regression. The state-file invariant under test is plane-independent, but this proof
-// of it requires a bootable server, so it is gated on the linked provider-pool section. Full-feature
-// builds still run it.
 #![cfg(linked_section_pools)]
 
 mod common;
@@ -35,7 +12,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-/// A fresh, isolated fixture directory (pid + nanos, like the cli_validate harness).
 fn fixture_dir() -> PathBuf {
     let d = std::env::temp_dir().join(format!(
         "busbar-no-state-persist-{}-{}",
@@ -56,8 +32,6 @@ fn fixture_dir() -> PathBuf {
     d
 }
 
-/// A minimal config that boots a full server: ephemeral ports (`:0`) so parallel runs never collide,
-/// admin mTLS guard waived (`admin_require_mtls: false`) and open auth so no secrets are needed, memory store (default).
 fn write_configs(dir: &Path) {
     std::fs::write(
         dir.join("providers.yaml"),
@@ -85,23 +59,17 @@ models:
     .unwrap();
 }
 
-/// A real busbar process, booted through to "listening", then stopped with SIGTERM, adds NOTHING to
-/// the directory it was pointed at — compared as a whole tree, so a state file under any name is
-/// caught, with the two paths the removed mechanism used named afterwards for a legible message.
 #[test]
 fn a_running_busbar_writes_no_state_file() {
     let dir = fixture_dir();
     write_configs(&dir);
-    let state_file = dir.join("state.json"); // the pre-removal $BUSBAR_STATE_FILE override target
-    let default_state_file = dir.join("busbar-state.json"); // the pre-removal default-next-to-config
+    let state_file = dir.join("state.json");
+    let default_state_file = dir.join("busbar-state.json");
 
-    // Combined stdout+stderr → a log file we poll for the boot marker (tracing writes to stdout).
     let log_path = dir.join("out.log");
     let log = std::fs::File::create(&log_path).unwrap();
     let log_err = log.try_clone().unwrap();
 
-    // The fixture tree as the process will find it. Everything here is ours: the two configs and
-    // the log we just opened. Anything the run adds to this set is state the process persisted.
     let before = tree(&dir);
 
     let mut child = Command::new(common::boot::exe())
@@ -115,8 +83,6 @@ fn a_running_busbar_writes_no_state_file() {
         .spawn()
         .expect("spawn busbar");
 
-    // Wait for the boot marker, failing loudly if the process dies first (so a boot failure can
-    // never masquerade as a green "no file written").
     let booted = wait_for(Duration::from_secs(30), || {
         if let Some(status) = child.try_wait().expect("try_wait") {
             panic!(
@@ -132,11 +98,8 @@ fn a_running_busbar_writes_no_state_file() {
         read_to_string(&log_path)
     );
 
-    // Under the OLD code the snapshotter's immediate first tick has already written the file by now.
     std::thread::sleep(Duration::from_millis(400));
 
-    // Graceful stop via SIGTERM (busbar's shutdown signal) — the OLD code's at-signal + post-drain
-    // writes both ran here.
     let pid = child.id().to_string();
     let killed = Command::new("kill")
         .arg("-TERM")
@@ -146,7 +109,6 @@ fn a_running_busbar_writes_no_state_file() {
         .success();
     assert!(killed, "kill -TERM {pid} failed");
 
-    // Wait for the process to actually exit (bounded); a stuck process is a test failure, not a hang.
     let exited = wait_for(Duration::from_secs(15), || {
         child.try_wait().expect("try_wait").is_some()
     });
@@ -158,8 +120,6 @@ fn a_running_busbar_writes_no_state_file() {
         );
     }
 
-    // THE GATE: the tree is exactly as the process found it. A new file under any name — the two
-    // paths the removed mechanism used, or a third nobody has thought of yet — is persisted state.
     let after = tree(&dir);
     let added: Vec<_> = after.difference(&before).collect();
     assert!(
@@ -170,9 +130,6 @@ fn a_running_busbar_writes_no_state_file() {
         read_to_string(&log_path)
     );
 
-    // The two paths the removed mechanism used, named so a regression at either reads as itself
-    // rather than as an anonymous entry in the set above. The enumeration is what makes the gate
-    // total; these two make its most likely failure legible.
     assert!(
         !state_file.exists(),
         "$BUSBAR_STATE_FILE was written at {} — the state-file mechanism must be gone",
@@ -187,12 +144,6 @@ fn a_running_busbar_writes_no_state_file() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Every file path under `dir`, recursively, relative to `dir`.
-///
-/// The gate asks "did the process leave anything behind", and only an enumeration can answer that.
-/// Naming the paths the old code happened to use answers a narrower question — the next state file
-/// under a different name walks straight past a two-filename check — so the proof is the set of
-/// files that exist after the run, compared against the set that existed before it.
 fn tree(dir: &Path) -> BTreeSet<PathBuf> {
     let mut out = BTreeSet::new();
     collect(dir, dir, &mut out);
@@ -213,7 +164,6 @@ fn collect(root: &Path, dir: &Path, out: &mut BTreeSet<PathBuf>) {
     }
 }
 
-/// Poll `cond` until it returns true or `budget` elapses; returns whether it became true.
 fn wait_for(budget: Duration, mut cond: impl FnMut() -> bool) -> bool {
     let deadline = Instant::now() + budget;
     while Instant::now() < deadline {
@@ -225,7 +175,6 @@ fn wait_for(budget: Duration, mut cond: impl FnMut() -> bool) -> bool {
     cond()
 }
 
-/// Read a file to a String, tolerating a not-yet-flushed/partial log (returns what's there).
 fn read_to_string(path: &Path) -> String {
     let mut s = String::new();
     if let Ok(mut f) = std::fs::File::open(path) {

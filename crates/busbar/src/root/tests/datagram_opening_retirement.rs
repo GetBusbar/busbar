@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The real opening owns its caller cycle until the session book accepts it.
-
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
@@ -33,8 +31,6 @@ enum Preparation {
 
 type Callback = Arc<dyn Fn() + Send + Sync>;
 
-/// Adapt the existing loan-writing fixture through its safe crossing API. Its local-user prefix
-/// doubles as a nonempty description and a queued opening message, preserving the term bytes.
 struct OpeningFramer {
     recording: Arc<Recording>,
     preparation: Preparation,
@@ -112,7 +108,6 @@ fn door() -> Arc<ClaimDoor> {
 }
 
 fn open(door: &Arc<ClaimDoor>, framer: &Arc<OpeningFramer>) -> Result<Opened, String> {
-    // Capture a local candidate only for this synchronous opening; sibling tests see no install.
     let limits = LimitsResolved {
         datagram_line_memory_bytes: Some(
             4 * busbar_core_connector::test_support::datagram_output_reservation_bytes(),
@@ -269,7 +264,7 @@ async fn a_book_refusal_retires_the_already_joined_association_outside_host_lock
         assert_host_unlocked(&door, &leg);
         let pairing = weak_pairing.upgrade().unwrap();
         assert!(pairing.closed());
-        pairing.close(); // Reentrant retirement must be inert.
+        pairing.close();
     }));
     let joining = only_joining(opened);
     let connector = Connector::new();

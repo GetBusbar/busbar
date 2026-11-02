@@ -1,42 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The per-endpoint ERROR TAXONOMY — the single declaration `openapi.json` is a projection of.
-//!
-//! `openapi_doc()` does not author response prose: it ENUMERATES [`declared_errors`] to emit each
-//! operation's 4xx responses, so a status a handler can emit is impossible to omit and a documented
-//! response no handler emits is impossible to keep. A class-level test
-//! (`admin::tests::declared_error_set_is_exactly_what_the_handlers_emit`) captures the errors the
-//! handlers ACTUALLY emit at the one wire choke point (`err_json`) and asserts that captured set
-//! equals this declaration — under-claim AND over-claim both fail, at `(operation, ErrKind, Cond)`
-//! granularity. The operations it walks are read out of the committed `openapi.json`, so an endpoint
-//! cannot escape the audit by never being added to a hand-maintained list.
-//!
-//! 401 / 403 (generic under-scope) / 405 / 429 / 500 are ALGORITHMIC: stamped on every operation by
-//! `openapi_doc()` because every operation can emit them. They are deliberately NOT declarable here
-//! (see [`err_kind_of`], which classifies them as `None`).
-//!
-//! WHICH items are live here depends on TWO independent cfgs: `openapi-schema` (the CI-only feature
-//! that compiles the generator) selects the declaration + phrasing + projection, and `test` selects
-//! the emission tagging, the recording layer, and the class-level drift audit's own inputs. The
-//! SHIPPED binary needs neither — it serves the pre-generated `openapi.json` — so items gated on
-//! `any(test, feature = "openapi-schema")` or `feature = "openapi-schema"` alone are genuinely ABSENT
-//! from a release build, not merely suppressed. `Cond` itself stays UNGATED: `err_json_cond`, a real
-//! production function, takes one as a parameter, so the enum is live in every build; only its
-//! `phrase()` method (openapi-schema doc prose) is gated.
-
 #[cfg(any(test, feature = "openapi-schema", feature = "test-support"))]
 use super::{AdminError, Scope};
 #[cfg(any(test, feature = "openapi-schema", feature = "test-support"))]
 use busbar_kernel::config::named_map::{NamedMapSection, NamedMapShape};
-
-// ── ERROR TAXONOMY → OpenAPI PROJECTION ──────────────────────────────────────────────────────────
-//
-// The per-endpoint 4xx error set is DECLARED here, once, as data — never hand-authored beside each
-// operation in `openapi_doc()`. `openapi_doc()` ENUMERATES `declared_errors` to emit the 400/404/409
-// responses; a class-level test (`json::tests`) asserts the declaration equals the set the handlers
-// can actually emit (no under-claim, no over-claim). 401/403/429/500 stay ALGORITHMIC (stamped on
-// every op) and are deliberately NOT in this table — see `openapi_doc`.
 
 /// The DOC dimension of `AdminError`: its discriminant WITHOUT payload. Each `ErrKind` maps 1:1 to a
 /// frozen `code` + HTTP status by reusing `AdminError`'s frozen tables (no second mapping). Only the
@@ -69,8 +37,6 @@ pub enum ErrKind {
 
 #[cfg(any(test, feature = "openapi-schema", feature = "test-support"))]
 impl ErrKind {
-    /// A representative `AdminError` for this kind — used only to READ its frozen `code`/`http_status`
-    /// (payloads are empty; the doc dimension carries no message).
     fn as_admin_error(self) -> AdminError {
         match self {
             ErrKind::NotFound => AdminError::not_found(""),
@@ -87,12 +53,10 @@ impl ErrKind {
         }
     }
 
-    /// The FROZEN stable code for this kind (reuses `AdminError::code`).
     pub fn code(self) -> &'static str {
         self.as_admin_error().code()
     }
 
-    /// The HTTP status for this kind (reuses `AdminError::http_status`).
     pub fn status(self) -> u16 {
         self.as_admin_error().http_status()
     }
@@ -165,8 +129,6 @@ pub enum Cond {
 }
 
 impl Cond {
-    /// The single canonical human phrasing for this condition — written ONCE. Every endpoint that
-    /// declares a `(kind, cond)` renders identically.
     #[cfg(feature = "openapi-schema")]
     pub fn phrase(self) -> &'static str {
         match self {
@@ -214,9 +176,6 @@ impl Cond {
                 "this process has no shutdown channel, so it cannot restart itself"
             }
             Cond::UnknownSection => {
-                // DERIVED, never restated: the hand-written four-name list here outlived the
-                // arrival of the `named_maps` overlay section, so the API's own error taxonomy
-                // asserted `export` was not a section while it was becoming one.
                 static PROSE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
                     format!(
                         "unknown overlay section (expected one of {})",
@@ -270,16 +229,8 @@ pub enum MethodTag {
     Delete,
 }
 
-// Every real caller needs EITHER `openapi-schema` (the `openapi_doc`-body call, and the
-// `json/tests` consistency tests, both gated on that feature alone) OR `test-support` (the
-// admin surface's taxonomy-drift audit, which drives this crate through its `test-support` build).
-// Plain `cfg(test)` alone is NOT a real caller: it left this compiled but unreachable, tripping
-// `-D dead-code` in CI.
 #[cfg(any(test, feature = "openapi-schema", feature = "test-support"))]
 impl MethodTag {
-    /// Parse an OpenAPI operation key (`"get"`, `"post"`, …) back into a tag. `None` for the `x-*`
-    /// specification extensions that share the path-item object with real operations. Called from
-    /// `openapi_doc`'s own body, so it is reachable under `feature = "openapi-schema"` alone.
     pub fn from_op_key(key: &str) -> Option<MethodTag> {
         Some(match key {
             "get" => MethodTag::Get,
@@ -295,18 +246,6 @@ impl MethodTag {
 #[cfg(test)]
 pub use crate::test_support::method_tag;
 
-/// THE ONE PLACE an endpoint's emittable 4xx error set is named. `openapi_doc()` enumerates this
-/// (through [`declared_responses`]) to emit every body-specific 400 / 403-escalation / 404 / 409;
-/// the class-level drift test asserts it equals what the handlers can actually emit. `rel` is the
-/// RELATIVE (post-`ADMIN_PREFIX`) path.
-///
-/// A templated READ (`{…}` in `rel`) with no arm of its own gets a default `[NotFound /
-/// UnknownResource]`, so a trivial single-resource GET needs no entry and cannot forget its 404.
-///
-/// NOT listed here (and not listable): 401, the generic under-scope 403, 405, 429 and 500 — every
-/// operation can emit them, so `openapi_doc()` stamps them algorithmically. (1.5.2 scope collapse
-/// removed the only per-endpoint `Forbidden` declaration — the hook-escalation refusal — since a
-/// non-`full` caller can no longer reach a hook mutation at all.)
 #[cfg(any(test, feature = "openapi-schema", feature = "test-support"))]
 pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
     use Cond::*;
@@ -318,7 +257,6 @@ pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
         };
     }
     match (method, rel) {
-        // ── Hooks (definition lifecycle) ──────────────────────────────────────────────────────
         (Post, "/hooks") => de![
             Validation / MalformedBody,
             Validation / MalformedIfMatch,
@@ -349,32 +287,18 @@ pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
             Conflict / SettingsPush,
             VersionConflict / StaleIfMatch,
         ],
-        // ── The `tools` named-map's trust verbs ───────────────────────────────────────────────
-        //
-        // `connect` reaches an operator-named endpoint, so it has one refusal the reads do not: a
-        // registration whose credential posture an operator-driven refresh cannot honour
-        // (`passthrough`, whose credential belongs to a caller that a refresh does not have). That
-        // is the operator's own configuration, hence `invalid_request` rather than a 404 or a 5xx.
-        // The two READ verbs take the default templated-read 404 and declare nothing.
+
         (Post, "/tools/{name}/connect") => {
             de![Validation / InvalidConfig, NotFound / UnknownResource,]
         }
-        // ── The `agents` named-map's trust verbs ──────────────────────────────────────────────
-        //
-        // `connect` is a PREVIEW and takes no body, so its only refusal is the unknown name: a card
-        // that will not fetch or will not verify is a 200 carrying `state: error` and the reason,
-        // because the request succeeded and what it found is that the endpoint cannot be
-        // authenticated. `approve` adds the two ways an operator's own submission can be wrong — a
-        // body that is not `{"fingerprint": …}`, and a fingerprint that is not the one the endpoint
-        // is serving. Both are `invalid_request`, and the second is the arm that keeps the approval
-        // a statement about a document a human actually read.
+
         (Post, "/agents/{name}/connect") => de![NotFound / UnknownResource,],
         (Post, "/agents/{name}/approve") => de![
             Validation / MalformedBody,
             Validation / InvalidConfig,
             NotFound / UnknownResource,
         ],
-        // ── Groups (the limit tree) ───────────────────────────────────────────────────────────
+
         (Post, "/groups") => de![
             Validation / InvalidTree,
             Validation / MalformedBody,
@@ -406,7 +330,7 @@ pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
             Conflict / BoundKeys,
             VersionConflict / StaleIfMatch,
         ],
-        // ── Plugins (dynamic-library store plugins) ───────────────────────────────────────────
+
         (Post, "/plugins") => de![
             Validation / MalformedBody,
             Validation / InvalidFilename,
@@ -414,10 +338,7 @@ pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
             Conflict / UntrustedUpload,
             Conflict / NameCollision,
         ],
-        // `POST /plugins/reload` 400s when the rebuild-from-disk fails — an on-disk config that has
-        // gone invalid since boot. This used to be undeclared because no fixture could drive it,
-        // which left `openapi.json` hiding a response clients hit. `TestApp::disk_paths` gives a
-        // snapshot real disk truth, so `drive_plugin_reload_errors` now witnesses it.
+
         (Post, "/plugins/reload") => de![Validation / InvalidConfig],
         (Post, "/plugins/rollback") => de![
             Validation / MalformedBody,
@@ -431,11 +352,9 @@ pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
         (Delete, "/plugins/{file}") => {
             de![Validation / InvalidFilename, NotFound / UnknownResource,]
         }
-        // Stateless preview of a candidate tarball — every failure
-        // mode is a malformed/oversized/untrusted-shaped INPUT, never a state conflict (it writes
-        // nothing and conflict-checks nothing), so `Validation` is its only declarable kind.
+
         (Post, "/plugins/inspect") => de![Validation / MalformedBody],
-        // ── Config plane ──────────────────────────────────────────────────────────────────────
+
         (Put, "/admin-auth") => de![
             Validation / UnknownModule,
             Validation / MalformedBody,
@@ -483,7 +402,7 @@ pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
         (Get, "/config/versions/{v}") => {
             de![Validation / NonNumericPath, NotFound / UnknownResource,]
         }
-        // ── List GETs whose query string can be rejected at the door ──────────────────────────
+
         (Get, "/audit") => de![Validation / MalformedCursor],
         (Get, "/config/versions") => de![Validation / MalformedCursor],
         (Get, "/plugins") => de![Validation / MissingRequiredQuery],
@@ -492,7 +411,7 @@ pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
         (Get, "/groups/{name}/usage") => {
             de![NotFound / UnknownResource, UnpricedClass / Unpriced]
         }
-        // ── Virtual keys (unified onto this taxonomy) ─────────────────────────────────────────
+
         (Get, "/keys") => de![Validation / MalformedCursor, Validation / InvalidQueryValue,],
         (Post, "/keys") => de![
             Validation / MalformedBody,
@@ -553,19 +472,12 @@ pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
             Conflict / NoSupervisor,
             Conflict / NotRestartable,
         ],
-        // ── The GENERIC named-DEFINITION maps (`/identity-providers`, `/export`; `tools`/`agents`
-        //    later) ────────────────────────────────────────────────────────────────────────────
-        // Declared per route SHAPE, not per section, and reached through the SAME
-        // `NamedMapSection::parse_rel` seam the router mounts from. That is what makes a new
-        // section additive here: adding the variant adds its five operations' declarations with
-        // no arm of their own. The one asymmetry is the identity-providers TRUST CEILING, which is
-        // keyed off `has_trust_ceiling()` rather than off the section's name.
+
         (m, r) if NamedMapSection::parse_rel(r).is_some() => {
             let (section, shape) = NamedMapSection::parse_rel(r).expect("just matched");
             named_map_declared_errors(m, section, shape)
         }
-        // A templated READ with no arm of its own answers 404 for an unknown resource and nothing
-        // else; every other operation carries only the algorithmic responses.
+
         _ => {
             if method == Get && rel.contains('{') {
                 de![NotFound / UnknownResource]
@@ -576,12 +488,6 @@ pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
     }
 }
 
-/// The declared 4xx set for ONE generic named-map operation, keyed on the route SHAPE (+ the trust
-/// ceiling predicate) rather than on the section — see the arm in [`declared_errors`].
-///
-/// Every listed condition is emitted with its `Cond` NAMED (`err_json_cond`) by
-/// `admin::v1::json::named_map`, so each declaration is witness-backed at condition granularity and
-/// none of them needs a `COND_WITNESS_DEBT` row.
 #[cfg(any(test, feature = "openapi-schema", feature = "test-support"))]
 fn named_map_declared_errors(
     method: MethodTag,
@@ -597,7 +503,6 @@ fn named_map_declared_errors(
         };
     }
     match (method, shape) {
-        // PUT is an UPSERT (create-or-replace), so it has no `not_found`.
         (Put, NamedMapShape::Item) if section.has_trust_ceiling() => de![
             Validation / MalformedBody,
             Validation / MalformedIfMatch,
@@ -639,25 +544,16 @@ fn named_map_declared_errors(
             Conflict / BaseDefined,
             VersionConflict / StaleIfMatch,
         ],
-        // The single-definition READ 404s on an unknown name; the collection READ takes no input
-        // it could reject.
+
         (Get, NamedMapShape::Item) => de![NotFound / UnknownResource],
         _ => &[],
     }
 }
 
-/// PROJECT the declaration onto OpenAPI `responses` entries: `(status, description)` pairs, one per
-/// distinct HTTP status the endpoint declares. Conditions that share a status are GROUPED into that
-/// one response (matching the wire shape a single `409` has always had), and within a status the
-/// clauses are grouped by their frozen `code` — so a reader always sees which code goes with which
-/// condition, and no endpoint can word the same condition two different ways.
-///
-/// This is the ONLY producer of 4xx response text in the document. `openapi_doc()` calls it and
-/// writes the result verbatim; there is no per-endpoint prose left to drift.
 #[cfg(feature = "openapi-schema")]
 pub fn declared_responses(method: MethodTag, rel: &str) -> Vec<(String, String)> {
     let declared = declared_errors(method, rel);
-    // Status → ordered list of (code, phrase), de-duplicated, in declaration order.
+
     let mut by_status: Vec<(u16, Vec<(&'static str, &'static str)>)> = Vec::new();
     for de in declared {
         let (status, code, phrase) = (de.kind.status(), de.kind.code(), de.cond.phrase());
@@ -676,7 +572,6 @@ pub fn declared_responses(method: MethodTag, rel: &str) -> Vec<(String, String)>
     by_status
         .into_iter()
         .map(|(status, clauses)| {
-            // Within one status, group the phrases under their code: "`code`: a, b | `code2`: c".
             let mut by_code: Vec<(&'static str, Vec<&'static str>)> = Vec::new();
             for (code, phrase) in clauses {
                 match by_code.iter_mut().find(|(c, _)| *c == code) {
@@ -694,9 +589,6 @@ pub fn declared_responses(method: MethodTag, rel: &str) -> Vec<(String, String)>
         .collect()
 }
 
-/// TEST-ONLY: the tag the one wire choke point (`json::err_json`) stamps on an error response, so
-/// the v1 router's test layer can fail a test whose handler emits an error `declared_errors` does
-/// not list.
 #[cfg(test)]
 pub mod observed {
     use super::{Cond, ErrKind};

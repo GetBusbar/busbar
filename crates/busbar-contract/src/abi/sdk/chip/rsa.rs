@@ -2,9 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! RSA-OAEP (SHA-1, MGF1-SHA-1; RFC 8017 7.1.1) to a server's public key: MySQL's
-//! `caching_sha2_password` full authentication on a link with no TLS. The
-//! encoded block is wiped; `num-bigint`'s own limbs for it are not (it offers no wipe), a residual
-//! that ends when chip row 4 runs this in the secret plugin.
 
 use base64::Engine as _;
 use num_bigint::BigUint;
@@ -40,12 +37,11 @@ fn rsa_public_key(der: &[u8]) -> Option<(BigUint, BigUint)> {
     }
     let (t1, first, rest) = der_item(body)?;
     if t1 == 0x30 {
-        // SubjectPublicKeyInfo: the algorithm, then a BIT STRING holding an RSAPublicKey.
         let (t2, bits, _) = der_item(rest)?;
         if t2 != 0x03 || bits.first() != Some(&0) {
             return None;
         }
-        // RFC 3279: the BIT STRING directly holds PKCS #1, never another SPKI.
+
         return pkcs1_public_key(&bits[1..]);
     }
     pkcs1_integers(t1, first, rest)
@@ -61,7 +57,6 @@ fn pkcs1_public_key(der: &[u8]) -> Option<(BigUint, BigUint)> {
 }
 
 fn pkcs1_integers(t1: u8, first: &[u8], rest: &[u8]) -> Option<(BigUint, BigUint)> {
-    // RSAPublicKey (PKCS #1): modulus, public exponent.
     let (t2, e, _) = der_item(rest)?;
     (t1 == 0x02 && t2 == 0x02).then(|| (BigUint::from_bytes_be(first), BigUint::from_bytes_be(e)))
 }

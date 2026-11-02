@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/plugin-loader/src/durable.rs`.
-
 use crate::durable::hooks::{
     fault_arm, fault_reset, parent_fsynced as fault_parent_fsynced,
     parents_fsynced as fault_parents_fsynced, plant_decoy_arm, FaultStep,
@@ -10,20 +8,13 @@ use crate::durable::hooks::{
 use crate::durable::{create_dir_all, holding_dir, write, write_with, DurableOpts};
 use std::path::{Path, PathBuf};
 
-// Linux ENOSPC=28, EIO=5; macOS shares these values. Injected via `from_raw_os_error`.
 const ENOSPC: i32 = 28;
 const EIO: i32 = 5;
-/// `EINVAL`: what `fsync(2)` answers for a descriptor that does not support synchronization.
+
 const EINVAL: i32 = 22;
 
-/// Serializes the ONE test in this file that mutates process-global CWD
-/// (`success_relative_path_fsyncs_dot`) against itself. MUST be module-level, not
-/// function-local — a function-local `static` is scoped to that function and contends with
-/// nothing (the bug this lock previously had). Still not sufficient on its own: no test
-/// OUTSIDE this file that resolves a relative path takes this lock. See that test's doc comment.
 static CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// A private scratch directory, removed on drop, so each case is hermetic and leaves nothing.
 struct Scratch {
     dir: PathBuf,
 }
@@ -41,7 +32,7 @@ impl Scratch {
     fn path(&self, name: &str) -> PathBuf {
         self.dir.join(name)
     }
-    /// Any leftover durable temp (`.<name>.<pid>-<seq>.tmp`) for `name` in the dir?
+
     fn has_durable_temp(&self, name: &str) -> bool {
         let prefix = format!(".{name}.");
         std::fs::read_dir(&self.dir).unwrap().any(|e| {
@@ -57,10 +48,6 @@ impl Drop for Scratch {
     }
 }
 
-/// The injected-failure matrix — for every step × {ENOSPC, EIO}, the write returns `Err`,
-/// the target is UNCHANGED (prior contents, or still absent), and NO durable temp remains (the
-/// RAII guard ran on every early-return path). The temp assertion catches a leaked `.tmp` on a
-/// pre-rename error; the "target unchanged" is the whole-family integrity guarantee.
 #[test]
 fn fault_matrix_returns_err_untouched_target_no_temp_leak() {
     let sc = Scratch::new("matrix");
@@ -73,7 +60,6 @@ fn fault_matrix_returns_err_untouched_target_no_temp_leak() {
     ];
     for &step in &steps {
         for &errno in &[ENOSPC, EIO] {
-            // Case A: target ABSENT before the failed write → must stay absent, no temp.
             let target = sc.path("absent.json");
             let _ = std::fs::remove_file(&target);
             fault_reset();
@@ -97,7 +83,6 @@ fn fault_matrix_returns_err_untouched_target_no_temp_leak() {
                 "step {step:?} errno {errno}: no durable temp may leak"
             );
 
-            // Case B: target has PRIOR contents → must be byte-for-byte unchanged, no temp.
             let target = sc.path("prior.json");
             std::fs::write(&target, b"OLD CONTENTS").unwrap();
             fault_reset();
@@ -117,7 +102,6 @@ fn fault_matrix_returns_err_untouched_target_no_temp_leak() {
     }
 }
 
-/// Success on an ABSOLUTE path round-trips and leaves no temp.
 #[test]
 fn success_absolute_path_roundtrips_no_temp() {
     let sc = Scratch::new("abs");
@@ -125,16 +109,12 @@ fn success_absolute_path_roundtrips_no_temp() {
     fault_reset();
     write(&target, b"payload-A").unwrap();
     assert_eq!(std::fs::read(&target).unwrap(), b"payload-A");
-    // Overwrite: still atomic, still no temp, new contents win.
+
     write(&target, b"payload-B").unwrap();
     assert_eq!(std::fs::read(&target).unwrap(), b"payload-B");
     assert!(!sc.has_durable_temp("cfg.json"));
 }
 
-/// The primitive `holding_dir` uses to resolve a RELATIVE path's parent to "." — the pure,
-/// deterministic form of the property `success_relative_path_fsyncs_dot` below also exercises
-/// through a real CWD round-trip. Covers it with NO filesystem/CWD mutation at all, so it can
-/// never be a cross-test hazard.
 #[test]
 fn holding_dir_resolves_a_relative_path_to_dot() {
     assert_eq!(holding_dir(Path::new("relative.json")), Path::new("."));
@@ -148,18 +128,6 @@ fn holding_dir_resolves_a_relative_path_to_dot() {
     );
 }
 
-/// Success on a RELATIVE path round-trips AND the parent fsync was attempted on the
-/// resolved "." — the assertion that catches a skipped relative-path parent fsync.
-///
-/// `CWD_LOCK` MUST be a module-level (not function-local) static: a `static` declared inside a
-/// function body is scoped to that function and contends with nothing, which is the same defect
-/// `store::now_for_test`'s doc documents elsewhere in this crate. Even hoisted, this lock only
-/// serializes CWD mutation AGAINST ITSELF — no OTHER test in this binary that resolves a
-/// relative path takes it, so the window between `set_current_dir` calls below is still a real
-/// (if currently unexercised) cross-file hazard. The deterministic alternative is
-/// `holding_dir_resolves_a_relative_path_to_dot` above, which needs no CWD mutation at all;
-/// this test is kept because it also exercises the write()/fsync ROUND TRIP, which the pure
-/// unit test above does not cover.
 #[test]
 fn success_relative_path_fsyncs_dot() {
     let _g = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -169,10 +137,9 @@ fn success_relative_path_fsyncs_dot() {
     std::env::set_current_dir(&sc.dir).unwrap();
     fault_reset();
 
-    // A bare file name is a relative path whose parent is empty → primitive resolves it to ".".
     let r = write(Path::new("relative.json"), b"rel-payload");
     let fsynced = fault_parent_fsynced();
-    std::env::set_current_dir(&prev).unwrap(); // restore CWD before asserting
+    std::env::set_current_dir(&prev).unwrap();
 
     r.unwrap();
     assert_eq!(
@@ -187,29 +154,22 @@ fn success_relative_path_fsyncs_dot() {
     assert!(!sc.has_durable_temp("relative.json"));
 }
 
-/// A pre-existing stale temp of a DIFFERENT (crashed-run) name is irrelevant under the
-/// primitive's per-call-unique naming — a fresh write succeeds and ignores the foreign leftover.
-/// And for the `exclusive` posture, a stale temp of our OWN about-to-use name does not wedge
-/// (pre-removed).
 #[test]
 fn stale_foreign_temp_is_ignored() {
     let sc = Scratch::new("stale");
     let target = sc.path("k.json");
-    // A foreign leftover from a prior crash (a plausible old fixed name).
+
     std::fs::write(sc.path(".k.json.tmp"), b"crashed-run leftover").unwrap();
     fault_reset();
     write(&target, b"fresh").unwrap();
     assert_eq!(std::fs::read(&target).unwrap(), b"fresh");
-    // The foreign temp is untouched (different name) — proves we didn't collide on it.
+
     assert_eq!(
         std::fs::read(sc.path(".k.json.tmp")).unwrap(),
         b"crashed-run leftover"
     );
 }
 
-/// The `exclusive` + `mode` posture (the signing key): the published file is 0600 on
-/// unix, and a pre-planted temp of our own name is cleared rather than wedging (anti-wedge), while
-/// O_EXCL still refuses to ADOPT a foreign temp we did not clear.
 #[test]
 #[cfg(unix)]
 fn exclusive_mode_publishes_0600_and_survives_stale_own_temp() {
@@ -221,7 +181,7 @@ fn exclusive_mode_publishes_0600_and_survives_stale_own_temp() {
         exclusive: true,
     };
     fault_reset();
-    // First write establishes the file 0600.
+
     write_with(&target, b"deadbeef", opts).unwrap();
     let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o600, "exclusive+mode must publish 0600");
@@ -230,14 +190,6 @@ fn exclusive_mode_publishes_0600_and_survives_stale_own_temp() {
     assert!(!sc.has_durable_temp("signing.key"));
 }
 
-/// THE ANTI-WEDGE PRE-REMOVAL. `exclusive` opens the temp with `O_EXCL`, so a leftover at the
-/// exact about-to-use name from a crashed run would make every subsequent write fail `EEXIST`
-/// forever -- the signing key could never be rotated again. The `remove_file(&tmp)` that
-/// prevents it is awkward to exercise from outside: the temp name embeds a pid and an atomic
-/// counter, so no test can name the file it needs to plant.
-///
-/// `plant_decoy_arm` plants INSIDE the primitive, at the exact path it computed, so this case
-/// fails with `EEXIST` the moment the pre-removal is dropped.
 #[test]
 fn exclusive_pre_removal_clears_a_temp_left_by_a_crashed_run() {
     let sc = Scratch::new("wedge");
@@ -263,12 +215,6 @@ fn exclusive_pre_removal_clears_a_temp_left_by_a_crashed_run() {
     );
 }
 
-/// THE REMOVE SIDE of the durability contract. Installing an artifact fsyncs the holding
-/// directory so its entry survives a power loss; removing one used to skip that (a bare
-/// `remove_file` at the plugin-delete call site), which is the asymmetric half -- a crash right
-/// after a delete could resurrect the artifact and load it on the next boot. Asserted the same
-/// way the write side is: by observing the directory the primitive actually fsync'd, including
-/// the RELATIVE-path resolution to "." that a call site cannot dodge.
 #[test]
 fn remove_unlinks_and_fsyncs_the_holding_dir() {
     let sc = Scratch::new("remove");
@@ -276,13 +222,6 @@ fn remove_unlinks_and_fsyncs_the_holding_dir() {
     fault_reset();
     write(&target, b"artifact").unwrap();
 
-    // RESET AGAIN, between the setup write and the removal under test. `fault_parent_fsynced()`
-    // returns `.last()` of a CUMULATIVE vec that only `fault_reset` clears, and the setup `write`
-    // above already pushed this same dir through `write_with` -> `sync_holding_dir`. Without this
-    // line the assertion below reads the WRITE's entry: deleting `sync_holding_dir(path)` from
-    // `remove` -- reverting it to a bare `std::fs::remove_file`, which is exactly the asymmetry
-    // this test is named for, and which lets a crash after a plugin delete resurrect the artifact
-    // -- left `.last()` still `Some(sc.dir)` and the test still green.
     fault_reset();
 
     crate::durable::remove(&target).expect("the unlink succeeds");
@@ -293,28 +232,22 @@ fn remove_unlinks_and_fsyncs_the_holding_dir() {
         "the REMOVAL's directory entry must be fsync'd, exactly as the install's is"
     );
 
-    // A missing target is a real error, not a silent success -- the caller's 404 check is a
-    // separate concern and must not be papered over here.
     assert!(
         crate::durable::remove(&target).is_err(),
         "removing nothing is an error"
     );
 }
 
-/// Concurrent writers to the SAME target — the final file is exactly ONE writer's payload
-/// intact (no torn interleave), and no durable temp leaks. Covers the unique-naming race the old
-/// fixed `.overlay.tmp`/`.json.tmp` names allowed.
 #[test]
 fn concurrent_writers_no_torn_file_no_temp_leak() {
     let sc = Scratch::new("concurrent");
     let target = sc.path("shared.json");
-    // Distinct fixed-length payloads so a torn interleave would be detectable.
+
     let payloads: Vec<Vec<u8>> = (0..8u8).map(|i| vec![b'A' + i; 4096]).collect();
     std::thread::scope(|s| {
         for p in &payloads {
             let target = target.clone();
             s.spawn(move || {
-                // Each thread must clear its own thread-local fault state (none armed here).
                 fault_reset();
                 write(&target, p).unwrap();
             });
@@ -330,11 +263,7 @@ fn concurrent_writers_no_torn_file_no_temp_leak() {
         "no durable temp may leak after concurrent writers"
     );
 }
-/// `std::fs::create_dir_all` leaves each new directory's own ENTRY non-durable, so the first
-/// artifact written into a freshly created plugins dir could vanish along with the directory on
-/// power loss — even though the file's contents and its holding directory were both fsynced.
-/// The primitive must fsync one PARENT per directory it creates, walking the whole missing
-/// ancestry, and must leave already-existing directories alone.
+
 #[test]
 fn create_dir_all_fsyncs_the_parent_of_every_directory_it_creates() {
     let sc = Scratch::new("mkdir-ancestors");
@@ -349,7 +278,6 @@ fn create_dir_all_fsyncs_the_parent_of_every_directory_it_creates() {
         "one parent fsync per created directory, shallowest first"
     );
 
-    // Re-running over an existing tree creates nothing, so it must fsync nothing.
     fault_reset();
     create_dir_all(&leaf).unwrap();
     assert!(
@@ -357,20 +285,12 @@ fn create_dir_all_fsyncs_the_parent_of_every_directory_it_creates() {
         "an already-durable directory must not be re-fsynced"
     );
 
-    // Only the MISSING suffix is created, so only its parents are fsynced.
     fault_reset();
     let deeper = leaf.join("d");
     create_dir_all(&deeper).unwrap();
     assert_eq!(fault_parents_fsynced(), vec![leaf.clone()]);
 }
 
-/// `create_dir_all`'s per-directory `create_dir` MUST propagate a genuine (non-`AlreadyExists`)
-/// error rather than silently swallow it — the fail-closed half of the `Err(e) if e.kind() ==
-/// AlreadyExists => {} , Err(e) => return Err(e)` match. Forces a real `NotADirectory`-shaped
-/// error (not achievable via the fault-injection seam, which only covers `write_with`'s steps) by
-/// naming a path THROUGH an existing plain file: the file itself is found already-existing (so the
-/// walk stops there without pushing it), but `create_dir` on the child underneath it fails for a
-/// reason that is emphatically not "already exists".
 #[test]
 fn create_dir_all_propagates_a_genuine_non_already_exists_error() {
     let sc = Scratch::new("mkdir-through-file");
@@ -392,10 +312,6 @@ fn create_dir_all_propagates_a_genuine_non_already_exists_error() {
     );
 }
 
-/// The "concurrent creator won the race" branch, exercised for REAL: many threads calling
-/// `create_dir_all` on the exact same not-yet-existing nested path at once. Every thread must
-/// still return `Ok(())` (the loser(s) hit a genuine `AlreadyExists` from the winner and must
-/// swallow exactly that, and only that) and the directory must end up present exactly once.
 #[test]
 fn create_dir_all_concurrent_racers_all_succeed_on_the_same_new_path() {
     let sc = Scratch::new("mkdir-race");
@@ -421,8 +337,6 @@ fn create_dir_all_concurrent_racers_all_succeed_on_the_same_new_path() {
     assert!(target.is_dir());
 }
 
-/// **A PUBLISH WHOSE DIRECTORY FSYNC FAILS IS AN ERROR.** RED before the fix: the failure was
-/// swallowed and `write` answered `Ok` over a rename a power loss could still undo.
 #[test]
 fn a_publish_whose_directory_fsync_fails_is_an_error() {
     let scratch = Scratch::new("dirfsync-publish");
@@ -436,13 +350,10 @@ fn a_publish_whose_directory_fsync_fails_is_an_error() {
         Some(EIO),
         "the fsync's own error surfaces"
     );
-    // The contract says what an error from the last step means: the rename happened, and it is
-    // the entry's durability that was not given.
+
     assert_eq!(std::fs::read(&target).unwrap(), b"new contents");
 }
 
-/// **A REMOVAL WHOSE DIRECTORY FSYNC FAILS IS AN ERROR.** RED before the fix: `remove` answered
-/// `Ok` once the unlink succeeded, whatever the fsync after it said.
 #[test]
 fn a_removal_whose_directory_fsync_fails_is_an_error() {
     let scratch = Scratch::new("dirfsync-remove");
@@ -454,8 +365,6 @@ fn a_removal_whose_directory_fsync_fails_is_an_error() {
     assert_eq!(err.raw_os_error(), Some(EIO));
 }
 
-/// **A DIRECTORY CREATED WHOSE PARENT'S FSYNC FAILS IS AN ERROR.** RED before the fix: the walk
-/// fsynced each new directory's parent and ignored the answer.
 #[test]
 fn a_created_directory_whose_parent_fsync_fails_is_an_error() {
     let scratch = Scratch::new("dirfsync-mkdir");
@@ -466,8 +375,6 @@ fn a_created_directory_whose_parent_fsync_fails_is_an_error() {
     assert_eq!(err.raw_os_error(), Some(EIO));
 }
 
-/// A filesystem that does not support fsyncing a directory is not refused: there is nothing more
-/// it can promise, and refusing every publish on it would leave no durability at all.
 #[test]
 fn a_directory_fsync_the_filesystem_does_not_support_is_not_an_error() {
     let scratch = Scratch::new("dirfsync-unsupported");

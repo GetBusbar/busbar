@@ -60,33 +60,20 @@ use std::os::raw::c_void;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
-/// The budget: the host-table crossing must cost under one microsecond over a direct call.
 const HOT_PATH_BUDGET_NANOS: u64 = 1_000;
 
-/// Every host-service slot invocation on the streaming path bumps this. The budget requires it to stay `0`
-/// per token: a host crossing is a per-request cost, never a per-token one.
 static PER_TOKEN_HOST_CALLS: AtomicUsize = AtomicUsize::new(0);
 
-/// The host service under measurement, in the exact shape every `HostSlots` slot has: the
-/// `clock.now` service on the one call shape `svc(ctx, in, out)`, answering READY. Counted so the
-/// streaming model can prove it did NOT cross the seam per token.
 extern "C" fn host_clock_now(
     _ctx: HostCtx,
     _input: *const c_void,
     _out: *mut ServiceOut,
 ) -> RawOutcome {
     PER_TOKEN_HOST_CALLS.fetch_add(1, Ordering::Relaxed);
-    // A trivial, side-effect-free body: the cost being measured is the CROSSING, not the work, so
-    // the direct and table legs must run byte-identical bodies.
+
     RawOutcome::of(Outcome::Ready)
 }
 
-/// A [`HostSlots`] table with `clock_now` populated and every other slot absent (`None`).
-///
-/// Built by zeroing then setting the header and the one live slot: every field is valid all-zero (an
-/// `Option<extern "C" fn>` is `None` under the null-pointer niche, and the header scalars are
-/// integers), so this is a sound construction of the real `#[repr(C)]` subject rather than a
-/// stand-in.
 fn armed_vtable() -> HostSlots {
     // SAFETY: every field of `HostSlots` is valid when all-zero — the header is integers, and every
     // slot is `Option<extern "C" fn>`, whose `None` is the all-zero niche for a non-null fn pointer.
@@ -97,8 +84,6 @@ fn armed_vtable() -> HostSlots {
     vt
 }
 
-/// The `clock.now` call a plugin makes: its `in` (the head naming the op, no ticket — the service
-/// never pends) and the host's `out`, both on the caller's stack.
 struct ClockCall {
     reading: ClockReading,
     input: ClockNowIn,
@@ -138,15 +123,10 @@ impl ClockCall {
     }
 }
 
-/// Per-call nanoseconds for a batch of `K` calls, `SAMPLES` times, sorted ascending. Timing one
-/// call is dominated by the clock read itself; a batch amortises that, and the percentile is taken
-/// across batch means.
 const BATCH: u64 = 4_096;
 const SAMPLES: usize = 512;
 
 fn percentiles(mut f: impl FnMut()) -> (u64, u64) {
-    // Warm up, so the first sample does not carry code-cache and branch-predictor cold cost into the
-    // distribution.
     for _ in 0..BATCH {
         f();
     }
@@ -164,9 +144,6 @@ fn percentiles(mut f: impl FnMut()) -> (u64, u64) {
     (p50, p99)
 }
 
-/// THE BUDGET ASSERTION — `delta < 1µs at p50 AND p99`, computed here rather than parsed out of
-/// criterion's report so the bench binary EXITS NON-ZERO when the budget is blown (which is what
-/// makes it a gate and not a graph).
 fn assert_hot_path_delta_under_budget() {
     let null: HostCtx = HostCtx::NONE;
     let vt = armed_vtable();
@@ -182,8 +159,6 @@ fn assert_hot_path_delta_under_budget() {
         ));
     });
     let (vtable_p50, vtable_p99) = percentiles(|| {
-        // `black_box` the slot: without it the compiler devirtualises the indirect call back into
-        // the direct one and the delta is a measurement of nothing.
         let f = black_box(vt.clock_now).expect("clock_now slot is armed");
         black_box(unsafe { f(black_box(null), black_box(input), black_box(out)) });
     });
@@ -205,9 +180,6 @@ fn assert_hot_path_delta_under_budget() {
     );
 }
 
-/// A carrier slot in the memory ABI's one call shape (`op(instance, in, out)`, THE DESIGN §11.2):
-/// the transport kind's `read` slot, answering one outcome byte — `Ready` or `Pending`. The body is
-/// as trivial as the clock's, for the same reason — the crossing is what is measured.
 extern "C" fn carrier_read(
     instance: *mut std::os::raw::c_void,
     input: *const std::os::raw::c_void,
@@ -221,9 +193,6 @@ extern "C" fn carrier_read(
     })
 }
 
-/// A transport's ops table as its door states it: the attested size and slot count, and the
-/// carrier's `read` slot armed (every other slot `None`, the all-zero niche, as [`armed_vtable`]
-/// builds the host-services table).
 fn armed_transport_ops() -> TransportOps {
     // SAFETY: every field of `TransportOps` is valid all-zero — the head's integers and
     // `Option<extern "C" fn>` slots whose `None` is the null niche.
@@ -234,8 +203,6 @@ fn armed_transport_ops() -> TransportOps {
     ops
 }
 
-/// The carrier's `read` slot as the dispatcher reaches it on every read: the table's attested size
-/// checked against the host's, then the slot.
 fn read_slot(ops: *const TransportOps) -> Op {
     // SAFETY: `ops` is the live table the cell below owns.
     let table = unsafe { &*ops };
@@ -247,10 +214,6 @@ fn read_slot(ops: *const TransportOps) -> Op {
     table.read.expect("read slot is armed")
 }
 
-/// THE TRANSPORT CELL (both the plane and the transport owe `< 1µs`): the same delta budget, over
-/// the crossing a loaded carrier's every byte-moving `read` makes through its door's ops table —
-/// the table's size check, the slot read, the indirect call and the decode of its Ready | Pending
-/// answer — against the same slot body called directly.
 fn assert_transport_hot_path_delta_under_budget() {
     let ops = armed_transport_ops();
     let ops_ptr: *const TransportOps = &ops;
@@ -289,11 +252,6 @@ fn assert_transport_hot_path_delta_under_budget() {
     );
 }
 
-/// THE PER-TOKEN CROSSING ASSERTION — the `per-token host-call counter == 0`.
-///
-/// Models a plane emitting `n` tokens: the fast path does its per-token work in-plane and crosses
-/// the host table NOT AT ALL. `BUSBAR_PERF_STREAM_CROSS` makes it cross per token, which is
-/// how the `== 0` assertion is proven able to fail.
 fn assert_zero_per_token_host_calls() {
     let null: HostCtx = HostCtx::NONE;
     let vt = armed_vtable();
@@ -306,10 +264,8 @@ fn assert_zero_per_token_host_calls() {
     let mut sink: u64 = 0;
     let tokens: usize = 10_000;
     for i in 0..tokens {
-        // The fast per-token work: pure in-plane arithmetic, no seam crossing.
         sink = sink.wrapping_add(i as u64);
         if cross_per_token {
-            // The RED shape: a host crossing PER TOKEN, which the budget forbids.
             let f = vt.clock_now.expect("clock_now slot is armed");
             let answered = unsafe { f(null, call.input(), call.out()) };
             sink = sink.wrapping_add(u64::from(answered.outcome() == Outcome::Ready));
@@ -327,7 +283,6 @@ fn assert_zero_per_token_host_calls() {
 }
 
 fn hot_path(c: &mut Criterion) {
-    // The two published legs: the direct call and the SAME service through the `HostSlots` slot.
     let null: HostCtx = HostCtx::NONE;
     let vt = armed_vtable();
     let mut call = ClockCall::new();
@@ -350,7 +305,6 @@ fn hot_path(c: &mut Criterion) {
         });
     });
 
-    // The transport cell's two legs: the slot body called directly, and through the door's table.
     let ops = armed_transport_ops();
     let ops_ptr: *const TransportOps = &ops;
     c.bench_function("TRANSPORT_DIRECT_CALL", |b| {
@@ -376,8 +330,6 @@ fn hot_path(c: &mut Criterion) {
         });
     });
 
-    // The gating assertions run once per bench invocation: a blown budget or a per-token crossing
-    // takes the process down non-zero.
     assert_hot_path_delta_under_budget();
     assert_transport_hot_path_delta_under_budget();
     assert_zero_per_token_host_calls();

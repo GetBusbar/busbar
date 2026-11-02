@@ -1,16 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE AUTHORIZATION SERVER OVER THE DEPLOYMENT'S STORE: the library's own storage-conformance
-//! harness against [`SharedStorage`], two nodes over one store serving one server, and the signing
-//! key minted once per deployment.
-//!
-//! The store here is a double of the store's plane-record verbs and its single-use claims, over
-//! maps the test holds: every clone is the same store, so two planes built over two clones are two
-//! nodes on one deployment. It files records exactly as the linked in-tree store does: a record is
-//! kept at `(kind, parent or else id, seq)`, `get_plane_record` reads `(kind, id, 0)`, a list by
-//! parent reads the records whose parent it names, and a delete takes every sequence of an identity.
-
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
@@ -25,11 +15,8 @@ use crate::config::OauthAsCfg;
 use crate::plane::{seam_build, AsPlane};
 use crate::shared::{Shared, SharedStorage, LABEL, VERSION_CLAIM_SECS};
 
-/// `(kind, parent or else id, seq)` to `(parent, body)`, as the linked in-tree store keys them.
 type Records = BTreeMap<(String, String, u64), (Option<String>, Vec<u8>)>;
 
-/// One answer the double holds back: the slot (`get` or `redeem`), the record kind it is for, and
-/// how long the answer takes after the store has decided it.
 type Stall = (&'static str, String, std::time::Duration);
 
 /// The double. Cheap to clone; every clone is the same store.
@@ -49,14 +36,15 @@ pub(super) fn test_store_calls() -> Arc<dyn StoreCalls> {
     OneStore::default().calls()
 }
 
+type AtomicRows = BTreeMap<(String, Vec<u8>), Vec<u8>>;
+
 #[derive(Default)]
 struct AtomicRecords {
-    rows: BTreeMap<(String, Vec<u8>), Vec<u8>>,
+    rows: AtomicRows,
     receipts: BTreeMap<[u8; 16], Request>,
     calls: Vec<Request>,
 }
 
-/// Backend work is owned by its task, independently of the client awaiting the answer.
 struct DecisionDelay {
     schema: String,
     before: Option<Arc<tokio::sync::Notify>>,
@@ -110,27 +98,7 @@ impl OneStore {
         }) {
             return Ok(Decision::ConditionConflict);
         }
-        for mutation in &request.mutations {
-            match mutation {
-                Mutation::Put { schema, key, value } => {
-                    state
-                        .rows
-                        .insert((schema.clone(), key.clone()), value.clone());
-                }
-                Mutation::Delete { schema, key } => {
-                    state.rows.remove(&(schema.clone(), key.clone()));
-                }
-                Mutation::DeleteRange {
-                    schema,
-                    prefix,
-                    exact_key_length,
-                } => {
-                    state.rows.retain(|(s, k), _| {
-                        s != schema || k.len() as u64 != *exact_key_length || !k.starts_with(prefix)
-                    });
-                }
-            }
-        }
+        apply_mutations(&mut state.rows, &request.mutations);
         state.receipts.insert(request.op_id.0, request.clone());
         Ok(Decision::Applied)
     }
@@ -139,7 +107,6 @@ impl OneStore {
         Arc::new(self.clone())
     }
 
-    /// Redeem `(kind, token)` as another node would.
     fn redeem(&self, kind: &str, token: &str, expires_at: u64, _now: u64) -> bool {
         let mut claims = self.claims.lock().unwrap_or_else(|p| p.into_inner());
         let store_now = std::time::SystemTime::now()
@@ -162,9 +129,6 @@ impl OneStore {
         }
     }
 
-    /// Hold back the next answer of `slot` for the kind `name` of the server's records by `by`: the
-    /// store decides the call at once and answers it `by` later, as a stalled node or a slow store
-    /// would.
     fn stall(&self, slot: &'static str, name: &str, by: std::time::Duration) {
         self.stalls.lock().unwrap_or_else(|p| p.into_inner()).push((
             slot,
@@ -181,7 +145,6 @@ impl OneStore {
         Some(stalls.remove(i).2)
     }
 
-    /// Every record of the server's kinds the store still holds.
     fn rows(&self) -> Vec<(String, String, u64)> {
         self.visible()
             .keys()
@@ -190,11 +153,9 @@ impl OneStore {
             .collect()
     }
 
-    /// Logical live rows: raw authority suppresses legacy rows, including after retirement.
-    /// Physical tombstones remain observable through `atomic.rows` for fencing assertions.
     fn visible(&self) -> Records {
         let mut rows = self.records.lock().unwrap().clone();
-        for ((schema, key), value) in &self.atomic.lock().unwrap().rows {
+        for ((schema, key), value) in &logical_rows(&self.atomic.lock().unwrap().rows) {
             let Some(kind) = schema.strip_suffix(".atomic.v1") else {
                 continue;
             };
@@ -207,8 +168,6 @@ impl OneStore {
         rows
     }
 
-    /// Age every record that says when it was written (an `at` member, at any depth) by `secs`,
-    /// as if it had been written that much earlier.
     fn age(&self, secs: u64) {
         fn older(v: &mut serde_json::Value, secs: u64) {
             match v {
@@ -235,28 +194,40 @@ impl OneStore {
             *body = serde_json::to_vec(&v).expect("a JSON body serializes");
         }
         drop(records);
-        for body in self.atomic.lock().unwrap().rows.values_mut() {
-            let Ok(mut v) = serde_json::from_slice::<serde_json::Value>(body) else {
-                continue;
-            };
-            older(&mut v, secs);
-            *body = serde_json::to_vec(&v).expect("a JSON body serializes");
-        }
+        self.rewrite_atomic(|_, value| older(value, secs));
     }
 
     fn age_indexes(&self, secs: u64) {
         let prefix = format!("{LABEL}ix.");
-        for ((schema, _), body) in self.atomic.lock().unwrap().rows.iter_mut() {
-            if !schema.starts_with(&prefix) {
-                continue;
+        self.rewrite_atomic(|schema, value| {
+            if schema.starts_with(&prefix) {
+                if let Some(at) = value.get("at").and_then(|at| at.as_u64()) {
+                    value["at"] = serde_json::json!(at.saturating_sub(secs));
+                }
             }
-            let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(body) else {
+        });
+    }
+
+    fn rewrite_atomic(&self, mut change: impl FnMut(&str, &mut serde_json::Value)) {
+        let mut state = self.atomic.lock().unwrap();
+        for ((schema, key), body) in logical_rows(&state.rows) {
+            let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&body) else {
                 continue;
             };
-            if let Some(at) = value.get("at").and_then(|at| at.as_u64()) {
-                value["at"] = serde_json::json!(at.saturating_sub(secs));
-                *body = serde_json::to_vec(&value).unwrap();
+            let original = value.clone();
+            change(&schema, &mut value);
+            if value == original {
+                continue;
             }
+            let candidate = Shared::candidate(
+                &schema,
+                std::str::from_utf8(&key).expect("OAuth root id"),
+                Some(body),
+                serde_json::to_vec(&value).unwrap(),
+            );
+            let physical = crate::shared::records::physical(candidate, &[]).unwrap();
+            physical.validate().unwrap();
+            apply_mutations(&mut state.rows, &physical.mutations);
         }
     }
 
@@ -395,8 +366,7 @@ impl StoreCalls for OneStore {
             });
             return Box::pin(async move { receiver.await.expect("backend task answers") });
         }
-        // Filed as the linked in-tree store files it: under the parent when there is one, at its
-        // sequence position.
+
         let identity = record.parent.unwrap_or(record.id).to_string();
         self.records
             .lock()
@@ -504,7 +474,6 @@ fn block(signing_key: bool) -> serde_yaml::Value {
     .expect("the block serializes")
 }
 
-/// One node's generation over `store` (`None`: no store configured), after `prior`.
 fn node(
     store: Option<&OneStore>,
     prior: Option<&Arc<dyn std::any::Any + Send + Sync>>,
@@ -543,8 +512,6 @@ fn client(id: &str) -> oauth_as::client::Client {
     }
 }
 
-/// THE LIBRARY'S OWN CONTRACT, raced on real threads: atomic `take_*`, the four compare-and-swaps,
-/// the revocation barriers and cascades, the replay ledger and the sweep, every check.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_store_backed_server_holds_the_storage_contract() {
     let violations = oauth_as::storage_conformance::StorageConformance::new(|| async {
@@ -558,8 +525,6 @@ async fn the_store_backed_server_holds_the_storage_contract() {
     assert!(violations.is_empty(), "{violations:#?}");
 }
 
-/// RED before the store-backed records: each node held its own `MemoryStorage`, so a client one node
-/// registered was unknown to the other, and a replayed proof was fresh on the second node.
 #[tokio::test]
 async fn two_nodes_on_one_store_are_one_authorization_server() {
     let store = OneStore::default();
@@ -600,7 +565,6 @@ async fn two_nodes_on_one_store_are_one_authorization_server() {
         "a proof node A accepted is fresh again on node B"
     );
 
-    // The consent screen: a session opened on A, an answer staked on B, spent once across both.
     a.open_session("busbar-operator", "session-1".to_string())
         .await;
     b.stake("session-1", "key-1".to_string(), true).await;
@@ -620,8 +584,6 @@ async fn two_nodes_on_one_store_are_one_authorization_server() {
     );
 }
 
-/// RED before: with no `signing_key`, each node generated its own key, so a token node A signed
-/// failed verification on node B.
 #[tokio::test]
 async fn two_nodes_on_one_store_sign_with_one_minted_key() {
     let store = OneStore::default();
@@ -641,8 +603,6 @@ async fn two_nodes_on_one_store_sign_with_one_minted_key() {
     assert_eq!(jwks(&a), jwks(&b), "the two nodes publish different keys");
 }
 
-/// The key does not roll: a reload and a restart over the same store sign with the key a token was
-/// signed under before them, so a verifier never refuses a valid unexpired token across either.
 #[tokio::test]
 async fn a_reload_and_a_restart_keep_the_minted_key() {
     let store = OneStore::default();
@@ -662,7 +622,6 @@ async fn a_reload_and_a_restart_keep_the_minted_key() {
     );
 }
 
-/// A configured `signing_key` always wins over the minted one.
 #[tokio::test]
 async fn a_configured_signing_key_overrides_the_minted_one() {
     use base64::Engine as _;
@@ -689,7 +648,6 @@ async fn a_configured_signing_key_overrides_the_minted_one() {
     );
 }
 
-/// Store capability refusal applies even when a configured signing key bypasses minting.
 #[tokio::test]
 async fn a_store_without_conditional_transactions_fails_closed() {
     struct Unsupported;
@@ -784,7 +742,6 @@ async fn a_store_without_conditional_transactions_fails_closed() {
         .is_err());
 }
 
-/// With no store configured the server keeps its records in this process, as it always did.
 #[tokio::test]
 async fn without_a_store_the_records_stay_in_process() {
     let a = plane(&node(None, None, Vec::new()));
@@ -803,8 +760,6 @@ async fn without_a_store_the_records_stay_in_process() {
         .is_none());
 }
 
-/// Backend decisions can arrive after the old lease window; an unexpired refresh token is taken
-/// once. Authorization-code lifetime is too short to witness a 120-second delayed spend.
 #[tokio::test(start_paused = true)]
 async fn a_late_refresh_take_conflicts_after_another_node_took_it() {
     let store = OneStore::default();
@@ -837,11 +792,10 @@ async fn a_late_refresh_take_conflicts_after_another_node_took_it() {
     );
 }
 
-/// A stale absent read cannot replace a key another node kept in the meantime.
 #[tokio::test(start_paused = true)]
 async fn a_key_minter_with_a_stale_read_uses_the_committed_key() {
     let store = OneStore::default();
-    // The raw read is absent; the following legacy-fallback read stalls.
+
     let a_store = store.clone();
     let a = tokio::spawn(async move {
         let shared = Shared::new(a_store.calls());
@@ -873,12 +827,6 @@ async fn a_key_minter_with_a_stale_read_uses_the_committed_key() {
     }
 }
 
-/// RED (audit core-oauth2 r4#2): the sweep reclaims what has lapsed. A client registers, takes a
-/// code, holds a token family that is revoked, opens a consent session and stakes an answer on it,
-/// claims a replay id, and is deleted; once every record, barrier and session has lapsed, a sweep
-/// leaves none of the server's live payloads behind. Raw authority retains credential-free unique
-/// retirement markers, which prevent legacy resurrection and ABA. Before the fix index rows, sessions, stakes, the
-/// family barrier and the client's bucket were kept forever.
 #[tokio::test]
 async fn a_sweep_past_every_expiry_leaves_no_live_payload_behind() {
     use oauth_as::store::RevocationWindow;
@@ -970,7 +918,6 @@ async fn a_sweep_past_every_expiry_leaves_no_live_payload_behind() {
         .await
         .expect("deletes"));
 
-    // Three hours on: every record, barrier, session and answer above has lapsed.
     store.age(3 * 3600);
     let later = now + 3 * hour;
     s.sweep_expired(later).await.expect("sweeps");
@@ -989,7 +936,6 @@ async fn a_sweep_past_every_expiry_leaves_no_live_payload_behind() {
     );
 }
 
-/// How many held-back point reads of the server's `bucket` records are still unspent.
 fn bucket_reads_left(store: &OneStore) -> usize {
     let bucket = format!("{LABEL}bucket");
     store
@@ -1001,10 +947,6 @@ fn bucket_reads_left(store: &OneStore) -> usize {
         .count()
 }
 
-/// RED: the sweep judges each client's records on the body its listing already read, and reads a
-/// client's records again only when it has something to reclaim. Ten clients that hold nothing
-/// lapsed cost no point read; one whose code has lapsed is still read and swept. Before the fix
-/// the sweep read every client's records a second time, every minute, on every node.
 #[tokio::test]
 async fn the_sweep_reads_again_only_the_records_it_changes() {
     let store = OneStore::default();
@@ -1018,7 +960,7 @@ async fn the_sweep_reads_again_only_the_records_it_changes() {
     s.put_authorization_code(code("code-1", "lapsing"))
         .await
         .expect("issues a code");
-    // Every point read of a bucket from here spends one of these, so what is left counts them.
+
     for _ in 0..32 {
         store.stall("get", "bucket", std::time::Duration::ZERO);
     }
@@ -1051,11 +993,6 @@ fn code(code: &str, client_id: &str) -> oauth_as::authorization::AuthorizationCo
     )
 }
 
-/// A cell the sweep retired never blocks the cell made again under its id. The sweep
-/// retires an emptied bucket at version 2 under the claim on version 3, which stands for two
-/// minutes; a client whose records come back inside them climbs to version 3 again. Before the fix
-/// that write lost the retirement's claim on every attempt and answered a storage error (a login
-/// failing at the token endpoint); now the made-again cell's claims name an epoch of their own.
 #[tokio::test(start_paused = true)]
 async fn a_retired_cell_never_blocks_its_own_recreation() {
     let store = OneStore::default();
@@ -1068,8 +1005,7 @@ async fn a_retired_cell_never_blocks_its_own_recreation() {
         .await
         .expect("version 2")
         .is_some());
-    // Long enough ago that every claim on versions 1 and 2 has lapsed, and the sweep retires the
-    // emptied bucket, under the claim on version 3.
+
     tokio::time::advance(std::time::Duration::from_secs(VERSION_CLAIM_SECS + 60)).await;
     store.age(3600);
     s.sweep_expired(std::time::SystemTime::now())
@@ -1103,10 +1039,6 @@ async fn a_retired_cell_never_blocks_its_own_recreation() {
     );
 }
 
-/// With the store, a second answer to one request on one session is spent, once, as
-/// the in-process table spends it. Before the fix the spend claim named only the session and the
-/// request, so it stood from the first answer's spend and a second answer could never be spent:
-/// `/authorize` sent the operator back to the consent screen for the session's life.
 #[tokio::test]
 async fn a_second_answer_on_one_session_is_spent_once() {
     let store = OneStore::default();
@@ -1140,9 +1072,6 @@ async fn a_second_answer_on_one_session_is_spent_once() {
     );
 }
 
-/// In the deployment's store, a self-registered client whose bucket has held nothing
-/// for the idle period is reclaimed by the sweep, bucket and all. Before the fix a bucket holding a
-/// client never held nothing, so it was kept for good.
 #[tokio::test]
 async fn an_idle_self_registered_client_leaves_the_store() {
     use oauth_as::client::ClientId;
@@ -1165,7 +1094,7 @@ async fn an_idle_self_registered_client_leaves_the_store() {
         .await
         .expect("registers");
     let id = ClientId::new(info.client_id);
-    // A client stored with no registration (none of the server's own paths store one) is kept.
+
     p.server()
         .store()
         .put_client(client("agent-1"))
@@ -1203,7 +1132,6 @@ async fn an_idle_self_registered_client_leaves_the_store() {
     );
 }
 
-/// The keys of every row of the server's record kind `name` the store still holds.
 fn rows_of(store: &OneStore, name: &str) -> Vec<String> {
     let k = format!("{LABEL}{name}");
     store
@@ -1214,7 +1142,6 @@ fn rows_of(store: &OneStore, name: &str) -> Vec<String> {
         .collect()
 }
 
-/// Whether any row of the server's record kind `name` names `word` in its body.
 fn names(store: &OneStore, name: &str, word: &str) -> bool {
     let k = format!("{LABEL}{name}");
     store
@@ -1224,10 +1151,6 @@ fn names(store: &OneStore, name: &str, word: &str) -> bool {
         .any(|(_, (_, body))| body.windows(word.len()).any(|w| w == word.as_bytes()))
 }
 
-/// A subject's index entry for a client is reclaimed once that client
-/// no longer holds a consent of the subject, and only then; once no client holds one, nothing of
-/// the subject's index is left. Two clients hold `alice`'s consent; one is withdrawn, then the
-/// other. Before the fix every subject index row was kept forever.
 #[tokio::test]
 async fn a_sweep_reclaims_a_subject_index_its_clients_no_longer_hold() {
     use oauth_as::store::RevocationWindow;
@@ -1288,10 +1211,6 @@ async fn a_sweep_reclaims_a_subject_index_its_clients_no_longer_hold() {
         .is_empty());
 }
 
-/// RED (audit core-oauth2, the sweep-abort note): one index row whose client's records cannot be
-/// read is said and skipped; it never ends the pass. A credential index row whose client's bucket
-/// does not decode comes first; a lapsed row of a later index must still be reclaimed. Before the
-/// fix the `?` on that read ended the whole index sweep.
 #[tokio::test]
 async fn one_unreadable_client_never_ends_the_index_sweep() {
     let store = OneStore::default();
@@ -1350,8 +1269,6 @@ fn refresh(value: &str) -> oauth_as::token::RefreshTokenRecord {
     record
 }
 
-/// The backend decides after the client future was dropped, past the old claim's lifetime.
-/// This uses an unexpired refresh token: authorization-code lifetimes cannot witness this race.
 #[tokio::test(start_paused = true)]
 async fn a_late_cancelled_write_cannot_undo_client_revocation() {
     let store = OneStore::default();
@@ -1368,7 +1285,7 @@ async fn a_late_cancelled_write_cannot_undo_client_revocation() {
     accepted.notified().await;
     writer.abort();
     assert!(writer.await.expect_err("client cancelled").is_cancelled());
-    drop(a); // A restart loses the volatile pending table; the backend comparison still fences it.
+    drop(a);
     tokio::time::advance(std::time::Duration::from_secs(VERSION_CLAIM_SECS + 60)).await;
     let now = std::time::SystemTime::now();
     b.delete_client(
@@ -1597,7 +1514,7 @@ async fn a_cancelled_client_keeps_its_exact_candidate_for_replay() {
     let storage = Arc::new(SharedStorage::new(shared.clone()));
     storage.put_client(client("atomic-client")).await.unwrap();
     let (release, accepted, decided) = store.delay_decision("bucket", false);
-    let writer = {
+    let mut writer = {
         let storage = storage.clone();
         tokio::spawn(async move {
             storage
@@ -1605,7 +1522,10 @@ async fn a_cancelled_client_keeps_its_exact_candidate_for_replay() {
                 .await
         })
     };
-    accepted.notified().await;
+    tokio::select! {
+        _ = accepted.notified() => {},
+        result = &mut writer => panic!("write returned before the delayed backend accepted it: {result:?}"),
+    }
     writer.abort();
     assert!(writer.await.unwrap_err().is_cancelled());
     let candidate = shared
@@ -1681,16 +1601,31 @@ async fn a_late_cancelled_write_cannot_bypass_the_family_barrier() {
 
 #[tokio::test]
 async fn a_late_bucket_commit_restores_indexes_reclaimed_while_it_was_pending() {
+    late_bucket_commit_restores_indexes("atomic-client").await;
+}
+
+#[tokio::test]
+async fn a_late_bucket_commit_restores_chunked_indexes_for_a_long_client_id() {
+    late_bucket_commit_restores_indexes(&format!("https://client.example/{}", "c".repeat(900)))
+        .await;
+}
+
+async fn late_bucket_commit_restores_indexes(client_id: &str) {
     let store = OneStore::default();
     let a = Arc::new(SharedStorage::new(Arc::new(Shared::new(store.calls()))));
     let b = SharedStorage::new(Arc::new(Shared::new(store.calls())));
-    a.put_client(client("atomic-client")).await.unwrap();
+    a.put_client(client(client_id)).await.unwrap();
     let (release, accepted, decided) = store.delay_decision("bucket", false);
-    let writer = {
+    let mut grant = refresh("indexed-refresh");
+    grant.client_id = oauth_as::client::ClientId::new(client_id);
+    let mut writer = {
         let a = a.clone();
-        tokio::spawn(async move { a.put_refresh_token(refresh("indexed-refresh")).await })
+        tokio::spawn(async move { a.put_refresh_token(grant).await })
     };
-    accepted.notified().await;
+    tokio::select! {
+        _ = accepted.notified() => {},
+        result = &mut writer => panic!("write returned before the delayed backend accepted it: {result:?}"),
+    }
     writer.abort();
     assert!(writer.await.unwrap_err().is_cancelled());
     drop(a);
@@ -1973,4 +1908,199 @@ async fn a_delayed_subject_sweep_cannot_detach_a_new_consent() {
     decided.notified().await;
     sweep.await.unwrap().unwrap();
     assert_eq!(b.consents_for_subject("alice").await.unwrap().len(), 1);
+}
+
+fn logical_rows(
+    rows: &BTreeMap<(String, Vec<u8>), Vec<u8>>,
+) -> BTreeMap<(String, Vec<u8>), Vec<u8>> {
+    rows.iter()
+        .filter(|((schema, _), _)| schema.ends_with(".atomic.v1"))
+        .map(|((schema, key), root)| {
+            let value = match crate::shared::records::Descriptor::decode(root).unwrap() {
+                None => root.clone(),
+                Some(descriptor) => {
+                    let mut bytes = Vec::new();
+                    for part in 0..descriptor.parts() {
+                        bytes.extend_from_slice(
+                            &rows[&(
+                                crate::shared::records::parts_schema(schema),
+                                descriptor.key(key, part),
+                            )],
+                        );
+                    }
+                    assert!(
+                        descriptor.check(&bytes),
+                        "fixture observes complete atomic chunks"
+                    );
+                    bytes
+                }
+            };
+            ((schema.clone(), key.clone()), value)
+        })
+        .collect()
+}
+
+fn apply_mutations(rows: &mut AtomicRows, mutations: &[Mutation]) {
+    for mutation in mutations {
+        match mutation {
+            Mutation::Put { schema, key, value } => {
+                rows.insert((schema.clone(), key.clone()), value.clone());
+            }
+            Mutation::Delete { schema, key } => {
+                rows.remove(&(schema.clone(), key.clone()));
+            }
+            Mutation::DeleteRange {
+                schema,
+                prefix,
+                exact_key_length,
+            } => {
+                rows.retain(|(s, k), _| {
+                    s != schema || k.len() as u64 != *exact_key_length || !k.starts_with(prefix)
+                });
+            }
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_chunk_reader_retries_when_its_old_generation_was_reclaimed() {
+    let store = OneStore::default();
+    let a = Arc::new(SharedStorage::new(Arc::new(Shared::new(store.calls()))));
+    let b = SharedStorage::new(Arc::new(Shared::new(store.calls())));
+    assert_eq!(
+        a.put_refresh_token(refresh("first-chunked-refresh"))
+            .await
+            .unwrap(),
+        oauth_as::store::WriteOutcome::Applied
+    );
+    store.stall("get", "bucket", std::time::Duration::from_secs(1));
+    let reader = {
+        let a = a.clone();
+        tokio::spawn(async move { a.get_refresh_token("first-chunked-refresh").await })
+    };
+    tokio::task::yield_now().await;
+    assert!(
+        store.stalls.lock().unwrap().is_empty(),
+        "reader captured the old root"
+    );
+    assert_eq!(
+        b.put_refresh_token(refresh("second-chunked-refresh"))
+            .await
+            .unwrap(),
+        oauth_as::store::WriteOutcome::Applied
+    );
+    tokio::time::advance(std::time::Duration::from_secs(1)).await;
+    assert!(
+        reader.await.unwrap().unwrap().is_some(),
+        "reclaimed old chunks must trigger a fresh root read"
+    );
+    assert!(store
+        .atomic
+        .lock()
+        .unwrap()
+        .rows
+        .values()
+        .all(|b| b.len() <= busbar_contract::bounded::MAX_RECORD_BYTES));
+}
+
+#[tokio::test]
+async fn a_missing_chunk_under_an_unchanged_root_fails_closed() {
+    let store = OneStore::default();
+    let storage = SharedStorage::new(Arc::new(Shared::new(store.calls())));
+    assert_eq!(
+        storage
+            .put_refresh_token(refresh("corrupt-chunked-refresh"))
+            .await
+            .unwrap(),
+        oauth_as::store::WriteOutcome::Applied
+    );
+    let schema = crate::shared::atomic_schema("bucket");
+    {
+        let mut state = store.atomic.lock().unwrap();
+        let key = crate::shared::digest("atomic-client").into_bytes();
+        let descriptor =
+            crate::shared::records::Descriptor::decode(&state.rows[&(schema.clone(), key.clone())])
+                .unwrap()
+                .expect("large bucket uses bounded chunks");
+        state
+            .rows
+            .remove(&(
+                crate::shared::records::parts_schema(&schema),
+                descriptor.key(&key, 0),
+            ))
+            .unwrap();
+    }
+    let error = storage
+        .get_refresh_token("corrupt-chunked-refresh")
+        .await
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("incomplete or corrupt chunked record"));
+}
+
+#[tokio::test]
+async fn replacing_a_blind_large_index_reclaims_its_exact_old_generation() {
+    let store = OneStore::default();
+    let shared = Shared::new(store.calls());
+    shared
+        .index("rt", "large-index", &"c".repeat(600))
+        .await
+        .unwrap();
+    let schema = crate::shared::atomic_schema("ix.rt");
+    assert!(store
+        .atomic
+        .lock()
+        .unwrap()
+        .rows
+        .keys()
+        .any(|(s, _)| s == &crate::shared::records::parts_schema(&schema)));
+
+    let mut orphan_key = crate::shared::digest("large-index").into_bytes();
+    orphan_key.push(0);
+    orphan_key.extend_from_slice(&[9; 32]);
+    orphan_key.extend_from_slice(&0u64.to_le_bytes());
+    store.atomic.lock().unwrap().rows.insert(
+        (crate::shared::records::parts_schema(&schema), orphan_key),
+        b"unobserved old generation".to_vec(),
+    );
+    let mut blind = Shared::candidate(&schema, "unrelated-guard", None, b"guard".to_vec());
+    Arc::make_mut(&mut blind).mutations = vec![Mutation::Put {
+        schema: schema.clone(),
+        key: crate::shared::digest("large-index").into_bytes(),
+        value: serde_json::to_vec(&crate::shared::IndexRow {
+            client: "small-client".into(),
+            key: crate::shared::digest("large-index"),
+            at: crate::shared::now_secs(),
+        })
+        .unwrap(),
+    }];
+    assert!(
+        !blind
+            .predicates
+            .iter()
+            .any(|p| p.key == crate::shared::digest("large-index").as_bytes()),
+        "caller supplied no index-root comparison"
+    );
+    assert_eq!(shared.submit(blind).await.unwrap(), Decision::Applied);
+    assert_eq!(
+        shared
+            .client_of("rt", "large-index")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("small-client")
+    );
+    let state = store.atomic.lock().unwrap();
+    assert!(!state
+        .rows
+        .keys()
+        .any(|(s, _)| s == &crate::shared::records::parts_schema(&schema)));
+    let last = state.calls.last().unwrap();
+    assert!(
+        last.predicates
+            .iter()
+            .all(|p| p.key != crate::shared::digest("large-index").as_bytes()),
+        "blind index replacement preserves its original logical predicates"
+    );
 }

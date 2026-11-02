@@ -1,16 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE HOOK AXIS, THE ROOT'S (the opener seam: a kind's `<Kind>Axis` is the contract's, implemented over the ONE dispatcher and
-//! the registry, and installed through the kernel's `RootInstall`). [`axis`] answers the contract's
-//! `HookAxis` over one configuration's plugin registry and this build's linked hook doors
-//! (`LINKED.hook_doors`; two different plugins answering one word refuse the configuration): every `kind: hook` row, bound
-//! through the loader's one load (`load_linked` / `load_dropped`) on the process's one dispatcher
-//! (`root::dispatch`), each OPENED instance logging to its own file under `plugins.logs` and
-//! declaring its needs on the process's one connector (`root::connector::the()`), read when the
-//! instance opens. A dropped-in hook whose manifest states no Statement (a 1.5.5 JSON hook plugin)
-//! is refused here, and with it the configuration.
-
 use busbar_contract::conn::DeclaredConns;
 use busbar_contract::hook_calls::HookAxis;
 use std::sync::Arc;
@@ -19,18 +9,10 @@ use busbar_contract::plugin_rows::PluginRows;
 
 use crate::root::loader::{hook_door::HookRows, rows::registry_of};
 
-/// The process's one connection table, as an opened hook instance declares its needs on it.
 fn conns() -> Arc<dyn DeclaredConns> {
     crate::root::connector::the().clone()
 }
 
-/// The hook axis over `registry` (`busbar_kernel::preflight::RootInstall::hook_axis`): the rows the
-/// kernel holds as the contract's view, read back as the registry this root built them as. Rows
-/// this root did not build carry no dropped-in hook of the loader's: the axis answers the linked
-/// doors alone over them.
-///
-/// # Errors
-/// A `kind: hook` row that will not state itself, named.
 pub fn axis(registry: &Arc<dyn PluginRows>) -> Result<Arc<dyn HookAxis>, String> {
     let rows = HookRows::new(
         crate::LINKED.hook_doors,

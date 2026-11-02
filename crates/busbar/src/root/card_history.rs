@@ -1,37 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE FLEET-SHARED RATE-CARD HISTORY, as this node holds it (MONEY-DESIGN section 3a; owner
-//! rulings 2026-10-25 and 2026-10-26: money is ledger counts x rate card, the store keeps only
-//! counts and the card with its history, and the configuration is the source of the card, as in
-//! 1.5.5).
-//!
-//! [`CardStore`] reads the history from the store (`busbar.card.v2`, [`super::card_store`]) and
-//! resolves it: the highest-keyed LIVE entry covering an instant prices it.
-//!
-//! - **The opening entry** is written at boot only when the history is empty: the node's card from
-//!   instant zero. The fleet's lowest key wins. Each node still prices its own counts with its
-//!   confirmed own opening until it adopts or appends another card.
-//! - **Every change of the card a configuration resolves** (boot, reload, apply, settings, plugin
-//!   reload or rollback, overlay and named-map writes) appends a WHOLE-card entry, effective from
-//!   its authorized activation, recording who or what changed it ([`CardStore::prepare`]).
-//!   Store refusal or uncertainty retains the old effective card and the exact candidate.
-//! - **This node prices with its OWN entry** ([`CardStore::own`]): the one it appended or adopted.
-//!   A rescan records other nodes' entries and never moves it, so two nodes running different
-//!   cards each price their own counts with their own card; a time-based read takes the later
-//!   change on any node.
-//! - **Store-owned custody:** chunks and a validated immutable intent precede the canonical
-//!   candidate commit. Own-card entries also require an authorized activation intent and commit;
-//!   saved candidates alone never appear in active history. Pending writes retain the exact
-//!   original, identity and per-record progress; a complete Store intent survives host restart.
-//!   No host file or data-directory setting participates. A Store outage before intent completion
-//!   leaves RAM-only pending ownership, and memory Store is explicitly ephemeral.
-//! - **There is no WITHDRAW.** An entry that landed stays. [`CardStore::void`] keeps an entry
-//!   known but out of force; no operator verb reaches it, because a later change already keys
-//!   above a far-future entry and prices from its own start.
-//! - **Clock skew** never delays a change: an entry is effective from the writer's own now, whatever
-//!   its key; a head more than [`super::card_store::SKEW_MS`] ahead alarms.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
@@ -46,26 +15,21 @@ use super::card_store::{
     IN_LOCK_BOUND, SKEW_MS,
 };
 
-/// How often a node rescans the history for other nodes' entries.
 pub const RESCAN_INTERVAL: Duration = Duration::from_secs(5);
 
-/// How long the boot waits on the store for each read or write before it refuses.
 const BOOT_DEADLINE: Duration = Duration::from_secs(30);
 
-/// The alarm counter every history alarm increments.
 pub const CARD_ALARMS_TOTAL: &str = "busbar_card_history_alarms_total";
 
 fn now_ms() -> u64 {
     busbar_kernel::store::now_ms()
 }
 
-/// The digest of a card, hex.
 #[must_use]
 pub fn digest_hex(card: &CardFields) -> String {
     hex::encode(card.digest())
 }
 
-/// The card one entry prices with, built through the same constructors a live apply builds it.
 #[must_use]
 pub fn rate_card_of(card: &CardFields) -> busbar_kernel_ledger::cost::RateCard {
     let rates = card.rates();
@@ -73,7 +37,6 @@ pub fn rate_card_of(card: &CardFields) -> busbar_kernel_ledger::cost::RateCard {
     crate::root::kernel::card_from_raw(&rates.raw())
 }
 
-/// The node's history in the store.
 pub struct CardStore {
     calls: Arc<dyn StoreCalls>,
     node: u64,
@@ -81,9 +44,7 @@ pub struct CardStore {
     counter: AtomicU32,
     state: Mutex<State>,
     published: arc_swap::ArcSwapOption<History>,
-    /// The history as THIS NODE prices with it: the fleet history, with every other node's
-    /// change keyed above this node's own entry left known but out of force, so this node's own
-    /// entry prices its instants from its start ([`Self::node_history`]).
+
     node_published: arc_swap::ArcSwapOption<History>,
     loaded: AtomicBool,
     rescanning: AtomicBool,
@@ -119,7 +80,6 @@ struct PendingWrite {
 }
 
 impl PendingWrite {
-    /// Serialize one immutable candidate outside every history lock.
     fn prepare(entry: StoredEntry, own: bool) -> Self {
         let records = entry.records_for(own).ok().map(Arc::new);
         Self {
@@ -136,8 +96,6 @@ impl PendingWrite {
     }
 }
 
-/// A confirmed card reserved for one generation commit. Dropping it releases only the
-/// preparation lease; the immutable pending candidate remains held for an exact retry.
 pub struct PreparedCard {
     book: Arc<CardStore>,
     key: Option<EntryKey>,
@@ -145,8 +103,6 @@ pub struct PreparedCard {
 }
 
 impl PreparedCard {
-    /// Confirm activation only under the generation transaction's explicit authority.
-    /// Background custody retries never call this operation.
     pub fn confirm_activation(self) -> Result<ConfirmedCard, String> {
         let key = self.key.expect("a prepared card has a key");
         let pending = {
@@ -192,13 +148,11 @@ impl PreparedCard {
     }
 }
 
-/// An activation confirmed by the Store, ready for Store-free publication with its App.
 pub struct ConfirmedCard {
     prepared: PreparedCard,
 }
 
 impl ConfirmedCard {
-    /// Activate this exact confirmed candidate without calling the Store.
     pub fn commit(mut self) -> EntryKey {
         let key = self
             .prepared
@@ -282,8 +236,6 @@ impl std::fmt::Debug for CardStore {
     }
 }
 
-/// Whether `entry` is an opening entry (written at boot, or a chain's opening copied by the
-/// migration).
 fn is_opening(entry: &StoredEntry) -> bool {
     matches!(
         entry.author,
@@ -292,7 +244,6 @@ fn is_opening(entry: &StoredEntry) -> bool {
 }
 
 impl CardStore {
-    /// A history kept entirely in `calls`' Store by node `node`.
     #[must_use]
     pub fn new(calls: Arc<dyn StoreCalls>, node: u64) -> Arc<Self> {
         Arc::new(CardStore {
@@ -312,58 +263,45 @@ impl CardStore {
         self.state.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    /// Whether the boot has loaded the history.
     #[must_use]
     pub fn is_loaded(&self) -> bool {
         self.loaded.load(Ordering::Acquire)
     }
 
-    /// The FLEET history, resolved by time: the latest change on any node prices an instant. The
-    /// read every view and budget derivation takes (MONEY-DESIGN section 3a, item 17).
     #[must_use]
     pub fn history(&self) -> Option<Arc<History>> {
         self.published.load_full()
     }
 
-    /// **THE HISTORY THIS NODE PRICES WITH**: the fleet history, with every OTHER node's change
-    /// keyed above this node's own entry left known (its id still finds its card) but out of
-    /// force, so this node's own card prices every instant from its own entry's start, whatever
-    /// another node loaded since. What [`crate::root::kernel::RootHistory::pin`] hands a unit.
     #[must_use]
     pub fn node_history(&self) -> Option<Arc<History>> {
         self.node_published.load_full()
     }
 
-    /// This node's durable id.
     #[must_use]
     pub fn node(&self) -> u64 {
         self.node
     }
 
-    /// The store the history is kept in.
     #[must_use]
     pub fn calls(&self) -> &Arc<dyn StoreCalls> {
         &self.calls
     }
 
-    /// Every entry this node holds, in key order.
     #[must_use]
     pub fn entries(&self) -> Vec<StoredEntry> {
         self.lock().entries.values().cloned().collect()
     }
 
-    /// One immutable original by key, for a caller preparing a correction over a pinned snapshot.
     pub(crate) fn entry(&self, key: &EntryKey) -> Option<StoredEntry> {
         self.lock().entries.get(key).cloned()
     }
 
-    /// Every alarm this node has raised over the history, in the order raised (each once).
     #[must_use]
     pub fn alarms(&self) -> Vec<String> {
         self.lock().alarmed.iter().cloned().collect()
     }
 
-    /// The key of the oldest entry pending confirmation on this node, if any.
     #[must_use]
     pub fn pending(&self) -> Option<EntryKey> {
         self.lock()
@@ -373,8 +311,6 @@ impl CardStore {
             .map(|(key, _)| *key)
     }
 
-    /// **THE ENTRY THIS NODE PRICES WITH**: its key (whose id a count carries) and its card. Set by
-    /// every [`Self::apply`]; a rescan never moves it.
     #[must_use]
     pub fn own(&self) -> Option<(EntryKey, CardFields)> {
         let state = self.lock();
@@ -382,8 +318,6 @@ impl CardStore {
         state.entries.get(&key).map(|e| (key, e.card.clone()))
     }
 
-    /// Rebuild the resolved histories from what this node holds, and publish them: the fleet's,
-    /// and this node's own ([`Self::node_history`]).
     fn publish(&self, state: &State) {
         let fleet = Self::resolve_activated(&state.entries, &state.voids, &state.activations);
         let own_opening = state
@@ -412,13 +346,10 @@ impl CardStore {
         self.node_published.store(Some(Arc::new(node)));
     }
 
-    /// The opening entry that won: the lowest-keyed one.
     fn opening(entries: &BTreeMap<EntryKey, StoredEntry>) -> Option<&StoredEntry> {
         entries.values().find(|e| is_opening(e))
     }
 
-    /// **THE FLEET HISTORY**, resolved: every entry by key, an opening that lost its race and every
-    /// voided entry KNOWN (its card still answers its id) but never in force in the fleet view.
     #[must_use]
     pub fn resolve(entries: &BTreeMap<EntryKey, StoredEntry>, voids: &[VoidRecord]) -> History {
         Self::resolve_activated(entries, voids, &BTreeMap::new())
@@ -487,14 +418,12 @@ impl CardStore {
         history
     }
 
-    /// The entry in force at `t`: the highest-keyed live entry covering it.
     fn in_force_at(state: &State, t: u64) -> Option<StoredEntry> {
         let history = Self::resolve_activated(&state.entries, &state.voids, &state.activations);
         let key = history.current().entry_at(t)?.key();
         state.entries.get(&key).cloned()
     }
 
-    /// The card in force now, if the history holds one.
     #[must_use]
     pub fn in_force(&self) -> Option<CardFields> {
         if !self.is_loaded() {
@@ -505,8 +434,6 @@ impl CardStore {
         self.lock().entries.get(&key).map(|e| e.card.clone())
     }
 
-    /// A retained candidate awaiting confirmation or generation commit. The previous confirmed
-    /// card remains active while this is reported.
     #[must_use]
     pub fn pending_refusal(&self) -> Option<String> {
         self.pending().map(|key| {
@@ -517,7 +444,6 @@ impl CardStore {
         })
     }
 
-    /// Raise an alarm once per distinct message: an error line and the alarm counter.
     fn alarm(&self, state: &mut State, message: String) {
         if state.alarmed.insert(message.clone()) {
             tracing::error!(alarm = "card_history", "{message}");
@@ -525,15 +451,11 @@ impl CardStore {
         }
     }
 
-    /// The readers' alarms over what this node holds: far-future entries, nodes running different
-    /// cards (two changes extending one head; time-based reads take the later), and entries
-    /// extending a voided one.
     fn check_alarms(&self, state: &mut State) {
         let now = now_ms();
         let voided: BTreeSet<String> = state.voids.iter().map(|v| v.voided.clone()).collect();
         let mut messages = Vec::new();
-        // THIS NODE'S CARD IS NOT THE FLEET'S: its configuration loaded another card than the one
-        // a time-based read now takes.
+
         if let (Some(own), Some(in_force)) = (
             state.own.and_then(|k| state.entries.get(&k)),
             Self::in_force_at(state, now),
@@ -609,10 +531,9 @@ impl CardStore {
         }
     }
 
-    /// Merge a scan into what this node holds, and publish. Answers whether anything changed.
     fn merge(&self, scanned: Scanned) -> Result<bool, String> {
         let mut state = self.lock();
-        // Check the entire immutable union before installing any part of this snapshot.
+
         for entry in scanned
             .entries
             .iter()
@@ -676,8 +597,6 @@ impl CardStore {
             }
         }
         for entry in scanned.entries {
-            // A local prepared candidate is confirmed in the Store but belongs to a generation
-            // that has not committed yet. Neither a rescan nor a lost-ack read may activate it.
             if state
                 .pending
                 .iter()
@@ -715,18 +634,12 @@ impl CardStore {
         Ok(())
     }
 
-    /// Rescan the store, and publish what is new.
-    ///
-    /// # Errors
-    ///
-    /// The store failed or refused the scan.
     pub fn rescan(&self, deadline: Option<Instant>) -> Result<bool, String> {
         let scanned = scan(self.calls.as_ref(), deadline)?;
         Self::validate_scan(&scanned)?;
         self.merge(scanned)
     }
 
-    /// The next key this node writes: `t_ms = max(now, head + 1)`.
     fn next_key(&self, state: &State) -> EntryKey {
         let head = state
             .entries
@@ -738,15 +651,6 @@ impl CardStore {
         EntryKey::new(t, self.rand, self.counter.fetch_add(1, Ordering::Relaxed))
     }
 
-    /// **THE BOOT.** Validate and recover Store intents, read the history, copy the journal's
-    /// card records into it (`migrated`, every chain's), open it with this node's card when it is
-    /// still empty, and otherwise apply this node's card ([`Self::apply`]): unchanged, it adopts
-    /// the entry in force; changed, it appends one, effective now.
-    ///
-    /// # Errors
-    ///
-    /// The store would not read the history back, or would not take the opening entry or a
-    /// migrated one.
     pub fn boot(
         self: &Arc<Self>,
         card: &CardFields,
@@ -754,8 +658,7 @@ impl CardStore {
         migrated: Vec<StoredEntry>,
     ) -> Result<(), String> {
         let deadline = || Some(Instant::now() + BOOT_DEADLINE);
-        // Validate the entire Store snapshot before any recovery put or publication. Intent
-        // metadata never implies canonical confirmation, even when the intent's own ack was lost.
+
         let scanned = scan(self.calls.as_ref(), deadline())?;
         Self::validate_scan(&scanned)?;
         let intents = scanned.intents.clone();
@@ -796,15 +699,13 @@ impl CardStore {
                         false,
                     ) == PutOutcome::Ready;
                 pending.confirmed.store(confirmed, Ordering::Release);
-                // The shared Store also contains peer intents. An unconfirmed peer operation
-                // cannot select this node's prices or make its admissions pending.
+
                 if confirmed && !intent.activation_required {
                     self.lock().pending.retain(|(held, _)| *held != key);
                     self.lock().entries.insert(key, intent.entry.clone());
                 }
             }
-            // Another node's intent is safe to retry but cannot select this node's own card.
-            // An amendment's explicit own=false survives restart even if its card equals config.
+
             if intent.committed
                 && (!intent.activation_required || intent.activation_confirmed)
                 && intent.own
@@ -829,8 +730,7 @@ impl CardStore {
             self.spawn_reput();
             return Err(format!("the Store has not confirmed recovered rate-card entry {key}; boot cannot activate its prices"));
         }
-        // THE MIGRATION, before the opening rule: every chain's card records, under time keys, an
-        // idempotent union (a key the store holds is not written again).
+
         let held: BTreeSet<EntryKey> = self.lock().entries.keys().copied().collect();
         for entry in migrated.into_iter().filter(|e| !held.contains(&e.key)) {
             match put_all(self.calls.as_ref(), &entry.records()?, deadline(), true) {
@@ -845,7 +745,7 @@ impl CardStore {
             }
             self.lock().entries.insert(entry.key, entry);
         }
-        // THE OPENING RULE: an empty history is opened with this node's card, from instant zero.
+
         let needs_opening = {
             let state = self.lock();
             state.entries.is_empty()
@@ -889,15 +789,13 @@ impl CardStore {
                     pending.confirmed.store(true, Ordering::Release);
                 }
                 PutOutcome::Refused(_) | PutOutcome::Doubtful(_) => {
-                    // A boot failure has not activated prices. Retain the original owner, rather
-                    // than replacing an uncertain opening with a fresh identity.
                     self.spawn_reput();
                     return Err(format!(
                         "the Store has not confirmed opening rate-card entry {key}"
                     ));
                 }
             }
-            // Another node may have opened it at the same time: the lowest key wins.
+
             let _ = self.rescan(deadline());
         }
         self.loaded.store(true, Ordering::Release);
@@ -920,12 +818,6 @@ impl CardStore {
         Ok(())
     }
 
-    /// **A CONFIGURATION RESOLVED `card`** (boot, reload, apply, settings, plugin reload or
-    /// rollback, overlay and named-map writes; `origin` names which, and who). Equal to this
-    /// node's own card: nothing. Equal to the card in force: this node adopts that entry.
-    /// Otherwise a WHOLE-card entry is appended, effective now, recording `origin` and the fields
-    /// that changed. An unconfirmed write leaves the previous prices active.
-    /// Answers the entry this node now prices with, or `None` if preparation failed.
     pub fn apply(self: &Arc<Self>, card: &CardFields, origin: &str) -> Option<EntryKey> {
         let key = self
             .prepare(card, origin)
@@ -938,8 +830,6 @@ impl CardStore {
         Some(key)
     }
 
-    /// Confirm one immutable candidate while retaining the old card until the returned commit.
-    /// Concurrent or reentrant preparations refuse without replacing the pending owner.
     pub fn prepare(
         self: &Arc<Self>,
         card: &CardFields,
@@ -948,8 +838,6 @@ impl CardStore {
         self.prepare_with(card, origin, false)
     }
 
-    /// Authoritative reload recovery may retire an inert candidate or reconcile confirmed
-    /// activation effects before appending the desired card. Neither is a silent rollback.
     pub fn prepare_recovery(
         self: &Arc<Self>,
         card: &CardFields,
@@ -1024,8 +912,7 @@ impl CardStore {
                     .retain(|(held, _)| *held != pending.entry.key);
                 continue;
             }
-            // Preserve a Store-confirmed activation even when the desired reload is the old
-            // local card. Its successor must be a new confirmed Store fact, not a RAM no-op.
+
             let confirmed = PreparedCard {
                 book: self.clone(),
                 key: Some(pending.entry.key),
@@ -1079,8 +966,7 @@ impl CardStore {
                 let key = self.next_key(&state);
                 let entry = StoredEntry {
                     key,
-                    // Effective from this node's own now, whatever the key: a skewed head never
-                    // delays a change.
+
                     effective_from: now,
                     effective_until: None,
                     appended_at: now,
@@ -1095,8 +981,7 @@ impl CardStore {
                     card: card.clone(),
                     correction: None,
                 };
-                // Encoding happens outside the mutex; the logical preparation lease prevents a
-                // concurrent configuration from selecting another original in the meantime.
+
                 drop(state);
                 let pending = PendingWrite::prepare(entry, true);
                 self.lock()
@@ -1136,15 +1021,10 @@ impl CardStore {
         Ok(())
     }
 
-    /// A head more than the skew bound ahead of this node's clock is alarmed, naming it and its
-    /// writer. It never delays a change (see [`Self::apply`]).
     fn skew_alarm(&self, state: &mut State, _now: u64) {
         self.check_alarms(state);
     }
 
-    /// Prepare one immutable owner before its first put. The Store writes the complete intent
-    /// before the canonical commit. Own-card confirmation remains pending generation activation.
-    /// Encoding failure preserves the original in RAM and never claims restart durability.
     fn write(self: &Arc<Self>, entry: StoredEntry, own: bool) -> Result<EntryKey, String> {
         let key = entry.key;
         let pending = {
@@ -1184,7 +1064,6 @@ impl CardStore {
             let mut state = self.lock();
             pending.confirmed.store(true, Ordering::Release);
             if own {
-                // Candidate confirmation is not authority to activate a generation.
                 return Ok(key);
             }
             state.entries.insert(key, (*pending.entry).clone());
@@ -1201,11 +1080,6 @@ impl CardStore {
         Err(format!("the Store has not confirmed rate-card entry {key}; its immutable candidate remains pending"))
     }
 
-    /// A BOUNDED AMEND: `card` priced over `[from, until)`, written like a change.
-    ///
-    /// # Errors
-    ///
-    /// The history is not loaded.
     pub fn amend(
         self: &Arc<Self>,
         from: u64,
@@ -1218,7 +1092,6 @@ impl CardStore {
         self.amend_from((from, until), base, card, reason_hash, actor)
     }
 
-    /// Prepare over the exact base a caller pinned before its seal, without a global money lock.
     pub(crate) fn amend_from(
         self: &Arc<Self>,
         window: (u64, u64),
@@ -1299,19 +1172,12 @@ impl CardStore {
         self.write(entry, false)
     }
 
-    /// The card of the entry covering `t`, as fields, with its key.
     #[must_use]
     pub fn card_at(&self, t: u64) -> Option<(EntryKey, CardFields)> {
         let state = self.lock();
         Self::in_force_at(&state, t).map(|e| (e.key, e.card))
     }
 
-    /// Void an entry whose start is still in the future by this node's clock: known, never in
-    /// force. The VOID is written and acked before it is answered.
-    ///
-    /// # Errors
-    ///
-    /// The entry is unknown, already in force, or the store did not take the VOID.
     pub fn void(&self, key: EntryKey, actor: &str) -> Result<(), String> {
         let effective_from = {
             let state = self.lock();
@@ -1355,8 +1221,6 @@ impl CardStore {
         }
     }
 
-    /// Re-put every pending entry, oldest first, until each is READY. Repeatedly unconfirmed
-    /// owners alarm and remain held, including refusals after an earlier unknown outcome.
     fn spawn_reput(self: &Arc<Self>) {
         {
             let mut state = self.lock();
@@ -1454,7 +1318,6 @@ impl CardStore {
         }
     }
 
-    /// Rescan on the history's tick, for the life of the store.
     fn spawn_rescan(self: &Arc<Self>) {
         if self.rescanning.swap(true, Ordering::AcqRel) {
             return;
@@ -1477,23 +1340,13 @@ impl CardStore {
 #[path = "tests/card_history.rs"]
 mod tests;
 
-/// One chain's card records, as the PR-B first-boot migration copies them: `(journal node, its
-/// records in chain order)`.
 pub type Chain = (u64, Vec<busbar_kernel_wal::JournalRecord>);
 
-/// **THE MIGRATION** (MONEY-DESIGN section 3a, before the opening rule): every chain's history AS
-/// DEV'S BOOT REBUILT IT (`RootHistory::restore`): the opening entry first, then every other card
-/// record in chain order, each correction rebuilt over the entry its chain sealed it over and LEFT
-/// OUT when that rebuild refuses it (dev never priced a refused correction). Each entry is copied
-/// under a TIME key (`appended_at_ms ++ journal node ++ node_seq`). Duplicates by (card, window)
-/// collapse to the lowest key, and only the oldest opening entry is kept.
 #[must_use]
 pub fn migrated(chains: &[Chain], writer: u64) -> Vec<StoredEntry> {
     use crate::root::kernel::JournalledCard;
     let mut out: Vec<StoredEntry> = Vec::new();
     for (node, records) in chains {
-        // The order `restore` rebuilds in: the first configured card from instant zero opens it,
-        // and every other record follows in chain order.
         let mut opening = None;
         let mut rest = Vec::new();
         for (seq, body, card) in crate::root::kernel::journalled_cards_at(records) {
@@ -1508,7 +1361,7 @@ pub fn migrated(chains: &[Chain], writer: u64) -> Vec<StoredEntry> {
         }
         let has_opening = opening.is_some();
         let mut history = History::new();
-        // The card of each entry `history` holds, by its number.
+
         let mut cards: Vec<CardFields> = Vec::new();
         for (index, (seq, body, card)) in opening.into_iter().chain(rest).enumerate() {
             let key = |at: u64| EntryKey::new(at, node.to_be_bytes(), seq as u32);
@@ -1520,8 +1373,6 @@ pub fn migrated(chains: &[Chain], writer: u64) -> Vec<StoredEntry> {
             };
             let (draft, fields, reason) = match card {
                 JournalledCard::Applied(applied) => {
-                    // The chain's own history holds the card exactly as dev's rebuild did, so a
-                    // correction's base digest matches it as it did there.
                     (applied.draft(), applied.form.to_fields(), None)
                 }
                 JournalledCard::Corrected(correction, sealed_over) => {
@@ -1556,7 +1407,6 @@ pub fn migrated(chains: &[Chain], writer: u64) -> Vec<StoredEntry> {
                     (draft, fields, reason)
                 }
                 JournalledCard::Amended(draft) => {
-                    // A `v1`/`v2` correction: the cells and the fee were the whole card it sealed.
                     let fields = amended_fields(&body);
                     let reason = match &draft.author {
                         Author::Amend { reason_hash } => Some(hex::encode(reason_hash)),
@@ -1582,7 +1432,7 @@ pub fn migrated(chains: &[Chain], writer: u64) -> Vec<StoredEntry> {
             });
         }
     }
-    // Lowest key first, so each collapse keeps the lowest.
+
     out.sort_by_key(|e| e.key);
     let mut seen: BTreeSet<(String, u64, Option<u64>)> = BTreeSet::new();
     let mut opened = false;
@@ -1598,7 +1448,6 @@ pub fn migrated(chains: &[Chain], writer: u64) -> Vec<StoredEntry> {
     out
 }
 
-/// The card a `v1`/`v2` correction record sealed whole: its cells and its fee.
 #[cfg(feature = "root-admin")]
 fn amended_fields(body: &[u8]) -> CardFields {
     let Some(amendment) = crate::root::units_admin::amendment_from_body(body) else {
@@ -1619,7 +1468,6 @@ fn amended_fields(body: &[u8]) -> CardFields {
     )
 }
 
-/// A build without the admin plane journals no correction.
 #[cfg(not(feature = "root-admin"))]
 fn amended_fields(_body: &[u8]) -> CardFields {
     CardFields::default()

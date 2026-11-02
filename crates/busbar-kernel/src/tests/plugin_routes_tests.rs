@@ -1,23 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for plugin HTTP endpoint registration: collision detection, namespace
-//! confinement, end-to-end dispatch to `handle_http`, scrape-time (live-snapshot) resolution, and the
-//! auth:admin route's confinement to the admin listener.
-
 use super::*;
 use axum::Router;
 use busbar_contract::abi::mechanism::endpoint::{EndpointRequest, EndpointResponse};
 use busbar_contract::abi::mechanism::route::{Route, RouteAuth, RouteMethod};
 use std::sync::Arc;
 
-/// The protocol a test lane names. The kernel test binary registers no dialect (its built-ins are
-/// the neutral `proto-*` set), so a lane's protocol here is a name nothing resolves, exactly as the
-/// dialect word it replaces was: the neutral crate's tests spell no dialect.
 const LANE_PROTOCOL: &str = "unregistered-lane-protocol";
 
-/// A fake plugin dispatcher that echoes its label + the request line, so a test can prove WHICH plugin
-/// served a request (the scrape-time-resolution proof) and that `handle_http` ran end-to-end.
 struct FakeDispatch {
     label: &'static str,
 }
@@ -31,9 +22,6 @@ impl PluginHttpDispatch for FakeDispatch {
     }
 }
 
-/// Expect a build to FAIL with a collision/confinement error and return the message. A match rather
-/// than `unwrap_err` because `PluginRouteTable` is not `Debug` (its dispatchers are trait objects) —
-/// and this makes the RED case a clean assertion failure ("expected an Err"), not a compile error.
 fn expect_err(r: Result<PluginRouteTable, String>) -> String {
     match r {
         Err(e) => e,
@@ -65,16 +53,6 @@ fn decl(
     }
 }
 
-// ── Collision detection: deterministic first-to-claim, LOUD failure ──────────────────────────────
-
-/// Two plugins claiming the SAME {path, method} is a LOUD collision naming the OWNING (first) plugin,
-/// never last-writer-wins — with the exact message shape the design specifies. Deterministic scan
-/// order = declaration order, so `prometheus` (first) owns `GET /metrics` and `datadog` (second) is the
-/// one refused.
-///
-/// This asserts the EXACT loud message; with `build_route_table` doing
-/// last-writer-wins (no collision arm) the second claim would silently overwrite the first and this
-/// test fails (no `Err`) — proven by removing the collision arm before wiring it.
 #[test]
 fn collision_is_a_loud_failure_naming_the_owner() {
     let mut decls = vec![
@@ -103,9 +81,6 @@ fn collision_is_a_loud_failure_naming_the_owner() {
         err,
         "plugin \"datadog\" cannot register GET /metrics — already registered by \"prometheus\""
     );
-
-    // The boot/`--validate` preflight runs THIS function over the same declaration set
-    // (`plugins_preflight`, step 7), so it refuses the same collision in the same words.
 }
 
 #[test]
@@ -140,7 +115,6 @@ fn granted_public_route_is_not_hardcoded_to_an_exporter_path() {
     .is_err());
 }
 
-/// The SAME path with DIFFERENT methods is NOT a collision — the collision key is `{path, method}`.
 #[test]
 fn same_path_different_method_is_not_a_collision() {
     let decls = vec![
@@ -164,14 +138,8 @@ fn same_path_different_method_is_not_a_collision() {
     assert!(build_route_table(decls).is_ok());
 }
 
-// ── Namespace confinement ────────────────────────────────────────────────────────────────────────
-
-/// A hook's routes are confined under `/hooks/<name>/*`; anything outside — a bid to shadow the admin
-/// surface, the well-known `/metrics`, or a bare top-level path — is REJECTED by the registrar (the
-/// plugin's self-report is never trusted to place a route outside its namespace).
 #[test]
 fn confinement_rejects_hook_out_of_namespace() {
-    // In-namespace: accepted.
     assert!(build_route_table(vec![decl(
         "sr",
         RouteKind::Hook,
@@ -182,7 +150,6 @@ fn confinement_rejects_hook_out_of_namespace() {
     )])
     .is_ok());
 
-    // Shadowing the admin surface: rejected.
     assert!(expect_err(build_route_table(vec![decl(
         "sr",
         RouteKind::Hook,
@@ -193,7 +160,6 @@ fn confinement_rejects_hook_out_of_namespace() {
     )]))
     .contains("/api/* admin surface is reserved"));
 
-    // Claiming the well-known /metrics (an EXPORT-only exception): rejected for a hook.
     assert!(expect_err(build_route_table(vec![decl(
         "sr",
         RouteKind::Hook,
@@ -204,7 +170,6 @@ fn confinement_rejects_hook_out_of_namespace() {
     )]))
     .contains("/hooks/sr/*"));
 
-    // A bare top-level path outside the hook's namespace: rejected.
     assert!(expect_err(build_route_table(vec![decl(
         "sr",
         RouteKind::Hook,
@@ -216,11 +181,8 @@ fn confinement_rejects_hook_out_of_namespace() {
     .contains("/hooks/sr/*"));
 }
 
-/// An export sink may claim the well-known `/metrics` but is otherwise confined to `/exports/<name>/*`;
-/// a reserved core route (`/stats`, `/v1/models`, …) is refused to every kind.
 #[test]
 fn confinement_export_metrics_exception_and_reserved_routes() {
-    // The well-known /metrics: accepted for an export sink.
     assert!(build_route_table(vec![RouteDecl {
         scrape: true,
         ..decl(
@@ -234,7 +196,6 @@ fn confinement_export_metrics_exception_and_reserved_routes() {
     }])
     .is_ok());
 
-    // Its own namespace: accepted.
     assert!(build_route_table(vec![decl(
         "datadog",
         RouteKind::Export,
@@ -245,7 +206,6 @@ fn confinement_export_metrics_exception_and_reserved_routes() {
     )])
     .is_ok());
 
-    // A reserved core route: refused even for an export sink.
     assert!(expect_err(build_route_table(vec![decl(
         "prometheus",
         RouteKind::Export,
@@ -256,7 +216,6 @@ fn confinement_export_metrics_exception_and_reserved_routes() {
     )]))
     .contains("reserved core route"));
 
-    // Out of the export namespace and not the /metrics exception: refused.
     assert!(expect_err(build_route_table(vec![decl(
         "datadog",
         RouteKind::Export,
@@ -268,9 +227,6 @@ fn confinement_export_metrics_exception_and_reserved_routes() {
     .contains("/exports/datadog/*"));
 }
 
-/// THE SCRAPE SINK'S WELL-KNOWN PATH (owner law 2026-09-27: `/metrics/hooks` leaves core, a
-/// listener need of the scrape sink). RED: any other export plugin, or a hook, claiming
-/// `/metrics/hooks` is refused as a reserved route; the scrape sink's own claim is accepted.
 #[test]
 fn only_the_scrape_sink_claims_metrics_hooks() {
     let hooks = |owner: &str, kind: RouteKind, scrape: bool| RouteDecl {
@@ -292,8 +248,6 @@ fn only_the_scrape_sink_claims_metrics_hooks() {
         assert!(expect_err(build_route_table(vec![refused])).contains("routes are confined"));
     }
 }
-
-// ── End-to-end dispatch + scrape-time (live-snapshot) resolution ─────────────────────────────────
 
 fn app_with_table(table: Arc<PluginRouteTable>) -> Arc<crate::state::App> {
     use crate::test_support::{LaneSpec, TestApp};
@@ -321,16 +275,10 @@ async fn get(router: Router, path: &str) -> (u16, String) {
     (code, body)
 }
 
-/// END-TO-END: a registered `none`-auth data-plane route dispatches to the plugin's `handle_http` and
-/// relays its response verbatim; and after a hot-swap of the App snapshot to a DIFFERENT owner of the
-/// SAME path, the SAME server resolves the NEW plugin (scrape-time resolution, no stale handle
-/// baked into the route closure).
 #[tokio::test]
 async fn route_dispatches_to_handle_http_and_resolves_live_after_swap() {
-    // An export-namespace path (not the built-in `/metrics`, which the process-wide metrics recorder
-    // may already own in a shared test binary) — the dispatch + live-resolution mechanism is the same.
     const P: &str = "/exports/prometheus/scrape";
-    // Snapshot A: the route owned by "prom".
+
     let table_a = Arc::new(
         build_route_table(vec![decl(
             "prometheus",
@@ -361,7 +309,6 @@ async fn route_dispatches_to_handle_http_and_resolves_live_after_swap() {
         "handle_http response relayed verbatim"
     );
 
-    // Hot-swap the live snapshot to snapshot B: the SAME path now owned by "next".
     let table_b = Arc::new(
         build_route_table(vec![decl(
             "prometheus",
@@ -384,10 +331,6 @@ async fn route_dispatches_to_handle_http_and_resolves_live_after_swap() {
     );
 }
 
-// ── auth:admin confinement to the admin listener ─────────────────────────────────────────────────
-
-/// Plane classification (feature-independent): an `auth: admin` plugin route is mounted ONLY on the
-/// admin plane, never the data plane — the mount-level half of "confined to the admin listener".
 #[test]
 fn admin_auth_route_is_classified_to_the_admin_plane_only() {
     let table = build_route_table(vec![decl(
@@ -410,12 +353,6 @@ fn admin_auth_route_is_classified_to_the_admin_plane_only() {
     );
 }
 
-/// An `auth: admin` plugin route is physically ABSENT from the data listener — even to a caller the
-/// admin chain admits it is a hard 404 there (route not mounted), exactly like `/api/v1/admin/*`; on
-/// the admin listener it is served (dispatched to the plugin). Mirrors
-/// `split_admin_listener_no_double_exposure`. The admin chain is the explicit OPEN posture: this
-/// crate's test binary links no auth row for the operator credential, and what is under test is the
-/// route's placement, not the credential.
 #[tokio::test]
 async fn admin_auth_route_is_absent_from_the_data_listener() {
     use crate::governance::{GovState, MemoryStore};
@@ -464,13 +401,12 @@ async fn admin_auth_route_is_absent_from_the_data_listener() {
         code
     }
 
-    // DATA listener: absent — a valid admin token still 404s (route not mounted), not merely blocked.
     assert_eq!(
         get_tok(data_router, "/exports/audit-sink/admin-op", "admintok").await,
         404,
         "an auth:admin plugin route must be physically absent from the data listener"
     );
-    // ADMIN listener: served (admin chain passes with the token, then the plugin dispatch runs → 200).
+
     assert_eq!(
         get_tok(admin_router, "/exports/audit-sink/admin-op", "admintok").await,
         200,
@@ -478,21 +414,6 @@ async fn admin_auth_route_is_absent_from_the_data_listener() {
     );
 }
 
-// ── HEAD on a declared GET route (the logged LOW) ────────────────────────────────────────────────
-
-/// A HEAD request to a route a plugin declared as GET must be treated as that GET route by BOTH
-/// halves of the seam — the auth middleware's [`PluginRouteTable::declared_auth`] lookup AND the
-/// dispatcher's method mapping. axum already routes HEAD to the GET handler (its `MethodRouter`
-/// falls back to the GET arm and strips the body), so a HEAD reaches `plugin_route_dispatch`; with
-/// no HEAD arm in `route_method_of` the two halves DISAGREE:
-///
-/// * `declared_auth(path, HEAD)` returns `None`, so the route's DECLARED bar is not applied — an
-///   `auth: none` route demands a token on HEAD, and an `auth: admin` route is not forced down the
-///   admin chain (it is only saved from being reachable by the SECOND half of the same bug);
-/// * the dispatcher then 405s a request axum had already routed to the plugin's GET handler.
-///
-/// Mapping `Method::HEAD` onto `RouteMethod::Get` fixes both halves together, which is the only safe
-/// way to fix either: closing just the dispatch half would leave the auth half open.
 #[test]
 fn head_is_looked_up_as_the_declared_get_route() {
     let table = build_route_table(vec![decl(
@@ -514,14 +435,11 @@ fn head_is_looked_up_as_the_declared_get_route() {
         Some(RouteMethod::Get),
         "HEAD maps onto the declared GET route (axum already routes HEAD to the GET handler)"
     );
-    // Methods no plugin route can declare stay unmapped (the 405 arm is still reachable).
+
     assert_eq!(route_method_of(&axum::http::Method::OPTIONS), None);
     assert_eq!(route_method_of(&axum::http::Method::TRACE), None);
 }
 
-/// END-TO-END: a HEAD to an `auth: none` plugin route declared as GET is SERVED (200, empty body —
-/// axum strips a HEAD response body), not rejected with 405. The GET arm of the same route is
-/// unchanged.
 #[tokio::test]
 async fn head_dispatches_to_the_declared_get_route() {
     const P: &str = "/exports/prometheus/scrape";
@@ -567,21 +485,6 @@ async fn head_dispatches_to_the_declared_get_route() {
     );
 }
 
-// ── Header-count cap: NEVER a silent truncation ──────────────────────────────────────────────────
-//
-// `MAX_PLUGIN_HEADERS` (64) previously drove a bare `.take(64)` on BOTH the request projection
-// forwarded to a plugin and the plugin's response relayed to the external client — silently, with no
-// counter/warn/marker. These tests would have caught the regression: RED against the bare-`.take()`
-// shape (an over-cap set silently shortened with no observable signal), GREEN against the fix.
-
-/// The REQUEST direction: an inbound header set over the cap is never silently cut. The plugin
-/// projection is truncated to make room for an explicit marker header
-/// (`PLUGIN_REQUEST_HEADERS_TRUNCATED_MARKER`) so the plugin — which may make an auth/governance/
-/// routing decision on this projection — cannot mistake an incomplete set for a complete one.
-///
-/// RED against the pre-fix code (a bare `.take(MAX_RELAY_RESPONSE_HEADERS)` with no marker): the
-/// projection would contain exactly 64 headers, none of them the marker, and this assertion on the
-/// marker's presence fails. GREEN once the marker is appended.
 #[test]
 fn over_cap_request_headers_are_marked_not_silently_cut() {
     let mut headers = HeaderMap::new();
@@ -606,8 +509,6 @@ fn over_cap_request_headers_are_marked_not_silently_cut() {
     );
 }
 
-/// The under-cap case is UNCHANGED: no marker is injected when nothing was cut, so a plugin never
-/// sees a false-positive truncation signal.
 #[test]
 fn under_cap_request_headers_carry_no_marker() {
     let mut headers = HeaderMap::new();
@@ -641,7 +542,6 @@ fn non_text_request_headers_mark_the_projection_incomplete() {
         .iter()
         .any(|(k, v)| { k == PLUGIN_REQUEST_HEADERS_TRUNCATED_MARKER && v == "true" }));
 
-    // Authorization is intentionally excluded, regardless of its encoding.
     headers.remove("x-unreadable");
     headers.insert(
         "authorization",
@@ -653,13 +553,6 @@ fn non_text_request_headers_mark_the_projection_incomplete() {
     );
 }
 
-/// The RESPONSE direction: a plugin response over the header cap reaches an axum [`Response`] — this
-/// relay leaves the process to an EXTERNAL client, so the OWNER PRINCIPLE forbids a truncate-and-relay
-/// fallback. The whole response is REJECTED (502), never partially relayed.
-///
-/// RED against the pre-fix code (a bare `.take(MAX_RELAY_RESPONSE_HEADERS)`): the over-cap response
-/// would come back 200 with exactly 64 (of 100) headers silently kept, and this assertion on the
-/// status code fails. GREEN once the fix rejects it.
 #[test]
 fn over_cap_response_headers_are_rejected_not_silently_truncated() {
     let headers: Vec<(String, String)> = (0..100)
@@ -679,7 +572,6 @@ fn over_cap_response_headers_are_rejected_not_silently_truncated() {
     );
 }
 
-/// The under-cap case relays exactly as before: status + all headers + body pass through unchanged.
 #[test]
 fn under_cap_response_headers_relay_unchanged() {
     let resp = EndpointResponse {
@@ -693,15 +585,6 @@ fn under_cap_response_headers_relay_unchanged() {
     assert_eq!(out.headers().get("x-b").unwrap(), "2");
 }
 
-// ── The RESTART-TO-APPLY signal ──────────────────────────────────────────────────────────────────
-
-/// [`paths_awaiting_restart`] names exactly the paths a config apply cannot make servable, in every
-/// direction the `export:` admin surface can move.
-///
-/// The asymmetry it encodes: the axum router registers each declared path ONCE, at boot, and an apply
-/// swaps only `Arc<App>`. So an ADDED path that was not mounted at boot is unservable until a restart,
-/// while a REMOVED one is genuinely live (the dispatcher resolves the owner per request and 404s), and
-/// re-adding a path that WAS mounted at boot needs nothing — the mount never went away.
 #[test]
 fn paths_awaiting_restart_flags_only_newly_declared_unmounted_paths() {
     fn table(paths: &[&str]) -> PluginRouteTable {
@@ -729,24 +612,18 @@ fn paths_awaiting_restart_flags_only_newly_declared_unmounted_paths() {
     let empty = table(&[]);
     let metrics = table(&["/metrics"]);
 
-    // ADDED, never mounted at boot ⇒ flagged. THE FINDING.
     assert_eq!(
         paths_awaiting_restart(&metrics, &empty, &boot(&[])),
         vec!["/metrics".to_string()],
     );
-    // ADDED, but the boot router already has the mount (configured at boot, removed live, re-added)
-    // ⇒ nothing to say.
+
     assert!(paths_awaiting_restart(&metrics, &empty, &boot(&["/metrics"])).is_empty());
-    // REMOVED ⇒ live, nothing to say.
+
     assert!(paths_awaiting_restart(&empty, &metrics, &boot(&["/metrics"])).is_empty());
-    // UNCHANGED (an edit touching no route) ⇒ nothing to say, even while `/metrics` is itself still
-    // pending a restart from an EARLIER mutation: the signal is keyed on THIS delta, so an unrelated
-    // later edit does not re-flag it.
+
     assert!(paths_awaiting_restart(&metrics, &metrics, &boot(&[])).is_empty());
 }
 
-/// The outbound allocation stays live through HTTP data-chunk clones, then wipes on either
-/// successful consumption or an abandoned response. Observe only its initialized owned slice.
 #[tokio::test]
 async fn response_body_wipes_when_the_last_http_chunk_retires_or_is_abandoned() {
     use http_body_util::BodyExt;

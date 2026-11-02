@@ -1,24 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Q-STORE = (B) (owner ruling 2026-09-27, BUSBAR-1.6.0.md Appendix B; THE DESIGN §4): 1.6.0
-//! REQUIRES an explicit `store:` block, even for memory. A config without one is refused at
-//! validation (boot and `--validate` alike), and `busbar --migrate-config` inserts
-//! `store: {module: memory}` — the store a 1.5.x config without one ran on.
-
 use super::*;
 use crate::config;
 
-/// A 1.5.5-shaped document with no `store:` block (the no-store fixture's shape).
 const NO_STORE: &str = "listen: \"127.0.0.1:8080\"\nproviders:\n  acme:\n    api_key: { env: ACME_KEY }\nmodels:\n  m:\n    provider: acme\n";
 
-/// RED (Q-STORE = (B)): a config with no `store:` block is REFUSED, with the one refusal line that
-/// names the fix — the store to write and the migration that writes it.
-///
-/// Without the refusal arm in `validate` the config validates and the first assertion fails.
 #[test]
 fn a_config_without_a_store_block_is_refused() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
     let mut cfg =
         crate::test_support::cfg_with_provider_api_key(config::SecretRef::env("ACME_KEY"));
@@ -43,11 +32,6 @@ fn a_config_without_a_store_block_is_refused() {
     }
 }
 
-/// RED (Q-STORE = (B)): the migration inserts `store: {module: memory}` into a config that has
-/// none, records the change, and is idempotent: the migrated document migrates to itself.
-///
-/// Without `migrate_store_required` the migrated document has no `store:` and the first assertion
-/// fails.
 #[test]
 fn migrate_inserts_the_memory_store_into_a_config_without_one() {
     let out = config::migrate::migrate_config(NO_STORE).expect("the no-store document migrates");
@@ -86,9 +70,6 @@ fn migrate_inserts_the_memory_store_into_a_config_without_one() {
     );
 }
 
-/// A `store:` block that names no module read as the memory store in 1.5.5 (serde's default); the
-/// migration names it and keeps the operator's settings. A block that names its module is left
-/// exactly as written.
 #[test]
 fn migrate_names_the_module_of_a_store_block_without_one_and_leaves_a_named_one() {
     let unnamed = format!("{NO_STORE}store:\n  settings: {{ k: v }}\n");
@@ -106,10 +87,6 @@ fn migrate_names_the_module_of_a_store_block_without_one_and_leaves_a_named_one(
     assert!(!out.changes.iter().any(|c| c.starts_with("store")));
 }
 
-/// THE KERNEL NAMES NO STORE INSTANCE (Q128 arch u29; BUSBAR-1.6.0.md l.4205-4211): the store a
-/// 1.5.x config with no `store:` block ran on is the root migration table's `store_1_5_default` row,
-/// and the refusals and the migration read it from there. RED before: the kernel held the literal
-/// as a constant. The kernel's test store double answers to that same row.
 #[test]
 fn the_store_double_answers_to_the_migrated_store_module() {
     assert_eq!(

@@ -1,31 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **EVERY LINKED EXPORT SINK LOADS AS ITS OWN KIND, IN THE SHIPPED BINARY.** Driven through the real
-//! binary, with every first-party export sink this build links configured at once, and the stream wire
-//! under the data door (linked where the build links it, dropped in where it does not).
-//!
-//! The regression this guards: a binary that links several `["cdylib", "rlib"]` plugins used to carry
-//! one strong `#[no_mangle] busbar_plugin_kind` per plugin crate. Where the linker kept a single
-//! definition (a non-LTO link warns and picks one), a linked entry that answered its kind through that
-//! global symbol answered the OTHER plugin's kind, and the boot refused a metrics export with
-//! "plugin '<the scrape sink>' exports kind 'transport' but is being loaded as 'export'".
-//! The frozen symbols are now defined once, in the plugin SDK, and a binary's linked rows answer
-//! through their own entries (`BUSBAR_COLD_ENTRY`). The link-level half of that is proven in
-//! `crates/busbar-contract/tests/one_link_many_plugins.rs` (two plugins in one image compile, their
-//! global door answers as no plugin, each linked entry answers as itself). This test holds the
-//! shipped binary to the outcome: it boots, every sink loads as `export`, and the scrape sink renders
-//! `/metrics`.
-//!
-//! Which sinks the binary links is the binary's own answer: a module on no export axis is refused
-//! by `--validate` as an unknown exporter. No feature name is spelled.
-
 #![cfg(unix)]
-// The config serves `providers:`/`models:`, so the build must link the plane door that declares
-// `pools:` (`linked_section_pools`): the linked table's answer, never a feature name.
 #![cfg(linked_section_pools)]
-// A build that links no export sink has no row to load as the wrong kind: the test is the export
-// door axis's, so it compiles where the build links that axis and asserts the binary agrees.
 #![cfg(linked_axis_export_doors)]
 
 mod common;
@@ -38,11 +15,8 @@ use std::time::{Duration, Instant};
 
 include!(concat!(env!("OUT_DIR"), "/linked_transports.rs"));
 
-/// The key of the wire the data door rides.
 const WIRE: &str = "tcp";
 
-/// Every first-party export module and the instance line that configures it. `{dir}` is the fixture
-/// directory (the file sink's path).
 const SINKS: &[(&str, &str)] = &[
     (
         "prometheus",
@@ -127,8 +101,6 @@ fn busbar(dir: &Path) -> Command {
     cmd
 }
 
-/// The export modules this binary links: each first-party module configured alone, asked of
-/// `--validate`. A module on no export axis is refused as an unknown exporter.
 fn linked_sinks() -> Vec<&'static str> {
     SINKS
         .iter()
@@ -149,13 +121,11 @@ fn linked_sinks() -> Vec<&'static str> {
         .collect()
 }
 
-/// The transport `cdylib` packed as an UNSIGNED `kind: transport` tarball.
 fn drop_in_wire(dir: &Path, lib: &[u8]) {
     let bytes = common::plugins::pack("transport", "dropped-wire", lib, "acme");
     std::fs::write(dir.join("plugins").join("dropped-wire.tar.gz"), bytes).unwrap();
 }
 
-/// Kill the child when the test ends, however it ends.
 struct Reap(Child);
 impl Drop for Reap {
     fn drop(&mut self) {
@@ -164,7 +134,6 @@ impl Drop for Reap {
     }
 }
 
-/// `GET path` over a fresh connection: `(status, head, body)`, or `None` before the listener is up.
 fn get(port: u16, path: &str) -> Option<(u16, String, String)> {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
     stream
@@ -202,8 +171,6 @@ fn every_linked_export_sink_loads_as_its_own_kind_in_the_shipped_binary() {
         .collect();
     write_configs(&dir, data_port, admin_port, &export);
 
-    // THE WIRE UNDER THE DOOR. A build that does not link the wire's row boots only with it dropped
-    // in; one that links it would refuse the tarball as a second row on the same key.
     if !LINKED_TRANSPORTS.iter().any(|w| w.key == WIRE) {
         let (lib, _) = common::plugins::transport_cdylib_under(&[WIRE]).unwrap_or_else(|| {
             common::plugins::missing(&format!("{WIRE} transport"), common::plugins::BUILD_PINNED)
@@ -222,8 +189,6 @@ fn every_linked_export_sink_loads_as_its_own_kind_in_the_shipped_binary() {
     );
     let read_log = || std::fs::read_to_string(&log_path).unwrap_or_default();
 
-    // THE NODE BOOTS: the data door answers. A sink loaded as the wrong kind refuses the boot, so
-    // an exit here is the regression, and its log names the kind it was loaded as.
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         if let Some(status) = child.0.try_wait().expect("try_wait") {
@@ -243,8 +208,6 @@ fn every_linked_export_sink_loads_as_its_own_kind_in_the_shipped_binary() {
         std::thread::sleep(Duration::from_millis(50));
     }
 
-    // THE SCRAPE SINK LOADED AS AN EXPORT AND RENDERS: `/metrics` settles to 200 (past the
-    // recorder's boot-window 503) with the exposition's content type.
     if sinks.contains(&"prometheus") {
         let deadline = Instant::now() + Duration::from_secs(30);
         let (status, head, _) = loop {

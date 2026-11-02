@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE STORE KIND'S FORWARD-COMPATIBILITY CASE (open160 ST14), proven on fixture stores: a durable
-//! store that refuses a schema newer than its build passes; one that opens over it anyway (as the
-//! postgres, mysql and valkey stores did until their review) is refused; a durable store stating no
-//! way to stamp its schema is refused; an ephemeral store keeps no schema and has nothing to prove.
-
 use std::collections::BTreeMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -16,10 +11,8 @@ use super::{store_newer_schema, Subject};
 use crate::both_ways::store_fixture::MemoryStore;
 use crate::store_v3::wrap::{Hooks, Wrapped};
 
-/// The schema version this fixture build writes.
 const BUILD: u32 = 3;
 
-/// The fixtures' "backend": each namespace's recorded schema version.
 static SCHEMA: Mutex<BTreeMap<String, u32>> = Mutex::new(BTreeMap::new());
 
 fn namespace(settings: &[u8]) -> String {
@@ -27,7 +20,6 @@ fn namespace(settings: &[u8]) -> String {
     v["ns"].as_str().expect("settings.ns").to_string()
 }
 
-/// Open over `settings`: record this build's schema in a fresh namespace, then read it back.
 fn opened(settings: &[u8], refuse_newer: bool) -> Result<Arc<MemoryStore>, String> {
     let mut m = SCHEMA.lock().unwrap_or_else(PoisonError::into_inner);
     let found = *m.entry(namespace(settings)).or_insert(BUILD);
@@ -39,7 +31,6 @@ fn opened(settings: &[u8], refuse_newer: bool) -> Result<Arc<MemoryStore>, Strin
     Ok(Arc::new(MemoryStore::new()))
 }
 
-/// A durable store that keeps the rule.
 struct Honest;
 impl Hooks for Honest {
     const EPHEMERAL: bool = false;
@@ -48,7 +39,6 @@ impl Hooks for Honest {
     }
 }
 
-/// A durable store that opens over whatever schema it finds.
 struct Lax;
 impl Hooks for Lax {
     const EPHEMERAL: bool = false;
@@ -64,7 +54,6 @@ mod lax {
     busbar_contract::store_door!(super::Wrapped<super::Lax>, "lax", "0", 64);
 }
 
-/// The fixtures' stamp: the namespace's schema one newer than the build.
 fn stamp(ns: &str, _: &[u8]) {
     SCHEMA
         .lock()

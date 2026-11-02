@@ -26,9 +26,6 @@
 //! ADDING A RELEASE: drop its `config.yaml` in as `v<x.y.z>_config.yaml`. No code change; the test
 //! discovers the directory. `tests/migration-corpus/refresh.sh` regenerates the whole set from tags.
 
-// The helpers that supply the deferred decisions, validate a migrated config and read the 1.5.5
-// warning oracle serve only the two corpus tests, which a build without the admin credential's
-// plugin does not compile (see the first of them).
 #![cfg_attr(not(linked_operator_auth), allow(dead_code))]
 
 mod common;
@@ -53,7 +50,6 @@ fn corpus_files() -> Vec<PathBuf> {
     v
 }
 
-/// Run `--migrate-config` and return `(stdout, stderr)`, or a rendered failure.
 fn migrate(path: &Path) -> Result<(String, String), String> {
     let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
         .arg("--migrate-config")
@@ -73,12 +69,6 @@ fn migrate(path: &Path) -> Result<(String, String), String> {
     ))
 }
 
-/// The decisions the migrator explicitly defers to a human, applied mechanically so the RESULT can
-/// be validated. Deliberately narrow: only what a `TODO(migrate)` line actually asks for.
-///
-/// A signing key and an admin credential are the two things a migrator must not invent — a key it
-/// chose would be unrotatable and identical across every deployment that ran the tool. Supplying
-/// them here is the test standing in for the operator, not the test hiding a gap.
 fn apply_deferred_decisions(yaml: &str) -> String {
     let mut doc: serde_yaml::Value = match serde_yaml::from_str(yaml) {
         Ok(v) => v,
@@ -98,17 +88,16 @@ fn apply_deferred_decisions(yaml: &str) -> String {
     if !names_keys {
         return serde_yaml::to_string(&doc).unwrap_or_else(|_| yaml.to_string());
     }
-    // A 64-hex ed25519 secret, the shape `--generate-signing-key` emits. Fixed, because a test
-    // fixture must be reproducible; it never leaves this process.
+
     auth.entry(serde_yaml::Value::String("signing_key".into()))
         .or_insert_with(|| {
             serde_yaml::from_str("{ env: BUSBAR_TEST_SIGNING_KEY }").expect("literal parses")
         });
-    // The operator credential's module, as the manifest's `operator-auth` row names it.
+
     let op = common::operator_module();
     auth.entry(serde_yaml::Value::String("admin_auth".into()))
         .or_insert_with(|| serde_yaml::from_str(&format!("[{op}]")).expect("literal parses"));
-    // `admin_auth` references it by bare name, so the provider has to be defined.
+
     let idp_key = serde_yaml::Value::String("identity-providers".into());
     let idp = map
         .entry(idp_key)
@@ -125,36 +114,25 @@ fn apply_deferred_decisions(yaml: &str) -> String {
     serde_yaml::to_string(&doc).unwrap_or_else(|_| yaml.to_string())
 }
 
-/// The providers catalog a corpus config should be validated against.
-///
-/// A config is only meaningful WITH the catalog it shipped beside: `bench/latency/config.mock.yaml`
-/// names a `mock` provider that exists solely in `bench/latency/providers.mock.yaml`, so validating
-/// it against the shipped root catalog reports "provider 'mock' not found" — a true statement about
-/// the wrong pairing, not a migration defect. Pairing each config with its own tag's catalog tests
-/// the thing that actually shipped.
-///
-/// Falls back to the current root catalog when a config has no same-tag sibling, which is right for
-/// the ordinary `config.yaml` case: it always referenced the root catalog.
 fn providers_for(corpus_file: &Path) -> PathBuf {
     let name = corpus_file
         .file_name()
         .unwrap_or_default()
         .to_string_lossy();
-    // `v1.4.1_bench_latency_config.mock.yaml` -> tag `v1.4.1`, variant `mock`
+
     let (tag, rest) = name.split_once('_').unwrap_or(("", name.as_ref()));
     let dir = corpus_file
         .parent()
         .and_then(|p| p.parent())
         .map(|p| p.join("providers"))
         .unwrap_or_default();
-    // Same directory prefix, `config` -> `providers`. Keeps the variant suffix (`.mock`, `.anthropic`).
+
     let sibling = rest.replacen("config", "providers", 1);
     let candidate = dir.join(format!("{tag}_{sibling}"));
     if candidate.is_file() {
         return candidate;
     }
-    // A bench config with no same-tag catalog: try the same variant from any tag before giving up,
-    // since these files barely change and a missing one should not fail a MIGRATION test.
+
     if let Ok(entries) = std::fs::read_dir(&dir) {
         for e in entries.flatten() {
             if e.file_name().to_string_lossy().ends_with(&sibling) {
@@ -165,11 +143,6 @@ fn providers_for(corpus_file: &Path) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../providers.yaml")
 }
 
-/// The byte offset at which a YAML line-comment begins, or `line.len()` if there is none.
-///
-/// A `#` only opens a comment when it is at line start or preceded by whitespace — a `#` embedded
-/// in a token (`/etc/a#b`) is not a comment. Keeping this precise is what lets the repointer leave
-/// `file:` occurrences INSIDE a comment (the `THIS file:` prose, the commented TLS examples) alone.
 fn yaml_comment_start(line: &str) -> usize {
     let bytes = line.as_bytes();
     for (i, &b) in bytes.iter().enumerate() {
@@ -180,27 +153,6 @@ fn yaml_comment_start(line: &str) -> usize {
     line.len()
 }
 
-/// Repoint every GENUINE `{ file: <path> }` built-in secret reference at `stand_in`, and NOTHING
-/// else.
-///
-/// The corpus names PRODUCTION paths (`/var/lib/busbar/signing.key`) that cannot exist in CI, so a
-/// real `file:` secret has to be redirected at a temp file for `--validate` to resolve it. The
-/// earlier implementation matched a BARE `file:` substring, which also rewrote `providers_file:` /
-/// `cert_file:` / `key_file:` / `client_ca_file:` KEYS and `file:` inside comment prose — benign
-/// only by luck of today's corpus (every such hit was a comment or a repeat), and a latent trap the
-/// day the migrator emits an uncommented `providers_file:` line. Anchor to the secret-ref shape
-/// instead: a `file:` is a value to repoint ONLY when it is the KEY of a `file` mapping — the
-/// built-in `file` secret module — AND it sits in the CODE part of the line, before any comment.
-/// The `file` key appears in two shapes and BOTH occur in the corpus once a config is round-tripped
-/// through the serializer that defers the choice:
-///   * flow sugar `{ file: /path }` (as the raw corpus writes it), and
-///   * block form `\n  file: /path` (as `serde_yaml` re-emits the same `SecretRef`).
-///
-/// In both, everything before `file:` on the line is whitespace only — either the leading
-/// indentation (block) or `{ ` (flow). So the anchor is: the head, trimmed, is empty OR ends with
-/// `{`. `providers_file:` / `cert_file:` / `key_file:` / `client_ca_file:` all FAIL it (the char
-/// before `file:` is `_`, part of the key name); a commented `{ file: … }` fails it too (it is past
-/// the comment marker, so never in the CODE part scanned here).
 fn rewrite_file_secret_paths(yaml: &str, stand_in: &str) -> String {
     let mut out = String::with_capacity(yaml.len());
     for line in yaml.lines() {
@@ -216,9 +168,6 @@ fn rewrite_file_secret_paths(yaml: &str, stand_in: &str) -> String {
             let after_key = &tail["file:".len()..];
             let before = head.trim_end();
             if before.is_empty() || before.ends_with('{') {
-                // A genuine `file:` secret key (block `  file: /p` or flow `{ file: /p }`): keep the
-                // head (indentation or `{ `), drop the old path up to `}` (flow) or end-of-code
-                // (block), and splice in the stand-in.
                 let close = after_key.find('}').unwrap_or(after_key.len());
                 out.push_str(head);
                 out.push_str("file: ");
@@ -227,7 +176,7 @@ fn rewrite_file_secret_paths(yaml: &str, stand_in: &str) -> String {
                 out.push_str(&after_key[close..]);
                 break;
             }
-            // A `*_file:` key or other bare `file:` — emit verbatim and keep scanning the tail.
+
             out.push_str(head);
             out.push_str("file:");
             rest = after_key;
@@ -251,7 +200,6 @@ providers_file: /etc/busbar/providers.yaml
 ";
     let out = rewrite_file_secret_paths(yaml, "/tmp/stand-in");
 
-    // The genuine active FLOW-sugar secret ref IS repointed...
     assert!(
         out.contains("signing_key: { file: /tmp/stand-in }"),
         "the genuine `{{ file: … }}` secret must be repointed at the stand-in; got:\n{out}"
@@ -260,8 +208,7 @@ providers_file: /etc/busbar/providers.yaml
         !out.contains("/var/lib/busbar/signing.key"),
         "the production signing.key path must be gone; got:\n{out}"
     );
-    // ...and so is the BLOCK-form `file:` key that `serde_yaml` re-emits after a round-trip (the
-    // shape the real corpus validation actually feeds this function).
+
     assert!(
         out.contains("    file: /tmp/stand-in"),
         "a block-form `file:` secret key must be repointed; got:\n{out}"
@@ -270,23 +217,22 @@ providers_file: /etc/busbar/providers.yaml
         !out.contains("/var/lib/busbar/admin-ca.pem"),
         "the production admin-ca path must be gone; got:\n{out}"
     );
-    // ...its trailing comment survives unharmed.
+
     assert!(
         out.contains("# REQUIRED with keys above"),
         "the trailing comment must survive; got:\n{out}"
     );
 
-    // A `providers_file:` KEY is NOT a secret ref and must be left byte-for-byte.
     assert!(
         out.contains("providers_file: /etc/busbar/providers.yaml"),
         "`providers_file:` must NOT be rewritten; got:\n{out}"
     );
-    // Nor a `cert_file:` key.
+
     assert!(
         out.contains("cert_file: /etc/busbar/cert.pem"),
         "`cert_file:` must NOT be rewritten; got:\n{out}"
     );
-    // A `file:` inside a comment — prose or a commented `{ file: … }` example — is untouched.
+
     assert!(
         out.contains("# THIS file: your deployment"),
         "a `file:` in comment prose must NOT be rewritten; got:\n{out}"
@@ -297,31 +243,19 @@ providers_file: /etc/busbar/providers.yaml
     );
 }
 
-/// Run `--validate` over a migrated config. `Ok` carries the validator's own stderr, which is
-/// where every boot WARNING lands and is what the corpus warning count below is measured on.
 fn validate(yaml: &str, tmp: &Path, providers: &Path) -> Result<String, String> {
     std::fs::write(tmp, yaml).map_err(|e| format!("write temp config: {e}"))?;
-    // `--validate` RESOLVES built-in secret references, so every env var a corpus config names must
-    // be set or the gate fails on this machine's environment rather than on the migration. The
-    // corpus spans every shipped release, so enumerating the names here would rot; extract them
-    // from the config under test instead.
+
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_busbar"));
-    // 1.6.0: the shared root catalog is not next to the temp config, so point busbar at it with the
-    // `--providers` flag (the removed `BUSBAR_PROVIDERS` env var no longer works).
+
     cmd.arg("--validate")
         .arg("--providers")
         .arg(providers)
         .env("BUSBAR_CONFIG", tmp)
         .env("BUSBAR_TEST_SIGNING_KEY", "a".repeat(64))
         .env("BUSBAR_TEST_ADMIN_TOKEN", "corpus-admin-token");
-    // `file:` refs name PRODUCTION paths (`/var/lib/busbar/signing.key`) that cannot exist in CI.
-    // Point the copy under test at a real temp file so the gate checks the migration, not this
-    // machine's filesystem layout.
+
     let yaml = if yaml.contains("file:") {
-        // ONE STAND-IN PER CALLER'S TEMP CONFIG, never one shared name: the corpus tests run side by
-        // side, and a shared file one test rewrote (truncate, then write) while another's
-        // `--validate` read it resolved as an EMPTY secret and dropped that config from the count
-        // (hop run 37300700141: 77 of 78 compared).
         let stand_in = tmp.with_extension("secret");
         std::fs::write(&stand_in, "a".repeat(64)).map_err(|e| format!("write stand-in: {e}"))?;
         let out = rewrite_file_secret_paths(yaml, &stand_in.display().to_string());
@@ -339,7 +273,6 @@ fn validate(yaml: &str, tmp: &Path, providers: &Path) -> Result<String, String> 
             .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
             .collect();
         if !name.is_empty() {
-            // 64 hex: valid wherever a signing key is expected, harmless elsewhere.
             cmd.env(&name, "a".repeat(64));
         }
     }
@@ -356,17 +289,6 @@ fn validate(yaml: &str, tmp: &Path, providers: &Path) -> Result<String, String> 
     ))
 }
 
-/// Every shipped config migrates to a config the current binary ACCEPTS.
-///
-/// Reports EVERY failure with its migrated YAML and the validator's own words, rather than dying on
-/// the first: when a migration rule regresses it usually breaks a whole era of configs at once, and
-/// seeing "these 9 all lost their pools block" is a diagnosis where "v1.2.0 failed" is a scavenger
-/// hunt.
-// A config whose chain names `keys` needs an admin credential that can mint one, and the only
-// built-in is the operator credential's row. Without it the binary REFUSES such a config by design ("the
-// admin API would be silently disabled"), so the deferred decision cannot be supplied and the test
-// would be asserting a property of the build, not of the migrator. A build without it never
-// compiles the test; the default build runs it, so coverage is not lost.
 #[cfg(linked_operator_auth)]
 #[test]
 fn every_shipped_config_migrates_to_a_valid_current_config() {
@@ -419,11 +341,6 @@ fn every_shipped_config_migrates_to_a_valid_current_config() {
     );
 }
 
-/// A migration needing NO human decision must emit a file that looks hand-written.
-///
-/// The banner used to be unconditional, so a clean 1.5.x -> current migration came back stamped
-/// "migrated by a tool, review before deploying" — noise the operator then has to decide whether to
-/// delete, on a file that needed no review at all.
 #[test]
 fn a_migration_with_nothing_to_decide_emits_no_comment_banner() {
     let mut checked = 0usize;
@@ -437,7 +354,7 @@ fn a_migration_with_nothing_to_decide_emits_no_comment_banner() {
         let Ok((migrated, _)) = migrate(&f) else {
             continue;
         };
-        // Only configs the migrator had no TODO/WARNING for: those are the ones that should be clean.
+
         if migrated.contains("TODO(migrate)") || migrated.contains("WARNING(migrate)") {
             continue;
         }
@@ -460,42 +377,10 @@ fn a_migration_with_nothing_to_decide_emits_no_comment_banner() {
     );
 }
 
-// ── THE BOOT-WARNING COUNT ──────────────────────────────────────────────────────────────────────
-// qa/parity-bindings.md binds the boot warnings of a migrated 1.5.5 deployment: none beyond
-// what 1.5.5 itself emitted, unless a 1.6.0-additive key is written into the config.
-//
-// WHY THIS TEST AND NOT THE ONE THAT WAS THERE. That binding is a COUNT, and the only checks it
-// carried were an ABSENCE tripwire -- "no ledger/journal/hold/WAL metric series on a config with no
-// data_dir". That asserts a different thing about a different surface: a tripwire proves a named
-// series is missing, and says nothing whatever about how many lines the binary printed. The
-// `boot.warning` oracle cells have the mirrored blind spot -- each proves ONE warning is PRESENT,
-// and none totals them. A binary that grew a new warning on every config in the corpus would have
-// passed every one of those checks.
-//
-// SO THIS COUNTS. For each config the corpus holds it migrates, validates, and counts the warning
-// lines the CURRENT binary emits, against the count the published 1.5.5 binary emitted on the SAME
-// config -- read out of the pinned shadow-oracle golden, which recorded exactly that stderr for
-// every corpus config under `config.migrate|<tag>|validate-migrated`. The baseline is a RECORDING,
-// not a number typed into this file: nothing here can drift from what 1.5.5 did without the golden
-// moving first, and no count is asserted that was not measured from the shipped binary.
-//
-// THE COMPARISON IS `<=`, AND THAT IS THE BINDING, NOT A WEAKENING. "None beyond 1.5.5's" bounds
-// the warnings ABOVE. A migrated config that warns LESS is 1.6.0 retiring a deprecation, which is
-// the direction of travel and is what the corpus shows today: 1.5.5 warned once per config about
-// the deprecated `BUSBAR_PROVIDERS` env var, and the current binary, which no longer reads that
-// variable at all, does not. A warning that APPEARS is what this test exists to catch, and it is
-// reported with the config that produced it and the text of the new line, never as a bare count.
-
-/// The warning lines in one captured stderr. `[warn]` is the prefix the binary writes and the
-/// prefix the golden recorded; counting LINES rather than occurrences keeps a warning whose own
-/// message quotes the marker from counting twice.
 fn warning_lines(stderr: &str) -> Vec<&str> {
     stderr.lines().filter(|l| l.contains("[warn]")).collect()
 }
 
-/// The corpus tag the shadow oracle names this config by. Mirrors `enumerate-cells.py`'s
-/// `migrate_cells()`: the file name with a trailing `_config.yaml` removed, and left whole when it
-/// has no such suffix (`v1.3.1_bench_latency_config.anthropic.yaml` is its own tag).
 fn oracle_tag(corpus_file: &Path) -> String {
     let name = corpus_file
         .file_name()
@@ -507,8 +392,6 @@ fn oracle_tag(corpus_file: &Path) -> String {
         .unwrap_or(name)
 }
 
-/// How many warning lines the PUBLISHED 1.5.5 binary emitted validating this migrated config, read
-/// from the pinned golden's own recording of it. `None` when the golden holds no such cell.
 fn recorded_1_5_5_warning_count(tag: &str) -> Option<usize> {
     let cell = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../testing/shadow-oracle/golden/1.5.5/cells")
@@ -519,13 +402,6 @@ fn recorded_1_5_5_warning_count(tag: &str) -> Option<usize> {
     Some(warning_lines(stderr).len())
 }
 
-/// No migrated 1.5.5 config makes the current binary warn more than 1.5.5 warned on it.
-///
-/// Reports every config that gained a warning, with the lines it gained, rather than dying on the
-/// first: a warning added to a shared boot path shows up on the whole corpus at once, and the set
-/// is the diagnosis.
-// Gated as [`every_shipped_config_migrates_to_a_valid_current_config`] is: a migrated config naming
-// `keys` has a valid admin mint path only where the admin credential's plugin is linked.
 #[cfg(linked_operator_auth)]
 #[test]
 fn no_corpus_config_warns_more_at_boot_than_the_published_1_5_5_did() {
@@ -541,9 +417,7 @@ fn no_corpus_config_warns_more_at_boot_than_the_published_1_5_5_did() {
             .unwrap_or_default()
             .to_string_lossy()
             .to_string();
-        // A config the golden holds no recording for has no baseline to compare against. Skipped
-        // here and counted below, so a golden that loses its corpus recordings makes this test
-        // vacuous LOUDLY rather than quietly.
+
         let Some(recorded) = recorded_1_5_5_warning_count(&oracle_tag(f)) else {
             continue;
         };
@@ -551,8 +425,7 @@ fn no_corpus_config_warns_more_at_boot_than_the_published_1_5_5_did() {
             continue;
         };
         let ready = apply_deferred_decisions(&migrated);
-        // Whether a migrated config validates AT ALL is the sibling test's assertion; duplicating
-        // its failure here would report one regression as two.
+
         let Ok(stderr) = validate(&ready, &tmp, &providers_for(f)) else {
             continue;
         };
@@ -575,18 +448,6 @@ fn no_corpus_config_warns_more_at_boot_than_the_published_1_5_5_did() {
     let _ = std::fs::remove_file(&tmp);
     let _ = std::fs::remove_file(tmp.with_extension("secret"));
 
-    // A run that compared nothing must never read as green. Without this, a renamed golden
-    // directory or a corpus that stopped migrating would silently turn the whole test into a
-    // no-op -- which is precisely what the binding's old absence-tripwire citation already was.
-    //
-    // EVERY config, not a floor. Three `else { continue; }` arms above drop a config silently: no
-    // golden cell, migration failed, validation failed. A floor of 20 against 69 configs let two
-    // thirds of the corpus fall through all three and still reported green -- so a migrator change
-    // that broke validation for 49 of the 69 turned the sibling test red while THIS one quietly
-    // proved the binding over the 20 that survived. PB-17's claim is a count over the whole corpus
-    // ("1.5.5 warned 69 times over the 69 configs"); anything less than the whole corpus is a
-    // different, smaller claim wearing its name. Every shipped config has a recording today, so
-    // equality is the honest statement and a config that loses one is a fact worth a red.
     assert_eq!(
         compared,
         files.len(),

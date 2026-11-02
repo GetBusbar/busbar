@@ -1,33 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE PLANE RIDES THE REAL HOST, ON THE ONE PATH: a door plane, loaded both ways through the
-//! one loader seam (compiled in by `load_linked`, dropped in by `load_dropped`),
-//! crosses into the KERNEL's own host services on the one dispatcher, and the two doors answer
-//! alike.
-//!
-//! It replaces the kernel's former plane-ABI rider, which drove the retiring dlopen lane's plane
-//! table from inside the kernel and so had to name the loader. What that rider proved, and where
-//! each claim now stands:
-//! - a dropped-in plane serves over the real host table: here, both doors, on the kernel's services
-//!   ([`a_door_plane_reads_the_kernels_own_clock_both_ways`]);
-//! - the host's answer is the host's, not one the plane made up: the clock reading lies inside the
-//!   kernel's own readings taken around the call (same test);
-//! - each host crossing is load-bearing: with no host services bound the plane's clock read is
-//!   refused and the arrival refuses ([`with_no_host_services_the_clock_read_is_refused`]);
-//! - a crossing happens exactly once per call: the plane counts its own host calls, one per read;
-//! - pricing blindness: a door plane reports unit counts (class, source, amount) and the ABI carries
-//!   no price field at all, which the plane driver's own money-seam tests read off every answer;
-//! - the per-slot vtable counts, the metering lease round trip and the signed-tarball delivery of a
-//!   dlopen-lane plane die with that lane (its host table and its registry `open_plane` are
-//!   deleted by the old-loader removal); the door lane's delivery path is the one-dispatcher boot's
-//!   door-plane load, proven there.
-
 #[path = "fixtures/plane_driver_test_plane.rs"]
 #[allow(dead_code)]
 mod plane;
 
-// This crate's one plugin fixture: the panic a missing `cdylib` raises.
 #[path = "../../../crates/busbar/src/root/tests/test_plugins.rs"]
 mod fixture_plugins;
 
@@ -53,8 +30,6 @@ enum Way {
     Dropped,
 }
 
-/// The test plane's `cdylib`, built as the busbar `plane_driver_test_plane` example. A missing
-/// artifact is a failure in every run, never a skip of the dropped door.
 fn dropped_path() -> std::path::PathBuf {
     let name = "plane_driver_test_plane";
     let exe = std::env::current_exe().expect("the test binary's path");
@@ -78,14 +53,13 @@ fn ways() -> Vec<Way> {
     vec![Way::Linked, Way::Dropped]
 }
 
-/// Load and open the test plane through `way` on `dispatcher`.
 fn opened(way: Way, dispatcher: &Dispatcher) -> Plugin<Plane> {
     let bind = Bind {
         instance: Arc::from("the-instance"),
         max_inflight_cap: 8,
         sink: Arc::new(NoSink),
         dispatcher: dispatcher.adopter(),
-        // These rows read the clock only: the plane's need is not declared, bound as a probe.
+
         conns: busbar_plugin_loader::dispatch::ConnTable::Probe,
     };
     let plugin = match way {
@@ -135,7 +109,6 @@ fn opened(way: Way, dispatcher: &Dispatcher) -> Plugin<Plane> {
     plugin
 }
 
-/// `arrive` on `target`: its outcome and the unit amounts it wrote.
 fn arrive(plugin: &Plugin<Plane>, target: &[u8]) -> (AbiOutcome, Vec<u64>) {
     let mut units = [UnitCount {
         class: 0,
@@ -204,7 +177,6 @@ fn arrive(plugin: &Plugin<Plane>, target: &[u8]) -> (AbiOutcome, Vec<u64>) {
     (outcome, units[..written].iter().map(|u| u.amount).collect())
 }
 
-/// The plane's own count of the calls it made into the host.
 fn host_calls(plugin: &Plugin<Plane>) -> u64 {
     arrive(plugin, b"/stats").1[plane::Stat::HostCalls as usize]
 }

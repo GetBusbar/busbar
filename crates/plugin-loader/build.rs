@@ -29,21 +29,12 @@
 use std::env;
 use std::path::PathBuf;
 
-/// The kinds whose rows are packaged the plugin-repo way: the row names the logic crate (linked)
-/// and the dropped-in `cdylib` is the same repo's `<logic crate>-plugin`. A row's kind is its key
-/// up to the first `-` (`auth-verify` is a second proof of `auth`).
 const PACKAGED_KINDS: &[&str] = &["auth", "export", "secret", "transport"];
 
-/// The rows whose linked door is the logic crate's `door::door` (THE DESIGN, compiled-in =
-/// dropped-in: the same door its dropped-in build exports), carried in `DOOR_FIXTURES`.
 const DOOR_ROWS: &[&str] = &["auth", "auth-verify"];
 
-/// The rows whose fixture is reached only by its crate alias, `store_fixture.rs` and its door example
-/// (`store_door.rs`): the store kind's door is the crate's own `door`, not a `door::door`, and the
-/// row is in no table.
 const STORE_ROWS: &[&str] = &["store"];
 
-/// The suffix of a plugin repo's packaging crate, in snake case.
 const PACKAGING_SUFFIX: &str = "_plugin";
 
 fn main() {
@@ -52,7 +43,7 @@ fn main() {
         env::var("TARGET").expect("cargo sets TARGET for build scripts")
     );
     println!("cargo:rerun-if-changed=Cargo.toml");
-    // busbar-test-kit's source compiles into this crate's tests, and its unit tests run only here.
+
     println!("cargo::rustc-check-cfg=cfg(loader_self_tests)");
     println!("cargo::rustc-cfg=loader_self_tests");
     let manifest = std::fs::read_to_string("Cargo.toml").expect("read Cargo.toml");
@@ -65,10 +56,7 @@ fn main() {
          #[allow(dead_code)]\n\
          pub(crate) static FIXTURES: &[(&str, &str, &str)] = &[\n",
     );
-    // THE STORE FIXTURE, BY KIND, for the targets that cannot include `both_ways.rs` (an integration
-    // test, the store v3 door example): `store_fixture.rs` aliases the `store` row's crate and names
-    // its cdylib stem; `store_door.rs` is the example's one `export_door!` line. No test or fixture
-    // source names the store instance (instance-noun-neutrality, ARCHITECT Q-GG4(c)).
+
     let mut store_fixture = String::new();
     let mut store_door = String::new();
     let mut doors = String::from(
@@ -94,7 +82,6 @@ fn main() {
             }
             let kind = row.split('-').next().unwrap_or(row);
             if STORE_ROWS.contains(&row) {
-                // Reached by its crate alias and its door example below; no table row.
             } else if PACKAGED_KINDS.contains(&kind) {
                 let cdylib = format!("{logic}{PACKAGING_SUFFIX}");
                 fixtures.push_str(&format!("    (\"{row}\", \"{logic}\", \"{cdylib}\"),\n"));
@@ -124,7 +111,7 @@ fn main() {
                      busbar_contract::export_door!(::{logic}::door);\n"
                 );
             }
-            // A second proof of one kind is keyed `<kind>-<proof>`; its alias is that key as an ident.
+
             let alias = row.replace('-', "_");
             crates.push_str(&format!(
                 "// The `{row}` both-ways fixture crate.\n\

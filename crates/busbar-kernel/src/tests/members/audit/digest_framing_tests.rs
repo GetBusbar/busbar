@@ -27,7 +27,6 @@ use busbar_kernel_audit::record::{
     Subject, Usage, UsageLine, What,
 };
 
-/// One set of record inputs, with the two caller-named text fields under the test's control.
 fn record_inputs(op_class: &str, destination: &str) -> AuditInputs {
     AuditInputs {
         subject: Subject::PrincipalId("pseudonym-1".into()),
@@ -81,14 +80,6 @@ fn record_inputs(op_class: &str, destination: &str) -> AuditInputs {
     }
 }
 
-/// THE NEW RECORD'S OWN FIELDS SEPARATE, ON THE RECORD'S OWN DIGEST PATH.
-///
-/// A test on the canonicaliser alone is not enough. This one goes through the thing a
-/// deployment actually verifies with — [`AuditChain::digest_of`] — because a framing that were
-/// correct in isolation and mis-wired at the record would still let the log agree with a lie. The
-/// operation class and the destination are adjacent caller-named text fields, which is exactly the
-/// adjacency a separator join cannot defend: `("a|b", "c")` and `("a", "b|c")` join to the same
-/// `a|b|c` and must not digest the same.
 #[test]
 fn a_bar_moved_between_two_caller_named_fields_of_the_new_record_changes_its_digest() {
     let mut chain = AuditChain::new();
@@ -109,8 +100,6 @@ fn a_bar_moved_between_two_caller_named_fields_of_the_new_record_changes_its_dig
         "moving a bar between the operation class and the destination did not change the digest"
     );
 
-    // And the digest each record carries is the one its own fields produce, so a record re-sealed
-    // with the other's digest does not verify.
     let mut forged = right.clone();
     forged.hash = left.hash.clone();
     assert_ne!(
@@ -120,12 +109,6 @@ fn a_bar_moved_between_two_caller_named_fields_of_the_new_record_changes_its_dig
     );
 }
 
-/// THE LENGTH WORD IS REALLY THERE, ON THE PREIMAGE BYTES.
-///
-/// Checked on the canonicaliser's own buffer rather than through a digest, because a digest that
-/// merely agrees with itself would agree just as happily under a framing that omitted the lengths.
-/// Each field must appear as a big-endian eight-byte length followed by exactly that many bytes,
-/// and the buffer must end exactly at the last field -- no padding, no separator.
 #[test]
 fn every_field_of_a_length_framed_preimage_is_preceded_by_its_own_eight_byte_length() {
     let mut d = Digest::new(Framing::LengthPrefixed);
@@ -164,8 +147,6 @@ fn every_field_of_a_length_framed_preimage_is_preceded_by_its_own_eight_byte_len
         "the framed fields are not the fields that were fed in"
     );
 
-    // An integer is its eight-byte big-endian form, NOT its decimal text: the two framings disagree
-    // about that, and a number that framed as text would be one a caller's digits could imitate.
     let mut as_num = Digest::new(Framing::LengthPrefixed);
     as_num.num(7);
     let mut as_text = Digest::new(Framing::LengthPrefixed);
@@ -177,9 +158,6 @@ fn every_field_of_a_length_framed_preimage_is_preceded_by_its_own_eight_byte_len
     );
 }
 
-/// The chain's hex SHA-256 moved from RustCrypto `sha2` to ring (ONE crypto backend = ring). Every
-/// chain already on disk was hashed with the old one, so the bytes must be identical: the FIPS 180-2
-/// vector, and RustCrypto computed side by side.
 #[test]
 fn the_chain_digest_is_sha256_byte_for_byte() {
     use sha2::Digest as _;

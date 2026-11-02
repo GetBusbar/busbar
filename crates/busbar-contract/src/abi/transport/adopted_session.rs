@@ -11,6 +11,12 @@ pub const EXT_ADOPTED_SESSION: &str = "session.adopted";
 /// A Statement advertises this extension value when its Adopt consumes inherited sessions.
 pub const SUPPORT_ADOPTED_SESSION: &[u8] = b"1";
 
+/// Opt in to a transport-owned opening held until an explicit status-101 commit.
+pub const EXT_PREWIRE_SESSION: &str = "session.prewire";
+
+/// The complete value of [`EXT_PREWIRE_SESSION`].
+pub const SUPPORT_PREWIRE_SESSION: &[u8] = b"1";
+
 /// The session already admitted by the host. The reference belongs to the adopting owner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AdoptedSession {
@@ -33,9 +39,6 @@ impl AdoptedSession {
     }
 
     /// Decode a complete value, copying everything before the input loan ends.
-    ///
-    /// # Errors
-    /// Unknown versions, an absent unit, truncation or trailing bytes.
     pub fn decode(bytes: &[u8]) -> Result<Self, &'static str> {
         let bytes: &[u8; 28] = bytes
             .try_into()

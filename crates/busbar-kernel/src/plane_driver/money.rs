@@ -1,37 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE PRODUCTION MONEY SEAM (`BUSBAR-1.6.0.md` THE DESIGN, §7; Part 3, §12 "The route pump" and
-//! "Cancel"): the kernel's budget and ledger decisions behind the driver's [`MoneySeam`]. The plane
-//! reports; the kernel writes. Nothing here prices a stored figure or posts a sealed line of its own:
-//!
-//! * the unit's spend is its far-end-REPORTED counts (never an estimate), ledgered once, at the end,
-//!   through the governance book's one accrual (`GovState::record_usage`), which files it in the
-//!   window of the unit's ARRIVAL epoch (THE DESIGN, section 7: "same balance, same window, same row");
-//! * the unit's flat request fee is refunded as a separate act from the ledgering
-//!   (`GovState::refund_charge`, over the admission's own charge), decided by the unit's
-//!   [`FeeRefund`] rule: 1.5.5's non-2xx caller status, or, for a plane new in 1.6.0, the plane's
-//!   own fee-unit report;
-//! * a cancelled unit's bill (the four 1.5.5 cancel rules, computed by the driver) is ledgered the
-//!   same way, and the unit's later end ledgers nothing twice;
-//! * `on_exhaustion: finish-unit` (the default, 1.5.5) never cuts. `cut-stream` (new in 1.6.0) cuts
-//!   a running unit once its reported counts, priced by the one money function at the card in
-//!   force, reach what its tightest applicable budget has left; a count the card cannot price cuts
-//!   (fail closed);
-//! * an abandoned unit's sealed end goes to the composition root's one posting site
-//!   ([`EndPost`]); this file seals nothing;
-//! * a duplex session is ONE unit with ONE line (THE DESIGN §7, "A session is one unit with one
-//!   line"): its turns' cumulative counts are checkpoints, a cancel on either side bills nothing of
-//!   its own, and the session's one cleanup ([`MoneySeam::session_ended`]) ledgers the last
-//!   far-end-reported (or floor) cumulative counts once, however the session ended.
-//!
-//! * a running unit's cumulative counts are CHECKPOINTS held in RAM only (MONEY-DESIGN §3c, "Long
-//!   units"): the unit's one line is ledgered at its end, and nothing is journaled on the piece
-//!   path.
-//!
-//! The kernel names no plane here: a unit's class names, lane, pool and key are handed in by the
-//! composition root when it opens the unit ([`PlaneMoney::open`]).
-
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
@@ -46,14 +15,9 @@ use crate::cost::CostModel;
 use crate::governance::GovState;
 use crate::teller::{Ended, UnitCtx};
 
-/// Micro-units per nano-unit of the one money function's answer.
 const NANOS_PER_MICRO: u128 = 1_000;
 
-/// Where an abandoned unit's sealed end is posted: the composition root's one posting site, onto
-/// the book, balance and window a returned end settles on.
 pub trait EndPost: Send + Sync {
-    /// Post `ended`, the end the loop sealed for the unit whose caller went away. Runs inside a
-    /// `Drop`: it must not panic, await or cross a plugin.
     fn post(&self, ctx: &UnitCtx, ended: Ended);
 }
 
@@ -114,7 +78,6 @@ pub enum FeeRefund {
 }
 
 impl FeeRefund {
-    /// Whether `class` is one of the plane's fee units (never ledgered as usage).
     fn is_fee(&self, class: u32) -> bool {
         match self {
             FeeRefund::CallerStatus => false,
@@ -122,8 +85,6 @@ impl FeeRefund {
         }
     }
 
-    /// Whether the end refunds the fee: `caller_status` under 1.5.5's rule, else the plane's report
-    /// in `last` (no fee unit reported above zero).
     fn refunds(&self, caller_status: u32, last: &[UnitCount]) -> bool {
         match self {
             FeeRefund::CallerStatus => !(200..=299).contains(&caller_status),
@@ -134,46 +95,33 @@ impl FeeRefund {
     }
 }
 
-/// One open unit: its facts, its last cumulative counts, whether it has been ledgered, and whether
-/// its caller went away (its end then waits only for the driver's cancel bill).
 struct Open {
-    /// Shared, so a checkpoint prices a cut-stream unit off the lock without copying its facts;
-    /// the one rewrite (the serving member's or the plane's lane) is copy-on-write.
     money: Arc<UnitMoney>,
     last: Vec<UnitCount>,
     ledgered: bool,
     abandoned: bool,
-    /// The route step ended without a cancel: no bill will come.
+
     finished: bool,
-    /// A duplex session opened on the unit ([`MoneySeam::session_opened`]): its line is the
-    /// session end's, never a side's cancel bill.
+
     session: bool,
-    /// The provider of the member that served the unit, once its answering attempt committed
-    /// ([`MoneySeam::served`]); `None` while no member has answered. The served member replaces
-    /// [`UnitMoney::lane`] in `money` at the same moment, unless the plane named the unit's lane.
+
     provider: Option<String>,
-    /// The plane named the unit's ledger lane ([`MoneySeam::laned`]): it is [`UnitMoney::lane`]
-    /// in `money` from then on, and a serving member no longer replaces it.
+
     laned: bool,
 }
 
-/// How many locks the open units are spread over: a unit's checkpoint (the piece path) takes its
-/// own shard's lock, never one lock every unit of the plane instance contends on.
 const SHARDS: usize = 16;
 
-/// One shard of the open units.
 type Shard = HashMap<UnitKey, Open>;
 
-/// THE KERNEL'S MONEY STEPS for one plane instance's units.
 pub struct PlaneMoney {
     gov: Arc<GovState>,
     post: Arc<dyn EndPost>,
-    /// The open units, by key, over [`SHARDS`] locks ([`PlaneMoney::shard`]).
+
     units: [Mutex<Shard>; SHARDS],
 }
 
 impl PlaneMoney {
-    /// The money steps over the governance book `gov`, posting abandoned ends through `post`.
     #[must_use]
     pub fn new(gov: Arc<GovState>, post: Arc<dyn EndPost>) -> Self {
         PlaneMoney {
@@ -183,20 +131,15 @@ impl PlaneMoney {
         }
     }
 
-    /// The slot its book lends a unit's caller reference under ([`GovState::caller_ref_slot`]),
-    /// live: it holds the key from the moment the book binds one.
     #[must_use]
     pub fn caller_refs(&self) -> Option<super::CallerRefs> {
         Some(self.gov.caller_ref_slot())
     }
 
-    /// The shard unit `key`'s money facts live in, locked.
     fn shard(&self, key: UnitKey) -> std::sync::MutexGuard<'_, Shard> {
-        // A unit key is a node-local counter: consecutive units land on consecutive shards.
         locked(&self.units[(key.get() % SHARDS as u64) as usize])
     }
 
-    /// Open unit `key`'s money facts, at its admission.
     pub fn open(&self, key: UnitKey, money: UnitMoney) {
         self.shard(key).insert(
             key,
@@ -213,15 +156,6 @@ impl PlaneMoney {
         );
     }
 
-    /// THE UNIT'S END, returned to its caller with `caller_status`: ledger its last far-end-
-    /// reported counts (unless its cancel bill already did), and refund its flat request fee as
-    /// the unit's [`FeeRefund`] rule decides: under [`FeeRefund::CallerStatus`] when that status is
-    /// not a success, exactly 1.5.5's rule (`busbar-kernel/src/ingress/mod.rs`, the finish's
-    /// `refund_on_non_2xx && !is_success` arm: "REFUND it for a request that produced no usable
-    /// upstream result"); under [`FeeRefund::PlaneFeeUnits`] when the plane reported no fee unit.
-    /// A unit whose caller went away before any answer returns through [`MoneySeam::abandoned`],
-    /// never here, and is refunded nothing, as 1.5.5's dropped request never reached that arm. The
-    /// unit's facts are closed either way.
     pub fn settle_end(&self, key: UnitKey, caller_status: u32) {
         self.settle_end_as(
             key,
@@ -232,12 +166,6 @@ impl PlaneMoney {
         );
     }
 
-    /// [`PlaneMoney::settle_end`], told HOW the unit's answer ended ([`UnitEnd`]). The plane's
-    /// ledger is final: a stream its far end CUT bills and meters what the plane reported for it,
-    /// exactly as an uncut one does, because only the plane knows what it did (owner ruling
-    /// 2026-10-20: "spend is what it is. if spend occurred it occurred. null is not a fix."). A
-    /// plane that reported nothing bills nothing. The flat fee stays as the unit's [`FeeRefund`]
-    /// rule decides it.
     pub fn settle_end_as(&self, key: UnitKey, end: UnitEnd) {
         let UnitEnd { caller_status, .. } = end;
         let Some(open) = self.shard(key).remove(&key) else {
@@ -245,9 +173,6 @@ impl PlaneMoney {
         };
         let m = &open.money;
         if !open.ledgered {
-            // A DELIVERED end meters one request against the serving member, tokens or none
-            // (v1.5.5 proxy/usage.rs:31-40 and :99-106). A stream its far end cut is metered too:
-            // the plane's ledger, not the cut, says what it spent.
             let delivered = (200..=299).contains(&caller_status);
             self.bill(m, open.provider.as_deref(), &reported(&open.last), |_| {
                 delivered
@@ -256,10 +181,7 @@ impl PlaneMoney {
         if m.fee.refunds(caller_status, &open.last) {
             match &m.fee {
                 FeeRefund::CallerStatus => self.gov.refund_charge(&m.charge),
-                // A PLANE'S REFUND RETURNS ITS OWN FEE UNIT: a session's
-                // `per_session` comes back from the plane's fee lane by its class name.
-                // The admission's charge (its request fee) comes back as it was charged; any other
-                // fee unit the plane declares by its own name.
+
                 FeeRefund::PlaneFeeUnits(fees) => {
                     self.gov.refund_charge(&m.charge);
                     for unit in fees
@@ -281,7 +203,6 @@ impl PlaneMoney {
         }
     }
 
-    /// Unit `key`'s last cumulative counts, as the plane reported them.
     #[must_use]
     pub fn last_counts(&self, key: UnitKey) -> Vec<UnitCount> {
         self.shard(key)
@@ -290,36 +211,16 @@ impl PlaneMoney {
             .unwrap_or_default()
     }
 
-    /// The key unit `key` is ledgered, metered and priced under: the ledger lane its plane named
-    /// ([`MoneySeam::laned`]), else its serving member's once its answer committed
-    /// ([`MoneySeam::served`]), else the member it was opened with; `None` when no money facts are
-    /// open for it.
     #[must_use]
     pub fn serving(&self, key: UnitKey) -> Option<String> {
         self.shard(key).get(&key).map(|o| o.money.lane.clone())
     }
 
-    /// How many units' money facts are open (a witness: every end closes its unit).
     #[must_use]
     pub fn open_units(&self) -> usize {
         self.units.iter().map(|shard| locked(shard).len()).sum()
     }
 
-    /// Ledger `counts` (class index, amount) under the unit's lane, pool and arrival window. A sum
-    /// that would overflow bills the saturated figure, never a wrapped or zero one (fail closed);
-    /// the plane check refuses a class counted twice, so a validated report never gets here.
-    /// `provider` is the serving member's (once an attempt committed): the metering row the classes
-    /// mirror onto is the one the unit's request meters on, so spend is always attributed.
-    ///
-    /// Then, when `metered` holds of the usage counts, THE METERING ROW: one request against the
-    /// serving member, with the unit's counts by class name (none when they do not add up) —
-    /// v1.5.5 `crates/busbar/src/proxy/usage.rs` `ledger_and_meter` (:99-106: "even a zero-token
-    /// delivered response counts its request") and `record_resp_usage` (:31-40: "A delivered
-    /// response with NO token usage ... still METERS as one request against the serving model").
-    /// The kernel hands the counts over as opaque class names; which of them the row's own columns
-    /// hold is the metering row's fact ([`GovState::record_lane_metering`]), never this step's. The
-    /// row is the one `GovState::record_usage`'s class mirror keys the same lane by, so nothing
-    /// splits across two rows. The counts are named once for both.
     fn bill(
         &self,
         m: &UnitMoney,
@@ -361,8 +262,6 @@ impl PlaneMoney {
         }
     }
 
-    /// Whether `counts`, priced at the card in force, reach what the unit's tightest applicable
-    /// budget has left. A count the card cannot price reaches it (fail closed).
     fn dry(&self, m: &UnitMoney, counts: &[(u32, u64)]) -> bool {
         let (_, pool) = busbar_kernel_ledger::cost::split_plane_lane(&m.pool);
         let remaining = self
@@ -373,10 +272,10 @@ impl PlaneMoney {
             .filter_map(|b| b.remaining_micros)
             .min();
         let Some(remaining) = remaining else {
-            return false; // no budget applies: nothing to run dry
+            return false;
         };
         let Some(usage_units) = named(&m.classes, &usage_only(m, counts), u64::checked_add) else {
-            return true; // a report that does not add up is a plane fault: fail closed
+            return true;
         };
         let usage = busbar_contract::billing::Usage { usage_units };
         match m.cost.price_usage_nanos(&m.lane, &usage) {
@@ -389,10 +288,6 @@ impl PlaneMoney {
     }
 }
 
-/// Whether `units`' amounts add up in a `u64` under the plane's class names, as [`named`] adds
-/// them with `u64::checked_add` (a class index the plane never declared is not billed, so not
-/// added), without building the sums: the checkpoint's check on the piece path. Units are a
-/// handful, so each class name's sum is taken once, at its first unit.
 fn adds_up(classes: &[String], units: &[UnitCount]) -> bool {
     let name = |u: &UnitCount| classes.get(u.class as usize);
     units.iter().enumerate().all(|(at, u)| {
@@ -400,7 +295,7 @@ fn adds_up(classes: &[String], units: &[UnitCount]) -> bool {
             return true;
         };
         if units[..at].iter().any(|v| name(v) == Some(this)) {
-            return true; // summed at its first unit
+            return true;
         }
         units[at..]
             .iter()
@@ -410,8 +305,6 @@ fn adds_up(classes: &[String], units: &[UnitCount]) -> bool {
     })
 }
 
-/// `counts` without the unit's fee units: a fee unit's count says whether the fee was incurred and
-/// is never usage (the fee was charged at admission, #21).
 fn usage_only(m: &UnitMoney, counts: &[(u32, u64)]) -> Vec<(u32, u64)> {
     counts
         .iter()
@@ -420,10 +313,6 @@ fn usage_only(m: &UnitMoney, counts: &[(u32, u64)]) -> Vec<(u32, u64)> {
         .collect()
 }
 
-/// `counts` under the plane's class names, each class's sum added by `add`; a class index the
-/// plane never declared is not billed. With `u64::checked_add`, `None` when a class's counts do not
-/// add up in a `u64` (a plane fault; never a wrapped sum); saturating, the figure a fail-closed
-/// ledger bills.
 fn named(
     classes: &[String],
     counts: &[(u32, u64)],
@@ -439,8 +328,6 @@ fn named(
     Some(units)
 }
 
-/// The counts that bill ([`units_bill`]: reported or floor, never an estimate), as `(class, amount)`:
-/// what a bill ledgers.
 pub(super) fn reported(units: &[UnitCount]) -> Vec<(u32, u64)> {
     units
         .iter()
@@ -456,8 +343,6 @@ impl MoneySeam for PlaneMoney {
             return Checkpoint::Continue;
         };
         if !adds_up(&open.money.classes, units) {
-            // A report whose counts do not add up is a plane fault: it is not kept, and the unit
-            // is cut (fail closed) rather than run on a figure nothing can bill.
             return Checkpoint::Cut;
         }
         open.last.clear();
@@ -480,36 +365,26 @@ impl MoneySeam for PlaneMoney {
             let Some(open) = all.get_mut(&ctx.key) else {
                 return;
             };
-            // A session's side bills nothing of its own: the session's one line is written at
-            // its end from its last cumulative counts ([`MoneySeam::session_ended`]).
+
             if open.ledgered || open.session {
                 return;
             }
             open.ledgered = true;
             let money = (open.money.clone(), open.provider.clone());
             if open.abandoned {
-                // The caller went away and its end is posted: this bill was all it waited for.
                 all.remove(&ctx.key);
             }
             money
         };
-        // A cancelled stream meters only when it bills a reported count (1.5.5's drop path billed
-        // the usage the far end had reported through the same ledger_and_meter; none, no row).
+
         self.bill(&money, provider.as_deref(), &bill.billed, bills);
     }
 
-    /// The caller went away: the loop's sealed end goes to the root's posting site, and the unit's
-    /// money facts close. A unit the driver's pump had reported counts for still owes its cancel
-    /// bill (the sweep's, by the four 1.5.5 rules): its facts close when that bill is ledgered, or
-    /// here when it already was. A unit with no count closes here. Nothing is refunded (1.5.5's
-    /// dropped request never reached its refund arm).
     fn abandoned(&self, ctx: &UnitCtx, ended: Ended) {
         let owed = {
             let mut all = self.shard(ctx.key);
             match all.get_mut(&ctx.key) {
                 Some(open) if !open.ledgered && open.finished => {
-                    // The route ended on its own and the caller left during the exit: the last
-                    // reported counts are the bill, ledgered here, once.
                     let open = all.remove(&ctx.key);
                     open.map(|o| {
                         let counts = reported(&o.last);
@@ -528,10 +403,6 @@ impl MoneySeam for PlaneMoney {
             }
         };
         if let Some((money, provider, counts)) = owed {
-            // Safe inside the loop's `Drop` guard: GovState::record_usage is an in-memory accrual
-            // (the bucket cells and the metering row are write-behind; the durable write is the
-            // flusher's, never a store call on this thread), and it neither awaits nor crosses a
-            // plugin. record_metering is the same in-memory, sharded accumulator.
             self.bill(&money, provider.as_deref(), &counts, bills);
         }
         self.post.post(ctx, ended);
@@ -543,9 +414,6 @@ impl MoneySeam for PlaneMoney {
         }
     }
 
-    /// The session opens under the unit's one admission: its money facts must be open (a unit
-    /// the root admitted with no facts runs no session unbilled), and from here its line is the
-    /// session end's.
     fn session_opened(&self, ctx: &UnitCtx) -> Result<(), ReasonCode> {
         match self.shard(ctx.key).get_mut(&ctx.key) {
             Some(open) if !open.ledgered => {
@@ -556,12 +424,6 @@ impl MoneySeam for PlaneMoney {
         }
     }
 
-    /// THE SESSION'S ONE LINE: its last billing cumulative counts (far-end-reported or floor,
-    /// never an estimate), ledgered once and metered when they bill, in the window of the unit's
-    /// arrival, however the session ended (its own end, a cut, a cancel on either side, its caller
-    /// gone). The unit's own end then ledgers nothing twice and still decides the fee refund. A unit
-    /// whose caller already went away closes here. Runs inside the session's cleanup `Drop`: the
-    /// accrual is in memory and neither awaits nor crosses a plugin.
     fn session_ended(&self, ctx: &UnitCtx) {
         let owed = {
             let mut all = self.shard(ctx.key);
@@ -586,10 +448,6 @@ impl MoneySeam for PlaneMoney {
         self.bill(&money, provider.as_deref(), &counts, bills);
     }
 
-    /// The member that served the unit: from here every ledgering, metering and cut-stream pricing
-    /// of the unit is under ITS member name and provider, as 1.5.5 attributed a delivered response
-    /// to the serving lane after failover (`proxy/usage.rs` `ledger_and_meter`: "THE ONE PLACE a
-    /// delivered response is attributed to a model ... `lane` is the SERVING lane").
     fn served(&self, ctx: &UnitCtx, member: &str, provider: &str) {
         if let Some(open) = self.shard(ctx.key).get_mut(&ctx.key) {
             if !open.laned {
@@ -599,11 +457,6 @@ impl MoneySeam for PlaneMoney {
         }
     }
 
-    /// THE LEDGER LANE THE PLANE NAMED (ARCHITECT SEAM-L(j): the ledger lane is not the route
-    /// entry): from here every ledgering, metering and cut-stream pricing of the unit is under it,
-    /// qualified by the same plane key the unit was opened under (`"<plane>\u{1f}<lane>"`), so a
-    /// plane names lanes of its own card alone. A lane that is empty, or carries a control
-    /// character (the qualifier's separator among them), names nothing.
     fn laned(&self, ctx: &UnitCtx, lane: &str) {
         if lane.is_empty() || lane.chars().any(char::is_control) {
             return;
@@ -621,15 +474,12 @@ impl MoneySeam for PlaneMoney {
     }
 }
 
-/// `shard`, locked; a poisoned lock is taken as it stands.
 fn locked(shard: &Mutex<Shard>) -> std::sync::MutexGuard<'_, Shard> {
     shard
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Whether `usage` (the counts with the fee units set aside, [`usage_only`]) bills anything: a
-/// reported count above zero.
 fn bills(usage: &[(u32, u64)]) -> bool {
     usage.iter().any(|(_, n)| *n > 0)
 }

@@ -42,9 +42,7 @@ fn forgetting_includes_an_insert_already_admitted_for_the_owner() {
         })
     };
     admission.recv().unwrap();
-    // Select a feasible schedule without depending on the scheduler or a timeout. When
-    // admission is available, forget completes before this insert can reach its entry.
-    // Otherwise forget races the admitted insert as soon as the barrier releases it.
+
     let early = s.declared.try_lock().ok().map(|guard| {
         drop(guard);
         s.forget(A)
@@ -62,7 +60,7 @@ fn forgetting_includes_an_insert_already_admitted_for_the_owner() {
     for id in &retired {
         s.remove(A, *id).unwrap();
     }
-    // Reclaim an orphan before asserting so the regression's failing path cleans up too.
+
     if let Ok(id) = inserted {
         let _ = s.remove(A, id);
     }
@@ -134,7 +132,6 @@ fn the_owner_reaches_its_connection() {
 }
 
 /// RED ARM — a CROSS-INSTANCE id is refused, on every operation, with its own refusal text; the
-/// owner's connection is untouched by the attempt.
 #[test]
 fn another_instances_connection_is_refused() {
     let s = slab();
@@ -149,7 +146,6 @@ fn another_instances_connection_is_refused() {
 }
 
 /// RED ARM — a CLOSED id is refused, and a later connection that reuses its slot is not reached
-/// through it: the id carries its generation.
 #[test]
 fn a_closed_connection_is_refused_and_its_slot_reuse_is_not_reached() {
     let s = slab();
@@ -166,7 +162,6 @@ fn a_closed_connection_is_refused_and_its_slot_reuse_is_not_reached() {
 }
 
 /// RED ARM — a need the caller never DECLARED opens nothing, even when another instance declared
-/// the same number.
 #[test]
 fn an_undeclared_need_opens_nothing() {
     let s: ConnSlab<()> = ConnSlab::default();
@@ -195,6 +190,7 @@ fn a_program_is_read_from_its_settings_and_refused_when_it_cannot_be_spawned_as_
         })),
         Ok(Program {
             command: "/usr/bin/server".into(),
+            cwd: None,
             args: vec!["--serve".into(), "-v".into()],
             env: vec![("TOKEN".into(), "s3cr3t".into())],
             env_refs: Vec::new(),
@@ -204,6 +200,7 @@ fn a_program_is_read_from_its_settings_and_refused_when_it_cannot_be_spawned_as_
         read(serde_json::json!({"command": "/bin/cat"})),
         Ok(Program {
             command: "/bin/cat".into(),
+            cwd: None,
             args: Vec::new(),
             env: Vec::new(),
             env_refs: Vec::new(),
@@ -254,6 +251,7 @@ fn a_program_is_read_from_its_settings_and_refused_when_it_cannot_be_spawned_as_
 fn a_programs_environment_never_prints() {
     let p = super::Program {
         command: "/usr/bin/server".into(),
+        cwd: None,
         args: vec!["--serve".into()],
         env: vec![("TOKEN".into(), "s3cr3t-value".into())],
         env_refs: Vec::new(),
@@ -263,10 +261,37 @@ fn a_programs_environment_never_prints() {
     assert!(!printed.contains("s3cr3t-value"), "{printed}");
 }
 
-/// RED (ARCHITECT round 5, the member-program upstream ruling (A)): a member-program need's member
-/// is read off its REGISTRATION: `command`, `args` and `env`, every other key of the registration
-/// ignored (it is the registration's own, never the program's); a registration naming no `command`
-/// is no member; the three keys are judged as a program is.
+#[test]
+fn a_program_working_directory_is_explicit_absolute_and_part_of_its_identity() {
+    use super::{Program, ProgramRefused};
+    let base = Program::from_settings(&serde_json::json!({"command": "/bin/pwd"})).unwrap();
+    assert_eq!(base.cwd, None);
+    assert_eq!(
+        Program::from_settings(&serde_json::json!({"command": "/bin/pwd", "cwd": null})),
+        Ok(base.clone())
+    );
+    let at =
+        Program::from_settings(&serde_json::json!({"command": "/bin/pwd", "cwd": "/srv"})).unwrap();
+    assert_eq!(at.cwd.as_deref(), Some("/srv"));
+    assert_ne!(at, base);
+    for cwd in [
+        serde_json::json!(false),
+        serde_json::json!(""),
+        serde_json::json!("relative"),
+        serde_json::json!(" /srv"),
+        serde_json::json!("/srv "),
+    ] {
+        assert_eq!(
+            Program::from_settings(&serde_json::json!({"command": "/bin/pwd", "cwd": cwd})),
+            Err(ProgramRefused::Cwd)
+        );
+    }
+    assert_eq!(
+        Program::from_settings(&serde_json::json!({"command": "/bin/pwd", "cwd": "/srv\0bad"})),
+        Err(ProgramRefused::Nul)
+    );
+}
+
 #[test]
 fn a_registrations_program_is_its_command_args_and_env_and_nothing_else() {
     use super::{Program, ProgramRefused};
@@ -282,6 +307,7 @@ fn a_registrations_program_is_its_command_args_and_env_and_nothing_else() {
         })),
         Some(Ok(Program {
             command: "/usr/bin/server".into(),
+            cwd: Some("/srv".into()),
             args: vec!["--serve".into()],
             env: vec![("LEVEL".into(), "debug".into())],
             env_refs: Vec::new(),
@@ -303,8 +329,6 @@ fn a_registrations_program_is_its_command_args_and_env_and_nothing_else() {
 }
 
 /// THE OWNED-SECTION PATH (`owned.<section>.<key>`): a namespace of its own, answered only for a
-/// path under `owned.` with a section and a key; a `settings.` path, the member paths, a bare
-/// `owned.` or an empty segment are not owned paths.
 #[test]
 fn an_owned_path_is_its_own_namespace() {
     use crate::section::owned_path;
@@ -325,8 +349,6 @@ fn an_owned_path_is_its_own_namespace() {
 }
 
 /// A program's `env` entry written as a secret REFERENCE is held as the reference
-/// (`Program::env_refs`), never resolved by the reader: the host resolves it at the spawn. A
-/// value that is neither a string nor a reference is refused.
 #[test]
 fn a_programs_env_refsironment_is_held_as_its_reference() {
     let p = Program::from_settings(&serde_json::json!({

@@ -1,60 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The store adapter: the unit-side store seams over ONE loaded store plugin.
-//!
-//! The admin verb-execution unit binds to a store without naming one: the sealed new-verb replay
-//! cache, which the composition root's `busbar_kernel_seams::verb_store::Store` answers through this
-//! adapter. The composition root binds it to a single adapter over the store this crate loaded, so
-//! there is exactly one store handle in the process and one place that says what this adapter
-//! answers itself.
-//!
-//! The disaster-recovery verbs are not here (status row 187). They act on the node's journal and on
-//! the store's record slots, both of which the composition root holds (`durability::recovery`), and
-//! nothing about them is kept in this adapter's memory.
-//!
-//! # The journal is not here
-//!
-//! The node's journal is kept by the configured store through its store v3 record slots
-//! (`record_put` / `record_get` / `record_scan`), written by the composition root's own bounded lane
-//! and read back at boot (the root's `durability::store_chain`; ARCHITECT 2026-10-07 H3 ruling).
-//! This adapter used to stand in as the journal's shipper and acknowledge every batch while keeping
-//! only a count, which is how a node with no data directory lost its whole chain on every restart.
-//! That shim is gone: nothing here acknowledges a record a store did not take.
-//!
-//! # What passes through and what this adapter answers itself
-//!
-//! - **The published operations pass through unchanged.** They are
-//!   [`busbar_contract::records::RecordStore`] calls on the loaded plugin, reached through
-//!   [`StoreAdapter::store`] — the same handle the ledger's legacy-rows dual write uses. Nothing in
-//!   this module touches their wire; the oracle's store-persist cell is what proves it
-//!   (`testing/shadow-oracle/scripts/store-persist.sh`: mint, spend, kill, boot again on the same
-//!   store, read the money back).
-//! - **The sealed replay cache is answered from this node's memory.** No money is held here:
-//!   money is counts x the rate card, derived in core.
-//!
-//! # Those answers, stated rather than implied
-//!
-//! - **The sealed replay cache.** Node-local. Nothing but its TTL clears it — no restore and no
-//!   other verb: dropping a committed replay slot is precisely how a credential-minting verb
-//!   re-mints, which is the one thing the sealed cache exists to prevent. It is not
-//!   process-lifetime, though: a slot answers for [`REPLAY_TTL_SECS`] — the same window the
-//!   in-process sibling keeps — and is swept after, or the map would grow forever with every minted
-//!   response the node ever served. It does not survive a restart.
-//!
-//! # The migration's read, and why it is on this side of the seam
-//!
-//! The first boot after an upgrade seals what the previous release already holds as the ledger's
-//! opening figures. Reading it is two published operations — the audit tail for the chain head, and
-//! the token-ledger and metering rows for the balances — so the read lives here, where the row shapes
-//! and the loaded plugin already are, and the ledger unit is handed plain figures. That is the same
-//! division the ledger's dual write makes in the other direction, for the same reason: one place that
-//! knows what a legacy row looks like.
-//!
-//! Every method of that read is a READ. There is no write-read-back probe and no watermark stamped
-//! back onto the rows, because a deployment booting on a read-only replica or a grant-restricted
-//! database is the previous release's supported shape and must keep booting.
-
 use busbar_contract::records::RecordStore as AbiStore;
 use busbar_contract::records::{
     RecordStoreError, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT,
@@ -90,38 +36,20 @@ pub struct StoreAdapter {
 }
 
 struct Inner {
-    /// The loaded store. Every published operation is a call on this and nothing else.
     store: Arc<dyn AbiStore>,
-    /// The payload schema its signed manifest declares.
+
     abi_version: u32,
     shim: Shim,
-    /// What the sealed replay cache ages its slots against.
+
     clock: ShimClock,
 }
 
-/// The sealed replay cache's map: the verb's idempotency key to the moment the slot was written and
-/// the committed response bytes, or `None` for a slot that is reserved and not yet committed.
-///
-/// The moment is held beside the slot because the seam this shim answers for names a TTL, and a map
-/// with no TTL is not a cache — it is a leak that grows with every credential-minting verb the node
-/// ever serves, and it holds each minted response for the life of the process.
 type ReplaySlots = HashMap<(String, String), (u64, Option<Vec<u8>>)>;
 
-/// How long a sealed replay slot answers for, in seconds.
-///
-/// The seam's own contract names the window, and the in-process sibling
-/// [`busbar_kernel_seams::verb_store::IDEMPOTENCY_TTL_SECS`] keeps exactly this one — so a deployment whose store predates
-/// the durable cache gets the same replay window it would get from the store, rather than a
-/// different one because the shim is answering.
 pub const REPLAY_TTL_SECS: u64 = busbar_kernel_seams::verb_store::IDEMPOTENCY_TTL_SECS;
 
-/// The clock the sealed replay cache ages its slots against, in unix seconds.
-///
-/// Injected rather than read where it is needed: the sweep is the whole of the cache's bound, and a
-/// bound that can only be observed by waiting ten minutes is a bound nothing checks.
 pub type ShimClock = Arc<dyn Fn() -> u64 + Send + Sync>;
 
-/// The wall clock, for an adapter whose caller did not name one.
 fn system_clock() -> ShimClock {
     Arc::new(|| {
         std::time::SystemTime::now()
@@ -143,23 +71,10 @@ struct Shim {
 }
 
 impl StoreAdapter {
-    /// Bind the seams to `store`, whose signed manifest declares payload schema `abi_version`.
-    ///
-    /// **This is the constructor the composition root calls.** It takes the store the plugin
-    /// registry loaded (or the in-tree memory store, which is the default when a config names none)
-    /// together with the schema the registry read off the manifest. For an in-tree store built
-    /// against the current schema, use [`StoreAdapter::native`].
-    ///
-    /// Infallible and does no I/O: it must be constructible before the transports listen, because
-    /// the first accepted connection can settle and the ledger's dual write is already holding this
-    /// adapter's legacy-rows path by then.
     pub fn new(store: Arc<dyn AbiStore>, abi_version: u32) -> Self {
         StoreAdapter::with_clock(store, abi_version, system_clock())
     }
 
-    /// [`StoreAdapter::new`] against a named clock. The composition root has no reason to name one;
-    /// anything that must watch the sealed replay cache age its slots does, because the alternative
-    /// is waiting out the TTL in real time.
     pub fn with_clock(store: Arc<dyn AbiStore>, abi_version: u32, clock: ShimClock) -> Self {
         StoreAdapter {
             inner: Arc::new(Inner {
@@ -171,27 +86,18 @@ impl StoreAdapter {
         }
     }
 
-    /// [`StoreAdapter::new`] for a store built against the CURRENT payload schema — the in-tree
-    /// memory store, which is what a config that names no store gets.
     pub fn native(store: Arc<dyn AbiStore>) -> Self {
         StoreAdapter::new(store, busbar_contract::abi::store::ABI_VERSION)
     }
 
-    /// The loaded store itself, for the published operations: keys, usage, metering, audit, and the
-    /// legacy cells the ledger dual-writes onto. Passes through untouched.
     pub fn store(&self) -> Arc<dyn AbiStore> {
         Arc::clone(&self.inner.store)
     }
 
-    /// The payload schema the loaded store's manifest declares.
     pub fn abi_version(&self) -> u32 {
         self.inner.abi_version
     }
 
-    /// What the node-local shim is holding.
-    ///
-    /// One lock at a time, each taken, copied out and dropped before the next — see the lock order
-    /// on [`Shim`].
     pub fn shim_state(&self) -> ShimState {
         let (replay_slots, replay_committed) = {
             let replay = self.inner.shim.replay();
@@ -206,19 +112,6 @@ impl StoreAdapter {
         }
     }
 
-    /// The previous release's chain head: its last administrative sequence number and the hash at
-    /// that point.
-    ///
-    /// An EMPTY head is a legitimate answer and not a failure. A store that keeps no audit rows, a
-    /// store that predates the tail read and answers that it does not know the operation, and a
-    /// store that simply has an empty log all read the same way — and the migration seals a zero
-    /// opening balance for all three rather than refusing to boot a configuration that worked
-    /// yesterday.
-    ///
-    /// A store that FAILED to answer said none of those things. It is empty here too, because a
-    /// node whose store is briefly unreachable must still boot, but the reason travels with the
-    /// answer and is said out loud: a migration that seals a zero opening balance over a chain that
-    /// was really there has broken the chain, and the one thing it may not do is break it quietly.
     pub fn migration_audit_head(&self) -> MigrationAuditHead {
         match self.store().list_audit_tail(1) {
             Ok(tail) => MigrationAuditHead {
@@ -247,19 +140,10 @@ impl StoreAdapter {
         }
     }
 
-    /// Read the previous release's cells: the token ledger for each named (bucket, window) and the
-    /// metering rows for each named day.
-    ///
-    /// Reads only. A row the store would not answer for is NAMED in
-    /// [`MigrationCells::unreadable`] rather than raised, because one unreadable bucket must not stop a
-    /// node booting and must not vanish either.
     pub fn migration_cells_read(&self, plan: &MigrationReadPlan) -> MigrationCells {
         let store = self.store();
         let mut cells = MigrationCells::default();
-        // Where each bucket's balance already sits in `cells.balances`. The vector's ORDER is the
-        // plan's order and stays that way — this index only replaces the scan that found the slot,
-        // which grew with the square of a deployment's virtual-key count on the one read that runs
-        // before the node serves anything.
+
         let mut balance_at: HashMap<&str, usize> = HashMap::new();
         for (bucket, window) in &plan.windows {
             match store.get_usage(bucket, *window) {
@@ -267,8 +151,6 @@ impl StoreAdapter {
                     .unreadable
                     .push(format!("the token ledger for {bucket} at {window}: {e}")),
                 Ok(ledger) => {
-                    // An untouched (bucket, window) reads as the EMPTY ledger, and counting that as
-                    // a cell read would report a migration that walked rows which were never there.
                     if ledger.requests == 0
                         && ledger.billable_requests == 0
                         && ledger.models.is_empty()
@@ -304,9 +186,7 @@ impl StoreAdapter {
                             );
                         }
                     }
-                    // The bucket's balance comes from the ENFORCEMENT ledger alone. The metering
-                    // rows below are the observability view of the same consumption, and adding
-                    // them here would report a bucket as having consumed twice what it did.
+
                     let total = i128::from(ledger.total_tokens());
                     match balance_at.get(bucket.as_str()) {
                         Some(at) => cells.balances[*at].1 += total,
@@ -359,17 +239,6 @@ impl StoreAdapter {
         cells
     }
 
-    /// The plan for a deployment whose buckets are its key rows' own: every key id at `window`, plus
-    /// the group buckets the caller names, plus the metering days it names.
-    ///
-    /// The (bucket, window) pairs cannot be discovered from the published store — a token ledger is
-    /// addressed by bucket AND window and neither is enumerable — so the enumerable half comes from
-    /// the key rows, which is the same place the previous release's own boot hydration gets it, and
-    /// the rest is named by the caller that holds the configuration.
-    ///
-    /// # Errors
-    ///
-    /// The key rows could not be listed.
     pub fn key_bucket_plan(
         &self,
         window: u64,
@@ -389,7 +258,6 @@ impl StoreAdapter {
         })
     }
 
-    /// The migration's source over this adapter's store, reading exactly `plan`.
     pub fn migration_ledger_rows(&self, plan: MigrationReadPlan) -> MigrationStoreRows {
         MigrationStoreRows {
             adapter: self.clone(),
@@ -400,11 +268,6 @@ impl StoreAdapter {
     }
 }
 
-/// The name the previous release's billable-request count takes as a meter class.
-///
-/// A count of billable requests is not the same balance as a count of admitted ones — the previous
-/// release refunds one and never the other — so it opens as its own declared class rather than
-/// being folded into the request count it is a subset of.
 pub const BILLABLE_REQUESTS_CLASS: &str = "billable_requests";
 
 /// Which of the previous release's rows the migration reads.
@@ -422,12 +285,10 @@ pub struct MigrationReadPlan {
 }
 
 impl MigrationReadPlan {
-    /// A plan naming nothing. Reading it produces no figures, which seals a zero opening balance.
     pub fn nothing() -> Self {
         MigrationReadPlan::default()
     }
 
-    /// Whether this plan names anything at all.
     pub fn is_empty(&self) -> bool {
         self.windows.is_empty() && self.days.is_empty()
     }
@@ -478,19 +339,15 @@ pub struct MigrationStoreRows {
 }
 
 impl MigrationStoreRows {
-    /// What this source will read.
     pub fn plan(&self) -> &MigrationReadPlan {
         &self.plan
     }
 
-    /// The reading, taken on first use and kept.
     pub fn cells(&self) -> &MigrationCells {
         self.cells
             .get_or_init(|| self.adapter.migration_cells_read(&self.plan))
     }
 
-    /// The chain head, taken on first use and kept — for the same reason the cells are: the head a
-    /// caller reads and the reason it reports must describe one reading of one store.
     pub fn audit_head(&self) -> &MigrationAuditHead {
         self.audit
             .get_or_init(|| self.adapter.migration_audit_head())
@@ -498,8 +355,6 @@ impl MigrationStoreRows {
 }
 
 impl MigrationSource for MigrationStoreRows {
-    /// The chain head, with the per-bucket balances the cells hold hung off it — one object that
-    /// read one store, so the head and the figures cannot disagree about what was there.
     fn read_head(&self) -> MigrationHead {
         let cells = self.cells();
         MigrationHead {
@@ -513,8 +368,7 @@ impl MigrationSource for MigrationStoreRows {
 impl MigrationLedgerRows for MigrationStoreRows {
     fn read_figures(&self) -> MigrationFigures {
         let cells = self.cells();
-        // An unread chain head joins the unread cells on the one channel the migration report
-        // already prints, so "the store would not say" reaches an operator whichever read it was.
+
         let mut unreadable = cells.unreadable.clone();
         unreadable.extend(self.audit_head().unreadable.clone());
         MigrationFigures {
@@ -530,19 +384,7 @@ impl Shim {
     }
 }
 
-/// THE SEALED NEW-VERB REPLAY CACHE, which the composition root's verb store answers through this
-/// adapter (`busbar_kernel_seams::verb_store::Store::replay_new_verb` and `commit_new_verb_replay`).
 impl StoreAdapter {
-    /// Read the sealed replay slot for a credential-minting verb, reserving it on first sighting so
-    /// a concurrent second call sees a reservation rather than another first sighting — the same
-    /// discipline the in-process cache keeps, over the node-local shim instead of durable storage.
-    ///
-    /// A reserved-but-uncommitted slot reads as `None`: the first caller is still in flight and has
-    /// not decided what the answer is.
-    ///
-    /// Every probe first drops the slots past [`REPLAY_TTL_SECS`], which is what bounds the cache:
-    /// the only other thing that ever touches it is a commit, so a sweep anywhere else would leave
-    /// the map growing on exactly the traffic that fills it. The in-process sibling sweeps here too.
     pub fn replay_new_verb(
         &self,
         key: &(String, String),
@@ -560,7 +402,6 @@ impl StoreAdapter {
         }
     }
 
-    /// Commit the response bytes into the slot, so a replay returns exactly these bytes.
     pub fn commit_new_verb_replay(
         &self,
         key: &(String, String),

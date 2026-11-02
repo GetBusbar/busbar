@@ -130,12 +130,10 @@ impl busbar_kernel::governance::RecordStore for RewrapStore {
     }
 }
 
-/// The actual reload callback owns retries: listing failure and a lost claim both leave a row
-/// readable under previous, and an unchanged subsequent reload must finish the maintenance work.
 #[tokio::test]
 async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery() {
-    busbar_kernel::snapshot::init();
-    let _limits_lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
+    busbar_kernel_testkit::test_support::metrics::init();
+    let _limits_lock = busbar_kernel_testkit::limits::LIMITS_TEST_LOCK.lock().await;
     for failure in ["listing", "claim"] {
         let (dir, config_path, providers_path) = write_reset_fixture(&format!("rewrap-{failure}"));
         let old_path = dir.join("old-at-rest.key");
@@ -235,7 +233,7 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
                 .map(String::as_str),
             Some("recoverable-test-secret")
         );
-        // A failed settings commit cannot fire the deferred maintenance closure either.
+
         std::fs::write(&new_path, [5_u8; 32]).unwrap();
         overlay.fail_writes(true);
         let before = handle.load();
@@ -259,8 +257,7 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
             "{rejected_text}"
         );
         assert!(Arc::ptr_eq(&before, &handle.load()));
-        // The existing setter reports whether the installed kids differed, so this checks that
-        // the rejected candidate did not install key 5 without adding a key-inspection API.
+
         assert!(!gov.set_at_rest_keys(Some(AtRestKeys::new(&[4_u8; 32], Some(&[3_u8; 32])))));
         assert_eq!(
             store.listings.load(Ordering::SeqCst),
@@ -273,7 +270,7 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
 
 #[tokio::test]
 async fn hook_register_and_replace_refuse_oversized_timeouts_without_swapping() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let hook =
         serde_json::from_value(serde_json::json!({"kind": "gate", "module": "test-hook"})).unwrap();
     let overlay = TestOverlayStore::new();
@@ -320,9 +317,9 @@ async fn hook_register_and_replace_refuse_oversized_timeouts_without_swapping() 
 
 #[tokio::test]
 async fn reload_refuses_env_policy_injection_without_publishing() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     const VAR: &str = "BUSBAR_TEST_KC_ADMIN_POLICY_TTL";
-    let _env = busbar_kernel::test_support::EnvVarGuard::capture(VAR);
+    let _env = busbar_kernel_testkit::test_support::EnvVarGuard::capture(VAR);
     std::env::set_var(VAR, r#"90d"}, policy: {self_mint: true, default_ttl: "90d"#);
     let (dir, config_path, providers_path) = write_reset_fixture("env-policy");
     std::fs::write(&config_path, r#"{providers: {}, models: {}, store: {module: memory}, auth: {policy: {self_mint: false, max_ttl: 7d, default_ttl: "${BUSBAR_TEST_KC_ADMIN_POLICY_TTL}"}}}"#).unwrap();

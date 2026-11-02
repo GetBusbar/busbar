@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A GitHub pin names the release asset a busbar plugin release actually publishes: one signed
-//! tarball per target, `<repo>-<version>-<target>.tar.gz`.
-
 use super::{per_target, release_asset_for};
 
 #[test]

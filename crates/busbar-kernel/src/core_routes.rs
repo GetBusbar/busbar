@@ -1,32 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The CORE route-auth table: every first-party route a router mounts, DECLARED as it is mounted.
-//!
-//! Plugin routes have carried their own declared [`RouteAuth`] since 1.5.3
-//! ([`crate::plugin_routes::PluginRouteTable::declared_auth`]). Core routes did not: the auth
-//! middleware carried two hand-written path equalities (`path == "/healthz"`,
-//! `path == "/auth/token"`) that were a PROCESS-wide statement about a route only one ROUTER
-//! mounts. Two consequences, both real:
-//!
-//! - **Drift.** A core route added later gets whatever the middleware happens to say about its
-//!   path, which is nothing, so the route's admission bar lives somewhere other than the route.
-//! - **Plane leakage.** `/auth/token` is mounted on the data router alone, yet the process-wide
-//!   bypass also waved it through on the admin listener, where an unauthenticated caller got a 404
-//!   (the path is unknown here) rather than a 401 (you are not admitted here).
-//!
-//! This module makes the declaration and the mount ONE ACT. [`CoreRouter`] is the only way core
-//! routes reach an axum [`Router`]: `route()` takes the handler AND the auth level together and
-//! records the pair, so a mounted route without a declared bar cannot be written. The resulting
-//! [`CoreRouteTable`] travels with the router it describes, is consulted by
-//! `auth::auth_middleware`, and is ENUMERABLE — which is what lets a test walk the real mounted
-//! surface and assert a property over every route, rather than over a hand-listed sample that a new
-//! route silently escapes.
-//!
-//! The method mapping (`http::Method` → the declared method, HEAD folded onto GET because axum's
-//! `MethodRouter` serves HEAD from the GET arm) is REUSED from `plugin_routes`, not re-derived: the
-//! two tables answer the same question and a second copy is a second place to get HEAD wrong.
-
 use crate::plugin_routes::{method_filter_of, route_method_of};
 use crate::state::AppHandle;
 use axum::http::Method;
@@ -78,11 +52,6 @@ pub(crate) struct CoreRouteTable {
 }
 
 impl CoreRouteTable {
-    /// The declared auth level for `(path, method)`, or `None` when this router mounts no core
-    /// route there — in which case the caller falls through to the plugin table and then to the
-    /// normal data-plane bar. Exact path match only, never a prefix: a bypass that matched a prefix
-    /// would hand every path below it the same free pass. O(1) on the path, then a walk of that
-    /// path's own (one- or two-entry) method list.
     pub(crate) fn declared_auth(&self, path: &str, method: &Method) -> Option<RouteAuth> {
         let rm = route_method_of(method)?;
         self.by_path
@@ -92,8 +61,6 @@ impl CoreRouteTable {
             .map(|(_, a)| *a)
     }
 
-    /// This table with `refusals` recorded: the door routes' unit-less refusals, each at its own
-    /// route's path and method.
     #[must_use]
     pub(crate) fn with_door_refusals(
         mut self,
@@ -103,10 +70,6 @@ impl CoreRouteTable {
         self
     }
 
-    /// The unit-less refusal of the door route `(path, method)` matches, or `None` when the request
-    /// matches no door route (every residual data-plane path). A route's path is matched as the
-    /// router matched it: literal segments exactly, a `{name}` segment as any one segment, a
-    /// `{*name}` tail as the rest.
     pub(crate) fn door_refusal(
         &self,
         path: &str,
@@ -122,8 +85,6 @@ impl CoreRouteTable {
             .map(|r| &r.refuse)
     }
 
-    /// The issued-id prefix of the tickets the door route `(path, method)` takes (row 132): `Some`
-    /// for a `CLAIM_TICKET` route whose plane declares one, `None` for every other route.
     pub(crate) fn door_ticket(&self, path: &str, method: &Method) -> Option<&str> {
         if self.door_refusals.is_empty() {
             return None;
@@ -135,11 +96,6 @@ impl CoreRouteTable {
             .and_then(|r| r.ticket_prefix.as_deref())
     }
 
-    /// Whether a door plane flags `path` a SIGNED path (`abi::plane::CLAIM_SIGNED_INGRESS`; ARCHITECT
-    /// ruling 2026-10-16, 3b A): some raw-affix claim of a door plane (`abi::plane::CLAIM_RAW_AFFIX`,
-    /// ARCHITECT ruling 2026-10-17), whatever its verb, whose prefix and suffix the raw `path` starts
-    /// and ends with, as bytes. Looked up by path alone, so a signed request with a verb no claim
-    /// takes is verified first and then answered the method refusal.
     pub(crate) fn signed_ingress(&self, path: &str) -> bool {
         use busbar_contract::abi::plane::check::raw_affix_matches;
         self.door_refusals
@@ -148,27 +104,18 @@ impl CoreRouteTable {
             .any(|target| raw_affix_matches(target, path))
     }
 
-    /// Every declared route, in mount order. The enumeration a router-walking test iterates so a
-    /// newly mounted route JOINS the assertion instead of escaping it. Read by the plane-boundary
-    /// ratchet; production never enumerates (it only ever asks about one path).
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn routes(&self) -> &[CoreRoute] {
         &self.routes
     }
 }
 
-/// The core-route builder: an axum [`Router`] and its [`CoreRouteTable`] grown together.
-///
-/// Nothing else may mount a core route. `route()` is the single act that both wires the handler and
-/// records its bar, so "the router serves a path the table does not describe" is not a state this
-/// type can produce.
 pub struct CoreRouter {
     router: Router<Arc<AppHandle>>,
     table: CoreRouteTable,
 }
 
 impl CoreRouter {
-    /// An empty router + empty table.
     pub(crate) fn new() -> Self {
         Self {
             router: Router::new(),
@@ -176,11 +123,6 @@ impl CoreRouter {
         }
     }
 
-    /// Mount `handler` at `path` for `method`, declaring its admission bar in the same act.
-    ///
-    /// Calling this twice for one path with different methods MERGES into that path's single
-    /// `MethodRouter` (axum's documented behaviour), so a wrong-method hit still yields the native
-    /// 405 rather than the catch-all.
     pub fn route<H, T>(
         mut self,
         path: impl Into<String>,
@@ -195,7 +137,7 @@ impl CoreRouter {
         let path = path.into();
         let mr: MethodRouter<Arc<AppHandle>> = on(method_filter_of(method), handler);
         self.router = self.router.route(&path, mr);
-        // Table and index grow in the SAME act as the mount — the one place all three are written.
+
         self.table
             .by_path
             .entry(path.clone())
@@ -205,10 +147,6 @@ impl CoreRouter {
         self
     }
 
-    /// Apply an arbitrary router transformation that mounts NO core route — the plugin-route mount,
-    /// the admin-transport nest, the catch-all fallback. Each is either separately declared (plugin
-    /// routes keep their own table; the admin surface is gated by its `/api` prefix rule) or is not
-    /// a route at all (a fallback claims no path).
     pub fn map_router(
         mut self,
         f: impl FnOnce(Router<Arc<AppHandle>>) -> Router<Arc<AppHandle>>,
@@ -217,7 +155,6 @@ impl CoreRouter {
         self
     }
 
-    /// The methods a core route is already mounted under at exactly `path`.
     pub(crate) fn methods_at(&self, path: &str) -> Vec<RouteMethod> {
         self.table
             .by_path
@@ -226,14 +163,11 @@ impl CoreRouter {
             .unwrap_or_default()
     }
 
-    /// Split into the mounted router and the table describing it.
     pub(crate) fn into_parts(self) -> (Router<Arc<AppHandle>>, CoreRouteTable) {
         (self.router, self.table)
     }
 }
 
-/// Whether the request `path` is one the route pattern `route` matches: literal segments exactly, a
-/// `{name}` segment as any one non-empty segment, a `{*name}` tail as a non-empty remainder.
 fn route_matches(route: &str, path: &str) -> bool {
     let mut want = route.split('/');
     let mut got = path.split('/');

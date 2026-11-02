@@ -2,8 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE KERNEL-HELD RECORDS as store v3 slots: `record_put`, `record_get` and `record_scan`, an
-//! opaque `(schema, key) -> value` map the kernel keeps its own durable records in (the journal,
-//! node identity, the rate-card history). The store never interprets a value.
 
 use super::HostBuf;
 use crate::abi::mechanism::call::{AbiStr, Blob, InHead};

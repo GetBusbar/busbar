@@ -24,13 +24,11 @@ fn meta(id: &str, public_id: &str) -> CredentialMeta {
     }
 }
 
-/// The at-rest keys `credentials.at_rest` resolves to: `key` from `seed`, `previous` from `prev`.
 fn keys(seed: u8, prev: Option<u8>) -> AtRestKeys {
     let prev = prev.map(|p| [p; 32]);
     AtRestKeys::new(&[seed; 32], prev.as_ref().map(|p| &p[..]))
 }
 
-/// `envelope` with its kid replaced by `kid`: a row that names a key it was not sealed under.
 fn with_kid(envelope: &str, kid: &str) -> String {
     let rest = envelope.strip_prefix("v1:aead:").expect("sealed");
     let (_, tail) = rest.split_once(':').expect("kid");
@@ -51,17 +49,17 @@ fn a_sealed_secret_opens_only_for_its_row_and_its_key() {
         open(Some(&k), &m, &sealed).as_deref().map(String::as_str),
         Some("wJalrXUtnFEMI/K7MDENG")
     );
-    // Two seals of one secret differ (a fresh nonce each).
+
     assert_ne!(sealed, k.seal(&m, b"wJalrXUtnFEMI/K7MDENG").unwrap());
-    // Moved to another row: does not open.
+
     assert!(open(Some(&k), &meta("cred_b", "AKIA1"), &sealed).is_none());
     assert!(open(Some(&k), &meta("cred_a", "AKIA2"), &sealed).is_none());
-    // Another key, naming its own kid or this one's: does not open. No key: does not open.
+
     let other = keys(8, None);
     assert!(open(Some(&other), &m, &sealed).is_none());
     assert!(open(Some(&other), &m, &with_kid(&sealed, other.kid())).is_none());
     assert!(open(None, &m, &sealed).is_none());
-    // Altered: does not open.
+
     let mut altered = sealed.clone();
     let last = altered.pop().unwrap();
     altered.push(if last == 'A' { 'B' } else { 'A' });
@@ -96,8 +94,6 @@ fn the_key_never_prints() {
     );
 }
 
-/// The kid names the key without being it: 16 hex characters, stable for one key, distinct across
-/// keys, and not a prefix of the key's bytes in hex.
 #[test]
 fn the_kid_is_derived_from_the_key_and_is_not_its_bytes() {
     let a = keys(7, None);
@@ -108,7 +104,6 @@ fn the_kid_is_derived_from_the_key_and_is_not_its_bytes() {
     assert!(!hex::encode([7_u8; 32]).contains(a.kid()));
 }
 
-/// The old key still opens what it sealed: a row sealed under A opens under `key: B, previous: A`.
 #[test]
 fn the_previous_key_still_opens_a_row_it_sealed() {
     let a = keys(1, None);
@@ -120,12 +115,10 @@ fn the_previous_key_still_opens_a_row_it_sealed() {
             .map(String::as_str),
         Some("wJalrXUtnFEMI/K7MDENG")
     );
-    // A third key with neither: does not open.
+
     assert!(open(Some(&keys(3, Some(4))), &m, &sealed).is_none());
 }
 
-/// A recoverable at-rest key reference resolves to 32 raw bytes or 64 hex characters; anything else
-/// is refused, naming the path and never the value.
 #[test]
 fn an_at_rest_key_is_32_bytes_or_64_hex_characters() {
     let hex64 = hex::encode([5_u8; 32]);
@@ -155,7 +148,6 @@ fn signing_gov(store: Arc<MemoryStore>, seed: u8) -> GovState {
     GovState::new_with_signer(store, None, Some(signer)).unwrap()
 }
 
-/// A node on `store` whose `credentials.at_rest` is `key: <seed>, previous: <prev>`.
 fn node(store: Arc<MemoryStore>, seed: u8, prev: Option<u8>) -> GovState {
     let g = signing_gov(store, 7);
     g.set_at_rest_keys(Some(keys(seed, prev)));
@@ -188,7 +180,6 @@ fn read(g: &GovState, public_id: &str) -> (String, bool) {
     (s.expose(&crate::seal::lend()).clone(), live)
 }
 
-/// The one stored credential row.
 fn row(store: &MemoryStore) -> CredentialSecret {
     let rows = store.list_credentials_since(0).unwrap();
     assert_eq!(rows.len(), 1);
@@ -199,8 +190,6 @@ fn kid_of(envelope: &str) -> &str {
     sealed_kid(envelope).expect("a sealed envelope")
 }
 
-/// RED before the seal: the store held `v1:plain:<secret>`. Now no store row carries the secret,
-/// and the read still answers it, live.
 #[test]
 fn a_minted_recoverable_credential_reaches_the_store_sealed_and_still_authenticates() {
     let store = Arc::new(MemoryStore::new());
@@ -213,8 +202,6 @@ fn a_minted_recoverable_credential_reaches_the_store_sealed_and_still_authentica
     assert_eq!(read(&g, &public_id), (secret, true));
 }
 
-/// RED before the dedicated key: the KEK was the signing key's, so minting needed only that. Now a
-/// node with no `credentials.at_rest` refuses, says what to configure, and writes nothing.
 #[test]
 fn minting_a_recoverable_credential_without_an_at_rest_key_is_refused_with_the_sentence() {
     let store = Arc::new(MemoryStore::new());
@@ -227,7 +214,7 @@ fn minting_a_recoverable_credential_without_an_at_rest_key_is_refused_with_the_s
         store.list_keys().unwrap().is_empty(),
         "a binding was written"
     );
-    // A bearer-only mint needs no at-rest key.
+
     assert!(g
         .mint_signed(
             NewKeySpec {
@@ -240,10 +227,6 @@ fn minting_a_recoverable_credential_without_an_at_rest_key_is_refused_with_the_s
         .is_ok());
 }
 
-/// ROTATION RE-WRAPS AND NEVER BREAKS. Sealed under A; the node is reconfigured `key: B,
-/// previous: A`. The row authenticates before the re-wrap (under `previous`), the re-wrap re-seals
-/// it under B (the stored kid changes and the store still holds no secret), and it authenticates
-/// after. A second pass finds nothing to do.
 #[test]
 fn rotation_reseals_a_row_under_the_new_key_and_it_still_authenticates() {
     let store = Arc::new(MemoryStore::new());
@@ -261,7 +244,7 @@ fn rotation_reseals_a_row_under_the_new_key_and_it_still_authenticates() {
     assert!(!after.secret.contains(&secret));
     assert_eq!(after.meta.id, before.meta.id);
     assert_eq!(read(&rotated, &public_id), (secret.clone(), true));
-    // With A retired (`key: B` alone), it still authenticates.
+
     assert_eq!(
         read(&node(store.clone(), 2, None), &public_id),
         (secret, true)
@@ -271,14 +254,13 @@ fn rotation_reseals_a_row_under_the_new_key_and_it_still_authenticates() {
     assert_eq!((again.resealed, again.pending), (0, 0), "{again:?}");
 }
 
-/// Two nodes rotating together: the claim lets exactly one of them re-seal the row.
 #[test]
 fn two_nodes_rotating_together_reseal_a_row_once() {
     let store = Arc::new(MemoryStore::new());
     let (public_id, secret) = mint(&node(store.clone(), 1, None));
     let x = node(store.clone(), 2, Some(1));
     let y = node(store.clone(), 2, Some(1));
-    // Both read the row under A before either re-wraps it.
+
     let candidates = store.list_credentials_since(0).unwrap();
     let first = x.rewrap_rows(candidates.clone(), NOW).unwrap();
     let second = y.rewrap_rows(candidates, NOW).unwrap();
@@ -287,8 +269,6 @@ fn two_nodes_rotating_together_reseal_a_row_once() {
     assert_eq!(read(&y, &public_id), (secret, true));
 }
 
-/// A row revoked between the re-wrap's read and its write is not written back: a re-wrap never
-/// brings a revoked credential back to life.
 #[test]
 fn a_rewrap_never_revives_a_revoked_row() {
     let store = Arc::new(MemoryStore::new());
@@ -307,9 +287,6 @@ fn a_rewrap_never_revives_a_revoked_row() {
     assert!(!read(&rotated, &public_id).1);
 }
 
-/// A row that opens under neither key does not authenticate: it answers as an unknown credential
-/// (an empty secret, not live; the verifying auth swaps in its own dummy). The re-wrap leaves it
-/// as it is.
 #[test]
 fn a_row_under_neither_key_does_not_authenticate() {
     let store = Arc::new(MemoryStore::new());
@@ -322,17 +299,16 @@ fn a_row_under_neither_key_does_not_authenticate() {
     let pass = stranger.rewrap_credentials(NOW).unwrap();
     assert_eq!((pass.resealed, pass.pending), (0, 0), "{pass:?}");
     assert_eq!(kid_of(&row(&store).secret), keys(1, None).kid());
-    // No key at all: the same.
+
     assert!(!read(&signing_gov(store, 7), &public_id).1);
 }
 
-/// A pre-1.6.0 row (`v1:plain:`) is re-sealed under `key` too, and still authenticates.
 #[test]
 fn a_legacy_plain_row_is_resealed_under_the_key() {
     let store = Arc::new(MemoryStore::new());
     let g = node(store.clone(), 1, None);
     let (public_id, secret) = mint(&g);
-    // The row as 1.5.5 wrote it.
+
     let mut legacy = row(&store);
     legacy.secret = format!("v1:plain:{secret}");
     store.put_credential(&legacy).unwrap();
@@ -353,8 +329,6 @@ mod immutable_store {
         MeteringDelta, MeteringRow, RecordStoreError, RecordStoreResult, UsageLedger, VirtualKey,
     };
 
-    // Models the durable stores' live-row immutability. The ordinary in-memory fixture permits
-    // same-id replacement, so its rotation tests cannot expose a maintenance write using PUT.
     struct ImmutableStore(Arc<MemoryStore>);
 
     impl RecordStore for ImmutableStore {

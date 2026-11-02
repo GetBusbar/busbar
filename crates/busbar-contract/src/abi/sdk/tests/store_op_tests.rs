@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! One op, one connection: a store op's checkout answers its own stream again for the same need
-//! and target, and is REFUSED for any other; an op on no ticket may not pend.
 
 use std::task::Poll;
 
@@ -31,7 +30,6 @@ fn holding(need: u32, target: Option<&str>) -> Op<'static> {
             host: None,
             ticket: TICKET,
         }),
-        // No wire read buffers: these ops read nothing off the wire.
         None,
     )
 }

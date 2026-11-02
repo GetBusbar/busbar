@@ -2,8 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! `io.*` on the worker's reactor: refused off a worker (no reactor thread to fall back on),
-//! not-ready then ready on a real socket, a cleared readiness waits for a fresh edge, and a
-//! deregistered descriptor comes back whole.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -46,7 +44,7 @@ fn a_read_is_not_ready_until_the_far_end_writes() {
         .await
         .unwrap();
         assert_eq!(&buf[..n], b"ready");
-        // Drained: the next attempt answers WouldBlock, clears the readiness and waits again.
+
         assert!(matches!(
             reg.poll_io(Direction::Read, &mut cx, |mut s| s.read(&mut buf)),
             Poll::Pending

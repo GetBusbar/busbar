@@ -29,7 +29,7 @@ fn days_from_now(days: i64) -> (i32, u8, u8) {
         .duration_since(std::time::UNIX_EPOCH)
         .expect("the clock is after 1970")
         .as_secs();
-    // civil-from-days (H. Hinnant): the UTC calendar date of a day count since 1970-01-01.
+
     let z = i64::try_from(now / 86_400).expect("a day count") + days + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z.rem_euclid(146_097);
@@ -51,8 +51,6 @@ fn main() {
     std::fs::create_dir_all(&dir).expect("out dir");
     busbar_core_connector::tls::install_crypto_provider();
 
-    // A certificate shaped like a public one a server is deployed with: a 90-day life that has begun,
-    // and a CRL distribution point. The assessment's "no HIGH finding" rule reads both.
     let mut params =
         rcgen::CertificateParams::new(vec!["localhost".to_owned()]).expect("cert params");
     let ((y0, m0, d0), (y1, m1, d1)) = (days_from_now(-1), days_from_now(89));

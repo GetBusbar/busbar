@@ -1,14 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE BINARY BOOTS WITH THE ROOT'S ONE DISPATCHER INSTALLED: one dispatcher, built by the
-//! composition root at boot, one plugin worker per data worker.
-//!
-//! Boots the REAL binary with `advanced.worker_threads: 3` and counts the dispatcher's threads in
-//! `/proc/<pid>/task/*/comm` (a thread name is cut to 15 bytes, so every `busbar-dispatch-<i>` worker
-//! and the `busbar-dispatch-watchdog` read `busbar-dispatch`): three workers and the watchdog. RED
-//! when `run()` stops building the dispatcher at boot — none is built (0 threads), or a later
-//! first use builds the one-worker fallback (2).
 #![cfg(target_os = "linux")]
 #![cfg(linked_section_pools)]
 
@@ -41,7 +33,6 @@ fn fixture_dir() -> PathBuf {
 }
 
 fn write_configs(dir: &Path, data_port: u16, admin_port: u16) {
-    // The provider catalog row is test data (`fixtures/mock_provider.yaml`), not a literal here.
     std::fs::write(
         dir.join("providers.yaml"),
         include_str!("fixtures/mock_provider.yaml"),
@@ -81,7 +72,6 @@ fn wait_for(budget: Duration, mut cond: impl FnMut() -> bool) -> bool {
     false
 }
 
-/// How many of `pid`'s threads carry the dispatcher's (15-byte) thread name.
 fn dispatcher_threads(pid: u32) -> usize {
     let tasks = std::fs::read_dir(format!("/proc/{pid}/task")).expect("the process's threads");
     tasks
@@ -91,7 +81,6 @@ fn dispatcher_threads(pid: u32) -> usize {
         .count()
 }
 
-/// Boot the binary with `env`, answer its dispatcher thread count and everything it printed.
 fn boot(tag: &str, env: &[(&str, &str)]) -> (usize, String) {
     let dir = fixture_dir();
     let data_port = common::boot::free_port();
@@ -149,9 +138,6 @@ fn the_binary_boots_with_the_root_dispatcher_installed() {
     );
 }
 
-/// THE WORKER-COUNT WARNINGS KEEP THEIR BYTES AND THEIR PLACE, now that the count is resolved at the
-/// top of `main()` for the dispatcher: an invalid `BUSBAR_WORKER_THREADS` is warned about with the
-/// same line, before the boot's own lines, and the configured count still sizes the one dispatcher.
 #[test]
 fn the_worker_count_warnings_print_as_before_and_the_dispatcher_is_full_size() {
     let (threads, out) = boot("invalid-env", &[("BUSBAR_WORKER_THREADS", "0")]);

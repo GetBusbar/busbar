@@ -1,5 +1,3 @@
-//! Live pressure recovery must use the serving tick, even when admission blocks the next append.
-
 use super::LeaseTick;
 use crate::root::durability::{
     build_on_store, read_chain, Durability, DurabilityConfig, JournalLane,
@@ -13,7 +11,6 @@ use std::time::{Duration, Instant};
 
 const WAIT: Duration = Duration::from_secs(5);
 
-/// A paused Store resumes even if an assertion unwinds, so its worker cannot remain parked.
 struct PausedStore(RecordSlots);
 
 impl PausedStore {
@@ -92,7 +89,7 @@ fn live_tick_reopens_admission_after_store_pressure_without_another_unit() {
     let paused = PausedStore::new(&slots);
     pressure(&book);
     assert!(tick.node.journal_refusal().is_some());
-    // A retry while the queue is full cannot bypass its capacity or duplicate its accepted batch.
+
     tick.tick();
     assert_eq!(lane.pending(), 2);
     assert_eq!(book.lock().unwrap().journal.buffered(), 1);
@@ -104,7 +101,6 @@ fn live_tick_reopens_admission_after_store_pressure_without_another_unit() {
     );
     assert_eq!(read_chain(slots.calls().as_ref(), 871).unwrap().len(), 2);
 
-    // This is the production background tick, with no new admitted unit or append by the test.
     tick.tick();
     assert!(lane.drain(WAIT));
     assert!(

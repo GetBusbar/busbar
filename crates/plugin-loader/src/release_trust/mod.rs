@@ -1,43 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE RELEASE TRUST CHAIN for first-party plugins: ROOT -> KEYS DOCUMENT -> RELEASE MANIFEST ->
-//! ARTEFACT, modelled on TUF (`docs/design/release-trust.md`).
-//!
-//! * The ROOT keys are compiled in (`BUSBAR_RELEASE_PUBKEY`, [`crate::sign::embedded_release_keys`]).
-//!   They sign nothing but keys documents, and [`ROOT_THRESHOLD`] of them must.
-//! * A KEYS DOCUMENT ([`KeysDoc`], TUF's root/delegation metadata) names the release signer keys of
-//!   each product role ([`PLUGINS_ROLE`] for first-party plugins) with a threshold, an `expires`
-//!   and a `version` that only increases, and carries signed revocations of signer keys and of
-//!   artefact digests. Replacing the release signer is a new keys document; the binary is unchanged.
-//! * A RELEASE MANIFEST ([`TargetsDoc`], TUF's targets metadata) lists every artefact of one
-//!   release, `(name, version, target, sha256)`, and is signed ONCE by the role's signers.
-//! * The ARTEFACT is a plugin's canonical manifest bytes (`sign::canonical_manifest_bytes`, which
-//!   pin the library by its own sha256): the plugin loads only if the release manifest lists it
-//!   for this binary's target ([`PLUGIN_TARGET`]) under exactly that digest.
-//!
-//! Every refusal is a [`SealRefusal`]: a stable [`SealRefusal::code`] for the audit record and a
-//! message that says what failed and what to do. Nothing here defaults open: a missing role, a zero
-//! threshold or an unreadable document is a refusal.
-//!
-//! The byte encoding lives in [`wire`] alone, so the documents' format can move to ModernCI's v1
-//! without touching the chain.
-
 pub mod wire;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-/// How many distinct root keys must sign a keys document.
 pub const ROOT_THRESHOLD: usize = 1;
 
-/// The keys-document role whose signers sign first-party plugin releases.
 pub const PLUGINS_ROLE: &str = "busbar-plugins";
 
-/// The plugin target this binary loads: its own Rust target triple, the `<target>` a release
-/// manifest lists and a plugin release asset is named for.
 pub const PLUGIN_TARGET: &str = env!("BUSBAR_PLUGIN_TARGET");
 
-/// Unix seconds now, from the system clock (a clock before 1970 reads as 0: everything expired).
 #[must_use]
 pub fn now() -> u64 {
     std::time::SystemTime::now()
@@ -55,7 +28,6 @@ pub enum ReleaseKey {
 }
 
 impl ReleaseKey {
-    /// The algorithm's key-list spelling (`ed25519` | `p256`).
     #[must_use]
     pub fn algorithm(&self) -> &'static str {
         match self {
@@ -64,7 +36,6 @@ impl ReleaseKey {
         }
     }
 
-    /// The public key bytes, hex.
     #[must_use]
     pub fn public_hex(&self) -> String {
         match self {
@@ -73,8 +44,6 @@ impl ReleaseKey {
         }
     }
 
-    /// Why this public key is permanently retired, in every release-trust role.
-    /// Delegating a compromised key in a new keys document never restores its authority.
     #[must_use]
     pub fn retired_reason(&self) -> Option<&'static str> {
         let ReleaseKey::Ed25519(key) = self else {
@@ -90,13 +59,6 @@ impl ReleaseKey {
             })
     }
 
-    /// A P-256 public key from the hex of its 65-byte uncompressed SEC1 point. The point's place on
-    /// the curve is checked by every verification (`ring` refuses an off-curve key there), so a
-    /// malformed point verifies nothing: it fails closed.
-    ///
-    /// # Errors
-    ///
-    /// Not hex, not 65 bytes, or not an uncompressed point (`04` prefix).
     pub fn p256_from_hex(s: &str) -> Result<Self, String> {
         let bytes =
             hex::decode(s.trim()).map_err(|e| format!("p256 public key not valid hex: {e}"))?;
@@ -282,7 +244,6 @@ pub enum SealRefusal {
 }
 
 impl SealRefusal {
-    /// The stable token the audit record carries.
     #[must_use]
     pub fn code(&self) -> &'static str {
         match self {
@@ -415,14 +376,6 @@ impl std::fmt::Display for SealRefusal {
     }
 }
 
-/// THE INSTALL-TIME FRESHNESS CHECK of a seal's two documents: refused when either has expired at
-/// `now`. It reads the documents WITHOUT verifying them, for a path that verifies the chain later
-/// (`plugins.fetch` writes, the boot scan verifies): a forged `expires` fails that verification, so
-/// the value judged here is the one the chain will vouch for.
-///
-/// # Errors
-///
-/// A document that does not read, or has expired.
 pub fn check_fresh(seal: Seal<'_>, now: u64) -> Result<(), SealRefusal> {
     let malformed = |doc: &'static str| move |why: String| SealRefusal::Malformed { doc, why };
     let keys = wire::read_keys(seal.keys)
@@ -448,12 +401,6 @@ pub fn check_fresh(seal: Seal<'_>, now: u64) -> Result<(), SealRefusal> {
     Ok(())
 }
 
-/// VERIFY THE CHAIN for `subject`: the keys document against `roots`, the release manifest against
-/// the keys document, the artefact against the release manifest.
-///
-/// # Errors
-///
-/// The first link that does not hold, as a [`SealRefusal`].
 pub fn verify_release(
     roots: &[crate::sign::FirstPartyKey],
     seal: Seal<'_>,
@@ -462,7 +409,6 @@ pub fn verify_release(
 ) -> Result<Verified, SealRefusal> {
     let malformed = |doc: &'static str| move |why: String| SealRefusal::Malformed { doc, why };
 
-    // ROOT -> KEYS DOCUMENT.
     let keys = wire::read_keys(seal.keys).map_err(malformed("keys document"))?;
     let mut vouching: Vec<&str> = Vec::new();
     let mut retired = None;
@@ -508,7 +454,6 @@ pub fn verify_release(
         }
     };
 
-    // KEYS DOCUMENT -> RELEASE MANIFEST.
     let targets = wire::read_targets(seal.targets).map_err(malformed("release manifest"))?;
     if targets.doc.role != PLUGINS_ROLE {
         return Err(SealRefusal::Malformed {
@@ -561,7 +506,6 @@ pub fn verify_release(
         });
     }
 
-    // RELEASE MANIFEST -> ARTEFACT.
     for digest in [subject.sha256, subject.lib_sha256] {
         if let Some(why) = kd.revoked_digests.get(&digest.to_ascii_lowercase()) {
             return Err(SealRefusal::DigestRevoked {

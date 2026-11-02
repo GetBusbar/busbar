@@ -1,41 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE HOOK FAMILIES of the snapshot service — what `GET /metrics/hooks` is rendered from.
-//!
-//! A hook reports its own operational metrics over the wire (`status.metrics`, see
-//! [`HookMetric`]). The admin API surfaces those LIVE, on-demand, per hook
-//! (`GET /api/v1/admin/hooks/{name}/status`) — that path is unchanged and is the "truth right now"
-//! read. THIS module is the parallel projection for time-series consumers: the host validates,
-//! bounds and folds the same metrics into hook FAMILIES — the hook's metric NAMES verbatim (so an
-//! external dashboard built against a hook repoints at busbar and just works) plus one automatic
-//! `hook="<name>"` label for provenance and multi-hook disambiguation — and the scrape sink reads
-//! them through the host snapshot service (`snapshot.read`, scope `SNAPSHOT_SCOPE_HOOKS`,
-//! `crate::export::scrape`) to answer its own `/metrics/hooks` route. Moved here from the kernel's
-//! `hooks::scrape` (`/metrics/hooks` leaves core;
-//! the fold is the snapshot service's, the route and the rendering the plugin's). The kernel writes
-//! no exposition text.
-//!
-//! Design invariants (why this can never break busbar's own `/metrics`):
-//! * SEPARATE exposition. Hook families are handed to their own render, never merged into busbar's
-//!   own `/metrics`, so a hook can never type-conflict or shadow a first-party `busbar_*` series
-//!   (Prometheus allows one TYPE per metric name per exposition; a `hook` label cannot
-//!   disambiguate type).
-//! * RESERVED namespace. A hook metric whose name starts with `busbar_` is dropped — a hook cannot
-//!   impersonate a first-party series.
-//! * NON-BLOCKING scrape. The fold reads a CACHE and never awaits a hook socket inline. When a
-//!   hook's cache is older than [`HOOK_METRICS_TTL_SECS`] the scrape serves the stale value and fires
-//!   an ASYNC refresh (stale-while-revalidate) — a slow or dead hook yields stale-then-absent series
-//!   (fail-open), never a stalled `/metrics/hooks`. Zero work when nobody scrapes; self-tunes to the
-//!   scrape rate.
-//! * BOUNDED. `parse_status_metrics` already caps entries (64) + labels (8) + quantiles (8) +
-//!   buckets (64) and sanitizes every name/label/value, so a hostile hook cannot flood or
-//!   exfiltrate through the scrape.
-//!
-//! The 1.5.5 layout the plugin writes: families by name, `# HELP` (when present) then `# TYPE`, each
-//! family's samples in the order handed (hooks by name, then each hook's report order), no blank line
-//! between families. Every label value and number here is already in exposition spelling.
-
 use busbar_contract::export_calls::{Family, Sample};
 use busbar_contract::hook_wire::reply::HookMetric;
 use std::collections::HashMap;
@@ -87,41 +52,20 @@ impl Drop for Metrics {
     }
 }
 
-/// Staleness bound for a hook's cached metrics. On a scrape, a cache older than this triggers an
-/// async refresh (stale-while-revalidate). Chosen ≤ a typical Prometheus `scrape_interval` (15s) so
-/// consecutive scrapes see fresh-enough samples without polling a hook faster than it is scraped.
 pub(crate) const HOOK_METRICS_TTL_SECS: u64 = 10;
 
-/// One hook's last-known metrics + when they were fetched (unix secs). `metrics` empty means the
-/// hook was queried but reported none / doesn't speak status (fail-open: it simply contributes no
-/// series). A hook with no cache entry yet is refreshed on first scrape.
 struct Cached {
     fetched_at: u64,
     metrics: Metrics,
 }
 
-/// Process-wide hook-metrics cache, keyed by hook name. Populated by the stale-while-revalidate
-/// refresh fired from the scrape handler; read (never blocked) by the renderer.
 static CACHE: RwLock<Option<HashMap<HookName, Cached>>> = RwLock::new(None);
 
-/// The hooks with a refresh ALREADY IN FLIGHT. Without this, staleness alone gates the spawn -- and
-/// staleness does not clear until the refresh COMPLETES, so every scrape that lands while one is
-/// running spawns another. A refresh is not cheap: it stages a copy of the plugin to disk, `dlopen`s
-/// it, and runs its constructor. A scrape interval shorter than a slow hook's status round-trip
-/// therefore compounds without bound -- N monitoring replicas x every scrape x every hook, each
-/// loading a fresh copy of the library -- exactly when the hook is already struggling.
-///
-/// Membership is the admission ticket: a hook not in the set is claimed and refreshed, one in the
-/// set is skipped and picked up on a later scrape. Released by [`InFlight`] on the way out,
-/// including on panic, so a failed refresh cannot wedge a hook out of ever refreshing again.
 static IN_FLIGHT: RwLock<Option<std::collections::HashSet<HookName>>> = RwLock::new(None);
 
-/// RAII claim on a hook's refresh slot. `Drop` releases it, so an early return or a panic inside the
-/// spawned task cannot leak the claim.
 struct InFlight(HookName);
 
 impl InFlight {
-    /// Claim `name`, or `None` if a refresh for it is already running.
     fn claim(name: &str) -> Option<InFlight> {
         let mut guard = IN_FLIGHT.write().unwrap_or_else(|e| e.into_inner());
         let set = guard.get_or_insert_with(std::collections::HashSet::new);
@@ -139,8 +83,6 @@ impl Drop for InFlight {
     }
 }
 
-/// True iff `name`'s cache is missing or older than the TTL — i.e. the scrape should fire an async
-/// refresh for it. Read-only; the refresh itself writes the cache.
 fn is_stale(name: &str, now: u64) -> bool {
     let guard = CACHE.read().unwrap_or_else(|e| e.into_inner());
     match guard.as_ref().and_then(|m| m.get(name)) {
@@ -149,7 +91,6 @@ fn is_stale(name: &str, now: u64) -> bool {
     }
 }
 
-/// Store a freshly-fetched metric set for `name`.
 fn store(name: &str, metrics: Vec<HookMetric>, now: u64) {
     let metrics = Metrics(metrics);
     let mut guard = CACHE.write().unwrap_or_else(|e| e.into_inner());
@@ -164,11 +105,6 @@ fn store(name: &str, metrics: Vec<HookMetric>, now: u64) {
     drop(retired);
 }
 
-/// Evict cache entries for hooks no longer in the current registry (removed/renamed on a config
-/// reload). Without this, the process-global `CACHE` retains a dead `(name, Cached)` entry for the
-/// process lifetime for every hook name ever configured — an unbounded (operator-driven) retention
-/// under frequent hook churn, and dead series would keep rendering in `/metrics/hooks`. `keep` is the
-/// set of currently-configured hook names. Skips the lock entirely when nothing needs pruning.
 fn prune_absent<'a>(keep: impl Iterator<Item = &'a str>) {
     let keep: std::collections::HashSet<&str> = keep.collect();
     let mut guard = CACHE.write().unwrap_or_else(|e| e.into_inner());
@@ -188,8 +124,6 @@ fn prune_absent<'a>(keep: impl Iterator<Item = &'a str>) {
     }
 }
 
-/// Snapshot the current cache as `(hook_name, metrics)` pairs for rendering. Clones the small parsed
-/// metric structs (≤64 per hook) so the render never holds the lock across formatting.
 fn snapshot() -> Vec<(Zeroizing<String>, Metrics)> {
     let guard = CACHE.read().unwrap_or_else(|e| e.into_inner());
     guard
@@ -202,17 +136,12 @@ fn snapshot() -> Vec<(Zeroizing<String>, Metrics)> {
         .unwrap_or_default()
 }
 
-/// Live-query one hook's status and update its cache entry. Runs in a spawned task from the scrape
-/// (never inline). Reuses the exact same [`crate::hooks::fetch_status`] path the admin API uses, so the
-/// scrape and the live admin read see the identical hook data (just at different freshness).
 async fn refresh(
     claim: InFlight,
     hook: crate::config::HookCfg,
     settings_version: u64,
     env: crate::hooks::HookEnv,
 ) {
-    // The claim is held for the WHOLE refresh and dropped on the way out (including on panic), so no
-    // second refresh for this hook can start while this one is still loading the plugin.
     let name = &claim.0 .0;
     let metrics = match crate::hooks::fetch_status(name, &hook, settings_version, &env).await {
         Some(status) => status
@@ -220,26 +149,18 @@ async fn refresh(
             .as_ref()
             .map(|m| busbar_contract::hook_wire::reply::parse_status_metrics(m))
             .unwrap_or_default(),
-        // Unreachable / doesn't speak status: cache an empty set so it contributes no series and is
-        // not re-hammered every scrape until the TTL elapses (fail-open).
+
         None => Vec::new(),
     };
     store(name, metrics, busbar_kernel::store::now());
 }
 
-/// THE HOOK FAMILIES for one `GET /metrics/hooks`: every hook's cached metrics, folded.
-///
-/// Stale-while-revalidate: for each configured hook whose cache is stale, spawn an async refresh
-/// (the NEXT scrape sees it) and fold the current cache now. Never awaits a hook.
 pub(crate) fn families(app: &crate::state::App) -> Vec<Family> {
     let now = busbar_kernel::store::now();
-    // Evict cache entries for hooks removed/renamed in a config reload so stale series stop
-    // rendering and the process-global cache can't grow unbounded across reloads.
+
     prune_absent(app.hook_registry.keys().map(String::as_str));
-    // Fire async refreshes for stale hooks; never block the scrape on them.
+
     for (name, hook) in app.hook_registry.iter() {
-        // Stale AND not already being refreshed. Staleness alone is not enough: it does not clear
-        // until the refresh lands, so it would re-arm on every scrape in the meantime.
         if !is_stale(name, now) {
             continue;
         }
@@ -261,18 +182,12 @@ pub(crate) fn families(app: &crate::state::App) -> Vec<Family> {
     )
 }
 
-/// A metric-name group during the fold: `(prometheus_type, help, [(hook_name, metric)])`.
 type MetricGroup<'a> = (
     &'static str,
     Option<&'a str>,
     Vec<(&'a str, &'a HookMetric)>,
 );
 
-/// Fold `(hook_name, metrics)` pairs into the hook families, in the 1.5.5 exposition's order.
-/// Grouped by metric name (one family per name, as the format requires), verbatim names + a
-/// `hook="<name>"` label, `busbar_`-prefixed names dropped, histograms as Prometheus SUMMARY (the
-/// type that carries `quantile` series) unless they carry native buckets. Deterministic order
-/// (sorted) so scrapes are stable and testable.
 #[cfg(test)]
 pub(crate) fn families_of(hooks: &[(String, Vec<HookMetric>)]) -> Vec<Family> {
     fold_families(
@@ -283,8 +198,6 @@ pub(crate) fn families_of(hooks: &[(String, Vec<HookMetric>)]) -> Vec<Family> {
 }
 
 fn fold_families<'a>(hooks: impl Iterator<Item = (&'a str, &'a [HookMetric])>) -> Vec<Family> {
-    // Group by metric name -> (prom_type, help, [(hook_name, metric)]). First occurrence fixes the
-    // type; a later entry of a DIFFERENT type for the same name is dropped (Prometheus forbids mixing).
     let mut order: Vec<&str> = Vec::new();
     let mut groups: HashMap<&str, MetricGroup<'_>> = HashMap::new();
     let mut sorted: Vec<_> = hooks.collect();
@@ -292,7 +205,7 @@ fn fold_families<'a>(hooks: impl Iterator<Item = (&'a str, &'a [HookMetric])>) -
     for (hook_name, metrics) in sorted {
         for m in metrics {
             if m.name.starts_with("busbar_") {
-                continue; // reserved first-party namespace — a hook cannot impersonate it
+                continue;
             }
             let prom_type = prom_type_of(m);
             let entry = groups.entry(m.name.as_str()).or_insert_with(|| {
@@ -300,7 +213,7 @@ fn fold_families<'a>(hooks: impl Iterator<Item = (&'a str, &'a [HookMetric])>) -
                 (prom_type, m.help.as_deref(), Vec::new())
             });
             if entry.0 != prom_type {
-                continue; // type conflict for a shared name: keep the first, drop the rest
+                continue;
             }
             if entry.1.is_none() {
                 entry.1 = m.help.as_deref();
@@ -337,10 +250,6 @@ fn fold_families<'a>(hooks: impl Iterator<Item = (&'a str, &'a [HookMetric])>) -
     out
 }
 
-/// Map a hook metric to its Prometheus type. A `histogram` carrying native `buckets` renders as a
-/// Prometheus HISTOGRAM (`_bucket`/`_count`, queryable via `histogram_quantile`); a `histogram`
-/// carrying precomputed `quantiles` renders as a SUMMARY. Counter/gauge pass through; anything else
-/// is `untyped`.
 fn prom_type_of(m: &HookMetric) -> &'static str {
     match m.kind.as_str() {
         "counter" => "counter",
@@ -351,15 +260,9 @@ fn prom_type_of(m: &HookMetric) -> &'static str {
     }
 }
 
-/// Render a native Prometheus histogram: one `name_bucket{le="…"}` line per bucket (cumulative
-/// counts, as the hook reported them; a `+Inf` bucket is emitted to close the histogram if the hook
-/// omitted it) plus `name_count` = the total observation count (`value`). This is the shape
-/// `histogram_quantile()` operates on, so a dashboard built against a `*_bucket` series works
-/// unchanged.
 fn histogram_samples(out: &mut Vec<Sample>, name: &str, hook: &str, m: &HookMetric) {
     let mut saw_inf = false;
     if let Some(buckets) = &m.buckets {
-        // Sort by le so the exposition is monotonic and stable (finite bounds ascending, +Inf last).
         let mut rows: Vec<(&String, &f64)> = buckets.iter().collect();
         rows.sort_by(|a, b| {
             let pa = if a.0 == "+Inf" {
@@ -385,7 +288,7 @@ fn histogram_samples(out: &mut Vec<Sample>, name: &str, hook: &str, m: &HookMetr
             });
         }
     }
-    // Prometheus requires a +Inf bucket equal to the total count; add it if the hook didn't.
+
     if !saw_inf {
         out.push(Sample {
             name: sample_name(name, "_bucket"),
@@ -400,8 +303,6 @@ fn histogram_samples(out: &mut Vec<Sample>, name: &str, hook: &str, m: &HookMetr
     });
 }
 
-/// Render a summary: one `name{...,quantile="q"}` line per quantile plus `name_count` = the
-/// observation count (the metric's `value` for a histogram).
 fn summary_samples(out: &mut Vec<Sample>, name: &str, hook: &str, m: &HookMetric) {
     if let Some(qs) = &m.quantiles {
         for (q, v) in qs {
@@ -419,14 +320,6 @@ fn summary_samples(out: &mut Vec<Sample>, name: &str, hook: &str, m: &HookMetric
     });
 }
 
-/// Build the `{hook="...",k="v",...,extra="..."}` label set: the automatic `hook` label first, then
-/// the hook's own labels (sorted for determinism), then any renderer-added labels (e.g. `quantile`).
-/// Values are Prometheus-escaped.
-///
-/// A hook label that would SHADOW one this renderer emits is dropped: charset validity (all the
-/// wire checks) is not uniqueness, and a duplicate label name is a parse error that costs the whole
-/// scrape, not just the sample. The forbidden set is derived from `extra` rather than listed, so it
-/// cannot drift from what the renderer actually emits.
 fn render_labels(
     hook: &str,
     labels: Option<&std::collections::BTreeMap<String, String>>,
@@ -437,7 +330,7 @@ fn render_labels(
     if let Some(m) = labels {
         for (k, v) in m {
             if k == "hook" || extra.iter().any(|(ek, _)| ek == k) {
-                continue; // would duplicate a label this fold emits; keep ours, drop theirs
+                continue;
             }
             parts.push((k.clone(), escape_label(v)));
         }
@@ -448,7 +341,6 @@ fn render_labels(
     parts
 }
 
-/// Prometheus label-value escaping: backslash, double-quote, newline (per the exposition spec).
 fn sample_name(name: &str, suffix: &str) -> String {
     let capacity = name
         .len()
@@ -464,7 +356,6 @@ fn escape_label(s: &str) -> String {
     escape(s, true)
 }
 
-/// HELP-line escaping: backslash and newline (double-quotes are literal in HELP text).
 fn escape_help(s: &str) -> String {
     escape(s, false)
 }
@@ -483,8 +374,6 @@ fn escape(s: &str, quotes: bool) -> String {
     std::mem::take(&mut *out)
 }
 
-/// Format a float for Prometheus: integers without a decimal point, otherwise a compact decimal.
-/// Non-finite values (already excluded by `parse_status_metrics`) render as `0`.
 fn fmt_f64(v: f64) -> String {
     if !v.is_finite() {
         return "0".to_string();

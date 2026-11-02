@@ -326,7 +326,7 @@ fn real_pairing_requeues_source_before_new_inputs_and_retires_both_queue_lists_o
         let mut task = sink.task.lock().unwrap().take().unwrap();
         let mut context = Context::from_waker(Waker::noop());
         assert!(task.as_mut().poll(&mut context).is_pending());
-        // Actual output precedes the deferred source and newer accepted application jobs.
+
         assert_eq!(
             *sink.accepted.lock().unwrap(),
             vec![(10, Vec::new()), (10, b"line".to_vec())]

@@ -1,13 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The host I/O slots' reading of a caller's ranges (THE DESIGN §11.13 M1).
-
 use super::*;
 
-/// RED (THE DESIGN §11.13 M1, "Every slice built from a plugin-reported length is capped and
-/// validated before it is formed"; audit PL1 #1): an I/O slot's list or buffer stated over the hard
-/// byte maximum (`u32::MAX`) is refused before any slice is formed over it, as NULL with a count is.
 #[test]
 fn red_an_io_range_over_the_byte_cap_is_refused_before_any_slice() {
     let b = [0_u8; 8];
@@ -25,8 +20,6 @@ fn red_an_io_range_over_the_byte_cap_is_refused_before_any_slice() {
     assert!(unsafe { list::<u8>(std::ptr::null(), 1) }.is_none());
 }
 
-/// A caller's `out` lent in 96 bytes, stating `size`: every byte past the size field is `0xAA`, so
-/// a write past what the caller stated shows.
 #[repr(C, align(8))]
 struct LentOut([u8; 96]);
 
@@ -41,17 +34,11 @@ impl LentOut {
         self.0.as_mut_ptr().cast()
     }
 
-    /// Whether every byte from `from` on is still the caller's.
     fn untouched_from(&self, from: usize) -> bool {
         self.0[from..].iter().all(|b| *b == 0xAA)
     }
 }
 
-/// RED (Q128 kernel-scope MEDIUM, the io slot frame): the host writes a caller's `out` only as far
-/// as the caller STATED it (`min(out.size, its own)`), and refuses an `out` stated below the first
-/// `ServiceOut` before the service runs, writing none of it, so a `ServiceOut` may grow by appending
-/// and an older caller's smaller one is never overrun. RED before: the frame wrote a whole
-/// `ServiceOut` over whatever the caller lent.
 #[test]
 fn red_the_io_slot_frame_writes_no_further_than_the_out_the_caller_stated() {
     use busbar_contract::abi::host::service::SERVICE_OUT_V1;
@@ -82,9 +69,6 @@ fn red_the_io_slot_frame_writes_no_further_than_the_out_the_caller_stated() {
     assert_eq!(lent.0[5], 0, "`exited` is written zero by every frame");
 }
 
-/// `io.ends` on a program that has exited answers `exited` = 1 and its exit code in `value`, and
-/// writes no far address; a program still running, and every other handle, answers `exited` = 0
-/// with its port and far end as before.
 #[test]
 fn ends_answers_a_programs_own_exit_in_the_exited_byte() {
     let mut buf = [0xAA_u8; busbar_contract::abi::host::io::MAX_ADDR];

@@ -2,9 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE SIGNING GATE READS THE RENDERING THIS CRATE WRITES. `scripts/signing-gate.sh` carries its own
-//! reader of the Statement rendering (a Python heredoc) to find a plugin's first-party need in the
-//! signed manifest. This drives that very reader over a real rendering of a Statement whose kind tail
-//! carries facts and which declares a secret field, so the two cannot drift apart unseen.
 
 use std::path::Path;
 use std::process::Command;
@@ -28,7 +25,7 @@ const DENIED: &[AbiStr] = &[abi_str("x-reader-denied")];
 const NEEDS: &[Need] = &[
     Need {
         direction: DIRECTION_OUTBOUND,
-        // The one class the loader grants a first-party plugin only (sign.rs FIRST_PARTY_EGRESS).
+
         egress_class: EGRESS_PROVIDER,
         transport: abi_str("http"),
         auth: NONE,

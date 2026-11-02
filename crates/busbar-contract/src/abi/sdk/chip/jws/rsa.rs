@@ -6,14 +6,12 @@ use std::ptr::NonNull;
 use aws_lc_sys as lc;
 use zeroize::Zeroizing;
 
-// Preserve ring's accepted private-key sizes and public exponent bounds. Balanced
-// factors make 2047 the smallest modulus with a 1024-bit half, despite byte rounding.
 const MIN_MODULUS_BITS: u32 = 2047;
 const MAX_MODULUS_BITS: u32 = 4096;
 const PRIME_BITS_GRANULARITY: u32 = 512;
 const MIN_PUBLIC_EXPONENT: u64 = 65537;
 const PUBLIC_EXPONENT_LIMIT: u64 = 1_u64 << 33;
-// RFC 5208 PrivateKeyInfo version and RFC 3279 rsaEncryption with explicit NULL.
+
 const PKCS8_V1: u64 = 0;
 const RSA_ENCRYPTION_WITH_NULL: &[u8] = b"\x06\x09\x2a\x86\x48\x86\xf7\x0d\x01\x01\x01\x05\x00";
 
@@ -61,8 +59,7 @@ impl Key {
             if lc::CBS_len(&sequence) != 0 {
                 return Err(());
             }
-            // This parser checks d and CRT consistency, consumes the entire inner DER,
-            // and frees partial keys on failure. Guard its sole owned result at once.
+
             let key = Self(
                 NonNull::new(lc::RSA_private_key_from_bytes(
                     lc::CBS_data(&private),

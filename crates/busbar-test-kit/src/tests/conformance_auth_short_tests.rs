@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The SHORT pin includes real SDK decision custody, without permitting another VERIFY.
-
 use super::*;
 use crate::conformance::{dispatcher, exact, StaticDoor};
 use busbar_contract::abi::auth::{AuthPoints, Ops, DECISION_CONTINUE};
@@ -30,7 +28,7 @@ static SAME_WORKER_REJECTED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Default)]
 struct ReleaseGate {
-    state: Mutex<(bool, bool)>, // entered, released
+    state: Mutex<(bool, bool)>,
     changed: Condvar,
 }
 
@@ -81,8 +79,7 @@ extern "C" fn retained_verify(
         // SAFETY: this selected VERIFY's complete input remains borrowed for this wrapper.
         let ticket = unsafe { (&*input.cast::<VerifyIn>()).head.ticket };
         SAME_WORKER_SEEN.store(dispatcher.current_worker().is_some(), Ordering::SeqCst);
-        // A missing same-worker guard would block this real callback beyond the outer call's
-        // deadline. The healthy path rejects immediately, without a clock-threshold assertion.
+
         SAME_WORKER_REJECTED.store(
             !dispatcher.retirement_barrier(ticket, Duration::from_secs(60)),
             Ordering::SeqCst,
@@ -102,7 +99,7 @@ extern "C" fn release(instance: *mut c_void, input: *const c_void, out: *mut c_v
         let mut state = gate.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.0 = true;
         gate.changed.notify_all();
-        // Bounded even if the observing test unwinds before releasing its gate.
+
         drop(
             gate.changed
                 .wait_timeout_while(state, Duration::from_secs(30), |state| !state.1)
@@ -215,7 +212,6 @@ fn retained_short_pin_counts_cleanup_and_rejects_an_extra_verify_or_missing_rele
     let storage = ShortReply::of(&serde_json::json!({}));
     assert_eq!(storage, ShortReply::Retained);
 
-    // GREEN: the real SDK judges once; two VERIFY entries copy the one decision, then RELEASE.
     {
         let (_d, p, mut case) = opened(false);
         let mut rec = Recorder::new(crossings(&p));
@@ -232,7 +228,6 @@ fn retained_short_pin_counts_cleanup_and_rejects_an_extra_verify_or_missing_rele
         assert_eq!(close(&p).outcome, Outcome::Ready);
     }
 
-    // RED: another actual VERIFY cannot hide inside the new cleanup-inclusive pin.
     {
         let (_d, p, mut case) = opened(false);
         let mut rec = Recorder::new(crossings(&p));
@@ -248,9 +243,6 @@ fn retained_short_pin_counts_cleanup_and_rejects_an_extra_verify_or_missing_rele
         assert_eq!(close(&p).outcome, Outcome::Ready);
     }
 
-    // RED: keep the real Recall token past consumption. The second VERIFY presents its genuine
-    // short reference, so it copies the same decision without another judgment, but cleanup is
-    // missing from this step until the deliberately held token is dropped below.
     {
         let (_d, p, mut case) = opened(false);
         let mut rec = Recorder::new(crossings(&p));
@@ -358,7 +350,7 @@ fn submitted_short_fences_actual_release_and_rejects_same_worker_wait() {
     let entered = state.0;
     let returned_before_cleanup = received.recv_timeout(Duration::from_millis(100)).is_ok();
     let during = counts();
-    // Unblock before any assertion, including on timeout, so no worker is stranded by failure.
+
     state.1 = true;
     drop(state);
     gate.changed.notify_all();

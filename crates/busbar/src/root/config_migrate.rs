@@ -1,21 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE COMPOSITION ROOT'S HALF OF `busbar --migrate-config` (owner ruling 2026-10-27: each plugin
-//! migrates its own settings; core migrates only its own keys). The kernel walks the configuration
-//! ([`busbar_kernel::config::migrate_plugins`]); this answers its [`MigrateHost`]:
-//!
-//! - **a plugin's own migration**: the plugin a section names, found among the doors this build
-//!   links, the plugins directory the configuration names, and (when neither has it) the release of
-//!   it the release index names for this core, downloaded and verified like any dropped-in plugin;
-//!   then its door's optional `migrate` is called (`busbar_plugin_loader::dispatch::migrate`);
-//! - **the release index**: which release of a plugin matches this core's ABI for its kind, read
-//!   from `plugin-index.json` (this release's own asset, or `BUSBAR_PLUGIN_INDEX`: a path or URL).
-//!   The index is data: no plugin name is written here.
-//!
-//! The index is read only when a lookup needs it (a `plugins.fetch` GitHub pin, or a plugin no
-//! build here serves), once per run.
-
 use std::cell::OnceCell;
 use std::path::{Path, PathBuf};
 
@@ -25,7 +10,6 @@ use busbar_kernel::config::PluginsCfg;
 
 use crate::root::loader::PluginRegistry;
 
-/// The release index's existing JSON schema. Unknown fields still refuse the whole index.
 mod index_field {
     pub const PLUGINS: &str = "plugins";
     pub const REPO: &str = "repo";
@@ -37,11 +21,9 @@ mod index_field {
     pub const ABI_VERSION: &str = "abi_version";
 }
 
-/// The existing release source and asset name. Naming these preserves routing; it does not
-/// change the configured index override or where historical releases are fetched from.
 const RELEASE_DOWNLOAD_ROOT: &str = "https://github.com/GetBusbar/busbar/releases/download";
 const RELEASE_INDEX_ASSET: &str = "plugin-index.json";
-/// HTTP(S) source prefixes admitted by the release-index reader (RFC 3986 scheme syntax).
+
 const HTTPS_SOURCE_PREFIX: &str = "https://";
 const HTTP_SOURCE_PREFIX: &str = "http://";
 const CONFIG_PLUGINS_KEY: &str = "plugins";
@@ -49,8 +31,6 @@ const CONFIG_PROVIDERS_FILE_KEY: &str = "providers_file";
 const DEFAULT_PROVIDERS_CATALOG: &str = "providers.yaml";
 const UNNAMED_PROVIDERS_CATALOG_STEM: &str = "providers";
 
-/// Where the release index is read from when `BUSBAR_PLUGIN_INDEX` names none: this release's own
-/// `plugin-index.json` asset.
 fn default_index() -> String {
     format!(
         "{RELEASE_DOWNLOAD_ROOT}/v{}/{RELEASE_INDEX_ASSET}",
@@ -58,7 +38,6 @@ fn default_index() -> String {
     )
 }
 
-/// The environment variable naming the release index to read instead (a path or an `https` URL).
 pub const INDEX_ENV: &str = "BUSBAR_PLUGIN_INDEX";
 
 /// THE RELEASE INDEX: every plugin the index knows, each with its repository, the repositories it
@@ -96,12 +75,6 @@ pub struct IndexRelease {
 }
 
 impl Index {
-    /// Read a release index document: `{"plugins": [{"repo", "former_repos"?, "kind",
-    /// "answers_to"?, "releases": [{"tag", "abi_version"}]}]}`. A key this core does not know is
-    /// refused, never skipped.
-    ///
-    /// # Errors
-    /// The bytes are not such a document, naming what is wrong.
     pub fn parse(bytes: &[u8]) -> Result<Self, String> {
         use serde_json::Value;
         fn object<'a>(
@@ -192,8 +165,6 @@ impl Index {
         Ok(Self { plugins })
     }
 
-    /// The plugin the GitHub repository `repo` (`org/repo`) publishes, under its current or a former
-    /// repository name.
     fn by_repo(&self, repo: &str) -> Option<&IndexPlugin> {
         let same = |r: &String| r.eq_ignore_ascii_case(repo);
         self.plugins
@@ -201,7 +172,6 @@ impl Index {
             .find(|p| same(&p.repo) || p.former_repos.iter().any(same))
     }
 
-    /// The plugin of `kind` that answers to `module`.
     fn by_module(&self, kind: &str, module: &str) -> Option<&IndexPlugin> {
         self.plugins
             .iter()
@@ -210,8 +180,6 @@ impl Index {
 }
 
 impl IndexPlugin {
-    /// The GitHub pin of its newest release built for the ABI version this core speaks for its
-    /// kind; `None` when it has none.
     #[must_use]
     pub fn pin_for_this_core(&self) -> Option<String> {
         let speaks = crate::root::loader::registry::supported_abi(&self.kind);
@@ -223,7 +191,6 @@ impl IndexPlugin {
     }
 }
 
-/// The semver order of two tags (`v1.6.0` < `v1.6.10`); a tag that is not one sorts first.
 fn version_order(a: &str, b: &str) -> std::cmp::Ordering {
     use std::cmp::Ordering;
     fn parts(tag: &str) -> Option<([u64; 3], Option<&str>)> {
@@ -300,23 +267,19 @@ fn version_order(a: &str, b: &str) -> std::cmp::Ordering {
     })
 }
 
-/// THE ROOT'S MIGRATION HOST over one configuration: its plugins block, the doors this build links,
-/// and the release index, read once when first needed.
 pub struct RootHost {
-    /// The configuration's `plugins:` block (its directory and trust), when it has one.
     plugins: Option<PluginsCfg>,
-    /// The configuration file being migrated, and its `providers_file:` value.
+
     config: PathBuf,
     providers_file: Option<String>,
-    /// The registry of the linked doors and the configured plugins directory.
+
     local: OnceCell<PluginRegistry>,
-    /// The release index, or why it could not be read.
+
     index: OnceCell<Result<Index, String>>,
-    /// Builds downloaded for this run, in a directory of its own.
+
     fetched: OnceCell<FetchedDir>,
 }
 
-/// A fresh staging name carries 128 bits of OS randomness and is private to this process user.
 const STAGING_RANDOM_BYTES: usize = 16;
 const STAGING_DIRECTORY_PREFIX: &str = "busbar-migrate-";
 #[cfg(unix)]
@@ -353,8 +316,6 @@ impl Drop for FetchedDir {
 }
 
 impl RootHost {
-    /// The host over the configuration document `raw`, read from `config` (its `plugins:` block and
-    /// `providers_file:`, read as boot reads them).
     #[must_use]
     pub fn for_document(raw: &str, config: &std::path::Path) -> Self {
         let doc = serde_yaml::from_str::<serde_yaml::Value>(raw).ok();
@@ -377,7 +338,6 @@ impl RootHost {
         }
     }
 
-    /// The linked rows this build registers, as the boot's registry build takes them.
     fn linked() -> Vec<crate::root::loader::LinkedPlugin> {
         let mut rows: Vec<_> = busbar_kernel::preflight::linked_rows()
             .iter()
@@ -389,8 +349,6 @@ impl RootHost {
         rows
     }
 
-    /// The linked doors and the configured plugins directory. A directory that does not scan (a
-    /// build made for an earlier busbar, with no successor beside it) leaves the linked doors alone.
     fn local(&self) -> &PluginRegistry {
         self.local.get_or_init(|| {
             let scanned = self.plugins.as_ref().filter(|p| p.enabled).and_then(|p| {
@@ -403,7 +361,6 @@ impl RootHost {
         })
     }
 
-    /// The release index, read once.
     fn index(&self) -> Result<&Index, String> {
         self.index
             .get_or_init(|| {
@@ -421,14 +378,11 @@ impl RootHost {
             .map_err(Clone::clone)
     }
 
-    /// A linked plane or hook door answering `module` on `kind`'s axis, with its printed name.
     fn linked_door(
         kind: &str,
         module: &str,
     ) -> Option<(String, busbar_contract::abi::mechanism::door::DoorFn)> {
         match kind {
-            // A plane is named by its registry key; its linked door is the one whose Statement
-            // declares the plane's section.
             busbar_contract::abi::mechanism::kind::PLANE => {
                 let section = busbar_kernel::plane_driver::registry::plane_decls()
                     .iter()
@@ -443,7 +397,7 @@ impl RootHost {
                     })
                     .map(|door| (module.to_string(), *door))
             }
-            // A linked hook or secret door answers to its Statement's name and aliases.
+
             busbar_contract::abi::mechanism::kind::HOOK
             | busbar_contract::abi::mechanism::kind::SECRET => {
                 let doors = if kind == busbar_contract::abi::mechanism::kind::HOOK {
@@ -461,13 +415,10 @@ impl RootHost {
         }
     }
 
-    /// Whether a build here serves `module` on `kind`'s axis.
     fn served(&self, kind: &str, module: &str) -> bool {
         Self::linked_door(kind, module).is_some() || self.local().answers(module, kind)
     }
 
-    /// The release of `module` for this core, downloaded into this run's own directory and scanned
-    /// as a dropped-in plugin is (signature, trust, ABI) under the configuration's trust.
     fn fetch(&self, kind: &str, module: &str) -> Result<PluginRegistry, String> {
         let index = self.index()?;
         let plugin = index
@@ -503,10 +454,6 @@ impl RootHost {
 }
 
 impl RootHost {
-    /// The directory of the configuration, and the providers catalog boot reads beside it:
-    /// `--providers` > `providers_file:` (beside the config) > the `providers.yaml` beside the
-    /// config. Read as boot reads it, without saying anything: boot already warns about the
-    /// deprecated variable, and `--migrate-config`'s output stays the one 1.5.5 printed.
     fn catalog_path(&self) -> (PathBuf, PathBuf) {
         let dir = self
             .config
@@ -547,8 +494,7 @@ impl MigrateHost for RootHost {
         if let Some((name, door)) = Self::linked_door(kind, module) {
             return Ok(migrate_door(raw(door), settings, from)?.map(|m| (name, m)));
         }
-        // A plane the registry holds is served by this build; one with no linked door to ask
-        // migrates nothing here.
+
         if kind == busbar_contract::abi::mechanism::kind::PLANE {
             return Ok(None);
         }
@@ -558,9 +504,7 @@ impl MigrateHost for RootHost {
                 .migrate(settings, from)?
                 .map(|m| (row.manifest.name.clone(), m)));
         }
-        // No build here, and none the release index can hand over (no index, no network, no
-        // release for this busbar): the section passes through as written, as `--migrate-config`
-        // always left it, and boot names the plugin that is missing, as it always has.
+
         let Ok(fetched) = self.fetch(kind, module) else {
             return Ok(None);
         };
@@ -576,7 +520,7 @@ impl MigrateHost for RootHost {
         let Some((repo, _)) = github.split_once('@') else {
             return Ok(None);
         };
-        // An index that cannot be read changes nothing: the configuration is left as written.
+
         let Ok(index) = self.index() else {
             return Ok(None);
         };
@@ -601,7 +545,7 @@ impl MigrateHost for RootHost {
         );
         let out = path.with_file_name(format!("{stem}.migrated.yaml"));
         std::fs::write(&out, &m.yaml).map_err(|e| format!("{}: {e}", out.display()))?;
-        // Named beside the configuration when it sits there, as `providers_file:` resolves.
+
         let file = match out.strip_prefix(&dir) {
             Ok(rel) if !dir.as_os_str().is_empty() => rel.display().to_string(),
             _ => out.display().to_string(),
@@ -613,8 +557,7 @@ impl MigrateHost for RootHost {
         &self,
     ) -> Result<Option<serde_json::Map<String, serde_json::Value>>, String> {
         let (_, path) = self.catalog_path();
-        // No catalog where boot looks: the plane reads the configuration's own entries, and boot
-        // names the missing file, as it always has.
+
         let Ok(raw) = std::fs::read_to_string(&path) else {
             return Ok(None);
         };
@@ -628,7 +571,6 @@ impl MigrateHost for RootHost {
     }
 
     fn resolve(&self, host: &str) -> Result<Vec<std::net::IpAddr>, String> {
-        // The system resolver, as the destination guard's own resolves a name at a dial.
         use std::net::ToSocketAddrs;
         (host, 0)
             .to_socket_addrs()
@@ -637,11 +579,10 @@ impl MigrateHost for RootHost {
     }
 
     fn release_for(&self, kind: &str, module: &str) -> Result<Option<String>, String> {
-        // A plane's site comes from the plane registry: this build serves it.
         if kind == busbar_contract::abi::mechanism::kind::PLANE || self.served(kind, module) {
             return Ok(None);
         }
-        // An index that cannot be read changes nothing: the configuration is left as written.
+
         let Ok(index) = self.index() else {
             return Ok(None);
         };

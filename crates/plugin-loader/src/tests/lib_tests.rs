@@ -1,19 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/plugin-loader/src/lib.rs`.
-
 use super::*;
 
-/// The 1.5.5 store payload schema (v2). No loaded plugin states it since THE DESIGN §11.8 (the
-/// registry refuses it at boot, ruling C21/ABI-o1); the store adapter's shim suites bind an adapter
-/// at it to pin the schema-keyed shim rule.
 const PUBLISHED_STORE_SCHEMA: u32 = 2;
 
-/// `intern_name` reuses the SAME allocation for repeated sightings of the same name (that's the
-/// whole point - bounding the leak to one per distinct name), while two DIFFERENT names get
-/// distinct interned strings. Checked via pointer identity, not just string equality, since two
-/// equal-but-differently-allocated `&'static str`s would defeat the interning claim silently.
 #[test]
 fn intern_name_reuses_the_same_allocation_for_a_repeated_name() {
     let a1 = intern_name("plugin-a-unique-for-this-test");
@@ -45,10 +36,7 @@ fn is_library_file_matches_only_this_platforms_extension() {
     assert!(!is_library_file("libfoo.txt"));
     assert!(!is_library_file("libfoo"));
     assert!(!is_library_file("README.md"));
-    // The "only" in this test's name wasn't actually proven before: an implementation
-    // accepting every platform's library extension everywhere (e.g. `.dylib` on Linux too)
-    // would have passed the assertions above unchanged. Explicitly assert the OTHER platforms'
-    // extensions are rejected on THIS platform.
+
     for other_ext in [".dll", ".dylib", ".so"] {
         if other_ext == expected_ext {
             continue;
@@ -61,9 +49,6 @@ fn is_library_file_matches_only_this_platforms_extension() {
     }
 }
 
-/// `list_plugin_files` lists only library-extension files, sorted, and NEVER dlopens anything
-/// (so it must return real filenames even for a garbage/non-plugin library file no loader would
-/// take).
 #[test]
 fn list_plugin_files_filters_to_libraries_only_and_sorts() {
     let dir = std::env::temp_dir().join(format!(
@@ -101,15 +86,6 @@ fn list_plugin_files_filters_to_libraries_only_and_sorts() {
     );
 }
 
-/// THE EXTENSION MATCH FOLLOWS THE FILESYSTEM'S CASE RULE, and the two rules are opposites.
-///
-/// This scan is what `GET /admin/plugins` renders, so a file it skips is a plugin an operator is
-/// told is not installed. On NTFS `FOO.DLL` and `foo.dll` are ONE file and `LoadLibrary` opens
-/// either, so a case-sensitive `ends_with(".dll")` hides a plugin that is genuinely there — and
-/// uppercase extensions are exactly what a Windows build system or an unzip hands over. On unix the
-/// extension is part of the name, `.SO` is a different file the loader would not resolve, and
-/// claiming it is a library would be the mirror-image error. So the assertion is per platform
-/// rather than one shared expectation, because the correct answers genuinely differ.
 #[test]
 fn the_library_extension_match_uses_this_filesystems_case_rule() {
     let dir = std::env::temp_dir().join(format!("busbar-libext-case-{}-{}", std::process::id(), {

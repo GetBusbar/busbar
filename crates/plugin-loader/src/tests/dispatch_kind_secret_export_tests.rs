@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The secret and export kinds' answer checks, through the dispatcher's `Kind` adapters: each op
-//! reaches its `check_<op>`, a violation is FAULT naming its rule and field, a zeroed PENDING or
-//! REFUSED `out` passes, a foreign-sized struct is FAULT, and the one
-//! short-buffer op reads as short.
-
 use std::mem::size_of;
 
 use busbar_contract::abi::export::{self, CheckOut, ScrapeIn, ScrapeOut, ServeOut, StatusOut};
@@ -52,7 +47,6 @@ fn resolve(outcome: Outcome, secret: Blob, error_kind: u32) -> ResolveOut {
 
 #[test]
 fn secret_resolve_is_checked() {
-    // The host's buffer the value is written into (the credential chip, row 6: host-owned secret bytes).
     let mut buf = [b'k'; 4];
     let input = ResolveIn {
         head: in_head(),
@@ -72,14 +66,14 @@ fn secret_resolve_is_checked() {
         Secret::check(&answer(s, Outcome::Ready, &input, &ok)),
         Ok(())
     );
-    // RED: the same answer under a lease (plugin memory the host would have to release).
+
     let mut leased = ok;
     leased.head.lease = 7;
     assert_eq!(
         Secret::check(&answer(s, Outcome::Ready, &input, &leased)),
         Err(fault(Rule::Contradiction, "resolve.lease"))
     );
-    // RED: material at an address the host did not lend: judged against the call's own `in`.
+
     let plugin = *b"k";
     let foreign = resolve(
         Outcome::Ready,
@@ -93,7 +87,7 @@ fn secret_resolve_is_checked() {
         Secret::check(&answer(s, Outcome::Ready, &input, &foreign)),
         Err(fault(Rule::Foreign, "resolve.secret_outside_buffer"))
     );
-    // The short-buffer answer passes and is SHORT (the one re-call's).
+
     let mut short = resolve(Outcome::Failed, NO_BLOB, 0);
     short.needed = 5;
     let a = answer(s, Outcome::Failed, &input, &short);
@@ -105,13 +99,13 @@ fn secret_resolve_is_checked() {
         Secret::check(&answer(s, Outcome::Failed, &input, &failed)),
         Ok(())
     );
-    // RED: a FAILED answer carrying secret material.
+
     let leak = resolve(Outcome::Failed, material, ERROR_KIND_NOT_FOUND);
     assert_eq!(
         Secret::check(&answer(s, Outcome::Failed, &input, &leak)),
         Err(fault(Rule::Contradiction, "resolve.secret_on_failed"))
     );
-    // RED: an `out` smaller than the op's struct.
+
     let small = head(Outcome::Ready);
     let f = Secret::check(&answer(s, Outcome::Ready, &input, &small)).unwrap_err();
     assert_eq!(f.rule, Rule::Foreign);
@@ -145,25 +139,25 @@ fn export_scrape_is_checked_against_the_hosts_cap() {
         Export::check(&answer(s, Outcome::Ready, &input, &ok)),
         Ok(())
     );
-    // RED: more written than the host gave.
+
     let over = scrape_out(Outcome::Ready, 65, 0);
     assert_eq!(
         Export::check(&answer(s, Outcome::Ready, &input, &over)),
         Err(fault(Rule::OverCap, "scrape.bytes"))
     );
-    // RED: FAILED with needed <= cap wastes the one re-call.
+
     let wasted = scrape_out(Outcome::Failed, 0, 64);
     assert_eq!(
         Export::check(&answer(s, Outcome::Failed, &input, &wasted)),
         Err(fault(Rule::WastedRecall, "scrape.bytes"))
     );
-    // SHORT: FAILED with needed above the cap, nothing written.
+
     let short = scrape_out(Outcome::Failed, 0, 65);
     let a = answer(s, Outcome::Failed, &input, &short);
     assert_eq!(Export::check(&a), Ok(()));
     assert!(Export::short(&a));
     assert!(!Export::short(&answer(s, Outcome::Ready, &input, &ok)));
-    // RED: an `in` smaller than ScrapeIn: the cap cannot be read, so FAULT.
+
     let small_in = in_head();
     let f = Export::check(&answer(s, Outcome::Ready, &small_in, &ok)).unwrap_err();
     assert_eq!(f.rule, Rule::Foreign);
@@ -180,7 +174,7 @@ fn export_every_slot_is_named_and_reaches_its_check() {
     ] {
         assert_ne!(Export::op_name(s), "op");
     }
-    // RED through `deliver`: FAILED error text with a length behind NULL.
+
     let input: InHead = in_head();
     let mut bad = head(Outcome::Failed);
     bad.error.len = 3;

@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A STORE'S DECLARED SECRETS ARE LENT, NOT WRITTEN INTO ITS SETTINGS (open160 ST8): a store whose
-//! Statement names `password` in `secret_refs` is opened with the resolved password in
-//! `OpenIn.secrets` (a `BLOB_SECRET` blob, as every other kind's `open` is), and the settings it
-//! reads no longer carry it. Before, the host opened every store with no secrets, so a DSN
-//! password rode the plain settings JSON.
-
 use std::sync::{Arc, Mutex};
 
 use busbar_contract::abi::sdk::conn::Host;
@@ -19,11 +13,9 @@ use crate::dispatch::{load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, 
 use crate::store_v3::wrap::{Hooks, Wrapped};
 use crate::store_v3::LoadedStore;
 
-/// What the store's `open` was handed: its settings and its secrets.
 type OpenSeen = (Vec<u8>, Vec<Vec<u8>>);
 static SEEN: Mutex<Vec<OpenSeen>> = Mutex::new(Vec::new());
 
-/// A store that keeps what its `open` read.
 struct Keeps;
 
 impl Hooks for Keeps {
@@ -70,7 +62,7 @@ fn a_declared_store_secret_reaches_open_as_a_secret_never_in_its_settings() {
         },
     )
     .expect("the door loads");
-    // The settings as the kernel hands them: the declared reference already resolved in place.
+
     let settings = br#"{"host":"db.internal","password":"hunter2"}"#;
     let _store = LoadedStore::open(p, d, settings, mint).expect("it opens");
     let (seen, secrets) = SEEN
@@ -97,7 +89,6 @@ mod synchronous {
     busbar_contract::store_door!(super::MemoryStore, "synchronous", "0", 64, secret_refs: REFS);
 }
 
-/// The SyncStore blanket must forward the same separated secrets as a direct StoreSlots backend.
 #[test]
 fn a_synchronous_store_receives_and_checks_its_declared_secret() {
     for (password, accepted) in [("hunter2", true), ("wrong", false)] {

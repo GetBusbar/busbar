@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE PROVIDER-KEY DESCRIPTOR (row 155 B1c, ARCHITECT ruling "Option A"): the keys of a
+//! THE PROVIDER-KEY DESCRIPTOR states the keys of a
 //! `providers:` entry that a PLANE owns, stated by that plane as data in its Statement, so the
 //! kernel parses a provider entry without holding one plane key name.
 //!
@@ -37,7 +37,6 @@
 use serde_json::{Map, Value};
 
 /// THE STATEMENT-EXTENSIONS KEY a plane states its provider-key descriptor under
-/// (`Statement::extensions`, read by `abi::mechanism::extensions::get`).
 pub const EXT_PROVIDER_KEYS: &str = "provider_keys";
 
 /// The shape word of [`Shape::Str`].
@@ -132,12 +131,6 @@ pub fn encode(keys: &ProviderKeys) -> Vec<u8> {
 }
 
 /// The descriptor `bytes` state.
-///
-/// # Errors
-///
-/// Where the bytes are not a descriptor: not JSON, a member missing or not stated by the encoding, a
-/// shape word outside [`SHAPE_WORDS`], a key name stated twice in one table, or an empty or
-/// repeated `one-of` word.
 pub fn decode(bytes: &[u8]) -> Result<ProviderKeys, String> {
     let doc: Value = serde_json::from_slice(bytes)
         .map_err(|e| format!("the provider keys are not JSON: {e}"))?;
@@ -154,11 +147,6 @@ pub fn decode(bytes: &[u8]) -> Result<ProviderKeys, String> {
 }
 
 /// The descriptor a Statement's extensions blob states under [`EXT_PROVIDER_KEYS`]; `None` when it
-/// states none.
-///
-/// # Errors
-///
-/// The stated value is not a descriptor ([`decode`]).
 pub fn stated(extensions: &[u8]) -> Result<Option<ProviderKeys>, String> {
     crate::abi::mechanism::extensions::get(extensions, EXT_PROVIDER_KEYS)
         .map(decode)

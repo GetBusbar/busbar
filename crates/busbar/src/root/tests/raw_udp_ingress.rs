@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The shared claim-door socket keeps serving healthy associations while raw busy ingress
-//! is discarded before framing; trusted writers and accepted LINE output retain custody.
-
 use std::future::Future;
 use std::sync::Arc;
 use std::task::{Context, Wake, Waker};
@@ -106,7 +103,6 @@ impl Wake for Quiet {
     fn wake(self: Arc<Self>) {}
 }
 
-/// Unparks before joining, including timeout, assertion and cancellation unwinds.
 struct Parked {
     release: Option<std::sync::mpsc::Sender<()>>,
     thread: Option<std::thread::JoinHandle<bool>>,
@@ -188,8 +184,7 @@ async fn raw_output_credit_readiness_drops_before_acceptance_and_resumes_without
     let source = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     heard(&source, &door, &a, "creditfrag").await;
     assert!(a.pair.published().await.failure.is_none());
-    // A real reserved input allocation prevents a second full output reservation while its
-    // association is otherwise idle. Storage is reserved before the allocation is requested.
+
     let custody = a
         .pair
         .reserve_input_for(Leg::Caller, 2 * FRAME_CAP)
@@ -268,7 +263,7 @@ async fn busy_raw_ingress_is_counted_without_blocking_the_shared_socket_or_trust
         }
     })
     .await;
-    // USERNAME overrides this already-known B source path: unknown is never busy A or B.
+
     let unknown = source_b
         .send_to(&check("missingfrag", 2), door.local())
         .await;
@@ -277,7 +272,7 @@ async fn busy_raw_ingress_is_counted_without_blocking_the_shared_socket_or_trust
     let healthy_received = tokio::time::timeout(WAIT, b.messages.recv()).await;
     let count_while_parked = door.assocs.raw_busy_dropped();
     let a_while_parked = a.framer.received();
-    // Every assertion below runs after the independent blocking host thread is released.
+
     let holder = parked.finish();
     let written = match application_poll {
         std::task::Poll::Ready(written) => Ok(written),
@@ -331,7 +326,7 @@ async fn closing_a_busy_association_cancels_waiters_and_does_not_reuse_its_old_p
     let mut pending = Box::pin(CallerEnd::write(&caller, b"closed waiter"));
     let before = pending.as_mut().poll(&mut cx);
     a.pair.close();
-    // A closing routing record may still exist while the holder owns the framing.
+
     let late = source.send_to(&check("reusedfrag", 3), door.local()).await;
     let marker_check = check("closingmarker", 4);
     let marker_sent = source.send_to(&marker_check, door.local()).await;

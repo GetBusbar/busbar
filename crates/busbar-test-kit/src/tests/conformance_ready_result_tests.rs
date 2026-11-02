@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Honest readiness must succeed, in addition to having the right invocation count.
 use super::*;
 use crate::dispatch_tests::TestKind;
 use std::sync::OnceLock;

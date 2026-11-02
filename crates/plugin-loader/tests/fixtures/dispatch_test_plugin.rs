@@ -1,22 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DISPATCHER'S TEST PLUGIN — one source, compiled into the test build (the LINKED door) and
-//! built as the `dispatch_test_plugin` example `cdylib` (the DROPPED door).
-//!
-//! Its plugin interface is the one door ([`busbar_plugin_door`]) over the lifecycle table only:
-//! the door, the Statement, the table and every `in`/`out` are
-//! `busbar_contract::abi`'s. Its `tick` is the test's side door: the `in`'s extensions blob names
-//! what to do ([`answer`], [`PEND_AFTER`] …), so one slot answers every outcome, pends and wakes in
-//! every way the mechanism names (after PENDING, before it, spuriously, for stale generations, by
-//! `wake_at_ns`), holds ops for a deadline, a client drop or `max_inflight`, arms a driver ticket,
-//! hangs until released (the watchdog's prey) and panics. Every slot is HAND-WRITTEN with no panic
-//! guard, so that panic escapes `extern "C"` and aborts the process.
-//!
-//! Numbers go back the way a plugin reports anything: as #85 envelope gauges (families 2..=5).
-//! A separate fixture-only native-finalizer observer export lets unload tests identify this
-//! image's actual finalizer thread; it adds nothing to the plugin interface or its ABI tables.
-
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::os::raw::c_void;
@@ -37,8 +21,6 @@ use busbar_contract::abi::mechanism::lifecycle::{
 use busbar_contract::abi::mechanism::ticket::{HostCtx, Ticket, WakeFn};
 use busbar_contract::abi::mechanism::{KindCode, DOOR_MAGIC, MECHANISM_VERSION};
 
-/// A fixture-only observer of the image's native finalizer, independent of any instance's CLOSE.
-/// A copied image has its own registration; no process-global unload counter is involved.
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 mod unload_witness {
     use std::sync::Mutex;
@@ -74,92 +56,80 @@ mod unload_witness {
     static FINALIZER: extern "C" fn() = finalized;
 }
 
-/// The kind this test plugin states; its table is that kind's lifecycle skeleton.
 pub const KIND: KindCode = KindCode::Export;
 
-/// `tick` mode: answer the outcome byte that follows (`answer:3`), mirrored, with the test envelope.
 pub const ANSWER: &[u8] = b"answer:";
-/// `tick` mode: return READY, mirror FAILED.
+
 pub const MISMATCH: &[u8] = b"mismatch";
-/// `tick` mode: return and mirror the unknown byte 9.
+
 pub const UNKNOWN: &[u8] = b"unknown";
-/// `tick` mode: PENDING, then a wake from another thread once ready.
+
 pub const PEND_AFTER: &[u8] = b"pend:after";
-/// `tick` mode: ready and woken BEFORE answering PENDING (the latch).
+
 pub const PEND_BEFORE: &[u8] = b"pend:before";
-/// `tick` mode: a spurious wake at once, the real one later.
+
 pub const PEND_SPURIOUS: &[u8] = b"pend:spurious";
-/// `tick` mode: wakes for two recycled tickets this plugin held before, the real one later.
+
 pub const PEND_STALE: &[u8] = b"pend:stale";
-/// `tick` mode: no wake; `wake_at_ns = now_ns + 30ms`.
+
 pub const PEND_TIMER: &[u8] = b"pend:timer";
-/// `tick` mode: held until [`KICK`].
+
 pub const PEND_HOLD: &[u8] = b"pend:hold";
-/// `tick` mode: `hang:<key>` does not return until `unhang:<key>`.
+
 pub const HANG: &[u8] = b"hang:";
-/// `tick` mode: `unhang:<key>` releases every op hung on `<key>`, now and for the rest of the
-/// process (tests share it), so each test hangs on a key of its own.
+
 pub const UNHANG: &[u8] = b"unhang:";
-/// `tick` mode: `pend:hold:<d>` is held like [`PEND_HOLD`]; its `cancel` answers disposition `<d>`
-/// (`f` = `cancel` answers FAULT).
+
 pub const PEND_HOLD_DISPOSED: &[u8] = b"pend:hold:";
-/// `tick` mode: the next `drive` hangs until `unhang:drive`.
+
 pub const DRIVE_HANGS: &[u8] = b"drivehangs";
-/// `tick` mode: READY once a hanging `drive` is inside its crossing, else REFUSED.
+
 pub const DRIVE_ENTERED: &[u8] = b"driveentered";
-/// `tick` mode: the next `close` frees the instance and still answers FAULT (a state whose
-/// teardown failed after its memory went: the host must treat the instance as closed).
+
 pub const CLOSE_FAULTS: &[u8] = b"closefaults";
-/// `tick` mode: return READY WITHOUT writing the mirror (a host that did not zero `out` would read
-/// its own garbage as the answer).
+
 pub const SILENT: &[u8] = b"silent";
-/// `tick` mode: FAILED with error text of `isize::MAX + 1` bytes behind a real pointer.
+
 pub const HUGE_TEXT: &[u8] = b"hugetext";
-/// `tick` mode: report the counters as gauges.
+
 pub const COUNT: &[u8] = b"count";
-/// `tick` mode: wake the driver ticket that follows (`arm:<slot>:<generation>`) three times.
+
 pub const ARM: &[u8] = b"arm:";
-/// `tick` mode: finish and wake every held op.
+
 pub const KICK: &[u8] = b"kick";
-/// `tick` mode: READY, with `OutHead.size` larger than the host's `out`.
+
 pub const OVERSIZE: &[u8] = b"oversize";
-/// `tick` mode: FAILED, with error text NULL but a length.
+
 pub const BAD_TEXT: &[u8] = b"badtext";
-/// `tick` mode: READY, with a metrics array NULL but a length.
+
 pub const BAD_ENVELOPE: &[u8] = b"badenv";
-/// `tick` mode: READY with `next_tick_ns` = [`KIND_REJECTS`] (the test kind's validator refuses it).
+
 pub const REJECTED: &[u8] = b"rejected";
-/// `tick` mode: REFUSED with `next_tick_ns` = [`KIND_REJECTS`] (the test kind's validator
-/// judges a REFUSED answer too).
+
 pub const REJECTED_REFUSED: &[u8] = b"rejectedrefused";
-/// `tick` mode: FAILED with `next_tick_ns` = [`SHORT`] (the test kind reads it as a short buffer).
+
 pub const SHORT_ANSWER: &[u8] = b"short";
-/// The `next_tick_ns` the test kind's `check` refuses.
+
 pub const KIND_REJECTS: u64 = 0xDEAD;
-/// The `next_tick_ns` the test kind's `short` reads as "needs a bigger buffer".
+
 pub const SHORT: u64 = 0x5807;
-/// `open` settings: READY, its envelope [`OPEN_FLAGS`]: the declared `m1.note` at warn, a log line
-/// at warn, the declared id at info, and an id the Statement does not declare at error.
+
 pub const FLAG_OPEN: &[u8] = b"flag:open";
-/// `tick` mode: READY, its envelope [`OP_FLAGS`]: the declared `m1.note` at error, the declared id
-/// at warn, a log line at error, and an id the Statement does not declare at error.
+
 pub const FLAG_OP: &[u8] = b"flag:op";
-/// `tick` mode: panic. `tick` has no guard, so the process aborts.
+
 pub const PANIC: &[u8] = b"panic";
-/// `tick`: hand the host's `wake` a context one tag bit off the one this crossing was handed (#74:
-/// the host refuses it and quarantines this instance), then answer READY.
+
 pub const FORGE: &[u8] = b"forge";
-/// `tick`, on a ticket: wake this ticket's slot at a generation the host never minted (#74: a
-/// forged ticket generation; the host quarantines this instance), then answer READY.
+
 pub const FORGE_TICKET: &[u8] = b"forgeticket";
 
-/// Family index of the `invocations` gauge.
 pub const GAUGE_INVOCATIONS: u32 = 2;
-/// Family index of the `early` gauge (resumes that found the op not ready).
+
 pub const GAUGE_EARLY: u32 = 3;
-/// Family index of the `cancels` gauge.
+
 pub const GAUGE_CANCELS: u32 = 4;
-/// Family index of the `drives` gauge.
+
 pub const GAUGE_DRIVES: u32 = 5;
 
 struct Shared<T>(T);
@@ -251,16 +221,12 @@ static DOOR: Shared<Door> = Shared(unsafe {
     })
 });
 
-/// THE DOOR: the `DoorFn` a compiled-in row holds.
 pub extern "C" fn door() -> &'static Door {
     &DOOR.0
 }
 
-// The one exported symbol, forwarding to the same door (the SDK's one export).
 busbar_contract::export_door!(door);
 
-// The #85 envelope `answer` hands back: two good metrics, three the host must drop (an index out of
-// range, a non-finite value, a kind the family does not have), one good diagnostic and one bad.
 static ANSWER_LABELS: Shared<[AbiStr; 1]> = Shared([s(b"answer")]);
 const fn metric(family_idx: u32, kind: u8, value: f64) -> MetricEntry {
     MetricEntry {
@@ -297,8 +263,6 @@ static DIAGS: Shared<[Diag; 2]> = Shared([
     },
 ]);
 
-/// The diagnostics an `open` handed [`FLAG_OPEN`] answers with: only the first is a declared one at
-/// warn or error.
 static OPEN_FLAGS: Shared<[Diag; 4]> = Shared([
     Diag {
         severity: 1,
@@ -324,8 +288,6 @@ static OPEN_FLAGS: Shared<[Diag; 4]> = Shared([
     },
 ]);
 
-/// The diagnostics a `tick` handed [`FLAG_OP`] answers with: only the first is a declared one at
-/// error.
 static OP_FLAGS: Shared<[Diag; 4]> = Shared([
     Diag {
         severity: 2,
@@ -351,7 +313,6 @@ static OP_FLAGS: Shared<[Diag; 4]> = Shared([
     },
 ]);
 
-/// The keys [`UNHANG`] released; per image, so the linked and the dropped build each have one.
 static UNHUNG: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
 
 #[derive(Clone, Copy)]
@@ -375,7 +336,6 @@ struct TicketState {
     ready: Arc<AtomicBool>,
 }
 
-/// The gauges one reply carries; boxed so their address holds until the next op on the ticket.
 struct Gauges(Box<[MetricEntry]>);
 // SAFETY: gauge entries carry no label pointers; the box is plain owned data.
 unsafe impl Send for Gauges {}
@@ -405,11 +365,11 @@ struct Inst {
     invocations: AtomicU32,
     cancels: AtomicU32,
     drives: AtomicU32,
-    /// [`DRIVE_HANGS`]: the next `drive` hangs until `unhang:drive`.
+
     drive_hangs: AtomicBool,
-    /// A hanging `drive` is inside its crossing.
+
     drive_entered: AtomicBool,
-    /// [`CLOSE_FAULTS`]: `close` frees the instance and answers FAULT.
+
     close_faults: AtomicBool,
 }
 
@@ -482,7 +442,7 @@ extern "C" fn validate(_: *mut c_void, input: *const c_void, out: *mut c_void) -
 extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> RawOutcome {
     unsafe {
         let open_in = &*input.cast::<OpenIn>();
-        // Settings `hang:open`: `open` does not return until `unhang:open`.
+
         let st = open_in.settings;
         if !st.ptr.is_null() && std::slice::from_raw_parts(st.ptr, st.len) == b"hang:open" {
             hang_until(b"open");
@@ -493,7 +453,7 @@ extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> Ra
         if ((*out.cast::<OutHead>()).size as usize) < std::mem::size_of::<OpenOut>() {
             return say(out, Outcome::Refused);
         }
-        // Settings `overlong:open`: FAILED, stating a reason longer than the buffer the host lent.
+
         if !st.ptr.is_null() && std::slice::from_raw_parts(st.ptr, st.len) == b"overlong:open" {
             (*out.cast::<OpenOut>()).err_len = open_in.err_cap + 1;
             return say(out, Outcome::Failed);
@@ -536,7 +496,6 @@ extern "C" fn drive(instance: *mut c_void, _: *const c_void, out: *mut c_void) -
     }
 }
 
-/// Block until `unhang:<key>` released `key`.
 fn hang_until(key: &[u8]) {
     while !UNHUNG.lock().unwrap().iter().any(|k| k == key) {
         std::thread::sleep(Duration::from_millis(5));
@@ -583,7 +542,6 @@ fn later(w: Waker, t: Ticket, ready: Arc<AtomicBool>, ms: u64) {
     });
 }
 
-/// `arm:<slot>:<generation>` → the driver ticket.
 fn driver_of(rest: &[u8]) -> Option<Ticket> {
     let text = std::str::from_utf8(rest).ok()?;
     let (slot, generation) = text.split_once(':')?;
@@ -593,8 +551,6 @@ fn driver_of(rest: &[u8]) -> Option<Ticket> {
     })
 }
 
-/// THE TEST OPS, multiplexed on `tick` by the `in`'s extensions blob. A panic here escapes
-/// `extern "C"` and aborts the process.
 extern "C" fn tick(instance: *mut c_void, input: *const c_void, out: *mut c_void) -> RawOutcome {
     // SAFETY: the host's `TickIn`/`TickOut`, leading with their heads; the blob is host-owned.
     unsafe {
@@ -767,7 +723,6 @@ unsafe fn answer(me: &Inst, arg: &[u8], out: *mut c_void) -> RawOutcome {
     o
 }
 
-/// Wake `driver` three times, each once the previous drive ran.
 fn arm(me: Arc<Inst>, ctx: HostCtx, driver: Ticket) {
     let w = Waker { wake: me.wake, ctx };
     std::thread::spawn(move || {
@@ -815,10 +770,6 @@ unsafe fn pend(me: &Inst, tin: &TickIn, mode: &[u8], out: *mut c_void) -> RawOut
                 later(w, t, ready, 60);
             }
             PEND_STALE => {
-                // Two tickets this plugin was handed before, each recycled since: late wakes for
-                // generations the host really minted (H2), never a generation it did not (#74: a
-                // ticket generation is a keyed permutation of the slot's counter, so a guessed one
-                // is a forgery and quarantines the instance).
                 let stale: Vec<Ticket> = st
                     .handed
                     .iter()

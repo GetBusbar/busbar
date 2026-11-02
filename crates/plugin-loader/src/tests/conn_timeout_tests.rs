@@ -175,7 +175,7 @@ fn framed_end_preserves_independent_dial_request_and_reply_bounds() {
             state(&p).streams().get(&stream).unwrap().reply_timeout_ms,
             700
         );
-        // Replay of the end does not open again or start a second dial.
+
         assert!(ready(&request(
             &p,
             4,

@@ -1,30 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **THE `adjust` VERB'S EFFECT** (MONEY-DESIGN §4, "Amendments become counts"): a root correction
-//! to a key's COUNTS, as a SIGNED DELTA on the one ledger — the usage rows every money view prices.
-//!
-//! There is no amendment journal and no read-time correction any more: two nodes reading the same
-//! counts report the same money (MONEY-REVIEW review 5, B9). The correction:
-//!
-//! - names the KEY, the LANE (model) the counts were earned on, the card ENTRY they were priced
-//!   with (its history position, as `GET /api/v1/admin/usage` names it in `rate_card_version`),
-//!   and the unit's CARD EPOCH (`card_epoch_ms`, its arrival instant);
-//! - names the POOL the unit was dispatched through (owner ruling Q64/Q67), so it lands on every
-//!   bucket an accrual of the unit landed on: the key's own and each group bucket that pool
-//!   participates in;
-//! - LANDS WHERE ITS UNIT WAS LEDGERED (Q128 arch u32 #18): in each bucket's window holding the
-//!   epoch, in the segment of the card entry in force then, on the metering day holding it — never
-//!   the window, card or day current when the correction is made. Money is the counts x the card in
-//!   effect at the ledgered unit's time;
-//! - is applied to the counts in RAM at once, all or nothing, and reaches the store as a signed
-//!   `add_usage` delta through today's write-behind path (the poster replaces it, PR-B2);
-//! - FAILS CLOSED: it is REFUSED, with the reason, when no card entry covers its epoch, when the
-//!   entry it names is not the one in force then, when its epoch's window holds none of the counts
-//!   it moves down, or when it would take any count of its segment below zero: nothing is applied.
-//!
-//! The admin unit's own audit record is the trail: who asked, and that it applied or was refused.
-
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -59,21 +35,14 @@ pub enum Refused {
     Ledger(AdjustRefused),
 }
 
-/// WHERE A CORRECTION LANDS: the node's live governance state. `Err` is a store that could not be
-/// read, in its own words, for the node's log only.
 pub type UsageAdjuster =
     Arc<dyn Fn(&Correction) -> Result<Result<(), Refused>, String> + Send + Sync>;
 
-/// The adjuster of a node no root bound a ledger to: every correction is a store failure.
 #[must_use]
 pub fn no_ledger() -> UsageAdjuster {
     Arc::new(|_| Err("no ledger is bound on this node".to_string()))
 }
 
-/// The adjuster over `app`'s live governance state and dated rate-card history: the entry's
-/// position resolves to the era its counts were dated with (its `effective_from`), and
-/// [`busbar_kernel::governance::GovState::adjust_usage`] applies the delta where the unit was
-/// ledgered: at its card epoch, never at the instant the correction is made.
 #[must_use]
 pub fn live_adjuster(app: Arc<busbar_kernel::state::AppHandle>) -> UsageAdjuster {
     Arc::new(move |c: &Correction| {
@@ -87,7 +56,7 @@ pub fn live_adjuster(app: Arc<busbar_kernel::state::AppHandle>) -> UsageAdjuster
                 Some(entry) => entry.effective_from(),
                 None => return Ok(Err(Refused::UnknownEntry)),
             },
-            // No dated history: every count is undated, era zero, priced by the one card.
+
             None if c.entry == busbar_kernel::cost::HistorySeq::OPENING.get() => 0,
             None => return Ok(Err(Refused::UnknownEntry)),
         };
@@ -106,20 +75,6 @@ pub fn live_adjuster(app: Arc<busbar_kernel::state::AppHandle>) -> UsageAdjuster
     })
 }
 
-/// The effect half of `adjust`: decode a COUNT correction and apply it to the one ledger.
-///
-/// The body is `{ "key": "<key id>", "lane": "<model>", "entry": <history position>,
-/// "card_epoch_ms": <unix ms>, "pool": "<pool name>", "delta": { "<class>": <signed whole count>,
-/// … }, "reason": "…" }`. Counts are whole numbers and never a money figure (owner ruling Q9).
-/// `scope` is the scope the caller was admitted under; the verbs unit admits `adjust` at `full`
-/// only, and it is checked again here.
-///
-/// Refusals are client-safe: a malformed body, a blank reason, a scope below `full`, an entry the
-/// history does not hold, a card epoch no entry covers or at which the named entry is not in force,
-/// a correction its epoch's window holds no counts for, or a delta that would take a count below
-/// zero is `400 invalid_request` naming the fault; a key that does not exist is `NotFound`. A
-/// missing `pool`, or one `pool_known` does not know, is `400` naming it (Q64/Q67). Nothing is
-/// applied on any refusal.
 pub(crate) fn adjust_effect(
     body: &[u8],
     scope: busbar_contract::authz::Scope,
@@ -205,8 +160,6 @@ pub(crate) fn adjust_effect(
     }
 }
 
-/// The `400 invalid_request` a refused correction gets, in the admin envelope, with a message that
-/// says what to fix.
 fn refused(message: &str) -> AdminAnswer {
     AdminAnswer {
         status: 400,

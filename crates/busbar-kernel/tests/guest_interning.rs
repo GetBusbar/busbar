@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Route literals are interned once: a second build of the same guest list (a reload with the same
-//! routes) adds nothing to the interner. This file holds one test so no other build in the process
-//! moves the table while it is counted.
-
 use busbar_contract::abi::transport::route::{
     FIELD_VALUE_PREFIX, METHOD_ANY, PATH_EXACT, PATH_PATTERN,
 };
@@ -37,7 +33,6 @@ fn lines() -> Vec<Line> {
     ]
 }
 
-/// RED without the kernel's one interner: a second build of the same list grows its table by zero.
 #[test]
 fn a_second_build_of_the_same_guest_list_interns_nothing_new() {
     GuestList::seal(lines()).unwrap();

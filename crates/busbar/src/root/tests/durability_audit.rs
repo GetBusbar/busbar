@@ -1,13 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The fixed audit chain across a restart: the head read and the anchors answer as they did before.
-
 use super::*;
 use crate::root::store_double::RecordSlots;
 use busbar_kernel_audit::expose;
 
-/// A directory nobody else writes to, removed when the test ends.
 pub(crate) struct Scratch(pub(crate) std::path::PathBuf);
 
 impl Scratch {
@@ -29,7 +26,6 @@ impl Drop for Scratch {
     }
 }
 
-/// A book over the Store as node 7, supplied a legacy directory.
 pub(super) fn open(dir: &std::path::Path, slots: &RecordSlots) -> Durability {
     let lane = JournalLane::start(slots.calls(), "test-store").unwrap();
     build_on_store(
@@ -43,7 +39,6 @@ pub(super) fn open(dir: &std::path::Path, slots: &RecordSlots) -> Durability {
     .expect("the Store reads back")
 }
 
-/// A unit's facts for the audit step, an hour apart per unit so each one is its own head sample.
 pub(crate) fn inputs(unit: u64) -> AuditInputs {
     use busbar_contract::caps::{OriginKind, Outcome, UnitKey};
     use busbar_kernel_audit::{
@@ -62,7 +57,7 @@ pub(crate) fn inputs(unit: u64) -> AuditInputs {
         },
         wall: 1_700_000_000 + unit * 3_600,
         mono: unit,
-        origin: busbar_kernel::test_support::tokens::origin(OriginKind::Client),
+        origin: busbar_kernel_testkit::test_support::tokens::origin(OriginKind::Client),
         outcome: OutcomeFacts {
             unit_end: Outcome::Completed,
             step: None,
@@ -83,17 +78,16 @@ pub(crate) fn inputs(unit: u64) -> AuditInputs {
     }
 }
 
-/// Seal `n` units onto `book`'s chain, returning what was sealed.
 pub(super) fn seal(
     book: &mut Durability,
     units: std::ops::RangeInclusive<u64>,
 ) -> Vec<AuditRecord> {
-    let token = busbar_kernel::test_support::tokens::grant::<DurableWrite>();
+    let token = busbar_kernel_testkit::test_support::tokens::grant::<DurableWrite>();
     units
         .map(|unit| {
             book.seal_unit(
                 inputs(unit),
-                busbar_kernel::test_support::tokens::pass(),
+                busbar_kernel_testkit::test_support::tokens::pass(),
                 &token,
             )
             .expect("the record goes on the journal")
@@ -119,15 +113,15 @@ fn an_undecodable_audit_record_refuses_the_chain_window_without_reclassifying_th
     });
     book.seal_unit(
         next,
-        busbar_kernel::test_support::tokens::pass(),
-        &busbar_kernel::test_support::tokens::grant::<DurableWrite>(),
+        busbar_kernel_testkit::test_support::tokens::pass(),
+        &busbar_kernel_testkit::test_support::tokens::grant::<DurableWrite>(),
     )
     .expect("the complete record is journalled");
     assert!(
         book.chain().expect("read chain").is_ok(),
         "the journal still verifies"
     );
-    let captured = busbar_kernel::test_support::warn_capture::WarnCapture::default();
+    let captured = busbar_kernel_testkit::test_support::warn_capture::WarnCapture::default();
     let window = tracing::subscriber::with_default(
         tracing_subscriber::registry().with(captured.clone()),
         || book.chain_at().audit_window(1, 2),
@@ -140,12 +134,6 @@ fn an_undecodable_audit_record_refuses_the_chain_window_without_reclassifying_th
     assert!(!captured.contains("unregistered-window-class"));
 }
 
-/// AFTER A RESTART THE HEAD READ ANSWERS WITH THE CHAIN'S TIP, and every anchor survives.
-///
-/// The restarted book continues the chain at position four. Its head read used to answer
-/// `"head":null` beside `"next_seq":4` — "this chain has no records" while it holds three — and the
-/// range read's `anchor` was null for every window sealed before the restart, because the chain
-/// was resumed from its tail and its head history started empty.
 #[test]
 fn after_a_restart_the_head_read_answers_with_the_tip_and_the_anchors_survive() {
     let slots = RecordSlots::new();

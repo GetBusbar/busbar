@@ -1,5 +1,3 @@
-//! Actual admin PUT keeps route-bearing hook policy and HTTP calls on one candidate instance.
-
 use busbar_contract::abi::mechanism::{
     endpoint::{EndpointRequest, EndpointResponse},
     route::{Route, RouteAuth, RouteMethod},
@@ -219,17 +217,17 @@ async fn policy_observation(app: &busbar_kernel::state::App) -> String {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn timeout_only_admin_put_refreshes_both_hook_doors_and_policy_atomically() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let axis = Arc::new(Axis::default());
     let rules = Arc::new(Rules::default());
     let env = HookEnv::with_axis(
-        busbar_kernel::test_support::rows::empty(),
+        busbar_kernel_testkit::test_support::rows::empty(),
         axis.clone(),
         Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only()),
     );
     let gov = Arc::new(
         busbar_kernel::governance::GovState::new(
-            Arc::new(busbar_kernel::governance::MemoryStore::new()),
+            Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new()),
             Some("admintok".into()),
         )
         .unwrap(),
@@ -244,9 +242,11 @@ async fn timeout_only_admin_put_refreshes_both_hook_doors_and_policy_atomically(
     app.hook_registry
         .insert("receiver".into(), definition.clone());
     app.global_hooks = vec!["receiver".into()];
-    let mut declarations =
-        busbar_kernel::test_support::hook_route_declarations(&mut app.hook_env, &app.hook_registry)
-            .unwrap();
+    let mut declarations = busbar_kernel_testkit::test_support::hook_route_declarations(
+        &mut app.hook_env,
+        &app.hook_registry,
+    )
+    .unwrap();
     declarations.push(RouteDecl {
         owner: "retained-export".into(),
         source_instance: "sink-instance".into(),

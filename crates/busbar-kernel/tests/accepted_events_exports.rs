@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The public audit emitter reaches the real export projection/admission path only after its
-//! durable write lands. This binary owns its process-wide axis and audit registration.
-
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
@@ -21,8 +18,9 @@ use busbar_kernel::audit::auditlog::{
 };
 use busbar_kernel::audit_ring::OUTCOME_APPLIED;
 use busbar_kernel::config::{resolve_export, ExportDefCfg, ExportDefs};
-use busbar_kernel::governance::{GovState, MemoryStore};
+use busbar_kernel::governance::GovState;
 use busbar_kernel::preflight::{publish_root_rows, RootInstall};
+use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 use serde_json::Value;
 
 const MODULE: &str = "accepted-events-fixture";
@@ -95,7 +93,9 @@ impl RecordStore for Durable {
                 row.kind == kind
                     && match selector {
                         PlaneSelector::All => true,
-                        PlaneSelector::Parent(parent) => row.parent.as_deref() == Some(parent.as_ref()),
+                        PlaneSelector::Parent(parent) => {
+                            row.parent.as_deref() == Some(parent.as_ref())
+                        }
                     }
             })
             .cloned()
@@ -170,8 +170,7 @@ impl ExportCalls for Sink {
             let (done, release) = self.failure.lock().unwrap().take().unwrap();
             *self.worker.lock().unwrap() = Some(std::thread::spawn(move || {
                 release.recv_timeout(CONTROL_TIMEOUT).unwrap();
-                // This is the host observer's public refusal entry, reached later from an export
-                // worker's error envelope. It must remain durable without another delivery.
+
                 record_plugin_refusal(
                     PluginRefusal::Op,
                     Kind::Export.root(),
@@ -261,7 +260,7 @@ fn accepted_events_project_once_and_async_export_failures_do_not_feed_back() {
     assert!(errors.is_empty(), "{errors:?}");
     busbar_kernel::export::plugin::open(&config).unwrap();
     let store = Arc::new(Durable::default());
-    let app = busbar_kernel::test_support::TestApp::new()
+    let app = busbar_kernel_testkit::test_support::TestApp::new()
         .governance(Arc::new(GovState::new(store.clone(), None).unwrap()))
         .build();
     busbar_kernel::boot::hydrate_all(&app).unwrap();
@@ -337,7 +336,6 @@ fn accepted_events_project_once_and_async_export_failures_do_not_feed_back() {
     );
     assert!(axis.full.matching(&failure_resource).is_empty());
 
-    // Identical ordinary text has no trusted export-failure origin and must still be delivered.
     emit_admin_hostless_now(
         PluginRefusal::Op.action(),
         &failure_resource,

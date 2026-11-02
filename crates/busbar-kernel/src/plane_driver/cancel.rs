@@ -1,23 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! CANCEL, AND THE SEAM THE MONEY STEPS PLUG INTO (`BUSBAR-1.6.0.md` Part 3, §12 "Cancel";
-//! `BUSBAR-1.6.0.md` THE DESIGN, §7).
-//!
-//! The driver keeps its own facts about a unit: whether the far end answered, whether the reply
-//! streamed to the caller, and the last cumulative units the plane reported. A cancelled unit's
-//! bill is computed from those facts and the plane's `cancel` disposition by the four 1.5.5 rules
-//! ([`cancel_bills_reported_units`]); a FAULT or absent disposition bills as [`CANCEL_FAILED`].
-//! The driver computes the bill and hands it to the [`MoneySeam`]; it posts nothing itself. The
-//! budget hold is released on the money steps' own path, never folded into the bill.
-//!
-//! A unit whose caller went away is BURIED, because nothing may cross the dispatcher inside a
-//! `Drop`: an op still in flight goes to the dispatcher's client-drop path (a message, which makes
-//! the cancel crossing on the op's worker) and waits here until it settles; a unit with no op in
-//! flight waits here for its ticketless `cancel`. The host buffers are not kept here: the op lent
-//! them, so the dispatcher holds them until the crossing returns. [`super::PlaneDriver::sweep`]
-//! finishes both, outside any `Drop`.
-
 use busbar_contract::abi::mechanism::call::Outcome as AbiOutcome;
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
@@ -39,58 +22,30 @@ pub enum Checkpoint {
     Cut,
 }
 
-/// THE MONEY SEAM: where the kernel's money steps (the hold at admit, checkpoints, the cut, the
-/// cancel bill and the separate refund) plug into the driver. The driver moves no money: it reports
-/// units, cancel bills and abandoned ends here, and nothing else.
 pub trait MoneySeam: Send + Sync {
-    /// Every READY answer's cumulative units, as the plane reported them (estimated and reported
-    /// alike; only a source [`units_bill`](busbar_contract::abi::plane::units_bill) passes ever
-    /// bills). Feeds the budget check and the checkpoint cadence.
     fn checkpoint(&self, ctx: &UnitCtx, units: &[UnitCount]) -> Checkpoint;
 
-    /// A cancelled unit's bill, by the four 1.5.5 cancel rules.
     fn cancelled(&self, ctx: &UnitCtx, bill: &CancelBill);
 
-    /// The unit's route step ended without a cancel (complete, failed or exhausted): no cancel bill
-    /// will follow for it, so its last reported counts are its bill.
     fn finished(&self, ctx: &UnitCtx) {
         let _ = ctx;
     }
 
-    /// The member whose attempt answered the unit, once it commits (failover happens only before
-    /// the first byte, so this is final): its member name and its provider. The money steps
-    /// ledger and meter the unit under it, as 1.5.5's `ledger_and_meter` did under the serving
-    /// lane. The driver calls it once per unit, before any piece of that answer is relayed.
     fn served(&self, ctx: &UnitCtx, member: &str, provider: &str) {
         let _ = (ctx, member, provider);
     }
 
-    /// THE UNIT'S LEDGER LANE, as the plane's answer named it (`OnPieceOut::lane`): the billing
-    /// identity its units are priced, ledgered and metered under, which is not the route entry the
-    /// walk picked. The money steps qualify it with the plane's own key, and it holds over the
-    /// serving member for the rest of the unit; the last one named wins. A unit whose answers name
-    /// none is laned by its route entry, as before.
-    ///
-    /// [`OnPieceOut::lane`]: busbar_contract::abi::plane::OnPieceOut::lane
     fn laned(&self, ctx: &UnitCtx, lane: &str) {
         let _ = (ctx, lane);
     }
 
-    /// The end of a unit whose caller went away, as the loop's guard reached it: posted by the
-    /// money steps exactly as a returned end is. Runs inside a `Drop`: it must not panic, await or
-    /// cross a plugin.
     fn abandoned(&self, ctx: &UnitCtx, ended: Ended);
 
-    /// A duplex session opens under its unit's one admission (THE DESIGN §7: the kernel's session
-    /// account, one sealed line at the end). REFUSES by default: session money is K6-4's, and until
-    /// a money seam states it no session runs unbilled.
     fn session_opened(&self, ctx: &UnitCtx) -> Result<(), ReasonCode> {
         let _ = ctx;
         Err(ReasonCode::Unpriced)
     }
 
-    /// The session's one cleanup ran: it is over. Runs inside a `Drop`: it must not panic, await
-    /// or cross a plugin.
     fn session_ended(&self, ctx: &UnitCtx) {
         let _ = ctx;
     }
@@ -148,8 +103,7 @@ impl CancelBill {
             Some(d @ (CANCEL_OK_PARTIAL | CANCEL_FAILED | CANCEL_ABORTED)) => d,
             _ => CANCEL_FAILED,
         };
-        // Rules 1-3: a translate-abort and a failure bill nothing, a partial bills only when it
-        // streamed, and the plane's partial counts only if the far end did answer.
+
         let bills =
             facts.far_end_answered && cancel_bills_reported_units(disposition, facts.streamed);
         let billed = super::money::reported(if bills { &facts.units[..] } else { &[] });
@@ -163,12 +117,10 @@ impl CancelBill {
     }
 }
 
-/// A queued worker control reply. Enqueueing happens before this future is first polled.
 pub(crate) type CancelFuture = std::pin::Pin<
     Box<dyn std::future::Future<Output = Option<busbar_contract::plane_calls::Cancelled>> + Send>,
 >;
 
-/// A sweep observes progress without parking a caller or holding a driver table lock.
 pub(crate) fn poll_cancel(
     future: &mut CancelFuture,
 ) -> std::task::Poll<Option<busbar_contract::plane_calls::Cancelled>> {
@@ -177,34 +129,26 @@ pub(crate) fn poll_cancel(
         .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
 }
 
-/// A unit whose caller went away, waiting for its cancel to finish.
 pub(crate) struct Buried {
     pub(crate) ctx: UnitCtx,
     pub(crate) ticket: Ticket,
     pub(crate) facts: Facts,
-    /// The op that was in flight.
+
     pub(crate) flight: Option<Box<dyn PieceInFlight>>,
     pub(crate) closing: Option<CancelFuture>,
     pub(crate) billed: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub(crate) started: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    /// The principal the kernel verified for the unit: its cancel row is written under it.
+
     pub(crate) principal: Option<busbar_contract::caps::PrincipalId>,
-    /// The unit is closed already (a done answer, or a cancel that crossed before the drop): the
-    /// sweep bills it and makes no second closing call.
+
     pub(crate) closed: bool,
-    /// The flags of the piece its op in flight was pushed: a refused piece's done answer is not
-    /// the unit's close.
+
     pub(crate) piece_flags: u32,
-    /// That op's answer was marked `PIECE_FINAL` on its first piece (`route::closes_unit`).
+
     pub(crate) final_answer: bool,
 }
 
 impl PlaneDriver {
-    /// Finish every buried unit that can be finished: an in-flight op that has settled, and a unit
-    /// with no op in flight, whose worker cancellation is enqueued and polled here. Each is billed through the
-    /// money seam and its ticket recycled. Then every close a unit dropped open is owed
-    /// (`plane_driver/close.rs`). Called at the start of every unit (its decode, and its route
-    /// leg); never inside a `Drop`, and never under a lock (the plane is called with none held).
     pub fn sweep(&self) {
         let buried = std::mem::take(&mut *self.lock_buried());
         let mut unsettled = Vec::new();
@@ -272,7 +216,7 @@ impl PlaneDriver {
                     }
                 }
             };
-            // THE CANCELLED UNIT'S ROW (SEAM-L(r)): what its `cancel` wrote.
+
             if let Some((_, writes)) = &cancelled {
                 self.fold_writes(writes, unit.principal.as_ref());
             }
@@ -284,11 +228,10 @@ impl PlaneDriver {
             self.calls.recycle(unit.ticket);
         }
         self.lock_buried().extend(unsettled);
-        // The units dropped while their plane still held them: their owed close.
+
         self.close_owed();
     }
 
-    /// How many buried units are still waiting (a witness for the tests and the tick).
     pub fn buried(&self) -> usize {
         self.lock_buried().len()
     }

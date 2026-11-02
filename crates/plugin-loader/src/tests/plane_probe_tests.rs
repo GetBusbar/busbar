@@ -1,20 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The plane kind's host side under THE DESIGN §11.13 M1: a generation snapshot whose strings or
-//! blobs state a length over the hard byte maximum is refused before any slice is formed over them,
-//! and a door's facing binds, opens and refreshes its probe with the probes' lock let go.
-
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::*;
 
-/// RED (THE DESIGN §11.13 M1, "Every slice built from a plugin-reported length is capped and
-/// validated before it is formed"; audit PL1 #1): a READY snapshot's `audience`, `openapi` or
-/// `resource_facts` stated over the hard byte maximum (`u32::MAX`) refuses the snapshot before any
-/// slice is formed or copied. Run in a child: a copy past the plugin's eight bytes kills the process.
 #[test]
 fn red_a_snapshot_length_over_the_byte_cap_is_refused_before_any_copy() {
     crate::dispatch_tests::assert_child_passes(
@@ -24,7 +16,6 @@ fn red_a_snapshot_length_over_the_byte_cap_is_refused_before_any_copy() {
     );
 }
 
-/// The child half of the test above, in a process of its own.
 fn oversize_snapshot_lengths_child() {
     use busbar_contract::abi::plane::PlaneSnapshot;
     let b = [b'a'; 8];
@@ -107,10 +98,6 @@ impl Gate {
     }
 }
 
-/// RED (THE DESIGN §11.13 M1, "No plugin code (`dlclose` included) runs under a host lock"; audit
-/// PL1 #3): a door's facing for one public URL binds its probe (the door's load) and opens it. The
-/// probe door double here parks in that bind: while it is parked, the facing for another URL is
-/// answered, because the probes' lock is not held across the probe's plugin code.
 #[test]
 fn red_a_probe_is_bound_and_opened_with_the_probes_lock_let_go() {
     let gate = Arc::new(Gate::default());
@@ -132,7 +119,7 @@ fn red_a_probe_is_bound_and_opened_with_the_probes_lock_let_go() {
             let _ = tx.send(other(b"", b"", Some("https://two.example"), &[]).is_ok());
         });
         let second = rx.recv_timeout(Duration::from_secs(5));
-        // Released whatever happened, so the scope's join never waits on the parked bind.
+
         gate.released.store(true, Ordering::SeqCst);
         let _ = one.join();
         (parked, second)
@@ -145,15 +132,6 @@ fn red_a_probe_is_bound_and_opened_with_the_probes_lock_let_go() {
     );
 }
 
-/// LAW 7 FOR A PLANE'S REGISTRY ROW (`BUSBAR-1.6.0.md` l.1908-1910: "Core loads a plugin **iff** its
-/// configuration section is present. No verb configured → that plugin is never loaded."; ARCHITECT
-/// ruling 2026-10-20: reading a row's static declaration, its kind tail included, is reading, not
-/// loading).
-///
-/// RED before a linked door's registry row was read off its `'static` Statement: the row's facts
-/// were read off a probe instance bound at registration, so every discovered plane was bound at boot
-/// whatever the document wrote. Now the row binds nothing; the first judge of its section binds the
-/// one probe that answers it.
 #[test]
 fn a_linked_plane_registry_row_binds_no_probe_until_its_section_is_judged() {
     use std::sync::atomic::AtomicUsize;

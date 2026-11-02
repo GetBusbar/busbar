@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE REGISTRY AS THE KERNEL READS IT: [`PluginRegistry`] answers the contract's
-//! [`PluginRows`], so the composition root hands the kernel its registry without the kernel naming
-//! this crate (`BUSBAR-1.6.0.md` THE DESIGN, "One dispatcher"). The root's per-kind axes get their
-//! registry back through [`registry_of`] / [`registry_arc`].
-
 use std::any::Any;
 use std::sync::Arc;
 
@@ -15,7 +10,6 @@ use crate::registry::{LoadablePlugin, SkippedPlugin};
 use crate::sign::Verdict;
 use crate::PluginRegistry;
 
-/// A row as the kernel reads it.
 fn row(p: &LoadablePlugin) -> Row {
     let m = &p.manifest;
     Row {
@@ -47,7 +41,6 @@ fn row(p: &LoadablePlugin) -> Row {
     }
 }
 
-/// A skipped plugin as the kernel reads it.
 fn skipped(s: &SkippedPlugin) -> Skipped {
     Skipped {
         file: s.file.clone(),
@@ -125,13 +118,11 @@ impl PluginRows for PluginRegistry {
     }
 }
 
-/// The registry behind `rows`, when this crate built it (every build's rows are).
 #[must_use]
 pub fn registry_of(rows: &dyn PluginRows) -> Option<&PluginRegistry> {
     rows.as_any().downcast_ref::<PluginRegistry>()
 }
 
-/// [`registry_of`], owned.
 #[must_use]
 pub fn registry_arc(rows: Arc<dyn PluginRows>) -> Option<Arc<PluginRegistry>> {
     rows.into_any().downcast::<PluginRegistry>().ok()

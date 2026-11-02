@@ -1,27 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE PLANES' BLACK-BOX CASES, RUN AGAINST THE REAL BINARY (`blackbox/1`; coordinator ruling, Law 0
-//! root lane). A plane door crate states a directory of case files beside its root cells, under the
-//! same `links` name (`cargo::metadata=blackbox=<dir>`); the root's `build.rs` resolves it the same
-//! way for a path dependency and a pinned one (`DOOR_BLACKBOX`). This one test iterates every linked
-//! door's directory and runs each case: it writes the case's files, starts the far ends the case
-//! states, boots `CARGO_BIN_EXE_busbar`, drives it (`--validate`, a boot, a line-served session, an
-//! HTTP call, the admin API) and holds every answer to the case.
-//!
-//! Every word a case is about — its config section, its methods, its dialect, its digest, its
-//! refusal text — is the plane's DATA, written by the plane in its own crate. This source names no
-//! plane, no dialect and no instance; it knows JSON, HTTP/1.1, JSON-RPC 2.0 framing, the binary's
-//! own flags and the shared rigs (`common::{boot, credentials, lines, upstream}`).
-//!
-//! The schema is `blackbox/1` (fields below, at [`Case::parse`] and [`Step::parse`]); an unknown
-//! field, step or placeholder is refused, naming the plane crate and the case file. A case whose
-//! `requires` this build lacks is not applicable to it and is counted as such; a directory whose
-//! every case is not applicable, or that holds no case, fails.
-//!
-//! A case that cites a 1.5.5 golden cell (`oracle`) is held to the cell's recorded bytes before it
-//! runs: its stated status and every body or line it states must be the cell's ([`held_to_cell`]).
-
 mod common;
 
 use std::collections::BTreeMap;
@@ -33,16 +12,11 @@ use serde_json::{json, Value};
 
 use common::upstream::{Answer, Responder};
 
-// `DOOR_BLACKBOX`: every linked door's crate and the case directory it states.
 include!(concat!(env!("OUT_DIR"), "/door_cells_files.rs"));
 
-/// The schema every case file states.
 const SCHEMA: &str = "blackbox/1";
 
-/// The 1.5.5 golden ledger an `oracle` citation names a cell of.
 const ORACLE_LEDGER: &str = include_str!("../../../testing/shadow-oracle/golden/1.5.5/ledger.tsv");
-
-// ── the case, read ──────────────────────────────────────────────────────────────────────────────
 
 /// One case file, read.
 #[derive(Debug, Clone)]
@@ -91,7 +65,6 @@ enum Step {
     UpstreamCounts(Value),
 }
 
-/// `value`'s object, every key one of `known`.
 fn object<'a>(
     value: &'a Value,
     what: &str,
@@ -136,8 +109,6 @@ fn string_map(value: Option<&Value>, what: &str) -> Result<BTreeMap<String, Stri
     }
 }
 
-/// A scripted method's answer, read: `{"result": <json>}` or `{"echo": {"from", "into", "base"?,
-/// "format"?}}`.
 fn answer(value: &Value, what: &str) -> Result<Answer, String> {
     let map = object(value, what, &["result", "echo"])?;
     match (map.get("result"), map.get("echo")) {
@@ -167,8 +138,6 @@ fn answer(value: &Value, what: &str) -> Result<Answer, String> {
 }
 
 impl Step {
-    /// One step, read: an object with exactly one key, the step's kind, whose fields are held to
-    /// the kind's own list.
     fn parse(value: &Value, at: usize) -> Result<Self, String> {
         let map = value
             .as_object()
@@ -275,7 +244,6 @@ impl Step {
     }
 }
 
-/// One line-session script item, checked: `send`, `recv`, `repeat`, `eof` or `signal`.
 fn script_item(value: &Value, what: &str) -> Result<(), String> {
     let map = value
         .as_object()
@@ -323,8 +291,6 @@ fn script_item(value: &Value, what: &str) -> Result<(), String> {
 }
 
 impl Case {
-    /// A case file, read: `{"schema": "blackbox/1", "case", "oracle"?, "requires"?, "files"?,
-    /// "vars"?, "unset"?, "credentials"?, "upstream"?, "steps"}`.
     fn parse(text: &str) -> Result<Self, String> {
         let doc: Value = serde_json::from_str(text).map_err(|e| format!("not JSON: {e}"))?;
         let map = object(
@@ -461,7 +427,6 @@ impl Case {
         })
     }
 
-    /// Why this build does not apply to the case, or `None` when it does.
     fn not_applicable(&self) -> Option<String> {
         let have = |list: &str, word: &str| list.split_whitespace().any(|w| w == word);
         let sections = env!("BUSBAR_LINKED_SECTIONS");
@@ -495,8 +460,6 @@ impl Case {
     }
 }
 
-/// Whether this build links `axis`, named as the manifest's `linked-axes` rows name it
-/// (`body-ingress`); `BUSBAR_LINKED_AXES` states each as its cfg (`linked_axis_body_ingress`).
 fn axis_linked(axis: &str) -> bool {
     let cfg = format!("linked_axis_{}", axis.replace('-', "_"));
     env!("BUSBAR_LINKED_AXES")
@@ -504,8 +467,6 @@ fn axis_linked(axis: &str) -> bool {
         .any(|w| w == cfg)
 }
 
-/// A JSON-RPC reply answers the request it was sent for: a request (a `method` with an `id`) is
-/// answered under its own `id`. A notification, or a reply that is no JSON-RPC response, holds.
 fn reply_id_held(request: &Value, reply: &Value) -> Result<(), String> {
     let (Some(id), Some(_)) = (request.get("id"), request.get("method")) else {
         return Ok(());
@@ -522,8 +483,6 @@ fn reply_id_held(request: &Value, reply: &Value) -> Result<(), String> {
     }
 }
 
-/// Every JSON-RPC response in an HTTP answer: the body as one message, or each `data:` line of an
-/// event stream.
 fn responses_in(text: &str) -> Vec<Value> {
     if let Ok(one) = serde_json::from_str::<Value>(text) {
         return vec![one];
@@ -534,9 +493,6 @@ fn responses_in(text: &str) -> Vec<Value> {
         .collect()
 }
 
-// ── the cited 1.5.5 cell, held ──────────────────────────────────────────────────────────────────
-
-/// The 1.5.5 golden cell `id` as it was recorded: `{status, body: {text}|{json}, effects: {stderr?}}`.
 fn golden_cell(id: &str) -> Result<Value, String> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../testing/shadow-oracle/golden/1.5.5/cells")
@@ -546,16 +502,8 @@ fn golden_cell(id: &str) -> Result<Value, String> {
     serde_json::from_str(&text).map_err(|e| format!("the cell does not read ({e})"))
 }
 
-/// A step's `(key, text)` pairs: what its output must contain, must lack, or its lines.
 type Pairs<'a> = Vec<(&'a str, &'a str)>;
 
-/// A CITED CELL IS COMPARED, NOT ONLY NAMED: the case's last step that states a status (`exit`, or
-/// an answered `status`, or a `session` that expects a refusal) is held to the cell — its status to
-/// the cell's `status`, and every body or line it states to the cell's recorded body (`body.text`,
-/// or `body.json`) and stderr (`effects.stderr`). A line stated `_line_eq` must be a whole line of
-/// the record; a `_contains` must be in it; a `_lacks` must not; an admin `json_eq` pointer must
-/// hold the recorded value. A citation whose step states a status and no byte is refused: there is
-/// nothing of 1.5.5's to hold.
 fn held_to_cell(case: &Case, cell: &Value) -> Result<(), String> {
     let recorded = cell
         .get("status")
@@ -686,7 +634,6 @@ fn held_to_cell(case: &Case, cell: &Value) -> Result<(), String> {
     Ok(())
 }
 
-/// The case's cited cell compared, its failure naming the plane crate, the case and the cell.
 fn oracle_held(krate: &str, case: &Case) -> Result<(), String> {
     let Some(id) = &case.oracle else {
         return Ok(());
@@ -701,9 +648,6 @@ fn oracle_held(krate: &str, case: &Case) -> Result<(), String> {
         })
 }
 
-// ── the run ─────────────────────────────────────────────────────────────────────────────────────
-
-/// One case's world: its directory, its ports, its far ends, its keys, its running node.
 struct World {
     dir: PathBuf,
     data_port: u16,
@@ -730,7 +674,6 @@ impl Drop for World {
     }
 }
 
-/// A fresh, isolated directory for one case.
 fn case_dir(tag: &str) -> PathBuf {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let safe: String = tag
@@ -748,7 +691,6 @@ fn case_dir(tag: &str) -> PathBuf {
 }
 
 impl World {
-    /// Every placeholder in `text` filled; an unknown placeholder is refused.
     fn fill(&self, text: &str) -> Result<String, String> {
         let mut out = String::new();
         let mut rest = text;
@@ -790,7 +732,6 @@ impl World {
                     } else if key.is_empty()
                         || key.contains(|c: char| c.is_whitespace() || c == '"' || c == ':')
                     {
-                        // Not a placeholder (a YAML flow map's brace): kept as written.
                         out.push('{');
                         rest = after;
                         continue;
@@ -809,7 +750,6 @@ impl World {
         Ok(out)
     }
 
-    /// Every string inside `value` filled.
     fn fill_json(&self, value: &Value) -> Result<Value, String> {
         Ok(match value {
             Value::String(s) => Value::String(self.fill(s)?),
@@ -828,7 +768,6 @@ impl World {
         })
     }
 
-    /// The binary, its config and providers in this case's directory, the case's environment set.
     fn command(&self, args: &[String]) -> Result<Command, String> {
         let mut cmd = Command::new(common::boot::exe());
         cmd.args(args)
@@ -869,7 +808,6 @@ fn secs(step: &Value, default: u64) -> Duration {
     )
 }
 
-/// `text` holds every `contains` and none of `lacks`.
 fn hold(text: &str, contains: &[String], lacks: &[String], what: &str) -> Result<(), String> {
     if let Some(missing) = contains.iter().find(|c| !text.contains(c.as_str())) {
         return Err(format!("{what} lacks `{missing}`:\n{text}"));
@@ -882,7 +820,6 @@ fn hold(text: &str, contains: &[String], lacks: &[String], what: &str) -> Result
     Ok(())
 }
 
-/// `code` is the step's `exit`: a number, or `"nonzero"`.
 fn exit_is(step: &Value, code: i32) -> Result<(), String> {
     match step.get("exit") {
         None => Ok(()),
@@ -898,7 +835,6 @@ fn exit_is(step: &Value, code: i32) -> Result<(), String> {
     }
 }
 
-/// Whether `port` on loopback accepts a connection.
 fn up(port: u16) -> bool {
     std::net::TcpStream::connect_timeout(
         &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
@@ -911,7 +847,6 @@ fn read_file(path: &Path) -> String {
     std::fs::read_to_string(path).unwrap_or_default()
 }
 
-/// One HTTP call: `(status, body)`.
 fn http(
     method: &str,
     url: &str,
@@ -953,7 +888,6 @@ fn http(
     })
 }
 
-/// The value at `pointer` of `doc` equals `want`.
 fn pointer_eq(doc: &Value, checks: Option<&Value>, what: &str) -> Result<(), String> {
     for (pointer, want) in checks.and_then(Value::as_object).into_iter().flatten() {
         if doc.pointer(pointer) != Some(want) {
@@ -963,7 +897,6 @@ fn pointer_eq(doc: &Value, checks: Option<&Value>, what: &str) -> Result<(), Str
     Ok(())
 }
 
-/// A line session's script, run against `child`.
 fn run_script(
     world: &World,
     child: &mut common::lines::LineChild,
@@ -1002,7 +935,6 @@ fn run_script(
                 let elicit = body.get("elicitation");
                 let (mut served, mut elicitations, mut refused) = (0u64, 0u64, None);
                 for n in 0..max {
-                    // `{i}` (the round, from 0) first, then the case's placeholders.
                     let raw = body.get("send").unwrap_or(&Value::Null).to_string();
                     let send: Value = serde_json::from_str(&raw.replace("{i}", &n.to_string()))
                         .map_err(|e| format!("{what}: {e}"))?;
@@ -1070,7 +1002,7 @@ fn run_script(
                     .map_err(|e| format!("{what}: {e}"))?;
                 exit_is(body, code).map_err(|e| format!("{what}: {e}"))?;
             }
-            // A shutdown signal with stdin still open: only the signal can end the session.
+
             "signal" => {
                 let name = body.get("name").and_then(Value::as_str).unwrap_or("TERM");
                 let sent = Command::new("kill")
@@ -1094,7 +1026,6 @@ fn run_script(
     Ok(())
 }
 
-/// Run one step.
 fn run_step(world: &mut World, step: &Step) -> Result<(), String> {
     match step {
         Step::Validate(s) => {
@@ -1143,7 +1074,7 @@ fn run_step(world: &mut World, step: &Step) -> Result<(), String> {
                 .stderr(Stdio::from(file));
             let mut child =
                 common::boot::Reap(cmd.spawn().map_err(|e| format!("spawn the binary: {e}"))?);
-            // A boot that states its `exit` expects one.
+
             let default = if s.get("exit").is_some() {
                 "exit"
             } else {
@@ -1311,7 +1242,7 @@ fn run_step(world: &mut World, step: &Step) -> Result<(), String> {
                     return Err(format!("answered {status}, {want} was expected: {text}"));
                 }
             }
-            // Every reply answers its own request (on for every call, no opt-out).
+
             if let Some(request) = &body {
                 for reply in responses_in(&text) {
                     reply_id_held(request, &reply)?;
@@ -1434,10 +1365,7 @@ fn run_step(world: &mut World, step: &Step) -> Result<(), String> {
     }
 }
 
-/// Run one case: `Ok(None)` ran clean, `Ok(Some(why))` the build does not apply to it, `Err` a
-/// mismatch naming the plane crate, the case and the step.
 fn run_case(krate: &str, case: &Case) -> Result<Option<String>, String> {
-    // The citation is data against data: held whether or not this build applies to the case.
     oracle_held(krate, case)?;
     if let Some(why) = case.not_applicable() {
         return Ok(Some(why));
@@ -1491,8 +1419,6 @@ fn run_case(krate: &str, case: &Case) -> Result<Option<String>, String> {
     Ok(None)
 }
 
-/// Every case in `dir`, read; a directory holding none is refused, and so is a case that does not
-/// read — each naming the plane crate and the case file.
 fn cases_in(krate: &str, dir: &Path) -> Result<Vec<(String, Case)>, String> {
     let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
         .map_err(|e| format!("`{krate}` states black-box cases at {}: {e}", dir.display()))?
@@ -1524,7 +1450,6 @@ fn cases_in(krate: &str, dir: &Path) -> Result<Vec<(String, Case)>, String> {
     Ok(out)
 }
 
-/// Run every case of `krate`'s directory: every failure, each naming the plane crate and the case.
 fn run_dir(krate: &str, dir: &Path) -> Vec<String> {
     let cases = match cases_in(krate, dir) {
         Ok(cases) => cases,
@@ -1554,7 +1479,6 @@ fn run_dir(krate: &str, dir: &Path) -> Vec<String> {
     failures
 }
 
-/// EVERY LINKED DOOR'S BLACK-BOX CASES, RUN AGAINST THE REAL BINARY.
 #[test]
 fn every_linked_doors_black_box_cases_run_against_the_real_binary() {
     let failures: Vec<String> = DOOR_BLACKBOX
@@ -1572,9 +1496,6 @@ fn every_linked_doors_black_box_cases_run_against_the_real_binary() {
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));
 }
 
-// ── the runner's own REDs ───────────────────────────────────────────────────────────────────────
-
-/// A scratch directory holding `files`.
 fn planted(tag: &str, files: &[(&str, &str)]) -> PathBuf {
     let dir = case_dir(tag);
     for (name, text) in files {
@@ -1583,7 +1504,6 @@ fn planted(tag: &str, files: &[(&str, &str)]) -> PathBuf {
     dir
 }
 
-/// A DOOR WITH A BLACK-BOX DIRECTORY BUT NO CASES FAILS, naming the plane crate.
 #[test]
 fn a_door_stating_a_black_box_directory_with_no_cases_fails() {
     let dir = planted("no-cases", &[("notes.txt", "not a case")]);
@@ -1596,8 +1516,6 @@ fn a_door_stating_a_black_box_directory_with_no_cases_fails() {
     );
 }
 
-/// A MALFORMED CASE IS REFUSED, naming the plane crate and the case file: an unknown field, an
-/// unknown step, a missing name, a wrong schema.
 #[test]
 fn a_malformed_case_is_refused_naming_the_plane_and_the_case() {
     for (file, text, why) in [
@@ -1637,10 +1555,6 @@ fn a_malformed_case_is_refused_naming_the_plane_and_the_case() {
     }
 }
 
-/// A CITED CELL IS COMPARED: a case citing a 1.5.5 cell whose stated bytes are not the cell's
-/// fails, naming the plane crate, the case and the cell — a wrong line, a wrong status, and a
-/// citation that states no byte at all; the same citation stating the cell's own bytes holds (the
-/// control).
 #[test]
 fn a_cited_cell_whose_bytes_differ_fails_naming_the_plane_the_case_and_the_cell() {
     let case = |name: &str, step: &str| {
@@ -1687,9 +1601,6 @@ fn a_cited_cell_whose_bytes_differ_fails_naming_the_plane_the_case_and_the_cell(
     }
 }
 
-/// A MISMATCH FAILS, naming the plane crate, the case and the step: the binary's `--version`
-/// exits 0, and a case that expects it to exit nonzero is refused; the same case expecting 0 runs
-/// clean (the control).
 #[test]
 fn a_mismatch_fails_naming_the_plane_and_the_case() {
     let case = |name: &str, exit: &str| {
@@ -1714,9 +1625,6 @@ fn a_mismatch_fails_naming_the_plane_and_the_case() {
     );
 }
 
-/// THE SCRIPTED FAR END knows JSON-RPC framing and nothing else: a method the case states answers
-/// its stated result or echoes into its stated shape, a method it does not state is an error, every
-/// method received is counted, and an answer replaced between steps is the one served next.
 #[test]
 fn the_scripted_far_end_answers_what_the_case_states_and_counts_it() {
     let case = Case::parse(
@@ -1754,9 +1662,6 @@ fn the_scripted_far_end_answers_what_the_case_states_and_counts_it() {
     assert_eq!(counts.get("m/three"), Some(&1));
 }
 
-/// A BOOT STEP STATES ITS EXIT: a boot that exits is held to the `exit` it states — a config that
-/// does not read exits nonzero and holds `"nonzero"` (the control), and fails a stated `0`, naming
-/// the plane crate, the case and the step; `exit` beside `expect: listening` is refused.
 #[test]
 fn a_boot_step_is_held_to_the_exit_it_states() {
     let case = |name: &str, exit: &str| {
@@ -1786,9 +1691,6 @@ fn a_boot_step_is_held_to_the_exit_it_states() {
     assert!(refusal.contains("`exit`"), "{refusal}");
 }
 
-/// `unless` NAMES AN AXIS WHOSE ABSENCE THE CASE IS ABOUT: a build linking it does not apply to
-/// the case, a build without it does; `requires.axes` names an axis as the manifest does and
-/// applies exactly when the build links it.
 #[test]
 fn unless_runs_a_case_only_where_the_axis_is_absent() {
     let case = |field: &str| {
@@ -1816,8 +1718,6 @@ fn unless_runs_a_case_only_where_the_axis_is_absent() {
     }
 }
 
-/// EVERY REPLY ANSWERS ITS OWN REQUEST: a call's JSON-RPC reply carries the request's `id` — the
-/// scripted far end does (the control); a far end that answers under a foreign id fails the call.
 #[test]
 fn a_reply_under_a_foreign_id_fails_the_call() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");

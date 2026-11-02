@@ -1,19 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE SETTINGS-SCHEMA RULES, one set for `busbar-plugin-pack` (a schema file it packs) and for the
-//! host (a Statement's `settings_schema`, read at load): where `x-busbar-secret` and
-//! `x-busbar-public` may stand, no unmarked credential-looking field, no credential declared
-//! public. [`public_settings_of_schema`] is what the host reads: the settings a schema declares
-//! public, every other setting sensitive (`busbar_contract::settings_public`).
-
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-/// Field-name heuristic: an UNMARKED field whose name matches one of these
-/// (case-insensitive substring) is hard-rejected at pack time — the only mitigation against a
-/// third-party author silently shipping a plaintext-credential text box that doesn't depend on
-/// remembering to mark it. Deliberately not exhaustive; it converts a silent security failure
-/// into a loud packaging error for the overwhelmingly common case.
 pub const SECRET_NAME_HINTS: &[&str] = &[
     "password",
     "secret",
@@ -25,13 +14,6 @@ pub const SECRET_NAME_HINTS: &[&str] = &[
     "api_key",
 ];
 
-/// THE PUBLIC SETTINGS a Statement's `settings_schema` (`bytes`) declares, after the schema rules
-/// `plugin pack` holds a schema file to (`x-busbar-secret` and `x-busbar-public` placement, no
-/// unmarked credential-looking field, no credential declared public). Empty bytes: no schema, every
-/// setting sensitive.
-///
-/// # Errors
-/// Bytes that are not JSON, or a schema the rules refuse.
 pub fn public_settings_of_schema(
     bytes: &[u8],
 ) -> Result<std::collections::BTreeSet<String>, String> {
@@ -44,28 +26,10 @@ pub fn public_settings_of_schema(
     Ok(busbar_contract::settings_public::public_settings(&value))
 }
 
-/// Resolve `$ref`/`allOf` into an effective (locally merged) schema object, so field-depth and
-/// `x-busbar-secret` checks see the shape the way a form renderer actually would — not the raw
-/// document structure. `schemars`-style struct derivation commonly emits a nested field as a
-/// `$ref` into `$defs` rather than an inline nested object; a check that only walked raw
-/// `properties` without resolving `$ref` first would never see that nesting at all.
-/// Local `#/$defs/<Name>` / `#/definitions/<Name>` pointers only — an
-/// external or fragment-shaped `$ref` is left unresolved (its siblings are still merged) since
-/// there is nothing local to look up.
-///
-/// CARRIES ITS OWN DEPTH CAP, and needs one. `scan`'s `MAX_SCAN_DEPTH` counts the levels SCAN
-/// descends, and this function recurses into ITSELF — once through `$ref`, once per `allOf` member
-/// — without ever passing back through `scan`, so a chain living entirely inside a resolve advances
-/// that counter not at all. The `resolving` set is not the backstop either: it catches a `$ref` that
-/// closes a CYCLE and says nothing about a chain that is merely very long, so a non-cyclic
-/// 200-link `allOf` chain walks straight past it. This runs on operator-supplied input at pack time,
-/// and uncapped the end of that chain is a stack overflow or an unbounded re-resolve that never
-/// returns — an abort or a hang with no diagnostic, the one answer a validator must never give.
 struct Resolution<'a> {
     defs: &'a serde_json::Map<String, serde_json::Value>,
     resolving: HashSet<String>,
-    // Cache the whole resolution, including reference siblings and allOf merging. Depth is
-    // part of the key so a shallow success cannot bypass a later, deeper use's limit.
+
     memo: HashMap<(serde_json::Value, u32), serde_json::Map<String, serde_json::Value>>,
     scanned: HashSet<(serde_json::Value, Position, u32)>,
 }
@@ -76,8 +40,6 @@ impl Resolution<'_> {
         schema: &serde_json::Value,
         depth: u32,
     ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
-        // Same ceiling as `MAX_SCAN_DEPTH`, and the same one `busbar_contract::json_grammar` holds for
-        // wire JSON: deeper than this is not a schema anyone wrote by hand, it is the recursion.
         const MAX_RESOLVE_DEPTH: u32 = 64;
         if depth > MAX_RESOLVE_DEPTH {
             return Err(format!(
@@ -136,8 +98,7 @@ impl Resolution<'_> {
                 }
             }
         }
-        // Only a finished resolution is reusable. With immutable definitions, a subtree
-        // containing a reference cycle cannot have produced a successful cached result.
+
         self.memo.insert(key, merged.clone());
         Ok(merged)
     }
@@ -159,11 +120,6 @@ enum Position {
     Nested,
 }
 
-/// THE PUBLIC DECLARATION (`busbar_contract::settings_public`): every setting is sensitive unless a
-/// direct root property is marked `x-busbar-public: true`. Refused: a marker that is not `true`, one
-/// below the root (the host reads root properties alone, so a nested one would never take effect),
-/// one on a field also marked `x-busbar-secret`, and one on a field whose name looks like a
-/// credential ([`SECRET_NAME_HINTS`]) — a credential is never declared public.
 fn check_public(
     name: &str,
     prop: &serde_json::Map<String, serde_json::Value>,
@@ -228,13 +184,6 @@ pub fn validate_secret_fields(root: &serde_json::Value) -> Result<(), String> {
         at: Position,
         depth: u32,
     ) -> Result<(), String> {
-        // A schema may nest as deeply as it likes, but a `$defs` entry that refers to ITSELF is not
-        // caught by the `resolving` cycle guard: that guard is unwound as each resolution returns,
-        // so a `Node -> properties.child -> $ref Node` schema resolves cleanly at every single step
-        // and simply never stops. This walk runs on operator-supplied input at pack time, and the
-        // failure mode without a cap is a stack overflow — an abort with no diagnostic, which is the
-        // one outcome a validator must never have. Deeper than this is not a schema anyone wrote by
-        // hand; it is the recursion.
         const MAX_SCAN_DEPTH: u32 = 64;
         if depth > MAX_SCAN_DEPTH {
             return Err(format!(
@@ -242,8 +191,7 @@ pub fn validate_secret_fields(root: &serde_json::Value) -> Result<(), String> {
                  $defs entry is the usual cause; the schema cannot be validated"
             ));
         }
-        // Only successful walks are reused, at the same field position and remaining depth.
-        // A shared definition reached below a property must still be judged as nested.
+
         let key = (schema.clone(), at, depth);
         if resolution.scanned.contains(&key) {
             return Ok(());
@@ -251,8 +199,6 @@ pub fn validate_secret_fields(root: &serde_json::Value) -> Result<(), String> {
         let eff = resolution.effective(schema, depth)?;
         if eff.get("x-busbar-secret") == Some(&serde_json::Value::Bool(true)) {
             if at != Position::RootProperty {
-                // 1.5.5's words, naming the nesting depth (v1.5.5
-                // `crates/plugin-pack/src/main.rs:298-304`; ruling (B), 2026-10-19).
                 return Err(format!(
                     "x-busbar-secret: true is only allowed on a direct root-level property \
                      (found at nesting depth {depth}) — flatten the field to a root property \
@@ -291,11 +237,7 @@ pub fn validate_secret_fields(root: &serde_json::Value) -> Result<(), String> {
                         ));
                     }
                 }
-                // A property is a ROOT property when the object declaring it is the root schema —
-                // which is what `at` tracks, not a depth counter. `patternProperties` and the rest
-                // sit one `properties` map deeper than the root even when they are written at the
-                // top of the document, and a `oneOf` alternative at the root declares root
-                // properties even though it is a level down structurally.
+
                 let child = match at {
                     Position::Root => Position::RootProperty,
                     _ => Position::Nested,
@@ -306,15 +248,7 @@ pub fn validate_secret_fields(root: &serde_json::Value) -> Result<(), String> {
         if let Some(items) = eff.get("items") {
             scan(items, resolution, public, Position::Nested, depth + 1)?;
         }
-        // `oneOf`/`anyOf`/`prefixItems` are also places a field can hide — walked the same way as
-        // `properties`/`items` (one nesting level deeper), or both the root-only placement rule
-        // and the unmarked-secret-name heuristic can be evaded by putting the violating field
-        // inside one of these composition keywords instead of a plain nested object.
-        //
-        // A composition keyword does NOT move a field out of the position its parent occupies: a
-        // root `oneOf` whose alternatives each declare the same top-level object is still spelling
-        // out the ROOT's shape, and its properties are root properties `resolve_settings()` will
-        // resolve. So the position is carried through rather than reset.
+
         for combinator in ["oneOf", "anyOf"] {
             if let Some(alts) = eff.get(combinator).and_then(|v| v.as_array()) {
                 for alt in alts {
@@ -327,26 +261,7 @@ pub fn validate_secret_fields(root: &serde_json::Value) -> Result<(), String> {
                 scan(item, resolution, public, Position::Nested, depth + 1)?;
             }
         }
-        // Every other JSON Schema 2020-12 keyword whose value is itself a subschema (or holds one)
-        // is walked here too, against the full core+applicator+content vocabulary — `oneOf`/
-        // `anyOf`/`prefixItems` above cover one part of this class of gap; the rest is closed here
-        // in one pass rather than one keyword at a time. `if`/`then`/`else` and
-        // `not` each hold a single nested schema, same shape as `items`. `dependentSchemas` and
-        // `patternProperties` are maps of key -> schema, same shape as `properties` (but their keys
-        // are property names / regexes, not field names to check against `SECRET_NAME_HINTS`
-        // themselves — only the nested schemas are scanned). `additionalProperties`/
-        // `unevaluatedProperties`/`unevaluatedItems`/`contains`/`contentSchema` each hold a single
-        // nested schema OR (except `contentSchema`) a bare bool (`true`/`false`); a bool is not a
-        // schema object and is skipped rather than scanned (`resolve_effective` would just return
-        // an empty map for it anyway, but skip explicitly so the intent is clear).
-        //
-        // `propertyNames` is deliberately NOT walked: it constrains the KEYS of an object (e.g.
-        // "must match `^[a-z]+$`"), not the shape or value of any field, so it can never itself
-        // carry an `x-busbar-secret` marker or a secret-shaped VALUE for a field — there is nothing
-        // for this scan to find there.
-        // `if`/`then`/`else` constrain the SAME object their parent does (a conditional root branch
-        // still describes the root), so they carry the position like `oneOf`/`anyOf`. `not` and
-        // `contentSchema` describe something else entirely and are nested.
+
         for keyword in ["if", "then", "else"] {
             if let Some(sub) = eff.get(keyword) {
                 scan(sub, resolution, public, at, depth + 1)?;

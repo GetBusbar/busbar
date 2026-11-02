@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Correction-local capture, atomic acceptance and recoverable application of raw usage facts.
-
 use super::*;
 use busbar_contract::records::correction::{self, Decision, Request, UsageAddress, UsageChange};
 use busbar_contract::records::{ModelTokens, UsageLedger};
@@ -89,7 +87,6 @@ impl GovState {
         Ok(())
     }
 
-    /// Replay before any new validation, including when a key was deleted after an unknown commit.
     pub(super) fn resume_usage_correction(&self, adj: &Adjustment<'_>) -> RecordStoreResult<bool> {
         let pending = self
             .corrections
@@ -128,8 +125,7 @@ impl GovState {
                 "receipt retention expired; exact operation custody retained",
             ));
         }
-        // No budget shard or pending-map mutex spans the plugin call. Every error is unknown,
-        // including a refusal after an earlier lost commit acknowledgement.
+
         let decision = self.store.apply_usage_correction(&pending.request)?;
         let mut order: Vec<_> = pending
             .targets
@@ -151,7 +147,7 @@ impl GovState {
                 )
             })
             .collect();
-        // Check all custody before moving any branch.
+
         for (bucket, window) in &pending.targets {
             let index = order
                 .binary_search(&self.budget.shard_index(bucket))
@@ -184,8 +180,6 @@ impl GovState {
         Ok(decision)
     }
 
-    /// The flusher can recover an abandoned call. Keep its definitive result until the caller
-    /// consumes it, so an unknown reply followed by background recovery cannot duplicate a retry.
     pub(in crate::governance::state) fn retry_usage_corrections(&self) -> Vec<String> {
         let pending: Vec<_> = self
             .corrections
@@ -420,7 +414,7 @@ impl GovState {
                     .map(|(address, expected)| {
                         let mut replacement =
                             replacements.remove(&address).expect("same raw row set");
-                        // Every operation above preserves unique identities. Remove newly-zero rows.
+
                         correction::canonical_ledger(&mut replacement)
                             .expect("unique planned model identities");
                         UsageChange {
@@ -643,7 +637,7 @@ fn capture_target(
             model.flushed = base.map(|base| base.cur.clone()).unwrap_or_default();
             model.flushed_era = model.flushed.clone();
         }
-        // A local refund to zero still owns a negative debt against a durable segment.
+
         for base in baseline.models {
             if !before
                 .models

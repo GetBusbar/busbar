@@ -1,29 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **`kind: auth`, BOTH WAYS, VERIFY VERDICTS, ON THE MEMORY ABI — the auth kind's both-ways proof
-//! over the token cases** (DECISIONS #2; THE DESIGN, compiled-in = dropped-in: a compiled-in plugin exports the same door
-//! as a dropped-in one and is called through the same table; ARCHITECT 2026-09-27: the shipped
-//! admin-auth module is a REAL auth plugin and its both-ways conformance is the AUTH kind proof;
-//! ARCHITECT 2026-09-30, AUTH-DOOR Q1: this proof moves to the door, linked vs dropped, with a RED
-//! arm).
-//!
-//! The plugin is reached through the `auth-verify` row of `[package.metadata.busbar.both-ways]`, so
-//! no test source names a plugin instance. It is registered LINKED (its `rlib`'s `door::door`,
-//! through [`crate::PluginRegistry::link`]) and DROPPED IN (its `cdylib`, signed first-party into
-//! `plugins/` and found by the scan), each opened by the loader's auth rows on a real dispatcher and
-//! driven over the same token cases at the `Head` point, on the spot and submitted. The two rows
-//! and the two transcripts must be byte-identical, and the transcript must reach every verdict —
-//! the accepted token IDENTIFIES, a wrong opaque token is REJECTED, another scheme's token and no
-//! credential PASS.
-//!
-//! ## The RED arms stay in the file
-//!
-//! [`a_door_judging_another_token_is_told_apart`] opens the dropped-in door over a ROTATED token's
-//! digest: its verdicts differ, so the verdict equality is not vacuous.
-//! [`a_third_party_signature_is_a_different_row`] signs the same `cdylib` as a third party: the row
-//! differs (it is not first-party), so the row equality is not vacuous either.
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -35,16 +12,10 @@ use busbar_contract::abi::auth::AuthPoint;
 use busbar_contract::auth_calls::{Verified, VerifyAnswer, VerifyRequest};
 use busbar_contract::redacted::{sha256_hex, Secret};
 
-/// The both-ways table row this proof reads.
 const PROOF: &str = "auth-verify";
 
-/// The operator's token. The plugin is configured with its SHA-256 digest, never the token.
 const TOKEN: &str = "the-operator-token";
 
-/// The token cases, as the two field lines a request presents them on — the Bearer on the
-/// `authorization` line, the other on the second credential line: the accepted token on either,
-/// a wrong opaque token, a token in another scheme's grammar (a JWS compact serialization), none.
-/// The line names are the plugin's own, read here as the request's data.
 const CASES: [(Option<&str>, Option<&str>); 6] = [
     (Some(TOKEN), None),
     (None, Some(TOKEN)),
@@ -54,11 +25,8 @@ const CASES: [(Option<&str>, Option<&str>); 6] = [
     (None, None),
 ];
 
-/// The two credential lines the cases are presented on.
 const LINES: (&str, &str) = ("authorization", "x-admin-token");
 
-/// The manifest both doors state, carrying the Statement rendering the linked `door` states (a
-/// dropped-in plugin's signed manifest carries its rendering: the design's One Statement).
 fn stated(door: busbar_contract::abi::mechanism::door::DoorFn) -> crate::sign::Manifest {
     let rendering = crate::dispatch::LinkedRow::of(door)
         .expect("the door states itself")
@@ -83,7 +51,6 @@ fn dispatcher() -> Arc<Dispatcher> {
     }))
 }
 
-/// One case at the `Head` point.
 fn request(bearer: Option<&str>, other: Option<&str>) -> VerifyRequest {
     let line = |name: &str, value: String| (name.to_string(), Secret::new(value.into_bytes()));
     let lines = bearer
@@ -107,7 +74,6 @@ fn request(bearer: Option<&str>, other: Option<&str>) -> VerifyRequest {
     }
 }
 
-/// An answer as the transcript spells it: the verdict, the decision, the lines to strip.
 fn spelled(a: &VerifyAnswer) -> String {
     let verdict = match &a.verified {
         Verified::Identity(id) => format!("Identity({})", id.subject),
@@ -117,8 +83,6 @@ fn spelled(a: &VerifyAnswer) -> String {
     format!("{verdict} {:?} [{}]", a.decision, strips.join(", "))
 }
 
-/// The linked and dropped-in registries of the fixture; a `cdylib` not built is a hard failure
-/// naming the command that builds it ([`cdylib`]), never a skip.
 fn doors(third_party: bool) -> [PluginRegistry; 2] {
     let (crate_snake, door) = door_fixture(PROOF);
     let lib = std::fs::read(cdylib(crate_snake)).expect("read the cdylib");
@@ -135,8 +99,6 @@ fn doors(third_party: bool) -> [PluginRegistry; 2] {
     [linked, dropped]
 }
 
-/// The callback changes its answer on every invocation. SHORT is a buffer negotiation,
-/// so neither the on-the-spot recall nor a submitted recall may judge the credential again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn short_verdicts_keep_the_first_judgment_through_both_auth_doors() {
     for registry in doors(false) {
@@ -163,7 +125,7 @@ async fn short_verdicts_keep_the_first_judgment_through_both_auth_doors() {
         };
         identity(opened.verify_now(&wide()).expect("on the spot"), 1);
         identity(Box::into_pin(opened.verify(wide())).await, 2);
-        // Fresh operations with identical inputs get their own judgment, not a cached verdict.
+
         identity(Box::into_pin(opened.verify(wide())).await, 3);
         identity(
             opened.verify_now(&wide()).expect("another on-the-spot op"),
@@ -172,8 +134,6 @@ async fn short_verdicts_keep_the_first_judgment_through_both_auth_doors() {
     }
 }
 
-/// A one-shot recall token owns its SDK lease even when no recall is made. Closing an
-/// instance with an outstanding token drops its SDK storage and never calls a freed instance.
 #[test]
 fn abandoned_short_tokens_release_and_closed_auth_instances_refuse_recall_both_ways() {
     use crate::dispatch::{in_head, out_head, Frame};
@@ -181,7 +141,6 @@ fn abandoned_short_tokens_release_and_closed_auth_instances_refuse_recall_both_w
     use busbar_contract::abi::mechanism::call::Outcome;
     use busbar_contract::abi::mechanism::lifecycle::{slot as life, ReleaseIn};
     let frame = || {
-        // The reviewed all-zero builder initializes these ABI frames; request bytes are static.
         let mut input: VerifyIn = busbar_contract::abi::sdk::test_support::zeroed();
         input.head = in_head();
         input.point = POINT_HEAD;
@@ -244,8 +203,7 @@ fn abandoned_short_tokens_release_and_closed_auth_instances_refuse_recall_both_w
             } else {
                 d.recycle(ticket);
             }
-            // Two real crossings on this worker place a loop boundary after deferred release.
-            // The first can be scheduled in the same batch as the lifecycle message.
+
             for _ in 0..2 {
                 let barrier = d.mint(0).unwrap();
                 let tick = Frame::new(
@@ -299,9 +257,6 @@ fn abandoned_short_tokens_release_and_closed_auth_instances_refuse_recall_both_w
     }
 }
 
-/// What one door does, as one comparable transcript: the opened instance's name and facts, the
-/// operator credential's row the axis finds by its Statement, and its answer for every case on the
-/// spot and submitted.
 async fn transcript(registry: PluginRegistry, digest: &str) -> String {
     let rows = AuthRows::new(Arc::new(registry), dispatcher());
     let opened = rows
@@ -325,7 +280,6 @@ async fn transcript(registry: PluginRegistry, digest: &str) -> String {
     out.join("\n")
 }
 
-/// The transcript reaches every verdict, so the equality it is compared under covers them all.
 fn assert_every_verdict(transcript: &str) {
     assert!(
         transcript.contains("Identity")
@@ -335,9 +289,6 @@ fn assert_every_verdict(transcript: &str) {
     );
 }
 
-/// **THE AXIS, BOTH WAYS** (#2 rule (1), THE DESIGN: compiled-in = dropped-in). The linked door and the dropped-in door
-/// resolve to the byte-identical registry row, and the instance each opens answers every token case
-/// the same, on the spot and submitted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_linked_and_a_dropped_in_auth_door_answer_byte_identically() {
     let [linked, dropped] = doors(false);
@@ -359,8 +310,6 @@ async fn a_linked_and_a_dropped_in_auth_door_answer_byte_identically() {
     assert_eq!(linked, dropped, "the two doors must answer as one plugin");
 }
 
-/// **THE RED ARM OF THE VERDICT COMPARISON.** The dropped-in door opened over a ROTATED token's
-/// digest answers the same cases differently: the accepted token is no longer identified.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_door_judging_another_token_is_told_apart() {
     let [linked, dropped] = doors(false);
@@ -378,8 +327,6 @@ async fn a_door_judging_another_token_is_told_apart() {
     );
 }
 
-/// **THE RED ARM OF THE ROW COMPARISON.** The same `cdylib` signed by a third party is a different
-/// row from the linked first-party one.
 #[test]
 fn a_third_party_signature_is_a_different_row() {
     let [linked, dropped] = doors(true);

@@ -1,20 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE HOOK AXIS, BOTH WAYS (THE DESIGN §11.4; the SWITCH-OVER card, hook root axis): the hook
-//! kind's fixture (`hook_door_plugin`) reached through [`HookRows`] as a LINKED row (its door) and as
-//! a DROPPED-IN row (its example `cdylib`'s bytes, admitted against the rendering its door states),
-//! probed, opened and called through the contract's [`HookAxis`] / [`HookCalls`] on the one
-//! dispatcher. The two transcripts must be equal, line for line: the axis loads both doors through
-//! the one loader path and reads nothing of which door a row came in by.
-//!
-//! RED ARM, KEPT: [`a_hook_that_breaks_the_kind_contract_is_broken_through_both_doors`] opens the
-//! fixture's broken door (`decide` answering two verbs) the same two ways: the axis answers
-//! [`Answered::Broken`] on both, where the conforming door answers one verb.
-//!
-//! RED ARM (ARCHITECT Q-SO8): [`a_hook_statement_without_its_kind_tail_is_refused_at_load`] — the
-//! conforming plugin with no hook tail does not load; the refusal names the missing tail.
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -88,8 +74,6 @@ fn regenerate(instance: &super::HookInstance) {
     }
 }
 
-/// Existing ABI only: a plugin supplies its complete state as opaque extension bytes. The last
-/// pushed object is intentionally empty/null/stale, so replaying that object loses the live state.
 #[tokio::test]
 async fn complete_configure_checkpoints_survive_partial_pushes_through_both_doors() {
     use busbar_contract::hook_calls::HookCalls;
@@ -139,8 +123,6 @@ async fn complete_configure_checkpoints_survive_partial_pushes_through_both_door
     }
 }
 
-/// An older plugin may ACK opaque partial updates without supplying a checkpoint. It keeps its
-/// live behavior, but the host must not invent recoverable state when that instance is lost.
 #[tokio::test]
 async fn missing_or_malformed_checkpoints_never_reopen_silently_stale_through_both_doors() {
     use busbar_contract::hook_calls::HookCalls;
@@ -264,15 +246,12 @@ async fn an_ack_racing_the_replay_is_restored_before_the_trial_is_published() {
     regenerate(&instance);
     let deciding = instance.decide(frame(2), BUDGET);
     let trial = tokio::spawn(async move {
-        // Consume the raw-frame answer on its task. Only this pointer-free judgment crosses
-        // the JoinHandle boundary; the raw frame answer is consumed in this task.
         matches!(deciding.await, Answered::Answer {out, ..} if out.reject_status == REJECT_STATUS)
     });
     tokio::task::spawn_blocking(move || entered_rx.recv_timeout(BUDGET).unwrap())
         .await
         .unwrap();
-    // The fresh plugin is blocked inside configure. This old reply can still acquire the host's
-    // custody lock, and changes the saved checkpoint after the trial already copied its predecessor.
+
     instance
         .inner
         .acknowledged(
@@ -315,8 +294,6 @@ async fn a_missing_checkpoint_cannot_be_repaired_by_an_older_delayed_reply() {
     ));
 }
 
-/// The SDK's refresh boundary, through a loaded door and real connector services. No worker or
-/// timing race is needed: an inline ticket explicitly resumes the exchange parked by its first call.
 mod sdk_refresh {
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -747,7 +724,6 @@ mod sdk_refresh {
     }
 }
 
-/// Every call's budget.
 const BUDGET: Duration = Duration::from_secs(5);
 
 fn serve_request() -> busbar_contract::abi::mechanism::endpoint::EndpointRequest {
@@ -784,7 +760,7 @@ async fn hook_routes_serve_leased_responses_through_both_doors_and_refused_stubs
             response.body,
             b"POST /hooks/receiver/feedback?kind=feedback\nreceived"
         );
-        // A second response remains readable after the first answer's lease was released.
+
         assert_eq!(
             calls.serve(serve_request(), BUDGET).await.unwrap().body,
             response.body
@@ -850,7 +826,7 @@ async fn a_slow_hook_serve_is_bounded_by_its_budget_through_both_doors() {
             .serve(serve_request(), Duration::from_millis(10))
             .await
             .is_err());
-        // A fresh call with its full budget still serves normally after the timed-out request.
+
         assert_eq!(
             calls.serve(serve_request(), BUDGET).await.unwrap().status,
             202
@@ -858,7 +834,6 @@ async fn a_slow_hook_serve_is_bounded_by_its_budget_through_both_doors() {
     }
 }
 
-/// A request of `messages` messages.
 fn request(messages: usize) -> RoutingRequest<'static> {
     RoutingRequest {
         request_id: 7,
@@ -879,7 +854,6 @@ fn request(messages: usize) -> RoutingRequest<'static> {
     }
 }
 
-/// The `decide` frame of a request of `messages` messages over no candidates.
 fn frame(messages: usize) -> Arc<DecideFrame> {
     let ctx = RoutingContext {
         pool: "p",
@@ -896,8 +870,6 @@ enum Way {
     Dropped,
 }
 
-/// The axis over `door`, its one row reached `way`. A dropped-in row whose example `cdylib`
-/// (`example`) is not built is a hard failure naming the command that builds it, never a skip.
 fn rows(door: DoorFn, example: &str, way: Way) -> HookRows {
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     match way {
@@ -919,7 +891,6 @@ fn rows(door: DoorFn, example: &str, way: Way) -> HookRows {
     }
 }
 
-/// One `decide` answer, as a line.
 fn decided(messages: usize, a: &Answered<busbar_contract::abi::hook::DecideOut>) -> String {
     match a {
         Answered::Answer {
@@ -936,7 +907,6 @@ fn decided(messages: usize, a: &Answered<busbar_contract::abi::hook::DecideOut>)
     }
 }
 
-/// THE SCRIPT through the axis, one line per answer.
 async fn script(rows: &HookRows, module: &str) -> Vec<String> {
     let probed = |settings: serde_json::Value| rows.probe(module, "gate", &settings);
     let mut lines = vec![
@@ -984,7 +954,7 @@ async fn a_linked_and_a_dropped_in_hook_open_through_the_axis_and_decide_identic
     let dropped_rows = rows(door, "hook_door", Way::Dropped);
     let dropped = script(&dropped_rows, NAME).await;
     assert_eq!(linked, dropped, "the same table, whichever door");
-    // The script reached every answer it names: equal empty transcripts would prove nothing.
+
     let facts = HookFacts {
         name: NAME.to_string(),
         class: CLASS_GATE,
@@ -1017,8 +987,6 @@ async fn a_linked_and_a_dropped_in_hook_open_through_the_axis_and_decide_identic
     assert!(linked[7].starts_with("configure: Err("), "{}", linked[7]);
 }
 
-/// THE RED ARM, KEPT: a `decide` answering two verbs at once breaks the hook kind's contract.
-/// Through either door the axis answers BROKEN, never a verdict.
 #[tokio::test]
 async fn a_hook_that_breaks_the_kind_contract_is_broken_through_both_doors() {
     let run = |rows: HookRows| async move {
@@ -1038,7 +1006,7 @@ async fn a_hook_that_breaks_the_kind_contract_is_broken_through_both_doors() {
         linked.contains("broken (") && linked.contains("FAULT"),
         "{linked}"
     );
-    // The conforming door under the broken door's name is not a row: the axis names the module.
+
     let refused = rows(hook_door_plugin::conforming::door, "hook_door", Way::Linked)
         .open(BROKEN_NAME, "hooks.gate", &json!({}), BUDGET)
         .err();
@@ -1054,10 +1022,6 @@ async fn a_hook_that_breaks_the_kind_contract_is_broken_through_both_doors() {
     );
 }
 
-/// PB-81 (a panicking plugin is a fail-closed error): a hook whose `decide` PANICS is caught at
-/// its door and answered FAULT, which the axis answers as BROKEN, never a verdict, promptly and
-/// without unwinding into the host. The kernel reads every answer that is not READY as an error
-/// its `on_error` decides.
 #[tokio::test]
 async fn a_panicking_hook_is_broken_through_the_axis_never_a_verdict() {
     let axis = rows(hook_door_plugin::panicking::door, "hook_door", Way::Linked);
@@ -1091,8 +1055,6 @@ fn a_linked_row_is_linked_and_first_party_and_a_dropped_in_unsigned_row_is_neith
     assert!(!dropped.linked(NAME) && !dropped.first_party(NAME));
 }
 
-/// RED ARM (Q-SO8): a hook Statement with no kind tail is refused at load, named; nothing assumes
-/// a class or grants for it. The conforming door, which states its tail, opens.
 #[test]
 fn a_hook_statement_without_its_kind_tail_is_refused_at_load() {
     let untailed = rows(hook_door_plugin::untailed::door, "hook_door", Way::Linked);
@@ -1123,9 +1085,6 @@ fn a_hook_statement_without_its_kind_tail_is_refused_at_load() {
     assert!(tailed.is_ok(), "the tailed door opens");
 }
 
-/// RED (C21's hook half; one version per kind): a dropped-in `kind: hook` plugin whose manifest
-/// states no Statement speaks the 1.5.5 JSON hook contract. The axis refuses it — and so the boot —
-/// naming the plugin and the rebuild, where it used to load it over the JSON lane.
 #[test]
 fn a_dropped_in_1_5_5_json_hook_plugin_is_refused_naming_the_rebuild() {
     let abi = *crate::supported_abi("hook")
@@ -1146,10 +1105,6 @@ fn a_dropped_in_1_5_5_json_hook_plugin_is_refused_naming_the_rebuild() {
     );
 }
 
-/// THE SESSION REACHES A HOOK (ARCHITECT RULING 2026-10-03, the project-pool fold ruling's session
-/// half): the request view's opaque session crosses the hook kind's `decide` through the one
-/// dispatcher, linked and dropped in alike: the fixture refuses the session its settings name and
-/// abstains on any other, and on a request that names none.
 #[tokio::test]
 async fn a_hook_reads_the_request_session_through_both_doors() {
     let run = |rows: HookRows| async move {
@@ -1193,13 +1148,6 @@ async fn a_hook_reads_the_request_session_through_both_doors() {
     );
 }
 
-/// R1 (Q-LEAK; THE DESIGN: every hook call runs on an off-worker lane carrying 1.5.5's
-/// `timeout_ms` guarantee), the LANE'S half: a gate whose `decide` sleeps past the call's budget is
-/// cut off at that budget through the axis — `TimedOut`, promptly, never the sleep waited out, and
-/// the caller's worker never parked. The kernel's half (the budget is the hook's `timeout_ms`, and a
-/// timed-out call is an error its `on_error` decides) is `dlopen_decide_deadline_cuts_off_a_slow_gate`
-/// / `dlopen_slow_gate_hits_the_deadline` in busbar-kernel's hook tests. Re-homed with the deletion of
-/// the test-hook plugin (OWNER 2026-10-03, no test plugins), whose `sleep_ms` drove both halves.
 #[tokio::test]
 async fn a_slow_hook_is_cut_off_at_its_budget_through_the_axis() {
     let axis = rows(hook_door_plugin::conforming::door, "hook_door", Way::Linked);
@@ -1224,14 +1172,6 @@ async fn a_slow_hook_is_cut_off_at_its_budget_through_the_axis() {
     );
 }
 
-/// PB-81, THE QUARANTINE RACE: a call refused at the saturated cap whose wedged instance the
-/// watchdog faults before the refusal is looked at (the order a loaded host gave
-/// [`the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_the_axis`] by chance: its
-/// freed-slot call answered `broken (hook ... answered Refused)` at 1.00 s). That call was never
-/// made — a refusal is no crossing — so it waits for the trial window within its own budget, as a
-/// call meeting the fault before it was submitted does, and is answered by the fresh instance.
-/// The refused call here is held until the watchdog has faulted the instance, so the order is met
-/// every time.
 #[tokio::test]
 async fn a_call_refused_at_the_cap_as_the_watchdog_faults_the_instance_waits_for_its_trial() {
     for configuring in [false, true] {
@@ -1240,8 +1180,7 @@ async fn a_call_refused_at_the_cap_as_the_watchdog_faults_the_instance_waits_for
             "hook_door",
             Way::Linked,
         );
-        // `sleep_ms` past the Call class budget: the watchdog faults the wedged crossings; the odd
-        // figure marks this instance's settings for the hold.
+
         let wedged: Arc<dyn busbar_contract::hook_calls::HookCalls> = axis
             .open(
                 hook_door_plugin::CONFIGURABLE_NAME,
@@ -1264,8 +1203,7 @@ async fn a_call_refused_at_the_cap_as_the_watchdog_faults_the_instance_waits_for
         for h in inflight {
             let _ = h.await;
         }
-        // Every unit is held by a wedged crossing (the callers gave up; the crossings run on), so this
-        // call is refused at the cap, held until the watchdog faults the instance, then judged.
+
         let (ready, detail) = if configuring {
             let answer = wedged
                 .configure("wedged-race", r#"{"reject_over_messages":1}"#, 2, BUDGET)
@@ -1294,14 +1232,6 @@ async fn a_call_refused_at_the_cap_as_the_watchdog_faults_the_instance_waits_for
     }
 }
 
-/// PB-81 (`max_inflight` per loaded hook; 1.5.5 pinned `MAX_INFLIGHT_HOOK_CALLS = 64`, a 1.6.0 hook
-/// states its own in its Statement): one hook is saturated with `max_inflight` calls that never
-/// return inside the test's budget. A further call must fail CLOSED on the caller's own deadline —
-/// never wait out the wedge — and once the wedged calls drain, the freed slots let service resume.
-/// The cap is backpressure, not a latch. The cap is the dispatcher's, so its proof lives here, over
-/// the loader's own hook fixture; it moved from busbar-kernel's M4 suite
-/// (`the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_resolve_one`, which drove
-/// the deleted test-hook plugin) with every assertion kept.
 #[tokio::test]
 async fn the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_the_axis() {
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig {
@@ -1345,8 +1275,7 @@ async fn the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_the
     for h in inflight {
         assert!(h.await.expect_err("the caller is abandoned").is_cancelled());
     }
-    // The abandoned caller's clone cannot read, answer or submit these buffers again while
-    // the original native crossing is still inside the fixture. Cancellation retains its lease.
+
     assert!(kept.try_lend().is_none());
     assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| kept.order(1))).is_err());
     assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1398,11 +1327,6 @@ async fn the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_the
     );
 }
 
-/// THE RULING'S HOOK CASE THROUGH THE AXIS (1.5.5 configs load unchanged): a hook config naming
-/// `module: busbar-webrequest` (the 1.5.5 release's manifest name) opens the 1.6.0 hook, DROPPED IN
-/// (its signed manifest's `former_names`, through the registry the root builds the axis over) and
-/// LINKED (the former names the root's migration table gives a linked row). RED ARMS, in the same
-/// test: without the former names neither way answers the old name.
 #[test]
 fn a_1_5_5_hook_name_opens_the_1_6_0_hook_both_ways() {
     const OLD: &str = "busbar-webrequest";
@@ -1410,7 +1334,7 @@ fn a_1_5_5_hook_name_opens_the_1_6_0_hook_both_ways() {
     let settings = json!({"reject_over_messages": 3});
     let opens = |rows: &HookRows| rows.open(OLD, "hooks.wr", &settings, BUDGET).is_ok();
     let dispatcher = || Arc::new(Dispatcher::new(DispatchConfig::default()));
-    // LINKED.
+
     let former_of = |w: &str| {
         if w == NAME {
             vec![OLD.to_string()]
@@ -1426,7 +1350,7 @@ fn a_1_5_5_hook_name_opens_the_1_6_0_hook_both_ways() {
     assert!(linked.linked(OLD) && linked.first_party(OLD));
     let bare = HookRows::new(&[door], None, dispatcher()).expect("the linked row");
     assert!(!opens(&bare), "RED: a linked row without its former name");
-    // DROPPED IN.
+
     let path = crate::both_ways::example_cdylib("hook_door");
     let lib = std::fs::read(path).expect("the example cdylib reads");
     let abi = crate::supported_abi("hook")[0];
@@ -1451,8 +1375,6 @@ fn a_1_5_5_hook_name_opens_the_1_6_0_hook_both_ways() {
     assert!(!registry.answers(OLD, "hook"));
 }
 
-/// THE ONE-OWNER RULE on the hook axis (ARCHITECT): a linked hook given a former name another hook
-/// row already answers to is refused, naming both, so the old name never resolves ambiguously.
 #[test]
 fn a_former_name_two_hooks_claim_is_refused_on_the_axis() {
     let rows = HookRows::new(
@@ -1479,10 +1401,6 @@ fn a_former_name_two_hooks_claim_is_refused_on_the_axis() {
     );
 }
 
-/// ARCHITECT Q-P4-12 ON THE HOOK AXIS: a linked hook and a DIFFERENT dropped-in hook answering one
-/// word (here the dropped-in plugin's manifest alias spells the linked hook's name) refuse the
-/// configuration, naming both; no door outranks the other. GREEN arm: the dropped-in hook under an
-/// alias of its own sits beside the linked one.
 #[test]
 fn a_linked_hook_and_a_different_dropped_in_hook_claiming_one_word_are_refused() {
     let abi = crate::supported_abi("hook")[0];
@@ -1512,10 +1430,6 @@ fn a_linked_hook_and_a_different_dropped_in_hook_claiming_one_word_are_refused()
     );
 }
 
-/// RED (THE DESIGN §11.13 M1: no plugin code, `dlopen` and `open` included, runs under a host
-/// lock): a quarantine's trial binds and opens its fresh instance with the hook's state lock let
-/// go, so a trial wedged in its bind holds no other caller — the hook still answers whether it is
-/// quarantined — and the trial then serves.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_wedged_trial_holds_no_other_caller() {
     use super::{HookInstance, State};
@@ -1547,7 +1461,6 @@ async fn a_wedged_trial_holds_no_other_caller() {
             Arc::clone(&dispatcher),
             br#"{"reject_over_messages": 3}"#,
             move || {
-                // The trial's bind, wedged until the test releases it.
                 if let Some((entered, released)) = gate.lock().unwrap().take() {
                     entered.send(()).unwrap();
                     released.recv().unwrap();
@@ -1557,7 +1470,7 @@ async fn a_wedged_trial_holds_no_other_caller() {
         )
         .expect("the hook opens"),
     );
-    // Faulted, its trial window open now.
+
     *instance.inner.lock() = State::Quarantined {
         trial_at: std::time::Instant::now(),
         window: super::QUARANTINE_FIRST,
@@ -1600,10 +1513,6 @@ async fn a_wedged_trial_holds_no_other_caller() {
     assert!(!instance.quarantined());
 }
 
-/// RED (hook ABI defect 2): a quarantine's trial opens its fresh instance over the settings the
-/// hook was opened with, then pushes the last `configure` the hook acknowledged, so an
-/// acknowledged commit outlives the faulted instance. Before, the trial's instance served the
-/// first-open settings and the commit was silently lost.
 #[tokio::test]
 async fn a_trial_keeps_the_settings_the_hook_acknowledged() {
     use super::{HookInstance, State};
@@ -1646,7 +1555,7 @@ async fn a_trial_keeps_the_settings_the_hook_acknowledged() {
         "the acknowledged settings gate: {}",
         decided(2, &a)
     );
-    // Faulted, its trial window open now.
+
     *instance.inner.lock() = State::Quarantined {
         trial_at: std::time::Instant::now(),
         window: super::QUARANTINE_FIRST,
@@ -1660,9 +1569,6 @@ async fn a_trial_keeps_the_settings_the_hook_acknowledged() {
     assert!(!instance.quarantined());
 }
 
-/// RED (the refusal prefix, H13): a hook's `configure` refusal is its own bare words, and the
-/// HOST names the hook in front of them, as it does for `open` (`plugin '<name>' open failed:`), so
-/// a plugin never spells its own name into its refusals.
 #[tokio::test]
 async fn a_configure_refusal_is_named_by_the_host() {
     use super::HookInstance;
@@ -1708,9 +1614,6 @@ async fn a_configure_refusal_is_named_by_the_host() {
     );
 }
 
-/// THE SETTINGS NEVER PRINT. An opened instance keeps the settings bytes it was opened over (a
-/// resolved bag) to re-open a fresh instance on a quarantine trial; its `Debug` names the instance
-/// and nothing else, so `{:?}` in a log line, a `tracing` field or a panic cannot carry them.
 #[test]
 fn an_instance_debug_never_shows_its_settings() {
     let rows = rows(hook_door_plugin::conforming::door, "hook_door", Way::Linked);
@@ -1742,10 +1645,6 @@ fn an_instance_debug_never_shows_its_settings() {
     }
 }
 
-/// RED (ARCHITECT ruling, status row 194): a hook that declared `hook.orders: false` is refused
-/// when its `decide` answers an order, where the host reads the answer: BROKEN naming the
-/// declaration, never the verdict. Its twin, the same door with `orders` unstated (true), is
-/// answered READY with its order, and a declaring hook that abstains is still answered READY.
 #[tokio::test]
 async fn red_a_hook_that_declared_no_orders_is_refused_when_it_orders() {
     let open = |door: DoorFn, orders: bool| {

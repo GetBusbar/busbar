@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE KERNEL JUDGES EVERY PLANE'S SECTION: a cross-plane reference, a bad pin and a bad cadence are
-//! each refused by the kernel, on the boot path and on the admin write path, with the exact
-//! sentence, for a plane whose own parse accepts everything.
-//!
-//! The plane is one busbar does not have: its section, key names and mechanism tokens are its own,
-//! and its `parse_section` accepts any document. Every refusal below is therefore the kernel's.
-
 use busbar_contract::plane::{PinMechanismDecl, TrustKeyDecl, TrustRole};
 
 use crate::config::named_map::NamedMapSection;
@@ -43,7 +36,6 @@ const KEYS: &[TrustKeyDecl] = &[
     },
 ];
 
-/// The plane's own parse: it accepts any section, so nothing it could refuse hides the kernel's rule.
 fn accept_anything(
     _: &crate::plane_driver::registry::PlaneDecl,
     _: &serde_yaml::Value,
@@ -51,7 +43,6 @@ fn accept_anything(
     Ok(Box::<crate::config::plane_sections::RawPlaneSection>::default())
 }
 
-/// A plane owning the `bays:` section and declaring two kernel trust keys.
 static BAYS_PLANE: crate::plane_driver::registry::PlaneDecl =
     crate::plane_driver::registry::PlaneDecl {
         declaration: crate::plane_driver::registry::PlaneDeclaration {
@@ -122,9 +113,6 @@ fn boot_refuses_a_bad_cadence_in_a_planes_section() {
     assert_refused(boot("  dock:\n    recheck_after: soon\n"), CADENCE_REFUSAL);
 }
 
-/// RED (ARCHITECT timeout ruling): an entry's `timeout:` is a reserved key the KERNEL judges, for a
-/// plane that names none of it: a duration is legal; an unparseable one and a zero are refused in
-/// the kernel's sentence, on the boot path and on the admin write path alike.
 #[test]
 fn boot_and_the_admin_write_path_judge_an_entrys_timeout() {
     let _isolation = crate::test_support::planes::TestRegistryIsolation::seeded(&[&BAYS_PLANE]);
@@ -148,7 +136,7 @@ fn boot_and_the_admin_write_path_judge_an_entrys_timeout() {
         refused.starts_with("`bays.dock`: `timeout: 0m` is zero"),
         "{refused}"
     );
-    // A model-serving section's entries are its `models` map's: each judged, at its own path.
+
     let models: serde_yaml::Value =
         serde_yaml::from_str("models:\n  m1: { timeout: never }\n").expect("yaml");
     let refused = validate_plane_section("bays", &models, KEYS, None, &["bays"]).unwrap_err();
@@ -158,10 +146,6 @@ fn boot_and_the_admin_write_path_judge_an_entrys_timeout() {
     );
 }
 
-/// Ported from the deleted engine crate's config tests
-/// (`the_admin_write_path_and_the_file_share_one_grammar`): the case that test held beside these, a
-/// mechanism with no authenticity root carrying key material, is refused on the write path in the
-/// kernel's one sentence.
 #[test]
 fn the_admin_write_path_refuses_what_boot_refuses() {
     let _isolation = crate::test_support::planes::TestRegistryIsolation::seeded(&[&BAYS_PLANE]);
@@ -198,9 +182,6 @@ fn the_admin_write_path_refuses_what_boot_refuses() {
         .expect("a well-formed definition is accepted");
 }
 
-/// A definition whose pin token the plane's own parse would accept but its declared `trust_keys` do
-/// not spell reads, non-strictly, as NO pin: the admin write path refuses it, as boot's strict
-/// reading does, instead of persisting a keyless root pin.
 #[test]
 fn the_admin_write_path_refuses_a_pin_token_the_declaration_does_not_spell() {
     let _isolation = crate::test_support::planes::TestRegistryIsolation::seeded(&[&BAYS_PLANE]);
@@ -240,10 +221,8 @@ fn a_section_is_judged_per_registration_in_order_skipping_reserved_words() {
     );
 }
 
-/// The words a plane uses to refuse a forwarded caller credential. The kernel never writes them.
 const FORWARD_REFUSAL: &str = "the moorings plane never forwards a caller's credential";
 
-/// A plane owning the `moorings:` section that refuses a forwarded caller credential.
 static MOORINGS_PLANE: crate::plane_driver::registry::PlaneDecl =
     crate::plane_driver::registry::PlaneDecl {
         declaration: crate::plane_driver::registry::PlaneDeclaration {
@@ -298,12 +277,6 @@ fn the_section_default_is_judged_after_its_registrations() {
     );
 }
 
-/// RED (security item 5; website `mcp.astro:497-531`, "the caller's own Busbar credential never
-/// travels upstream, in any credential mode"): A REGISTRATION'S OWN `upstream_credentials:
-/// passthrough` IS REFUSED in the plane's words, exactly as the section default is. The key is the
-/// kernel's and is stripped before the section reaches a door plane, so the plane's own validator
-/// never sees it: only the kernel can refuse it, on boot and on the admin write path alike, naming
-/// the registration. A plane that states no refusal is unchanged.
 #[test]
 fn a_registrations_own_passthrough_is_refused_in_the_planes_own_words() {
     let _isolation =

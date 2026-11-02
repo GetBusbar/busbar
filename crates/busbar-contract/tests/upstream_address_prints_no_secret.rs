@@ -2,17 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The one secret-carrying field on an upstream address, and the rendering that is not allowed to
-//! say it.
-//!
-//! `UpstreamAddress::Program` names the environment a child is spawned under, and an environment is
-//! where a credential lives. Neither the `Debug` nor the serialization is derived for exactly that
-//! reason — and neither was read back by a test, so a hand-rolled rendering that had drifted into
-//! printing the values would have been a credential in every transport author's log line and every
-//! configuration dump, with nothing failing.
-//!
-//! What the rendering MAY say is the shape: which names are set, and how long each value was. That
-//! is what a reader needs to see that the child was spawned with the variables it was configured
-//! with, and it is all they get.
 
 use busbar_contract::transport::registry::facts;
 use busbar_contract::transport::UpstreamAddress;
@@ -45,7 +34,6 @@ fn a_spawned_programs_debug_says_which_names_are_set_and_never_a_value() {
         "every value is withheld, not just the ones that look secret: {rendered}"
     );
 
-    // What a reader is owed instead: the names, and the size of what sits behind each.
     assert!(rendered.contains("GRID_API_TOKEN"), "{rendered}");
     assert!(rendered.contains("HOME"), "{rendered}");
     assert!(
@@ -54,7 +42,6 @@ fn a_spawned_programs_debug_says_which_names_are_set_and_never_a_value() {
     );
     assert!(rendered.contains("<0 bytes>"), "{rendered}");
 
-    // And the rest of the arm, which carries nothing secret and is printed plainly.
     assert!(rendered.contains("Program"), "{rendered}");
     assert!(
         rendered.contains("/usr/local/bin/grid-server"),
@@ -65,8 +52,6 @@ fn a_spawned_programs_debug_says_which_names_are_set_and_never_a_value() {
 
 #[test]
 fn a_program_with_an_empty_environment_says_so_rather_than_saying_nothing() {
-    // The posture a transport should default to: a child that inherits nothing. The rendering has to
-    // distinguish "no variables" from "a rendering that stopped working".
     let bare = UpstreamAddress::Program {
         path: "/bin/true",
         args: &[],
@@ -81,9 +66,6 @@ fn a_program_with_an_empty_environment_says_so_rather_than_saying_nothing() {
 
 #[test]
 fn the_socket_and_call_per_path_arms_print_the_facts_that_tell_a_dial_apart() {
-    // Neither arm carries a secret, and both are read off a log line while a dial is failing: the
-    // pinned address, the certificate name it is checked against, and — for the family whose wire
-    // names every call by a path — the method, now a declared extra rather than a shape of its own.
     let socket = UpstreamAddress::Socket {
         authority: "10.0.0.7:443",
         sni: Some("api.example.com"),
@@ -94,14 +76,11 @@ fn the_socket_and_call_per_path_arms_print_the_facts_that_tell_a_dial_apart() {
     assert!(rendered.contains("10.0.0.7:443"), "{rendered}");
     assert!(rendered.contains("api.example.com"), "{rendered}");
 
-    // A pinned address with no name declared says so, rather than offering the address as the name.
     let unnamed = UpstreamAddress::socket("10.0.0.7:443");
     let rendered = format!("{unnamed:?}");
     assert!(rendered.contains("None"), "{rendered}");
     assert_eq!(UpstreamAddress::socket("10.0.0.7:443").sni(), None);
 
-    // A call-per-path family is still a SOCKET — the same shape — with its method declared beside
-    // the address under the reserved key the arrival grammar already spells a method with.
     let per_path = UpstreamAddress::Socket {
         authority: "10.0.0.8:443",
         sni: None,

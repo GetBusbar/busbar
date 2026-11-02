@@ -1,46 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE KERNEL'S TRUST STATE, per instance and counterparty: what `trust.sight` judges a reported
-//! catalogue hash against, what `trust.due` answers from, and the root key `trust.verify` reads.
-//! The lifecycle is the kernel's; a plane only reports hashes and hands signatures.
-//!
-//! * **The policy** is the instance's [`TrustEntry`] map, as [`super::section`] parsed it from the
-//!   plane's declared trust keys. A counterparty the map does not name is refused, never judged.
-//! * **The pin.** A counterparty is NEW until the operator approves it (`POST
-//!   /api/v1/admin/trust/approve`, [`TrustBook::decide`]), which pins the catalogue it last
-//!   reported: a first sighting pins nothing. With no declared fingerprint,
-//!   every sighting before the approval answers [`Sight::New`]. A declared fingerprint is the
-//!   operator's INTENT, not an observation: it
-//!   approves nothing. The counterparty stays pending until the operator approves it: every
-//!   sighting answers [`Sight::New`], at the declared fingerprint or any other hash, and nothing
-//!   drifts before the approval; the last verdict is
-//!   [`Sight::New`]; the Approve step refuses it and every item there; and it is listed NEW. A
-//!   demotion replayed for it still holds it quarantined until its pin is seen again.
-//! * **Drift.** A hash other than the pin answers [`Sight::Drifted`] once and demotes the
-//!   counterparty; every sighting after that answers [`Sight::Quarantined`] until the pin is seen
-//!   again. That clean sighting clears the demotion, unless the declared recovery backoff since the
-//!   last drift has not elapsed (or the clock went backwards since it), in which case it is held,
-//!   so a counterparty that flapped recently is not believed at once. Demotion is never held. A
-//!   demotion replayed for a counterparty with no declared pin has no pin to clear it by, and stays
-//!   until the operator declares one.
-//! * **Re-verification.** No background timer: a counterparty is re-verified when a unit uses it,
-//!   never because time passed, so an upstream nobody calls is never fetched. `trust.due` answers
-//!   no counterparty.
-//! * **Durability.** Demotion and clearing are effects the caller writes through the durable
-//!   demotion record; [`TrustBook::admit`] replays the demotions it was handed.
-//! * **Approve.** The kernel's Approve step judges the trust facts a plane STATES for a unit
-//!   ([`TrustFacts`]: a counterparty, and optionally an item there at the digest it is offered at)
-//!   by [`TrustBook::judge`]; a plane judges none. Item-less facts need the counterparty approved (pinned); an item needs itself
-//!   approved at the digest offered. An item's approval is the operator's: the configured one
-//!   ([`TrustEntry::approved`], re-read at every admit) under the core-admin decision
-//!   ([`TrustBook::decide`]), which wins. An item sighted at another digest than its approval is
-//!   DEMOTED: refused at any digest, a revert included, until the operator decides it again, and
-//!   the demotion is kept durably with the operator's decisions.
-//! * **Unreachable.** A sighting the plane could not make ([`TrustBook::last_verdict`]) answers
-//!   the last verdict and changes nothing: an upstream that stopped answering is neither drifted
-//!   nor cleared by it.
-
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -153,9 +113,6 @@ impl Subject {
         }
     }
 
-    /// A REGISTRATION WITH NO AUTHENTICITY ROOT APPROVES NOTHING ([`Undecided::Rootless`]): drop
-    /// every approval it holds, the counterparty's pin and each item grant, and keep only the
-    /// operator's revocations.
     fn unroot(&mut self) {
         self.pinned = None;
         self.pending = false;
@@ -163,7 +120,6 @@ impl Subject {
         self.granted.retain(|_, at| at.is_none());
     }
 
-    /// The digest `item` is approved at: the operator's decision, else the configured approval.
     fn approval<'a>(&'a self, entry: &'a TrustEntry, item: &str) -> Option<&'a str> {
         match self.granted.get(item) {
             Some(decided) => decided.as_deref(),
@@ -171,13 +127,10 @@ impl Subject {
         }
     }
 
-    /// Nothing at the counterparty is approved: never pinned, revoked, or pending on a declared
-    /// fingerprint the operator never approved.
     fn unapproved(&self) -> bool {
         self.pinned.is_none() || self.revoked || self.pending
     }
 
-    /// The verdict a sighting of the pinned state answers, without one being made.
     fn verdict(&self) -> Sight {
         if self.quarantined {
             Sight::Quarantined
@@ -188,7 +141,6 @@ impl Subject {
         }
     }
 
-    /// The counterparty's administrative state.
     fn state(&self) -> KeyState {
         if self.quarantined {
             if self.last_seen.is_some() && self.last_seen != self.pinned {
@@ -205,13 +157,11 @@ impl Subject {
         }
     }
 
-    /// One item's administrative state.
     fn item_state(&self, entry: &TrustEntry, item: &str) -> KeyState {
         if self.quarantined {
             return KeyState::Quarantined;
         }
         if self.demoted.contains(item) {
-            // Still offered at what moved: drifted; back at its approval: held, quarantined.
             return match (self.approval(entry, item), self.items.get(item)) {
                 (Some(at), Some(seen)) if at == seen => KeyState::Quarantined,
                 _ => KeyState::Drifted,
@@ -243,7 +193,6 @@ pub enum KeyState {
 }
 
 impl KeyState {
-    /// The word the admin surface writes.
     #[must_use]
     pub const fn word(self) -> &'static str {
         match self {
@@ -274,7 +223,6 @@ pub struct KeyRow {
 }
 
 impl KeyRow {
-    /// The key, `<instance>/<counterparty>[/<item>]`.
     #[must_use]
     pub fn key(&self) -> String {
         match &self.item {
@@ -294,11 +242,6 @@ pub enum Ruling {
     Revoke,
 }
 
-/// THE SIGHTING OF A DOCUMENT THAT FAILED ITS VERIFICATION: a plane that fetched a counterparty's
-/// document and could not verify it (against its pin, its signature or its root) reports this word
-/// in place of a fingerprint. No fingerprint is ever this word, so a pinned counterparty sighted
-/// under it drifts, and nothing is ever approved at it ([`Undecided::Unverified`]): an approval
-/// approves what was seen AND verified, by the generic verb and a plane's typed one alike.
 pub const UNVERIFIED_SIGHTING: &str = "unverified";
 
 /// Why a decision was not made.
@@ -359,8 +302,6 @@ struct Book {
     deciding: std::collections::BTreeSet<(String, Option<String>)>,
 }
 
-/// One local mutation of a durable decision key. This is ownership, never a held host mutex:
-/// Store callbacks may re-enter and other keys may progress. Every exit retires the owner.
 pub(crate) struct DecisionPermit {
     trust: TrustBook,
     instance: String,
@@ -369,8 +310,6 @@ pub(crate) struct DecisionPermit {
 }
 
 impl DecisionPermit {
-    /// An item sighting acquired only ownership; a resulting durable demotion also needs a
-    /// completion boundary, including when the Store refuses or unwinds.
     pub(crate) fn demoted(&mut self) {
         self.invalidate_on_drop = true;
     }
@@ -400,12 +339,9 @@ impl Drop for DecisionPermit {
     }
 }
 
-/// Local generations captured before crossing the Store read. At most the admitted subjects are
-/// retained, and dropping the read drops every old generation it captured.
 pub(crate) struct DecisionSnapshot(HashMap<Arc<str>, BTreeMap<String, Arc<()>>>);
 
 impl Book {
-    /// `name`'s entry and state; a declared counterparty never sighted reads as declared.
     fn subject(&self, name: &str) -> Option<(&TrustEntry, Cow<'_, Subject>)> {
         let entry = self.entries.get(name)?;
         let s = self
@@ -415,7 +351,6 @@ impl Book {
         Some((entry, s))
     }
 
-    /// `name`'s entry and its state to change, made from the declaration on first use.
     fn subject_mut(&mut self, name: &str) -> Option<(&TrustEntry, &mut Subject)> {
         let entry = self.entries.get(name)?;
         let s = self
@@ -426,7 +361,6 @@ impl Book {
     }
 }
 
-/// Replay only onto the declaration the row was made under, without crossing a Store boundary.
 fn replay_decision(book: &mut Book, row: &RulingRow) {
     if book
         .deciding
@@ -440,7 +374,7 @@ fn replay_decision(book: &mut Book, row: &RulingRow) {
     if row.declared != entry.pin || (row.approved.is_some() && entry.rootless()) {
         return;
     }
-    // An approval kept at the placeholder of a failed verification approves nothing.
+
     if row.approved.as_deref() == Some(UNVERIFIED_SIGHTING) {
         return;
     }
@@ -472,8 +406,6 @@ impl TrustBook {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Refuse overlapping writers of exactly this durable key, before any mutation or Store call.
-    /// The existing stale-decision refusal asks the caller to retry after the current owner.
     pub(crate) fn begin_decision(
         &self,
         instance: &str,
@@ -483,7 +415,6 @@ impl TrustBook {
         self.begin_mutation(instance, counterparty, item, true)
     }
 
-    /// Ordinary observations do not invalidate a fleet snapshot; only a resulting demotion does.
     pub(crate) fn begin_sighting(
         &self,
         instance: &str,
@@ -541,8 +472,6 @@ impl TrustBook {
         )
     }
 
-    /// Check and replay under the same guard: an old read cannot stand over a newer completed
-    /// local decision. A read spanning a failed/unknown write is also retried next window.
     pub(crate) fn resync_decided(&self, snapshot: &DecisionSnapshot, rows: &[RulingRow]) {
         let mut map = self.lock();
         for row in rows {
@@ -563,12 +492,6 @@ impl TrustBook {
         }
     }
 
-    /// Admit (or re-admit) `instance` with its parsed trust entries. `demoted` are the durable
-    /// demotions to replay, `(counterparty, recorded at, ms)`; one for a counterparty the entries do
-    /// not name is ignored. On a re-admit a counterparty keeps its state unless its declared pin
-    /// changed in ANY part (mechanism, root, key or fingerprint), which starts it afresh: pending
-    /// again until the operator approves it. An identity change never rides the old approval, and a
-    /// registration with no authenticity root keeps no approval at all.
     pub fn admit<'a>(
         &self,
         instance: &Arc<str>,
@@ -578,7 +501,6 @@ impl TrustBook {
         self.admit_with_decisions(instance, entries, demoted, &[]);
     }
 
-    /// Install the declaration and its first-admission replay atomically with local decisions.
     pub(crate) fn admit_with_decisions<'a>(
         &self,
         instance: &Arc<str>,
@@ -620,11 +542,6 @@ impl TrustBook {
         map.insert(Arc::clone(instance), book);
     }
 
-    /// Judge `hash`, reported for `counterparty` of `instance`, at `now_ms` on the kernel's clock.
-    ///
-    /// # Errors
-    ///
-    /// [`Unjudged`] for an instance never admitted or a counterparty it does not declare.
     pub fn sight(
         &self,
         instance: &str,
@@ -642,18 +559,13 @@ impl TrustBook {
         s.last_seen = Some(hash.to_string());
         let pinned = s.pinned.as_deref();
         if pinned.is_none() && s.quarantined {
-            // A replayed demotion with no pin to judge a clean answer by: held until the operator
-            // approves one. A restart is never the way out of a quarantine.
             return Ok((Sight::Quarantined, Effect::None));
         }
         if pinned.is_none() {
-            // NEW until the operator approves what it reports: a first sighting pins nothing.
             return Ok((Sight::New, Effect::None));
         }
         let at_pin = pinned == Some(hash);
         if s.pending && !s.quarantined {
-            // A declared fingerprint never approved: pending whatever is reported, and nothing
-            // drifts before the approval, at the declared fingerprint or any other hash.
             s.confirmed = at_pin;
             return Ok((Sight::New, Effect::None));
         }
@@ -688,13 +600,6 @@ impl TrustBook {
         ))
     }
 
-    /// THE LAST VERDICT for `counterparty` of `instance`, for a sighting the plane could NOT make
-    /// (its re-fetch failed: `TRUST_UNREACHABLE`). Nothing changes: an upstream that stopped
-    /// answering has neither drifted nor recovered, and its re-verification mark stands.
-    ///
-    /// # Errors
-    ///
-    /// [`Unjudged`] for an instance never admitted or a counterparty it does not declare.
     pub fn last_verdict(&self, instance: &str, counterparty: &str) -> Result<Sight, Unjudged> {
         let map = self.lock();
         let book = map.get(instance).ok_or(Unjudged::UnknownInstance)?;
@@ -704,12 +609,6 @@ impl TrustBook {
         Ok(s.verdict())
     }
 
-    /// The root key `instance` declares for `counterparty`: its pin's material when the pin is an
-    /// authenticity root, else `None`.
-    ///
-    /// # Errors
-    ///
-    /// [`Unjudged`] for an instance never admitted or a counterparty it does not declare.
     pub fn root_key(&self, instance: &str, counterparty: &str) -> Result<Option<String>, Unjudged> {
         let map = self.lock();
         let book = map.get(instance).ok_or(Unjudged::UnknownInstance)?;
@@ -724,25 +623,6 @@ impl TrustBook {
             .and_then(|p| p.key.clone()))
     }
 
-    /// THE OPERATOR'S DECISION about one trust key (`POST /api/v1/admin/trust/approve` and
-    /// `/revoke`): `item: None` decides the counterparty, `Some` one item there. Idempotent: the
-    /// same decision twice leaves the same state and answers the same row.
-    ///
-    /// * Approving a counterparty pins the catalogue hash it last reported (else its declared one)
-    ///   and clears its quarantine and any revocation; revoking it refuses everything at it.
-    /// * Approving an item adopts the digest it was last sighted at (else the one it is approved
-    ///   at); revoking it refuses it, over its configured approval.
-    ///
-    /// Answers the key's row and the durable fact to keep.
-    ///
-    /// # Errors
-    ///
-    /// [`Undecided::NoSuchKey`] for a key no admitted instance has; [`Undecided::NothingSighted`]
-    /// for an approval with nothing ever sighted (or declared) to approve at;
-    /// [`Undecided::Rootless`] for an approval at a counterparty with no authenticity root; and
-    /// [`Undecided::Stale`] for an approval whose `expected` fingerprint is not the current
-    /// sighting or whose key another local mutation owns; and [`Undecided::Unverified`] for an
-    /// approval at a sighting that failed its verification ([`UNVERIFIED_SIGHTING`]).
     pub fn decide(
         &self,
         instance: &str,
@@ -757,14 +637,6 @@ impl TrustBook {
         Ok((row, fact))
     }
 
-    /// THE DECISION, JUDGED AND NOT YET TAKEN: what [`Self::decide`] would do, as the durable fact
-    /// to keep, with the book unchanged. The caller keeps the fact durably and only then takes it
-    /// ([`Self::apply`]), so a decision that could not be kept never takes effect in this process
-    /// (the trust lifecycle and its record are durable kernel state).
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::decide`].
     pub fn rule(
         &self,
         instance: &str,
@@ -779,7 +651,7 @@ impl TrustBook {
         if decision == Ruling::Approve && entry.rootless() {
             return Err(Undecided::Rootless);
         }
-        // APPROVE WHAT YOU SAW: a stated fingerprint must be the key's current sighting.
+
         if let (Ruling::Approve, Some(expected)) = (decision, expected) {
             let current = match item {
                 None => s.last_seen.as_deref(),
@@ -820,8 +692,7 @@ impl TrustBook {
                 }
             }
         };
-        // NEVER PIN WHAT WAS NOT VERIFIED: whichever verb asks, with or without an expected
-        // fingerprint, the placeholder of a failed verification is never approved.
+
         if approved.as_deref() == Some(UNVERIFIED_SIGHTING) {
             return Err(Undecided::Unverified);
         }
@@ -835,17 +706,6 @@ impl TrustBook {
         })
     }
 
-    /// TAKE a decision [`Self::rule`] judged (and the caller kept): approving a counterparty pins
-    /// what it was approved at and clears its quarantine and any revocation; revoking it refuses
-    /// everything at it; an item decision is the operator's grant, over its configured approval.
-    /// Answers the key's row after it.
-    ///
-    /// # Errors
-    ///
-    /// [`Undecided::NoSuchKey`] when the instance or counterparty left the book since the ruling;
-    /// [`Undecided::Stale`] when its declaration changed since (the kept fact then replays over
-    /// nothing either) or another local mutation owns its key; [`Undecided::Rootless`] for an
-    /// approval at a counterparty with no authenticity root.
     pub fn apply(&self, fact: &RulingRow) -> Result<KeyRow, Undecided> {
         let permit =
             self.begin_decision(&fact.instance, &fact.counterparty, fact.item.as_deref())?;
@@ -897,12 +757,6 @@ impl TrustBook {
         ))
     }
 
-    /// Replay the operator's durable decisions for `instance` (each [`RulingRow`] naming it), in
-    /// order, onto its state: what [`Self::decide`] did before the restart. A row for a
-    /// counterparty the instance no longer declares is ignored, and so is one made under another
-    /// declaration than the counterparty's current one ([`RulingRow::declared`]): a restart starts
-    /// a changed declaration afresh exactly as an in-process re-admit does. No approval
-    /// replays onto a registration with no authenticity root.
     pub fn admit_decided<'a>(&self, instance: &str, rows: impl IntoIterator<Item = &'a RulingRow>) {
         let mut map = self.lock();
         let Some(book) = map.get_mut(instance) else {
@@ -916,9 +770,6 @@ impl TrustBook {
         }
     }
 
-    /// EVERY TRUST KEY of every admitted instance and its state, ordered by instance, counterparty
-    /// and item (each counterparty before its items): the counterparties every instance declares,
-    /// and the items each has sighted or approved.
     #[must_use]
     pub fn rows(&self) -> Vec<KeyRow> {
         let map = self.lock();
@@ -944,14 +795,6 @@ impl TrustBook {
         out
     }
 
-    /// Record the digest one ITEM of `counterparty` is offered at now, from the plane's live
-    /// re-fetch: the per-item sighting the kernel judges drift by. [`Sight::New`] the first,
-    /// [`Sight::Same`] the last one's digest, [`Sight::Drifted`] another, [`Sight::Quarantined`]
-    /// when the counterparty is (the sighting is still recorded).
-    ///
-    /// # Errors
-    ///
-    /// [`Unjudged`] for an instance never admitted or a counterparty it does not declare.
     pub fn sight_item(
         &self,
         instance: &str,
@@ -963,13 +806,6 @@ impl TrustBook {
             .map(|(sight, _)| sight)
     }
 
-    /// [`Self::sight_item`], and THE ITEM'S DEMOTION to keep durably when this sighting moved it
-    /// from its approval (configured or the operator's): the item is refused from now on, at any
-    /// digest, a revert included, until the operator decides it again.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::sight_item`].
     pub fn sight_item_kept(
         &self,
         instance: &str,
@@ -1011,15 +847,6 @@ impl TrustBook {
         Ok((sight, demotion))
     }
 
-    /// THE KERNEL'S APPROVE over the trust facts a plane stated for a unit of `instance`: the
-    /// counterparty is declared, not quarantined, not revoked and not pending on a declared
-    /// fingerprint the operator never approved. Item-less facts then need the counterparty's
-    /// catalogue approved (pinned); a named item needs itself approved there at exactly the digest
-    /// it is offered at (the operator's grant, else the configured approval).
-    ///
-    /// # Errors
-    ///
-    /// The [`Distrust`] that refuses the unit.
     pub fn judge(&self, instance: &str, facts: &TrustFacts<'_>) -> Result<(), Distrust> {
         let map = self.lock();
         let book = map.get(instance).ok_or(Distrust::Unknown)?;
@@ -1028,12 +855,9 @@ impl TrustBook {
             return Err(Distrust::Quarantined);
         }
         if s.revoked || s.pending {
-            // Revoked, or a declared fingerprint the operator never approved: nothing at the
-            // counterparty is trusted, its items included.
             return Err(Distrust::NotApproved);
         }
         let Some(item) = facts.item else {
-            // Item-less: the counterparty's catalogue must be approved (pinned).
             return match (&s.pinned, &s.last_seen) {
                 (Some(_), _) => Ok(()),
                 (None, None) => Err(Distrust::Unsighted),
@@ -1041,7 +865,6 @@ impl TrustBook {
             };
         };
         if s.demoted.contains(item) {
-            // Moved from its approval once: refused at any digest until the operator decides it.
             return Err(Distrust::Changed);
         }
         let offered = facts
@@ -1056,25 +879,19 @@ impl TrustBook {
                 Err(Distrust::UnknownItem)
             }
             None => Err(Distrust::NotApproved),
-            // APPROVED AND NEVER SIGHTED (a configured approval before the plane's first
-            // re-fetch): nothing to compare the approval against, so pending, never changed and
-            // never serving. The first sighting then compares: match serves, mismatch is changed.
+
             Some(_) if offered.is_none() => Err(Distrust::Unsighted),
             Some(at) if Some(at) == offered => Ok(()),
             Some(_) => Err(Distrust::Changed),
         }
     }
 
-    /// The counterparties of `instance` due a re-verification: none, ever. No background timer
-    /// re-fetches an upstream; a unit that uses one re-verifies it. `None` for an instance never
-    /// admitted.
     #[must_use]
     pub fn due(&self, instance: &str) -> Option<Vec<String>> {
         self.lock().get(instance).map(|_| Vec::new())
     }
 }
 
-/// One key's row.
 fn row_of(
     instance: &str,
     counterparty: &str,

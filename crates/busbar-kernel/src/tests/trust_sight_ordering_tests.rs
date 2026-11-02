@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Queued whole-counterparty demotions keep the same key owner through their Store effect.
-
 use super::*;
 use crate::store::plane_view::KIND_DEMOTION;
 use busbar_contract::records::RecordStoreResult;
@@ -32,7 +30,7 @@ fn a_queued_drift_cannot_resurrect_quarantine_after_a_completed_approval() {
         Some(CHANGED),
         true,
     );
-    // The pending whole-subject effect holds only its own key; item decisions still progress.
+
     node.decide_key(
         INSTANCE,
         COUNTERPARTY,
@@ -53,7 +51,7 @@ fn a_queued_drift_cannot_resurrect_quarantine_after_a_completed_approval() {
     assert_eq!(demotion_rows(&r).len(), 1);
     let before_approval = super::node(&r, &Arc::new(Probe::default()), Arc::new(Inline));
     assert_eq!(judged(&before_approval, None), Err(Distrust::Quarantined));
-    // Retrying after the drift is durable approves the current sighting and clears that record.
+
     node.trust_rule(WHOLE_KEY, Ruling::Approve).unwrap();
     assert!(demotion_rows(&r).is_empty());
     assert_eq!(judged(&node, None), Ok(()));
@@ -98,7 +96,7 @@ fn dropping_an_unrun_drift_retires_ownership_before_answering_its_caller() {
     ));
     let jobs = std::mem::take(&mut *held.0.lock().unwrap());
     assert_eq!(jobs.len(), 1);
-    // Drop outside the pool guard: the owed answer legitimately re-enters the kernel and Store.
+
     drop(jobs);
     assert!(answered.load(Ordering::SeqCst));
     assert_eq!(judged(&node, None), Ok(()));

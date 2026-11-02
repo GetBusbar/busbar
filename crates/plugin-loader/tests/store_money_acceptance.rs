@@ -1,57 +1,26 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE STORE MONEY ACCEPTANCE SUITE: the store kind's count contract (the ledger money derives from).
-//!
-//! Written BEFORE the store v3 table exists, as the contract its implementer must meet. Every
-//! money-relevant store behaviour has a test here:
-//!
-//! - **Runs today** against the build's store on every door it has — the
-//!   LINKED row, the DROPPED-IN cdylib over the C ABI, and the store adapter the root binds. These
-//!   pin what 1.5.5 did and 1.6.0 must keep.
-//! - **The count batches** (`v3_*`), through the store v3 table on the build's store's compiled-in
-//!   door ([`v3::bind`]): `op_id` dedupe on the coalesced batches. The wire has no "duplicate"
-//!   answer (a replay answers the ORIGINAL answer), so a replay is asserted as the same answer with
-//!   the counts unchanged; the memory store is EPHEMERAL (its tail says so), so the restart arm
-//!   asserts that statement, and the durable arm is the store conformance suite's.
-//!
-//! No store holds money: money is counts x the rate card, derived in core.
-//!
-//! The 1.5.5 source these pin is cited per test (`v1.5.5:crates/busbar/src/governance/state.rs`
-//! `flush_metering`/`record_metering`, `v1.5.5:crates/api/src/store.rs`, `v1.5.5:crates/store-memory`).
-//! The money invariants are the `money-invariants` gate rows (`xtask/src/gates/money_invariants.rs`):
-//! `:no-stored-price` (#77(3)), `:no-plugin-keyed-money` (#77(1)); `:single-seal-site` (#77(2)) is a
-//! kernel-crate rule the store has no surface for, so it is not restated here.
-
 use busbar_contract::records::{
     AuditRecord, MeteringDelta, MeteringRow, ModelTokensDelta, RecordStore, UsageDelta,
     UsageLedger, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT,
 };
-// The build's store, named once: every subject below reaches it through this alias.
+
 use busbar_plugin_loader::store_adapter::StoreAdapter;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-// The build's store, reached BY KIND (`store_fixture`, `STORE_FIXTURE_CDYLIB`): `build.rs` writes them
-// from the `[package.metadata.busbar.both-ways] store` row, so this suite names no store instance.
 include!(concat!(env!("OUT_DIR"), "/store_fixture.rs"));
 
-/// A FRESH store through the fixture's one constructor (the one both its doors reach), as its Rust
-/// type behind the record-store face.
 fn fresh() -> Arc<dyn RecordStore> {
     Arc::from(store_fixture::open("{}").expect("the store opens"))
 }
 
-// ── subjects: every door the build's store has ─────────────────────────────────────────────────
-
-/// One store under test, named for the door it was reached through.
 struct Subject {
     door: &'static str,
     store: Arc<dyn RecordStore>,
 }
 
-/// A FRESH store on every door: its Rust type, the compiled-in door through the store v3 table,
-/// the root's adapter over that, and the dropped-in door through the same table.
 fn subjects() -> Vec<Subject> {
     vec![
         Subject {
@@ -72,8 +41,6 @@ fn subjects() -> Vec<Subject> {
         },
     ]
 }
-
-// ── builders ───────────────────────────────────────────────────────────────────────────────────
 
 fn delta(requests: i64, billable: i64, model: &str, units: &[(&str, i64)]) -> UsageDelta {
     UsageDelta {
@@ -138,9 +105,6 @@ fn sorted(mut rows: Vec<MeteringRow>) -> Vec<MeteringRow> {
 
 const DAY: u64 = 1_790_000_000 - (1_790_000_000 % 86_400);
 
-// ── usage ledger: reserve (admission) / settle (accrual) / refund, per cell ────────────────────
-
-/// 1.5.5 `Store::get_usage`: an untouched (bucket, window) reads as the empty ledger, not an error.
 #[test]
 fn an_untouched_cell_reads_the_empty_ledger() {
     for s in subjects() {
@@ -149,8 +113,6 @@ fn an_untouched_cell_reads_the_empty_ledger() {
     }
 }
 
-/// 1.5.5 `flush_budgets`: each flush sends only the delta since the acked baseline, so two flushes
-/// of one cell must SUM on the store.
 #[test]
 fn add_usage_is_additive_across_flushes() {
     for s in subjects() {
@@ -171,8 +133,6 @@ fn add_usage_is_additive_across_flushes() {
     }
 }
 
-/// `RecordStore::add_usage` doc: the FLEET-HONEST primitive — N nodes flushing interleaved deltas
-/// into one cell read back the fleet total, never last-writer-wins.
 #[test]
 fn nodes_flushing_one_cell_sum_to_the_fleet_total() {
     for s in subjects() {
@@ -189,11 +149,6 @@ fn nodes_flushing_one_cell_sum_to_the_fleet_total() {
     }
 }
 
-/// 1.5.5 `BudgetCell`: admission charges `requests` AND `billable_requests`; a non-2xx refund
-/// decrements ONLY `billable_requests` (`refund_bucket`). The store must carry the two counters
-/// independently — `requests` is never refunded (the requests-cap truth). abi-brief M3: a
-/// translate-abort is never billed and the budget unit refunds separately; at the store that is
-/// exactly this admit-then-refund pair with no token accrual.
 #[test]
 fn a_refund_moves_billable_requests_only() {
     for s in subjects() {
@@ -209,8 +164,6 @@ fn a_refund_moves_billable_requests_only() {
     }
 }
 
-/// Settle: provider-reported usage accrues per (model, unit), each tier separately, open classes
-/// beside the reserved four, and models never merge.
 #[test]
 fn settle_accrues_per_model_and_per_unit() {
     for s in subjects() {
@@ -257,8 +210,6 @@ fn settle_accrues_per_model_and_per_unit() {
     }
 }
 
-/// 1.5.5 `apply_delta` (`saturating_add_signed`): a refund can never drive a durable counter
-/// negative — every counter floors at 0, independently.
 #[test]
 fn a_refund_larger_than_the_balance_floors_at_zero() {
     for s in subjects() {
@@ -274,9 +225,6 @@ fn a_refund_larger_than_the_balance_floors_at_zero() {
     }
 }
 
-/// ORDERING (1.5.5): because the floor clips at apply time, deltas do NOT commute across it. A
-/// refund that lands before its charge is eaten by the floor; the charge then stands. The store
-/// applies in arrival order and must not reorder or net deltas itself.
 #[test]
 fn the_floor_makes_arrival_order_matter() {
     for s in subjects() {
@@ -299,8 +247,6 @@ fn the_floor_makes_arrival_order_matter() {
     }
 }
 
-/// 1.5.5 `apply_model_delta`: a model is appended on first sight, so `models` reads back in
-/// first-seen order (the ledger is a Vec, and consumers iterate it).
 #[test]
 fn models_read_back_in_first_seen_order() {
     for s in subjects() {
@@ -315,7 +261,6 @@ fn models_read_back_in_first_seen_order() {
     }
 }
 
-/// The cell is (bucket, window): neither axis bleeds into another cell.
 #[test]
 fn cells_are_independent_per_bucket_and_window() {
     for s in subjects() {
@@ -338,7 +283,6 @@ fn cells_are_independent_per_bucket_and_window() {
     }
 }
 
-/// `put_usage` is the absolute single-writer set; `add_usage` after it accumulates on top.
 #[test]
 fn put_usage_sets_absolutely_and_add_usage_adds_on_top() {
     for s in subjects() {
@@ -363,8 +307,6 @@ fn put_usage_sets_absolutely_and_add_usage_adds_on_top() {
     }
 }
 
-/// COALESCING (1.5.5 `flush_budgets`): a busy cell's many responses leave the node as ONE delta per
-/// flush. One coalesced delta must land exactly as the N single deltas it stands for.
 #[test]
 fn one_coalesced_usage_delta_equals_its_singles() {
     for s in subjects() {
@@ -393,7 +335,6 @@ fn one_coalesced_usage_delta_equals_its_singles() {
     }
 }
 
-/// Counters saturate at `u64::MAX`; they never wrap to a small balance.
 #[test]
 fn usage_counters_saturate_not_wrap() {
     for s in subjects() {
@@ -424,11 +365,6 @@ fn usage_counters_saturate_not_wrap() {
     }
 }
 
-// ── metering: the billing ledger, coalesced per cell ───────────────────────────────────────────
-
-/// 1.5.5 `record_metering` + `flush_metering`: responses coalesce per (key, day-bucket, model,
-/// provider) and leave as ONE `MeteringDelta` whose `requests` is the response count. The store
-/// adds it whole: the row counts every response, not one per delta.
 #[test]
 fn a_coalesced_metering_delta_counts_every_response() {
     for s in subjects() {
@@ -446,7 +382,6 @@ fn a_coalesced_metering_delta_counts_every_response() {
     }
 }
 
-/// The metering cell key is (key, bucket, model, provider): any one differing opens its own row.
 #[test]
 fn the_metering_cell_is_key_bucket_model_provider() {
     for s in subjects() {
@@ -486,7 +421,6 @@ fn the_metering_cell_is_key_bucket_model_provider() {
     }
 }
 
-/// DECISION #79 (1.6.0, signed): a rate-card edit inside a day SPLITS the day's cell at the edit.
 #[test]
 fn a_rate_card_edit_splits_the_metering_day() {
     for s in subjects() {
@@ -549,7 +483,6 @@ fn metering_rows_keep_each_groups_and_versions_counts() {
     }
 }
 
-/// `list_metering(bucket)` answers exactly that day and nothing adjacent.
 #[test]
 fn list_metering_answers_only_the_bucket_asked() {
     for s in subjects() {
@@ -574,7 +507,6 @@ fn list_metering_answers_only_the_bucket_asked() {
     }
 }
 
-/// Every metering counter, open classes included, is additive and saturates rather than wraps.
 #[test]
 fn metering_counters_add_and_saturate() {
     for s in subjects() {
@@ -596,10 +528,6 @@ fn metering_counters_add_and_saturate() {
     }
 }
 
-// ── 1.5.5 records ──────────────────────────────────────────────────────────────────────────────
-
-/// A metering row exactly as 1.5.5 persisted it decodes with the same counts, dated at the opening
-/// card (`priced_from_ms` 0) and with no open classes.
 #[test]
 fn a_1_5_5_metering_row_reads_the_same_counts() {
     let v155 = r#"{"key_id":"k","model":"m","provider":"p","tokens_input":1,"tokens_output":2,"tokens_cache_read":3,"tokens_cache_write":4,"requests":5,"billable_requests":4,"key_group_at_use":"g","pricing_version":"v"}"#;
@@ -618,9 +546,6 @@ fn a_1_5_5_metering_row_reads_the_same_counts() {
     assert_eq!((r.priced_from_ms, r.usage_units.len()), (0, 0));
 }
 
-/// The audit record shape is unchanged since 1.5.5: bytes in are bytes out, so a hash chain written
-/// by 1.5.5 and read back through `list_audit` verifies after the upgrade. (No store op appends one
-/// any more: 1.6.0 writes its audit as plane records.)
 #[test]
 fn an_audit_record_round_trips_byte_identical_to_1_5_5() {
     let v155 = r#"{"seq":1,"ts":1790000000,"action":"key.create","resource":"key:k","outcome":"applied","principal":"admin","prev_hash":"","hash":"ab12"}"#;
@@ -628,10 +553,6 @@ fn an_audit_record_round_trips_byte_identical_to_1_5_5() {
     assert_eq!(serde_json::to_string(&rec).expect("encode"), v155);
 }
 
-// ── money invariants (money-invariants gate rows, held at runtime over what the store carries) ──
-
-/// The JSON field names a record serializes to, recursively (map KEYS under `usage_units` are data,
-/// not fields, so maps are not descended).
 fn field_names(v: &serde_json::Value, out: &mut Vec<String>) {
     match v {
         serde_json::Value::Object(m) => {
@@ -647,7 +568,6 @@ fn field_names(v: &serde_json::Value, out: &mut Vec<String>) {
     }
 }
 
-/// Every money record the store carries, fully populated.
 fn money_record_fields() -> Vec<String> {
     let mut ledger = UsageLedger::default();
     ledger.apply_delta(&delta(1, 1, "m", &[(UNIT_INPUT, 1), ("tool_calls", 1)]));
@@ -669,8 +589,6 @@ fn money_record_fields() -> Vec<String> {
     out
 }
 
-/// `money-invariants:no-stored-price` (#77(3)): the store carries RAW COUNTS only; no money record
-/// field is a price/spend/amount figure. Token and allow lists are the gate's own.
 #[test]
 fn money_records_carry_counts_never_a_price() {
     const PRICE: &[&str] = &[
@@ -685,7 +603,6 @@ fn money_records_carry_counts_never_a_price() {
     assert!(bad.is_empty(), "stored price field(s): {bad:?}");
 }
 
-/// `money-invariants:no-plugin-keyed-money` (#77(1)): no money record field names a plugin or plane.
 #[test]
 fn money_records_name_no_plugin_or_plane() {
     let bad: Vec<String> = money_record_fields()
@@ -695,8 +612,6 @@ fn money_records_name_no_plugin_or_plane() {
     assert!(bad.is_empty(), "plugin-keyed money field(s): {bad:?}");
 }
 
-/// The adapter's published money ops reach the ONE loaded store: a flush through the adapter is
-/// read back from the store itself, figure for figure.
 #[test]
 fn the_adapter_passes_money_through_to_the_loaded_store() {
     let inner = fresh();
@@ -719,10 +634,6 @@ fn the_adapter_passes_money_through_to_the_loaded_store() {
     assert_eq!(inner.list_metering(DAY).expect("list")[0].requests, 2);
 }
 
-// ── store v3: the count batches through the table ──────────────────────────────────────────────
-
-/// The store v3 count batches, bound to the build's store through the ONE loader and the store v3
-/// table.
 mod v3 {
     use std::sync::Arc;
 
@@ -740,7 +651,6 @@ mod v3 {
 
     pub use busbar_contract::abi::store::OpId;
 
-    /// This test process's `op_id` allocator: one counter, as the kernel's `door::op_id` is.
     fn mint() -> OpId {
         static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         OpId::from_parts(
@@ -759,7 +669,6 @@ mod v3 {
         }
     }
 
-    /// The build's store through its compiled-in door.
     pub fn compiled_in() -> LoadedStore {
         let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
         let row = LinkedRow::of(store_fixture::door).expect("the store states its Statement");
@@ -767,8 +676,6 @@ mod v3 {
         LoadedStore::open(p, d, b"{}", mint).expect("open")
     }
 
-    /// The same door dropped in (the `store_v3_door` example cdylib) through the same table. Not
-    /// built, a hard failure naming the command that builds it, never a skip.
     pub fn dropped_in() -> LoadedStore {
         let exe = std::env::current_exe().expect("the test binary's path");
         let name = format!(
@@ -789,13 +696,12 @@ mod v3 {
             );
         }
         let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
-        // The signed manifest's rendering: the linked rlib's door, the same crate the cdylib is.
+
         let stated = rendering_of(store_fixture::door).expect("the store renders its Statement");
         let p = load_dropped::<Store>(&path, &stated, bind_to(&d)).expect("dropped door");
         LoadedStore::open(p, d, b"{}", mint).expect("open")
     }
 
-    /// One store, bound, with a runtime to await its calls on.
     pub struct Bound {
         pub store: LoadedStore,
         rt: tokio::runtime::Runtime,
@@ -835,8 +741,7 @@ mod v3 {
         pub fn list_metering(&self, bucket: u64) -> Vec<MeteringRow> {
             RecordStore::list_metering(&self.store, bucket).expect("list_metering")
         }
-        /// Close and reopen: a process restart. The memory store states it is ephemeral, so the
-        /// reopened store holds nothing, its dedupe log included.
+
         pub fn restart(self) -> Bound {
             assert!(
                 self.facts().ephemeral,
@@ -853,9 +758,6 @@ fn op(n: u8) -> v3::OpId {
     v3::OpId([n; 16])
 }
 
-/// A duplicate batch (a flush retried after a lost ack) applies ONCE — every cell in it. 1.5.5 was
-/// at-least-once here (`BudgetCell.flushed_requests` doc: a lost ack double-counts one interval);
-/// the op_id makes it exactly-once. The replay answers what the first call answered.
 #[test]
 fn v3_a_duplicate_usage_batch_applies_once() {
     let s = v3::bind();
@@ -874,9 +776,6 @@ fn v3_a_duplicate_usage_batch_applies_once() {
     assert_eq!(s.get_usage("g", DAY).requests, 1);
 }
 
-/// Dedupe is DURABLE on a durable store. The memory store states it is EPHEMERAL: a restart loses
-/// every row and the dedupe log together, so a replay after it applies onto the empty store it
-/// left, once. (The durable arm is the store conformance suite's, per durable sibling.)
 #[test]
 fn v3_a_duplicate_usage_batch_applies_once_after_restart() {
     let s = v3::bind();
@@ -899,8 +798,6 @@ fn v3_a_duplicate_usage_batch_applies_once_after_restart() {
     assert_eq!(s.get_usage("k", DAY).requests, 1);
 }
 
-/// Dedupe keys on the op_id, never the body: two flushes that happen to carry identical coalesced
-/// deltas are two flushes, and both count.
 #[test]
 fn v3_equal_bodies_under_distinct_op_ids_both_apply() {
     let s = v3::bind();
@@ -910,7 +807,6 @@ fn v3_equal_bodies_under_distinct_op_ids_both_apply() {
     assert_eq!(s.get_usage("k", DAY).requests, 4);
 }
 
-/// The same op_id with a DIFFERENT body is never applied: REFUSED with `STORE_OPID_CONFLICT`.
 #[test]
 fn v3_a_reused_op_id_with_another_body_is_refused() {
     let s = v3::bind();
@@ -921,8 +817,6 @@ fn v3_a_reused_op_id_with_another_body_is_refused() {
     assert_eq!(s.get_usage("k", DAY).requests, 1);
 }
 
-/// Cells inside one batch apply in batch order, so the 1.5.5 floor behaves exactly as it does for
-/// single deltas (see `the_floor_makes_arrival_order_matter`).
 #[test]
 fn v3_a_batch_applies_its_cells_in_order() {
     let s = v3::bind();
@@ -934,8 +828,6 @@ fn v3_a_batch_applies_its_cells_in_order() {
     assert_eq!(s.get_usage("k", DAY).billable_requests, 1);
 }
 
-/// Metering batches dedupe the same way, and a coalesced row still counts every response it
-/// carries. Ephemeral: after a restart the replay applies onto the empty store, once.
 #[test]
 fn v3_a_duplicate_metering_batch_applies_once_after_restart() {
     let s = v3::bind();

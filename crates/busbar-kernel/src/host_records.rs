@@ -1,38 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE RECORDS BEHIND `records.get` / `records.list` (`BUSBAR-1.6.0.md` THE DESIGN, host services):
-//! the store's typed record surface a caller's records are read through, and the kernel-owned
-//! overlay of each instance's queued writes that makes those reads see the instance's own writes.
-//!
-//! * [`RecordRows`] is the store kind's `record_put` / `record_get` / `record_scan` (store v3 slots
-//!   `RECORD_PUT` / `RECORD_GET` / `RECORD_SCAN`), keyed by the caller's declared record kind as the
-//!   schema.
-//! * [`PendingRecords`] holds what an instance wrote and the store has not yet acknowledged:
-//!   `(kind, key)` to the bytes. Each write is enqueued here and drained through
-//!   [`PendingRecords::acked`] once the store took it; a read consults it first, so an instance
-//!   always reads what it wrote.
-//! * [`WriteBehind`] batches the writes to the store: a burst queues behind the one flush that is
-//!   running, which writes everything queued, batch after batch, then ends. A write is ANSWERED only
-//!   once the store took it ([`Acked`]): a write is durable before its writer hears so, as the
-//!   durable handle engine's write-through is. A write the store refuses answers FAILED and leaves
-//!   the overlay.
-//! * THE BOUNDS (ruling H2 U10): at most [`QUEUE_CAP`] writes wait (a write past it is refused,
-//!   and fails the op that carried it), at most [`BATCH_CAP`] cross in one batch, and a flush the
-//!   pool refused is restarted within [`FLUSH_INTERVAL`] by the kernel's cadence
-//!   (`KernelServices::flushes`), never left to wait on a later write.
-//! * THE CRASH WINDOW: what a crash loses is exactly the queued writes (at most [`QUEUE_CAP`]), and
-//!   none of them was answered: the op that carried each never completed, so no caller was told it
-//!   was kept. Every answered write is in the store. A graceful stop drains the queue
-//!   (`KernelServices::drain`, under its own deadline, so a hung store cannot hold the stop).
-//! * NEVER BEHIND: `records.claim` (approval redemption, replay refusal, idempotency) is the store's
-//!   own one-time put, answered only after the store decided it; it never joins this queue. Money
-//!   writes do not reach this path at all.
-//! * [`record_key`] scopes every stored key by the instance's LABEL: two instances declaring one
-//!   kind (of one plugin or of two) never read or write each other's records.
-//! * The list rule, laying the overlay over the store's rows, is the contract's
-//!   [`busbar_contract::services::merge_list`].
-
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -42,17 +10,11 @@ use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::kinds::{RecordBytes, StoreError};
 use busbar_contract::store_calls::StoreFailure;
 
-/// The store kind's typed records.
 pub trait RecordRows: Send + Sync {
-    /// Whether atomic conditional record publication is negotiated with the configured store.
     fn supports_record_transaction(&self) -> bool {
         false
     }
 
-    /// Apply this immutable request, or return a definitive condition conflict.
-    ///
-    /// # Errors
-    /// Failed and faulted calls may already have committed: replay the identical request.
     fn record_transaction(
         &self,
         _request: &conditional::Request,
@@ -62,11 +24,6 @@ pub trait RecordRows: Send + Sync {
         ))
     }
 
-    /// Write one record.
-    ///
-    /// # Errors
-    ///
-    /// The store's.
     fn record_put(
         &self,
         schema: RecordSchemaId,
@@ -74,22 +31,12 @@ pub trait RecordRows: Send + Sync {
         value: &RecordBytes,
     ) -> Result<(), StoreError>;
 
-    /// One record, or `None`.
-    ///
-    /// # Errors
-    ///
-    /// The store's.
     fn record_get(
         &self,
         schema: RecordSchemaId,
         key: &[u8],
     ) -> Result<Option<RecordBytes>, StoreError>;
 
-    /// The records under `prefix`, in key order, at most `limit` (`0` = none).
-    ///
-    /// # Errors
-    ///
-    /// The store's.
     fn record_scan(
         &self,
         schema: RecordSchemaId,
@@ -97,23 +44,12 @@ pub trait RecordRows: Send + Sync {
         limit: u32,
     ) -> Result<Vec<(Vec<u8>, RecordBytes)>, StoreError>;
 
-    /// CLAIM `token` under `kind` across the fleet until `expires_at`: `true` when this call was
-    /// the first, a test-and-set every node of the fleet sees (the store's `redeem_plane_token`).
-    ///
-    /// # Errors
-    ///
-    /// The store's.
     fn claim(&self, kind: &str, token: &str, expires_at: u64, now: u64)
         -> Result<bool, StoreError>;
 }
 
-/// The single-use token kind a chained record's position claim is redeemed under.
 pub const CLAIM_KIND: &str = "busbar.record-claim";
 
-/// THE CONFIGURED STORE'S TYPED RECORDS, as [`RecordRows`]: its store v3 record slots
-/// ([`busbar_contract::store_calls::StoreCalls`]), each call awaited where it is made. The host
-/// services call these only on their blocking pool (never on a runtime worker), so a call waits
-/// there for the store's answer. A store that FAILED or REFUSED the call answers its text.
 pub struct StoreRows(pub Arc<dyn busbar_contract::store_calls::StoreCalls>);
 
 impl std::fmt::Debug for StoreRows {
@@ -122,7 +58,6 @@ impl std::fmt::Debug for StoreRows {
     }
 }
 
-/// The store's answer to one awaited call, as the records' error.
 fn awaited<T>(call: busbar_contract::store_calls::StoreCall<'_, T>) -> Result<T, StoreError> {
     futures::executor::block_on(call).map_err(|failure| match failure {
         busbar_contract::store_calls::StoreFailure::Refused(text) => StoreError::Rejected(text),
@@ -179,9 +114,6 @@ impl RecordRows for StoreRows {
     }
 }
 
-/// The store key of `key` for the instance labelled `instance`: the label's length (two bytes, big
-/// endian), the label, then the key. The length makes the scope unambiguous whatever the label
-/// holds, and a key's scoped form begins with its prefix's scoped form, so a prefix scan stays one.
 #[must_use]
 pub fn record_key(instance: &str, key: &[u8]) -> Vec<u8> {
     let label = instance.as_bytes();
@@ -193,10 +125,8 @@ pub fn record_key(instance: &str, key: &[u8]) -> Vec<u8> {
     k
 }
 
-/// One queued write: its sequence, and its bytes or a tombstone.
 type Queued = (u64, Vec<u8>);
 
-/// Every instance's queued writes, by `(kind, key)`.
 type Queues = HashMap<Arc<str>, BTreeMap<(String, Vec<u8>), Queued>>;
 
 /// THE OVERLAY of every instance's unacknowledged writes.
@@ -211,8 +141,6 @@ impl PendingRecords {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Queue `instance`'s write of `value` under `(kind, key)`. Answers the write's sequence, which
-    /// the store's acknowledgement names.
     pub fn enqueue(&self, instance: &str, kind: &str, key: &[u8], value: Vec<u8>) -> u64 {
         let seq = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
         self.lock()
@@ -222,8 +150,6 @@ impl PendingRecords {
         seq
     }
 
-    /// The store took `instance`'s write `seq` of `(kind, key)`: it reads from the store from now
-    /// on. A write to the same key queued after it stays queued.
     pub fn acked(&self, instance: &str, kind: &str, key: &[u8], seq: u64) {
         let mut map = self.lock();
         if let Some(q) = map.get_mut(instance) {
@@ -237,7 +163,6 @@ impl PendingRecords {
         }
     }
 
-    /// `instance`'s queued write of `(kind, key)`, or `None` when nothing is queued.
     #[must_use]
     pub fn get(&self, instance: &str, kind: &str, key: &[u8]) -> Option<Vec<u8>> {
         self.lock()
@@ -246,7 +171,6 @@ impl PendingRecords {
             .map(|(_, v)| v.clone())
     }
 
-    /// `instance`'s queued writes of `kind` under `prefix`, in key order.
     #[must_use]
     pub fn under(&self, instance: &str, kind: &str, prefix: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
         self.lock().get(instance).map_or_else(Vec::new, |q| {
@@ -257,35 +181,27 @@ impl PendingRecords {
         })
     }
 
-    /// How many writes are queued, over every instance.
     #[must_use]
     pub fn queued(&self) -> usize {
         self.lock().values().map(BTreeMap::len).sum()
     }
 }
 
-/// The most writes one batch carries to the store.
 pub const BATCH_CAP: usize = 256;
-/// The most writes that wait for the store; a write past it is refused.
+
 pub const QUEUE_CAP: usize = 4096;
-/// How often the kernel's flush cadence (`KernelServices::flushes`) restarts a flush that did not
-/// run (its pool refused it), so a queued write is never left waiting on the next write.
+
 pub const FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// Where a record write's answer goes, once: `Ok` when the store took it, or the refusal.
 pub type Acked = Box<dyn FnOnce(Result<(), &'static str>) + Send>;
 
-/// The answer of a write the store did not take.
 pub const WRITE_FAILED: &str = "the store did not take the write";
-/// The answer of a write dropped before any flush reached it.
+
 pub const WRITE_DROPPED: &str = "the write was dropped before the store took it";
 
-/// A write's owed answer. Dropped unanswered it answers [`WRITE_DROPPED`]: a writer never waits on
-/// a write nobody will make.
 pub struct Owed(Option<Acked>);
 
 impl Owed {
-    /// Owe `acked` its answer.
     #[must_use]
     pub fn new(acked: Acked) -> Self {
         Self(Some(acked))
@@ -338,10 +254,8 @@ pub use busbar_contract::abi::sdk::plane::conditional::{
     RecordPredicate,
 };
 
-/// Callback for the candidate result; Indeterminate never authorizes local publication.
 pub type ConditionalAcked = Box<dyn FnOnce(ConditionalResult) + Send>;
 
-/// The exact optional chain life observed before reading a candidate's record preimages.
 pub type ChainLifeAcked = Box<dyn FnOnce(Result<conditional::Expected, &'static str>) + Send>;
 
 pub(crate) struct ConditionalOwed {
@@ -416,7 +330,6 @@ impl ConditionalWrite {
         book: &crate::host_chains::ChainBook,
     ) -> Option<Self> {
         if !self.prepared {
-            // Preparation has no effects; never expose this candidate through PendingRecords.
             for chain in self.chains.iter() {
                 match chain.prepare(rows, &self.instance, &mut self.request, book) {
                     Ok(position) => self.positions.push(position),
@@ -436,7 +349,6 @@ impl ConditionalWrite {
         }
         let first = *self.submitted.get_or_insert_with(std::time::Instant::now);
         if first.elapsed().as_secs() >= busbar_contract::abi::store::OP_ID_RETENTION_SECS {
-            // Report uncertainty without relinquishing custody or replaying an expired identity.
             if let Some(acked) = self.owed.acked.take() {
                 acked(ConditionalResult {
                     correlation: self.owed.correlation,
@@ -496,9 +408,6 @@ impl WriteBehind {
         self.queue.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Queue the write `make` builds, if there is room: `make` runs under the queue's lock, so a
-    /// write the queue refuses never reaches the overlay. `Some(true)` when no flush is running
-    /// (the caller starts one), `None` when [`QUEUE_CAP`] writes already wait.
     pub fn push_with(&self, make: impl FnOnce() -> Write) -> Option<bool> {
         let mut q = self.lock();
         if q.writes.len() + q.in_flight >= QUEUE_CAP {
@@ -513,35 +422,27 @@ impl WriteBehind {
         if q.writes.len() + q.in_flight >= QUEUE_CAP {
             return None;
         }
-        // Keep the write (including its callback) in the outer argument until allocation has
-        // succeeded. An allocation unwind must release the queue lock before that owner drops.
+
         q.writes.reserve(1);
         q.writes.push(QueuedWrite::Conditional(write));
         Some(!std::mem::replace(&mut q.flushing, true))
     }
 
-    /// The tick: `true` when writes wait and no flush is running; the caller starts one.
     pub fn start(&self) -> bool {
         let mut q = self.lock();
         !q.writes.is_empty() && !std::mem::replace(&mut q.flushing, true)
     }
 
-    /// Nothing waits and no flush runs.
     #[must_use]
     pub fn idle(&self) -> bool {
         let q = self.lock();
         q.writes.is_empty() && !q.flushing
     }
 
-    /// The flush that was to run will not: the next write starts one.
     pub fn abandon(&self) {
         self.lock().flushing = false;
     }
 
-    /// THE FLUSH: write every queued write to `rows`, in order, at most [`BATCH_CAP`] a batch; answer each once
-    /// the store took it and acknowledge it in `pending`; end when nothing is queued. A write the
-    /// store refuses answers [`WRITE_FAILED`] and leaves the overlay; the rest go on. A chained
-    /// kind's write is sealed onto its chain by `chains` (one flush at a time, so in queue order).
     pub fn flush(
         &self,
         pending: &PendingRecords,
@@ -597,8 +498,6 @@ impl WriteBehind {
             let mut q = self.lock();
             q.in_flight -= batch_len;
             if !unresolved.is_empty() {
-                // Retry on the existing cadence, behind other waiting work. Active candidates
-                // occupy the existing queue capacity until their definitive completion.
                 q.writes.append(&mut unresolved);
                 q.flushing = false;
                 return;

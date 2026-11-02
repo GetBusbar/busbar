@@ -21,8 +21,7 @@ async fn last_reader_retirement_between_refusal_and_wait_retries_the_freed_credi
     let (memory, reader) = full_reader(Leg::Upstream);
     let generation = memory.generation();
     assert!(memory.reserve(1).is_none());
-    // The last independent reader retires after the producer's failed attempt, before it
-    // enables its wait. A readers==0 snapshot alone would falsely declare exhaustion here.
+
     drop(reader);
     assert!(memory.reader_progress(generation).await);
     assert!(memory.reserve(128).is_some());
@@ -55,8 +54,7 @@ fn input_fit_and_other_leg_progress_are_one_atomic_reservation_decision() {
         memory.input(1, false, Some(1)),
         Err(ReservationError::Pending)
     ));
-    // Once the last reader retires, the same actual reservation succeeds. There is no
-    // unlocked failed-reserve/reader-count interval in which to choose a stale terminal result.
+
     drop(reader);
     assert!(memory.input(128, false, Some(0)).is_ok());
 }

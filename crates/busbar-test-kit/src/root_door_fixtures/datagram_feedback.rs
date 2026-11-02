@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Finite, distinct LINE feedback through real datagram framing. Only this fixture writes the
-//! ABI loans; it never retains their pointers or reads spare or freed allocation bytes.
-
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -42,8 +39,6 @@ struct State {
     settled: bool,
 }
 
-/// A valid association: positive depth branches into distinct zero/one children on its LINE;
-/// zero depth publishes the token's path on its own CHANNEL. Two instances form finite feedback.
 pub struct Branching {
     facts: DoorFacts,
     line: u64,
@@ -57,8 +52,6 @@ pub struct Branching {
 }
 
 impl Branching {
-    /// An independently identified association. With `per_batch=1`, use tokens over half the
-    /// frame loan so a second child genuinely needs a same-operation recall.
     pub fn new(
         line: u64,
         channel: u64,
@@ -89,23 +82,18 @@ impl Branching {
         })
     }
 
-    /// Fresh Emit inputs, copied only while their initialized input loan is live.
     pub fn emitted(&self) -> Vec<Vec<u8>> {
         self.state.lock().unwrap().emitted.clone()
     }
 
-    /// Empty-input recalls that drained the preceding Emit's remaining output.
     pub fn recalls(&self) -> usize {
         self.state.lock().unwrap().recalls
     }
 
-    /// Actual Finish crossings, including cancellation and destruction.
     pub fn finishes(&self) -> usize {
         self.finished.load(Ordering::SeqCst)
     }
 
-    /// Have subsequent fresh Emits accept and record their complete input without new output.
-    /// An already owed operation must finish before a fresh inert input can cross.
     pub fn consume_without_output(&self) {
         self.consume_only.store(true, Ordering::Release);
     }

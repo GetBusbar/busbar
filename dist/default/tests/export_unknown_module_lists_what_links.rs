@@ -1,29 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **THE UNKNOWN-EXPORTER REFUSAL LISTS THE MODULES THIS BUILD SERVES.** Driven through the real
-//! binary's `--validate`.
-//!
-//! A config naming an export module nothing serves is refused with the list of the modules that do
-//! exist. That list is the export sinks this build LINKS, in the frozen order — the kernel serves
-//! no module of its own since its last one became a linked sink (K9e-2). A build that does not link
-//! a sink does not offer it: it would be naming, as available, the very module it refuses when asked
-//! for it.
-//!
-//! Which modules the refusal offers is the binary's own answer, and each one it offers is asked of
-//! `--validate` in turn: none of them is an unknown exporter. A build that serves every module
-//! 1.5.5's refusal offered prints 1.5.5's line byte for byte: that line is DATA
-//! in the oracle corpus (`testing/shadow-oracle/fixtures/law0/unknown-exporter-1.5.5.txt`, verbatim
-//! from the 1.5.5 binary), so the source names no sink.
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// 1.5.5's refusal for `module: nosuch`, byte for byte (DATA, verbatim from the 1.5.5 binary).
 const REFUSAL_1_5_5: &str =
     include_str!("../../../testing/shadow-oracle/fixtures/law0/unknown-exporter-1.5.5.txt");
 
-/// The refusal's head for `module: nosuch`; the modules it offers follow, ` | `-separated.
 const REFUSAL_HEAD: &str =
     "export.x.module: unknown exporter 'nosuch'; the built-in export modules are ";
 
@@ -47,7 +30,6 @@ fn fixture_dir(tag: &str) -> PathBuf {
     d
 }
 
-/// `--validate` over a config whose only section is `export:` with `instance`: its whole output.
 fn validate(dir: &Path, instance: &str) -> String {
     std::fs::write(dir.join("providers.yaml"), "").unwrap();
     std::fs::write(
@@ -91,8 +73,7 @@ fn the_unknown_exporter_refusal_lists_exactly_the_modules_this_build_serves() {
     let mut seen = std::collections::BTreeSet::new();
     for module in &offered {
         assert!(seen.insert(*module), "`{module}` is offered twice: {line}");
-        // Every module it offers is one this build serves: asked for alone, it is no unknown
-        // exporter (its settings may be refused; its name is not).
+
         let out = validate(&dir, &format!("  x: {{ module: {module} }}\n"));
         assert!(
             !out.contains("invalid YAML"),
@@ -103,8 +84,7 @@ fn the_unknown_exporter_refusal_lists_exactly_the_modules_this_build_serves() {
             "the refusal offers `{module}`, which this build does not serve:\n{out}"
         );
     }
-    // A build serving every module 1.5.5 offered prints 1.5.5's line, byte for byte; a build that
-    // does not link one of them never offers it.
+
     let line_1_5_5 = REFUSAL_1_5_5.trim_end();
     let offered_1_5_5: Vec<&str> = line_1_5_5
         .strip_prefix(REFUSAL_HEAD)

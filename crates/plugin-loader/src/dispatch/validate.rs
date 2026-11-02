@@ -1,24 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! VALIDATE EVERY ANSWER BEFORE READING IT. A plugin's `out` is untrusted input, and any violation
-//! is FAULT, never a clamp and never a guess.
-//!
-//! Two layers, and only two. The MECHANISM's checks of every `out` head live here and run in every
-//! crossing: `OutHead.size` within `size_of::<OutHead>()..=` the host's `out`, the error text and
-//! the #85 arrays not NULL-with-length nor over-long, the outcome mirror, and PENDING on NONE (in
-//! `plugin::judge`). A KIND's reply fields (spans, counts, `written`, `needed_*`) are checked only
-//! by that kind's pure `check_<op>` in `abi/<kind>/`, reached through [`super::Kind::check`]
-//! (answer validators live with the shape); the dispatcher adds the one re-call
-//! rule on top ([`super::Kind::short`]): a second short answer on the same ticket is FAULT.
-
 use std::mem::size_of;
 
 use busbar_contract::abi::mechanism::call::{AbiStr, Envelope, OutHead, Outcome};
+use busbar_contract::abi::mechanism::check;
 
 use super::plugin::MAX_ENVELOPE_ENTRIES;
 
-/// The most bytes of error text a plugin may state; longer is a malformed answer.
 pub const MAX_ERROR_LEN: usize = super::plugin::MAX_TEXT;
 
 /// What was wrong with an answer. Every violation is FAULT.
@@ -39,17 +28,16 @@ pub enum Violation {
     ErrorText(usize),
     /// An envelope array is NULL with a length, or longer than [`MAX_ENVELOPE_ENTRIES`].
     EnvelopeArray(usize),
+    /// The extensions blob is NULL with a length or exceeds the shared blob bound.
+    Extensions(check::Fault),
 }
 
 impl Violation {
-    /// Every violation answers FAULT.
     pub const fn outcome(self) -> Outcome {
         Outcome::Fault
     }
 }
 
-/// The mechanism's own checks of an `out` head, run on every crossing: its size, its error text
-/// and its #85 arrays.
 pub(crate) fn out_head(head: &OutHead, host_out_size: u32) -> Result<(), Violation> {
     let stated = head.size;
     if (stated as usize) < size_of::<OutHead>() || stated > host_out_size {
@@ -58,12 +46,16 @@ pub(crate) fn out_head(head: &OutHead, host_out_size: u32) -> Result<(), Violati
             host: host_out_size,
         });
     }
+    check::blob(
+        &head.extensions,
+        "out.extensions.null_with_len",
+        "out.extensions.over_max",
+    )
+    .map_err(Violation::Extensions)?;
     text(head.error)?;
     envelope(&head.envelope)
 }
 
-/// The most bytes any slice a plugin reports the length of may span: THE DESIGN's hard maximum,
-/// "bytes ≤ `u32::MAX`" (§11, Hard maxima).
 pub(crate) const MAX_LENT_BYTES: usize = busbar_contract::abi::mechanism::check::MAX_BYTES as usize;
 
 /// THE ONE WAY A SLICE IS FORMED FROM A PLUGIN-REPORTED LENGTH (THE DESIGN §11.13 M1, "Every slice
@@ -113,7 +105,6 @@ pub(crate) unsafe fn lent_str<'a>(s: AbiStr) -> Option<&'a [u8]> {
     unsafe { lent(s.ptr, s.len) }
 }
 
-/// A non-empty range's bounds: non-NULL, aligned for `T`, at most [`MAX_LENT_BYTES`].
 fn within<T>(ptr: *const T, len: usize) -> bool {
     !ptr.is_null()
         && ptr.is_aligned()
@@ -140,3 +131,7 @@ fn envelope(e: &Envelope) -> Result<(), Violation> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "validate_tests.rs"]
+mod tests;

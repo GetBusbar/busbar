@@ -1,20 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! ITEM 99: A CLIENT THAT GOES AWAY MID-DISPATCH IS CHARGED.
-//!
-//! Two cells, identical but for whether the client stayed, both ending on the same reading of what
-//! reached the books: how many postings, and the count they carried. The destination reported 900
-//! before the caller left. (The books are the one ledger's counts, MONEY-DESIGN §4: a posting
-//! carries a count and never money.)
-//!
-//! The cell names no `Drop`, no terminal and no binding. What it reads is the books, after posting
-//! whatever end the loop handed to somebody — the caller that waited reads its end off the loop's
-//! return value; the caller that went away cannot, so the end reaches the leg's own plane through
-//! [`busbar_kernel::teller::RouteAwait::abandoned`]. Before that seam the loop sealed the end, emptied
-//! the cell and DROPPED the posting (`let _ended = terminal(..)`): no row and no count — `(0, 0)`
-//! against the waited-for `(1, 900)`.
-
 mod common;
 
 use std::future::Future;
@@ -29,11 +15,8 @@ use busbar_kernel::teller::{run_unit, run_unit_async, AccrualMeter, Ended, Evide
 
 use common::{ctx, principal, NeverRoutes, TestDoor, TestUnits};
 
-/// Postings that reached the books, and the count they carried.
 type Figures = (usize, u64);
 
-/// Post an end onto the books exactly as a composition root does: read the posting off the sealed
-/// end and add its count. An end nobody hands over is an end this never sees.
 fn post(books: &mut Figures, ended: Ended) {
     match ended {
         Ended::Settled { end, .. } => {
@@ -48,7 +31,7 @@ fn post(books: &mut Figures, ended: Ended) {
 
 fn one_unit(went_away: bool) -> Figures {
     let kernel = Kernel::new();
-    // The destination reported 900 before the unit ended.
+
     let units = TestUnits {
         evidence: Evidence {
             reported: Some(900),
@@ -95,7 +78,7 @@ fn one_unit(went_away: bool) -> Figures {
             let mut cx = Context::from_waker(Waker::noop());
             assert!(running.as_mut().poll(&mut cx).is_pending());
         }
-        // The caller has gone. Whatever the loop handed on is what reaches the books.
+
         let handed: Vec<Ended> = std::mem::take(&mut *units.abandoned.lock().unwrap());
         for ended in handed {
             post(&mut books, ended);

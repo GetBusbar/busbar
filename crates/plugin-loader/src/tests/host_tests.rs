@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The host's rotation by rename, step for step: the oldest archive dropped, the rest shifted up,
-//! the live file renamed to `<path>.1`.
-
 use super::*;
 
 fn scratch(tag: &str) -> std::path::PathBuf {
@@ -13,8 +10,6 @@ fn scratch(tag: &str) -> std::path::PathBuf {
     dir
 }
 
-/// A rotation renames the live file to `<path>.1`, shifts the archives up and keeps `keep` of
-/// them, dropping the oldest; nothing fails.
 #[test]
 fn a_rotation_renames_the_live_file_and_keeps_its_archives() {
     let dir = scratch("keep");
@@ -32,8 +27,6 @@ fn a_rotation_renames_the_live_file_and_keeps_its_archives() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A live file that cannot be renamed is a recorded `rename` fault, never a panic: it stays in
-/// place to keep being appended to.
 #[test]
 fn a_failed_rename_is_a_recorded_fault() {
     let dir = scratch("missing");

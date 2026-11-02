@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The two deadlines: the walk's own, checked before every step, and the per-attempt cap on time
-//! to the first answer.
-//!
-//! The first claim here is the one the previous release states most plainly and the one easiest to
-//! lose in a refactor: the walk's deadline is checked UNCONDITIONALLY before every attempt,
-//! streaming included. A streamed answer is exempt from the per-attempt cap's SHAPE — it is
-//! bounded by the client-level ceiling instead of the walk budget once it is under way — but it is
-//! not exempt from the check that there was any budget left to start it with.
-
 use super::harness::{frame, ok_frames, Script};
 use super::{member, Node, Refusal, Routed, STREAM_CEILING_SECS};
 use busbar_contract::conn::ConnError;
@@ -17,7 +8,6 @@ use busbar_contract::transport::wire::WireStatusClass;
 use busbar_contract::DestinationId;
 use busbar_kernel_egress::ports::{disposition, Clock};
 
-/// The client-level ceiling every far end in this module runs under, in milliseconds.
 const CEILING_MS: u64 = STREAM_CEILING_SECS * 1000;
 
 fn one_lane_pool(stream: bool) -> Node {
@@ -27,7 +17,6 @@ fn one_lane_pool(stream: bool) -> Node {
     node
 }
 
-/// The timeout refusal, as the far end hands it on: the overload status and no Retry-After.
 fn timed_out() -> Refusal {
     Refusal {
         status: u32::from(busbar_kernel_egress::wire::STATUS_SERVICE_UNAVAILABLE),
@@ -39,7 +28,6 @@ fn timed_out() -> Refusal {
 fn a_spent_deadline_refuses_before_the_first_attempt() {
     let node = one_lane_pool(false);
 
-    // The walk's own answer, in the words that shipped.
     let mut walker = node.walker("primary");
     node.clock.advance_secs(node.timeout_secs + 1);
     let shed = walker.shed();
@@ -52,7 +40,6 @@ fn a_spent_deadline_refuses_before_the_first_attempt() {
         busbar_kernel_egress::wire::STATUS_SERVICE_UNAVAILABLE
     );
 
-    // And through the far end: nothing is opened once the walk's budget is spent.
     let node = one_lane_pool(false);
     let outcome = node.route_with("primary", |node, attempt| {
         if attempt == 1 {
@@ -85,7 +72,6 @@ fn a_spent_deadline_refuses_before_a_streamed_attempt_too() {
 
 #[test]
 fn a_deadline_that_expires_between_hops_stops_the_walk() {
-    // With budget in hand the sibling serves.
     let mut node = Node::with_lanes(&["a", "b"]);
     node.pool(
         "primary",
@@ -100,7 +86,6 @@ fn a_deadline_that_expires_between_hops_stops_the_walk() {
     node.conns.script("b", Script::Frames(ok_frames()));
     assert!(node.route("primary").is_delivered());
 
-    // With the budget spent between the hops the walk stops instead, and says so.
     let mut node = Node::with_lanes(&["a", "b"]);
     node.pool(
         "primary",
@@ -125,7 +110,6 @@ fn a_deadline_that_expires_between_hops_stops_the_walk() {
         "the sibling is never dialled once the budget is spent"
     );
 
-    // The walk's own words for it.
     let mut walker = node.walker("primary");
     drop(walker.take());
     node.clock.advance_secs(2);
@@ -174,15 +158,13 @@ fn an_upstream_that_says_nothing_is_cut_by_the_per_attempt_cap() {
     );
 }
 
-/// The member's raw cap never reaches the connector: `attempt_cap_ms` floors it to what the walk
-/// has left before the open is handed it.
 #[test]
 fn a_per_attempt_cap_larger_than_the_walk_budget_is_clamped_to_it_before_it_reaches_the_clock() {
     let mut node = Node::with_lanes(&["a"]);
     let mut members = vec![member(DestinationId::new(0), "a")];
-    members[0].attempt_timeout_ms = Some(500_000); // far past any walk budget below
+    members[0].attempt_timeout_ms = Some(500_000);
     node.pool("primary", members);
-    node.timeout_secs = 2; // 2_000ms of walk budget
+    node.timeout_secs = 2;
     node.conns.script("a", Script::Hang);
 
     let _ = node.route("primary");
@@ -224,10 +206,7 @@ fn an_upstream_that_says_nothing_and_has_no_cap_is_cut_by_the_walk_budget() {
         vec![busbar_kernel_egress::ports::Outcome::Transient { retry_after: None }],
         "and the member that never answered is recorded against"
     );
-    // 1.5.5 counted it as the walk's own timeout, not a hang the member's cap detected: with no
-    // `attempt_timeout_ms` the send ran under the request's remaining budget and its expiry took
-    // the transport-error arm — `upstream_failure(transient_upstream)`, `failover(timeout)`
-    // (v1.5.5 `crates/busbar/src/proxy/engine/mod.rs:1696-1698`, `:1753-1781`).
+
     assert_eq!(
         node.telemetry.failures.lock().unwrap().as_slice(),
         &[(
@@ -245,16 +224,8 @@ fn an_upstream_that_says_nothing_and_has_no_cap_is_cut_by_the_walk_budget() {
     );
 }
 
-// ── a streamed head that never comes ─────────────────────────────────────
-
 use super::walk_tests::{real_egress, route_over, RealBreaker};
 
-/// rehomed from the retired engine crate's src/engine/engine_tests/send_envelope_tests.rs::a_black_holed_stream_send_times_out_at_the_ceiling_and_records_the_failure.
-/// A STREAMED send to a member that accepts and never sends its head resolves at the stream
-/// ceiling (300 s from the send, past the walk's 120 s budget: 1.5.5 ran a streamed request under
-/// the client ceiling and never the failover deadline), never hangs, is refused 503, and records
-/// exactly one transient against the member in the served breaker. The connector's own bound on
-/// the head is the same ceiling.
 #[test]
 fn a_black_holed_stream_send_times_out_at_the_ceiling_and_records_the_failure() {
     let node = one_lane_pool(true);
@@ -294,9 +265,6 @@ fn a_black_holed_stream_send_times_out_at_the_ceiling_and_records_the_failure() 
     assert_eq!(caps, vec![CEILING_MS]);
 }
 
-/// How long, in the paused runtime's milliseconds, a streamed send to a black hole takes to resolve
-/// under the deployment's stream ceiling of `secs` (the composition root hands the far end
-/// `limits.upstream_request_timeout_secs` as that ceiling) and the walk's own 120 s budget.
 fn cut_after(secs: u64) -> u128 {
     let node = one_lane_pool(true);
     node.conns.script("a", Script::Hang);
@@ -316,10 +284,6 @@ fn cut_after(secs: u64) -> u128 {
     node.clock.now_millis() - started
 }
 
-/// rehomed from the retired engine crate's src/engine/engine_tests/stream_deadline_tests.rs::a_proxied_stream_is_cut_at_the_configured_second_and_by_nothing_earlier.
-/// The same silent hole under two configured ceilings: cut at exactly 7 s under 7, and at exactly
-/// 23 s under 23. The cut is the configured total deadline and nothing else: an idle timer would
-/// fire at the same moment in both runs, and the walk's 120 s budget at neither.
 #[test]
 fn a_proxied_stream_is_cut_at_the_configured_second_and_by_nothing_earlier() {
     assert_eq!(cut_after(7), 7_000, "cut at the configured seven seconds");
@@ -330,7 +294,6 @@ fn a_proxied_stream_is_cut_at_the_configured_second_and_by_nothing_earlier() {
     );
 }
 
-/// A drip-fed answer: `count` pieces, one every `step_ms`, completing when asked.
 fn drip(count: usize, step_ms: u64, complete: bool) -> Script {
     Script::Drip {
         replies: (0..count)
@@ -344,9 +307,7 @@ fn drip(count: usize, step_ms: u64, complete: bool) -> Script {
 #[test]
 fn the_stream_ceiling_bounds_the_whole_answer_not_each_frame() {
     let node = one_lane_pool(true);
-    // A far end that never finishes and never quite goes quiet: a piece every quarter of the
-    // ceiling, twenty of them. Bounded by the whole answer, four arrive and the answer is cut at
-    // the ceiling; bounded per piece, all twenty arrive and the send runs five times as long.
+
     node.conns.script("a", drip(20, CEILING_MS / 4, false));
 
     let started = node.clock.now_millis();
@@ -365,8 +326,7 @@ fn the_stream_ceiling_bounds_the_whole_answer_not_each_frame() {
         delivered.pieces, 4,
         "only the pieces that fit inside the ceiling are relayed"
     );
-    // A cut answer is a partial one: 1.5.5 recorded the compensating transient on a stream the
-    // ceiling ended (v1.5.5 `crates/busbar/src/proxy/response_body.rs:279-299`).
+
     assert_eq!(
         node.breaker.outcomes("primary", DestinationId::new(0)),
         vec![
@@ -375,19 +335,14 @@ fn the_stream_ceiling_bounds_the_whole_answer_not_each_frame() {
         ],
         "a cut answer is a partial one: the transfer is recorded as failed"
     );
-    // And the four pieces that streamed are billed, not refunded (spec Part 2 #62, #77(2)).
+
     assert_eq!(node.breaker.budget_net(DestinationId::new(0)), 1);
 }
 
-/// A BUFFERED answer whose deadline passes mid-body delivered nothing to the caller: the cut
-/// records the compensating transient and gives back the unit the head spent, as 1.5.5's buffered
-/// read did on a body that failed mid-transfer (v1.5.5 `crates/busbar/src/proxy/engine/mod.rs:329-353`)
-/// and its non-stream passthrough body did on a post-first-byte non-SSE failure
-/// (`crates/busbar/src/proxy/response_body.rs:358-409`).
 #[test]
 fn a_buffered_answer_whose_deadline_passes_mid_body_refunds_the_budget_unit() {
     let node = one_lane_pool(false);
-    // A far end that never finishes: a piece every quarter of the walk's budget, never completing.
+
     node.conns
         .script("a", drip(20, node.timeout_secs * 1000 / 4, false));
 
@@ -411,10 +366,6 @@ fn a_buffered_answer_whose_deadline_passes_mid_body_refunds_the_budget_unit() {
     );
 }
 
-/// A BUFFERED ANSWER RUNS TO THE WALK'S WHOLE BUDGET, measured once from the unit's start. The wait for each piece after the first is
-/// what is left of the walk's budget; it used to subtract the time since the attempt opened a second
-/// time, so a far end still answering was cut at about half the budget. RED: a piece every 3/16 of
-/// the budget was cut after three pieces, at 9/16 of it, instead of at the budget itself.
 #[test]
 fn a_buffered_answer_is_cut_at_the_walks_budget_not_half_of_it() {
     let node = one_lane_pool(false);
@@ -442,7 +393,7 @@ fn a_buffered_answer_is_cut_at_the_walks_budget_not_half_of_it() {
 #[test]
 fn a_streamed_answer_that_finishes_inside_the_ceiling_is_untouched() {
     let node = one_lane_pool(true);
-    // Three pieces at a quarter of the ceiling each: the last one lands with budget to spare.
+
     node.conns.script("a", drip(3, CEILING_MS / 4, true));
 
     let outcome = node.route("primary");

@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-core/src/governance/signing.rs`.
-
 use super::*;
 
 fn signer() -> TokenSigner {
@@ -13,7 +11,6 @@ fn verifier(s: &TokenSigner) -> TokenVerifier {
     TokenVerifier::single(s.kid(), s.verifying_key())
 }
 
-/// Mint -> verify round-trips the subject + expiry, and the token carries the prefix + kid.
 #[test]
 fn mint_then_verify_roundtrips() {
     let s = signer();
@@ -26,17 +23,11 @@ fn mint_then_verify_roundtrips() {
     assert_eq!(claims.kid, DEFAULT_KID);
 }
 
-/// THE AUDIENCE BOUNDARY (1.6.0): an AUDIENCE-BOUND token
-/// (the shape an authorization-server mint produces, wire claim `a`) must be REJECTED by the
-/// plain data-plane verify. Before the boundary existed, serde ignored the unknown claim and
-/// the token verified everywhere a busbar key does (`/stats`, `/v1/models`, every
-/// `RouteAuth::Key` route): an audience-scoped token was silently a full data-plane key.
 #[test]
 fn audience_bound_token_is_rejected_on_the_plain_verify_path() {
     let s = signer();
     let v = verifier(&s);
-    // Hand-craft the payload (TokenClaims + the audience claim) and sign it with the real
-    // signer key, exactly as an AS mint will.
+
     let payload = serde_json::to_vec(&serde_json::json!({
         "sub": "vk_audience",
         "exp": 2000u64,
@@ -56,9 +47,6 @@ fn audience_bound_token_is_rejected_on_the_plain_verify_path() {
     );
 }
 
-/// The full audience matrix, fail-closed on every mismatch arm (1.6.0 P1). The two accept
-/// arms are exact: plain token on the plain plane, and matching audience on the
-/// audience-checked plane. Everything else is `AudienceMismatch`.
 #[test]
 fn audience_matrix_is_fail_closed() {
     let s = signer();
@@ -67,7 +55,6 @@ fn audience_matrix_is_fail_closed() {
     let plain = s.mint("vk_abc", 2000, None);
     let bound = s.mint_for_audience("vk_abc", 2000, None, aud, Some("client-1"));
 
-    // Accept arms.
     assert!(v.verify(&plain, 1000, None).is_ok(), "plain on plain");
     let claims = v
         .verify(&bound, 1000, Some(aud))
@@ -75,7 +62,6 @@ fn audience_matrix_is_fail_closed() {
     assert_eq!(claims.aud.as_deref(), Some(aud));
     assert_eq!(claims.cid.as_deref(), Some("client-1"));
 
-    // Reject arms.
     assert_eq!(
         v.verify(&bound, 1000, None),
         Err(VerifyError::AudienceMismatch),
@@ -93,13 +79,11 @@ fn audience_matrix_is_fail_closed() {
     );
 }
 
-/// FLEET COMPAT: a token minted before the `aud` claim existed (no `a` on the wire) keeps
-/// verifying on the data plane, exactly like the `generation`/`g` rollout. No flag day.
 #[test]
 fn legacy_token_without_audience_still_verifies_on_the_data_plane() {
     let s = signer();
     let v = verifier(&s);
-    // The pre-1.6.0 payload shape, hand-crafted: {sub, exp, kid} only.
+
     let payload = serde_json::to_vec(&serde_json::json!({
         "sub": "vk_old",
         "exp": 2000u64,
@@ -117,7 +101,6 @@ fn legacy_token_without_audience_still_verifies_on_the_data_plane() {
     assert_eq!(claims.cid, None);
 }
 
-/// An EXPIRED token (now >= exp) is rejected.
 #[test]
 fn expired_token_rejected() {
     let s = signer();
@@ -128,13 +111,12 @@ fn expired_token_rejected() {
     assert!(v.verify(&tok, 999, None).is_ok());
 }
 
-/// A TAMPERED payload (any byte flip) fails the signature check.
 #[test]
 fn tampered_token_rejected() {
     let s = signer();
     let v = verifier(&s);
     let tok = s.mint("vk_abc", 2000, None);
-    // Flip a char in the payload segment.
+
     let body = tok.strip_prefix(TOKEN_PREFIX).unwrap();
     let (payload, sig) = body.split_once('.').unwrap();
     let mut p = payload.to_string();
@@ -147,25 +129,20 @@ fn tampered_token_rejected() {
     ));
 }
 
-/// ROTATION: a token signed by key A fails under a verifier holding only key B (same kid: the
-/// signature check fails; different kid: UnknownKid). Both reject.
 #[test]
 fn token_fails_after_rotation() {
     let key_a = TokenSigner::from_secret_bytes(&[1u8; 32], DEFAULT_KID);
     let tok = key_a.mint("vk_abc", 2000, None);
 
-    // Same kid, different key material -> BadSignature.
     let key_b_same_kid = TokenSigner::from_secret_bytes(&[2u8; 32], DEFAULT_KID);
     let v_b = verifier(&key_b_same_kid);
     assert_eq!(v_b.verify(&tok, 1000, None), Err(VerifyError::BadSignature));
 
-    // Different kid entirely -> UnknownKid (the kid the token names is gone from the keyset).
     let key_c = TokenSigner::from_secret_bytes(&[3u8; 32], "k2");
     let v_c = verifier(&key_c);
     assert_eq!(v_c.verify(&tok, 1000, None), Err(VerifyError::UnknownKid));
 }
 
-/// Malformed inputs (no prefix, no dot, bad base64, wrong sig length) all reject as Malformed.
 #[test]
 fn malformed_tokens_rejected() {
     let s = signer();
@@ -174,7 +151,7 @@ fn malformed_tokens_rejected() {
         "not-a-token",
         "bbk_onlyonesegment",
         "bbk_%%%.%%%",
-        "bbk_YWJj.YWJj", // decodes but sig is not 64 bytes
+        "bbk_YWJj.YWJj",
     ] {
         assert!(
             matches!(
@@ -186,19 +163,17 @@ fn malformed_tokens_rejected() {
     }
 }
 
-/// A generated key round-trips through its raw secret bytes (the persistence path).
 #[test]
 fn generated_key_persists_and_reloads() {
     let s = TokenSigner::generate(DEFAULT_KID).unwrap();
     let bytes = s.secret_bytes();
     let reloaded = TokenSigner::from_secret_bytes(&bytes, DEFAULT_KID);
     let tok = s.mint("vk_x", 2000, None);
-    // The reloaded key is the SAME key: it mints/verifies interchangeably.
+
     let v = TokenVerifier::single(DEFAULT_KID, reloaded.verifying_key());
     assert!(v.verify(&tok, 1000, None).is_ok());
 }
 
-/// The signer's Debug never leaks key bytes.
 #[test]
 fn signer_debug_redacts_key() {
     let s = signer();
@@ -207,25 +182,6 @@ fn signer_debug_redacts_key() {
     assert!(!dbg.contains(&hex::encode([7u8; 32])));
 }
 
-// ── THE SUBKEY DERIVATION: KNOWN-ANSWER VECTORS ──────────────────────────────────────────────────
-
-/// THE BYTES ARE FROZEN. `subkey_seed` derives KEY MATERIAL, so a change to it is not a refactor
-/// with a test to update — it silently rotates every subkey in every existing deployment, and the
-/// symptom is signatures that stop verifying against what external callers already pinned. No
-/// property test can catch that (a different-but-still-deterministic, still-domain-separated
-/// derivation passes every property the neighbouring tests assert), so the bytes themselves are
-/// pinned here.
-///
-/// These vectors were captured from the implementation as it stood BEFORE the function moved out of
-/// the A2A plane into governance, and independently reproduced as
-/// `SHA-256("busbar/subkey/v1" ‖ secret ‖ domain)` outside this codebase — so they pin the
-/// construction, not merely whatever the current code happens to emit. The two vectors over
-/// `example-plane/artifact-signing/v1` stand in the neutral kernel for a plane's own domain; they
-/// were derived by that same independent SHA-256 reproduction, which also reproduces every other
-/// vector here byte for byte. A plane pins the bytes for ITS OWN domain in its own crate.
-///
-/// If one of these fails, do NOT re-baseline it. The context string is versioned precisely so that
-/// an intended change to the derivation is spelled as a new version, leaving these vectors intact.
 #[test]
 fn subkey_seed_derives_the_exact_pinned_bytes() {
     for (secret, domain, expected) in [
@@ -263,8 +219,6 @@ fn subkey_seed_derives_the_exact_pinned_bytes() {
         );
     }
 
-    // A non-ASCII domain, pinned so the UTF-8 encoding of the domain string is part of the frozen
-    // construction rather than an implementation detail free to change under it.
     let mut counting = [0u8; 32];
     for (i, b) in counting.iter_mut().enumerate() {
         *b = i as u8;
@@ -275,12 +229,9 @@ fn subkey_seed_derives_the_exact_pinned_bytes() {
     );
 }
 
-/// The method on the signer is the free function over the signer's own secret — the seam the A2A
-/// plane's `CardSigner` actually calls. Pinned end-to-end so the move cannot have changed what a
-/// caller holding a TokenSigner gets, only where the code lives.
 #[test]
 fn derived_subkey_seed_is_the_free_function_over_the_root_secret() {
-    let s = signer(); // secret [7u8; 32]
+    let s = signer();
     assert_eq!(
         hex::encode(s.derived_subkey_seed("example-plane/artifact-signing/v1")),
         "9d170779b08994af289bd84634a3151cf69a1e39b370900ed165c612522c7894",

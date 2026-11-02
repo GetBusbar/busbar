@@ -1,19 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! NEUTRALITY: a 1.5.5-shaped config (no section a later plane owns) must boot with the SAME
-//! log lines at INFO and above as the published 1.5.5 binary — no new boot line at INFO just because a
-//! later plane is compiled in, and no plane line at all unless that plane is configured (see
-//! `qa/parity-bindings.md`, and the shadow-oracle `neutrality|boot-lines` cell this
-//! test pins as a fast, always-on regression guard beside it).
-//!
-//! Boots the REAL binary, captures stdout (busbar's default log destination outside a line-serve flag),
-//! SIGTERMs it, and asserts the exact ORDERED set of INFO/WARN/ERROR lines after blanking the three
-//! fields that are expected to vary run-to-run: the timestamp, the version literal, and a
-//! `diag=BUSBAR-nnnn` suffix. The one line-group whose RELATIVE order is itself nondeterministic on
-//! the same binary — the per-pool "pool exhaustion policy" lines, walked off a `HashMap` — is sorted
-//! before comparison, exactly as `testing/shadow-oracle/normalize.py`'s `boot.exhaustion-order` rule
-//! does for the oracle's own recording of this same cell.
 #![cfg(unix)]
 #![cfg(linked_section_pools)]
 
@@ -49,20 +36,13 @@ fn free_port() -> u16 {
     common::boot::free_port()
 }
 
-/// A 1.5.5-SHAPED config: no section a later plane owns, governance ON (a keyed `auth.chain`,
-/// so the store/reliability lines fire the same way the oracle's baseline does), a plugin dir that is
-/// present but disabled (the "plugins: disabled" INFO line), one pool with `on_exhausted: least_bad`
-/// (the restored "pool exhaustion policy" line — a single pool, so no ordering ambiguity to sort), and
-/// `advanced.worker_threads: 2` so the thread-per-core data plane is small and fast to drain.
 fn write_configs(dir: &Path, data_port: u16, admin_port: u16) {
     std::fs::write(
         dir.join("providers.yaml"),
         "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n",
     )
     .unwrap();
-    // A REAL ed25519 signing secret, minted through the binary's own `--generate-signing-key` (the
-    // same mint `oracle_write_config` uses) — a placeholder string would fail `auth.signing_key`
-    // resolution at boot (BUSBAR-9007), which is a different cell, not this one.
+
     let key_hex = Command::new(common::boot::exe())
         .arg("--generate-signing-key")
         .output()
@@ -112,16 +92,10 @@ pools:
     .unwrap();
 }
 
-/// A `diag=BUSBAR-nnnn` suffix (any digit run), a `busbar <VERSION>`/`version="x.y.z"` literal, or an
-/// RFC3339-ish timestamp — the three fields the shadow-oracle's own capture/normalize pipeline blanks
-/// before an old-vs-new boot-line diff means anything (`testing/shadow-oracle/capture-exec.py`'s
-/// `scrub`, `normalize.py`'s `ver.string`).
 fn blank_volatile(line: &str) -> String {
     let mut out = String::new();
-    // timestamp: a leading RFC3339-ish token at the start of the line (tracing_subscriber's default
-    // fmt prefixes every line with one), e.g. `2026-09-05T07:00:37.362252Z`.
+
     let ts_re_match = |s: &str| -> Option<usize> {
-        // crude fixed-width RFC3339 match: YYYY-MM-DDTHH:MM:SS(.fraction)?Z?
         if s.len() < 20 {
             return None;
         }
@@ -161,7 +135,6 @@ fn blank_volatile(line: &str) -> String {
     out.push_str(rest);
     let line = out;
 
-    // version literal: `busbar X.Y.Z` or `version="X.Y.Z"`.
     let line = {
         let mut s = String::new();
         let mut rest = line.as_str();
@@ -184,7 +157,6 @@ fn blank_volatile(line: &str) -> String {
         s
     };
 
-    // diag=BUSBAR-nnnn suffix (with its leading space, so removal leaves no double space).
     let mut line = line;
     if let Some(pos) = line.find("diag=BUSBAR-") {
         let after = &line[pos + "diag=BUSBAR-".len()..];
@@ -221,9 +193,6 @@ fn boot_lines_match_1_5_5_shape() {
         .spawn()
         .expect("spawn busbar");
 
-    // Both "busbar listening" lines must be in the log before the signal: the data one is written
-    // by data worker 0 alone, and `/healthz` below can be answered by worker 1 while worker 0 has
-    // not yet written it. Signalled then, worker 0's line lands after the shutdown line.
     let booted = wait_for(Duration::from_secs(30), || {
         if let Some(status) = child.try_wait().expect("try_wait") {
             panic!(
@@ -239,13 +208,6 @@ fn boot_lines_match_1_5_5_shape() {
         read_to_string(&log_path)
     );
 
-    // Wait for BOTH listeners to actually answer `/healthz` before SIGTERM, rather than sleeping a
-    // fixed duration. Under `cargo test --workspace` load (many crates' test binaries competing for
-    // CPU) a fixed sleep is not long enough for a slow-scheduled worker thread to finish standing up
-    // its listener and log its own "busbar listening" line before the signal lands, so the captured
-    // log is missing a line the un-loaded run always has — a false failure, not a real drift. Polling
-    // the actual readiness signal (a live accept + response on each port) is load-robust
-    // without weakening what gets compared: the ordered-set assertion below is unchanged.
     let data_ready = wait_for(Duration::from_secs(30), || healthz_ok(data_port));
     assert!(
         data_ready,
@@ -268,11 +230,6 @@ fn boot_lines_match_1_5_5_shape() {
         .success();
     assert!(killed, "kill -TERM {pid} failed");
 
-    // Capture UNTIL THE PROCESS EXITS, not for a fixed window: the log is only read below, after this
-    // returns, so a slow-draining process under load still has every line it will ever write present
-    // by the time the comparison runs. The budget itself is generous (not zero-cost, but this test
-    // only runs once) precisely so CPU contention from concurrently running crates cannot turn a slow
-    // but correct drain into a false failure.
     let exited = wait_for(Duration::from_secs(60), || {
         child.try_wait().expect("try_wait").is_some()
     });
@@ -292,14 +249,8 @@ fn boot_lines_match_1_5_5_shape() {
         .map(|l| blank_volatile(&l))
         .collect();
 
-    // `boot.exhaustion-order` precedent (testing/shadow-oracle/normalize.py): sort any consecutive
-    // run of "pool exhaustion policy" lines in place — their relative order is a `HashMap` walk, not a
-    // contract. This fixture has exactly one such pool, so this is a no-op safety net, not load-bearing.
     sort_consecutive_runs(&mut lines, |l| l.contains("pool exhaustion policy pool="));
-    // The data listener's "busbar listening" line is logged from its own per-core worker thread while
-    // the admin listener's is logged from the control thread right after spawning it — a genuine
-    // thread race, not a HashMap walk, but the SAME "sort before comparing" treatment applies: which
-    // one lands first in the log is not a contract, only that there is exactly one of each.
+
     sort_consecutive_runs(&mut lines, |l| l.contains("INFO busbar listening listen="));
 
     let expected = vec![
@@ -322,8 +273,7 @@ fn boot_lines_match_1_5_5_shape() {
         "<TS>  INFO budget counters flushed on shutdown flushed=0".to_string(),
         "<TS>  INFO metering rows flushed on shutdown flushed=0".to_string(),
     ];
-    // Same treatment as `lines`: the two "busbar listening" lines' relative order is a thread race,
-    // not a contract — sort both sides the same way so the assertion pins the SET, not a coin flip.
+
     let mut expected = expected;
     sort_consecutive_runs(&mut expected, |l| {
         l.contains("INFO busbar listening listen=")
@@ -337,9 +287,6 @@ fn boot_lines_match_1_5_5_shape() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// `security.allow_all_metadata: true` swaps the metadata INFO line for exactly one WARN, 1.5.5's
-/// text byte for byte (lead ruling: 1.5.5 look and feel wins; the security doc quotes the product):
-/// `metadata protection DISABLED — all cloud-metadata endpoints reachable`.
 #[test]
 fn allow_all_metadata_boot_line_is_the_warn() {
     let dir = fixture_dir();
@@ -426,13 +373,6 @@ fn sort_consecutive_runs(lines: &mut Vec<String>, pred: impl Fn(&str) -> bool) {
     *lines = out;
 }
 
-/// A single best-effort `GET /healthz` against `127.0.0.1:port`, over a raw blocking socket
-/// rather than an async client, so this plain `#[test]` does not need a tokio runtime just to probe
-/// readiness. `/healthz` is unauthenticated and side-effect-free (see `endpoints::healthz`'s own
-/// doc), so this cannot perturb the boot-line sequence under test. Any I/O failure (connection
-/// refused because the listener has not bound yet, a reset mid-handshake, ...) is reported as "not
-/// ready" rather than propagated, since "not yet listening" is the expected steady state until boot
-/// completes.
 fn healthz_ok(port: u16) -> bool {
     let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) else {
         return false;
@@ -464,9 +404,6 @@ fn wait_for(budget: Duration, mut cond: impl FnMut() -> bool) -> bool {
     cond()
 }
 
-/// Strip ANSI SGR escape sequences (`\x1b[...m`) — tracing's default fmt layer colors level/field
-/// names even when writing to a plain file (not a tty), exactly as the shadow-oracle capture pipeline
-/// observes (`capture-exec.py`'s `exec.ansi` rule).
 fn strip_ansi(line: &str) -> String {
     let mut out = String::with_capacity(line.len());
     let mut chars = line.chars().peekable();

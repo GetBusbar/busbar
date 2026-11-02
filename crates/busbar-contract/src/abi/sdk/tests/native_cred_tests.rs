@@ -44,7 +44,7 @@ fn postgres_capture_preserves_last_wins_and_native_decoding() {
         assert!(CredUrl::parse_postgres(&format!("postgres://u:{invalid}@h/db")).is_err());
         assert!(CredUrl::parse_postgres(&format!("postgres://u@h/db?password={invalid}")).is_err());
     }
-    // `pass` is a native public option, never an alias for PostgreSQL's password.
+
     let p = CredUrl::parse_postgres("postgres://u@h/db?pass=value").unwrap();
     assert!(p.password().is_none());
     assert!(p.public().contains("pass=value"));

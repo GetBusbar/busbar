@@ -1,7 +1,5 @@
 use super::*;
 
-/// With no channel published — any build that never reached `run()` — the process must report that
-/// it cannot restart, so a handler refuses instead of claiming a restart it cannot cause.
 #[test]
 fn cannot_restart_when_no_channel_is_published() {
     assert!(
@@ -10,19 +8,12 @@ fn cannot_restart_when_no_channel_is_published() {
     );
 }
 
-/// The ask cell is one process-wide cell, so the tests that write it take turns. Without this they
-/// would be testing each other's writes — which is the very fault the keyed ask exists to stop, and
-/// not something to reproduce in the harness that proves it.
 static ASK_CELL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
     ASK_CELL.lock().unwrap_or_else(|p| p.into_inner())
 }
 
-/// Drive one future to completion on a runtime of this test's own.
-///
-/// Entered here rather than wrapping the whole test, because the turn a test takes at the shared ask
-/// cell is an ordinary lock and must not be held across an await.
 fn on_a_runtime<F: std::future::Future>(f: F) -> F::Output {
     tokio::runtime::Builder::new_current_thread()
         .build()
@@ -49,19 +40,11 @@ fn a_drain_asked_for_is_released_by_the_exit_path_exactly_once() {
     );
 }
 
-/// THE ASK BELONGS TO ONE UNIT. A second administrative request finishing between the restart's
-/// handler and the restart's own exit path used to take the ask with it: one process-wide bit, taken
-/// by whoever reached the tail next. The drain then began under somebody else's response, and the
-/// shutdown raced the 202 the restarting caller had not been sent yet.
-///
-/// Driven on the runtime because the attribution is ambient to the task the operation's body runs
-/// on, which is the same place the real seam puts it. The runtime is entered rather than wrapped
-/// around the test, so the turn this test takes at the shared cell is not held across an await.
 #[test]
 fn a_drain_is_released_only_by_the_unit_that_asked_for_it() {
     let _turn = one_at_a_time();
     drain_released_at_exit();
-    // Unit seven asks, from inside its own scope, exactly as an operation's body does.
+
     on_a_runtime(as_unit(7, async { begin_drain() }));
     assert!(
         !release_asked_drain(9),
@@ -81,9 +64,6 @@ fn a_drain_is_released_only_by_the_unit_that_asked_for_it() {
     );
 }
 
-/// A drain asked for OUTSIDE any unit scope is attributed to the reserved unkeyed marker rather than
-/// lost. That is the posture of a composition with an exit path but no loop behind it, and losing
-/// the ask there would be a restart that answered 202 and never restarted.
 #[test]
 fn an_ask_made_outside_a_unit_scope_is_the_unkeyed_one() {
     let _turn = one_at_a_time();
@@ -99,16 +79,6 @@ fn an_ask_made_outside_a_unit_scope_is_the_unkeyed_one() {
     );
 }
 
-/// Supervisor detection reads the markers systemd and Kubernetes stamp. Absence is not proof — a
-/// `docker run --restart` container sets neither — which is why the handler asks for confirmation
-/// rather than refusing when this is false.
-///
-/// Drives `supervisor_detected_in` with a fixture closure rather than mutating the real process
-/// environment: `supervisor_detected()` itself is a byte-for-byte re-implementation target (the old
-/// version of this test literally re-derived the same boolean expression it was testing, an
-/// `assert_eq!(false, false)` in practice), and the two markers it reads are also read by
-/// `test_admin_v1_restart_refuses_when_it_cannot_restart` elsewhere in this shared-process binary, so
-/// `set_var` would be a cross-test hazard even where edition allows it.
 #[test]
 fn supervisor_detection_reads_the_known_markers() {
     assert!(

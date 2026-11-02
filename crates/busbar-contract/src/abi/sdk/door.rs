@@ -2,48 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE DOOR MACRO — the plugin side of the shared mechanism (THE DESIGN, the plugin ABI; abi-v2, the door and the SDK).
-//!
-//! A plugin of any kind is two crates (abi-v2, the door's "crate shape"):
-//!
-//! * the LOGIC crate invokes [`plugin_door!`](crate::plugin_door) once. It expands, IN THAT CRATE,
-//!   to `pub extern "C" fn door() -> &'static Door` — a [`DoorFn`](crate::abi::mechanism::door::DoorFn) answering a `'static`
-//!   [`Door`] (magic [`DOOR_MAGIC`], [`MECHANISM_VERSION`], the kind, the kind's ABI version, the
-//!   plugin's [`Statement`] and its ops table). No `#[no_mangle]`: a composition root that links
-//!   several plugins links several `door` functions, one per crate, and a compiled-in row holds
-//!   exactly that `DoorFn`;
-//! * the thin `cdylib` crate holds one line, [`export_door!`](crate::export_door)`(crate_x::door)`,
-//!   which emits the ONE exported symbol [`DOOR_SYMBOL`](crate::abi::mechanism::DOOR_SYMBOL),
-//!   forwarding to the same `door`. Compiled in or dropped in, the kernel reaches the same table.
-//!
-//! EVERY SLOT IS A TRAMPOLINE. A table entry is `trampoline::<S, INDEX>` over a [`RawSlot`] the
-//! plugin implements. The trampoline is the SDK's half of the call convention, the same for every
-//! slot of every kind:
-//!
-//! * HEAD AND SIZE CHECKS — a NULL `out`, or one whose `size` cannot hold an [`OutHead`], is
-//!   answered [`Outcome::Fault`] with nothing written; a NULL `in`, an `in` shorter than its
-//!   [`InHead`], or an `in.op` that is not this slot's index is [`Outcome::Fault`] (the `in.op`
-//!   check is the SDK's own reading of [`InHead::op`]: a call routed to the wrong slot never runs);
-//!   the host's heads are read unaligned, so a C host owes no alignment;
-//! * the `in` is read up to `min(in.size, size_of In)` and an absent tail reads as zero;
-//! * `catch_unwind` around the slot body: a panic is [`Outcome::Fault`], never an abort and never
-//!   an unwind across the boundary (every plugin builds `panic = "unwind"`, ARCHITECT ruling,
-//!   m3-inputs; both macros refuse to compile under `panic = "abort"`);
-//! * PANIC-SAFE OUT WRITES — the body writes a private copy of `out`; only a body that RETURNED is
-//!   written back, and then at most `min(out.size, size_of Out)` bytes, with `out.size` set to the
-//!   plugin's own `size_of Out` (the host clamps) and `out.outcome` MIRRORING the returned outcome.
-//!   A panicking body writes nothing but `outcome = FAULT`;
-//! * [`Outcome::Pending`] answered on a [`Ticket::NONE`](crate::abi::mechanism::ticket::Ticket::NONE)
-//!   call is [`Outcome::Fault`] (the mechanism's rule, `OutHead::outcome`);
-//! * THE CALL CAPTURE — the body runs under the plugin image's call capture as the thread's scoped
-//!   `tracing` dispatcher, and whatever it logged, through `tracing` or `log`, rides the reply's
-//!   #85 envelope as log diagnostics ([`capture`](crate::abi::sdk::capture)). A body that faulted
-//!   carries none.
-//!
-//! Every name here is a TYPE, a TRAIT or a FUNCTION: the contract crate holds no `static`
-//! (`contract-stateless`). The `'static` door, Statement and table exist only as `const` items the
-//! macro expands in the plugin crate, and so does the one per-thread call-capture slot
-//! ([`CaptureHome`]), which is the plugin image's own. There is no load-time registration
-//! (`.init_array` is retired).
 
 use std::ffi::c_void;
 use std::mem::{offset_of, size_of, MaybeUninit};
@@ -128,8 +86,6 @@ pub unsafe trait KindOps: Copy + 'static {
     /// The kind this table belongs to; the door's `kind` and `kind_abi` follow from it.
     const KIND: KindCode;
     /// The `in`/`out` of each of the nine LIFECYCLE slots, stated as [`KindSlot`]s at the slot's
-    /// index: [`Lifecycle`], or a kind's own where the kind widens a lifecycle `in`/`out` (the
-    /// plane's `open`, `refresh` and `drive`).
     type Lifecycle: 'static;
 }
 
@@ -366,7 +322,6 @@ pub unsafe trait Entry {
     /// The slot's `out`.
     type Out: AbiOut;
     /// Whether this entry reads the instance as the SDK's typed state
-    /// ([`Safe`](crate::abi::sdk::safe::Safe)); `plugin_door!` then requires `open` to be one too.
     const SAFE: bool = false;
     /// The body.
     ///
@@ -396,8 +351,6 @@ unsafe impl<S: RawSlot> Entry for S {
 }
 
 /// The deprecated raw slot spelling. Its body requires the same explicit caller proof as
-/// [`RawSlot::call`]; a safe function over arbitrary raw instance/input pointers cannot promise
-/// this contract. Implement [`RawSlot`] or a [`SafeSlot`](crate::abi::sdk::safe::SafeSlot).
 #[deprecated(note = "implement `RawSlot` (`unsafe fn call`, same body) or `SafeSlot`")]
 pub trait Slot {
     /// The slot's `in`.
@@ -458,7 +411,6 @@ unsafe fn enter<S: Entry, H: CaptureHome>(
     // SAFETY: `out` is non-NULL and leads with an `OutHead` (the caller's contract).
     let host_out = unsafe { ptr::addr_of!((*out_head).size).read_unaligned() } as usize;
     if host_out < size_of::<OutHead>() {
-        // Not even the head fits: writing `outcome` would exceed what the host gave.
         return Outcome::Fault;
     }
     if input.is_null() {
@@ -500,9 +452,6 @@ unsafe fn enter<S: Entry, H: CaptureHome>(
         );
     }
 
-    // The body runs on COPIES moved into the closure and hands its `out` back only by returning:
-    // a panic leaves nothing half-written for the trampoline to copy out. It runs under the call
-    // capture, which is this thread's scoped `tracing` dispatcher for exactly as long as the body.
     let capture = H::with(|slot| slot.dispatch());
     // SAFETY: AbiIn starts with InHead and the local copy is initialized.
     let call = unsafe { ptr::addr_of!(local_in).cast::<InHead>().read() };
@@ -535,7 +484,7 @@ unsafe fn enter<S: Entry, H: CaptureHome>(
             // SAFETY: `S::Out` leads with an `OutHead` (`AbiOut`).
             let head = unsafe { &mut *ptr::addr_of_mut!(local_out).cast::<OutHead>() };
             head.outcome = RawOutcome::of(outcome);
-            // The plugin writes back its own size (the mechanism's growth rule); the host clamps.
+
             head.size = size_of::<S::Out>() as u32;
             // What the body logged joins the envelope it answered.
             // SAFETY: the plugin's own `diags`, when set, point to `diags_len` live entries until
@@ -563,7 +512,6 @@ unsafe fn enter<S: Entry, H: CaptureHome>(
             outcome
         }
         Err(payload) => {
-            // A payload whose own `Drop` panics escapes here and aborts: the `extern "C"` floor.
             drop(payload);
             H::with(|slot| slot.discard());
             // SAFETY: the host's `out` holds at least a whole `OutHead` (checked above).
@@ -574,9 +522,6 @@ unsafe fn enter<S: Entry, H: CaptureHome>(
 }
 
 /// A `T` table with every kind-op slot NULL (its head is the caller's to replace): the base
-/// [`plugin_door!`](crate::plugin_door) fills the kind ops a door does not name from. A NULL kind op
-/// is ABSENT; the loader admits one only in a slot its kind states optional (absent = pass, the
-/// secret `check` and the auth `target`) and refuses a door that leaves any other slot NULL.
 #[must_use]
 pub const fn absent_table<T: KindOps>() -> T {
     // SAFETY: `T: KindOps` is `#[repr(C)]` with `head: OpsHead` first and only `Option<Op>` slots
@@ -595,7 +540,6 @@ unsafe fn write_fault(head: *mut OutHead) {
 }
 
 /// The index of the table slot at byte `offset` of a [`KindOps`] table (the mechanism's SLOT
-/// LAYOUT: the head's two `u32`s, then one `Option<Op>` per slot).
 #[must_use]
 pub const fn slot_at(offset: usize) -> u32 {
     ((offset - offset_of!(OpsHead, validate)) / size_of::<Option<Op>>()) as u32
@@ -608,11 +552,6 @@ pub const fn slot_count<T: KindOps>() -> u32 {
 }
 
 /// A table entry: the `trampoline` over `S` at `INDEX` under the call capture `H` keeps, refusing
-/// to compile unless `S` reads and writes the structs `T` states for that slot ([`KindSlot`]): a
-/// kind op's `T` is the kind's `Ops`, a lifecycle slot's its [`KindOps::Lifecycle`]. A table
-/// holding any [`Safe`](crate::abi::sdk::safe::Safe) entry holds a `Safe` `open`, which mints the
-/// instance the others read; [`plugin_door!`](crate::plugin_door) refuses to compile one that does
-/// not, so a plugin builds its table with the macro, never by hand.
 #[must_use]
 pub const fn kind_op<T, S, H, const INDEX: u32>() -> Option<Op>
 where
@@ -624,9 +563,8 @@ where
 }
 
 /// The [`OpsHead`] of a `T` table: its `size` and `slots` stamped from `T`, the nine lifecycle
-/// entries as given.
 #[must_use]
-#[allow(clippy::too_many_arguments)] // one argument per lifecycle slot, in table order
+#[allow(clippy::too_many_arguments)]
 pub const fn ops_head<T: KindOps>(
     validate: Option<Op>,
     open: Option<Op>,
@@ -663,7 +601,6 @@ pub const fn abi_str(s: &'static str) -> AbiStr {
 }
 
 /// The module name `from` an operator may write for the plugin, as the Statement's
-/// [`REWRITE_ALIAS`] rewrite (`to` absent).
 #[must_use]
 pub const fn alias(from: &'static str) -> Rewrite {
     Rewrite {
@@ -674,8 +611,6 @@ pub const fn alias(from: &'static str) -> Rewrite {
 }
 
 /// A Statement naming the plugin, with no families, no diagnostic ids, no kind tail, no
-/// extensions, no marks, no rewrites, no sections, no needs, no settings paths, no answers and no claims. Its `size`, `kind` and `kind_abi` are stamped by [`plugin_door!`](crate::plugin_door)
-/// ([`stamp`]); a plugin extends it with struct-update syntax.
 #[must_use]
 pub const fn statement(name: &'static str, version: &'static str, max_inflight: u32) -> Statement {
     Statement {
@@ -704,7 +639,6 @@ pub const fn statement(name: &'static str, version: &'static str, max_inflight: 
 const ABSENT: AbiStr = AbiStr::ZERO;
 
 /// `statement` with `size`, `kind` and `kind_abi` stamped from `T`, so the Statement and the door
-/// can never disagree on them.
 #[must_use]
 pub const fn stamp<T: KindOps>(statement: Statement) -> Statement {
     Statement {
@@ -746,7 +680,7 @@ pub const unsafe fn door<T: KindOps>(
     }
 }
 
-/// THE SEALED DOOR (status row 195, ARCHITECT ruling on `admit_linked`): a [`DoorFn`] answers a
+/// THE SEALED DOOR: a [`DoorFn`] answers a
 /// `&'static Door`, and a [`Door`]'s fields are private behind the `unsafe`
 /// [`Door::__from_parts`] ([`door`] is `unsafe` over it), so the loader's safe `admit_linked`
 /// takes any `DoorFn` safe code can name. Each refusal below has a twin that differs in the one
@@ -882,10 +816,10 @@ pub type RawDoorFn = extern "C" fn() -> *const Door;
 ///
 /// WHAT THIS DOES NOT CLOSE: the Statement's CONTENT (its lists and their counts, every `AbiStr`,
 /// `Blob` and kind tail) is the macro caller's own `const` data, written with the ABI's public
-/// pointer/length fields; a count that disagrees with its storage is read as stated. That class is
-/// closed by the root unsafe-ABI change on branch `lane-row159-abi-unsafe-fn` (the ABI's ptr/len
-/// fields private behind `const` constructors from `'static` slices and strs).
-///
+/// pointer/length fields. The
+/// caller must ensure
+/// each count matches
+/// its backing storage.
 /// THE SAFE SURFACE OF THE MACRO DOOR, PROVED IN PAIRS. Each `compile_fail` below has a twin that
 /// differs from it in the one forbidden spelling and MUST compile, so the failure is the guard's
 /// and nothing else's (stable rustdoc checks no error code). The test support's own pairs
@@ -1016,11 +950,11 @@ impl MacroDoor {
     ///
     /// # Safety
     ///
-    /// `door` answers a pointer to a `'static`, fully initialised `Door` the SDK built (the `const`
-    /// items [`plugin_door!`](crate::plugin_door) lays out), whose Statement lists point at their
-    /// stated counts of live `'static` entries. That last part is the content of the Statement the
-    /// macro's caller wrote as its own `const` data; the ABI does not yet enforce it, and the root
-    /// unsafe-ABI change on branch `lane-row159-abi-unsafe-fn` closes it.
+    /// `door` answers a pointer to a fully initialized static `Door` built by the SDK, using the const items laid out by [`plugin_door!`](crate::plugin_door). Its Statement lists must point to their stated counts of live static entries. The macro caller supplies that const data and must ensure these counts match their backing storage; the ABI does not enforce this obligation.
+    ///
+    ///
+    ///
+    ///
     #[doc(hidden)]
     #[must_use]
     pub const unsafe fn __from_door_macro(door: DoorFn) -> Self {
@@ -1037,13 +971,13 @@ impl MacroDoor {
 /// THE DOOR MACRO. The door, Statement and table are `const` items: `'static`, but Rust does not
 /// promise one address per `const`, so a host compares a door's contents, never its address.
 ///
-/// Beside `door` it expands `MACRO_DOOR`, the [`MacroDoor`] the contract's test support reads the
-/// door through. The `statement` it is given is the caller's own `const` data: its lists, strings,
-/// blobs and kind tail are stated through the ABI's public pointer/length fields, which the
-/// root unsafe-ABI change on branch `lane-row159-abi-unsafe-fn` puts behind `const` constructors
-/// from `'static` slices and strs.
-/// Invoked once, in a plugin's LOGIC crate; expands there to
-/// `pub extern "C" fn door() -> &'static Door` over a `'static` door, Statement and ops table.
+/// Beside `door`, this macro expands `MACRO_DOOR`, the [`MacroDoor`] used by the contract's test support. The caller supplies the const Statement, including its lists, strings, blobs, and kind tail through the ABI's pointer/length fields, and must keep their backing valid. Invoke it once in a plugin's logic crate; it expands to `pub extern "C" fn door() -> &'static Door` over a static door, Statement, and operation table.
+///
+///
+///
+///
+///
+///
 ///
 /// ```ignore
 /// busbar_contract::plugin_door! {
@@ -1278,8 +1212,8 @@ macro_rules! plugin_door {
             // SAFETY: `door` is the function this macro expanded just above: it answers the
             // `'static`, fully initialised `Door` the SDK laid out as `const` items. The Statement's
             // content (its lists, strings, blobs and kind tail) is the caller's own `const` data;
-            // that its counts match its storage is closed by the root unsafe-ABI change on branch
-            // `lane-row159-abi-unsafe-fn`.
+            // The caller must ensure each
+            // count matches its backing storage.
             unsafe { $crate::abi::sdk::door::MacroDoor::__from_door_macro(door) };
 
     };

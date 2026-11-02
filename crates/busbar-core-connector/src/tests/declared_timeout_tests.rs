@@ -405,8 +405,6 @@ fn a_pended_dns_dial_carries_its_expired_original_bound_into_the_tls_stage() {
         let held = c.slab.get(OWNER, id).unwrap().1;
         let expiring = held.clone();
         *carrier.2.lock().unwrap() = Some(Box::new(move || {
-            // The original budget expires while resolution's admitted dial crosses. The TLS
-            // engine has already been constructed with valid trust, but must get no fresh clock.
             expiring.dial_due.lock().unwrap().as_mut().unwrap().at = Instant::now();
         }));
         answer.lock().unwrap().take().unwrap()(Ok(address.parse().unwrap()));

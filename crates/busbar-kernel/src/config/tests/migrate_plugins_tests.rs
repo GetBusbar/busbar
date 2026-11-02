@@ -1,19 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Core's half of a plugin's own migration: it hands each selected plugin its section, writes the
-//! answer back, applies only the needs raised against core's keys, prints the report lines under
-//! the plugin's name, and rewrites `plugins.fetch` through the release lookup. It knows no plugin's
-//! keys: the stub host below does the renaming, as a plugin's `migrate` would.
-
 use busbar_contract::abi::sdk::migrate::{MigrateNeed, Migrated};
 
 use super::{MigrateHost, NoPlugins};
 use crate::config::migrate::{migrate_config, migrate_config_with};
 
-/// A stub host: the `stub` store and auth plugins rename `signing-secret` to `signing_secret` and
-/// ask for the host their `url` names; `broken` refuses; the index answers `v1.6.0` for the stub's
-/// repository, and a pin for the unserved `elsewhere` module.
 struct Stub;
 
 impl MigrateHost for Stub {
@@ -167,7 +159,7 @@ fn core_writes_back_the_plugins_own_migration_and_applies_only_its_needs() {
         "{:?}",
         out.changes
     );
-    // A plugin with no migrate passes through; one that refuses is left as written, with a TODO.
+
     assert_eq!(
         d["identity-providers"]["other"]["settings"],
         yaml("{ keep: me }")
@@ -205,7 +197,7 @@ fn fetch_pins_are_rewritten_through_the_release_lookup_and_unserved_plugins_gain
         .changes
         .iter()
         .any(|c| c.starts_with("plugins.fetch: added 'Acme/busbar-elsewhere@v1.6.0'")));
-    // Idempotent: the migrated document migrates to itself.
+
     let again = migrate_config_with(&out.yaml, &Stub).expect("migrates again");
     assert!(
         !again.changes.iter().any(|c| c.starts_with("plugins.fetch")
@@ -229,16 +221,6 @@ fn with_no_plugins_at_hand_every_section_passes_through_unchanged() {
     assert!(d["advanced"].is_null());
 }
 
-// ── A plane's consumed sections, the merged providers view, and a host allowed only if private ──
-//
-// A plane's migration is handed the sections it CONSUMES beside the ones it owns, read-only: an
-// answer that rewrites one is refused, whole, with the reason. A plane that consumes the transport
-// kind's root (`providers`) is handed the catalog merged under the deployment's entries, as boot
-// merges them. A plane that cannot tell whether a host it dials is private raises
-// `AllowDestinationIfPrivate`: core resolves it at migrate time with the destination guard's own
-// predicates and adds exactly that host only when every answer is private or loopback and none is
-// cloud metadata, with a report line for every decision.
-
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::net::IpAddr;
@@ -248,11 +230,8 @@ use busbar_contract::section::{RESERVED_MODELS_KEY, RESERVED_POOLS_KEY};
 
 use super::{migrate_over, Ledger, PlaneFacts};
 
-/// The section a witness plane reads beside its own that no catalog backs.
 const SHARED: &str = "witness_shared";
 
-/// The witness plane: it declares the pools section, owns `witness_own`, and consumes the
-/// providers, the models and [`SHARED`].
 fn witness() -> PlaneFacts {
     const CONSUMES: &[&str] = &[Kind::Transport.root(), RESERVED_MODELS_KEY, SHARED];
     PlaneFacts {
@@ -275,9 +254,6 @@ enum Plane {
     RewritesShared,
 }
 
-/// A host whose witness plane does what [`Plane`] says, whose catalog is `catalog` and whose
-/// resolver answers from `dns` (never the network), recording what the plane was handed and every
-/// name resolved.
 struct Witness {
     plane: Plane,
     catalog: Option<&'static str>,
@@ -393,7 +369,6 @@ impl MigrateHost for Witness {
     }
 }
 
-/// Run only the plugin step over `yaml`, with the witness plane registered.
 fn run(yaml: &str, host: &Witness) -> (serde_yaml::Value, Vec<String>, Vec<String>) {
     let serde_yaml::Value::Mapping(mut root) = serde_yaml::from_str(yaml).expect("YAML") else {
         panic!("a mapping");
@@ -440,7 +415,7 @@ fn a_plane_is_handed_its_consumed_sections_beside_its_own() {
         );
     }
     assert_eq!(handed[SHARED], serde_json::json!({"keep": "me"}));
-    // Its own section is written back; the consumed ones it answered unchanged stay as written.
+
     assert_eq!(d["witness_own"], yaml("{ new: 1 }"));
     assert_eq!(d[SHARED], yaml("{ keep: me }"));
     assert_eq!(d["models"], yaml("{ m: { provider: a } }"));
@@ -485,7 +460,7 @@ fn a_consumed_section_is_read_only_and_a_rewrite_of_it_is_refused_with_the_reaso
             )) && todo.ends_with("the settings were left as written"),
             "{todo}"
         );
-        // Nothing of the answer is written, its own section included.
+
         assert_eq!(d, yaml(PLANE_DOC), "the document is left as written");
     }
 }
@@ -522,7 +497,7 @@ providers:
         "the deployment's keys win, a string map merges member by member, and a catalog-only \
          entry is there"
     );
-    // The view is the plane's to read: the document's own `providers:` is left as written.
+
     assert_eq!(
         d[Kind::Transport.root()],
         yaml(
@@ -540,7 +515,6 @@ providers:
     assert_eq!(allowed, ["10.0.0.5", "10.0.0.6", "192.168.1.9"]);
 }
 
-/// The allow-if-private decision over one host, through a plane that raises it.
 fn decide(host: &Witness, url: &str) -> (serde_yaml::Value, Vec<String>, Vec<String>) {
     let doc = format!(
         "pools:\n  p: {{ members: [{{ model: m }}] }}\nproviders:\n  a: {{ base_url: '{url}' }}\n"
@@ -551,7 +525,6 @@ fn decide(host: &Witness, url: &str) -> (serde_yaml::Value, Vec<String>, Vec<Str
 
 #[test]
 fn a_private_host_is_added_exactly_with_a_line_naming_what_it_resolved_to() {
-    // An address literal: judged as its own answer, nothing resolved.
     let host = Witness::new(Plane::Migrates);
     let (list, changes, _) = decide(&host, "http://10.0.0.5:8000");
     assert_eq!(list, yaml("['10.0.0.5']"));
@@ -567,11 +540,9 @@ fn a_private_host_is_added_exactly_with_a_line_naming_what_it_resolved_to() {
           allowed; only this host is allowed, not every private address)"]
     );
 
-    // An IPv6 unique-local literal, unbracketed in the entry.
     let (list, _, _) = decide(&Witness::new(Plane::Migrates), "http://[fd00::5]:8000");
     assert_eq!(list, yaml("['fd00::5']"));
 
-    // The `localhost` family: loopback by definition, nothing resolved.
     let host = Witness::new(Plane::Migrates);
     let (list, changes, _) = decide(&host, "http://LocalHost:11434");
     assert_eq!(list, yaml("['localhost']"));
@@ -583,7 +554,6 @@ fn a_private_host_is_added_exactly_with_a_line_naming_what_it_resolved_to() {
         "{changes:?}"
     );
 
-    // A name: every answer the resolver gives is judged.
     let host = Witness::new(Plane::Migrates).answers("ollama.internal", &["10.1.2.3", "fd00::7"]);
     let (list, changes, todos) = decide(&host, "http://ollama.internal:11434");
     assert_eq!(list, yaml("['ollama.internal']"));
@@ -647,7 +617,6 @@ fn cloud_metadata_is_never_added_by_literal_by_name_or_by_answer() {
 
 #[test]
 fn a_host_that_cannot_be_decided_is_left_to_the_operator_with_a_todo() {
-    // No answer at migrate time.
     let (list, changes, todos) = decide(&Witness::new(Plane::Migrates), "http://gone.internal/");
     assert!(list.is_null() && changes.is_empty());
     assert_eq!(
@@ -656,8 +625,7 @@ fn a_host_that_cannot_be_decided_is_left_to_the_operator_with_a_todo() {
           did not resolve at migrate time (no such name), so it was not added; if it is a private \
           or loopback host where busbar runs, add it to advanced.allow_destinations by hand"]
     );
-    // A mixed answer: the guard refuses it unless the host is allowed, and core adds it only when
-    // every answer is private.
+
     let host = Witness::new(Plane::Migrates).answers("split.example", &["10.0.0.9", "8.8.8.8"]);
     let (list, changes, todos) = decide(&host, "http://split.example/");
     assert!(list.is_null() && changes.is_empty());
@@ -670,7 +638,7 @@ fn a_host_that_cannot_be_decided_is_left_to_the_operator_with_a_todo() {
             && todos[0].contains("some answers private and some public, so it was not added"),
         "{todos:?}"
     );
-    // An alternate IPv4 spelling: the guard refuses it whatever the allowlist says.
+
     let (list, _, todos) = decide(&Witness::new(Plane::Migrates), "http://0x7f.1/");
     assert!(list.is_null());
     assert!(
@@ -708,11 +676,6 @@ advanced:
     );
 }
 
-/// THE PRIVATE-DESTINATIONS CORPUS FIXTURE (`tests/migration-corpus/private-destinations/`): a
-/// 1.5.5 deployment whose providers reach a private literal, `localhost`, a private NAME, a
-/// catalog-only private entry and a private `token_url`. Migrated through a plane that raises
-/// `AllowDestinationIfPrivate` for each host it dials, every private one is allowed exactly, the
-/// public and metadata ones are not, and each decision has its line.
 #[test]
 fn the_private_destinations_fixture_allows_exactly_its_private_upstreams() {
     let mut host = Witness::new(Plane::Migrates)
@@ -761,7 +724,7 @@ fn the_private_destinations_fixture_allows_exactly_its_private_upstreams() {
             "{not}: {changes:?}"
         );
     }
-    // The deployment overrode the catalog's public `lab-vllm` URL: the catalog's is never dialled.
+
     assert!(!changes.iter().any(|c| c.contains("vllm.example.com")));
     assert!(d["advanced"]["block_private_addresses"].is_null());
 }

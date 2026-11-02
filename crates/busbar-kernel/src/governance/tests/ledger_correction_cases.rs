@@ -184,7 +184,7 @@ fn unknown_correction_retains_exact_identity_through_another_error_and_backgroun
     );
     store.set_down(false);
     gov.flush_budgets();
-    // Background replay recovered the branch; the caller still consumes the original outcome.
+
     gov.adjust_usage(&cm, &adj).unwrap().unwrap();
     gov.flush_budgets();
     assert_eq!(

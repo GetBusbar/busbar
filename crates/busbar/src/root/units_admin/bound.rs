@@ -1,27 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **THE FOUR 1.6.0 ADMIN VERBS OWNER ANSWER Q71(2) BINDS**: `verify`, `plane_facts`,
-//! `plane_record_write` and `commit_upgrade` — additive, `x-busbar-since 1.6.0`, the same shape as
-//! the core admin verbs of Q56. Every one is admitted by the verbs unit before it reaches this file
-//! (scope, then rate class: a plain scoped verb, #77(9) OWNER-LOCKED), so each effect here speaks
-//! only to its own body and its own effect.
-//!
-//! * `GET /api/v1/admin/verify` — [`verify_effect`]: everything that has to be true of what the node
-//!   holds — every count of the one ledger priceable at the card, the journal read back clean at
-//!   boot, the amendment and audit chains as held, and every chain the store keeps. A failed
-//!   verification is still a `200`: the verb answers the question it was asked, and `ok` says the
-//!   answer.
-//! * `GET /api/v1/admin/plane-facts?plane=<key>` — [`plane_facts_effect`]: what a plane this node
-//!   serves declares about itself (its contract `PlaneDeclaration`), read off the registry. A plane
-//!   this node does not serve is `404` — the same Law-7 answer its admin paths give.
-//! * `POST /api/v1/admin/plane-record-write` — [`plane_record_write_effect`]: one upsert of a plane
-//!   record into the named plane's own rows (keyed by the plane), through the plane-facing store
-//!   seam; never onto a row the kernel keeps.
-//! * `POST /api/v1/admin/commit-upgrade` — [`commit_upgrade_effect`]: seal, on the node's journal as
-//!   a `Policy` record, that the fleet commits to the release THIS binary is. The body names the
-//!   release; one this binary is not is refused, so a commit can never name a version nobody runs.
-
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -33,20 +12,13 @@ use busbar_kernel::trust::book::{KeyRow, Ruling};
 
 use super::{AdminAnswer, AmendmentJournal, AuditView, LedgerView};
 
-/// Which plane THIS node serves under a key, and what it declares: `None` for a key no plane is
-/// registered under, and for a registered plane this node has not configured (Law 7). A predicate
-/// over the live configuration rather than a list, so a config apply is what the next call sees.
 pub type PlaneLookup = Arc<dyn Fn(&str) -> Option<PlaneDeclaration> + Send + Sync>;
 
-/// The lookup of a node no root bound a registry to: it serves no plane.
 #[must_use]
 pub fn no_planes() -> PlaneLookup {
     Arc::new(|_| None)
 }
 
-/// Where `plane_record_write` lands one record: the plane-facing store seam
-/// (`busbar_kernel::store::plane_view::PlaneStore::upsert_plane_record`). `Err` carries the store's own
-/// typed refusal or unknown outcome, without treating a lost acknowledgement as no effect.
 pub type PlaneRecordSink = Arc<
     dyn Fn(&PlaneRecord) -> Result<(), busbar_contract::store_calls::StoreFailure> + Send + Sync,
 >;
@@ -125,25 +97,17 @@ fn refused_effect(status: u16, code: &str, message: &str) -> EffectAnswer {
     EffectAnswer::unapplied(refused(status, code, message))
 }
 
-/// The kernel's host services, whose trust book the three trust verbs read and decide over
-/// (ARCHITECT 2026-10-06): `None` until the root composed them, and on a node that composed none —
-/// which then has no trust keys, lists none and answers every key `404`.
 pub type TrustDesk = Arc<dyn Fn() -> Option<Arc<KernelServices>> + Send + Sync>;
 
-/// The desk of a node no root bound the kernel's services to: no trust keys.
 #[must_use]
 pub fn no_trust() -> TrustDesk {
     Arc::new(|| None)
 }
 
-/// The domain tag a `commit_upgrade` journal record's body opens with, so a `Policy`-class record
-/// is recognisable as a committed release without guessing.
 pub const COMMIT_UPGRADE_RECORD_TAG: &str = "busbar/commit-upgrade/v1";
 
-/// The release this binary is — the only release a `commit_upgrade` on this node may name.
 pub const RUNNING_RELEASE: &str = env!("CARGO_PKG_VERSION");
 
-/// One refusal in the admin envelope, with a message that says what to fix.
 fn refused(status: u16, code: &str, message: &str) -> AdminAnswer {
     AdminAnswer {
         status,
@@ -152,20 +116,16 @@ fn refused(status: u16, code: &str, message: &str) -> AdminAnswer {
     }
 }
 
-/// A durable verb the store has not acknowledged: `503` with the reason (ARCHITECT 2026-10-07 H3
-/// ruling (d)). A refusal the previous release never answered: it kept no journal.
 pub(crate) fn journal_unavailable(why: &str) -> AdminAnswer {
     refused(503, "service_unavailable", why)
 }
 
-/// A `200` carrying `value` as JSON.
 fn answer(value: &serde_json::Value) -> Result<AdminAnswer, GovernanceError> {
     serde_json::to_vec(value)
         .map(super::json_answer)
         .map_err(|_| GovernanceError::Store)
 }
 
-/// One query parameter's value, or `None` when the target carries none under `name`.
 fn query_param<'t>(target: &'t str, name: &str) -> Option<&'t str> {
     let (_, query) = target.split_once('?')?;
     let query = query.split('#').next().unwrap_or(query);
@@ -176,15 +136,6 @@ fn query_param<'t>(target: &'t str, name: &str) -> Option<&'t str> {
         .map(|(_, value)| value)
 }
 
-/// `GET /api/v1/admin/verify` — everything that has to be true of this node's ledger, checked.
-///
-/// THE ONE LEDGER is the store's usage counts, priced by the card in core: there is no second book
-/// to measure against a checkpoint, so `checkpoints` is 0, `since` is null and `book_verified` is
-/// false, as on a node that never sealed one. The identity holds when every count is priceable; a
-/// row the card refuses (#42) is a finding naming it, and every other check still runs. The journal
-/// (what the boot could not read back, the amendment chain, the audit chain, every chain the store
-/// keeps) is verified as before, through `audit`; `journal` is the node's amendment journal,
-/// verified as it is held now (a binding no root gave one holds no amendments to check).
 pub(crate) fn verify_effect(
     ledger: &dyn LedgerView,
     audit: Option<&dyn AuditView>,
@@ -205,9 +156,7 @@ pub(crate) fn verify_effect(
             )
         })
         .collect();
-    // WHAT THE BOOT COULD NOT READ BACK of the journal: a quarantined segment, a record that does
-    // not decode, an amendment that does not link. The boot logs it and serves on, and this is
-    // where an operator asking reads it.
+
     if let Some(audit) = audit {
         findings.extend(
             audit
@@ -216,22 +165,18 @@ pub(crate) fn verify_effect(
                 .map(|finding| format!("restart: {finding}")),
         );
     }
-    // THE AMENDMENT CHAIN, verified as it is held now: an edit made to the node's held content
-    // accesses after boot is a finding.
+
     if let Some(Err(broken)) = journal.map(crate::root::durability::verify_held) {
         findings.push(format!("amendment chain: {broken}"));
     }
     if let Some(audit) = audit {
-        // THE FIXED AUDIT CHAIN, walked as it is held now: a retained record edited, relinked or
-        // re-signed after it was sealed is a finding.
         findings.extend(
             audit
                 .retained_audit_findings()
                 .into_iter()
                 .map(|finding| format!("audit chain: {finding}")),
         );
-        // EVERY CHAIN THE STORE KEEPS, this node's and its peers', walked and verified against the
-        // deployment keyset.
+
         findings.extend(
             audit
                 .stored_chain_findings()
@@ -250,8 +195,6 @@ pub(crate) fn verify_effect(
     }))
 }
 
-/// `GET /api/v1/admin/plane-facts?plane=<key>` — what a plane this node serves declares about
-/// itself. Read-only: the declaration is a constant of the plane.
 pub(crate) fn plane_facts_effect(
     target: &str,
     planes: &dyn Fn(&str) -> Option<PlaneDeclaration>,
@@ -295,18 +238,6 @@ pub(crate) fn plane_facts_effect(
     }))
 }
 
-/// `POST /api/v1/admin/plane-record-write` — upsert one record of a plane this node serves.
-///
-/// The body is `{ "plane": "<key>", "kind": "…", "id": "…", "parent": "…"|null, "terminal": bool,
-/// "body": <json> }`. `body` is the record's opaque row, stored as its JSON bytes and never decoded
-/// by the store; `terminal` (default `false`) is the retention disposition. `written_at` is the
-/// arrival second, pinned by the unit.
-///
-/// The record lands in the NAMED PLANE'S OWN ROWS, under the store kind
-/// [`busbar_kernel::store::plane_view::plane_owned_kind`] keys by the plane; the answer names the
-/// kind as written. A kind the kernel keeps its own rows under
-/// ([`busbar_kernel::store::plane_view::KERNEL_RECORD_KINDS`]) is refused `403` even where the plane
-/// declares it, writing nothing (`BUSBAR-7107`).
 pub(crate) fn plane_record_write_effect(
     body: &[u8],
     at: u64,
@@ -365,8 +296,7 @@ pub(crate) fn plane_record_write_effect(
             &format!("plane `{plane}` not found"),
         ));
     };
-    // The plane's own declaration is the verdict (ARCHITECT RULING (b)): a record lands only under
-    // a kind the named plane declares it keeps, never under another plane's kind or one nobody reads.
+
     if !busbar_contract::plane::declares_record_kind(&decl, kind) {
         return Ok(refused_effect(
             403,
@@ -374,10 +304,7 @@ pub(crate) fn plane_record_write_effect(
             &format!("plane `{plane}` may not write record kind `{kind}`"),
         ));
     }
-    // THE KERNEL'S OWN ROWS ARE NEVER A PLANE'S, declared or not: plane-mcp declares `demotion`,
-    // and the rows under it are the kernel's durable demotion record, which a write in the plane's
-    // name must not alter (a demoted upstream would re-open). Refused by name, writing nothing; the
-    // unit seals the refusal on the audit ring as `rejected`.
+
     if busbar_kernel::store::plane_view::KERNEL_RECORD_KINDS.contains(&kind) {
         busbar_kernel::diagnostics::diag_warn!(
             busbar_kernel::diagnostics::PLANE_RECORD_WRITE_KERNEL_KIND,
@@ -394,8 +321,7 @@ pub(crate) fn plane_record_write_effect(
             ),
         ));
     }
-    // THE PLANE'S OWN ROWS, keyed by the plane: two planes declaring one kind never land on (or
-    // read) each other's rows, and no plane's row is a kernel kind's.
+
     let Some(owned) = busbar_kernel::store::plane_view::plane_owned_kind(plane, kind) else {
         return Ok(refused_effect(
             400,
@@ -417,7 +343,7 @@ pub(crate) fn plane_record_write_effect(
         },
         body: serde_json::to_vec(row).map_err(|_| GovernanceError::Validation)?,
     };
-    // Render before submission: every error returned by this function proves no effect started.
+
     let applied = answer(&serde_json::json!({
         "plane": plane,
         "kind": kind,
@@ -444,14 +370,6 @@ pub(crate) fn plane_record_write_effect(
     }
 }
 
-/// `POST /api/v1/admin/commit-upgrade` — the fleet commits to the release this binary is.
-///
-/// The body is `{ "version": "<release>" }`. A release this binary is not is refused `409
-/// conflict` and seals nothing. The committed release is sealed on the node's journal as a
-/// `Policy` record ([`COMMIT_UPGRADE_RECORD_TAG`], the release, the second, the principal) before
-/// the answer names its position and chain hash. A node with no journal bound refuses (`Store`):
-/// a commit nothing recorded did not happen. Where the store keeps the journal, the commit answers
-/// only once the store acknowledged its record, and `503` with the reason otherwise.
 pub(crate) fn commit_upgrade_effect(
     body: &[u8],
     at: u64,
@@ -527,7 +445,6 @@ pub(crate) fn commit_upgrade_effect(
     }
 }
 
-/// One trust key's row as the trust verbs write it.
 fn trust_row(row: &KeyRow) -> serde_json::Value {
     serde_json::json!({
         "key": row.key(),
@@ -540,7 +457,6 @@ fn trust_row(row: &KeyRow) -> serde_json::Value {
     })
 }
 
-/// `GET /api/v1/admin/trust` — every trust key of the kernel's trust book and its state. A read.
 pub(crate) fn trust_list_effect(desk: &TrustDesk) -> Result<AdminAnswer, GovernanceError> {
     let rows = desk().map(|k| k.trust_rows()).unwrap_or_default();
     answer(&serde_json::json!({
@@ -548,12 +464,6 @@ pub(crate) fn trust_list_effect(desk: &TrustDesk) -> Result<AdminAnswer, Governa
     }))
 }
 
-/// `POST /api/v1/admin/trust/approve` and `/revoke` — the operator's decision about one trust key,
-/// `{ "key": "<instance>/<counterparty>[/<item>]" }`, made on the kernel's trust book and kept
-/// durably. Idempotent: the same key twice answers the same row. An unknown key is `404`; an
-/// approval with nothing ever sighted to approve at, or at a sighting that failed its verification,
-/// is `409`; a decision the store could not keep is `Store` (`503`). Every refusal is audited
-/// `rejected` (the root-only verb's row the audit step seals).
 pub(crate) fn trust_decide_effect(
     body: &[u8],
     ruling: Ruling,
@@ -587,13 +497,13 @@ pub(crate) fn trust_decide_effect(
             "conflict",
             &format!("trust key `{key}` was never sighted"),
         )),
-        // A changed declaration or another local decision in progress asks the operator to retry.
+
         Err(TrustRefused::Stale) => Ok(refused(
             409,
             "conflict",
             &format!("trust key `{key}` changed or has another decision in progress; retry"),
         )),
-        // NEVER PIN WHAT WAS NOT VERIFIED: the typed verbs refuse it alike (a2a.md:265).
+
         Err(TrustRefused::Unverified) => Ok(refused(
             409,
             "conflict",
@@ -614,9 +524,6 @@ pub(crate) fn trust_decide_effect(
     }
 }
 
-/// THE PRODUCTION PLANE LOOKUP: the registry's planes, filtered by Law 7 against the LIVE
-/// configuration — read off the snapshot on every call, so a config apply that adds or removes a
-/// plane section is what the next call sees.
 #[must_use]
 pub fn live_planes(app: Arc<busbar_kernel::state::AppHandle>) -> PlaneLookup {
     Arc::new(move |key: &str| {
@@ -628,11 +535,6 @@ pub fn live_planes(app: Arc<busbar_kernel::state::AppHandle>) -> PlaneLookup {
     })
 }
 
-/// THE PRODUCTION ADMIN DOOR: the request judged on the LIVE snapshot's admin chain, through the
-/// kernel's own verdict — the chain the kernel middleware reads and a
-/// `PUT /api/v1/admin/admin-auth` swaps, read per call, so the swap is the next unit's door. The
-/// operator credential reads the request's head through its door, on the spot. The identity's
-/// replay claim comes back UNWON: the admin unit wins it once its own last deny decision is made.
 #[must_use]
 pub fn live_admin_door(app: Arc<busbar_kernel::state::AppHandle>) -> super::AdminDoorFn {
     Arc::new(move |request: &super::AdminRequest| {
@@ -644,11 +546,6 @@ pub fn live_admin_door(app: Arc<busbar_kernel::state::AppHandle>) -> super::Admi
     })
 }
 
-/// THE PRODUCTION RECORD SINK: the live configuration's governance store, written through its v3
-/// `upsert_plane_record`. A node with no store configured keeps nothing, and says so (`Err`),
-/// rather than acknowledging a write that went nowhere. The sink is synchronous and the admin unit
-/// that calls it answers on the blocking pool, so the store call is awaited here, on that thread:
-/// the sink's one wait.
 #[must_use]
 pub fn live_records(app: Arc<busbar_kernel::state::AppHandle>) -> PlaneRecordSink {
     Arc::new(move |record: &PlaneRecord| {
@@ -741,9 +638,6 @@ impl HeldReplay {
             Some(journal),
         ) = (&self.value.receipt, journal)
         {
-            // A sibling's same-numbered journal position proves nothing. Match the full sealed
-            // receipt on the originating node before asking for its acknowledgement. Store reads
-            // and acknowledgement waits happen after releasing the book's lock.
             let chain = {
                 let book = journal.book.lock().unwrap_or_else(|p| p.into_inner());
                 (book.journal.node() == *node).then(|| book.chain_at())
@@ -760,26 +654,19 @@ impl HeldReplay {
                 }
             }
         }
-        // Upsert has neither an op-id receipt nor a metadata read. Body equality is not proof
-        // that this exact write applied; retain it without issuing another upsert. A sealed
-        // commit likewise keeps its first answer byte for byte after an acknowledgement retry.
+
         self.value.answer.clone()
     }
 }
 
-/// The configured store a key is claimed in, read when the claim is taken.
 pub type ReplayStore =
     Arc<dyn Fn() -> Option<Arc<dyn busbar_contract::records::RecordStore>> + Send + Sync>;
 
-/// THE PRODUCTION REPLAY STORE: the live configuration's governance store.
 #[must_use]
 pub fn live_replay_store(app: Arc<busbar_kernel::state::AppHandle>) -> ReplayStore {
     Arc::new(move || app.load().governance.as_ref().map(|gov| gov.store()))
 }
 
-/// A first answer as the store keeps it: the body's digest, then the whole answer — status, every
-/// header in emission order, body — length-prefixed, so a header value or a body may hold any byte
-/// and come back identical. The store boundary is the only place an answer is bytes.
 fn stored_answer(value: &ReplayValue) -> Vec<u8> {
     fn push(out: &mut Vec<u8>, bytes: &[u8]) {
         let len = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
@@ -805,9 +692,6 @@ fn stored_answer(value: &ReplayValue) -> Vec<u8> {
     out
 }
 
-/// What [`stored_answer`] wrote, read back: the first body's digest and the first answer. `None`
-/// on anything that is not exactly that framing. The header count is a claim the bytes make about
-/// themselves, so nothing is reserved on it: each header is read off the bytes actually held.
 fn kept_answer(kept: &[u8]) -> Option<ReplayValue> {
     fn take<'b>(bytes: &'b [u8], cursor: &mut usize, n: usize) -> Option<&'b [u8]> {
         let end = cursor.checked_add(n)?;
@@ -849,24 +733,13 @@ fn kept_answer(kept: &[u8]) -> Option<ReplayValue> {
     })
 }
 
-/// The request header carrying the client-chosen idempotency token (names arrive lowercased).
 const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
 
-/// The verb and resolved principal that scope an idempotency key.
 pub(crate) struct ReplayScope<'a> {
     pub verb: busbar_core_admin::KernelVerb,
     pub actor: &'a str,
 }
 
-/// Run a write under contract D-3's `Idempotency-Key` replay — the same cache, TTL, in-flight
-/// sentinel and per-principal key scoping the key mint and rotate use.
-///
-/// No header: the effect runs, nothing is reserved. First sighting: the effect states whether it
-/// definitely did nothing, completed, or retained an exact receipt. Only definitely unapplied
-/// outcomes release the key. Sealed/unknown outcomes survive the ordinary replay window.
-/// A replay with the SAME body answers the committed bytes verbatim and runs nothing; the same key
-/// with a DIFFERENT body is `409 conflict`, and a key whose first call is still running is the
-/// existing `409 conflict` "a request with this Idempotency-Key is already in flight".
 pub(crate) fn replayable(
     cache: &ReplayCache,
     store: Option<&ReplayStore>,
@@ -890,8 +763,7 @@ pub(crate) fn replayable(
     };
     let name = busbar_core_admin::verb_name(verb).unwrap_or_default();
     let digest: [u8; 32] = busbar_contract::abi::sdk::digest::sha256(body);
-    // Scoped to the resolved PRINCIPAL, as the key mint's is: two principals sharing a key value
-    // never replay each other's answer.
+
     use busbar_core_admin::idempotency::durable::{self, Refused, Settled};
 
     let other_body = || {
@@ -928,15 +800,11 @@ pub(crate) fn replayable(
         Probe::InFlight => in_flight(),
         Probe::NoKey => effect().map(|outcome| outcome.answer),
         Probe::Reserved(mut reservation) => {
-            // Claimed in the store before the effect runs, so a retry after a restart or on another
-            // node replays the first answer or is refused: it never runs the effect again.
             let store = store.and_then(|store| store());
             let claim = match &store {
                 Some(store) => match durable::claim_held(&**store, reservation.key(), unit.at) {
                     Ok(claim) => Some(claim),
                     Err(Refused::Answer(kept) | Refused::Retained(kept)) => {
-                        // The first answer, whole and byte for byte — status, headers and body: a
-                        // re-render would mint a second one-time secret over one identity.
                         return match kept_answer(&kept) {
                             Some(value) if value.digest == digest => {
                                 if value.receipt.is_some() {
@@ -974,8 +842,7 @@ pub(crate) fn replayable(
                 },
                 None => None,
             };
-            // Unwind or cancellation after entering the effect cannot free a live mutation.
-            // Every returned Err is contractually before submission/sealing.
+
             reservation.in_flight();
             let (answer, settled) = match effect() {
                 Ok(EffectAnswer {

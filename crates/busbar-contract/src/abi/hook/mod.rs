@@ -1,19 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE HOOK KIND'S ABI: its version and its table (the design's locked plugin ABI: one
-//! mechanism, every shape in `abi/`). M0 landed the skeleton; this is M3-SHAPES
-//! (`abi-v2-perkind.md` B.4): `decide`, `transform`, `notify`, `configure`, `status`, `describe`
-//! and `serve`, the fixed views, the Statement tail and the `CancelOut` disposition vocabulary.
-//! The one dispatcher calls this table (`busbar-plugin-loader`, `dispatch::kinds::hook`); the
-//! layout golden pins its layout. 1.5.5 behaviour stays byte-identical (a 1.6.0 FUNCTIONAL FIXED
-//! POINT); this transcribes the OLD `busbar-contract::hooks`/`busbar-kernel::hooks::wire` shapes
-//! (`RoutingRequest`, `Candidate`, `PromptProjection`, `CallerIdentity`, `SignalBag`,
-//! `RoutingDecision`, `TransformOutcome`, `HookStageProjection`, `HookContext`,
-//! `BudgetBucketState`) into fixed C layout, unchanged in meaning.
+//! The hook ABI defines its version, table, `decide`, `transform`, `notify`, `configure`, `status`, `describe`, `serve`, fixed views, Statement tail, and `CancelOut` disposition vocabulary. The dispatcher calls it through `busbar-plugin-loader::dispatch::kinds::hook`, and the layout golden pins its layout. The fixed C views preserve the meaning of `RoutingRequest`, `Candidate`, `PromptProjection`, `CallerIdentity`, `SignalBag`, `RoutingDecision`, `TransformOutcome`, `HookStageProjection`, `HookContext`, and `BudgetBucketState`, with byte-identical 1.5.5 behavior.
 //!
-//! **ARCHITECT REVIEW RULING (fresh-Opus M3-SHAPES review, 2026-09-28), folded in on top of the
-//! first landing:**
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//! # Host-owned request results
+//!
 //! 1. **No plugin-pointer results on the request path.** `decide`/`transform` are REQUEST-PATH, so
 //!    every result they write goes into a HOST-owned buffer named in [`DecideIn`]
 //!    (`reject_message_buf`/`_cap`, `restrict_tags_buf`/`_cap`, `rewrite_buf`/`_cap`, alongside the
@@ -45,15 +45,15 @@
 //!    [`CandidateStatic::context_max`] widened `u32` -> `u64` (a context window is a token count,
 //!    not bounded to 32 bits).
 //!
-//! **SECOND REVIEW PASS (ARCHITECT ruling, 2026-09-28), folded in on the same landing — the
-//! reviewer's own "extra parity findings" beyond the fresh-Opus review's ten items:**
+//! # Route and result shapes
+//!
 //! 9. [`Tail::routes`] carries [`Route`] entries (`path`, `method`, `auth`), not bare path
 //!    strings: none/key/admin auth cannot be read off a path, and `{path, method}` is the
 //!    collision key the kernel checks at load (the same shape B.5 gives export's routes).
 //! 10. [`ConfigureIn`] gains `name`, echoing the OLD `ConfigureBody`'s instance name.
 //! 11. Hook words are Statement word marks
-//!    ([`MARK_WORD_HOOK`](crate::abi::mechanism::door::MARK_WORD_HOOK)): STATIC, a Statement fact (see the ASSUMPTIONS
-//!    section below, now a ruling rather than an assumption).
+//!     ([`MARK_WORD_HOOK`](crate::abi::mechanism::door::MARK_WORD_HOOK)): STATIC, a Statement fact.
+//!
 //!
 //! **OFF-WORKER (OWNER RULING, decided 2026-09-27, abi-brief.md section 4 item 1):** every hook call
 //! (`decide`/`transform`/`notify`/`configure`/`status`/`describe`/`serve`) runs OFF the request's
@@ -114,16 +114,14 @@
 //! - **Acceptance:** 181 v1.5.5 hook tests ported verbatim, plus memory-form RED tests for each
 //!   malformed class (M4 HOOK-PARITY, after this shape lands).
 //!
-//! ASSUMPTIONS (M3-SHAPES, noted for the SLOT-LOG; none are money- or customer-visible — 1.5.5
-//! reply BEHAVIOUR is unchanged, only its wire shape moves from JSON to fixed C layout, which is
-//! the whole point of this milestone — so none is an owner question):
+//! Hook words, routes, signals, and cancellation use these fixed-layout rules:
 //! - "hook words" (B.4's tail bullet) are Statement word marks,
-//!   [`MARK_WORD_HOOK`](crate::abi::mechanism::door::MARK_WORD_HOOK) (ARCHITECT ruling, folded in on
-//!   top of the first landing): STATIC, a Statement fact, not a per-call answer — a native
+//!   [`MARK_WORD_HOOK`](crate::abi::mechanism::door::MARK_WORD_HOOK): static Statement data, not
+//!   a per-call answer. A native
 //!   ranking strategy (the OLD `RESERVED_HOOK_NAMES`: `cheapest`/`fastest`/`least_busy`/`usage`)
 //!   becomes a hook plugin by declaring the word it claims here.
 //! - `routes` (B.4's "routes, serve" row) is [`Tail::routes`], now [`Route`] entries (path +
-//!   method + auth, ARCHITECT ruling: a bare path string cannot state none/key/admin auth), a
+//!   method + auth: a bare path string cannot state none/key/admin auth), a
 //!   Statement fact the plugin states once; `serve` is the op the kernel calls per matched
 //!   request.
 //! - Signal ids ([`signal`]) are numbered in the OLD `Signal` enum's declared order
@@ -136,6 +134,8 @@
 //! - The `CancelOut` disposition vocabulary ([`cancel`]) is not stated in B.4; `decide`/`transform`/
 //!   `serve` are this kind's `may_pend` ops, and the two dispositions below cover a cancelled
 //!   verdict/response uniformly (nothing partial is ever committed for a hook reply).
+//!
+//!
 
 use super::mechanism::call::{AbiStr, Blob, InHead, Op, OutHead};
 
@@ -147,15 +147,9 @@ use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 pub const ABI_VERSION: u32 = 2;
 
 /// The hook kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
-/// [`LAYOUT_SHAPES`], the size, alignment and field offsets of every `#[repr(C)]` struct crossing
-/// the hook table. A door states it as built
-/// ([`Door::layout`](crate::abi::mechanism::door::Door::layout)) and the loader refuses another;
-/// `tests/layout_fingerprint.rs` holds it to its fold.
 pub const LAYOUT_FINGERPRINT: u64 = 0xe66698e71abe2054;
 
 /// The hook kind's shapes, in fold order ([`crate::layout_shape!`]): every `#[repr(C)]` struct
-/// crossing its table, each with every field. A struct `abi/hook/` gains is listed here (gate
-/// `abi-location`).
 pub const LAYOUT_SHAPES: &[&[u64]] = &[
     crate::layout_shape!(Ops =>
         head, decide, transform, notify, configure, status, describe, serve
@@ -289,8 +283,6 @@ pub struct Ops {
     pub serve: Option<Op>,
 }
 
-// ── Signals (OLD `Signal`/`SignalBag`, `busbar-contract/src/signal.rs`) ─────────────────────────
-
 /// One requested/reported signal, in push (insertion) order: a signal bag in fixed layout.
 pub mod signal {
     /// The model the request asked for.
@@ -347,8 +339,6 @@ pub union SignalValue {
 
 impl std::fmt::Debug for SignalValue {
     /// A union carries no tag of its own — printing a specific field without first consulting
-    /// [`SignalEntry::tag`] would read whichever bytes happen to be there under the wrong type, so
-    /// this never does.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SignalValue").finish_non_exhaustive()
     }
@@ -366,8 +356,6 @@ pub struct SignalEntry {
     /// The value; read the field `tag` names.
     pub value: SignalValue,
 }
-
-// ── Views ────────────────────────────────────────────────────────────────────────────────────
 
 /// [`RequestView::flags`]: `max_tokens` is present.
 pub const REQUEST_HAS_MAX_TOKENS: u32 = 1 << 0;
@@ -404,8 +392,8 @@ pub struct RequestView {
     /// names its own key; a plane with none leaves it absent). Neither the kernel nor a hook reads
     /// meaning into the bytes: the kernel keys its incremental scan on them, bound to the caller and
     /// the hook generation. [`BLOB_ABSENT`](super::mechanism::call::BLOB_ABSENT) = no session, and
-    /// every request is screened whole. ARCHITECT RULING 2026-10-03 (Q-FOLD-A2A-2-PROJECT-POOL,
-    /// session half): appended, a pre-tag v1 layout edit, the layout golden regenerated, no bump.
+    /// every request is
+    /// screened whole.
     pub session: Blob,
 }
 
@@ -434,7 +422,7 @@ pub struct CandidateStatic {
     /// Alignment padding (widened `context_max` below needs 8-byte alignment).
     pub _reserved3: u32,
     /// The `context_max`, meaningful only when [`CANDIDATE_HAS_CONTEXT_MAX`] is set.
-    /// ARCHITECT review ruling 8: widened `u32` -> `u64` (a context window is a token count).
+    /// A context window is a token count, represented as `u64`.
     pub context_max: u64,
     /// The `tier`, meaningful only when [`CANDIDATE_HAS_TIER`] is set.
     pub tier: AbiStr,
@@ -494,7 +482,7 @@ pub struct PromptView {
     pub system: AbiStr,
     /// How many messages the prompt holds.
     pub message_count: u64,
-    /// The body blob, ARCHITECT review ruling 6: the RAW origin-dialect request bytes, as
+    /// The body blob contains the raw origin-dialect request bytes, as
     /// [`super::mechanism::call::BLOB_OCTETS`] — zero-copy, never a kernel-built JSON document
     /// (the shared mechanism's own rule: JSON crosses only as an already-opaque payload the
     /// KERNEL never constructs). The SDK/plugin parses its own dialect (llm/mcp/a2a) to recover
@@ -568,12 +556,11 @@ pub const VIEW_HAS_PROMPT: u32 = 1 << 0;
 /// [`DecideIn`]'s `present`: the user view is populated.
 pub const VIEW_HAS_USER: u32 = 1 << 1;
 /// [`DecideIn`]'s `present`: `budget_remaining` (the pool's remaining request budget) is
-/// populated.
 pub const VIEW_HAS_BUDGET_REMAINING: u32 = 1 << 2;
 
 /// `decide`'s and `transform`'s shared `in` (both ops see identical views; only their `out` and
 /// grant differ — B.4: "identical for both"). Carries every HOST-owned result buffer the two ops
-/// write into (ARCHITECT review ruling 1: no plugin-pointer results on the request path).
+/// write into; request-path results never contain plugin-owned pointers.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct DecideIn {
@@ -617,7 +604,7 @@ pub struct DecideIn {
     /// `restrict_tags_buf`'s capacity, in bytes.
     pub restrict_tags_cap: usize,
     /// The host-owned buffer `transform` writes its rewrite bytes into (opaque octets, the
-    /// caller's own dialect — never kernel-built JSON, ARCHITECT review ruling 6); unused by
+    /// caller's own dialect, never kernel-built JSON); unused by
     /// `decide`.
     pub rewrite_buf: *mut u8,
     /// `rewrite_buf`'s capacity, in bytes.
@@ -633,13 +620,11 @@ pub const VERB_REJECT: u32 = 1 << 2;
 /// [`DecideOut::verbs`]: narrow to `restrict_tags`.
 pub const VERB_RESTRICT: u32 = 1 << 3;
 /// [`DecideOut::verbs`]/[`TransformOut::verbs`]: `reject_status` is populated; unset means the
-/// mechanism's 403 default applies regardless of `reject_status`'s bytes (ARCHITECT review
-/// ruling 7).
 pub const VERB_HAS_REJECT_STATUS: u32 = 1 << 4;
 
 /// `decide`'s `out`. Exactly one of [`VERB_PREFER`], [`VERB_ABSTAIN`], [`VERB_REJECT`],
-/// [`VERB_RESTRICT`] must be set (H1: SEH fix-forward ruling, 2026-09-27); the validator FAULTs on
-/// 0 or 2+ bits.
+///
+///
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct DecideOut {
@@ -673,9 +658,6 @@ pub struct DecideOut {
 
 /// [`TransformOut::verbs`]: apply the rewrite bytes.
 pub const VERB_REWRITE: u32 = 1 << 0;
-// VERB_ABSTAIN and VERB_REJECT (above) are reused for transform's OLD `Abstain`/`Reject`;
-// VERB_HAS_REJECT_STATUS is shared with decide's. OLD `Failed` maps to the mechanism's own
-// `Outcome::Failed` rather than a verb bit.
 
 /// `transform`'s `out`. The kernel reads ONLY `verbs`; the CALLER (whichever request-serving
 /// code invoked this chain) parses and validates the rewrite bytes, proceeding unmodified on
@@ -699,14 +681,13 @@ pub struct TransformOut {
     /// `0` unless `reject_message_written == 0` because the buffer was too small.
     pub reject_message_needed: usize,
     /// How many bytes the plugin wrote into [`DecideIn::rewrite_buf`]: opaque octets in the
-    /// caller's own dialect (ARCHITECT review ruling 6), never kernel-parsed.
+    /// caller's own dialect, never kernel-parsed.
     pub rewrite_written: usize,
     /// `0` unless `rewrite_written == 0` because `rewrite_buf` was too small.
     pub rewrite_needed: usize,
 }
 
 /// [`StageView::stage_present`]: the stage fields are present at all (a REQUEST-stage tap sets
-/// none of the bits below: it has no stage).
 pub const STAGE_HAS_PROJECTION: u32 = 1 << 0;
 /// [`StageView::stage_present`]: `model` is present.
 pub const STAGE_HAS_MODEL: u32 = 1 << 1;
@@ -731,7 +712,7 @@ pub const STAGE_AT_RESPONSE: u32 = 2;
 /// The stage view a tap receives: [`RequestView`] with NO prompt and NO
 /// signals (B.4's explicit exclusion), plus the stage fields (`at`, `model`,
 /// `attempt_number`, `remaining_candidates`, `previous_failure`, `outcome`, `status`),
-/// presence-bitmasked (ARCHITECT review ruling 4) since they ride only stage taps
+/// presence-bitmasked since they ride only stage taps
 /// (candidate/routing/response), never a request-stage tap.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -896,8 +877,6 @@ pub struct ServeOut {
     pub body: Blob,
 }
 
-// ── Statement tail ───────────────────────────────────────────────────────────────────────────
-
 /// [`Route::auth`]: no auth required before `serve`.
 pub const ROUTE_AUTH_NONE: u32 = 0;
 /// [`Route::auth`]: a data-plane key required before `serve`.
@@ -906,7 +885,7 @@ pub const ROUTE_AUTH_KEY: u32 = 1;
 pub const ROUTE_AUTH_ADMIN: u32 = 2;
 
 /// One HTTP route this instance serves via `serve` (ARCHITECT review ruling, fresh-Opus M3-SHAPES
-/// review, parity item): `{path, method}` is the collision key the kernel checks at load;
+/// is the collision key the kernel checks at load;
 /// `auth` is enforced by the kernel BEFORE `serve` is ever called — none/key/admin auth cannot be
 /// read off a bare path string, which is why a route is this struct, not an [`AbiStr`].
 #[repr(C)]
@@ -932,7 +911,6 @@ pub const PROMPT_NO: u32 = 0;
 /// [`Tail::prompt_access`]: read-only prompt view/body.
 pub const PROMPT_RO: u32 = 1;
 /// [`Tail::prompt_access`]: read-write — the same view/body as `ro`, PLUS the `transform` rewrite
-/// grant.
 pub const PROMPT_RW: u32 = 2;
 
 /// [`Tail::user_access`]: no user view (the default).
@@ -974,11 +952,9 @@ pub struct Tail {
     pub routes_len: usize,
 }
 
-/// HOW THE HOOK KIND TAIL IS MADE (status row 194): from [`Tail::EMPTY`], its plain fields set
-/// directly and each list by its setter, to items that live for the program.
+/// HOW THE HOOK KIND TAIL IS MADE: from [`Tail::EMPTY`], its plain fields set
 impl Tail {
     /// Nothing stated: every string absent, every list empty, every number zero; the head
-    /// sized to the whole tail.
     pub const EMPTY: Tail = Tail {
         head: KindTailHead {
             size: core::mem::size_of::<Tail>() as u32,
@@ -996,7 +972,6 @@ impl Tail {
     };
 
     /// This tail with its class and its two grants set: the one constructor a hook plugin's
-    /// `const` goes through, so the plugin SDK names no field of the grants.
     #[must_use]
     pub const fn with_access(mut self, kind_class: u32, content: u32, user: u32) -> Tail {
         self.kind_class = kind_class;
@@ -1013,16 +988,10 @@ impl Tail {
 }
 
 /// The hook kind's [`super::mechanism::lifecycle::CancelOut::disposition`] vocabulary.
-///
-/// ASSUMPTION (M3-SHAPES): B.4 does not enumerate a cancel disposition vocabulary; a hook reply is
-/// never partially committed (the kernel normalizer runs on a complete `out` or not at all), so
-/// the two dispositions below cover every `may_pend` op (`decide`/`transform`/`serve`) uniformly.
 pub mod cancel {
     /// The pending op was aborted before it produced a verdict/response; `on_error` runs as
-    /// though this call had answered [`super::super::mechanism::call::Outcome::Failed`].
     pub const ABORTED: u32 = 0;
     /// The op had already completed when the cancel arrived (a race with the deadline); its
-    /// result stands.
     pub const RACED_TO_COMPLETION: u32 = 1;
 }
 

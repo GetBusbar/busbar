@@ -21,7 +21,7 @@ fn an_open_with_a_form_gets_the_description_as_its_last_part() {
     let mut want = lead.to_vec();
     want.extend_from_slice(b"v=0\r\n\r\n--b0und--\r\n");
     assert_eq!(got, want);
-    // A quoted boundary, a lower-case field name and a parameter before the boundary.
+
     let quoted: &[u8] = b"multipart/form-data; charset=utf-8; boundary=\"b0und\"";
     assert_eq!(
         composed_body(&[("content-type", quoted)], lead, b"v=0\r\n"),
@@ -32,7 +32,7 @@ fn an_open_with_a_form_gets_the_description_as_its_last_part() {
 #[test]
 fn a_body_the_connector_cannot_frame_is_refused() {
     let lead = b"--b0und\r\n\r\n";
-    // RED: no content type, another content type, a form with no boundary, an unusable boundary.
+
     for fields in [
         &[][..],
         &[("content-type", &b"application/json"[..])][..],
@@ -45,7 +45,7 @@ fn a_body_the_connector_cannot_frame_is_refused() {
             "{fields:?}"
         );
     }
-    // RED: a description holding the form's delimiter would end the form early.
+
     assert_eq!(
         composed_body(&[("content-type", FORM)], lead, b"v=0\r\n--b0und--\r\n"),
         Err(ConnError::Refused)

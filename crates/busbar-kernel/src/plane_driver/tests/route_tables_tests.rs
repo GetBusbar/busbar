@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The kernel's own tables view over the `pools:`/`models:` sections it resolved: the read seam's
-//! answer when no plane contributes a runtime, so it must project exactly what the sections say.
-
 use std::collections::HashMap;
 
 use super::{ConfigTables, EngineTablesView};

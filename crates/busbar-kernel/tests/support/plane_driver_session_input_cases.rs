@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Caller allocation custody through the real session pump and its contract-level crossings.
-
 use super::*;
 use busbar_kernel::plane_driver::{CallerEnd, SessionCaller, SessionInput};
 
@@ -52,7 +50,6 @@ impl SessionCaller for OwnedCaller {
     }
 }
 
-/// Output cannot complete until the input's allocation owner returns its capacity.
 struct CreditCaller {
     inner: OwnedCaller,
     released: Arc<tokio::sync::Notify>,
@@ -114,8 +111,6 @@ async fn poll_pending(future: &mut Pin<Box<impl Future>>) {
     .await;
 }
 
-/// The retained crossing's `Lent` keeps the allocation alive while these initialized bytes are
-/// read. Nothing is read after releasing that ownership, and no spare or freed bytes are read.
 fn borrowed(plane: &Double) -> (usize, Vec<u8>) {
     let held = plane.sessions.borrowed.lock().unwrap();
     let (input, _lent) = held
@@ -130,7 +125,7 @@ fn borrowed(plane: &Double) -> (usize, Vec<u8>) {
 
 fn release_borrowed(plane: &Double) {
     let held = plane.sessions.borrowed.lock().unwrap().take();
-    // Drop the crossing's ownership outside the fixture lock.
+
     drop(held);
 }
 
@@ -176,7 +171,6 @@ async fn a_session_retires_consumed_input_before_waiting_for_another_piece() {
         .unit(&steps, &far, &caller, cases::arrival("/session", b""), 0);
     let mut running = Box::pin(drive(&units));
 
-    // The pending caller read resolves to the first piece when it is delivered.
     poll_pending(&mut running).await;
     let first = input(1, &dropped);
     let first_at = first.bytes.as_ptr() as usize;
@@ -365,7 +359,7 @@ async fn a_resumed_session_retires_input_after_its_ready_crossing() {
     poll_pending(&mut running).await;
     assert!(dropped.lock().unwrap().is_empty());
     assert_eq!(borrowed(&r.plane), (at, b"piece:1".to_vec()));
-    // The crossing actually returns its borrow before reporting READY.
+
     release_borrowed(&r.plane);
     assert!(r.plane.release_controlled(true));
     poll_pending(&mut running).await;
@@ -451,8 +445,6 @@ async fn a_faulted_session_keeps_input_custody_after_the_near_side_returns() {
     assert_eq!(*dropped.lock().unwrap(), vec![1]);
 }
 
-/// Both real session pumps share terminal ownership while every ticket keeps its own buffers.
-/// Cancellation is driven by reload after explicitly observing the requested Pending legs.
 #[tokio::test]
 async fn a_session_cancels_its_idle_near_far_and_two_pending_legs_once() {
     for (near_pending, far_pending, caller_drop) in [
@@ -633,8 +625,7 @@ async fn normal_session_completion_wins_over_its_pending_siblings_retirement() {
         r.plane.sessions.open.lock().unwrap().is_empty(),
         "caller EOF completed the logical unit"
     );
-    // The loader's real worker regression independently proves this sibling retirement.
-    // Deliver that same host outcome after the completing caller side has recorded its end.
+
     let (ticket, (slot, out)) = {
         let mut held = r.plane.held.lock().unwrap();
         let ticket = *held.keys().next().unwrap();

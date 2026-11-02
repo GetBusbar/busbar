@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A catalog entry's stray keys are removed, one change line each; every key its grammar reads
-//! stays exactly as written.
-
 use super::{catalog_keys, migrate_catalog};
 
 #[test]
@@ -49,7 +46,7 @@ other:
                 .to_string()
         ]
     );
-    // A clean catalog is left alone.
+
     assert!(migrate_catalog(&m.yaml, "providers.yaml")
         .expect("reads")
         .is_none());

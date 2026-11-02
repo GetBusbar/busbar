@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Reviewed slots for the loader's retained-input transport regression.
-
 use busbar_contract::abi::mechanism::call::{Blob, OutHead, Outcome, RawOutcome, BLOB_OCTETS};
 use busbar_contract::abi::mechanism::door::{Door, DoorParts};
 use busbar_contract::abi::mechanism::extensions;

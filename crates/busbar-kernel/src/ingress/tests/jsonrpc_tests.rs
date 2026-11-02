@@ -1,12 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The kernel's one JSON-RPC body: a refusal made before any envelope was read.
-
 use super::*;
 
-/// The transport's status survives (only the body is JSON-RPC's), the id is Null because none was
-/// established, and the code is `-32600`, never a parse error for a body nothing parsed.
 #[tokio::test]
 async fn a_transport_refusal_keeps_its_status_and_names_no_id() {
     for status in [

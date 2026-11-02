@@ -28,16 +28,6 @@ use super::*;
 use crate::audit::audit_entry_record::AuditInput;
 use crate::audit_ring::AuditEntry;
 
-// ══ THE FOURTH STREAM ════════════════════════════════════════════════════════════════════════════
-//
-// A record type that exists ONLY in this file, for a stream busbar does not have. It is deliberately
-// unlike the three real ones — a different scope noun, different field types, a field the digest
-// covers and a field it does not — so that "a fourth plane costs a record type" is demonstrated
-// rather than assumed from a copy of an existing one.
-//
-// EVERYTHING BELOW IS THE WHOLE COST. There is no chain type, no `compute_hash`, no `verify_chain`,
-// no `ChainBreak` and no `Display` for one. If a future stream needs any of those, the seam failed.
-
 /// A throwaway fourth record: "widget `w` did `what` under tenant `t`".
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Nonsense {
@@ -51,7 +41,6 @@ struct Nonsense {
     hash: String,
 }
 
-/// The payload a caller of the fourth stream supplies. No `seq`, no `prev_hash`, no `hash`.
 struct NonsenseInput {
     what: String,
     amount: u64,
@@ -112,7 +101,6 @@ fn nonsense_input(what: &str, amount: u64) -> NonsenseInput {
     }
 }
 
-/// A three-record chain of the fourth stream, built with nothing but [`Chain`].
 fn a_chain() -> Vec<Nonsense> {
     let mut chain: Chain<Nonsense> = Chain::new();
     vec![
@@ -122,10 +110,6 @@ fn a_chain() -> Vec<Nonsense> {
     ]
 }
 
-// ══ THE SEAM ═════════════════════════════════════════════════════════════════════════════════════
-
-/// THE ACCEPTANCE TEST FOR THE WHOLE DESIGN: a stream that did not exist five minutes ago chains,
-/// links, digests and verifies, and the only thing written for it was the record type above.
 #[test]
 fn a_fourth_stream_costs_a_record_type_and_nothing_else() {
     let records = a_chain();
@@ -145,8 +129,6 @@ fn a_fourth_stream_costs_a_record_type_and_nothing_else() {
     assert_eq!(verify_chain(&records), Ok(()));
 }
 
-/// The fourth stream inherits the RESUME too: a restart continues the same chain rather than opening
-/// a second one under the same scope — two chains that each verify and together describe nothing.
 #[test]
 fn a_fourth_stream_inherits_resume_and_refuses_to_launder_a_broken_tail() {
     let persisted = a_chain();
@@ -160,18 +142,13 @@ fn a_fourth_stream_inherits_resume_and_refuses_to_launder_a_broken_tail() {
     let mut broken = persisted;
     broken[0].what = "forged".to_string();
     Chain::<Nonsense>::from_persisted(&broken).expect_err("resume must verify before it trusts");
-    // The unverified variant exists for the tamper-detected path, and it positions on the tail so
-    // evidence CONTINUES rather than silently stopping the moment somebody corrupts one row.
+
     assert_eq!(
         Chain::<Nonsense>::from_persisted_unverified(&broken).next_seq(),
         4
     );
 }
 
-// ══ THE FOUR TAMPERS, on the fourth stream ═══════════════════════════════════════════════════════
-
-/// TAMPER 1 — ALTERATION. Edit one record's fields in place. The single most important assertion in
-/// this file: a chain that does not detect this is decoration.
 #[test]
 fn altering_a_record_in_place_is_detected_and_located() {
     let mut records = a_chain();
@@ -202,8 +179,6 @@ fn altering_a_record_in_place_is_detected_and_located() {
     );
 }
 
-/// TAMPER 2 — DELETION. Remove a record from the middle. Reported as a SEQUENCE break, which names
-/// the real defect ("something is missing") rather than blaming the innocent successor.
 #[test]
 fn deleting_a_record_from_the_middle_is_detected() {
     let mut records = a_chain();
@@ -220,8 +195,6 @@ fn deleting_a_record_from_the_middle_is_detected() {
     assert!(brk.to_string().contains("REMOVED"), "{brk}");
 }
 
-/// TAMPER 3 — REORDERING. Swapping two records leaves every digest individually valid, which is
-/// exactly why the position and the link are checked and not just the digests.
 #[test]
 fn reordering_two_records_is_detected() {
     let mut records = a_chain();
@@ -236,17 +209,10 @@ fn reordering_two_records_is_detected() {
     );
 }
 
-/// TAMPER 4 — INSERTION of a forgery that carries the right sequence number AND a correct digest
-/// over its own fields. The forger controls everything except the predecessor's hash, and that is
-/// what the link check catches.
 #[test]
 fn inserting_a_self_consistent_forgery_is_detected_by_its_link() {
     let records = a_chain();
-    // Build the forgery on a chain of its own so its digest is internally valid. The rogue chain's
-    // seed differs from the real one, which models the forger's actual position: it can produce a
-    // self-consistent record, but it does not hold the real predecessor's digest. Where it DOES — a
-    // host compromised deeply enough to replay the whole chain — this verifies, and that limit is
-    // stated in the module doc rather than tested around.
+
     let mut rogue: Chain<Nonsense> = Chain::new();
     let _ = rogue.append(TENANT, nonsense_input("something-else", 77));
     let forged = rogue.append(TENANT, nonsense_input("updated", 2));
@@ -270,10 +236,6 @@ fn inserting_a_self_consistent_forgery_is_detected_by_its_link() {
     assert!(brk.to_string().contains("INSERTED"), "{brk}");
 }
 
-/// THE STREAMS STAY SEPARATE. One mechanism does not mean one chain: a record from another scope
-/// appearing in this one is refused outright, so one caller's evidence can never be made to depend
-/// on another caller's rows. A store backend once had a real cross-principal read defect of this
-/// exact shape.
 #[test]
 fn a_foreign_scopes_record_cannot_hide_inside_this_chain() {
     let mut records = a_chain();
@@ -292,9 +254,6 @@ fn a_foreign_scopes_record_cannot_hide_inside_this_chain() {
     );
 }
 
-/// TRUNCATING THE TAIL is the one tamper a chain cannot catch alone: every remaining link is still
-/// correct. Stated rather than papered over — what closes it is whoever holds the other half (the
-/// store's principal enumeration, the task row's terminal state).
 #[test]
 fn truncating_the_tail_verifies_and_that_limit_is_deliberate() {
     let mut records = a_chain();
@@ -303,14 +262,11 @@ fn truncating_the_tail_verifies_and_that_limit_is_deliberate() {
     assert_eq!(records.last().unwrap().what, "updated");
 }
 
-/// An EMPTY chain verifies, and that is a stated limit rather than a loophole: "no records" and
-/// "every record deleted" are indistinguishable from the records alone.
 #[test]
 fn an_empty_chain_verifies_and_the_limit_is_deliberate() {
     assert_eq!(verify_chain::<Nonsense>(&[]), Ok(()));
 }
 
-/// The digest covers what it claims to cover, and the JOIN KEY is deliberately outside it.
 #[test]
 fn the_digest_covers_the_chained_fields_and_excludes_the_join_key() {
     let records = a_chain();
@@ -344,13 +300,6 @@ fn the_digest_covers_the_chained_fields_and_excludes_the_join_key() {
     );
 }
 
-// ══ THE WINDOW: a bounded ring is a chain with its head pruned ═══════════════════════════════════
-
-/// The admin ring keeps the most recent `MAX_AUDIT_ENTRIES` and the durable store keeps the rest, so
-/// the oldest retained record's predecessor is legitimately gone. [`verify_window`] takes that first
-/// position as given and checks everything after it in full — while [`verify_chain`] on the same
-/// slice REFUSES it, which is what stops a caller holding a whole chain from silently excusing a
-/// missing head.
 #[test]
 fn a_window_verifies_from_a_pruned_head_while_a_whole_chain_does_not() {
     let records = a_chain();
@@ -367,7 +316,6 @@ fn a_window_verifies_from_a_pruned_head_while_a_whole_chain_does_not() {
     );
 }
 
-/// A WINDOW IS NOT A WEAKER CHECK past its first record: every tamper inside it is still caught.
 #[test]
 fn a_window_still_catches_a_tamper_after_its_first_record() {
     let mut records = a_chain();
@@ -377,25 +325,12 @@ fn a_window_still_catches_a_tamper_after_its_first_record() {
     assert!(matches!(brk.kind, ChainBreakKind::DigestMismatch { .. }));
 }
 
-// ══ THE POSITION ════════════════════════════════════════════════════════════════════════════════
-
-/// `Chain::default()` MUST equal `Chain::new()`. A derived `Default` gives `next_seq: 0`, which is
-/// not a valid sequence, and it is exactly what a clippy suggestion to replace
-/// `or_insert_with(Chain::new)` with `or_default()` once produced on a downstream per-call log.
-/// There is now ONE `Default` for every stream, so this pins the hazard for all of them at once.
 #[test]
 fn the_default_chain_is_the_new_chain_because_a_derived_default_starts_at_zero() {
     assert_eq!(Chain::<Nonsense>::default(), Chain::<Nonsense>::new());
     assert_eq!(Chain::<Nonsense>::default().next_seq(), 1);
 }
 
-// ══ THE FRAMED DIGESTS DID NOT MOVE ═════════════════════════════════════════════════════════════
-
-/// A scoped LengthPrefixed stream's digest is the single-buffer formula: the host-framed prelude
-/// (`prev_hash`, scope, `seq`) followed RAW by the stream's own length-prefixed content suffix equals
-/// every field length-prefixed into one buffer. Minted through the neutral journal record
-/// (`StreamRecord`), the shape production persists. The fields are neutral stand-ins: which fields a
-/// stream's suffix carries is that stream's business, and its own crate pins them.
 #[test]
 fn a_scoped_length_prefixed_stream_digest_is_the_single_buffer_formula() {
     let (prev_hash, scope, seq) = (String::new(), "scope-1", 1u64);
@@ -405,7 +340,7 @@ fn a_scoped_length_prefixed_stream_digest_is_the_single_buffer_formula() {
         out.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
         out.extend_from_slice(bytes);
     };
-    // The stream's LengthPrefixed content suffix (the tail after the prelude).
+
     let mut content: Vec<u8> = Vec::new();
     lp(&mut content, &ts.to_be_bytes());
     lp(&mut content, field_a.as_bytes());
@@ -436,14 +371,11 @@ fn a_scoped_length_prefixed_stream_digest_is_the_single_buffer_formula() {
     );
 }
 
-/// A scoped PipeSeparated stream's digest is the single canonical string: the host-framed prelude
-/// `prev_hash|scope|seq` followed RAW by the stream's own `|`-led content suffix equals every field
-/// joined by `|` in one string. Neutral stand-in fields, as above.
 #[test]
 fn a_scoped_pipe_separated_stream_digest_is_the_single_canonical_string() {
     let (prev_hash, scope, seq) = (String::new(), "scope-1", 1u64);
     let (ts, field_a, field_b, field_c) = (1_700_000_000u64, "alpha", "beta", "gamma");
-    // The stream's PipeSeparated content suffix (leading `|`).
+
     let content = format!("|{ts}|{field_a}|{field_b}|{field_c}").into_bytes();
     let rec = crate::audit::stream_registry::StreamRecord::from_parts(
         scope.to_string(),
@@ -462,11 +394,6 @@ fn a_scoped_pipe_separated_stream_digest_is_the_single_canonical_string() {
     );
 }
 
-/// A SCHEME-1 admin audit digest is byte-for-byte what `admin/audit.rs` computed before the
-/// unification, and byte-for-byte the formula `busbar_contract::records::AuditRecord` publishes — the shape a
-/// record read back off a store (or, before the scheme tag existed, every record) carries. `seal`
-/// mints scheme 2 on a fresh entry (see the paired test right after this one); this forces scheme 1
-/// back on and reseals, reproducing exactly what an already-persisted entry's digest is.
 #[test]
 fn a_scheme_one_admin_audit_digest_is_unchanged_by_the_unification() {
     let mut entry: AuditEntry = seal(
@@ -504,13 +431,6 @@ fn a_scheme_one_admin_audit_digest_is_unchanged_by_the_unification() {
     );
 }
 
-/// THE OTHER HALF: the SAME fields, sealed through the REAL, unmodified `seal` path the in-process
-/// ring uses, produce a DIFFERENT digest — scheme 2, whose caller-supplied fields are length-prefixed.
-/// Its recipe is the one the durable seam seals a scheme-2 record under (the `prev_hash|seq` prelude,
-/// then the safe suffix), so a served scheme-2 record recomputes under its own tag. A
-/// fresh record's digest differing from scheme 1 is what closes the collision a caller-controlled
-/// `|` inside `resource` opens under scheme 1 (see `crates/busbar-kernel-audit`'s
-/// `digest_framing_tests` for the collision demonstrated end to end).
 #[test]
 fn a_freshly_sealed_admin_audit_digest_now_uses_scheme_two() {
     let entry: AuditEntry = seal(
@@ -549,11 +469,6 @@ fn a_freshly_sealed_admin_audit_digest_now_uses_scheme_two() {
     );
 }
 
-/// THE FRAMING IS THE OTHER HALF OF THE DIGEST, and the two are not interchangeable. Length prefixes
-/// make the split between fields unforgeable: two records whose fields differ only in WHERE the
-/// boundary falls collide under a separator join and do not under a length prefix. This is why a new
-/// record type takes `LengthPrefixed` and why the two legacy streams keep theirs only because their
-/// rows are already on disk.
 #[test]
 fn length_prefixing_makes_the_field_split_unforgeable_where_a_separator_does_not() {
     let mut pipe_a = Digest::new(Framing::PipeSeparated);

@@ -1,17 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Mid-log corruption is not a torn tail, and recovery must not treat it as one.
-//!
-//! A crash mid-append leaves an incomplete final record with nothing verifying past it; cutting it
-//! loses nothing that was acknowledged. A checksum failure with whole, verifying records BEHIND it is
-//! acknowledged data the medium damaged. The node still boots — over every record that verifies,
-//! those behind the damage included — and the damaged record is copied byte for byte into a
-//! quarantine file beside the segment, made durable, and LEFT IN PLACE: only a true torn tail is
-//! ever cut (THE DESIGN, MONEY-CHAIN, BUSBAR-1.6.0.md l.1056-1058). The verdict naming the file, the
-//! offset and the byte count is handed back so the caller can raise the alarm, at every boot that
-//! finds the damage still there. 1.5.5 had no log, so there is no earlier recovery to match.
-
 use std::path::{Path, PathBuf};
 
 use busbar_kernel_wal::backend::{DirectoryFactory, MemoryFactory, SegmentBackend, SegmentFactory};
@@ -23,12 +12,10 @@ use busbar_kernel_wal::wal::{Mode, Wal};
 
 use super::fixtures::{durability_token, records, TempDir, METER};
 
-/// Four single-frame records, so record `i` is exactly frame `i`.
 fn four() -> Vec<Record> {
     records(3, 1, 4, 200)
 }
 
-/// Write `written` to a fresh log in `dir`, close it, and return the committed bytes of segment 0.
 fn lay_down(dir: &Path, written: &[Record]) -> Vec<u8> {
     let mut wal =
         Wal::in_directory(dir, Box::new(NullShipper::new()), super::fixtures::wall_ms).unwrap();
@@ -44,7 +31,6 @@ fn segment_path(dir: &Path) -> PathBuf {
     DirectoryFactory::new(dir).unwrap().segment_path(0)
 }
 
-/// Flip one byte of the segment file in place.
 fn flip(dir: &Path, at: usize) {
     let path = segment_path(dir);
     let mut bytes = std::fs::read(&path).unwrap();
@@ -52,7 +38,6 @@ fn flip(dir: &Path, at: usize) {
     std::fs::write(&path, bytes).unwrap();
 }
 
-/// Every quarantine file in `dir`, sorted by name.
 fn quarantine_files(dir: &Path) -> Vec<PathBuf> {
     let mut found: Vec<PathBuf> = std::fs::read_dir(dir)
         .unwrap()
@@ -68,11 +53,6 @@ fn quarantine_files(dir: &Path) -> Vec<PathBuf> {
     found
 }
 
-/// **ONE DAMAGED RECORD QUARANTINES ONLY ITSELF**. Record two of four is
-/// altered on the medium. RED before the fix: the scan stopped at it for good, and records three and
-/// four — whole, verifying and acknowledged — were copied into the quarantine and cut off the log
-/// with it, so their postings left the book. Now the damaged record alone is set aside, left in
-/// place, and every record behind it is kept.
 #[test]
 fn a_mid_log_checksum_flip_quarantines_only_the_damaged_record_and_keeps_every_one_behind_it() {
     let dir = TempDir::new("corrupt-mid-log");
@@ -80,11 +60,9 @@ fn a_mid_log_checksum_flip_quarantines_only_the_damaged_record_and_keeps_every_o
     let original = lay_down(dir.path(), &written);
     assert_eq!(original.len(), 4 * FRAME_BYTES);
 
-    // Damage the SECOND record's payload. Records three and four behind it are whole and verify.
     flip(dir.path(), FRAME_BYTES + 200);
     let damaged = std::fs::read(segment_path(dir.path())).unwrap()[..original.len()].to_vec();
 
-    // Boot is never blocked.
     let wal = Wal::in_directory(
         dir.path(),
         Box::new(NullShipper::new()),
@@ -92,16 +70,14 @@ fn a_mid_log_checksum_flip_quarantines_only_the_damaged_record_and_keeps_every_o
     )
     .expect("a corrupt segment does not stop the log opening");
 
-    // Every record that verifies is kept, the two behind the damage included.
     assert_eq!(
         wal.recovered(),
         &[written[0].clone(), written[2].clone(), written[3].clone()]
     );
-    // Nothing acknowledged is cut: the damaged record is still where it was.
+
     let segment_now = std::fs::read(segment_path(dir.path())).unwrap();
     assert_eq!(segment_now[..original.len()].to_vec(), damaged);
 
-    // The verdict names the file, the offset and the byte count — of the damaged record alone.
     let q = wal.quarantined();
     assert_eq!(q.len(), 1, "one damaged record, one quarantine");
     let q = &q[0];
@@ -126,7 +102,6 @@ fn a_mid_log_checksum_flip_quarantines_only_the_damaged_record_and_keeps_every_o
     assert_eq!(q.before, Some((3, 1)), "the record kept before the hole");
     assert_eq!(q.after, Some((3, 3)), "the record kept behind it");
 
-    // The quarantine file is beside the segment and holds exactly the damaged bytes.
     let files = quarantine_files(dir.path());
     assert_eq!(files.len(), 1);
     assert_eq!(q.kept, QuarantineKept::File(files[0].clone()));
@@ -140,8 +115,6 @@ fn a_mid_log_checksum_flip_quarantines_only_the_damaged_record_and_keeps_every_o
         damaged[FRAME_BYTES..2 * FRAME_BYTES].to_vec()
     );
 
-    // The set-aside number is never handed out again — not by the log, and not by a journal
-    // resuming over it.
     assert_eq!(wal.next_free_seq(3), 5);
     assert_eq!(
         busbar_kernel_wal::journal::Journal::over(wal, 3).next_seq(),
@@ -155,8 +128,6 @@ fn a_torn_tail_is_cut_silently_and_nothing_is_quarantined() {
     let written = four();
     let original = lay_down(dir.path(), &written);
 
-    // A crash mid-append: the write of the last record's frame stopped INSIDE its header, and
-    // nothing after it was written. The header check fails: a torn write.
     let path = segment_path(dir.path());
     let mut bytes = std::fs::read(&path).unwrap();
     for b in &mut bytes[3 * FRAME_BYTES + 20..] {
@@ -179,10 +150,6 @@ fn a_torn_tail_is_cut_silently_and_nothing_is_quarantined() {
     );
 }
 
-/// A WHOLE final record altered after it was written is QUARANTINED, never cut as if it were a torn
-/// tail. Its header checks and its digest does not, so the write that made it completed and the
-/// record was acknowledged: a silent cut would lose a settlement the node had made. (Under the rule
-/// before the header check, this was cut silently.)
 #[test]
 fn a_flipped_byte_in_the_final_record_is_quarantined_not_cut() {
     let dir = TempDir::new("flip-final");
@@ -219,31 +186,8 @@ fn a_flipped_byte_in_the_final_record_is_quarantined_not_cut() {
     assert_eq!(quarantine_files(dir.path()).len(), 1);
 }
 
-/// The four records of [`four`], framed under layout VERSION 1 (the layout before the header check,
-/// never released: 1.5.5 had no log), as a dev build before the check wrote them: 4 x
-/// [`FRAME_BYTES`] = 2048 bytes, no padding.
-///
-/// PROVENANCE. A checked-in test vector, not produced by any encoder at test time. Generated once by
-/// reproducing the version-1 encoder (crates/busbar-kernel-wal/src/record.rs, the
-/// `#[cfg(test)] pub(crate) fn encode_legacy`, at commit 4aa05a13d71ce79bf8e2320c6689e39cb6e03033)
-/// in a throwaway python3 script using `hashlib.sha256`. Per frame `i` (node 3, node_seq `i + 1`,
-/// body byte `b` = `(node_seq + b) % 251` for `b` in `0..200`): `[0,4)` "BWAL"; `[4,6)` version 1
-/// LE; `[6]` flags 0 (single part); `[7]` 0; `[8,16)` node LE; `[16,24)` node_seq LE; `[24,28)`
-/// part index 0 LE; `[28,32)` part count 1 LE; `[32,34)` payload length 200 LE; `[34,64)` zero
-/// (no header check under version 1); `[64,96)` SHA-256 over `[0,64)` then `[96,512)`; `[96,296)`
-/// the body; `[296,512)` zero. SHA-256 of the whole file:
-/// 29d9b3e634b4bf1d278445d7fdb862e5ee3c694e5a6d164dca9888a65eccc286. The full procedure is in
-/// `vectors/legacy_segment.bin.provenance`. The test below checks the vector against the current
-/// encoder before it relies on it.
 const VERSION_1_SEGMENT: &[u8] = include_bytes!("vectors/legacy_segment.bin");
 
-/// A VERSION-1 SEGMENT IS A LAYOUT THIS BUILD DOES NOT READ: quarantined whole, never read and never
-/// cut. Version 1 was never released, so no segment in the field holds it; reading it under its old
-/// rule (no header check, a digest failure cut as a torn tail) was a downgrade path and nothing else.
-/// Its frames end in zeros, as every layout before the end mark did; they are still not unfinished
-/// writes of this layout, because their version is not this layout's.
-/// Every record it holds is set aside with its identity taken, so no acknowledged number is handed
-/// out again.
 #[test]
 fn a_version_1_segment_is_quarantined_never_read() {
     let dir = TempDir::new("v1-segment");
@@ -251,8 +195,7 @@ fn a_version_1_segment_is_quarantined_never_read() {
     lay_down(dir.path(), &written);
     let path = segment_path(dir.path());
     let mut v1: Vec<u8> = VERSION_1_SEGMENT.to_vec();
-    // The vector is the version-1 framing of exactly `written`: version 1, no header check, a digest
-    // that verifies, and every other byte the current encoder's.
+
     assert_eq!(v1.len(), written.len() * FRAME_BYTES);
     for (record, frame) in written.iter().zip(v1.as_chunks::<FRAME_BYTES>().0) {
         assert_eq!(frame_version(frame), 1);
@@ -260,8 +203,7 @@ fn a_version_1_segment_is_quarantined_never_read() {
         assert_eq!(frame[0..4], current[0..4]);
         assert_eq!(frame[6..34], current[6..34]);
         assert_eq!(frame[34..64], [0u8; 30]);
-        // Every payload byte; the current layout's last byte is its end mark, which version 1 did
-        // not have.
+
         assert_eq!(frame[96..FRAME_BYTES - 1], current[96..FRAME_BYTES - 1]);
         assert_eq!(
             decode_frame(frame),
@@ -295,9 +237,6 @@ fn a_version_1_segment_is_quarantined_never_read() {
     );
 }
 
-/// A WHOLE final frame RELABELLED to version 1 is quarantined, never cut as a torn tail.
-/// Under a reader that still took version 1, the relabel skipped the header check and
-/// the digest failure it caused read as a torn write, so an acknowledged record was cut silently.
 #[test]
 fn a_final_frame_relabelled_to_version_1_is_quarantined_not_cut() {
     let dir = TempDir::new("relabel-v1");
@@ -305,7 +244,7 @@ fn a_final_frame_relabelled_to_version_1_is_quarantined_not_cut() {
     lay_down(dir.path(), &written);
     let path = segment_path(dir.path());
     let mut bytes = std::fs::read(&path).unwrap();
-    // `[4,6)` is the layout version, little-endian: 2 becomes 1.
+
     bytes[3 * FRAME_BYTES + 4..3 * FRAME_BYTES + 6].copy_from_slice(&1u16.to_le_bytes());
     std::fs::write(&path, bytes).unwrap();
     let wal = Wal::in_directory(
@@ -327,10 +266,6 @@ fn a_final_frame_relabelled_to_version_1_is_quarantined_not_cut() {
     assert_eq!(wal.next_free_seq(3), 5);
 }
 
-/// A WHOLE final frame whose HEADER was altered after it was written is quarantined, never cut as a
-/// torn tail (MONEY-AUDIT E4). A torn write leaves zeros past the point it stopped; this frame has
-/// its digest and payload, so it was written in full and its record was acknowledged. The payload
-/// length byte (33) and the magic (0) are both header bytes the check covers.
 #[test]
 fn a_whole_final_frame_with_an_altered_header_is_quarantined_not_cut() {
     for at in [33usize, 0] {
@@ -362,12 +297,6 @@ fn a_whole_final_frame_with_an_altered_header_is_quarantined_not_cut() {
     }
 }
 
-/// **A TEAR INSIDE A FRAME'S PAYLOAD IS A TORN TAIL, CUT SILENTLY**. The write
-/// got past the header and the digest and stopped in the payload, leaving zeros to the frame's end.
-/// The frame's end mark is one of those zeros, so the write that made it never completed: nothing
-/// in it was acknowledged, and an ordinary crash is not reported as corruption. RED before the fix:
-/// the header checked and the digest did not, which read as a whole frame altered afterwards, and
-/// the crash raised a quarantine.
 #[test]
 fn a_tear_inside_a_frames_payload_is_a_torn_tail_cut_silently() {
     let dir = TempDir::new("tear-payload");
@@ -400,8 +329,6 @@ fn a_tear_inside_a_frames_payload_is_a_torn_tail_cut_silently() {
     );
 }
 
-/// Write each of `commits` as its own group commit to a fresh log in `dir`, close it, and return
-/// the committed bytes of segment 0.
 fn lay_down_commits(dir: &Path, commits: &[Vec<Record>]) -> Vec<u8> {
     let mut wal =
         Wal::in_directory(dir, Box::new(NullShipper::new()), super::fixtures::wall_ms).unwrap();
@@ -417,24 +344,15 @@ fn lay_down_commits(dir: &Path, commits: &[Vec<Record>]) -> Vec<u8> {
     bytes[..usize::try_from(end).unwrap()].to_vec()
 }
 
-/// **A COMMIT WHOSE PAGES LANDED OUT OF ORDER IS A TORN TAIL, NOT CORRUPTION**.
-///
-/// A group commit spanning more than one page is written back in whatever order the kernel picks.
-/// A crash during its sync can land one page and not the page before it: frames that verify sit
-/// past frames that never landed. They are frames of the SAME commit, which never synced, so
-/// nothing in it was acknowledged — the commit is cut silently and its identities stay free. RED
-/// before the fix: any verifying frame past the stop meant "corrupt", whichever commit it was in.
 #[test]
 fn a_commit_whose_pages_landed_out_of_order_is_a_torn_tail() {
     let dir = TempDir::new("pages-out-of-order");
-    // Two acknowledged records, then a commit of twelve single-frame records: frames 2..14, across
-    // the 4 KiB page boundary at frame 8.
+
     let acknowledged = records(3, 1, 2, 200);
     let torn_commit = records(3, 3, 12, 200);
     let original = lay_down_commits(dir.path(), &[acknowledged.clone(), torn_commit.clone()]);
     assert_eq!(original.len(), 14 * FRAME_BYTES);
 
-    // The second page landed; the first page's share of the torn commit did not.
     let path = segment_path(dir.path());
     let mut bytes = std::fs::read(&path).unwrap();
     for b in &mut bytes[2 * FRAME_BYTES..8 * FRAME_BYTES] {
@@ -466,9 +384,6 @@ fn a_commit_whose_pages_landed_out_of_order_is_a_torn_tail() {
     );
 }
 
-/// The other side of the same rule: damage in a commit that a SUBSEQUENT commit acknowledges is
-/// corruption whatever it looks like — even a frame of zeros, the shape a crash leaves — because a
-/// commit is only written after the one before it synced.
 #[test]
 fn damage_in_a_commit_a_subsequent_commit_acknowledges_is_corrupt_whatever_its_shape() {
     let dir = TempDir::new("acknowledged-zeros");
@@ -540,11 +455,6 @@ fn the_scan_names_the_verdict() {
     assert_eq!(corrupt.tail, TailVerdict::Clean);
 }
 
-/// **ACKNOWLEDGED DAMAGE IS FOUND AGAIN AT EVERY BOOT, AND NOTHING ABOUT IT IS LOST OR DOUBLED.**
-/// The damage is never cut, so a second boot reads exactly what the first did: the same records kept,
-/// the same quarantine reported, and the copy already beside the segment reused rather than written
-/// out once per boot. (Before the fix a corrupt remainder was cut after its copy, and a crash between
-/// the two left a second copy on the next boot.)
 #[test]
 fn acknowledged_damage_is_found_again_at_every_boot_with_one_copy() {
     let dir = TempDir::new("found-again");
@@ -588,7 +498,6 @@ fn acknowledged_damage_is_found_again_at_every_boot_with_one_copy() {
     );
 }
 
-/// A memory factory whose quarantine cannot be made durable.
 struct NoQuarantine(MemoryFactory);
 
 impl SegmentFactory for NoQuarantine {
@@ -651,7 +560,7 @@ fn a_quarantine_that_cannot_be_made_leaves_the_damage_in_place_and_writes_elsewh
         wal.quarantined()[0].kept,
         QuarantineKept::InPlace(_)
     ));
-    // Not cut, not overwritten.
+
     assert_eq!(seg0.lock().unwrap()[..4 * FRAME_BYTES].to_vec(), before);
 
     assert!(wal.is_poisoned(), "the damaged segment is closed to writes");
@@ -748,10 +657,9 @@ fn the_journal_puts_a_durable_record_of_each_quarantine_on_the_chain() {
     let kept = file.display().to_string();
     assert_eq!(body.text(), Some(kept.as_str()));
     assert_eq!(body.num(), Some(q.at_unix_ms));
-    // The record whose magic was flipped (3, 2): the flipped frame was written whole, so its
-    // record was acknowledged and its identity is named. The two behind it are kept.
+
     assert_eq!(body.num(), Some(1));
-    // The hole it leaves in the chain: kept before it (3, 1), kept after it (3, 3).
+
     assert_eq!(
         [
             body.num(),
@@ -765,7 +673,6 @@ fn the_journal_puts_a_durable_record_of_each_quarantine_on_the_chain() {
     );
     assert!(body.is_done());
 
-    // Found again at the next boot, and not recorded again: one break per hole.
     drop(journal);
     let mut journal = Journal::over(
         Wal::in_directory(
@@ -782,7 +689,6 @@ fn the_journal_puts_a_durable_record_of_each_quarantine_on_the_chain() {
         .unwrap()
         .is_none());
 
-    // A clean boot has nothing to record.
     drop(journal);
     let clean = TempDir::new("quarantine-record-clean");
     lay_down(clean.path(), &four());
@@ -801,7 +707,6 @@ fn the_journal_puts_a_durable_record_of_each_quarantine_on_the_chain() {
         .is_none());
 }
 
-/// Append `n` journal records, one commit each, numbered on from wherever `journal` stands.
 fn seal_loads(journal: &mut Journal, n: u8, tag: u8) {
     for i in 0..n {
         journal
@@ -824,7 +729,6 @@ fn journal_in(dir: &Path) -> Journal {
     .unwrap()
 }
 
-/// The node sequence numbers of the chain `journal` replays, which must verify.
 fn replayed_seqs(journal: &Journal) -> Vec<u64> {
     journal
         .replay()
@@ -835,18 +739,11 @@ fn replayed_seqs(journal: &Journal) -> Vec<u64> {
         .collect()
 }
 
-/// **AFTER A QUARANTINE THE CHAIN STILL VERIFIES, ON THIS BOOT AND EVERY ONE AFTER IT** (arch-audit
-/// u44, HIGH). The final journal record is altered on the medium and set aside; the number it carried
-/// stays taken, so the chain resumes past it. RED before the fix: `verify` had no rule for that gap,
-/// so the replay failed with a sequence mismatch as soon as the quarantine's `ChainBreak` was sealed,
-/// and on every boot after — and the composition root answers an unverifiable chain by rebuilding
-/// an EMPTY book. Now the chain re-anchors on the last record kept before the hole, every
-/// acknowledged record replays, and the quarantine is still reported, once on the chain.
 #[test]
 fn after_a_quarantine_every_later_replay_rebuilds_every_kept_record() {
     let dir = TempDir::new("chain-after-quarantine");
     seal_loads(&mut journal_in(dir.path()), 4, 1);
-    // Record four, the last on the chain, altered whole: an acknowledged record set aside.
+
     flip(dir.path(), 3 * FRAME_BYTES + 200);
 
     let mut journal = journal_in(dir.path());
@@ -891,10 +788,6 @@ fn after_a_quarantine_every_later_replay_rebuilds_every_kept_record() {
     }
 }
 
-/// A damaged record in the MIDDLE of the journal: the records behind it are kept, and the chain
-/// verifies across the hole on the boot that finds it (before its break is sealed), once the break
-/// is sealed, and on a later boot. RED before the fix: records three and four left the log with the
-/// damaged one, and the chain stopped verifying once the break was sealed.
 #[test]
 fn a_mid_journal_hole_keeps_every_record_behind_it_on_the_chain() {
     let dir = TempDir::new("chain-mid-hole");
@@ -916,8 +809,6 @@ fn a_mid_journal_hole_keeps_every_record_behind_it_on_the_chain() {
     );
 }
 
-/// A gap NO quarantine names still fails: the bridge is the hole recovery set aside and nothing
-/// else. A record taken out of the middle of a verified run is a removal, not a quarantine.
 #[test]
 fn a_gap_no_quarantine_names_still_breaks_the_chain() {
     let dir = TempDir::new("chain-unnamed-gap");
@@ -931,14 +822,8 @@ fn a_gap_no_quarantine_names_still_breaks_the_chain() {
     ));
 }
 
-/// **DAMAGE BELOW THE TAIL SEGMENT IS QUARANTINED, REPORTED AND READ PAST**.
-/// The log has rolled, and a record in the closed segment below the tail is altered — in its middle,
-/// and at its end. RED before the fix: only the tail segment was ever recovered, so no quarantine
-/// was made or reported, no unit it named was held back, and `read_back` dropped the rest of that
-/// segment silently.
 #[test]
 fn damage_in_a_segment_below_the_tail_is_quarantined_reported_and_read_past() {
-    // Four single-frame records to a segment: records 1..4 in segment 0, 5..8 in segment 1.
     const CEILING: u64 = 4 * FRAME_BYTES as u64;
     let open = |dir: &Path| {
         Journal::over(

@@ -1,15 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
-//! THE PINNED OIDC PLUGIN'S EGRESS CLASSES (security item 3; security.md:169: "a provider upstream
-//! or identity provider ... is refused when it is, or resolves to, a private ... address, unless
-//! `allow_destinations` names it"): every outbound need the linked OIDC door states (discovery,
-//! the JWKS, the token exchange), judged in the class the connector judges it in
-//! (`guard::judged_class`: a default-class need whose config names its target is lifted to
-//! operator infrastructure), is one the destination guard refuses a private address in unless
-//! allowlisted, and none is operator infrastructure. The token exchange keeps a class that takes
-//! the target's own scheme (1.5.5's http to an allowlisted private IdP token endpoint).
-//! Supersedes `the_linked_oidc_plugins_needs_declare_operator_infrastructure` (the class that
-//! admitted a private IdP with no allow entry; busbar-auth-oidc #59, #62).
 
 use busbar_contract::abi::host::conn::connector::{
     DIRECTION_OUTBOUND, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,

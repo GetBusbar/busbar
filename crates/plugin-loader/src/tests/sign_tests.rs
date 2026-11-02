@@ -1,16 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/plugin-loader/src/sign.rs`.
-
 use super::*;
 
-/// Deterministic test key from a seed byte (no RNG needed in this crate's tests).
 fn test_key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
 }
 
-/// A well-formed manifest (sha256/signature set by `sign`).
 fn manifest(name: &str, alias: &str, publisher: &str) -> Manifest {
     Manifest {
         name: name.to_string(),
@@ -34,25 +30,18 @@ fn manifest(name: &str, alias: &str, publisher: &str) -> Manifest {
     }
 }
 
-/// The advisory `needs:` intent is SIGNED (covered by the canonical bytes) so it cannot be
-/// spoofed, and a manifest omitting it parses with the default "asks for nothing". `NeedLevel`
-/// exposes the read/rewrite predicates the core compares against the operator grant.
 #[test]
 fn hook_needs_is_signed_and_defaults_to_none() {
-    // Default (absent) needs → declares nothing.
     let n = HookNeeds::default();
     assert!(!n.declares_any());
     assert!(!n.prompt.wants_read());
 
-    // A declared prompt:rw need round-trips through JSON and reads as read+rewrite.
     let json = r#"{"prompt":"rw","user":"ro"}"#;
     let parsed: HookNeeds = serde_json::from_str(json).unwrap();
     assert!(parsed.declares_any());
     assert!(parsed.prompt.wants_read() && parsed.prompt.wants_rewrite());
     assert!(parsed.user.wants_read() && !parsed.user.wants_rewrite());
 
-    // `declares_any` is an OR of the two axes, not an AND: a plugin that declares a need on only
-    // ONE axis still declares_any(). Pinned both ways so a mutant swapping `||` for `&&` goes red.
     assert!(
         HookNeeds {
             prompt: NeedLevel::Ro,
@@ -70,7 +59,6 @@ fn hook_needs_is_signed_and_defaults_to_none() {
         "declaring only the user axis is still declaring a need"
     );
 
-    // It is covered by the signature: changing `needs` after signing breaks verification.
     let key = test_key(9);
     let mut m = manifest("busbar-hook-x", "x", "busbar");
     m.kind = "hook".into();
@@ -88,7 +76,6 @@ fn abi(_kind: &str) -> &'static [u32] {
     &[1]
 }
 
-/// A policy with the given first-party key, third-party publishers, and opt-in flags.
 fn policy(
     first_party: Option<&SigningKey>,
     pairs: &[(&str, &VerifyingKey)],
@@ -108,15 +95,6 @@ fn policy(
     }
 }
 
-// ── The first-party ANTI-DOWNGRADE FLOOR (docs/plugins.md security-model item 3) ────────────────
-// A validly-signed but OLD release is still a signed artifact an attacker with write access to
-// `plugins.dir` can replay. With no floor set, a genuine busbar-signed 1.0.0 carrying a known fixed
-// defect verifies against the embedded release key and loads as `first-party` with no warning. The
-// floor is the per-plugin-name HIGH-WATER MARK: the highest version of that name this deployment has
-// actually seen and loaded.
-
-/// A genuinely first-party-signed artifact BELOW the recorded high-water mark for its own name is
-/// REFUSED, and the refusal names both the floor and the operator's way past it (the rollback pin).
 #[test]
 fn a_first_party_replay_below_the_high_water_mark_is_refused() {
     let release = test_key(1);
@@ -125,8 +103,6 @@ fn a_first_party_replay_below_the_high_water_mark_is_refused() {
     old.version = "1.0.0".into();
     let old = sign(&release, old, artifact);
 
-    // With NO mark this deployment has never seen the name, so there is nothing to downgrade FROM
-    // and the artifact loads — a first install is not a replay.
     let pol = policy(Some(&release), &[], false, false);
     assert!(
         matches!(
@@ -139,7 +115,6 @@ fn a_first_party_replay_below_the_high_water_mark_is_refused() {
         "a name with no high-water mark carries no floor"
     );
 
-    // This deployment HAS loaded 1.2.0 of this name. The genuine 1.0.0 is now a replay.
     let mut pol = policy(Some(&release), &[], true, true);
     pol.first_party_high_water
         .insert("busbar-store-gamma-plugin".to_string(), "1.2.0".to_string());
@@ -150,9 +125,7 @@ fn a_first_party_replay_below_the_high_water_mark_is_refused() {
         err.reason.contains("plugins.rollback") || err.reason.contains("rollback"),
         "names the override: {err:?}"
     );
-    // No opt-in flag can launder it: both are set above and it is still a hard reject.
 
-    // The artifact AT the mark, and above it, still load — the floor is a floor, not a pin.
     for v in ["1.2.0", "1.3.0"] {
         let mut cur = manifest("busbar-store-gamma-plugin", "gamma", FIRST_PARTY_PUBLISHER);
         cur.version = v.into();
@@ -170,8 +143,6 @@ fn a_first_party_replay_below_the_high_water_mark_is_refused() {
     }
 }
 
-/// The EXPLICIT rollback pin is the documented override: it REPLACES the high-water floor for that
-/// name (and that name only), which is exactly what makes an audited rollback possible at all.
 #[test]
 fn an_explicit_rollback_pin_overrides_the_high_water_mark() {
     let release = test_key(1);
@@ -183,9 +154,9 @@ fn an_explicit_rollback_pin_overrides_the_high_water_mark() {
     let mut pol = policy(Some(&release), &[], false, false);
     pol.first_party_high_water
         .insert("busbar-store-gamma-plugin".to_string(), "1.2.0".to_string());
-    // Without the pin: refused.
+
     assert!(evaluate(artifact, &old, &pol).is_err());
-    // With the pin at the rollback target: admitted, for THIS NAME only.
+
     pol.first_party_floors
         .insert("busbar-store-gamma-plugin".to_string(), "1.0.0".to_string());
     assert!(
@@ -199,7 +170,6 @@ fn an_explicit_rollback_pin_overrides_the_high_water_mark() {
         "an explicit, audited rollback pin replaces the high-water floor"
     );
 
-    // A DIFFERENT unpinned name still faces its own mark — a rollback of A never admits an old B.
     let mut b = manifest("busbar-hook-ranker", "ranker", FIRST_PARTY_PUBLISHER);
     b.version = "1.0.0".into();
     let b = sign(&release, b, artifact);
@@ -211,8 +181,6 @@ fn an_explicit_rollback_pin_overrides_the_high_water_mark() {
     );
 }
 
-/// The mark floors FIRST-PARTY artifacts only. A third-party plugin is judged by `min_versions`
-/// alone — the first-party lane's mark must never silently floor someone else's publisher.
 #[test]
 fn the_high_water_mark_does_not_floor_a_third_party_plugin() {
     let release = test_key(1);
@@ -251,11 +219,10 @@ fn first_party_signed_is_trusted_with_zero_config() {
         manifest("busbar-store-gamma-plugin", "gamma", FIRST_PARTY_PUBLISHER),
         artifact,
     );
-    // Manifest round-trips through JSON (it travels inside the tarball).
+
     let j = serde_json::to_string(&m).unwrap();
     assert_eq!(serde_json::from_str::<Manifest>(&j).unwrap(), m);
 
-    // ZERO configured publishers: the embedded key alone proves first-party.
     let pol = policy(Some(&release), &[], false, false);
     assert_eq!(
         evaluate(artifact, &m, &pol).unwrap(),
@@ -266,9 +233,6 @@ fn first_party_signed_is_trusted_with_zero_config() {
     );
 }
 
-/// `kind: secret` is a first-class plugin kind - a signed secret-module manifest passes
-/// structural validation and the trust evaluation identically to a store plugin (a plugin is a
-/// plugin), while an unknown kind still fails structure.
 #[test]
 fn secret_kind_is_known_and_signs_like_any_plugin() {
     assert!(KNOWN_KINDS.contains(&"secret"));
@@ -287,7 +251,7 @@ fn secret_kind_is_known_and_signs_like_any_plugin() {
             first_party: true
         }
     );
-    // A made-up kind still fails structure (the closed KNOWN_KINDS set).
+
     let mut bad = manifest("busbar-x", "x", FIRST_PARTY_PUBLISHER);
     bad.kind = "gizmo".to_string();
     let bad = sign(&release, bad, artifact);
@@ -295,9 +259,6 @@ fn secret_kind_is_known_and_signs_like_any_plugin() {
     assert!(err.contains("gizmo"), "got {err}");
 }
 
-/// `kind: export` is a first-class plugin kind — a signed export-sink manifest passes structural
-/// validation and trust evaluation identically to any other plugin (a plugin is a plugin). Mirrors
-/// `secret_kind_is_known_and_signs_like_any_plugin`.
 #[test]
 fn export_kind_is_known_and_signs_like_any_plugin() {
     assert!(KNOWN_KINDS.contains(&"export"));
@@ -318,16 +279,12 @@ fn export_kind_is_known_and_signs_like_any_plugin() {
     );
 }
 
-/// First-party plugin versions float FREE of the binary's version: the fleet ships 1.0.x
-/// stores/auth/hooks under a 1.5.0 engine, so a verified first-party
-/// plugin below the binary version MUST load when no per-name floor pins it. (The automatic
-/// binary-version floor this replaces rejected every correctly-signed current release.)
 #[test]
 fn first_party_version_floats_free_of_the_binary_version() {
     let release = test_key(1);
     let artifact = b"current first-party build on its own version line";
     let mut m = manifest("busbar-store-gamma-plugin", "gamma", FIRST_PARTY_PUBLISHER);
-    m.version = "1.0.1".into(); // binary is 1.5.0 — and that must not matter
+    m.version = "1.0.1".into();
     let m = sign(&release, m, artifact);
     let pol = policy(Some(&release), &[], false, false);
     assert!(
@@ -341,8 +298,6 @@ fn first_party_version_floats_free_of_the_binary_version() {
             "a verified first-party plugin with no per-name floor loads regardless of the binary version"
         );
 
-    // A per-name floor (rollback pin / registry floor) still hard-rejects below it, and no
-    // loose opt-in flag can launder that (verified first-party never consults opt-ins).
     let mut floored = policy(Some(&release), &[], true, true);
     floored
         .first_party_floors
@@ -353,9 +308,6 @@ fn first_party_version_floats_free_of_the_binary_version() {
         "got {err:?}"
     );
 
-    // A per-name floor that the version MEETS must NOT reject — the floor check is "floor set
-    // AND below it", not "floor set OR below it". (A mutant that turns the `&&` into `||` would
-    // reject here purely because a floor exists, regardless of the version satisfying it.)
     let mut met = policy(Some(&release), &[], true, true);
     met.first_party_floors
         .insert("busbar-store-gamma-plugin".to_string(), "1.0.0".to_string());
@@ -371,9 +323,6 @@ fn first_party_version_floats_free_of_the_binary_version() {
     );
 }
 
-/// Per-name scoping: a PER-NAME first-party floor binds the pinned name
-/// ONLY. Plugin A's floor must never change what plugin B is allowed to be — B is judged
-/// solely by its own pin (or, absent one, no floor).
 #[test]
 fn first_party_floor_override_is_scoped_per_name() {
     let release = test_key(1);
@@ -386,18 +335,16 @@ fn first_party_floor_override_is_scoped_per_name() {
     b.version = "1.4.0".into();
     let b = sign(&release, b, artifact_b);
 
-    // Floor A at 1.4.1 (above what A ships) and leave B unpinned.
     let mut pol = policy(Some(&release), &[], false, false);
     pol.first_party_floors
         .insert("busbar-store-gamma-plugin".to_string(), "1.4.1".to_string());
 
-    // A is below ITS OWN floor and is rejected.
     let err = evaluate(artifact_a, &a, &pol).unwrap_err();
     assert!(
         err.reason.contains("anti-downgrade"),
         "a pinned first-party plugin below its own floor is rejected: {err:?}"
     );
-    // B, unpinned, is untouched by A's floor and loads.
+
     assert!(
         matches!(
             evaluate(artifact_b, &b, &pol),
@@ -419,14 +366,14 @@ fn first_party_claim_without_embedded_key_is_unsigned() {
         manifest("busbar-store-gamma-plugin", "gamma", FIRST_PARTY_PUBLISHER),
         artifact,
     );
-    // No embedded key in this build: default posture rejects, naming the situation.
+
     let pol = policy(None, &[], false, false);
     let err = evaluate(artifact, &m, &pol).unwrap_err();
     assert!(
         err.reason.contains("embeds no busbar release key"),
         "got {err:?}"
     );
-    // allow_unsigned permits it (dev builds), as the Unsigned category.
+
     let loose = policy(None, &[], true, false);
     assert!(matches!(
         evaluate(artifact, &m, &loose).unwrap(),
@@ -437,41 +384,31 @@ fn first_party_claim_without_embedded_key_is_unsigned() {
     ));
 }
 
-/// FIRST-PARTY IMPERSONATION is impossible: an attacker signs a plugin with their OWN key and
-/// sets `publisher: busbar` to masquerade as first-party. Even with the real release key
-/// EMBEDDED, evaluation routes a `publisher: busbar` manifest ONLY to the embedded key, so the
-/// attacker's signature fails and the plugin is UNSIGNED (rejected by default; never third-party
-/// laundered, and never trusted). Setting the publisher name buys nothing.
 #[test]
 fn first_party_publisher_name_cannot_be_forged_with_another_key() {
-    let release = test_key(1); // the REAL embedded release key
-    let attacker = test_key(9); // a key the operator never trusted
+    let release = test_key(1);
+    let attacker = test_key(9);
     let artifact = b"malicious plugin claiming to be busbar";
-    // Attacker signs a busbar-branded manifest with their own key.
+
     let m = sign(
         &attacker,
         manifest("busbar-store-gamma-plugin", "gamma", FIRST_PARTY_PUBLISHER),
         artifact,
     );
-    // Embedded key present, attacker NOT in publishers. Default posture: rejected as unsigned
-    // (the signature does not verify against the embedded first-party key).
+
     let pol = policy(Some(&release), &[], false, false);
     let err = evaluate(artifact, &m, &pol).unwrap_err();
     assert!(
         err.reason.contains("first-party signature failed"),
         "impersonation must be reported as a first-party signature failure, got {err:?}"
     );
-    // Even allow_third_party cannot launder it: a `busbar` publisher never routes to the
-    // third-party path, so the third-party opt-in is irrelevant. It stays UNSIGNED-category,
-    // permitted ONLY by allow_unsigned (which is "load anything unsigned" by definition).
+
     let third_party_open = policy(Some(&release), &[], false, true);
     assert!(
         evaluate(artifact, &m, &third_party_open).is_err(),
         "allow_third_party must NOT permit a forged first-party plugin"
     );
-    // And the attacker cannot get themselves allowlisted UNDER the name `busbar` to reach the
-    // first-party branch: even if such a policy existed, the `publisher == busbar` branch only
-    // consults the embedded key, never `publishers`. Prove the routing directly.
+
     let mut mislead = policy(Some(&release), &[], false, false);
     mislead
         .publishers
@@ -482,20 +419,14 @@ fn first_party_publisher_name_cannot_be_forged_with_another_key() {
     );
 }
 
-/// STRIPPED-SIGNATURE first-party downgrade: an attacker takes an OLD first-party release,
-/// strips its signature, and hopes the automatic first-party anti-downgrade (which only guards
-/// VERIFIED first-party manifests) no longer applies. Under the DEFAULT posture it is rejected
-/// as unsigned - the downgrade never lands. (Under allow_unsigned the operator has already
-/// opted into loading arbitrary unsigned code, so this is out of scope of the anti-downgrade
-/// guarantee, which is specifically about REPLAYING a still-VALIDLY-SIGNED old release.)
 #[test]
 fn stripped_signature_old_first_party_is_rejected_by_default() {
     let release = test_key(1);
     let artifact = b"old vulnerable first-party build";
     let mut old = manifest("busbar-store-gamma-plugin", "gamma", FIRST_PARTY_PUBLISHER);
-    old.version = "1.0.0".into(); // below the 1.5.0 binary
+    old.version = "1.0.0".into();
     let old = sign(&release, old, artifact);
-    // Strip the (valid) signature: now it is an unsigned artifact claiming to be busbar.
+
     let mut stripped = old.clone();
     stripped.signature = String::new();
     let pol = policy(Some(&release), &[], false, false);
@@ -532,15 +463,14 @@ fn tampering_any_signed_field_fails() {
     let m = sign(&key, manifest("acme-p", "p", "acme"), artifact);
     let pol = policy(None, &[("acme", &key.verifying_key())], false, false);
 
-    // Flip a DISPLAY field: signature must break (the display card cannot be spoofed).
     let mut forged = m.clone();
     forged.description = "Busbar Official".into();
     assert!(evaluate(artifact, &forged, &pol).is_err());
-    // Flip the ALIAS (the config-selection identity): signature must break.
+
     let mut forged = m.clone();
     forged.alias = "gamma".into();
     assert!(evaluate(artifact, &forged, &pol).is_err());
-    // Swap the library under a good manifest -> hash mismatch.
+
     assert!(evaluate(b"different!", &m, &pol).is_err());
 }
 
@@ -560,12 +490,11 @@ fn unknown_publisher_needs_allow_third_party() {
     let artifact = b"third-party bytes";
     let m = sign(&key, manifest("acme-p", "p", "acme"), artifact);
 
-    // Default: refused, naming allow_third_party (NOT allow_unsigned).
     let err = evaluate(artifact, &m, &policy(None, &[], false, false)).unwrap_err();
     assert!(err.reason.contains("allow_third_party"), "got {err:?}");
-    // allow_unsigned alone does NOT permit a third-party-signed plugin.
+
     assert!(evaluate(artifact, &m, &policy(None, &[], true, false)).is_err());
-    // allow_third_party permits it.
+
     assert!(matches!(
         evaluate(artifact, &m, &policy(None, &[], false, true)).unwrap(),
         Verdict::Allowed {
@@ -580,7 +509,7 @@ fn unsigned_needs_allow_unsigned() {
     let artifact = b"unsigned bytes";
     let mut m = manifest("acme-p", "p", "acme");
     m.sha256 = sha256_hex(artifact);
-    // Publisher IS allowlisted but the signature is empty -> tamper/unsigned category.
+
     let key = test_key(1);
     let pol = policy(None, &[("acme", &key.verifying_key())], false, false);
     let err = evaluate(artifact, &m, &pol).unwrap_err();
@@ -603,7 +532,7 @@ fn canonical_bytes_are_stable_and_exclude_signature() {
     let mut m2 = m.clone();
     m2.signature = "deadbeef".into();
     assert_eq!(a, canonical_manifest_bytes(&m2));
-    // Sorted-key JSON: abi_version sorts before alias before name.
+
     let s = String::from_utf8(a).unwrap();
     assert!(s.find("\"abi_version\"").unwrap() < s.find("\"alias\"").unwrap());
     assert!(s.find("\"alias\"").unwrap() < s.find("\"name\"").unwrap());
@@ -644,8 +573,6 @@ fn name_and_semver_validators() {
     assert!(!valid_semver(""));
 }
 
-/// Phase-1 structural validation catches each malformation with a specific reason, independent
-/// of trust (a validly-signed malformed manifest still fails).
 #[test]
 fn structural_validation_names_each_failure() {
     let key = test_key(1);
@@ -689,7 +616,6 @@ fn structural_validation_names_each_failure() {
         .unwrap_err()
         .contains("64-char hex"));
 
-    // Integrity: right shape, wrong digest.
     let mut bad = good.clone();
     bad.sha256 = sha256_hex(b"other bytes");
     assert!(validate_structure(&bad, bytes, &abi, HOST_IDENTITY)
@@ -703,8 +629,6 @@ fn structural_validation_names_each_failure() {
         .contains("abi_version"));
 }
 
-/// A manifest with an UNKNOWN field fails to parse at all (deny_unknown_fields): fail-closed
-/// against content this binary does not understand.
 #[test]
 fn unknown_manifest_field_fails_parse() {
     let key = test_key(1);
@@ -716,8 +640,6 @@ fn unknown_manifest_field_fails_parse() {
     assert!(serde_json::from_value::<Manifest>(v).is_err());
 }
 
-/// Configured floor: a validly-signed-but-old third-party release is rejected once floored, and
-/// a stripped-signature copy cannot be laundered past the floor by a loose posture.
 #[test]
 fn configured_floor_rejects_downgrade_and_is_not_bypassable() {
     let acme = test_key(2);
@@ -726,20 +648,17 @@ fn configured_floor_rejects_downgrade_and_is_not_bypassable() {
     old.version = "1.0.0".into();
     let old = sign(&acme, old, artifact);
 
-    // No floor: trusted (baseline).
     let mut pol = policy(None, &[("acme", &acme.verifying_key())], false, false);
     assert!(matches!(
         evaluate(artifact, &old, &pol).unwrap(),
         Verdict::Trusted { .. }
     ));
 
-    // Floor pinned: the old validly-signed release is rejected.
     pol.min_versions
         .insert("acme-store-dynamo".to_string(), "2.0.0".to_string());
     let err = evaluate(artifact, &old, &pol).unwrap_err();
     assert!(err.reason.contains("anti-downgrade"), "got {err:?}");
 
-    // Stripped signature + both opt-ins: STILL rejected (the floor requires trusted proof).
     let mut stripped = old.clone();
     stripped.signature = String::new();
     let mut loose = policy(None, &[], true, true);
@@ -749,7 +668,6 @@ fn configured_floor_rejects_downgrade_and_is_not_bypassable() {
     let err = evaluate(artifact, &stripped, &loose).unwrap_err();
     assert!(err.reason.contains("anti-downgrade"), "got {err:?}");
 
-    // A current signed release at the floor still passes.
     let mut cur = manifest("acme-store-dynamo", "dynamo", "acme");
     cur.version = "2.0.0".into();
     let cur = sign(&acme, cur, artifact);
@@ -759,11 +677,6 @@ fn configured_floor_rejects_downgrade_and_is_not_bypassable() {
     ));
 }
 
-/// A MALFORMED `min_versions` floor (no leading `v`, so it fails [`valid_semver`]) must be
-/// UNSATISFIABLE, not silently void. `version_components("v2.0.0")` truncates to `[0,0,0]`, so
-/// without the [`valid_semver`] guard `version_at_least("1.0.0", "v2.0.0")` would be `true` and
-/// the old artifact would evaluate `Verdict::Trusted` — a silent admission past a floor the
-/// operator believed was armed.
 #[test]
 fn garbage_min_version_floor_is_unsatisfiable_not_void() {
     let acme = test_key(2);
@@ -785,17 +698,12 @@ fn garbage_min_version_floor_is_unsatisfiable_not_void() {
     );
 }
 
-/// A malformed `first_party_floors` override must NOT erase the automatic `binary_version`
-/// floor it REPLACES — the sharpest case, because the override would make a plugin the
-/// automatic floor alone would have refused instead get ADMITTED, i.e. strictly LESS
-/// protection than configuring nothing at all. Unguarded, the override reads as `[0,0,0]`,
-/// which every version satisfies.
 #[test]
 fn garbage_first_party_floor_does_not_erase_the_binary_floor() {
     let release = test_key(1);
     let artifact = b"old first-party build";
     let mut old = manifest("busbar-store-gamma-plugin", "gamma", FIRST_PARTY_PUBLISHER);
-    old.version = "1.0.0".into(); // below `binary_version` ("1.5.0", set by `policy()`)
+    old.version = "1.0.0".into();
     let old = sign(&release, old, artifact);
 
     let mut pol = policy(Some(&release), &[], false, false);
@@ -808,7 +716,6 @@ fn garbage_first_party_floor_does_not_erase_the_binary_floor() {
     assert_eq!(err.kind, RejectKind::AntiDowngrade);
 }
 
-/// `floor_note`'s operator-facing wording, pinned by a test rather than by review.
 #[test]
 fn malformed_floor_reason_says_the_floor_is_malformed() {
     assert_eq!(floor_note("1.6.0"), "");
@@ -818,8 +725,6 @@ fn malformed_floor_reason_says_the_floor_is_malformed() {
     assert!(note.contains("MAJOR.MINOR.PATCH"));
 }
 
-/// `Rejected`'s `Display` impl is the operator-facing rendering (e.g. a CLI's `{err}`), so it must
-/// actually carry the human `reason`, not a blank/default string.
 #[test]
 fn rejected_display_carries_the_reason() {
     let r = Rejected::new(
@@ -832,9 +737,6 @@ fn rejected_display_carries_the_reason() {
     );
 }
 
-/// `validate_structure`'s abi_version range check accepts the full CLOSED interval `[floor, max]`,
-/// including both endpoints — a mutant that deletes the in-range match arm falls through to the
-/// generic "no supported abi_version range" error instead, which names the wrong problem.
 #[test]
 fn validate_structure_accepts_abi_version_at_either_end_of_the_supported_range() {
     fn abi_1_to_3(_kind: &str) -> &'static [u32] {
@@ -856,17 +758,10 @@ fn validate_structure_accepts_abi_version_at_either_end_of_the_supported_range()
         .expect("abi_version at the max of the supported range is accepted");
 }
 
-/// The embedded-release-key accessor mirrors the build-time env exactly: a build that carried
-/// BUSBAR_RELEASE_PUBKEY (CI, and every build in this tree through .cargo/config.toml) embeds a key
-/// that parses; a build without it embeds none. Neither state is assumed, so the test is honest in
-/// both.
 #[test]
 fn embedded_key_mirrors_the_build_env() {
     match option_env!("BUSBAR_RELEASE_PUBKEY") {
         Some(hex) if !hex.trim().is_empty() => {
-            // Not just `is_some()` (which a mutant that always returns `Some(Default::default())`
-            // would also satisfy) — the embedded key must be the SPECIFIC key that build-time hex
-            // parses to, so a mutant returning a fabricated key still goes red.
             let expected = public_key_from_hex(hex)
                 .expect("this tree's committed BUSBAR_RELEASE_PUBKEY parses");
             assert_eq!(
@@ -882,16 +777,13 @@ fn embedded_key_mirrors_the_build_env() {
     }
 }
 
-/// `store`/`secret` default to restart-required; `hook`/`auth` default to hot-appliable —
-/// derived from `kind`, never plugin-declared.
 #[test]
 fn kind_restart_default_matches_binding_lifecycle() {
     assert!(kind_restart_default("store"));
     assert!(kind_restart_default("secret"));
     assert!(!kind_restart_default("hook"));
     assert!(!kind_restart_default("auth"));
-    // An unrecognized kind fails to the SAFE direction (restart-required), never the
-    // hot-appliable one.
+
     assert!(kind_restart_default("widget"));
 }
 
@@ -916,8 +808,6 @@ fn allowed_unsigned() -> Verdict {
     }
 }
 
-/// The override direction that INCREASES caution (`true` against a `false` kind default) is
-/// ALWAYS honored, regardless of trust — the safe direction to be wrong in.
 #[test]
 fn restart_override_to_true_is_always_honored() {
     for verdict in [
@@ -930,11 +820,6 @@ fn restart_override_to_true_is_always_honored() {
     }
 }
 
-/// The override direction that DECREASES caution (`false` against a `true` kind default) is
-/// honored ONLY for a trusted, first-party (`publisher == "busbar"`) manifest — the exact same
-/// trust+publisher gate `schema_derived`'s load-bearing rule uses. A
-/// trusted THIRD-PARTY publisher, or an unsigned/allowed artifact, does NOT clear the gate —
-/// `publisher` alone is never sufficient; only `Verdict::Trusted { first_party: true, .. }` does.
 #[test]
 fn restart_override_to_false_requires_trusted_first_party() {
     assert!(
@@ -951,8 +836,6 @@ fn restart_override_to_false_requires_trusted_first_party() {
     );
 }
 
-/// With no per-field override, the kind default applies unconditionally (trust is irrelevant
-/// when there is nothing to override).
 #[test]
 fn restart_no_override_uses_kind_default_regardless_of_trust() {
     assert!(effective_restart_required(
@@ -967,9 +850,6 @@ fn restart_no_override_uses_kind_default_regardless_of_trust() {
     ));
 }
 
-/// A `false` override against an ALREADY hot-appliable kind default changes nothing observable
-/// (there is no restart-required claim being weakened), so it is honored regardless of trust —
-/// this is not the silent-data-loss direction the asymmetry guards against.
 #[test]
 fn restart_override_to_false_against_hot_default_is_a_no_op_honored_unconditionally() {
     assert!(!effective_restart_required(
@@ -979,12 +859,6 @@ fn restart_override_to_false_against_hot_default_is_a_no_op_honored_unconditiona
     ));
 }
 
-// ── manifest `host` disambiguates sibling products that share this exact plugin ABI ─────────
-
-/// BACKWARD COMPAT: a manifest with no `host` field at all (every manifest packed before this
-/// field existed — real packed tarballs, not just an in-memory struct) still parses AND still
-/// passes structural validation. Deserializes from raw JSON (not `Manifest { .. }` literal
-/// syntax) so this actually proves the wire format, not just that the Rust default exists.
 #[test]
 fn manifest_with_no_host_field_parses_and_loads() {
     let key = test_key(1);
@@ -1009,8 +883,6 @@ fn manifest_with_no_host_field_parses_and_loads() {
         .expect("a manifest with no host field must still pass structural validation");
 }
 
-/// A manifest that EXPLICITLY declares `host: busbar` (this binary's own identity) loads
-/// exactly like an absent `host` — the field is additive, not merely tolerated when omitted.
 #[test]
 fn manifest_with_host_busbar_loads() {
     let key = test_key(1);
@@ -1022,13 +894,6 @@ fn manifest_with_host_busbar_loads() {
         .expect("host: busbar matches this binary's own identity and must load");
 }
 
-/// THE ACTUAL SAFETY PROPERTY: a manifest declaring a DIFFERENT host (e.g. `busbar-ui`, the
-/// sibling product that reuses this identical six-symbol ABI and signed-manifest shape) is
-/// REJECTED at structural validation — not silently ignored. This is what stops a busbar-ui
-/// `store` plugin (tenants/deployments) from `dlopen`ing into the engine and answering `store`
-/// calls with the wrong payload contract (keys/denylists) after passing the ABI handshake.
-/// Runs even on a VALIDLY SIGNED manifest, proving this is a structural (phase 1) gate that
-/// trust cannot override.
 #[test]
 fn manifest_with_foreign_host_is_rejected() {
     let key = test_key(1);
@@ -1042,40 +907,24 @@ fn manifest_with_foreign_host_is_rejected() {
         "rejection must name both the offending host and the field, got: {err}"
     );
 
-    // Not just structural: even a manifest that WOULD verify as trusted first-party never
-    // reaches `evaluate` in the real pipeline, because `registry.rs::examine` runs
-    // `validate_structure` (phase 1) before `evaluate` (phase 2, trust) — a foreign host never
-    // gets a chance to be laundered through a loose trust posture.
     let pol = policy(Some(&key), &[], true, true);
     assert!(
         validate_structure(&m, artifact, &abi, HOST_IDENTITY).is_err(),
         "the host gate is structural and does not consult TrustPolicy at all"
     );
-    let _ = pol; // constructed only to make the "trust cannot help" point explicit above
+    let _ = pol;
 }
 
-/// A `host` value that is neither absent, `busbar`, nor a recognizable other product string
-/// (garbage / typo) is rejected the same way as a deliberately foreign host — there is no
-/// third "unknown, so allow" outcome.
 #[test]
 fn manifest_with_garbage_host_is_rejected() {
     let key = test_key(1);
     let artifact = b"garbage-host bytes";
     let mut m = manifest("acme-p", "p", "acme");
-    m.host = Some("Busbar".to_string()); // case mismatch is still not an exact match
+    m.host = Some("Busbar".to_string());
     let m = sign(&key, m, artifact);
     assert!(validate_structure(&m, artifact, &abi, HOST_IDENTITY).is_err());
 }
 
-/// REGRESSION GUARD: `host_identity` must be the parameter `validate_structure` actually
-/// consults, not a decorative signature widening that still checks against a hardcoded
-/// `HOST_IDENTITY` const internally. Every OTHER test in this file passes `HOST_IDENTITY`
-/// verbatim, so none of them can tell the difference between "the parameter is load-bearing"
-/// and "the parameter is ignored" — a manifest whose `host` is `busbar-ui`, validated by a
-/// caller whose own identity IS `busbar-ui`, must load; the identical manifest validated by a
-/// caller whose identity is `busbar` (this binary's own `HOST_IDENTITY`) must not. If a future
-/// change reverted the body to compare against `HOST_IDENTITY` instead of the parameter, this
-/// test is the one that would catch it — every other host test in this file would still pass.
 #[test]
 fn validate_structure_consults_the_host_identity_parameter_not_a_hardcoded_const() {
     let key = test_key(1);
@@ -1095,9 +944,6 @@ fn validate_structure_consults_the_host_identity_parameter_not_a_hardcoded_const
         );
 }
 
-/// An ABSENT `host` matches ANY caller's identity (the field is additive/backward-compatible —
-/// see `manifest_with_no_host_field_parses_and_loads`), regardless of which host_identity is
-/// passed. Proves the "absent means match" branch doesn't secretly special-case `HOST_IDENTITY`.
 #[test]
 fn manifest_with_no_host_matches_any_caller_identity() {
     let key = test_key(1);
@@ -1114,15 +960,9 @@ fn manifest_with_no_host_matches_any_caller_identity() {
         .expect("absent host must match ANY caller's identity, not just known ones");
 }
 
-/// The ed25519 IDENTITY point, hex-encoded — the canonical small-order (weak) public key. Under the
-/// permissive cofactored check `Verifier::verify` performs, a signature made against it verifies for
-/// EVERY message, so an allowlist entry naming it would trust every artifact handed to the loader.
 const WEAK_PUBLIC_KEY_HEX: &str =
     "0100000000000000000000000000000000000000000000000000000000000000";
 
-/// A weak (small-order / identity) publisher key must be REFUSED where it is parsed, not admitted
-/// into the allowlist. An operator who pastes a placeholder, a truncated key, or a key an attacker
-/// supplied in a vendor document otherwise arms a trust entry that verifies anything.
 #[test]
 fn weak_publisher_key_is_refused_at_parse() {
     let err = public_key_from_hex(WEAK_PUBLIC_KEY_HEX)
@@ -1133,21 +973,17 @@ fn weak_publisher_key_is_refused_at_parse() {
     );
 }
 
-/// Even if a weak key reaches the verifier some other way, verification must REFUSE it rather than
-/// accept the universal forgery the permissive check admits. The parse-time refusal above and this
-/// verify-time strictness are the two halves of one guard.
 #[test]
 fn signature_does_not_verify_under_a_weak_key() {
     let mut weak = [0u8; 32];
     weak[0] = 1;
-    // `VerifyingKey::from_bytes` decompresses the identity point happily — that IS the hazard.
+
     let key = ed25519_dalek::VerifyingKey::from_bytes(&weak)
         .expect("the identity point decompresses; only a weakness check refuses it");
     let artifact = b"attacker-supplied library bytes";
     let mut m = manifest("acme-p", "p", "acme");
     m.sha256 = sha256_hex(artifact);
-    // The forgery the permissive cofactored check accepts for any message under the identity key:
-    // R = the identity point, s = 0.
+
     let mut forged = [0u8; 64];
     forged[0] = 1;
     m.signature = hex::encode(forged);
@@ -1157,12 +993,6 @@ fn signature_does_not_verify_under_a_weak_key() {
     );
 }
 
-/// THE SUPERSEDED CONTRACT-ABI RANGE (`contract_abi`) IS NOT A DECLARATION (THE DESIGN §2 l.237-240,
-/// §9 l.1164-1165: a plugin declares its kind's ABI version, the manifest's `abi_version`, and that
-/// is the only version fact admission reads). A declares FILE that still states it, until the
-/// fleet's re-render strips it from every repo, is read and the range dropped, never carried into
-/// a manifest; a SIGNED manifest's `declares` that states it is refused as an unknown key. RED
-/// before the parse was removed: the range was parsed, carried and signed.
 #[test]
 fn a_contract_abi_range_is_never_carried_and_a_signed_manifest_stating_one_is_refused() {
     let d = Declares::from_declares_json(br#"{"contract_abi": {"min": 3, "max": 4}}"#)
@@ -1180,14 +1010,8 @@ fn a_contract_abi_range_is_never_carried_and_a_signed_manifest_stating_one_is_re
     );
 }
 
-/// THE BREAKER FACT A PLANE DECLARES (`declares.breaker`, ARCHITECT Q4) is spelled
-/// `{"breaker": {"bench_below_trip_threshold": ..}}` in a declares file, reads back as stated and is
-/// signed like every other `declares` statement. A manifest that states none carries no `breaker`
-/// key at all: its wire bytes and its signed bytes are exactly the ones it had before the field
-/// existed, so every manifest already packed keeps its signature.
 #[test]
 fn a_declared_breaker_fact_round_trips_and_a_manifest_without_one_keeps_its_bytes() {
-    // ABSENT: no `breaker` key on the wire or under the signature, and the bytes survive a read.
     let key = test_key(12);
     let mut quiet = manifest("busbar-plane-quiet", "quiet", FIRST_PARTY_PUBLISHER);
     quiet.kind = "plane".to_string();
@@ -1212,7 +1036,6 @@ fn a_declared_breaker_fact_round_trips_and_a_manifest_without_one_keeps_its_byte
     );
     assert!(Declares::default().is_empty());
 
-    // STATED: it reads as stated, round-trips, and refuses a word it does not know.
     let stated = r#"{"breaker":{"bench_below_trip_threshold":false}}"#;
     let d = Declares::from_declares_json(stated.as_bytes()).expect("parses");
     assert_eq!(
@@ -1251,9 +1074,6 @@ fn a_declared_breaker_fact_round_trips_and_a_manifest_without_one_keeps_its_byte
     );
 }
 
-/// THE STATEMENT A MANIFEST CARRIES is signed: a tampered rendering fails the signature, a
-/// rendering that is not one whole Statement is a structural refusal, and a manifest with none keeps
-/// the canonical bytes (and so the signature) it had before the field existed.
 #[test]
 fn red_the_stated_statement_is_signed_and_must_be_one_whole_rendering() {
     use busbar_contract::abi::mechanism::rendering::render;
@@ -1297,8 +1117,6 @@ fn red_the_stated_statement_is_signed_and_must_be_one_whole_rendering() {
     );
 }
 
-/// A valid signature authenticates the stated policy; admission must still compare that policy
-/// against the actual module's Statement. Only retention differs in each refused manifest here.
 #[test]
 fn a_signed_need_retention_policy_must_equal_the_actual_modules_policy() {
     use crate::dispatch::{load_linked, Adopter, Bind, ConnTable, LinkedRow, LoadError, NoSink};
@@ -1409,9 +1227,6 @@ fn a_signed_need_retention_policy_must_equal_the_actual_modules_policy() {
     }
 }
 
-/// `TrustPolicy::from_config` (the resolution the kernel's `PluginsCfg::to_policy` did, moved out of
-/// the kernel): its refusals keep their bytes, and the per-name floors — `min_versions` and the
-/// rollback pins in `first_party_floors` — are carried exactly, with no automatic floor armed.
 #[test]
 fn from_config_keeps_its_refusal_bytes_and_carries_every_floor_exactly() {
     let none = BTreeMap::new();
@@ -1443,7 +1258,7 @@ fn from_config_keeps_its_refusal_bytes_and_carries_every_floor_exactly() {
             .unwrap_err(),
         "plugins.trust.publishers['acme']: public key must be 32 bytes, got 1"
     );
-    // RED for rollback: a pinned first-party floor and a min_versions floor are carried as given.
+
     let mut floors = BTreeMap::new();
     floors.insert("busbar-store-kv-plugin".to_string(), "0.9.0".to_string());
     let mut mins = BTreeMap::new();
@@ -1473,20 +1288,8 @@ fn from_config_keeps_its_refusal_bytes_and_carries_every_floor_exactly() {
     assert_eq!(p.first_party_key, embedded_release_pubkey());
 }
 
-// ── FORMER NAMES (ARCHITECT ruling: 1.5.5 configs load unchanged) ─────────────────────────────
-
-/// The RETIRED busbar 1.5 release key, which signed every 1.5.x first-party tarball and the 1.6.0 dev
-/// artefacts `plugin-release.yml` packed. Its private seed lived in a GitHub organisation secret
-/// (`BUSBAR_SIGN_KEY`) every repository could read, and a copy was found on disk, so a signature by
-/// it no longer proves busbar made the plugin.
 const RELEASE_PUBKEY_1_5: &str = "b18395a332803151b9cd40a71489a86a96d8bea3ee6a37a45f59dec197bacba7";
 
-/// THE DEFAULT RELEASE KEY INPUT NEVER NAMES A RETIRED KEY. The release key is a build input
-/// (`BUSBAR_RELEASE_PUBKEY`, read by [`embedded_release_pubkey`] at compile time); a build that does
-/// not set it in its environment takes this tree's `.cargo/config.toml` `[env]` value. The retired
-/// 1.5 key is not that value, nor any key on [`RETIRED_RELEASE_KEYS`]: a default build embeds no
-/// retired key. The shadow oracle sets the variable to its run key at ITS candidate build only
-/// (ARCHITECT ruling 2026-10-20, row 86); cargo's `[env]` never overrides the process environment.
 #[test]
 fn the_default_release_key_input_is_not_a_retired_key() {
     let cfg = include_str!("../../../../.cargo/config.toml");
@@ -1510,14 +1313,6 @@ fn the_default_release_key_input_is_not_a_retired_key() {
     }
 }
 
-// ── THE RETIRED 1.5 CI KEY (security P0, 2026-10-28) ─────────────────────────────────────────────
-// A first-party manifest signed by a RETIRED release key is refused with its own reason and audit
-// code, whether or not the build embeds that key, unless the operator names the key under
-// `plugins.trust.publishers`. No private half of the retired key is used here: the real key is
-// witnessed by the REAL 1.5.5 manifest it signed, and a stand-in test key, put on a retired list
-// through `evaluate_against`, signs a library these tests hold.
-
-/// The real `busbar-webrequest` 1.0.6 manifest, signed by the retired 1.5 key.
 fn retired_key_manifest() -> Manifest {
     serde_json::from_str(include_str!(
         "../../tests/fixtures/manifest_1_5_5_busbar_webrequest.json"
@@ -1525,7 +1320,6 @@ fn retired_key_manifest() -> Manifest {
     .expect("the 1.5.5 manifest parses")
 }
 
-/// A stand-in retired key, its hex, and a first-party manifest it signed over `artifact`.
 fn stand_in_retired(artifact: &[u8]) -> (SigningKey, String, Manifest) {
     let key = test_key(0x15);
     let hex = hex::encode(key.verifying_key().as_bytes());
@@ -1546,9 +1340,6 @@ fn a_manifest_signed_by_the_retired_ci_key_is_refused() {
         "the retired 1.5 CI key is on the compiled-in retired list"
     );
 
-    // THE REAL KEY. Zero config, in a build that embeds no key and in a build that still embeds
-    // the retired key (a stale CI variable): refused, as a retired key, naming the key and the way
-    // an operator trusts it explicitly. Never "unsigned", never silent.
     let m = retired_key_manifest();
     let lib = b"\x7fELF any library";
     let keyless = policy(None, &[], false, false);
@@ -1576,16 +1367,13 @@ fn a_manifest_signed_by_the_retired_ci_key_is_refused() {
             r.reason
         );
     }
-    // A third-party opt-in does not reach it: it is not a third-party plugin.
+
     let loose = policy(None, &[], false, true);
     assert_eq!(
         evaluate(lib, &m, &loose).unwrap_err().kind,
         RejectKind::RetiredKey
     );
 
-    // A STAND-IN retired key over a library it truly signed: the signature is valid and bound,
-    // the build embeds that very key as its release key, and it is still refused. Off the retired
-    // list the same manifest is first-party trusted, so the refusal is the retired list's alone.
     let artifact = b"\x7fELF signed by a retired key";
     let (key, hex, signed) = stand_in_retired(artifact);
     let retired = [(hex.as_str(), "a stand-in retired key")];
@@ -1609,7 +1397,6 @@ fn a_manifest_signed_by_the_retired_ci_key_loads_only_when_the_operator_trusts_i
     let vk = key.verifying_key();
     let retired = [(hex.as_str(), "a stand-in retired key")];
 
-    // Not named by the operator: refused.
     let r = evaluate_against(
         artifact,
         &signed,
@@ -1619,9 +1406,6 @@ fn a_manifest_signed_by_the_retired_ci_key_loads_only_when_the_operator_trusts_i
     .unwrap_err();
     assert_eq!(r.kind, RejectKind::RetiredKey);
 
-    // Named under plugins.trust.publishers (any name but `busbar`): it loads, as an EXPLICIT
-    // opt-in the boot WARNs about (an `Allowed` verdict), naming the key, why it is retired and the
-    // operator's entry. It is never `Trusted` as a current first-party plugin.
     let pol = policy(None, &[("busbar-1-5-retired", &vk)], false, false);
     match evaluate_against(artifact, &signed, &pol, &retired) {
         Ok(Verdict::Allowed {
@@ -1641,14 +1425,14 @@ fn a_manifest_signed_by_the_retired_ci_key_loads_only_when_the_operator_trusts_i
         }
         other => panic!("an explicitly trusted retired key loads as an opt-in, got {other:?}"),
     }
-    // The opt-in trusts the KEY, not any bytes: a library the manifest does not bind is refused.
+
     assert_eq!(
         evaluate_against(b"\x7fELF another library", &signed, &pol, &retired)
             .unwrap_err()
             .kind,
         RejectKind::Tampered
     );
-    // The opt-in proves no anti-downgrade floor: a floored name still needs a current key.
+
     let mut floored = pol.clone();
     floored
         .min_versions
@@ -1659,9 +1443,7 @@ fn a_manifest_signed_by_the_retired_ci_key_loads_only_when_the_operator_trusts_i
             .kind,
         RejectKind::UntrustedFloored
     );
-    // allow_unsigned does NOT admit it (owner-signed 2026-10-30, SEC-ALLOWUNS): a retired key is a
-    // revocation, not a missing signature. The refusal names the key and says allow_unsigned does
-    // not admit it, with every opt-in flag on.
+
     for permissive in [
         policy(None, &[], true, false),
         policy(None, &[], true, true),
@@ -1678,7 +1460,7 @@ fn a_manifest_signed_by_the_retired_ci_key_loads_only_when_the_operator_trusts_i
             r.reason
         );
     }
-    // The real retired 1.5 key under allow_unsigned: refused the same way.
+
     let r = evaluate(
         b"\x7fELF any library",
         &retired_key_manifest(),
@@ -1687,7 +1469,7 @@ fn a_manifest_signed_by_the_retired_ci_key_loads_only_when_the_operator_trusts_i
     .expect_err("allow_unsigned never admits the retired 1.5 key");
     assert_eq!(r.kind, RejectKind::RetiredKey, "got {r:?}");
     assert!(r.reason.contains(RELEASE_PUBKEY_1_5), "{}", r.reason);
-    // A plugin with NO signature at all is still what allow_unsigned is for: it loads unverified.
+
     let unsigned = manifest("busbar-store-unsigned", "unsigned", FIRST_PARTY_PUBLISHER);
     assert!(unsigned.signature.is_empty(), "the helper signs nothing");
     match evaluate_against(
@@ -1703,9 +1485,6 @@ fn a_manifest_signed_by_the_retired_ci_key_loads_only_when_the_operator_trusts_i
         other => panic!("an unsigned plugin under allow_unsigned loads unverified, got {other:?}"),
     }
 
-    // THE REAL KEY, through the operator's config entry: it parses, and it lifts the retired
-    // refusal off the real 1.5.5 manifest. What then stands is that manifest's binding to its own
-    // library, which this test does not hold.
     let mins = BTreeMap::new();
     let floors = BTreeMap::new();
     let pol = TrustPolicy::from_config(TrustInput {
@@ -1726,12 +1505,6 @@ fn a_manifest_signed_by_the_retired_ci_key_loads_only_when_the_operator_trusts_i
     );
 }
 
-/// A manifest packed before `former_names` existed parses UNCHANGED and its signature still
-/// verifies over this binary's canonical bytes: the field is skipped when empty, so an old
-/// manifest's signed bytes are exactly what its publisher signed. The witness is the REAL manifest
-/// of `busbar-webrequest` v1.0.6 (the release beside busbar v1.5.5), as its published tarball
-/// `busbar-webrequest-1.0.6-aarch64-apple-darwin.tar.gz` carries it (sha256 `7f0818c6…`, the
-/// testing/shadow-oracle/plugin-digests.tsv row), verified against the release key that signed it.
 #[test]
 fn an_old_manifest_with_no_former_names_parses_and_verifies_unchanged() {
     let text = include_str!("../../tests/fixtures/manifest_1_5_5_busbar_webrequest.json");
@@ -1747,14 +1520,12 @@ fn an_old_manifest_with_no_former_names_parses_and_verifies_unchanged() {
     );
     key.verify_strict(&canonical, &Signature::from_bytes(&sig))
         .expect("the 1.5.5 release signature verifies over this binary's canonical bytes");
-    // Re-serialized, it is still the same document (no field appears from nowhere).
+
     let back: serde_json::Value = serde_json::to_value(&m).unwrap();
     let orig: serde_json::Value = serde_json::from_str(text).unwrap();
     assert_eq!(back, orig);
 }
 
-/// A former name is SIGNED: the signature covers it, so a former name added, dropped or changed
-/// after signing fails verification (RED), and the signed list verifies (GREEN).
 #[test]
 fn former_names_are_covered_by_the_signature() {
     let key = test_key(9);
@@ -1782,8 +1553,6 @@ fn former_names_are_covered_by_the_signature() {
     }
 }
 
-/// A former name is held to the alias's rules, and to being a name the plugin does not already
-/// have: lowercase `[a-z0-9-]+`, not the plugin's name or alias, not listed twice.
 #[test]
 fn a_malformed_or_repeated_former_name_fails_structure() {
     let ok = |former: &[&str]| {
@@ -1807,10 +1576,6 @@ fn a_malformed_or_repeated_former_name_fails_structure() {
     }
 }
 
-/// THE DISK NEED (`declares.disk`, THE DESIGN §11.11 R4 as the OWNER amended it 2026-10-13) is a
-/// `kind: secret` fact alone: any other kind stating it is refused at phase 1, naming the kind; a
-/// secret source stating it validates; and a manifest that states none keeps its canonical bytes
-/// (the field is left off the wire when false).
 #[test]
 fn only_a_secret_source_may_declare_a_disk_need() {
     let mut store = manifest("busbar-store-disk", "disk", "acme");
@@ -1837,7 +1602,6 @@ fn only_a_secret_source_may_declare_a_disk_need() {
     );
 }
 
-/// A syntactically numeric component above u64 must not turn the configured floor into zero.
 #[test]
 fn overflowing_min_version_components_refuse_a_real_signed_artifact() {
     let acme = test_key(2);

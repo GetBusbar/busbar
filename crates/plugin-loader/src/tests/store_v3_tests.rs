@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! `LoadedStore`: the build's store loaded through its COMPILED-IN door
-//! and reached only through the store v3 table, on both surfaces — the synchronous `RecordStore`
-//! bridge and the typed, awaited `StoreCalls`.
-
 use std::sync::Arc;
 
 use busbar_contract::abi::store::OpId;
@@ -41,7 +37,6 @@ fn open() -> LoadedStore {
     LoadedStore::open(plugin, d, b"{}", mint).expect("the memory store opens")
 }
 
-/// This test process's `op_id` allocator: one counter, as the kernel's `door::op_id` is.
 fn mint() -> OpId {
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     OpId::from_parts(
@@ -434,8 +429,6 @@ fn a_metering_batch_applies_through_the_typed_surface() {
     );
 }
 
-/// One Statement: the memory store's `ephemeral` is the Statement mark `MARK_EPHEMERAL`, carried
-/// by the rendering the row states; the store tail it states is the tail without it.
 #[test]
 fn the_ephemeral_store_states_mark_ephemeral_on_its_statement_not_its_tail() {
     use busbar_contract::abi::mechanism::door::MARK_EPHEMERAL;
@@ -451,8 +444,6 @@ fn the_ephemeral_store_states_mark_ephemeral_on_its_statement_not_its_tail() {
 
 #[test]
 fn a_failed_op_reaches_the_record_store_as_the_stores_own_text() {
-    // 1.5.5 printed a durable-store failure as `store error: <the backend's text>` (oracle
-    // BOOT-172/BOOT-175); the v3 door's typed wording must not reach the operator in between.
     let e = super::bridge::<()>(Err(StoreFailure::Failed(
         "database disk image is malformed".to_string(),
     )))
@@ -468,10 +459,6 @@ fn a_failed_op_reaches_the_record_store_as_the_stores_own_text() {
     );
 }
 
-/// A STORE'S `refresh` NEVER CLAIMS IT APPLIED SETTINGS (open160 ST15): the host never refreshes a
-/// store (a changed store section reaches it through a fresh instance, on a restart or a reload),
-/// so a `refresh` that answered READY would tell a caller the new settings were applied when they
-/// were not. The SDK's default refuses, naming the restart that applies them.
 #[test]
 fn a_store_refresh_refuses_naming_the_restart_that_applies_settings() {
     use busbar_contract::abi::mechanism::call::{OutHead, Outcome};

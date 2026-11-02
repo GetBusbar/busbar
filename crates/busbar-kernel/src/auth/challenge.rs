@@ -1,33 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The RFC 6750 `WWW-Authenticate` challenge, for ingresses that are OAuth 2.1 RESOURCE SERVERS.
-//!
-//! ## Why this is not `unauthorized_response`
-//!
-//! The data plane's 401 (`super::unauthorized_response`) answers in the refusal dialect of the
-//! line the caller reached, so a client gets the refusal shape its own wire protocol uses. That is
-//! right for a gateway that speaks its callers' protocols, and it is exactly wrong here. An
-//! audience-bound plane's caller is not an LLM SDK; it is an OAuth client
-//! that has been TOLD, by RFC 6750 and RFC 9728, that a `401` carries a machine-readable challenge
-//! naming where to go and get a token. Hand it a vendor-shaped JSON body with no
-//! `WWW-Authenticate` header and the discovery loop simply does not close: the client has no way to
-//! find the authorization server, because the only place that URL was ever going to come from is the
-//! header we did not send.
-//!
-//! This is the whole of the MCP bootstrap story, and it is the reason an agent can log into busbar
-//! with no prior configuration: connect with no credential, read `resource_metadata` out of the
-//! challenge, fetch the protected-resource metadata document, discover the operator's authorization
-//! server, do ordinary OAuth, come back with a token.
-//!
-//! ## Why the parameters are built rather than formatted inline
-//!
-//! `WWW-Authenticate` is `#auth-param` — comma-separated `key="value"` pairs with quoted-string
-//! values. A quote or a backslash inside a value would terminate or escape out of the string and let
-//! an operator-configured URL rewrite the rest of the header, which is header injection with extra
-//! steps. Values here are operator config rather than caller input, so this is defence in depth
-//! rather than the last line, but the cost of doing it correctly once is a single function.
-
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 
@@ -51,7 +24,6 @@ pub enum ChallengeError {
 }
 
 impl ChallengeError {
-    /// The RFC 6750 `error` code, or `None` for the bare challenge.
     fn code(self) -> Option<&'static str> {
         match self {
             ChallengeError::Absent => None,
@@ -60,8 +32,6 @@ impl ChallengeError {
         }
     }
 
-    /// The status this error is carried on. `insufficient_scope` is a `403` per RFC 6750 §3.1; the
-    /// other two are `401`.
     fn status(self) -> StatusCode {
         match self {
             ChallengeError::Absent | ChallengeError::InvalidToken => StatusCode::UNAUTHORIZED,
@@ -70,16 +40,6 @@ impl ChallengeError {
     }
 }
 
-/// Build the `WWW-Authenticate` header value for a bearer challenge.
-///
-/// `resource_metadata` is the RFC 9728 §5.1 parameter: the absolute URL of this resource's
-/// protected-resource metadata. It is present on EVERY challenge, including `insufficient_scope`,
-/// because a client that guessed the wrong scope needs the same document to learn the right one.
-///
-/// `description` is optional and advisory. It never carries the reason a token failed in any detail
-/// a caller could use to probe — "the audience does not match" is safe (the caller knows its own
-/// token's audience), "no key with id 7fa3" is not.
-/// An absent credential receives discovery metadata without error advice (RFC 6750 §3.1).
 pub fn www_authenticate(
     error: ChallengeError,
     resource_metadata: &str,
@@ -97,22 +57,13 @@ pub fn www_authenticate(
     if let Some(d) = description.filter(|_| error != ChallengeError::Absent) {
         params.push(format!("error_description=\"{}\"", quoted(d)));
     }
-    // RFC 6750 §3.1: `scope` names what WOULD have been sufficient. Only meaningful alongside
-    // `insufficient_scope` — on a bare or invalid-token challenge it would be advice about a request
-    // the caller has not yet been allowed to make.
+
     if let Some(s) = scope.filter(|_| error == ChallengeError::InsufficientScope) {
         params.push(format!("scope=\"{}\"", quoted(s)));
     }
     format!("Bearer {}", params.join(", "))
 }
 
-/// Escape a value for an RFC 7230 `quoted-string`: backslash and double-quote are the only two
-/// characters that can escape the string, and both are escaped rather than stripped so the value a
-/// client reads back is the value the operator configured.
-///
-/// Control characters are DROPPED rather than escaped: `quoted-string` has no escape form for CR or
-/// LF, and passing either through would split the header. Dropping is the only option that neither
-/// injects nor silently succeeds at emitting an invalid header.
 fn quoted(v: &str) -> String {
     let mut out = String::with_capacity(v.len());
     for c in v.chars() {
@@ -128,11 +79,6 @@ fn quoted(v: &str) -> String {
     out
 }
 
-/// The full refusal: the right status, the `WWW-Authenticate` challenge, and a small JSON body.
-///
-/// The body is OAuth-shaped (`{"error": …, "error_description": …}`), NOT vendor-shaped, for the
-/// reason in the module header — and it is small on purpose. Every fact in it is already in the
-/// header; the body exists so a human reading a `curl` sees something, not so a client parses it.
 pub fn refuse(
     error: ChallengeError,
     resource_metadata: &str,
@@ -147,10 +93,7 @@ pub fn refuse(
         body["error_description"] = serde_json::json!(description);
     }
     let mut resp = (error.status(), axum::Json(body)).into_response();
-    // A header value that will not build is a programming error in the value we constructed, not a
-    // caller-triggerable condition — `quoted` has already removed everything that could make one
-    // invalid. Fall back to the bare scheme rather than panicking on a request path: a 401 with a
-    // useless challenge is recoverable for the caller, a panic is not.
+
     let hv =
         HeaderValue::from_str(&challenge).unwrap_or_else(|_| HeaderValue::from_static("Bearer"));
     resp.headers_mut().insert(header::WWW_AUTHENTICATE, hv);

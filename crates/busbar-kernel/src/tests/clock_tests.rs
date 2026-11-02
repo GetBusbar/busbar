@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE BEAT: work handed to the kernel's clock is beaten while its owner holds it, and leaves the
-//! clock when its owner lets it go.
-
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 

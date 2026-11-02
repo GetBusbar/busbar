@@ -1,33 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE CANONICAL-NAME DRIFT GUARD: one plugin has ONE identity whichever door it
-//! arrives by. Its canonical name is plugins.yaml's `manifest_name` (default: the repo), the name
-//! its release tarball's signed manifest carries; a row this build LINKS must be registered under
-//! that same name, or the same plugin dropped in beside it is a second plugin claiming its alias.
-//!
-//! Every linked row the registry or a door axis holds is read here — the stores and auths (the
-//! kernel's own row constructors over the root's tables), the export sinks and the secret sources —
-//! and held to the plugins.yaml entry of the same kind that answers one of its aliases. A row no
-//! entry answers is SKIPPED, and printed with the reason; so is every row of an axis this guard
-//! does not hold yet. Nothing is skipped silently. The plugin names are data: this file spells none.
-
 use super::linked_exports;
 use crate::root::loader::boot::Candidate;
 use crate::root::loader::LinkedPlugin;
 
-/// THE REGISTRY, read as the migration table's test reads it (`root/tests/migration_table.rs`).
 const REGISTRY: &str = include_str!("../../../../../plugins.yaml");
 
-/// One plugins.yaml entry, as this guard reads it.
 struct Entry {
     kind: String,
     alias: String,
-    /// `manifest_name`, defaulting to the repo.
+
     manifest_name: String,
 }
 
-/// Every entry of `registry`.
 fn entries(registry: &str) -> Vec<Entry> {
     let doc: serde_yaml::Value = serde_yaml::from_str(registry).expect("plugins.yaml parses");
     let plugins = doc["plugins"].as_sequence().expect("plugins: is a list");
@@ -45,8 +31,6 @@ fn entries(registry: &str) -> Vec<Entry> {
         .collect()
 }
 
-/// One linked row, as this guard reads it: its kind, its canonical name, and every other name
-/// config may give it.
 struct Row {
     kind: String,
     canonical: String,
@@ -54,7 +38,6 @@ struct Row {
 }
 
 impl Row {
-    /// A registry row (`LinkedPlugin`): its manifest's name, alias and former names.
     fn of(row: &LinkedPlugin) -> Self {
         let m = &row.manifest;
         Self {
@@ -64,7 +47,6 @@ impl Row {
         }
     }
 
-    /// A door axis's row (a `Candidate`): its Statement's name and aliases.
     fn of_door(c: &Candidate, kind: &str) -> Self {
         Self {
             kind: kind.to_string(),
@@ -74,9 +56,6 @@ impl Row {
     }
 }
 
-/// THE VERDICT over `rows` against `entries`: `(matched, mismatches, skipped)` — each row held to
-/// the entry of its kind that answers one of its aliases (or its canonical name); a row no entry
-/// answers is skipped, with the reason.
 fn drift(rows: &[Row], entries: &[Entry]) -> (Vec<String>, Vec<String>, Vec<String>) {
     let (mut matched, mut mismatches, mut skipped) = (Vec::new(), Vec::new(), Vec::new());
     for row in rows {
@@ -99,8 +78,6 @@ fn drift(rows: &[Row], entries: &[Entry]) -> (Vec<String>, Vec<String>, Vec<Stri
     (matched, mismatches, skipped)
 }
 
-/// Every linked row this guard holds (stores, auths, export sinks, secret sources), and the rows
-/// of the axes it does not hold yet, each with the reason.
 fn linked_rows() -> (Vec<Row>, Vec<String>) {
     let mut rows: Vec<Row> = Vec::new();
     let stores = crate::LINKED.stores.iter();
@@ -123,9 +100,7 @@ fn linked_rows() -> (Vec<Row>, Vec<String>) {
     }
     let entries = entries(REGISTRY);
     let mut skipped = Vec::new();
-    // THE HOOK ROWS ARE NOT HELD YET: on predev the linked hook row is the in-tree crate's door,
-    // which states its pre-C' name, until P5 #484 re-pins the repo, whose Statement states the
-    // plugins.yaml manifest_name. Printed with what it will be held to.
+
     for door in crate::LINKED.hook_doors {
         let c = Candidate::linked(*door).expect("a linked hook states itself");
         let row = Row::of_door(&c, "hook");
@@ -157,9 +132,6 @@ fn linked_rows() -> (Vec<Row>, Vec<String>) {
     (rows, skipped)
 }
 
-/// EVERY LINKED ROW CARRIES ITS PLUGIN'S CANONICAL NAME: the name plugins.yaml gives the entry of
-/// its kind and alias. The rows held are printed matched; every row not held is printed with why.
-/// It cannot pass empty: each held axis has a matched row.
 #[test]
 fn every_linked_row_is_registered_under_its_plugins_yaml_manifest_name() {
     let (rows, mut skipped) = linked_rows();
@@ -178,7 +150,7 @@ fn every_linked_row_is_registered_under_its_plugins_yaml_manifest_name() {
     );
     for kind in ["store", "auth", "export", "secret"] {
         if kind != "store" && !rows.iter().any(|r| r.kind == kind) {
-            continue; // this build links none of the kind (a feature is off)
+            continue;
         }
         assert!(
             matched.iter().any(|m| m.starts_with(&format!("{kind} "))),

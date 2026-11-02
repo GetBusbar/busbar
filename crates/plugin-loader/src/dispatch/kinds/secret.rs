@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE SECRET KIND: `abi/secret/`. `resolve` is checked by the contract's `secret::check_answer`
-//! (`check_resolve` against the host buffer it was lent), and its short answer is the one
-//! re-call's; `check` answers an
-//! `OutHead` alone and states no rule beyond the mechanism's (its refusal text is judged where the
-//! host renders it, `check_validate_refusal`).
-
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::mechanism::check::Fault;
 use busbar_contract::abi::mechanism::KindCode;
@@ -36,7 +30,6 @@ impl Kind for Secret {
         }
     }
 
-    /// `check` is optional: a source that states none passes every reference it is handed.
     fn optional_slot(s: u32) -> bool {
         s == slot::CHECK
     }
@@ -48,7 +41,6 @@ impl Kind for Secret {
         unsafe { secret::check_answer(a.slot, a.outcome, input, in_size, out, out_size, &()) }
     }
 
-    /// A `resolve` whose value does not fit the host's buffer: FAILED with `needed` (M-SB).
     fn short(a: &Answer) -> bool {
         a.outcome == Outcome::Failed
             && a.slot == slot::RESOLVE

@@ -1,20 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE SUBSCRIPTION CHANNEL OVER HTTP, END TO END THROUGH THE DATA ROUTES: the tool door's `subscriptions/listen`
-//! arrives on its claim, its `arrive` states `ROUTE_SESSION`, and the kernel drives the unit as a
-//! K6 session whose caller leg is the long-lived HTTP response (the root's ingress caller). What the
-//! caller sees is predev's: `200` as an event stream (`content-type: text/event-stream`,
-//! `cache-control: no-cache, no-store`), the acknowledgement first and tagged with the request's
-//! id, a change frame when the catalogue its caller can see moves, a keepalive comment when it has
-//! been quiet, the revision's graceful `complete` result at its bound, the `identity_not_live`
-//! refusal when its principal stops standing, and each end closes the stream. A request that can
-//! deliver nothing is refused `400` with its JSON-RPC error.
-//!
-//! The kernel's monotonic clock (`clock.now`, which the subscription's keepalive and bound read) is
-//! stepped forward by the rig; the instance's tick runs on the process's clock, as the process
-//! spawns it.
-
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -24,23 +10,18 @@ use busbar_contract::abi::mechanism::lifecycle::RefreshIn;
 use busbar_contract::abi::plane::PlaneRefreshOut;
 use http_body_util::BodyExt as _;
 
-use super::tool_door::{protocol_version, rig_with, surface, tool_digest, tool_server, Rig};
+use super::tool_door::{protocol_version, surface, tool_digest, Rig, TlsToolServer};
 use crate::root::loader::dispatch::{in_head, out_head, Frame};
 use crate::root::serve::planes_tests::PUBLISHING;
 
-/// The keepalive comment an idle stream writes (predev's `: keepalive`).
 const KEEPALIVE: &str = ": keepalive\n\n";
 
-/// Further than a quiet stream's keepalive interval (predev's 15 s) and short of its bound.
 const PAST_KEEPALIVE: Duration = Duration::from_secs(20);
 
-/// Further than a stream's lifetime bound (predev's 300 s).
 const PAST_BOUND: Duration = Duration::from_secs(400);
 
-/// The request id every listen here is opened under.
 const ID: u64 = 7;
 
-/// A `subscriptions/listen` asking for `notifications`, as the revision's clients send it.
 fn listen_body(notifications: &serde_json::Value) -> String {
     serde_json::json!({
         "jsonrpc": "2.0",
@@ -57,7 +38,6 @@ fn listen_body(notifications: &serde_json::Value) -> String {
     .to_string()
 }
 
-/// POST a listen to the door's endpoint under the rig's key: the live response.
 async fn listen(rig: &Rig, notifications: &serde_json::Value) -> axum::response::Response {
     use tower::ServiceExt as _;
     let endpoint = format!("/{}", super::tool_door::endpoint_section());
@@ -68,7 +48,7 @@ async fn listen(rig: &Rig, notifications: &serde_json::Value) -> axum::response:
         .header("accept", "application/json, text/event-stream")
         .header(surface("protocol_header"), protocol_version())
         .header(surface("method_header"), surface("listen_method"))
-        .header("authorization", format!("Bearer {}", rig.token))
+        .header("authorization", format!("Bearer {}", rig.bound_token()))
         .body(axum::body::Body::from(listen_body(notifications)))
         .expect("a request");
     rig.router
@@ -86,7 +66,6 @@ struct Heard {
 }
 
 impl Heard {
-    /// Every `message` event's data, in order.
     fn events(&self) -> Vec<serde_json::Value> {
         self.text
             .lines()
@@ -95,7 +74,6 @@ impl Heard {
             .collect()
     }
 
-    /// The methods of the events heard, in order.
     fn methods(&self) -> Vec<String> {
         self.events()
             .iter()
@@ -104,7 +82,6 @@ impl Heard {
     }
 }
 
-/// Read `body` into `heard` until `want` holds or the stream ends (bounded): whether `want` held.
 async fn read_until(
     body: &mut axum::body::Body,
     heard: &mut Heard,
@@ -125,23 +102,16 @@ async fn read_until(
     want(heard)
 }
 
-/// The `tools:` section the rig opens with, with `extra` more approved tools on its one server.
-fn section_with(port: u16, extra: &[&str]) -> serde_yaml::Value {
-    let mut tools = format!("    read_file: {{ schema_hash: \"{}\" }}\n", tool_digest());
+fn section_with(server: &TlsToolServer, extra: &[&str]) -> serde_yaml::Value {
+    let mut section = server.section();
     for name in extra {
-        tools.push_str(&format!(
-            "    {name}: {{ schema_hash: \"{}\" }}\n",
-            tool_digest()
-        ));
+        section["fs"]["tools_allow"][*name] =
+            serde_yaml::to_value(serde_json::json!({ "schema_hash": tool_digest() }))
+                .expect("an approval");
     }
-    serde_yaml::from_str(&format!(
-        "fs:\n  url: \"http://127.0.0.1:{port}/rpc\"\n  pin: {{ mechanism: pinned_pubkey, key: \
-         \"sha256/K=\" }}\n  tools_allow:\n{tools}"
-    ))
-    .expect("a section")
+    section
 }
 
-/// Publish generation 2 of the door over `section` (the operator's reload): the catalogue moves.
 fn refresh(rig: &Rig, section: &serde_yaml::Value) {
     let settings = serde_json::to_vec(section).expect("json");
     let mut frame = Frame::new(
@@ -167,24 +137,17 @@ fn refresh(rig: &Rig, section: &serde_yaml::Value) {
     assert!(snapshot.is_some(), "generation 2 is published");
 }
 
-/// Step the kernel's monotonic clock forward by `by`.
 fn step_clock(rig: &Rig, by: Duration) {
     let ns = u64::try_from(by.as_nanos()).expect("in range");
     rig.clock.fetch_add(ns, Ordering::SeqCst);
 }
 
-/// THE SUBSCRIPTION, HELD AS A SESSION OVER THE HTTP RESPONSE: `200` as an event stream, its first
-/// event the acknowledgement of the accepted filter tagged with the request's id; a new generation
-/// whose tools this caller can see changed is told as `notifications/tools/list_changed`; a quiet
-/// stream writes the keepalive comment; at its bound the stream ends with the revision's `complete`
-/// result correlated to the request, and closes. RED before the K6 route: the door declined the
-/// request and the caller was answered a refusal, not a stream.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_subscription_over_http_is_held_as_a_session_until_its_bound() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-door-listen-held";
-    let (port, _heard) = tool_server().await;
-    let rig = rig_with(instance, port, None, &|app| app);
+    let server = TlsToolServer::new().await;
+    let rig = server.rig(instance, server.section(), &|app| app);
     let response = listen(&rig, &serde_json::json!({ "toolsListChanged": true })).await;
     assert_eq!(response.status(), StatusCode::OK);
     let head = |name: &str| {
@@ -223,7 +186,7 @@ async fn a_subscription_over_http_is_held_as_a_session_until_its_bound() {
         "the accepted filter"
     );
 
-    refresh(&rig, &section_with(port, &["write_file"]));
+    refresh(&rig, &section_with(&server, &["write_file"]));
     let changed = surface("tools_changed").to_string();
     assert!(
         read_until(&mut body, &mut heard, |h| h.methods().contains(&changed)).await,
@@ -267,15 +230,12 @@ async fn a_subscription_over_http_is_held_as_a_session_until_its_bound() {
     );
 }
 
-/// THE PERMISSION IS RE-ASKED EVERY FRAME: once the caller's key is deleted, the stream's next step
-/// ends it with predev's refusal (`-32600`, reason `identity_not_live`) and closes, with nothing
-/// after it. RED without the per-frame re-resolution: the stream stayed open.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_subscription_over_http_ends_when_its_principal_stops_standing() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-door-listen-lapsed";
-    let (port, _heard) = tool_server().await;
-    let rig = rig_with(instance, port, None, &|app| app);
+    let server = TlsToolServer::new().await;
+    let rig = server.rig(instance, server.section(), &|app| app);
     let response = listen(&rig, &serde_json::json!({ "toolsListChanged": true })).await;
     assert_eq!(response.status(), StatusCode::OK);
     let mut body = response.into_body();
@@ -312,14 +272,12 @@ async fn a_subscription_over_http_ends_when_its_principal_stops_standing() {
     );
 }
 
-/// A SUBSCRIPTION THAT CAN DELIVER NOTHING IS REFUSED, not held open: `400`, a JSON body, the
-/// JSON-RPC invalid-params error correlated to the request, in predev's words.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_subscription_over_http_that_could_deliver_nothing_is_refused() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-door-listen-refused";
-    let (port, _heard) = tool_server().await;
-    let rig = rig_with(instance, port, None, &|app| app);
+    let server = TlsToolServer::new().await;
+    let rig = server.rig(instance, server.section(), &|app| app);
     let response = listen(&rig, &serde_json::json!({})).await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(

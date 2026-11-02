@@ -1,18 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The runtime half of the capability proof that has to MINT to run: that the cell is a state
-//! machine, that a hold is taken once, that an accrual is sealed to its parent, and that a posting
-//! settles what was priced. Moved here from `busbar-contract/src/caps/tests/mod.rs`, because a
-//! token constructor is spelled only inside the kernel (construction `token-sealed`); the tests
-//! that need no token stayed with the contract.
-
 use busbar_contract::caps::*;
 
 use crate::canary::Canary;
 
-/// Everything a test needs to act as the kernel, in one place, so no test quietly reaches for the
-/// seal on its own.
 struct Kernel {
     seal: KernelSeal,
     call_gen: std::sync::atomic::AtomicU64,
@@ -25,7 +17,7 @@ impl Kernel {
             call_gen: std::sync::atomic::AtomicU64::new(0),
         }
     }
-    /// A fresh per-request generation, as the teller's `Kernel::next_call` opens one (#74).
+
     fn next_call(&self) -> CallId {
         let gen = self
             .call_gen
@@ -35,7 +27,7 @@ impl Kernel {
     fn admit_token(&self) -> Grant<Admittance> {
         Grant::<Admittance>::mint(&self.seal)
     }
-    /// The admittance grant bound to one call, as the teller's `Kernel::admit_token_for` (#74).
+
     fn admit_token_for(&self, call: CallId) -> Grant<Admittance> {
         Grant::<Admittance>::mint_bound(&self.seal, call)
     }
@@ -85,12 +77,6 @@ fn a_refusal_is_stamped_with_the_step_that_raised_it() {
     assert!(!refusal.under_hold(), "approve runs before the door");
 }
 
-/// An unstamped refusal says it has no step, rather than naming one it never reached.
-///
-/// The step is the decision's to stamp, so between raising a refusal and turning it into a
-/// decision there is a moment where no step is known. Filling that moment with the first step of
-/// the loop makes the record claim the unit stopped at arrival, which is a claim about where money
-/// was committed: everything before the door is free, everything after it is not.
 #[test]
 fn a_refusal_that_was_never_stamped_names_no_step() {
     let k = Kernel::new();
@@ -174,7 +160,6 @@ fn the_hold_is_taken_exactly_once_however_many_exits_race() {
     );
     assert!(cell.take(&exit).is_none());
 
-    // And nothing can put one back afterwards.
     let rejected = cell
         .admit(Hold::open(&admit, who("acct-1")), &admit)
         .expect_err("a taken cell is final");
@@ -195,7 +180,6 @@ fn two_threads_racing_the_take_produce_exactly_one_hold() {
         let cell = std::sync::Arc::clone(&cell);
         let winners = std::sync::Arc::clone(&winners);
         handles.push(std::thread::spawn(move || {
-            // Each thread is its own exit-path caller; only one can win.
             let seal = KernelSeal::acquire_for_kernel();
             let exit = Grant::<Exit>::mint(&seal);
             if let Some(hold) = cell.take(&exit) {
@@ -213,23 +197,10 @@ fn two_threads_racing_the_take_produce_exactly_one_hold() {
     assert_eq!(winners.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
-/// The child's posting and the sweep's take are two keys on one slot.
-///
-/// Reading the cell's state and then building the posting outside the lock leaves a gap between
-/// the two, and the sweep is the second holder of the take key, so the gap is one a real thread
-/// can land in. Taking the slot once and answering under that guard closes it: the state that
-/// decided the posting and the posting itself come out of the same critical section, so a clean
-/// in-parent posting is never written against a slot somebody had already emptied.
-///
-/// Whichever way the race falls, the child posts exactly once and for the same principal. Only the
-/// flags move, which is what makes this a discipline fix rather than a count fix.
 #[test]
 fn a_child_posting_racing_the_sweep_answers_under_one_guard() {
     use std::sync::atomic::{AtomicBool, Ordering as Order};
 
-    // The two threads are released together and then each spins a different, iteration-dependent
-    // number of times, so the slot is genuinely contended and both arms of the answer are reached
-    // rather than one thread always arriving first.
     fn jitter(n: usize) {
         for _ in 0..n {
             std::hint::spin_loop();
@@ -250,8 +221,6 @@ fn a_child_posting_racing_the_sweep_answers_under_one_guard() {
             .accrue_child(&who("acct-1"), &admit)
             .expect("an open parent takes the child");
 
-        // The sweep publishes its win only after the slot is empty, so a poster that sees the
-        // flag already set knows the parent has gone and must be handed its accrual back.
         let swept = std::sync::Arc::new(AtomicBool::new(false));
         let start = std::sync::Arc::new(std::sync::Barrier::new(2));
         let sweep_cell = std::sync::Arc::clone(&cell);
@@ -314,7 +283,6 @@ fn an_accrual_is_sealed_to_an_admitted_parent_with_the_same_principal() {
     let admit = k.admit_token();
     let cell = HoldCell::new(Hold::open(&admit, who("acct-1")));
 
-    // Before the door: nothing to accrue into.
     assert_eq!(
         cell.accrue_child(&who("acct-1"), &admit).unwrap_err(),
         AccrualRefused::ParentNotAdmitted
@@ -325,7 +293,6 @@ fn an_accrual_is_sealed_to_an_admitted_parent_with_the_same_principal() {
         .expect("admitted");
     let _ = Posted::settle(arrival, 0, &usage_of(&k, 0), &k.ledger_token());
 
-    // A stranger's child cannot spend this admission.
     assert_eq!(
         cell.accrue_child(&who("acct-2"), &admit).unwrap_err(),
         AccrualRefused::PrincipalMismatch
@@ -337,7 +304,6 @@ fn an_accrual_is_sealed_to_an_admitted_parent_with_the_same_principal() {
     assert_eq!(accrual.principal().as_str(), "acct-1");
     assert_eq!(cell.accruals(), 1);
 
-    // After the parent exits, a late child is refused and posts on its own instead.
     let parent = cell.take(&k.exit_token()).expect("the parent exits");
     assert_eq!(
         cell.accrue_child(&who("acct-1"), &admit).unwrap_err(),
@@ -375,8 +341,7 @@ fn an_estimated_usage_report_flags_the_posting() {
 #[test]
 fn a_usage_report_is_bounded_by_the_record_size() {
     let k = Kernel::new();
-    // A meter class is a declared name, so the over-long report is built from declared names; the
-    // ceiling is on the line count, not on the class, so one repeated class proves it just as well.
+
     let lines: Vec<_> = (0..MAX_USAGE_LINES + 1)
         .map(|_| UsageLine {
             class: MeterClassId::new("class"),
@@ -433,9 +398,6 @@ fn the_kernels_own_types_are_sealed_and_readable() {
     assert_eq!(IdempotencyKey::mint(&k.seal, [7; 32]).bytes()[0], 7);
 }
 
-/// The transport-key half of what the egress capabilities may print. The one-shot secret's half is
-/// minted by the verbs unit and nowhere else (construction `token-sealed:secret-once-mint`), so it
-/// is proved beside that unit: `busbar-core-admin/src/tests/secret_once_tests.rs`.
 #[test]
 fn the_egress_capabilities_never_print_what_they_carry() {
     let k = Kernel::new();
@@ -456,9 +418,6 @@ fn a_sealed_destination_carries_the_lane_the_money_side_reads() {
     assert_eq!(dest.lane().as_str(), "vendor-a:gpt-4o");
 }
 
-/// The journal spelling of an origin is a wire fact: it is what a metering row and an audit entry
-/// carry, so a renamed variant that quietly renamed its string would move rows nobody asked to
-/// move. All eight are pinned, in one table, so adding a ninth is a change to this test too.
 #[test]
 fn every_origin_spells_itself_the_way_the_journal_reads_it() {
     let k = Kernel::new();
@@ -485,8 +444,7 @@ fn every_origin_spells_itself_the_way_the_journal_reads_it() {
     assert_eq!(table.len(), 8, "eight places a unit can come from");
     for (kind, spelling) in table {
         assert_eq!(kind.as_str(), spelling);
-        // The sealed value spells itself the same way the kind does; the seal decides who may
-        // write one, never what it is called.
+
         assert_eq!(Origin::seal(&k.seal, kind).as_str(), spelling);
         assert_eq!(Origin::seal(&k.seal, kind).kind(), kind);
     }
@@ -516,7 +474,6 @@ fn the_doors_answer_is_one_of_three_shapes() {
         other => panic!("expected the unit's own hold, got {other:?}"),
     }
 
-    // A zero-priced unit holds nothing, which is why the heartbeat always runs.
     let token: Pass<Admit> = Pass::mint(&k.seal);
     let decision = SeatVerdict::proceed(&token, Admission::ZeroHold);
     assert!(matches!(
@@ -525,12 +482,6 @@ fn the_doors_answer_is_one_of_three_shapes() {
     ));
 }
 
-/// The child's own posting, and what happens when its parent got away first.
-///
-/// The design bounds late-accrual exposure by the parent-exit conversion being a MECHANISM: at the
-/// parent's exit every outstanding accrual becomes a child-owned hold, drawn synchronously. Without
-/// the two constructors below the bound was an assertion, because nothing in the tree could perform
-/// the conversion or write the child's posting.
 #[test]
 fn a_child_posts_inside_its_parent_while_the_parent_is_open() {
     let k = Kernel::new();
@@ -567,7 +518,6 @@ fn a_child_whose_parent_exited_gets_its_accrual_back_and_posts_late() {
         .accrue_child(&who("acct-1"), &admit)
         .expect("an open parent takes the child");
 
-    // The parent exits while the child is still running.
     let taken = parent.take(&k.exit_token()).expect("the parent's own exit");
     let _ = Posted::settle(taken, 0, &usage_of(&k, 0), &k.ledger_token());
 
@@ -593,7 +543,6 @@ fn an_outstanding_accrual_becomes_a_hold_of_its_own_at_the_parents_exit() {
         .accrue_child(&who("acct-1"), &admit)
         .expect("an open parent takes the child");
 
-    // Converted synchronously at the parent's exit: the child ends on a hold of its own.
     let converted = accrual
         .convert_at_parent_exit(&admit)
         .expect("the accruing call's own grant converts it");
@@ -606,10 +555,6 @@ fn an_outstanding_accrual_becomes_a_hold_of_its_own_at_the_parents_exit() {
     );
 }
 
-/// #74, THE PER-CALL BINDING AT THE MONEY SEAM: a grant minted for call A does not admit call B's
-/// hold into a cell (the hold comes back untouched, `CellError::CallMismatch`), and does not convert
-/// call B's accrual at the parent's exit (the accrual comes back). The control: each call's own
-/// grant does both.
 #[test]
 fn a_grant_of_another_call_neither_admits_nor_converts() {
     let k = Kernel::new();
@@ -652,13 +597,12 @@ fn the_canary_balances_a_clean_run_and_sees_a_missing_settlement() {
         canary.hold_opened();
         canary.settled();
     }
-    // A child that accrued into a parent instead of opening its own still has to settle.
+
     canary.draft_accepted();
     canary.accrual_taken();
     canary.settled();
     assert!(canary.balanced().is_ok());
 
-    // A unit that got through the door and never settled is exactly what this is for.
     canary.draft_accepted();
     canary.hold_opened();
     let broken = canary.balanced().expect_err("one settlement is missing");

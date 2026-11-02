@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The shared raw caller's custody promise is exercised against the real SDK writer.
-
 use super::*;
 use crate::conformance::{dispatcher, load, release};
 use busbar_contract::abi::auth::{AuthPoints, FIELD_SENSITIVE};
@@ -118,7 +116,7 @@ fn outbound_lend_keeps_secure_requirement_and_all_request_facts() {
     expected_extensions.extend_from_slice(&style.head.extensions_blob());
     assert_eq!(lend.ext, expected_extensions);
     let input = lend.input(handle, &style.head, STYLE_NEEDS_HEADERS, POINT_HEAD_BODY);
-    drop(style); // All nested facts, including the binary marker, now belong only to Lend.
+    drop(style);
     let mut frame = Frame::new(input, output::<FieldsOut>());
     let called = plugin.call(slot::FIELDS, &mut frame);
     assert_eq!(called.outcome, Outcome::Ready);
@@ -158,8 +156,7 @@ fn outbound_lend_without_valid_custody_refuses_before_any_credential_write() {
     let (_dispatcher, plugin, style, handle) = fixture();
     for version in [None, Some(&b"1"[..]), Some(&[0][..]), Some(&[1, 0][..])] {
         let mut lend = Lend::new(&style.head);
-        // RED: alter only the real caller's capability; keep the same plugin, secure credential,
-        // request facts and unrelated extensions. Plain ASCII "1" is not version-one bytes.
+
         lend.ext = version.map_or_else(Vec::new, |v| extensions::encode(&[(EXT_SEALED_FIELDS, v)]));
         lend.ext.extend_from_slice(&style.head.extensions_blob());
         lend.buf.fill(0xa5);

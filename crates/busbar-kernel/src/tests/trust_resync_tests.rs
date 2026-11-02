@@ -1,13 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A retired fleet read must let the next window apply another node's trust decisions.
-
 use super::*;
 use crate::store::plane_view::KIND_TRUST_DECISION;
 use busbar_contract::records::{PlaneSelector, RecordStoreResult};
 
-/// A second node over the rig's real decision store, with a controllable read crossing.
 fn follower(
     r: &Rig,
     pool: Arc<dyn Offload>,
@@ -93,7 +90,6 @@ fn a_bounded_pool_refusal_releases_the_resync_for_the_next_window() {
     node.trust_resync_tick();
     pending(&node);
 
-    // Replacing only the offload preserves the resync state left by the refused submission.
     let held = Arc::new(Held::default());
     let node = Arc::try_unwrap(node)
         .unwrap()

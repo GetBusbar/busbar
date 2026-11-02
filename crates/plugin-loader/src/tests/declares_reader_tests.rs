@@ -1,17 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE ONE READER OF A DECLARES DOCUMENT ([`Declares::from_declares_json`], ARCHITECT ruling (b),
-//! 2026-10-07): what it reads and refuses, and a scan of the tree that refuses any other site
-//! deserializing declares bytes straight into [`Declares`] with `serde_json`.
-
 use super::Declares;
 
-/// A declares document's `needs` is checked and left out of the section: the needs belong to the
-/// Statement. The reader names no scheme (core names no transport, Law 1): any non-empty name
-/// reads, and which ones a plugin may state is the conformance suite's check against its
-/// Statement. RED ARMS: a malformed `needs` (not a list, a non-string, an empty name) is refused,
-/// and any other unknown key beside a well-formed `needs` is still refused.
 #[test]
 fn the_reader_checks_and_drops_needs_and_refuses_every_other_unknown_key() {
     let with = Declares::from_declares_json(
@@ -41,10 +32,6 @@ fn the_reader_checks_and_drops_needs_and_refuses_every_other_unknown_key() {
     }
 }
 
-/// A destination's retention (`keep`, THE DESIGN: `disk.append` rotation declared per
-/// destination) reads for a declared destination and rides the section; unstated, the section
-/// carries none (the manifest's canonical bytes are unchanged). RED ARM: a `keep` naming a key that
-/// is not a declared destination is refused.
 #[test]
 fn a_declared_keep_reads_for_a_declared_destination_only() {
     let read = Declares::from_declares_json(br#"{"destinations": ["path"], "keep": {"path": 0}}"#)
@@ -71,10 +58,6 @@ fn a_declared_keep_reads_for_a_declared_destination_only() {
     );
 }
 
-/// A hook's `hook.orders` (ARCHITECT ruling, status row 194) reads as stated; unstated, the hook
-/// may order and the section carries nothing, so every manifest packed before the field existed
-/// keeps its canonical bytes. RED ARMS: a non-bool `orders` and an unknown key under `hook` are
-/// refused.
 #[test]
 fn a_declared_hook_orders_reads_and_unstated_leaves_the_bytes_unchanged() {
     let off = Declares::from_declares_json(br#"{"hook": {"orders": false}}"#).expect("reads");
@@ -106,8 +89,6 @@ fn a_declared_hook_orders_reads_and_unstated_leaves_the_bytes_unchanged() {
     }
 }
 
-/// A SIGNED manifest's `declares` is not a declares document: the manifest never carries `needs`,
-/// so one that states it is refused like any other unknown key.
 #[test]
 fn a_signed_manifest_section_stating_needs_is_refused() {
     assert!(

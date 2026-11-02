@@ -1,55 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE ONE LEDGER'S ADMIN READ AND ITS ONE CORRECTION (MONEY-DESIGN §4, Busbar PR-C).
-//!
-//! Money is the ledger's counts x the rate card, computed in core. The ledger is these usage rows:
-//! a bucket's cell in RAM, its durable row behind it. There is no second book, so the admin ledger
-//! views price exactly what [`GovState::derived_bucket_usage`] prices, and an operator's
-//! correction is a SIGNED DELTA on those same counts:
-//!
-//! - it names the unit it corrects by its CARD EPOCH (`card_epoch_ms`, the unit's arrival instant)
-//!   and the card entry its counts were earned under (`entry_era`), which must be the entry they
-//!   were dated with at that epoch;
-//! - IT LANDS WHERE ITS UNIT WAS LEDGERED, never where the correction is made (Q128 arch u32 #18,
-//!   carried onto the one ledger: money is the counts x the card in effect at the ledgered unit's
-//!   time): in each bucket, the window holding the epoch, and in that window the unit's lane in the
-//!   latest era not after the epoch (a new segment at the entry in force then when the window holds
-//!   none of that lane), and on the metering day holding the epoch;
-//! - it lands on every bucket an accrual of the unit would have landed on (the key's own, and each
-//!   group bucket its pool participates in), all or nothing;
-//! - its affected raw rows, captured local debt and metering adjustment commit atomically, after
-//!   comparing their exact shared pre-state. No compensation write or unconditional negative
-//!   flush can accept a correction. RAM adopts the acknowledged branch only after that decision;
-//!   ordinary operations update both possible branches while the result is unknown;
-//! - FAIL CLOSED: a correction whose card cannot be resolved (no entry covers its epoch, or it names
-//!   another entry than the one its counts were dated with), whose epoch's window holds none of its
-//!   counts for a downward delta to move, or that would take any count of its segment below zero is
-//!   REFUSED, with the reason, and nothing is applied, so no store floors the row while RAM goes
-//!   negative (MONEY-REVIEW review 17, NB5) and no correction is ever moved onto another window's
-//!   counts;
-//! - it reaches THE METERED VIEW (`GET /api/v1/admin/usage`) as an ADJUSTMENT ROW: the metering rows
-//!   carry unsigned counts, so the signed delta is kept beside them on two usage rows of the day
-//!   ([`ADJUST_UP_BUCKET`], [`ADJUST_DOWN_BUCKET`]), each only ever added to, and the usage read
-//!   folds them into the day's metering rows of the same key, lane and era
-//!   ([`GovState::usage_adjustments`]). The view prices the counts AS ADJUSTED, through the same one
-//!   function; it carries no money of its own. An adjustment the epoch day's metering rows cannot
-//!   carry (no row of that key, lane and era, or a count it would take below zero) is refused too.
-//!
-//! A child module of `state`, so it reaches that module's private helpers (`bucket_cell`,
-//! `durable_cell`) exactly as a method written there would.
-
 use super::*;
 
-/// The usage row a day's UPWARD adjustments accumulate on: per slot ([`adjustment_slot`]), per
-/// class, the sum of every positive delta. Only ever added to.
 pub use busbar_contract::records::correction::ADJUST_UP_BUCKET;
 
-/// The usage row a day's DOWNWARD adjustments accumulate on: per slot, per class, the sum of every
-/// negative delta's magnitude. Only ever added to. Up minus down is the day's signed adjustment.
 pub use busbar_contract::records::correction::ADJUST_DOWN_BUCKET;
 
-/// The separator of an adjustment slot's three parts. Not [`PLANE_LANE_SEP`], which a lane carries.
 use busbar_contract::records::correction::SLOT_SEP;
 
 #[path = "ledger_correction.rs"]
@@ -57,13 +14,10 @@ mod correction_impl;
 
 pub(in crate::governance) use correction_impl::PendingCorrection;
 
-/// The model name an adjustment row keeps one (key, lane, era) under.
 fn adjustment_slot(key_id: &str, lane: &str, era: impl Into<RawRateEra>) -> String {
     format!("{key_id}{SLOT_SEP}{lane}{SLOT_SEP}{}", era_tag(era.into()))
 }
 
-/// A metering row's LANE: a non-fallback plane's row is that plane's lane (`<plane><sep><model>`),
-/// every other row its model — the lane its counts were accrued on in the budget book.
 #[must_use]
 pub fn metering_lane<'a>(model: &'a str, provider: &str) -> std::borrow::Cow<'a, str> {
     match crate::plane_driver::registry::plane_decl_for(provider) {
@@ -90,8 +44,6 @@ pub struct UsageAdjustment {
     pub delta: BTreeMap<String, i128>,
 }
 
-/// One class's count on a metering row: the four token columns under their reserved spellings,
-/// every other class from the row's `usage_units`.
 fn metered_count(row: &MeteringRow, class: &str) -> u64 {
     match class {
         busbar_contract::records::UNIT_INPUT => row.tokens_input,
@@ -237,14 +189,6 @@ impl std::fmt::Display for AdjustRefused {
 impl std::error::Error for AdjustRefused {}
 
 impl GovState {
-    /// **ONE BUCKET'S CURRENT WINDOW, PRICED** — the live cell, else the durable row read as the
-    /// cell hydrated from it, priced at the card each era was earned under, the fee included. The
-    /// same cell and the same function [`GovState::derived_bucket_usage`] answers from, kept in
-    /// the money type rather than projected to whole minor units.
-    ///
-    /// # Errors
-    ///
-    /// The store could not read the durable row.
     pub fn priced_bucket(
         &self,
         cost: &crate::cost::CostModel,
@@ -262,26 +206,6 @@ impl GovState {
         })
     }
 
-    /// **APPLY ONE OPERATOR CORRECTION** to the usage counts WHERE ITS UNIT WAS LEDGERED (Q128 arch
-    /// u32 #18): every bucket an accrual of the unit lands on (the key's own, and each group bucket
-    /// of its chain the pool participates in; the key's own alone when its group is missing, as
-    /// accrual degrades), in the window holding `card_epoch_ms`, on `model` in the latest era not
-    /// after it. Local raw facts are captured under ordered shard locks; the store compares all
-    /// exact durable pre-states and commits all replacements and its receipt atomically.
-    ///
-    /// FAIL CLOSED: a card epoch no rate-card entry covers, an `entry_era` other than the entry the
-    /// unit's counts were dated with, an epoch window holding none of the counts a downward delta
-    /// moves, or a count taken below zero refuses the whole correction with its reason, and nothing
-    /// moves.
-    ///
-    /// The store accepts exact raw row replacements and the applied receipt atomically. The
-    /// immutable operation and both raw branches survive an unknown answer for exact replay.
-    ///
-    /// # Errors
-    ///
-    /// A store error can have an unknown commit outcome (outer): the exact operation and both
-    /// raw branches remain owned for replay, including through another call of this API. A named
-    /// refusal (inner) accepted no correction.
     pub fn adjust_usage(
         &self,
         cost: &crate::cost::CostModel,
@@ -306,35 +230,27 @@ impl GovState {
         if self.store.get_key(adj.key_id)?.is_none() {
             return Ok(Err(AdjustRefused::UnknownKey));
         }
-        // THE UNIT'S CARD: the entry in force at its epoch, resolved or refused. A dated history
-        // with no entry covering the epoch cannot say what the unit's counts are worth.
+
         let at = adj.card_epoch_ms;
         if let Some(history) = crate::rate_apply::dated_history() {
             if history.current().entry_at(at).is_none() {
                 return Ok(Err(AdjustRefused::NoCardInForce { at }));
             }
         }
-        // An entry that begins after the unit cannot be the one its counts were dated with.
+
         if adj.entry_era > at {
             return Ok(Err(AdjustRefused::NotInForce {
                 named: adj.entry_era,
                 in_force: crate::rate_apply::effective_from_at(at),
             }));
         }
-        // THE UNIT'S TIME, in wall seconds: its metering day and each bucket's window are the ones
-        // holding it, never the ones current when the correction is made.
+
         let epoch = at / 1_000;
-        // THE METERED VIEW must carry it: checked against the epoch day's rows before anything moves.
+
         let day = crate::governance::metering_bucket(epoch);
         self.correct_usage(cost, adj, &delta, day)
     }
 
-    /// **THE DAY'S ADJUSTMENTS**, net per (key, lane, era): what the usage read folds into the
-    /// day's metering rows. Read from the two adjustment rows of `day`.
-    ///
-    /// # Errors
-    ///
-    /// The store could not read an adjustment row.
     pub fn usage_adjustments(&self, day: u64) -> RecordStoreResult<Vec<UsageAdjustment>> {
         if self
             .corrections
@@ -386,9 +302,6 @@ impl GovState {
     }
 }
 
-/// THE SEGMENT A CORRECTION LANDS ON in a window's cell: `lane` in the latest era not after the
-/// unit's epoch `at_ms` — the era the unit's counts accrued under, as dev's read-time fold placed
-/// it (Q128 arch u32 #18). `None` when the window holds none of that lane by then.
 fn segment_at(models: &[ModelCell], lane: &str, at_ms: u64) -> Option<usize> {
     (models.iter().enumerate())
         .filter(|(_, m)| {
@@ -398,7 +311,6 @@ fn segment_at(models: &[ModelCell], lane: &str, at_ms: u64) -> Option<usize> {
         .map(|(i, _)| i)
 }
 
-/// `count` moved by `delta`, or `None` when that leaves `u64`.
 fn moved(count: u64, delta: i64) -> Option<u64> {
     if delta >= 0 {
         count.checked_add(delta.unsigned_abs())

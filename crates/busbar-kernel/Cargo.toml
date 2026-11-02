@@ -26,7 +26,7 @@ busbar-kernel-identity = { path = "../busbar-kernel-identity" }
 libc = { workspace = true, optional = true }
 axum = { workspace = true }
 tower = { workspace = true }
-# No `net`: the kernel opens no socket; `test-support` adds it.
+# No `net`: the kernel opens no socket; its external dev-only kit enables socket tests.
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "signal", "io-util", "io-std", "process"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -59,24 +59,17 @@ arc-swap = { workspace = true }
 httpdate = { workspace = true }
 
 [features]
-# Empty: they select nothing. The modernci-config clippy matrix still builds the kernel with
-# `--features plane-a2a` and `--features plane-mcp`; delete both once that config stops naming them.
-plane-mcp = []
-plane-a2a = []
-# Off by default so the shipped build carries no `axum/ws` edge.
-duplex-ws  = ["runtime"]
-runtime = ["axum/ws"]
 openapi-schema = ["dep:schemars"]
 loom-model = ["dep:loom"]
 # Never on in a normal build; dependents enable it from [dev-dependencies].
-test-support = ["tokio/net", "busbar-kernel-identity/stand-in"]
+test-support = ["busbar-kernel-identity/test-support"]
 # Default off: `timeit!` expands to `()`.
 timing = ["dep:libc"]
 
 [dev-dependencies]
 sha2 = { workspace = true }
-# Self-edge so integration tests reach `test_support`, where `cfg(test)` is false.
-busbar-kernel = { path = ".", default-features = false, features = ["test-support"] }
+# External integration tests use the dev-only kit, never kernel fixture exports.
+busbar-kernel-testkit = { path = "../busbar-kernel-testkit" }
 # Dev-only: the test seal is absent from release builds.
 busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
 metrics-exporter-prometheus = { workspace = true }

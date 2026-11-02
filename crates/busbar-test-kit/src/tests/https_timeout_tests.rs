@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The real SDK Host and loader slots over the immediate framed fixture: distinct dial bounds
-//! reach the existing far end without changing a REQUEST_HEAD's whole-request bound.
-
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
 
@@ -30,7 +27,6 @@ use crate::stand_in::FramedFacts;
 
 type Opening = (u64, u64, Vec<u8>, Vec<u8>, Vec<u8>);
 
-/// Records what the actual loader forwards, then opens the real in-memory fixture unchanged.
 struct Observed {
     table: Arc<HttpsConns>,
     openings: Mutex<Vec<Opening>>,

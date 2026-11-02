@@ -1,20 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! RFC 8707 audience binding for credentials busbar did not mint.
-//!
-//! The property under test is one-directional and that is the whole design: this filter may only
-//! ever REFUSE. So every case below asks "does the wrong token get turned away", and the two cases
-//! that answer `Bound` are there to prove the filter is not simply refusing everything — which is
-//! the way a fail-closed check silently stops being a check.
-
 use super::{inspect_bearer, Binding};
 use base64::Engine as _;
 
 const RESOURCE: &str = "https://gateway.example.com/plane";
 
-/// Build a JWT-shaped token whose payload is `claims`. The signature is garbage on purpose: this
-/// module never verifies one, and a test that supplied a real signature would imply it did.
 fn jwt(claims: serde_json::Value) -> String {
     let b64 = |v: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(v);
     format!(
@@ -25,10 +16,6 @@ fn jwt(claims: serde_json::Value) -> String {
     )
 }
 
-/// A busbar-minted token is DEFERRED, never judged here. It is not a JWT — it is
-/// `bbk_<payload>.<sig>` — so reading it as one would find no `aud` and refuse every valid busbar
-/// token presented on an audience-bound plane, which is a total outage dressed as a security
-/// control.
 #[test]
 fn a_busbar_token_is_deferred_to_the_verifier() {
     let tok = format!(
@@ -38,8 +25,6 @@ fn a_busbar_token_is_deferred_to_the_verifier() {
     assert_eq!(inspect_bearer(&tok, RESOURCE), Binding::Deferred);
 }
 
-/// The accept arms. Both `aud` forms RFC 7519 permits are read: a bare string, and an array in
-/// which the expected value appears anywhere (not only first — an IdP is free to order them).
 #[test]
 fn a_jwt_naming_this_resource_is_bound_in_both_aud_forms() {
     assert_eq!(
@@ -57,9 +42,6 @@ fn a_jwt_naming_this_resource_is_bound_in_both_aud_forms() {
     );
 }
 
-/// THE CONFUSED-DEPUTY CASE, and the reason this module exists. Every one of these is a token the
-/// operator's IdP legitimately issued and correctly signed, and an auth plugin asked "did our IdP
-/// sign this?" would say yes to all of them. None was minted for busbar.
 #[test]
 fn a_token_minted_for_somebody_else_is_refused() {
     for (label, claims) in [
@@ -89,9 +71,6 @@ fn a_token_minted_for_somebody_else_is_refused() {
     }
 }
 
-/// A resource indicator is an OPAQUE IDENTIFIER, not a namespace. Every near-miss below shares a
-/// prefix, a suffix or a case-folding with the real one, and every one of them is a different
-/// resource. Matching any of them is how one deployment's tokens start being spent on another's.
 #[test]
 fn near_miss_audiences_are_not_treated_as_this_resource() {
     for near in [
@@ -111,18 +90,16 @@ fn near_miss_audiences_are_not_treated_as_this_resource() {
     }
 }
 
-/// A credential with nothing to read. Refusal is the only honest answer to "was this minted for
-/// me?" when the credential cannot say — see the module header on the opaque-token limitation.
 #[test]
 fn a_credential_with_no_readable_claims_is_opaque() {
     for tok in [
-        "0f6d2a9c-3b1e-4f77-9a2e-8c5d1e0b7a44", // an opaque reference token
+        "0f6d2a9c-3b1e-4f77-9a2e-8c5d1e0b7a44",
         "not.a.jwt.at.all.five.segments",
         "onlytwo.segments",
         "",
-        "..",                     // three empty segments
-        "aGVhZGVy.!!!!.c2ln",     // middle segment is not base64url
-        "aGVhZGVy.bm90LWpzb24.c", // middle segment decodes to bytes that are not JSON
+        "..",
+        "aGVhZGVy.!!!!.c2ln",
+        "aGVhZGVy.bm90LWpzb24.c",
     ] {
         assert_eq!(
             inspect_bearer(tok, RESOURCE),
@@ -132,9 +109,6 @@ fn a_credential_with_no_readable_claims_is_opaque() {
     }
 }
 
-/// THE REFUSAL DESCRIPTIONS ARE ONE LINE OF TEXT. They go verbatim into the challenge's
-/// `error_description` and the JSON body. RED: the gate's literals were split across source lines
-/// with no `\`, so each carried a run of about 26 spaces in the middle of a sentence.
 #[test]
 fn the_audience_refusal_descriptions_are_single_spaced_sentences() {
     assert_eq!(

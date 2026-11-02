@@ -1,14 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-substrate/src/profile.rs`.
-
 use super::*;
 
 #[test]
 fn bucket_is_bounded_and_tracks_true_count() {
-    // Offer far more samples than the cap; the retained set must never exceed BUCKET_CAP, but the
-    // `seen` count must reflect EVERY observation (so the report's `n=` stays truthful).
     let mut b = Bucket::default();
     let offered = BUCKET_CAP * 4 + 123;
     for i in 0..offered {
@@ -27,7 +23,6 @@ fn bucket_is_bounded_and_tracks_true_count() {
 
 #[test]
 fn bucket_under_cap_keeps_everything() {
-    // Below the cap it behaves exactly like the old unbounded Vec: every sample retained, in order.
     let mut b = Bucket::default();
     for i in 0..10u32 {
         b.record(i);
@@ -39,9 +34,6 @@ fn bucket_under_cap_keeps_everything() {
 
 #[test]
 fn reservoir_stays_representative_of_the_range() {
-    // Reservoir sampling keeps a uniform subset, so the retained min/max should still span most of
-    // the offered range (a first-N cap would freeze the max near BUCKET_CAP). Feed a large ramp and
-    // check the retained max lands in the upper reaches - a smoke test that late samples are admitted.
     let mut b = Bucket::default();
     let offered = BUCKET_CAP * 10;
     for i in 0..offered {
@@ -55,13 +47,6 @@ fn reservoir_stays_representative_of_the_range() {
     );
 }
 
-/// ITEM 571: the bucket store keeps no count of the `Stage` enum, so a stage it has never seen takes
-/// a bucket instead of indexing past the end of one.
-///
-/// The store was an array sized by a hand-kept literal and indexed by a variant's position with no
-/// bound; a stage added without editing the literal panicked the first sample of a profiling run, on
-/// the request path. Here the LAST declared variant records into a store holding nothing, which is
-/// exactly the index the old array had no room for once the enum outgrew its count.
 #[test]
 fn a_stage_the_store_has_never_seen_takes_a_bucket_instead_of_indexing_past_the_end() {
     let mut store = Vec::new();

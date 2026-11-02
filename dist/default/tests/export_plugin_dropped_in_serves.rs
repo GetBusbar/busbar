@@ -23,9 +23,6 @@
 
 #![cfg(unix)]
 #![cfg(linked_section_pools)]
-// The config names `module: prometheus`, the linked scrape sink on the export-doors axis: a build
-// that links no export door (the single-plane rows link only the exports axis) refuses that module at
-// boot ("unknown exporter 'prometheus'"), which is correct product behaviour, not what this measures.
 #![cfg(linked_axis_export_doors)]
 
 mod common;
@@ -36,17 +33,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
-/// The name the dropped-in export plugin's manifest states — what the `export:` instance's
-/// `module:` names, and the provenance label the host attaches to what it reports.
 const PLUGIN: &str = "dropped-sink";
 
-/// The dropped-in door's library: the export-file repo's cdylib crate, snake-cased — built into this
-/// target dir by this crate's dev-edge on it (under `deps/`, hashed).
 const CDYLIB: &str = "busbar_export_file_plugin";
 
-/// The real sink's `cdylib`, newest wins: uplifted by its exact name, or under `deps/` with a metadata
-/// hash. A missing artifact is a hard failure in every run, never a silent skip of item 141's
-/// control.
 fn export_cdylib() -> Vec<u8> {
     common::plugins::cdylib(CDYLIB)
         .unwrap_or_else(|| common::plugins::missing(CDYLIB, common::plugins::BUILD_PINNED))
@@ -76,19 +66,15 @@ fn free_port() -> u16 {
     common::boot::free_port()
 }
 
-/// The export `cdylib` packed as an UNSIGNED `kind: export` tarball (the config below opts into
-/// unsigned plugins, as the CLI fixtures do), its manifest stating the door's Statement and
-/// declaring `destinations` (K9a S4): the settings keys the host appends to for it.
 fn write_tarball_declaring(dir: &Path, lib: &[u8], destinations: &[&str]) {
     let mut m = common::plugins::manifest("export", PLUGIN, "acme");
     m.declares.destinations = destinations.iter().map(|d| d.to_string()).collect();
-    // The sink is on the export kind's memory ABI: its manifest states its door's Statement.
+
     common::plugins::state(&mut m, lib);
     let bytes = common::plugins::seal(m, lib);
     std::fs::write(dir.join("plugins").join("dropped-sink.tar.gz"), bytes).unwrap();
 }
 
-/// [`write_configs`] with the plugin instance's `settings:` block spelled `tail_settings`.
 fn write_configs_with(dir: &Path, data_port: u16, admin_port: u16, tail_settings: &str) {
     std::fs::write(
         dir.join("providers.yaml"),
@@ -127,7 +113,6 @@ models:
     .unwrap();
 }
 
-/// Kill the child when the test ends, however it ends.
 struct Reap(Child);
 impl Drop for Reap {
     fn drop(&mut self) {
@@ -136,8 +121,6 @@ impl Drop for Reap {
     }
 }
 
-/// One raw HTTP/1.1 exchange over a fresh connection: `(status, body)`, or `None` when no
-/// connection could be made or read (the listener is not up yet).
 fn exchange(port: u16, request: &str) -> Option<(u16, String)> {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
     stream
@@ -196,7 +179,6 @@ fn a_dropped_in_export_plugin_serves() {
             .expect("spawn busbar"),
     );
 
-    // 1. THE BOOT ACCEPTS THE INSTANCE, and the recorder is up: `/metrics` answers 200.
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if let Some(status) = child.0.try_wait().expect("try_wait") {
@@ -217,8 +199,6 @@ fn a_dropped_in_export_plugin_serves() {
         std::thread::sleep(Duration::from_millis(20));
     }
 
-    // 2. A REQUEST — refused (no such model), which still finishes through the request-log terminal
-    // and so produces the `logs` line the plugin subscribed to.
     let body =
         r#"{"model":"no-such-model","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}"#;
     let request = format!(
@@ -228,8 +208,6 @@ fn a_dropped_in_export_plugin_serves() {
     );
     exchange(data_port, &request).expect("the request is answered");
 
-    // THE PLUGIN WAS HANDED THE LINE: the host appended what the sink asked it to write to the
-    // destination the manifest declares. Delivery is off the request path, so poll briefly.
     let read = || -> Vec<serde_json::Value> {
         std::fs::read_to_string(&lines)
             .unwrap_or_default()
@@ -256,7 +234,7 @@ fn a_dropped_in_export_plugin_serves() {
             .any(|l| l["ingress_protocol"] == "anthropic" && l["outcome"] == "client_error"),
         "the request's own line: {logged:?}"
     );
-    // A sink subscribed to `logs` only is handed its line and no span.
+
     assert!(
         logged
             .iter()
@@ -264,11 +242,6 @@ fn a_dropped_in_export_plugin_serves() {
         "a sink not subscribed to `traces` was handed spans: {logged:?}"
     );
 
-    // 3. THE RECORDER SNAPSHOT (K9a S6): the host's real exposition, read into the snapshot, is
-    // handed to the dropped-in sink through its door. The file sink carries no `metrics` stream, so
-    // it renders no body: its door refuses the scrape in the SDK's words (`NO_EXPOSITION`). The
-    // byte-for-byte render is the prometheus sink's, which owns `render_exposition` (ABI-TRIM F10a)
-    // and proves it in its own repo.
     let exposition = scrape(data_port).map(|(_, b)| b).unwrap_or_default();
     assert!(!exposition.is_empty(), "the host serves an exposition");
     let settings = format!("{{\"path\":\"{}\"}}", lines.display());
@@ -284,10 +257,6 @@ fn a_dropped_in_export_plugin_serves() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// K9a S2, end to end: `--validate` asks the dropped-in sink to VALIDATE its instance's settings,
-/// and a refusal is reported among the configuration's errors in the sink's own words, failing the
-/// run — the same moment and shape a built-in module's settings error has. Settings the sink
-/// accepts validate clean. RED before the op: the refused settings validated clean (exit 0).
 #[test]
 fn validate_reports_a_dropped_in_sinks_settings_errors_in_its_own_words() {
     let lib = export_cdylib();

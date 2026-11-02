@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The hook views, host side: every view the host builds passes the kind's own `in` checks, the
-//! frames point at their own buffers, and a re-call's frame grows exactly the short dimensions.
 
 use super::*;
 use crate::abi::hook::validate::{check_notify_in, check_prompt_view};
@@ -124,7 +123,7 @@ fn a_tap_view_carries_signals_and_the_prompt_only_when_projected() {
     assert_eq!(with.present, VIEW_HAS_PROMPT);
     assert_eq!(with.signals_len, 1);
     assert_eq!(with.stage.stage_present, 0);
-    // A granted tap over a request that projects no prompt sees none.
+
     let without = NotifyFrame::build(&req(false), None, true).input();
     assert_eq!(check_notify_in(&without), Ok(()));
     assert_eq!(without.present, 0);
@@ -151,9 +150,6 @@ fn a_tap_view_carries_signals_and_the_prompt_only_when_projected() {
     );
 }
 
-/// RED (ARCHITECT ruling 2026-09-29, WIRE-HOOK Q5): the prompt rides `notify` ONLY under the tap's
-/// `prompt: ro` grant. An ungranted tap is handed no prompt even when the request it observes
-/// carries one: no presence bit, no system text, no messages, no body.
 #[test]
 fn red_an_ungranted_tap_never_sees_the_prompt_the_request_carries() {
     let tap = NotifyFrame::build(&req(true), None, false).input();
@@ -168,13 +164,10 @@ fn red_an_ungranted_tap_never_sees_the_prompt_the_request_carries() {
     assert_eq!(tap.prompt.messages_len, 0);
     assert_eq!(tap.prompt.message_count, 0);
     assert!(tap.prompt.body.ptr.is_null());
-    // The signals are not grant-gated: they still ride.
+
     assert_eq!(tap.signals_len, 1);
 }
 
-/// THE SESSION CROSSES (ARCHITECT RULING 2026-10-03, Q-FOLD-A2A-2-PROJECT-POOL session half): the
-/// request's opaque session reaches the hook's request view as octets, byte for byte; a request
-/// that names none crosses an absent blob.
 #[test]
 fn a_decide_view_carries_the_request_session_as_octets() {
     let ctx = RoutingContext {
@@ -199,8 +192,6 @@ fn a_decide_view_carries_the_request_session_as_octets() {
 }
 
 /// An IN-PROCESS answer lands in the frame's own host buffers exactly as the SDK's door writes it:
-/// the projection is the SDK's rebuild, each verdict reads back through the frame's readers, and an
-/// answer too long for the first frame is the one short FAILED whose regrown frame then fits.
 #[test]
 fn an_in_process_answer_reads_back_through_the_frame() {
     use crate::abi::hook::{
@@ -241,8 +232,6 @@ fn an_in_process_answer_reads_back_through_the_frame() {
     assert_eq!((outcome, out.verbs), (Outcome::Ready, VERB_REWRITE));
     assert_eq!(frame.rewrite(out.rewrite_written), b"{}");
 
-    // Two candidates' order does not fit the first frame's one slot: the short FAILED names it,
-    // and the regrown frame takes it.
     let (outcome, out) = frame.answer_decide(&Verdict::Prefer(vec![1, 0]));
     assert_eq!(
         (outcome, out.order_written, out.order_needed),
@@ -255,7 +244,6 @@ fn an_in_process_answer_reads_back_through_the_frame() {
 }
 
 /// The kept static half is checked in release too: a shorter dynamic half must never be
-/// published with the cached half's longer length, and changed facts must never leak a stale view.
 #[test]
 fn a_mismatched_static_half_is_rejected_before_publishing_a_view() {
     let ctx = RoutingContext {
@@ -288,7 +276,6 @@ fn a_mismatched_static_half_is_rejected_before_publishing_a_view() {
 }
 
 /// Retaining an Arc on the client side cannot race a native operation's answer buffers.
-/// The dispatcher's retained owner keeps the reservation after the client owner disappears.
 #[test]
 fn a_native_reservation_excludes_safe_answers_and_readers_until_the_last_owner_releases() {
     use crate::abi::sdk::hook::{RewriteVerdict, Verdict};
@@ -323,7 +310,7 @@ fn a_native_reservation_excludes_safe_answers_and_readers_until_the_last_owner_r
     refused(&|| {
         let _ = frame.rewrite(1);
     });
-    // Immutable projection callbacks remain usable without claiming or exposing answer buffers.
+
     let () = frame.decoded(|decoded| {
         assert_eq!(decoded.request_id, 7);
         assert_eq!(
@@ -338,7 +325,6 @@ fn a_native_reservation_excludes_safe_answers_and_readers_until_the_last_owner_r
 }
 
 /// A settled reply can release the reservation before the dispatcher's owner is dropped.
-/// Dropping that stale owner must never unlock a later operation on the same frame.
 #[test]
 fn completing_a_reservation_does_not_let_its_late_drop_release_the_next_operation() {
     let ctx = RoutingContext {

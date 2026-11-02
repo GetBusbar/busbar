@@ -1,20 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE ONE PLUGIN FIXTURE — how this crate's tests pack a plugin, drop it into a `plugins/`
-//! directory, find the in-tree `cdylib` it carries and read what the boot's scan makes of it.
-//!
-//! Every test that hands busbar a dropped-in plugin needs the same few steps: a manifest stating the
-//! plugin (its kind, name and publisher, the newest payload schema the loader speaks for the kind),
-//! the library's hash bound into it, a signature when the test holds a release key, and the
-//! tarball the loader unpacks. Those steps live here, once, so a change to how a plugin is packaged
-//! is one edit and every test packs the same artifact a release would.
-//!
-//! Integration tests reach it through `mod common;` (`common::plugins`); the composition root's unit
-//! tests and the benches include this file by path. Nothing here reads a variable only an
-//! integration test has: the target directory is found from the running test binary, which lives
-//! in `target/<profile>/deps` whichever kind of test it is.
-
 #![allow(dead_code)]
 
 use busbar_contract::abi::export::ExportStream;
@@ -31,9 +17,6 @@ use busbar_plugin_loader::{
 };
 use std::path::{Path, PathBuf};
 
-/// The manifest a plugin of `kind` named `name` states when `publisher` ships it: its alias is its
-/// name, its version this binary's, its payload schema the newest the loader speaks for the kind,
-/// and every optional field empty. A test changes the fields its case is about.
 pub fn manifest(kind: &str, name: &str, publisher: &str) -> Manifest {
     Manifest {
         name: name.into(),
@@ -57,25 +40,17 @@ pub fn manifest(kind: &str, name: &str, publisher: &str) -> Manifest {
     }
 }
 
-/// `lib` packed UNSIGNED as a `kind` plugin named `name` from `publisher` — the tarball a
-/// deployment that opts into unsigned plugins drops in.
 pub fn pack(kind: &str, name: &str, lib: &[u8], publisher: &str) -> Vec<u8> {
     seal(manifest(kind, name, publisher), lib)
 }
 
-/// `lib` packed UNSIGNED as a `kind` plugin, its manifest stating the library's own Statement
-/// rendering when it exports a door (the door is admitted against it), as the pack tool signs it.
 pub fn pack_stated(kind: &str, name: &str, lib: &[u8], publisher: &str) -> Vec<u8> {
     let mut m = manifest(kind, name, publisher);
     state(&mut m, lib);
     seal(m, lib)
 }
 
-/// `m` states the Statement rendering `lib`'s door answers (what the packer signs into a
-/// memory-ABI plugin's manifest).
 pub fn state(m: &mut Manifest, lib: &[u8]) {
-    // One staging file per call: two tests of one binary may state the same plugin name at once,
-    // and one must not unlink or overwrite the library the other is mapping.
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!(
@@ -90,35 +65,27 @@ pub fn state(m: &mut Manifest, lib: &[u8]) {
     m.statement = rendering.map(hex::encode);
 }
 
-/// `lib` packed UNSIGNED under `m`, the manifest bound to the library's hash.
 pub fn seal(mut m: Manifest, lib: &[u8]) -> Vec<u8> {
     m.sha256 = sha256(lib);
     package(&m, lib)
 }
 
-/// `lib` packed under `m` SIGNED by `key` (the hash bound, then signed over every field).
 pub fn signed(key: &SigningKey, m: Manifest, lib: &[u8]) -> Vec<u8> {
     package(&sign(key, m, lib), lib)
 }
 
-/// `lib` packed under `m` exactly as stated — the hash and signature are whatever `m` says, which
-/// is how a test builds a tarball whose manifest does not match its library.
 pub fn package(m: &Manifest, lib: &[u8]) -> Vec<u8> {
     tarball::package(m, "lib.so", lib).expect("the plugin packs")
 }
 
-/// The lowercase hex SHA-256 a manifest binds its library with.
 pub fn sha256(bytes: &[u8]) -> String {
     sha256_hex(bytes)
 }
 
-/// A signing key made from one repeated byte — a test's release key or third-party publisher key.
 pub fn key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
 }
 
-/// The DEFAULT trust posture a release build boots with, holding `release` as its first-party key:
-/// no publisher allowlisted, nothing unsigned, nothing third-party.
 pub fn release_policy(release: &SigningKey) -> TrustPolicy {
     TrustPolicy {
         first_party_key: Some(release.verifying_key()),
@@ -127,7 +94,6 @@ pub fn release_policy(release: &SigningKey) -> TrustPolicy {
     }
 }
 
-/// A fresh, empty directory for this process under `tag`.
 pub fn scratch(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("busbar-plugins-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -135,23 +101,15 @@ pub fn scratch(tag: &str) -> PathBuf {
     dir
 }
 
-/// What the boot's scan admits from `dir` under `policy` — every tarball in it verified, trusted and
-/// registered, exactly as the boot scans the configured `plugins.dir`.
 pub fn boot_with(dir: &Path, policy: &TrustPolicy) -> PluginRegistry {
     scan_and_validate(dir, policy).expect("the plugins directory scans")
 }
 
-/// `target/<profile>`: the directory this test binary's `deps/` sits in, where cargo builds (and
-/// uplifts) every `cdylib` this crate depends on.
 fn profile_dir() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     Some(exe.parent()?.parent()?.to_path_buf())
 }
 
-/// The built `cdylib` of the crate `snake` (its snake-cased crate name): uplifted, or under `deps/`
-/// with cargo's metadata hash (`lib<name>-<hash>.<ext>`, how a git dependency's library is left),
-/// the newest wins. `None` when it is not built; a test whose subject it is fails through
-/// [`missing`], never skips.
 pub fn cdylib_path(snake: &str) -> Option<PathBuf> {
     let profile = profile_dir()?;
     let exact = plugin_library_filename(snake);
@@ -174,37 +132,24 @@ pub fn cdylib_path(snake: &str) -> Option<PathBuf> {
         .map(|(_, p)| p)
 }
 
-/// A FIXTURE THAT IS NOT BUILT IS A FAILURE, NEVER A SKIP: the panic every fixture probe of this
-/// crate's tests (integration and the composition root's unit tests, which mount this file) raises
-/// when the `cdylib` named `name` is absent, naming the `command` that builds it. A test whose
-/// subject is absent has proved nothing, so it must not report "ok".
 pub fn missing(name: &str, command: &str) -> ! {
     panic!("the {name} cdylib is not built: run `{command}` first (this test never skips)")
 }
 
-/// What builds a pinned plugin's `cdylib`: the dev-dependency edge of this crate's tests.
 pub const BUILD_PINNED: &str = "cargo test -p busbar --no-run";
 
-/// What builds the plugin loader's example `cdylib`s (the neutral frame door).
 pub const BUILD_LOADER_EXAMPLES: &str = "cargo build -p busbar-plugin-loader --examples";
 
-/// What builds this crate's example `cdylib`s (the test plane).
 pub const BUILD_BUSBAR_EXAMPLES: &str = "cargo build -p busbar --examples";
 
-/// The bytes of [`cdylib_path`].
 pub fn cdylib(snake: &str) -> Option<Vec<u8>> {
     std::fs::read(cdylib_path(snake)?).ok()
 }
 
-/// The pinned token-verifying `kind: auth` plugin's built `cdylib` (a git dev-dependency of this
-/// crate, so the build leaves it under `deps/` with a metadata hash): the ONE place the root's auth
-/// proofs name it.
 pub fn token_verifier_cdylib_path() -> Option<PathBuf> {
     cdylib_path("busbar_auth_oidc_plugin")
 }
 
-/// Every loadable plugin library in the target directory (uplifted, under `deps/`, or an example
-/// `cdylib` under `examples/`), newest first.
 fn libraries() -> Vec<PathBuf> {
     let Some(profile) = profile_dir() else {
         return Vec::new();
@@ -223,19 +168,17 @@ fn libraries() -> Vec<PathBuf> {
     found.into_iter().map(|(_, p)| p).collect()
 }
 
-/// A transport door `cdylib` at `path`, admitted through the one dispatcher's door validation, and
-/// the key its tail states (its own claim); `None` for any other library.
 fn transport_door(path: &Path) -> Option<(Plugin<Transport>, &'static str)> {
     static ONE: std::sync::OnceLock<Dispatcher> = std::sync::OnceLock::new();
     let d = ONE.get_or_init(|| Dispatcher::new(DispatchConfig::default()));
-    // The library's own Statement rendering, as its signed manifest would state it.
+
     let stated = rendering_of_library(path).ok()??;
     let bind = Bind {
         instance: std::sync::Arc::from("the-instance"),
         max_inflight_cap: 64,
         sink: std::sync::Arc::new(NoSink),
         dispatcher: d.adopter(),
-        // A transport door is a framer the connector drives: it declares no need.
+
         conns: busbar_plugin_loader::dispatch::ConnTable::NoNeeds,
     };
     let plugin = load_dropped::<Transport>(path, &stated, bind).ok()?;
@@ -243,8 +186,6 @@ fn transport_door(path: &Path) -> Option<(Plugin<Transport>, &'static str)> {
     Some((plugin, key))
 }
 
-/// A compiled-in transport door (a linked row's door function), admitted through the same door
-/// validation as a dropped-in one and bound with `bind`.
 pub fn linked_transport(
     door: busbar_contract::abi::mechanism::door::DoorFn,
     bind: Bind,
@@ -253,27 +194,11 @@ pub fn linked_transport(
     load_linked::<Transport>(&row, bind).expect("the linked door loads")
 }
 
-/// An in-tree transport door `cdylib` that frames the host's socket (the wire at the floor of a
-/// stack: its tail composes over nothing), found by its KIND, and the key its tail states — the
-/// test names no transport. A door composing over a layer (the http door example, where a workspace
-/// build emits it) is not a dropped-in wire.
 pub fn transport_cdylib() -> Option<(Vec<u8>, &'static str)> {
     transport_cdylib_under(&[])
 }
 
-/// [`transport_cdylib`] PINNED TO THE WIRE A PROOF NEEDS: the floor CARRIER whose key is one of
-/// `keys` (the keys the build's linked layers compose over, read off its linked table); every key
-/// when `keys` is empty.
-///
-/// The target directory holds every transport door any build in it emitted (the pinned plugin
-/// repos' cdylibs, the loader's examples, an in-tree carrier built with its door), and "the newest
-/// floor door" was whichever of them a build happened to touch last: in the dropped-in floor-wire
-/// row it was one the layers do not compose over, and the node refused to boot (a request
-/// transport composing over a floor wire no registered transport provides). Filtered by the key
-/// the layers need, the artifact is the one wire that can sit under them, whatever else was built since.
 pub fn transport_cdylib_under(keys: &[&str]) -> Option<(Vec<u8>, &'static str)> {
-    // The neutral frame door claims no linked key and no layer composes over it; the proofs that
-    // need it name it ([`neutral_frame_door`]).
     let neutral = plugin_library_filename("neutral_frame_door");
     libraries().into_iter().find_map(|p| {
         if p.file_name().is_some_and(|n| n == neutral.as_str()) {
@@ -281,8 +206,7 @@ pub fn transport_cdylib_under(keys: &[&str]) -> Option<(Vec<u8>, &'static str)> 
         }
         let (plugin, key) = transport_door(&p)?;
         let facts = plugin.context::<TransportFacts>()?;
-        // The floor wire is a CARRIER whose claim serves a port: the one that can listen under the
-        // data door (a carrier reached by a program serves no port).
+
         if !facts.composes_over.is_empty()
             || facts.role != busbar_contract::abi::transport::ROLE_CARRIER
             || !facts.ported
@@ -296,7 +220,6 @@ pub fn transport_cdylib_under(keys: &[&str]) -> Option<(Vec<u8>, &'static str)> 
     })
 }
 
-/// The neutral frame door's library bytes ([`neutral_frame_door`]), for a proof that drops it in.
 pub fn neutral_frame_door_bytes() -> Option<Vec<u8>> {
     let file = plugin_library_filename("neutral_frame_door");
     libraries()
@@ -305,8 +228,6 @@ pub fn neutral_frame_door_bytes() -> Option<Vec<u8>> {
         .and_then(|p| std::fs::read(p).ok())
 }
 
-/// An in-tree export door `cdylib` that loads as a sink carrying exactly the `metrics` stream,
-/// found by what it carries rather than by name.
 pub fn metrics_sink_cdylib() -> Option<Vec<u8>> {
     static ONE: std::sync::OnceLock<Dispatcher> = std::sync::OnceLock::new();
     let d = ONE.get_or_init(|| Dispatcher::new(DispatchConfig::default()));
@@ -317,7 +238,7 @@ pub fn metrics_sink_cdylib() -> Option<Vec<u8>> {
             max_inflight_cap: 64,
             sink: std::sync::Arc::new(NoSink),
             dispatcher: d.adopter(),
-            // A probe: the library is only read for what it states, never opened to serve.
+
             conns: busbar_plugin_loader::dispatch::ConnTable::Probe,
         };
         let plugin = load_dropped::<Export>(&p, &stated, bind).ok()?;
@@ -328,10 +249,6 @@ pub fn metrics_sink_cdylib() -> Option<Vec<u8>> {
     })
 }
 
-/// The export sink `lib`, DROPPED IN on the export kind's memory ABI (its door's Statement stated)
-/// and opened under `name` with `settings`, handed `exposition` read into the recorder snapshot, as
-/// the host hands a sink serving `/metrics` its scrape: the body it renders, or the sink's refusal
-/// (a sink carrying no `metrics` stream refuses in the SDK's `NO_EXPOSITION` words).
 pub fn render_snapshot(
     lib: &[u8],
     name: &str,
@@ -366,10 +283,6 @@ pub fn render_snapshot(
     sink.scrape(&families)
 }
 
-/// THE NEUTRAL FRAME DOOR (the plugin loader's `neutral_frame_door` example): a transport door that
-/// frames the host's socket under a neutral claim and names no transport, admitted through the one
-/// dispatcher's door validation, and the key its tail states. `None` when it is not built beside the
-/// test binary.
 pub fn neutral_frame_door() -> Option<(Plugin<Transport>, &'static str)> {
     let file = plugin_library_filename("neutral_frame_door");
     libraries()

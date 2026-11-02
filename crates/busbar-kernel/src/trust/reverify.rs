@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE RE-VERIFICATION CADENCE: when the kernel's trust book ([`super::book`]) marks a
-//! counterparty due to be looked at again, from the operator's declared policy and the kernel's
-//! own clock.
-
 #[cfg(test)]
 #[path = "tests/reverify_tests.rs"]
 mod reverify_tests;
@@ -54,17 +50,11 @@ pub enum Due {
 }
 
 impl Due {
-    /// Whether a check should happen.
     pub fn should_check(self) -> bool {
         !matches!(self, Due::No)
     }
 }
 
-/// Decide whether to re-fetch, from the operator's policy and OUR clock alone.
-///
-/// Reaching the TTL is due, not "one tick short of due": the operator wrote the longest staleness
-/// they will accept, so treating it as still acceptable makes the setting mean something other than
-/// what it says.
 pub fn due(ledger: &Ledger, policy: &Policy, now_ms: u64, operator_sync: bool) -> Due {
     if operator_sync {
         return Due::OperatorSync;

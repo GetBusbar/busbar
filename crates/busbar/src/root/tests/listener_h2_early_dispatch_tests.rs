@@ -1,24 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A MALFORMED HTTP/2 REQUEST IS REFUSED, NOT ANSWERED (RFC 9113 8.1, 8.1.2.6; h2spec
-//! `http2/8.1/1`, `http2/8.1.2.6/2`).
-//!
-//! hyper dispatches a request at its HEADERS frame. A handler that answers at once completes the
-//! stream, h2 resets it (RST_STREAM NO_ERROR) and the frames that arrive afterwards are ignored, so
-//! a request that turned out malformed in its LATER frames got a normal response where the RFC wants
-//! the stream error PROTOCOL_ERROR. The delay between the frames below is what makes the failure
-//! certain rather than a race. The serve loop now holds a request whose method carries no body
-//! (GET, HEAD, OPTIONS, TRACE) until its stream is complete.
-//!
-//! NOT COVERED HERE, and not fixable here: h2spec `http2/8.1.2.1/3` (a pseudo-header field in
-//! trailers, RFC 9113 8.1). h2 0.4.18 (and 0.4.20, the latest) drops the trailers' pseudo-header
-//! fields without a check (`proto/streams/recv.rs` `recv_trailers`: `frame.into_fields()`), so the
-//! request arrives as well-formed and nothing above h2 can see the violation.
-//!
-//! Each test drives the real plain listener (`serve_plain`, the same hardened builder and service
-//! as the TLS one) over h2c with prior knowledge, with the frames written by hand.
-
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -44,13 +26,10 @@ fn frame(kind: u8, flags: u8, stream: u32, payload: &[u8]) -> Vec<u8> {
     v
 }
 
-/// `GET http://localhost/` as an HPACK block (static table: :method GET, :scheme http, :path /,
-/// then :authority localhost as a literal), with `extra` header bytes appended.
 fn request_block(extra: &[u8]) -> Vec<u8> {
     request_block_at(&[0x84], extra)
 }
 
-/// The same with `path` as the HPACK bytes of the :path field (`[0x84]` is `/`).
 fn request_block_at(path: &[u8], extra: &[u8]) -> Vec<u8> {
     let mut b = vec![0x82, 0x86];
     b.extend_from_slice(path);
@@ -60,7 +39,6 @@ fn request_block_at(path: &[u8], extra: &[u8]) -> Vec<u8> {
     b
 }
 
-/// One decoded frame: (type, flags, stream, payload).
 type Frame = (u8, u8, u32, Vec<u8>);
 
 fn parse(mut acc: &[u8]) -> Vec<Frame> {
@@ -77,8 +55,6 @@ fn parse(mut acc: &[u8]) -> Vec<Frame> {
     out
 }
 
-/// The router: `/` counts its dispatches and answers at once, never touching the request body (as
-/// `/healthz` does); `/len` reads the whole body and answers with its length.
 async fn listener() -> (std::net::SocketAddr, Arc<AtomicUsize>) {
     let dispatched = Arc::new(AtomicUsize::new(0));
     let seen = dispatched.clone();
@@ -107,8 +83,6 @@ async fn listener() -> (std::net::SocketAddr, Arc<AtomicUsize>) {
     (addr, dispatched)
 }
 
-/// Send the connection preface, an empty SETTINGS, then each `(delay, bytes)` step; return every
-/// frame the server wrote within `listen`.
 async fn exchange(addr: std::net::SocketAddr, steps: &[(u64, Vec<u8>)]) -> Vec<Frame> {
     let mut c = TcpStream::connect(addr).await.expect("connect");
     let mut hello = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n".to_vec();
@@ -134,7 +108,6 @@ fn has(frames: &[Frame], kind: u8) -> bool {
     frames.iter().any(|f| f.0 == kind && f.2 == 1)
 }
 
-/// The stream is ended with PROTOCOL_ERROR (RST_STREAM on it, or GOAWAY), and nothing was answered.
 fn assert_refused(frames: &[Frame], dispatched: &AtomicUsize, what: &str) {
     let refused = frames.iter().any(|f| {
         (f.0 == RST_STREAM && f.2 == 1 && f.3[..4] == PROTOCOL_ERROR.to_be_bytes())
@@ -159,7 +132,6 @@ async fn a_second_headers_frame_without_end_stream_is_a_stream_error_not_a_respo
         addr,
         &[
             (0, frame(HEADERS, END_HEADERS, 1, &request_block(&[]))),
-            // the second HEADERS block: no END_STREAM, so not valid trailers (RFC 9113 8.1)
             (
                 150,
                 frame(HEADERS, END_HEADERS, 1, &[0x00, 1, b'x', 1, b'y']),
@@ -173,7 +145,7 @@ async fn a_second_headers_frame_without_end_stream_is_a_stream_error_not_a_respo
 #[tokio::test]
 async fn data_that_does_not_add_up_to_content_length_is_a_stream_error_not_a_response() {
     let (addr, dispatched) = listener().await;
-    // `content-length: 5` (static index 28, literal without indexing), then 2 + 2 body bytes.
+
     let frames = exchange(
         addr,
         &[
@@ -212,7 +184,7 @@ async fn a_well_formed_get_is_dispatched_at_its_headers_frame() {
 #[tokio::test]
 async fn a_well_formed_get_that_carries_a_body_is_dispatched_once_complete_and_sees_it() {
     let (addr, _) = listener().await;
-    // `/len` as a literal :path (static name index 4), so the body is the handler's to read.
+
     let path = [&[0x04u8, 4][..], b"/len"].concat();
     let frames = exchange(
         addr,

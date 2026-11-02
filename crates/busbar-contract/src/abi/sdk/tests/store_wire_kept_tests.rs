@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! One op on a kept session: the body runs on the session it opened, which is handed back when
-//! the body has answered; a session that does not open answers its failure and runs nothing.
 
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -151,8 +150,6 @@ mod replay_handles {
         SCRIPT.with(|state| f(&mut state.borrow_mut()))
     }
 
-    // Model the real host's handle binding and stored result: a completed request on the same
-    // handle returns its original answer, including a successful zero-byte write.
     fn cross(kind: Kind, handle: CompletionHandle, bytes: &[u8]) -> (Outcome, usize) {
         script(|s| {
             if !s.held.contains_key(&handle) {

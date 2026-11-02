@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A whole answer is relayed whole (item 451, the far end's half of it).
-//!
-//! The previous walk's attempt decoded the answer itself, and a decode that lost what the encode
-//! decided ended an incremental answer on its FIRST frame: the remaining events were never relayed
-//! and the unit closed on event one. The far end decodes nothing — every piece it reads goes to the
-//! plane, which owns its codec state — so what is left to prove here is the far end's side: an
-//! answer of N pieces reaches the plane piece by piece to its completion, records one success and
-//! keeps the budget unit it spent.
-
 use busbar_contract::transport::wire::WireStatusClass;
 
 use super::harness::{frame, Script};

@@ -1,16 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **A REFUSAL MADE WHILE A PLUGIN BINDS IS ON THE AUDIT CHAIN** (owner rule: every refusal is
-//! audited and explained; nothing silent). The webhook request-log sink is configured at a plain
-//! `http://` loopback target, which the host's connection table refuses when the sink declares its
-//! need at `open` (the oracle's `export|request-log-webhook|loopback-refused` cell). The node still
-//! boots, the sink stays inert, and its refusal is in the plugin's own log. RED before BIND-AUDIT:
-//! the chain held nothing about it.
-//!
-//! Driven through the shipped binary: boot, then `GET /api/v1/admin/audit`. Exactly one
-//! `plugin.need` record names the sink, `rejected`, by the host, and carries no URL.
-
 #![cfg(unix)]
 #![cfg(linked_section_pools)]
 
@@ -22,10 +12,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
-/// The admin token the config names.
 const ADMIN_TOKEN: &str = "bind-refusal-audited-admin-token";
 
-/// The sink's target: plain http, loopback. The host refuses it before any dial.
 const REFUSED_URL: &str = "http://127.0.0.1:9/sidecar";
 
 fn fixture_dir() -> PathBuf {
@@ -40,8 +28,6 @@ fn fixture_dir() -> PathBuf {
     d
 }
 
-/// A 1.5.5-shaped config with an admin token, governance on, and the webhook sink at
-/// [`REFUSED_URL`]. No `allow_destinations`: the host's default guard stands.
 fn write_configs(dir: &Path, data_port: u16, admin_port: u16) {
     std::fs::write(
         dir.join("providers.yaml"),
@@ -86,7 +72,6 @@ models:
     .unwrap();
 }
 
-/// Kill the child when the test ends, however it ends.
 struct Reap(Child);
 impl Drop for Reap {
     fn drop(&mut self) {
@@ -95,8 +80,6 @@ impl Drop for Reap {
     }
 }
 
-/// `GET path` on the admin listener with the admin token: `(status, body)`, or `None` before it
-/// answers.
 fn admin_get(port: u16, path: &str) -> Option<(u16, String)> {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
     stream
@@ -142,7 +125,6 @@ fn a_loopback_webhook_refusal_at_boot_is_one_audit_record() {
             .expect("spawn busbar"),
     );
 
-    // THE NODE BOOTS: a refused sink is inert, not a boot refusal.
     let deadline = Instant::now() + Duration::from_secs(60);
     let body = loop {
         if let Some(status) = child.0.try_wait().expect("try_wait") {

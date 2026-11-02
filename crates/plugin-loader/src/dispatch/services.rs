@@ -1,52 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE HOST SERVICES, HOST SIDE (`BUSBAR-1.6.0.md` THE DESIGN, §11.12): the `HostSlots` table every
-//! instance is handed ([`HOST_SLOTS`]), and the one mechanism every service runs through.
-//!
-//! * **Stored once, redeemed on the handle.** A ticketed call runs its service once under its
-//!   [`CompletionHandle`] and stores the result. A re-issued handle (a resume, or the re-call a short
-//!   answer earns) reads the stored result; nothing runs twice. The store forgets a ticket's results
-//!   when the ticket is recycled, a driver ticket's when its next tick starts with nothing held
-//!   on it (a held exchange keeps its results, `dispatch::worker`), and any other
-//!   ticket's when a new op (not a short answer's re-call) starts on it. Each op's results live
-//!   under an epoch of their own, so a pended service of an op that is over completes into
-//!   nothing: never the next op's same-numbered handle, never a wake for it.
-//! * **The short-buffer rule.** A result that does not fit the caller's buffers answers FAILED with
-//!   `needed_bytes`/`needed_items` at their full sizes and writes nothing. The one re-call on the same
-//!   handle reads the stored result; a second short answer on that handle is FAULT.
-//! * **A handle is bound to one request** (THE DESIGN §11.2: a host answer belongs to exactly one
-//!   request). A ticket's handle is bound to the service and the request it was first used for (the
-//!   service's index and a fingerprint of the request's bytes, never its buffers). The re-poll of
-//!   that request reads its answer; a call on the handle naming another service or another request
-//!   is a plugin fault: FAULT ([`HANDLE_REBOUND`]), never the stored answer, and the calling
-//!   instance is quarantined as a forged context's is. Status row 189: a plugin reused one handle
-//!   for its record load and then `entitlement.check`, and the check read the record load's
-//!   answer.
-//! * **May pend only on a ticket.** A service that may pend, called with no ticket, is REFUSED and
-//!   never runs.
-//! * **Served so far:** `clock.now`, `dest.judge`, `records.get`/`records.list`/`records.claim`,
-//!   `sign`, `trust.sight`, `trust.due`, `trust.verify`, `records.secret` (to the credential
-//!   kinds the caller's Statement declares, [`UNDECLARED_KIND`] otherwise), `work.open` /
-//!   `work.find` / `work.settle` / `work.resume`, `unit.nest`, `content.scan` and `hook.call`
-//!   (for the unit the crossing serves), `verify.lookup` / `verify.store` (the caller's own
-//!   single-flight verify cache), `disk.append` (to the destinations the caller was granted,
-//!   [`NO_DESTINATION`] otherwise) and `snapshot.read` (the host's metric families, laid out in the
-//!   caller's buffer by [`super::snapshot`], to the crossing the kernel granted them). The auth
-//!   handle's three (`auth.call`, `unit.hand_in`, `unit.refuse`; THE DESIGN §6, "Auth points and
-//!   guest lists", step 4) each refuse an `in` that is not exactly its size, then VERIFY its refs
-//!   ([`super::auth_handle`]: a ref of another owner, of another generation or with a forged mac is
-//!   REFUSED; a unit is verified against the secret the kernel side minted it under, and refused
-//!   while no kernel side is installed), then its contract check, and past those delegate to the
-//!   kernel side the root installed ([`super::Dispatcher::install_auth_handle`]), or answer
-//!   REFUSED [`AUTH_HANDLE_NOT_SERVED`] with none (fail closed).
-//! * **Who called.** The instance's [`Caller`], stated at bind, is handed to every service that is
-//!   scoped to its caller; an instance with none is REFUSED ([`NO_CALLER`]).
-//!
-//! THE SERVICES THEMSELVES ARE THE KERNEL'S. This file is the mechanism only: the kernel hands the
-//! dispatcher its [`HostServices`] at construction, and every slot here dispatches into it. The
-//! loader names no kernel crate.
-
 use std::collections::HashMap;
 use std::mem::size_of;
 use std::os::raw::c_void;
@@ -82,37 +36,29 @@ use busbar_contract::abi::auth::FieldSpan;
 use busbar_contract::abi::host::service::ItemSpan;
 use busbar_contract::abi::mechanism::call::Span;
 
-/// The error text of a caller-scoped service called from an instance the host states no caller for.
 pub const NO_CALLER: &str = "no caller is bound to this instance";
-/// The error text of a claim with no time to live.
+
 pub const NO_TTL: &str = "a claim states its time to live";
-/// The error text of a may-pend service called with no ticket.
+
 pub const UNTICKETED: &str = "a service that may pend is callable only inside a ticketed op";
-/// The error text of a ticketed service call whose handle names a ticket other than the one the
-/// calling crossing carries.
+
 pub const NOT_THIS_CROSSING: &str =
     "a service handle names the ticket of the crossing that calls it";
-/// The error text of a short answer.
+
 pub const SHORT: &str = "the buffer is too small";
-/// The refusal of a `random.fill` of no bytes or above `MAX_RANDOM_FILL`, before a byte is drawn.
+
 pub const FILL_OUT_OF_RANGE: &str = "a fill asks for 1 to MAX_RANDOM_FILL bytes";
-/// The refusal of a `records.secret` read of a credential kind the calling instance does not
-/// declare, before anything is read.
+
 pub const UNDECLARED_KIND: &str = "the caller does not declare that credential kind";
-/// The refusal of a `disk.append` to a key the calling instance was not granted (its manifest
-/// declares no such destination) or its settings leave unset, before anything is written.
+
 pub const NO_DESTINATION: &str = "the caller was granted no such destination";
-/// The error text of a `snapshot.read` before the host's recorder is installed: the caller answers
-/// "not ready, retry".
+
 pub const SNAPSHOT_NOT_READY: &str = "the snapshot is not ready";
-/// The error text of the second short answer on one handle.
+
 pub const SECOND_SHORT: &str = "a second short answer on one handle";
-/// The fault of a call on a used handle that names another service or another request than the
-/// one the handle is bound to; the calling instance is quarantined.
+
 pub const HANDLE_REBOUND: &str =
     "a handle is bound to the service and request it was first used for";
-
-// ── the stored results ─────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug)]
 enum Entry {
@@ -152,14 +98,12 @@ struct Bound {
 pub(crate) struct Fp(u64);
 
 impl Fp {
-    /// The fingerprint of no parts (FNV-1a's offset basis).
     pub(crate) const EMPTY: Self = Self(0xcbf2_9ce4_8422_2325);
 
     fn word(self, w: u64) -> Self {
         Self((self.0 ^ w).wrapping_mul(0x0100_0000_01b3).rotate_left(29))
     }
 
-    /// `self` with `part` folded in.
     #[must_use]
     pub(crate) fn with(self, part: &[u8]) -> Self {
         let mut f = self.word(part.len() as u64);
@@ -175,7 +119,6 @@ impl Fp {
         f
     }
 
-    /// The fingerprint of `parts`, in order.
     pub(crate) fn of(parts: &[&[u8]]) -> u64 {
         parts.iter().fold(Self::EMPTY, |f, p| f.with(p)).0
     }
@@ -243,23 +186,19 @@ pub struct ServiceStore {
     pub(crate) held: super::held::Held,
 }
 
-/// How many maps a [`ServiceStore`] is split into: a worker's tickets all land in one.
 const SHARDS: usize = 16;
 
 impl ServiceStore {
-    /// The map worker `worker`'s tickets live in, locked.
     fn shard(&self, worker: u32) -> std::sync::MutexGuard<'_, HashMap<Ticket, Held>> {
         self.shards[worker as usize % SHARDS]
             .lock()
             .unwrap_or_else(|e| e.into_inner())
     }
 
-    /// The map `ticket` lives in, locked.
     fn lock(&self, ticket: Ticket) -> std::sync::MutexGuard<'_, HashMap<Ticket, Held>> {
         self.shard(decode(ticket.slot).0)
     }
 
-    /// Store a pended service's result; `false` when the handle is not running under `epoch`.
     fn complete(
         &self,
         h: CompletionHandle,
@@ -291,8 +230,6 @@ impl ServiceStore {
         }
     }
 
-    /// Forget every result under `ticket` (it was recycled, a driver ticket's tick started, or a
-    /// new op started on it), ending its epoch; how many there were.
     pub(crate) fn forget(&self, ticket: Ticket) -> usize {
         let retired = {
             let mut map = self.lock(ticket);
@@ -315,8 +252,7 @@ impl ServiceStore {
                     removed.push(kept);
                 }
             }
-            // The old immutable commits retain their own original epoch in their map key.
-            // A new ordinary operation can never regain that old capability.
+
             h.epoch = self.epochs.fetch_add(1, Ordering::Relaxed) + 1;
             let empty_owner = if h.empty() { map.remove(&ticket) } else { None };
             (entries, inspections, removed, wakes, empty_owner)
@@ -330,7 +266,6 @@ impl ServiceStore {
         count
     }
 
-    /// Forget every result of worker `worker` (it was replaced).
     pub(crate) fn forget_worker(&self, worker: u32) {
         let tickets: Vec<_> = self
             .shard(worker)
@@ -343,8 +278,6 @@ impl ServiceStore {
         }
     }
 
-    /// TEST ONLY: a READY result kept under `ticket`'s handle `seq`, as a service an op on the
-    /// ticket called leaves it.
     #[cfg(test)]
     pub(crate) fn keep(&self, ticket: Ticket, seq: u32) {
         let epoch = self.epochs.fetch_add(1, Ordering::Relaxed) + 1;
@@ -373,7 +306,6 @@ impl ServiceStore {
             );
     }
 
-    /// How many results the store holds.
     #[cfg(test)]
     pub(crate) fn held(&self) -> usize {
         (0..SHARDS as u32)
@@ -387,13 +319,12 @@ impl ServiceStore {
     }
 }
 
-/// The one answer a pended service gives: store the result under its handle, then wake its ticket.
 pub struct Completer {
     store: Weak<ServiceStore>,
-    /// The route, and the instance whose context took the ticket (#74).
+
     waking: Waking,
     handle: CompletionHandle,
-    /// The epoch of the op that issued `handle`.
+
     epoch: u64,
     invocation: u64,
 }
@@ -408,8 +339,6 @@ impl std::fmt::Debug for Completer {
 }
 
 impl Completer {
-    /// Store `stored` and wake the ticket. A handle whose op is over meanwhile (its ticket was
-    /// recycled, or a new op or tick started on it) is dropped, and wakes nothing.
     pub fn complete(self, stored: Stored) {
         let Some(store) = self.store.upgrade() else {
             return;
@@ -434,7 +363,6 @@ pub struct ServicesSlot {
 }
 
 impl ServicesSlot {
-    /// Nothing installed yet: `pre` answers until the install.
     #[must_use]
     pub fn late(pre: Arc<dyn HostServices>) -> Arc<Self> {
         Arc::new(Self {
@@ -443,7 +371,6 @@ impl ServicesSlot {
         })
     }
 
-    /// `services`, installed now.
     #[must_use]
     pub fn of(services: Arc<dyn HostServices>) -> Arc<Self> {
         Arc::new(Self {
@@ -452,18 +379,15 @@ impl ServicesSlot {
         })
     }
 
-    /// Install `services`; `false`, and nothing changed, when some already are.
     pub fn install(&self, services: Arc<dyn HostServices>) -> bool {
         self.installed.set(services).is_ok()
     }
 
-    /// Whether services are installed.
     #[must_use]
     pub fn is_installed(&self) -> bool {
         self.installed.get().is_some()
     }
 
-    /// What the slot serves now: the installed services, else `pre`; `None` when neither.
     #[must_use]
     pub fn get(&self) -> Option<&Arc<dyn HostServices>> {
         self.installed.get().or(self.pre.as_ref())
@@ -476,8 +400,6 @@ pub(crate) struct Served<'a> {
     pub(crate) store: &'a Arc<ServiceStore>,
     pub(crate) provider: &'a dyn HostServices,
 }
-
-// ── the answer ─────────────────────────────────────────────────────────────────────────────────
 
 /// A service's answer, before it is written into the caller's `out` ([`write_out`]): the one
 /// answer every slot table's frame writes (the host services, the connector's, the host I/O's).
@@ -502,7 +424,6 @@ pub struct Answered {
 }
 
 impl Answered {
-    /// `outcome`, with `error` its reason and nothing else.
     pub(crate) const fn bare(outcome: Outcome, error: &'static str) -> Self {
         Self {
             outcome,
@@ -516,12 +437,10 @@ impl Answered {
         }
     }
 
-    /// The one fault answer: FAULT, no text.
     pub(crate) const fn fault() -> Self {
         Self::bare(Outcome::Fault, "")
     }
 
-    /// READY, with its scalar `value` and `len` bytes written.
     pub(crate) const fn ready(value: u64, len: u64) -> Self {
         Self {
             value,
@@ -627,9 +546,6 @@ pub(crate) unsafe fn serve(
     )
 }
 
-/// [`serve`] with the stored result written into the caller's memory by `put` (`Err` = the short
-/// answer) rather than into a [`ServiceBufs`]: the one mechanism, for a service whose answer has
-/// its own layout (the auth handle's names and answer slot). `put` runs at most once per call.
 pub(crate) fn serve_with(
     store: &Arc<ServiceStore>,
     route: &Waking,
@@ -642,21 +558,18 @@ pub(crate) fn serve_with(
         if may_pend(head.op) {
             return Answered::bare(Outcome::Refused, UNTICKETED);
         }
-        // A ticketless call is never stored: only a service that never pends gets here, and a
-        // re-call re-reads it.
+
         return match body(None) {
             Ran::Now(stored) => put(&stored).unwrap_or_else(|short| short),
             Ran::Later => Answered::fault(),
         };
     }
     let h = head.handle;
-    // A ticketed handle names the ticket of the crossing that calls it, or the call is refused:
-    // a pure op may not stamp another op's live ticket to pend, nor another op's result redeem.
+
     if !crossing_names(h.ticket) {
         return Answered::bare(Outcome::Refused, NOT_THIS_CROSSING);
     }
-    // A driver ticket's tick may not reuse a handle another exchange issued in a kept cycle
-    // (`super::held`): it would read that exchange's kept answer.
+
     let caller = Issue::of(route, h.seq).caller;
     let domain = busbar_contract::abi::sdk::completion_retirement::Domain::Host;
     if !store.held.call(caller, domain, h) {
@@ -670,9 +583,6 @@ pub(crate) fn serve_with(
     a
 }
 
-/// [`serve`] under the ticketed handle `h`, bound at its first use to `bound` (the service and the
-/// request's fingerprint): run once, stored, redeemed on the handle; a call naming another `bound`
-/// is [`rebound`]. `put` writes a stored result into the caller's memory.
 fn serve_kept(
     store: &Arc<ServiceStore>,
     route: &Waking,
@@ -681,9 +591,6 @@ fn serve_kept(
     put: impl FnOnce(&Stored) -> Result<Answered, Answered>,
     body: impl FnOnce(Option<Completer>) -> Ran,
 ) -> Answered {
-    // The epoch of the op on the ticket: the one its first result minted, or a fresh one. A handle
-    // already used is redeemed under this one lock; one bound to another service or request is
-    // `None`; a fresh one is noted running, so a completion has an entry to land in.
     let issue = Issue::of(route, h.seq);
     let fresh = {
         let mut map = store.lock(h.ticket);
@@ -720,7 +627,7 @@ fn serve_kept(
         invocation,
     };
     let ran = body(Some(completer));
-    // What it ran to is stored and redeemed under one lock.
+
     let mut map = store.lock(h.ticket);
     let Some((_, e)) = map
         .get_mut(&h.ticket)
@@ -728,7 +635,6 @@ fn serve_kept(
         .and_then(|held| held.entries.get_mut(&issue))
         .filter(|(_, entry)| entry.invocation() == invocation)
     else {
-        // Forgotten under the call: its ticket was recycled.
         return Answered::fault();
     };
     if let Ran::Now(stored) = ran {
@@ -785,9 +691,6 @@ unsafe fn redeem(
     }
 }
 
-/// A call on a used handle naming another service or request (status row 189): the caller, the
-/// instance whose context made the call, is quarantined, and the call answers FAULT. Never the
-/// answer the handle holds.
 fn rebound(route: &Waking) -> Answered {
     if let Some(wake) = route.supplier {
         super::plugin::quarantine(
@@ -799,9 +702,6 @@ fn rebound(route: &Waking) -> Answered {
     Answered::bare(Outcome::Fault, HANDLE_REBOUND)
 }
 
-// ── the slots ──────────────────────────────────────────────────────────────────────────────────
-
-/// The table a host hands every instance.
 pub static HOST_SLOTS: HostSlots = HostSlots {
     size: size_of::<HostSlots>() as u32,
     slots: SERVICES,
@@ -841,16 +741,6 @@ pub static HOST_SLOTS: HostSlots = HostSlots {
     ticket_take: Some(ticket_take),
 };
 
-/// A NEW OP starts on `ticket` (an inline ticket's op that is not a resume): the results the
-/// ticket's earlier op stored are forgotten, ending their epoch, so the new op's handles (counted
-/// from 0 again) never read them and a late completion of the old op stores into nothing. A
-/// resume keeps them: the re-issued handle reads its stored result.
-///
-/// THE HOST'S OWN BOOKKEEPING, read off the instance's own handle-table entry (`wake`), never a
-/// context judged as if a plugin had handed it: the op may be crossed NESTED inside another
-/// instance's crossing (a framer's `begin` on its inline ticket, driven by a plane's connection
-/// service on the plane's thread), where resolving the framer's context would read as "another
-/// instance's handle inside a crossing" and quarantine the plane, which no plugin forged.
 pub(crate) fn new_op(wake: &'static super::ticket::InstanceWake, ticket: Ticket) {
     let Some(route) = Waking::of(wake).and_then(|w| w.route.upgrade()) else {
         return;
@@ -860,8 +750,6 @@ pub(crate) fn new_op(wake: &'static super::ticket::InstanceWake, ticket: Ticket)
     }
 }
 
-/// A checked range of the caller's, copied: `None` for NULL with a length, or a length over the
-/// hard byte maximum (refused before any slice is formed, THE DESIGN §11.13 M1).
 fn bytes_of(s: AbiStr, field: &'static str) -> Option<Vec<u8>> {
     check::text(s, field).ok()?;
     // SAFETY: a range of the caller's, live for the call, its length capped by `lent_str` before
@@ -869,29 +757,20 @@ fn bytes_of(s: AbiStr, field: &'static str) -> Option<Vec<u8>> {
     unsafe { super::validate::lent_str(s) }.map(<[u8]>::to_vec)
 }
 
-/// A checked blob of the caller's, copied: `None` for NULL with a length, or a length over the hard
-/// byte maximum (refused before any slice is formed, THE DESIGN §11.13 M1).
 fn blob_of(b: Blob, field: &'static str) -> Option<Vec<u8>> {
     check::listed(b.ptr, b.len, field).ok()?;
     // SAFETY: as `bytes_of`.
     unsafe { super::validate::lent(b.ptr, b.len) }.map(<[u8]>::to_vec)
 }
 
-/// A checked UTF-8 string of the caller's, copied: `None` for NULL with a length or bad UTF-8.
 fn text_of(s: AbiStr, field: &'static str) -> Option<String> {
     String::from_utf8(bytes_of(s, field)?).ok()
 }
 
-/// The [`Later`] a ticketed service's completer answers through.
 fn later_of(completer: Option<Completer>) -> Option<Later> {
     completer.map(|c| -> Later { Box::new(move |s| c.complete(s)) })
 }
 
-/// ONE SLOT'S FRAME: the `in` and `out` are there, the head is this service's and covers its `in`,
-/// a may-pend service has a ticket, then `body` with what the dispatcher the context routes to
-/// serves (borrowed for the call) and the instance's route, the context resolved once. A panic
-/// answers FAULT; the `out` is written as far as the caller stated it, and one stated below the
-/// first is REFUSED.
 fn slot(
     ctx: HostCtx,
     input: *const c_void,
@@ -915,9 +794,6 @@ fn slot(
     })
 }
 
-/// [`slot`]'s frame, for a service the kernel does not serve (the connection table answers it):
-/// the `in` and `out` are there, the head is this service's and covers its `in`, a may-pend
-/// service has a ticket, then `body`. A panic answers FAULT; the whole `out` is written.
 fn framed(
     input: *const c_void,
     out: *mut ServiceOut,
@@ -925,9 +801,6 @@ fn framed(
     in_size: usize,
     body: impl FnOnce(ServiceHead) -> Answered,
 ) -> RawOutcome {
-    // THE CALLER'S `out`, as it states it: one below the first `ServiceOut` is REFUSED before the
-    // service runs, and nothing of it is written (an `out` grows by appending, so an older caller's
-    // smaller one is never overrun).
     let lent = if out.is_null() {
         0
     } else {
@@ -1048,7 +921,6 @@ service! {
     }
 }
 
-/// A caller-scoped slot's frame: [`slot`], then the instance's [`Caller`] or REFUSED.
 fn scoped(
     ctx: HostCtx,
     input: *const c_void,
@@ -1121,8 +993,6 @@ service! {
     }
 }
 
-/// The credential kinds the calling instance (`route`'s supplier) declares it reads; none before
-/// bind stated them.
 fn credential_kinds(route: &Waking) -> &'static [String] {
     let Some(wake) = route.supplier else {
         return &[];
@@ -1158,8 +1028,6 @@ service! {
     }
 }
 
-/// The destination the calling instance's (`route`'s supplier's) `key` is bound to; `None` when it
-/// was granted no such key, or its settings leave it unset.
 fn destination(route: &Waking, key: &str) -> Option<busbar_contract::services::DiskDest> {
     let wake = route.supplier?;
     if !wake.destinations.get()?.iter().any(|k| k == key) {
@@ -1175,14 +1043,6 @@ fn destination(route: &Waking, key: &str) -> Option<busbar_contract::services::D
     bound.iter().find(|d| d.key == key).cloned()
 }
 
-// `disk.append` (THE DESIGN §11.11 R4, §11.12): the caller's destination KEY is mapped to the
-// file the host bound for it (granted from its manifest, bound from its settings at open), and
-// the bytes go to the kernel's bounded disk lane, which pends the call until the append is done.
-// On READY and FAILED the result slot gets what the lane reported: the rotation before the append,
-// and on READY the whole of the bytes. A key the caller was not granted (or one its settings left
-// unbound) is never opened: it answers FAILED at the [`svc::DISK_OPEN_FAILED`] step, in the host's
-// words ([`NO_DESTINATION`]), before anything is written, so the sink reports it as the one line it
-// reports a file it could not open with, as 1.5.5's file sink did (its BUSBAR-7074).
 service! {
     disk_append, slot, op::DISK_APPEND, DiskAppendIn, |served, route, head, i| {
         if check_disk_append_in(&i).is_err() {
@@ -1522,8 +1382,6 @@ thread_local! {
     static CROSSING: std::cell::Cell<Option<Ticket>> = const { std::cell::Cell::new(None) };
 }
 
-/// The ticket a crossing carries, stated for the host services it calls on its thread, and
-/// restored (to that of any crossing it is nested in) when the crossing returns.
 pub(crate) struct Crossing(Option<Ticket>);
 
 impl Drop for Crossing {
@@ -1532,22 +1390,16 @@ impl Drop for Crossing {
     }
 }
 
-/// State that the crossing on this thread carries `ticket` until the returned guard drops.
 pub(crate) fn crossing(ticket: Ticket) -> Crossing {
     Crossing(CROSSING.with(|c| c.replace(Some(ticket))))
 }
 
-/// Whether a service handle naming `ticket` may be served on this thread (THE DESIGN §11.12: "A
-/// service that may pend is callable only inside a ticketed op"): inside a crossing, only the
-/// crossing's own ticket; outside any crossing (the host's own calls), any.
 fn crossing_names(ticket: Ticket) -> bool {
     CROSSING
         .with(std::cell::Cell::get)
         .is_none_or(|t| t == ticket)
 }
 
-/// The unit a crossing serves, stated for the host services it calls on its thread, and cleared
-/// (to the unit of any crossing it is nested in) when the crossing returns.
 pub(crate) struct Serving(Option<u64>);
 
 impl Drop for Serving {
@@ -1556,12 +1408,10 @@ impl Drop for Serving {
     }
 }
 
-/// State that the crossing on this thread serves `unit` until the returned guard drops.
 pub(crate) fn serving(unit: Option<u64>) -> Serving {
     Serving(SERVING.with(|s| s.replace(unit)))
 }
 
-/// The unit the crossing on this thread serves; `None` outside a crossing that serves one.
 pub(crate) fn serving_unit() -> Option<u64> {
     SERVING.with(std::cell::Cell::get)
 }
@@ -1571,7 +1421,6 @@ thread_local! {
     static OP_DEADLINE: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
 }
 
-/// The op deadline a crossing states, restored to the one it is nested in when it drops.
 pub(crate) struct OpDeadline(Option<u64>);
 
 impl Drop for OpDeadline {
@@ -1580,9 +1429,6 @@ impl Drop for OpDeadline {
     }
 }
 
-/// State the deadline of the op `head` leads, for the host services its crossing calls: its
-/// `deadline_ns` for a call, stream or connection op; none for a write-behind op (never
-/// cancelled) or an op with no deadline.
 pub(crate) fn op_deadline(head: &busbar_contract::abi::mechanism::call::InHead) -> OpDeadline {
     use busbar_contract::abi::mechanism::call::DeadlineClass;
     let deadline = (head.deadline_ns != 0
@@ -1591,8 +1437,6 @@ pub(crate) fn op_deadline(head: &busbar_contract::abi::mechanism::call::InHead) 
     OpDeadline(OP_DEADLINE.with(|d| d.replace(deadline)))
 }
 
-/// What remains of the deadline of the op whose crossing is on this thread; `None` outside one,
-/// or for an op with none.
 fn op_remaining() -> Option<std::time::Duration> {
     OP_DEADLINE
         .with(std::cell::Cell::get)
@@ -1635,28 +1479,17 @@ service! {
     }
 }
 
-// ── the host auth handle ──────────────────────────────────────────────────────────────────────
-
-/// The refusal of an `in` whose stated size is not its service's one v1 size, before it is read.
 pub const NOT_EXACT: &str = "the `in` is not exactly its service's size";
-/// The refusal of a non-zero unit no kernel side is installed to verify: fail closed.
+
 pub const UNIT_UNVERIFIED: &str = "the host holds no unit to verify this one against";
-/// The refusal of an auth-handle `in` that breaks its contract check.
+
 pub const AUTH_IN_MALFORMED: &str = "the auth-handle `in` breaks its check";
-/// The refusal of a peer-point `auth.call` whose kernel answer named a line, a byte or a unit:
-/// the peer point answers continue or stop alone (the Peer rule).
+
 pub const PEER_ANSWER_NAMES: &str =
     "a peer-point answer is continue or stop, with nothing beside it";
-/// What every auth-handle slot answers PAST its checks while no kernel side is installed
-/// ([`super::Dispatcher::install_auth_handle`]): fail closed.
+
 pub const AUTH_HANDLE_NOT_SERVED: &str = "the auth handle is not yet served";
 
-/// THE AUTH HANDLE'S SLOT FRAME: [`framed`] with only the head read; the calling instance's
-/// dispatcher, whose service store a pended call is kept in (a transport's dispatcher serves no
-/// [`HostServices`], and its auth handle is served all the same); then the `in` is refused unless
-/// its stated size is EXACTLY `T`'s ([`NOT_EXACT`], before any field is read); then `body` with the
-/// `in` read whole, the calling instance's identity (the owner its refs are verified for), the
-/// store and the route a pended call wakes.
 fn exact<T: Copy>(
     ctx: HostCtx,
     input: *const c_void,
@@ -1680,20 +1513,16 @@ fn exact<T: Copy>(
     })
 }
 
-/// The kernel side of the handle the caller's dispatcher serves; `None` = none installed.
 fn auth_host(route: &Waking) -> Option<Arc<dyn AuthHandleHost>> {
     route.route.upgrade()?.auth_handle()
 }
 
-/// An auth ref, verified for `owner` at the selected policy generation: `None` when it passes.
 fn refused_ref(owner: u64, generation: u64, r: &svc::AuthRef) -> Option<Answered> {
     super::auth_handle::verify_auth_ref(owner, generation, r)
         .err()
         .map(|e| Answered::bare(Outcome::Refused, e.text()))
 }
 
-/// Select the policy of an existing unit without granting authority. Its MAC and request
-/// binding still have to pass before a service runs; a new unit uses the published generation.
 fn request_generation(
     owner: u64,
     host: Option<&Arc<dyn AuthHandleHost>>,
@@ -1725,12 +1554,6 @@ fn request_generation(
     Ok(super::auth_handle::generation())
 }
 
-/// A presented unit (#74): none passes. With no kernel side installed any other is refused
-/// ([`UNIT_UNVERIFIED`], fail closed); with one, the unit is verified against the secret,
-/// generation and line the kernel minted it under for this owner ([`verify_unit_ref`]), and a unit
-/// it holds no record of, or whose mac is not the one minted, is refused.
-///
-/// [`verify_unit_ref`]: super::auth_handle::verify_unit_ref
 fn refused_unit(
     owner: u64,
     host: Option<&Arc<dyn AuthHandleHost>>,
@@ -1751,7 +1574,6 @@ fn refused_unit(
     refused.map(|e| Answered::bare(Outcome::Refused, e))
 }
 
-/// A lent text, copied: `None` for a range that breaks the lent rules.
 fn lent_text(s: AbiStr) -> Option<String> {
     // SAFETY: a range of the caller's, live for the call, its length capped before the slice is
     // formed; copied before any pend.
@@ -1759,8 +1581,6 @@ fn lent_text(s: AbiStr) -> Option<String> {
     Some(String::from_utf8_lossy(bytes).into_owned())
 }
 
-/// The caller's [`HeadView`](svc::HeadView), copied out of its memory (checked by
-/// [`svc::check_head_view`] first): `None` for a list or text that breaks the lent rules.
 fn head_copy(v: &svc::HeadView) -> Option<HeadCopy> {
     let fields = if v.fields_len == 0 {
         Vec::new()
@@ -1787,13 +1607,8 @@ fn head_copy(v: &svc::HeadView) -> Option<HeadCopy> {
     })
 }
 
-/// The bytes before an `auth.call` answer's names in its stored form: the unit's id and mac.
 const UNIT_PREFIX: usize = 16;
 
-/// An `auth.call` answer in the mechanism's stored form, so a pended one is stored under its
-/// handle and redeemed on the re-issued one like any service's: `value` = the flow; the bytes =
-/// the unit (id, mac, little-endian) then the names; one span per name, its key the name's range
-/// and its value's length the name's `FIELD_*` flags. `Err` is REFUSED with the text.
 fn stored_auth(r: Result<AuthCallAnswer, &'static str>) -> Stored {
     let a = match r {
         Ok(a) => a,
@@ -1831,8 +1646,7 @@ unsafe fn put_auth(stored: &Stored, i: &svc::AuthCallIn) -> Result<Answered, Ans
         return Ok(Answered::bare(stored.outcome, stored.error));
     }
     let (unit, names) = stored.bytes.split_at(UNIT_PREFIX.min(stored.bytes.len()));
-    // THE PEER RULE: a peer-point answer is continue or stop alone; one that names anything, or a
-    // unit, is refused and writes nothing.
+
     if i.point == busbar_contract::abi::auth::POINT_PEER
         && (!names.is_empty() || !stored.spans.is_empty() || unit.iter().any(|b| *b != 0))
     {
@@ -1885,12 +1699,6 @@ unsafe fn put_auth(stored: &Stored, i: &svc::AuthCallIn) -> Result<Answered, Ans
     })
 }
 
-/// `auth.call` (THE DESIGN §6, "Auth points and guest lists", steps 4 and 7): the exact size, the
-/// ref (owner, generation, mac), the unit, the `in`'s contract check, each refused in that order
-/// before anything else; then the installed kernel side runs it ONCE per completion handle under
-/// the mechanism, so a call it keeps pends on its own ticket and the re-issued handle reads the
-/// stored answer, short-buffer rule included. With no kernel side installed:
-/// [`AUTH_HANDLE_NOT_SERVED`].
 fn service_framing(
     owner: u64,
     conn: u64,
@@ -1913,8 +1721,6 @@ fn claim_stream_operation(
     required: bool,
 ) -> Result<(), &'static str> {
     if let Some(context) = super::framing_context::current() {
-        // Contextless and legacy test hosts have no policy protocol. A concrete host's
-        // request_generation already required its registered stream loan before this point.
         if required || context.policy_generation(stream, false).is_some() {
             context.claim_stream_operation(ticket, stream, generation)?;
         }
@@ -1948,7 +1754,6 @@ extern "C" fn auth_call(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
                 return r;
             }
             match svc::check_auth_call_in(&i) {
-                // A request view that declares no scheme never grants: refused by name.
                 Err(f) if f.field == "head_view.scheme" && f.rule == check::Rule::Missing => {
                     return Answered::bare(Outcome::Refused, svc::SCHEME_UNDECLARED_REFUSED);
                 }
@@ -1958,8 +1763,7 @@ extern "C" fn auth_call(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
             let Some(host) = host else {
                 return Answered::bare(Outcome::Refused, AUTH_HANDLE_NOT_SERVED);
             };
-            // At the peer point the view is copied as presented: the kernel refuses any byte in it
-            // (the Peer rule).
+
             let Some(request) = head_copy(&i.request) else {
                 return Answered::bare(Outcome::Refused, AUTH_IN_MALFORMED);
             };
@@ -1999,9 +1803,7 @@ extern "C" fn auth_call(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
                 deadline: op_remaining(),
                 framing,
             };
-            // The request a handle is bound to: the line or binding, the unit, the point and the
-            // connection and stream it is made on. Never the buffers, which a short answer's
-            // re-call may change.
+
             let req = Fp::of(&[
                 &i.auth.id.to_le_bytes(),
                 &i.unit.id.to_le_bytes(),
@@ -2031,8 +1833,6 @@ extern "C" fn auth_call(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
     )
 }
 
-/// `unit.hand_in`: as [`auth_call`]'s checks, over the matched line's ref; then the installed
-/// kernel side's checks (a) to (c) answer the flow and the unit. Never pends.
 extern "C" fn unit_hand_in(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
     exact::<svc::UnitHandInIn>(
         ctx,
@@ -2061,7 +1861,7 @@ extern "C" fn unit_hand_in(ctx: HostCtx, input: *const c_void, out: *mut Service
             if svc::check_unit_hand_in_in(&i).is_err() {
                 return Answered::bare(Outcome::Refused, AUTH_IN_MALFORMED);
             }
-            // A request view that declares no scheme never grants, at the hand-in as at the call.
+
             if i.request.scheme == svc::SCHEME_UNDECLARED {
                 return Answered::bare(Outcome::Refused, svc::SCHEME_UNDECLARED_REFUSED);
             }
@@ -2126,8 +1926,6 @@ extern "C" fn unit_hand_in(ctx: HostCtx, input: *const c_void, out: *mut Service
     )
 }
 
-/// One refusal the kernel answered, lent to the caller for the call alone: the bytes, and the
-/// field list naming them.
 struct HeldRefusal {
     bytes: RefusalBytes,
     fields: Vec<busbar_contract::abi::mechanism::call::Field>,
@@ -2141,16 +1939,11 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-/// How many refusals this thread holds lent (at most one).
 #[cfg(test)]
 pub(crate) fn refusals_held() -> usize {
     LENT_REFUSAL.with(|l| usize::from(l.borrow().is_some()))
 }
 
-/// `unit.refuse`: the exact size, the unit, the `in`'s contract check; then the installed kernel
-/// side answers the refusal it owns, lent to the caller until the next refusal on its thread (it
-/// copies it out before the call returns).
-/// Never pends. With no kernel side installed: [`AUTH_HANDLE_NOT_SERVED`].
 extern "C" fn unit_refuse(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
     exact::<svc::UnitRefuseIn>(ctx, input, out, op::UNIT_REFUSE, |i, owner, _, route, h| {
         let host = auth_host(&route);
@@ -2249,7 +2042,6 @@ extern "C" fn unit_refuse(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
     })
 }
 
-/// `session.emit`'s refusal of a write that names no session or no bytes.
 const EMIT_NOTHING: &str = "session.emit names an open session and something to write";
 
 service! {
@@ -2275,7 +2067,6 @@ service! {
     }
 }
 
-/// `ticket.mint`'s refusal of an `in` with no lifetime or a record over the cap.
 const MINT_OUT_OF_RANGE: &str =
     "ticket.mint asks a lifetime of at least one second and a record within the cap";
 
@@ -2344,8 +2135,6 @@ service! {
     }
 }
 
-/// The refusal of a `work.open` or `work.settle` record past `MAX_WORK_RECORD`, before anything is
-/// opened or settled.
 pub const WORK_RECORD_TOO_LONG: &str = "the work record is longer than MAX_WORK_RECORD";
 
 service! {
@@ -2432,15 +2221,14 @@ service! {
     }
 }
 
-/// The refusal of a `verify.lookup` or `verify.store` with an empty key, before the cache is read.
 pub const NO_VERIFY_KEY: &str = "a verify call names its key";
-/// The refusal of a `hook.call` naming a stage that is neither a gate nor a rewrite.
+
 pub const HOOK_UNKNOWN_STAGE: &str = "the hook stage is neither a gate nor a rewrite";
-/// The refusal of a `hook.call` resuming a chain past `HOOK_FROM_MAX`.
+
 pub const HOOK_FROM_PAST_CAP: &str = "a rewrite chain resumes no further than HOOK_FROM_MAX";
-/// The refusal of a `hook.call` gate that names a place to resume from.
+
 pub const HOOK_GATE_RESUMED: &str = "a gate is never resumed";
-/// The refusal of a `hook.call` with no prompt view.
+
 pub const HOOK_NO_PROMPT: &str = "a hook call states its prompt view";
 
 service! {
@@ -2507,7 +2295,6 @@ service! {
     }
 }
 
-/// A prompt view, copied: the system text and the `(role, text)` messages.
 type PromptCopy = (Option<String>, Vec<(String, String)>);
 
 /// The caller's prompt view, copied: `None` for a view that breaks its rules (a NULL list with a
@@ -2583,11 +2370,6 @@ service! {
     }
 }
 
-/// THE HOST'S VERDICT on the calling instance's declared need: what the host's one connection
-/// table answered when the need was declared at bind (`DeclaredConns::declared`). READY when it was
-/// admitted; REFUSED, in the table's words, when it was refused or never declared. Never pends. The
-/// verdict binds fail-closed whether or not the plugin asks: every establish on a refused need is
-/// refused by the table.
 extern "C" fn need_admit(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
     framed(
         input,

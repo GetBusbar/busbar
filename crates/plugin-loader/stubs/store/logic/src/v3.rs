@@ -1,19 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The store v3 slots this backend answers beyond the 1.5.5 op set ([`SyncStore`]): the
-//! `op_id`-carrying count batches, plane records and the kernel-held records. It holds no money:
-//! money is counts x the rate card, derived in busbar's core.
-//!
-//! DEDUPE (`abi::store` S1-S4): every `op_id` this store APPLIED is remembered, with a SHA-256
-//! digest of the op's value fields and its answer, for [`OP_ID_RETENTION_SECS`]. The digest is fixed
-//! size, so what the log keeps per op does not grow with what the op wrote. A replay with the same
-//! value fields applies nothing and answers the original; different value fields are a conflict.
-//! The dedupe log lives under ONE lock, and an op's dedupe check, its effect and its record happen
-//! under it, so two racing calls with one `op_id` apply once. This store is EPHEMERAL (its
-//! Statement tail says so): the log is lost on restart together with everything it guards, so a
-//! replay after a restart re-applies onto an empty store, which is the state the restart left.
-
 use std::collections::{HashMap, VecDeque};
 use std::fmt::Write as _;
 use std::sync::{Mutex, MutexGuard};
@@ -36,10 +23,8 @@ enum Answer {
     Done,
 }
 
-/// The SHA-256 digest of an op's value fields, as their text renders them.
 type Body = [u8; 32];
 
-/// A [`std::fmt::Write`] that feeds what is written into a digest, so the text is never held.
 struct Feed(sha2::Sha256);
 
 impl std::fmt::Write for Feed {
@@ -49,15 +34,13 @@ impl std::fmt::Write for Feed {
     }
 }
 
-/// The [`Body`] of the value fields `args` render.
 fn body(args: std::fmt::Arguments<'_>) -> Body {
     let mut feed = Feed(<sha2::Sha256 as sha2::Digest>::new());
-    // Writing into a digest cannot fail.
+
     let _ = feed.write_fmt(args);
     sha2::Digest::finalize(feed.0).into()
 }
 
-/// One remembered op: the digest of its value fields and its answer.
 struct Recorded {
     body: Body,
     answer: Answer,
@@ -76,7 +59,6 @@ pub(crate) struct State {
     inner: Mutex<Inner>,
 }
 
-/// Whether an op is new, a replay, or a conflict.
 enum Seen {
     New,
     Replay(Answer),
@@ -92,7 +74,6 @@ impl Inner {
         }
     }
 
-    /// Remember an APPLIED op, and forget every op past its retention.
     fn record(&mut self, now: u64, op: OpId, body: Body, answer: Answer) {
         while let Some(&(at, old)) = self.aged.front() {
             if at.saturating_add(OP_ID_RETENTION_SECS) > now {
@@ -117,8 +98,6 @@ fn failed(e: busbar_contract::records::RecordStoreError) -> OpRefused {
 }
 
 impl MemoryStore {
-    /// Run one `op_id`-carrying write under the v3 lock: a replay answers the original, a
-    /// conflict applies nothing, and a new op runs `apply` and is remembered only if it applied.
     fn deduped(
         &self,
         op: OpId,
@@ -138,8 +117,6 @@ impl MemoryStore {
     }
 }
 
-/// The store v3 slots' own bodies: each op's ONE body, which the table's slot answers inline (the
-/// memory store never pends).
 impl MemoryStore {
     pub(crate) fn v3_append_plane_record_op(
         &self,
@@ -160,7 +137,6 @@ impl MemoryStore {
         key: &[u8],
         value: &[u8],
     ) -> Result<(), String> {
-        // The store keeps the record, so it copies it here (the door lends the host's bytes).
         let value = RecordBytes::new(value.to_vec())
             .map_err(|n| format!("a record of {n} bytes is over the ceiling"))?;
         self.record_put_at(schema, key, &value);
@@ -191,7 +167,6 @@ impl MemoryStore {
     ) -> OpResult<()> {
         let body = body(format_args!("add_usage_batch:{cells:?}"));
         self.deduped(op, body, |s, _| {
-            // A RAM ledger cannot fail an add, so applying in order is atomic.
             for (bucket, window, delta) in cells {
                 s.add_usage(bucket, *window, delta).map_err(failed)?;
             }
@@ -212,8 +187,6 @@ impl MemoryStore {
     }
 }
 
-/// Served whole by the SDK ([`SyncStore`]): the 1.5.5 op set is the store's [`RecordStore`] impl,
-/// and every slot answers at once.
 impl SyncStore for MemoryStore {
     const TAIL: Tail = Tail {
         ephemeral: true,

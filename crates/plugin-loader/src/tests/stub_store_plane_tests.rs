@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The stub store keys an upsert on `(kind, id)`, parent or not (the contract's
-//! `RecordStore::upsert_plane_record` / `get_plane_record`): an upserted record that names a parent
-//! reads back by its own id, a second id under the same parent is a second record (never an
-//! overwrite), and the parent-scoped listing still returns both.
-
 use busbar_contract::records::{PlaneDisposition, PlaneRecord, PlaneSelector, RecordStore};
 use busbar_stub_store::MemoryStore;
 
@@ -41,7 +36,6 @@ fn a_parented_upserted_record_reads_back_by_its_own_id() {
     listed.sort();
     assert_eq!(listed, vec![b"one".to_vec(), b"two".to_vec()]);
 
-    // A second upsert of one id replaces it; deleting it by id removes it alone.
     s.upsert_plane_record(child("t1", b"one'").view()).unwrap();
     assert_eq!(
         s.get_plane_record("task", "t1").unwrap(),

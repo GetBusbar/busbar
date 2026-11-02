@@ -1,29 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE GUEST LISTS (spec: THE DESIGN, Auth points and guest lists, step 3): one per listener, written
-//! by the kernel. A line is route → (claimant, dialect, auth); the lines are ordered by CG-62
-//! precedence and the listener's transport matches a request against them in that order.
-//!
-//! ORDER. Most specific path first (the same scores CG-62 seals claims by,
-//! [`crate::registry::precedence`]); at an equal path, a line with field predicates ranks above one
-//! without, the more specific predicates first; at an equal key, a claimant's own `rung` orders its
-//! own lines. Two different claimants' lines that could match one request at an equal key are
-//! refused ([`GuestRefusal::EqualPrecedence`]).
-//!
-//! POINTS. A line's point set is the union of its auths' sets. A listener where some lines need
-//! `Peer` and others need a per-request point (`Head`, `HeadBody`) without it is refused
-//! ([`GuestRefusal::PeerMix`]; THE DESIGN §6 step 3, boot refusals). A line that needs no point
-//! (auth `none`) is neutral to that rule: it sits on a `Peer` listener behind the connection's
-//! `Peer` verdict, which gates the whole connection ([`GuestList::connection_gated`]; §6 step 7).
-//! A line whose auth needs a point its transport does not offer is refused
-//! ([`GuestRefusal::PointNotOffered`]).
-//!
-//! MATCH. The first line whose path and predicates hold AND whose method set holds the method wins.
-//! When some line's path and predicates hold but none admits the method, the answer is a method
-//! miss on the first such line (405, never no-route). Otherwise there is no line (the listener's
-//! 1.5.5 no-route answer).
-
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use busbar_contract::abi::auth::{AuthPoint, AuthPoints};
@@ -35,9 +12,6 @@ use busbar_contract::abi::transport::route::{
 };
 use busbar_contract::grammar::Selector;
 
-/// THE KERNEL'S ROUTE-LITERAL INTERNER: one per process, held here because the contract holds no
-/// state. Every guest list the kernel seals, at boot and at each reload, interns through it, so a
-/// reload with the routes it has seen adds nothing.
 fn literals() -> MutexGuard<'static, Interner> {
     static LITERALS: OnceLock<Mutex<Interner>> = OnceLock::new();
     LITERALS
@@ -46,7 +20,6 @@ fn literals() -> MutexGuard<'static, Interner> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// How many distinct route strings and patterns the kernel's interner holds (strings, patterns).
 #[must_use]
 pub fn interned_counts() -> (usize, usize) {
     literals().counts()
@@ -79,7 +52,6 @@ pub struct Route {
 }
 
 impl Route {
-    /// The contract's read form, which every match goes through.
     #[must_use]
     pub fn view(&self) -> RouteView<'_> {
         RouteView {
@@ -95,7 +67,6 @@ impl Route {
         }
     }
 
-    /// The path as the grammar's selector, which CG-62 scores and overlaps.
     fn selector(&self) -> Option<Selector> {
         let mut literals = literals();
         let p = literals.intern(&self.path);
@@ -109,7 +80,6 @@ impl Route {
         })
     }
 
-    /// The field predicates as the grammar's header selectors.
     fn predicate_selectors(&self) -> Vec<Selector> {
         let mut literals = literals();
         self.fields
@@ -125,8 +95,6 @@ impl Route {
             .collect()
     }
 
-    /// The order key, highest first: path precedence, then whether predicates are named, then their
-    /// precedence.
     fn key(&self) -> ((u32, u32), bool, u32) {
         let path = self
             .selector()
@@ -136,8 +104,6 @@ impl Route {
         (path, !preds.is_empty(), score)
     }
 
-    /// Whether two routes could match one request: their method sets meet, their paths overlap
-    /// (CG-62's overlap), and no pair of predicates on one field rules the other out.
     fn could_meet(&self, other: &Route) -> bool {
         if self.methods & other.methods == 0 {
             return false;
@@ -167,7 +133,6 @@ pub enum LineAuth {
 }
 
 impl LineAuth {
-    /// The line's point set: the union of its auths' sets; empty for [`LineAuth::None`].
     #[must_use]
     pub fn points(&self) -> AuthPoints {
         match self {
@@ -229,23 +194,13 @@ pub struct GuestList {
 }
 
 impl GuestList {
-    /// Order `lines` and refuse a line whose route no request can match, two claimants' lines that
-    /// could meet at an equal precedence, a list where some lines need `Peer` and others need a
-    /// per-request point without it, and a line whose auth needs a point its transport does not
-    /// offer.
-    ///
-    /// # Errors
-    ///
-    /// [`GuestRefusal::Malformed`], naming the line and its rule;
-    /// [`GuestRefusal::EqualPrecedence`], naming both lines; [`GuestRefusal::PeerMix`], naming
-    /// the lines on each side; [`GuestRefusal::PointNotOffered`], naming the line.
     pub fn seal(mut lines: Vec<Line>) -> Result<Self, GuestRefusal> {
         for line in &lines {
             if let Err(fault) = check_route_view(&line.route.view()) {
                 return Err(GuestRefusal::Malformed(Box::new((line.clone(), fault))));
             }
         }
-        // Stable: equal keys keep the declared order, and a claimant's rung orders its own lines.
+
         lines.sort_by(|a, b| {
             b.route
                 .key()
@@ -289,22 +244,16 @@ impl GuestList {
         })
     }
 
-    /// Whether the listener's connections are gated by a `Peer` verdict: some line needs `Peer`.
-    /// The verdict is the connection's, so every line on the list sits behind it, a `none` line
-    /// included (THE DESIGN §6 step 7): no request on a connection the `Peer` verdict refused
-    /// reaches any line.
     #[must_use]
     pub fn connection_gated(&self) -> bool {
         self.connection_gated
     }
 
-    /// The lines, in the order they are tried.
     #[must_use]
     pub fn lines(&self) -> &[Line] {
         &self.lines
     }
 
-    /// The line a request is for.
     #[must_use]
     pub fn matched(&self, method: &str, path: &str, fields: &[(&str, &[u8])]) -> Matched<'_> {
         let mut miss = None;

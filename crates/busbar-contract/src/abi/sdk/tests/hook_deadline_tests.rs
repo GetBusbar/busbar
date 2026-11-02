@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Complete-exchange bounds through the actual hook Safe entry, with a manually advanced host
-//! clock. The far end sends a head and then remains Pending without waking the operation.
 
 use super::*;
 use crate::abi::host::conn::connector::{ReplyIn, StreamIn, REPLY_BODY, REPLY_END, REPLY_HEAD};
@@ -384,8 +383,6 @@ fn configure_owned_dom_is_wiped_on_ack_and_nack_from_the_actual_hook_callback() 
             settings: &serde_json::Map<String, serde_json::Value>,
             _: u64,
         ) -> Result<(), String> {
-            // Registration is in the consumer of the actual adapter-owned map, so the same test
-            // observes the old unguarded adapter as well as its fixed owner.
             watch_settings(settings);
             if settings.contains_key("bad") {
                 Err("refused settings.bad".into())
@@ -425,8 +422,7 @@ fn configure_owned_dom_is_wiped_on_ack_and_nack_from_the_actual_hook_callback() 
 #[test]
 fn reply_trees_wipe_unknown_and_typed_refusal_fields_with_an_unwiped_control() {
     use crate::alloc_counter::{watch_initialized_payload, InitializedPayloadProbe};
-    // Register the complete caller-owned input before handing it to the actual production
-    // lowerer. The old consuming decoder frees unknown strings/keys without wiping them.
+
     for raw in [
         r#"{"unknown":{"KEYCANARY":["VALUECANARY"]},"abstain":true}"#,
         r#"{"reject":{"message":"MESSAGECANARY"},"restrict":{"FIELDKEYCANARY":"FIELDCANARY"},"rewrite":1,"abstain":"WRONGTYPECANARY"}"#,
@@ -648,8 +644,7 @@ fn facts_that_reaches_expiry_in_its_service_step_cannot_lend_its_handle_to_close
                 .unwrap()
                 .observing()
                 .with_timeout_ms(BOUND_MS);
-            // The host advances time inside FACTS and answers Pending. Observe's optional-facts
-            // handling must not convert that expiry into a normal ticketed CLOSE on its handle.
+
             let result = crate::abi::sdk::exchange::exchange(
                 &mut host.connector(TICKET),
                 &mut exchange,

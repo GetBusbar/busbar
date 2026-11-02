@@ -1,16 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **THE WEBHOOK-SIGNATURE AUTH PLUGIN IS LINKED**, default-on: its inbound
-//! verify is an auth-chain module, so linking it lists it in `GET /api/v1/admin/info`
-//! `build.auth_modules` after 1.5.5's two (accepted difference `#64-class build.auth_modules lists
-//! the webhook-signature module`). Driven through the real binary's `--validate`.
-//!
-//! An `auth.chain` module that no installed or linked plugin answers is refused with "no plugin
-//! matching" / "was not loaded" (`cli_validate`'s `validate_fails_on_unresolvable_auth_chain_plugin`).
-//! With the row linked, a valid chain naming the webhook-signature module and a resolvable signing
-//! secret must validate successfully. RED without the link: the refusal is exactly what prints. The case
-//! rides every linked auth row (`linked_every_auth`, build.rs) rather than spelling one row's feature.
 #![cfg(linked_every_auth)]
 
 use std::path::PathBuf;

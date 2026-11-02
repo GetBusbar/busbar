@@ -1,32 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The RESOLVED runtime mint policy (`auth.policy:`) — CORE governance/config infrastructure.
-//!
-//! RELOCATED out of `admin` (1.6.0 de-alias, stage 2a): this is read on the hot mint path
-//! (`state.rs`'s `App::mint_policy`, `auth/exchange.rs`, `auth/login.rs`'s `mint_policy.self_mint`)
-//! and built once at boot (`appbuild.rs`'s `MintPolicy::from_auth`) — none of that is admin-API
-//! surface, so the type does not belong under the `admin::` namespace. Byte-identical move: every
-//! value, decision and error message this module produces is unchanged: only the module path moved.
-//! The admin mint handler (`admin/mod.rs`, staying put — it is the admin HTTP API's own `POST /keys`
-//! handler) is the one remaining caller that still constructs a mint request against this policy;
-//! it now names this neutral path instead of defining the type itself.
-
-/// Apply the deployment-wide mint TTL ceiling (`auth.policy.max_ttl`, 1.6.0) to a resolved mint
-/// lifetime. CORE-SIDE enforcement — never the UI's job (auth design review M2) — of the block-level
-/// cap that bounds how long any minted token may live.
-///
-/// - `ceiling` is `None` ⇒ no policy cap: the requested TTL passes through unchanged (byte-identical
-///   pre-1.6.0 behavior for a deployment that set no `auth.policy.max_ttl`).
-/// - an EXPLICIT request (`expires_in`/`expires_at`, `explicit = true`) that exceeds the ceiling is
-///   REFUSED: the operator asked, in writing, for longer than policy allows, so a loud 4xx beats
-///   silently shortening what they typed.
-/// - the no-expiry DEFAULT (`explicit = false`) is CLAMPED down to the ceiling: a 90-day default that
-///   predates a shorter policy must not silently outlive the cap, and a default was never an explicit
-///   ask to refuse.
-///
-/// Returns the (possibly clamped) TTL in seconds, or an error message naming the ceiling for the 4xx.
-/// The per-role `mint_ceilings` narrowing composes ABOVE this by lowering `ceiling` before the call.
 pub fn apply_mint_ttl_ceiling(
     requested_ttl_secs: u64,
     explicit: bool,
@@ -39,14 +13,11 @@ pub fn apply_mint_ttl_ceiling(
             "requested key lifetime ({requested_ttl_secs}s) exceeds the policy ceiling \
              auth.policy.max_ttl ({max}s); request a shorter expires_in/expires_at"
         )),
-        // Default (non-explicit) over the ceiling: clamp down to the cap.
+
         Some(max) => Ok(max),
     }
 }
 
-/// The default signed-token lifetime when the mint body specifies neither `expires_in` nor
-/// `expires_at`: 90 days. Long enough that routine use does not churn, short enough that a leaked
-/// token is not valid forever (the 1.x posture: keys never expired).
 pub const DEFAULT_KEY_TTL_SECS: u64 = 90 * 86_400;
 
 /// One role's RESOLVED mint ceiling (`auth.policy.mint_ceilings.<role>`), durations pre-parsed at
@@ -61,8 +32,6 @@ pub struct RoleCeiling {
     pub binding_modes: Option<Vec<String>>,
 }
 
-/// A grant's ceiling-relevant shape for [`MintRequest`]: its `pool` values (3-state, as the grant
-/// states them: `None` = everything) and whether it names any other kind.
 pub fn requested_grant(
     scopes: Option<&[busbar_contract::records::ScopeRef]>,
 ) -> (Option<Vec<String>>, bool) {
@@ -97,31 +66,21 @@ pub struct MintPolicy {
     pub ceilings: std::collections::BTreeMap<String, RoleCeiling>,
 }
 
-/// A mint's ceiling-relevant shape, checked by [`MintPolicy::check_mint`].
 pub struct MintRequest<'a> {
-    /// The caller's asserted roles (`Principal::roles`) — the delegated-admin identity the per-role
-    /// ceiling keys off.
     pub roles: &'a [String],
-    /// The pools this mint requests — 3-state, as given (`None` = all).
+
     pub requested_pools: Option<&'a [String]>,
-    /// Whether the mint grants any scope of a kind other than `pool` (a plane's `allowed_{kind}s`,
-    /// W9). A role whose ceiling names its pools mints pool grants only: see
-    /// [`MintPolicy::check_mint`].
+
     pub grants_other_kinds: bool,
-    /// The resolved token lifetime in seconds.
+
     pub requested_ttl_secs: u64,
-    /// Whether the operator NAMED the lifetime (`expires_in`/`expires_at`) — an explicit over-ask is
-    /// refused, a default is clamped (see [`apply_mint_ttl_ceiling`]).
+
     pub explicit_ttl: bool,
-    /// The binding mode this mint will record (wire spelling), including a mode chosen by the
-    /// mint path's default. `None` is for a mint that records no binding mode; it skips mode checks.
+
     pub requested_mode: Option<&'a str>,
 }
 
 impl MintPolicy {
-    /// Build the resolved policy from config. Durations were already proven to parse by
-    /// `config_validate`; a stray unparseable value falls back to `None` (no cap) rather than
-    /// fabricating a ceiling.
     pub fn from_auth(auth: Option<&crate::config::AuthCfg>) -> Self {
         let Some(policy) = auth.map(|a| &a.policy) else {
             return Self::default();
@@ -157,23 +116,18 @@ impl MintPolicy {
         }
     }
 
-    /// The per-role ceiling composed across the caller's held roles: the MOST PERMISSIVE across the
-    /// roles that carry a ceiling (holding a role grants up to its own ceiling; a caller holding two
-    /// ceiling'd roles gets the union). `None` in a returned dimension = "no per-role restriction"
-    /// (either no held role carries a ceiling, or a held role explicitly allows all). Returns `None`
-    /// entirely when no held role has a `mint_ceilings` entry — the caller falls back to block caps.
     fn effective_role_ceiling(&self, roles: &[String]) -> Option<RoleCeiling> {
         let held: Vec<&RoleCeiling> = roles.iter().filter_map(|r| self.ceilings.get(r)).collect();
         if held.is_empty() {
             return None;
         }
-        // TTL: max across roles; a role with no cap (`None`) makes the union unbounded.
+
         let max_ttl_secs = if held.iter().any(|c| c.max_ttl_secs.is_none()) {
             None
         } else {
             held.iter().filter_map(|c| c.max_ttl_secs).max()
         };
-        // Pools: union; a role allowing ALL (`None`) makes the union all (no restriction).
+
         let allowed_pools = if held.iter().any(|c| c.allowed_pools.is_none()) {
             None
         } else {
@@ -187,7 +141,7 @@ impl MintPolicy {
             }
             Some(set)
         };
-        // Modes: union; a role with no mode restriction (`None`) makes the union unrestricted.
+
         let binding_modes = if held.iter().any(|c| c.binding_modes.is_none()) {
             None
         } else {
@@ -208,21 +162,9 @@ impl MintPolicy {
         })
     }
 
-    /// Enforce the mint ceiling CORE-SIDE (auth design review M2/M4: the delegated-admin cap must
-    /// live in core, never the UI). Returns the (possibly clamped) TTL in seconds, or an error
-    /// message for the 4xx. Composition: the per-role ceiling narrows BELOW the block cap, never
-    /// above it. A caller whose roles carry no ceiling is bound by the block caps alone.
-    ///
-    /// - TTL: effective max = min(block, role); an explicit over-ask is refused, a default is clamped.
-    /// - Pools: if the effective allowed set is a finite list, the request must be a subset —
-    ///   requesting ALL pools (`None`) under a finite ceiling is refused, an explicit subset is
-    ///   allowed, and the empty set is always allowed.
-    /// - Mode: if a mode is requested, it must be a member of the block list (when set) AND of the
-    ///   role list (when set).
     pub fn check_mint(&self, req: &MintRequest<'_>) -> Result<u64, String> {
         let role = self.effective_role_ceiling(req.roles);
 
-        // TTL ceiling: the tighter of block and (if present) the role cap.
         let role_ttl = role.as_ref().and_then(|c| c.max_ttl_secs);
         let effective_max_ttl = match (self.block_max_ttl_secs, role_ttl) {
             (Some(a), Some(b)) => Some(a.min(b)),
@@ -231,14 +173,12 @@ impl MintPolicy {
         let ttl =
             apply_mint_ttl_ceiling(req.requested_ttl_secs, req.explicit_ttl, effective_max_ttl)?;
 
-        // Pool ceiling: role-only (the block level carries no pool restriction).
         if let Some(RoleCeiling {
             allowed_pools: Some(allowed),
             ..
         }) = role.as_ref()
         {
             match req.requested_pools {
-                // Requesting ALL pools under a finite ceiling is an over-ask.
                 None => {
                     return Err(format!(
                         "the mint requests ALL pools but the caller's role ceiling \
@@ -256,9 +196,7 @@ impl MintPolicy {
                     }
                 }
             }
-            // A role held to named pools could never mint a grant of another kind before the
-            // plane kinds were mintable (a pool-only grant reaches no other kind), so it still
-            // cannot: the ceiling names pools only, and refuses rather than widens.
+
             if req.grants_other_kinds {
                 return Err(format!(
                     "the mint grants scopes of a kind other than pools, but the caller's role \
@@ -268,8 +206,6 @@ impl MintPolicy {
             }
         }
 
-        // Mode ceiling: the block-level allowed set AND the role's, each where set. A role's list
-        // narrows the deployment-wide list and never widens it (the composition rule above).
         let role_modes = role.as_ref().and_then(|c| c.binding_modes.as_ref());
         if let Some(mode) = req.requested_mode {
             for allowed in [self.block_binding_modes.as_ref(), role_modes]

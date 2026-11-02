@@ -1,35 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The 1.4.x -> 1.5.0 CONFIG MIGRATOR (`busbar --migrate-config <old.yaml>`) and the LOUD
-//! FAIL-CLOSED 1.x detector the boot/`--validate` path runs.
-//!
-//! Contract redefinition context: the config format is an OPERATOR artifact outside the SemVer
-//! freeze, changed only WITH a migration path and a loud fail-closed boot. This module is both
-//! halves of that promise:
-//!
-//! - [`detect_legacy_markers`] recognizes a 1.x config by its structural markers (a `governance:`
-//!   block, `auth.group_map:`, a top-level `hooks:` registry, `*_env` secret fields, `target:` in
-//!   a pool member, `auth.mode:`) so boot and `--validate` REFUSE to start with a named error
-//!   instead of half-parsing a config whose semantics silently flipped (the `allowed_pools: []`
-//!   all->none flip, vanished per-key budgets).
-//! - [`migrate_config`] mechanically converts every DETERMINISTIC 1.4.x change to the 1.5.0
-//!   shape and prints TODO comments wherever a human must decide. ZERO side effects: the caller
-//!   prints the new YAML + a change summary; nothing is written.
-//!
-//! The migrator works on the RAW file (env `${VAR}` references pass through untouched) over the
-//! `serde_yaml::Value` tree, so it is total: an unrecognized structure passes through or gains a
-//! TODO, never a panic.
-
 use busbar_contract::plugin::Kind;
 use serde_yaml::{Mapping, Value};
 
 #[path = "migrate_1_6.rs"]
 mod upgrade_1_6;
 
-/// Schema vocabulary the core migration reads and writes. These are the existing operator
-/// document keys from the 1.4.x, 1.5.x and 1.6 migration steps, not plugin settings keys.
-/// Kept inside the migration so this does not change the frozen configuration types.
 pub(super) mod vocabulary {
     pub mod field {
         pub const ACTION: &str = "action";
@@ -146,7 +123,6 @@ pub(super) mod vocabulary {
 
 use vocabulary::field;
 
-/// Accepted legacy period spellings, grouped by the window/span they selected in 1.4.x.
 const LEGACY_MINUTE_PERIODS: &[&str] = &["minute", "minutely", "per_minute"];
 const LEGACY_HOUR_PERIODS: &[&str] = &["hour", "hourly", "per_hour"];
 const LEGACY_DAY_PERIODS: &[&str] = &["day", "daily", "per_day"];
@@ -166,38 +142,33 @@ const LEGACY_HALF_YEAR_PERIODS: &[&str] = &[
 ];
 const LEGACY_YEAR_PERIODS: &[&str] = &["year", "yearly", "annual", "annually", "per_year"];
 
-/// Canonical 1.5.x exhausted-pool keywords and the 1.4.x action spellings they replace.
 const EXHAUSTED_REJECT: &str = "reject";
 const EXHAUSTED_LEAST_BAD: &str = "least_bad";
 const LEGACY_REJECT_ACTIONS: &[&str] = &[EXHAUSTED_REJECT, "503", "status_503", "status503"];
 const LEGACY_LEAST_BAD_ACTIONS: &[&str] = &[EXHAUSTED_LEAST_BAD, "least-bad", "leastbad"];
 const LEGACY_TARGETLESS_FALLBACK_ACTIONS: &[&str] = &[field::FALLBACK_POOL, "fallback", "failover"];
 const LEGACY_FALLBACK_ACTION_PREFIX: &str = "fallback_pool:";
-/// Retired auth modules and hook kind spellings still recognized by the legacy migration.
+
 const LEGACY_TOKENS_MODULE: &str = "tokens";
 const LEGACY_STATIC_TOKENS_MODULE: &str = "static-tokens";
 const LEGACY_TAP_HOOK_KIND: &str = "tap";
-/// Deterministic names the migration synthesizes when splitting admin providers or hooks.
+
 const ADMIN_PROVIDER_SUFFIX: &str = "admin";
 const UNNAMED_HOOK_STEM: &str = "hook";
 
-/// Accepted 1.4.x `auth.mode` spellings retained by the migration contract below.
 const LEGACY_AUTH_MODE_PASSTHROUGH: &str = "passthrough";
 const LEGACY_AUTH_MODE_NONE: &str = "none";
 
-/// Legacy flat token pricing used cents per thousand tokens; the destination card uses
-/// micro-units per token, so one cent per thousand becomes ten micro-units per token.
-/// This is a configuration conversion only; it does not define persisted usage or money.
 const LEGACY_CENTS_PER_THOUSAND_TO_MICRO_UNITS_PER_TOKEN: f64 = 10.0;
-/// The migrator's existing fallback for an unreadable legacy flat token price.
+
 const LEGACY_UNREADABLE_TOKEN_PRICE_CENTS: f64 = 0.0;
-/// A legacy group with no budget amount migrated with this existing amount.
+
 const LEGACY_ABSENT_BUDGET_CENTS: i32 = 0;
-/// Calendar spans used to rescale recurring caps onto the existing monthly fallback.
+
 const MONTHS_PER_QUARTER: u64 = 3;
 const MONTHS_PER_HALF_YEAR: u64 = 6;
 const MONTHS_PER_YEAR: u64 = 12;
-/// Smallest positive budget accepted by validation; rescaling must not emit a zero cap.
+
 const MIN_MIGRATED_BUDGET_AMOUNT: u64 = 1;
 
 const MISSING_SIGNING_KEY: &str =
@@ -206,27 +177,10 @@ const MISSING_SIGNING_KEY: &str =
      auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, \
      shared across a fleet)";
 
-/// The 1.5.x store-module text this migration and its refusals print, read off the ROOT LEGACY
-/// TABLE the composition root hands in ([`crate::config::migration_table`]; moved from
-/// `data/legacy_store_modules.toml`): frozen text naming store backends no crate in the kernel
-/// declares, each row citing the v1.5.5 line it is verbatim from in `plugins.yaml`. Among them
-/// `gov14_db_path`, 1.4.x's real default `governance.db_path` (`DEFAULT_GOVERNANCE_DB` in the
-/// retired v1.4.1 schema): migration reproduces that exact default, so a config that omitted
-/// `db_path` still finds its real, existing database file after migration.
 pub fn legacy_store_text(key: &str) -> &'static str {
     crate::config::migration_table::text(key)
 }
 
-/// The named boot error for a detected 1.x config. Every marker is listed so the operator
-/// sees the full scope before running the migrator.
-///
-/// IT MUST ALSO SPEAK TO THE ALREADY-MIGRATED OPERATOR. `take_shaped` deliberately PRESERVES a
-/// MALFORMED block rather than deleting it (deleting the operator's data and announcing a migration
-/// of it was the worse bug), so a `governance:` written in the wrong shape survives into the
-/// migrator's OUTPUT — and that output then trips this very detector. Telling that operator to "run
-/// `--migrate-config`" is advice that cannot help: they just did, and running it again reproduces
-/// the same file. So the message names that case explicitly and gives the action that actually
-/// resolves it (the migrator already emitted a `TODO` naming the exact path).
 pub(crate) fn legacy_config_error(markers: &[String]) -> String {
     format!(
         "this looks like a busbar 1.x config; run `busbar --migrate-config <config.yaml>` and \
@@ -245,10 +199,6 @@ pub(crate) fn legacy_config_error(markers: &[String]) -> String {
     )
 }
 
-/// Scan a parsed YAML document for 1.x structural markers. Empty = not a 1.x config (any residual
-/// incompatibility then fails through the normal deny-unknown-fields parse errors, which name the
-/// exact key). Called by boot AND `--validate` before `DeployCfg` deserializes, so nothing from
-/// 1.x ever boots-and-flips.
 pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
     let mut markers = Vec::new();
     let Some(root) = doc.as_mapping() else {
@@ -308,10 +258,7 @@ pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
             );
         }
     }
-    // The 1.4.x `DeployCfg` carried these at the TOP LEVEL; 1.5.0 relocated them (group_map ->
-    // auth.role_bindings, admin_auth -> auth.admin_auth), so their presence at the root is a 1.x
-    // marker in its own right (a real 1.4.x config that used them would otherwise pass straight
-    // through to a `deny_unknown_fields` rejection).
+
     if get(root, field::GROUP_MAP).is_some() {
         markers.push(
             "top-level `group_map:` (moved under auth as auth.role_bindings, nested by module)"
@@ -321,13 +268,7 @@ pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
     if get(root, field::ADMIN_AUTH).is_some() {
         markers.push("top-level `admin_auth:` (moved under auth as auth.admin_auth)".into());
     }
-    // A top-level `hooks:` key is AMBIGUOUS and must be distinguished by SHAPE, not mere presence
-    // (1.5.3): the NEW named-definition map (every entry names a non-empty `module:` and carries no
-    // legacy 1.x transport key) is VALID and passes straight through to the typed parse; a genuine
-    // 1.x REGISTRY (a transport entry, or any entry lacking `module:`) still LOUD-FAILS here,
-    // because booting it under 1.5.x rules would silently drop the retired transport.
-    // `is_new_hook_defs` is the SAME shape check the migrator uses to stay idempotent, so the two
-    // cannot drift. The URL transport's key is the root migration table's (`hook_1x_url_transport`).
+
     if let Some(Value::Mapping(hooks)) = get(root, Kind::Hook.root()) {
         if !is_new_hook_defs(&hooks) {
             markers.push(format!(
@@ -338,9 +279,7 @@ pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
             ));
         }
     }
-    // The removed top-level `global_hooks:` list (1.5.0/1.5.2): a real config carrying it would
-    // otherwise trip `deny_unknown_fields` with no upgrade breadcrumb. It moved to the reserved
-    // `pools.hooks:` all-pools attach (1.5.3).
+
     if get(root, field::GLOBAL_HOOKS).is_some() {
         markers.push(
             "top-level `global_hooks:` (removed 1.5.3 → the reserved `pools.hooks:` all-pools \
@@ -348,12 +287,7 @@ pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
                 .into(),
         );
     }
-    // 1.5.3 observability→export lift-out: the top-level `metrics:` block and the request-log
-    // `observability.*` keys (the root migration table's `observability_log_keys`) are RETIRED into the
-    // exporters. An un-migrated config carrying any of them LOUD-FAILS here (before the typed parse)
-    // with the migrate breadcrumb, so a lifted-out sink is never silently lost. Uses the SHARED
-    // `crate::config::retired_observability_keys` table so the marker, the migrator, and the
-    // `augment_config_error` hint cannot drift.
+
     if get(root, field::METRICS).is_some() {
         markers.push(format!(
             "top-level `metrics:` block (retired 1.5.3 → export.{}.settings.{{buffer_seconds, \
@@ -363,26 +297,19 @@ pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
     }
     if let Some(obs) = get(root, field::OBSERVABILITY).and_then(|v| v.as_mapping().cloned()) {
         for (old, new) in crate::config::retired_observability_keys() {
-            // `metrics` is the top-level block handled just above; the rest are `observability.*` keys.
             if old != field::METRICS && get(&obs, old).is_some() {
                 markers.push(format!("`observability.{old}:` (retired 1.5.3 → {new})"));
             }
         }
     }
-    // ── the 1.5.3 GRAMMAR-LOCK retirements ───────────────────────────────────────────────────────
-    // Every one of these would otherwise reach the typed parse as a bare `deny_unknown_fields`
-    // rejection with no upgrade breadcrumb (or, for `observability:`, as a whole block whose
-    // deletion would silently drop a trace sink). Detected HERE, before the typed parse, so the
-    // operator gets the named key + its new home + the `--migrate-config` pointer. Uses the SHARED
-    // `crate::config::retired_config_keys_1_5_3` table so the marker, the migrator and the
-    // `augment_config_error` hint cannot drift.
+
     let retired_home = |key: &str| -> String {
         crate::config::retired_config_keys_1_5_3()
             .into_iter()
             .find(|(old, _)| *old == key)
             .map_or_else(|| "its 1.5.3 replacement".to_string(), |(_, new)| new)
     };
-    // The `observability:` BLOCK is DELETED outright. Its last field folded into `export:`.
+
     if get(root, field::OBSERVABILITY).is_some() {
         markers.push(format!(
             "top-level `observability:` block (DELETED 1.5.3 → {}); all telemetry egress is now the \
@@ -390,7 +317,7 @@ pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
             retired_home(super::migration_table::text("observability_trace_key"))
         ));
     }
-    // The boot-guard flag inverted.
+
     if get(root, field::ADMIN_INSECURE).is_some() {
         markers.push(format!(
             "top-level `admin_insecure:` (retired 1.5.3 → {})",
@@ -398,23 +325,20 @@ pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
         ));
     }
     if let Some(auth) = get(root, field::AUTH).and_then(|v| v.as_mapping().cloned()) {
-        // The credential mode moved to the `pools:` section.
         if get(&auth, field::UPSTREAM_CREDENTIALS).is_some() {
             markers.push(format!(
                 "`auth.upstream_credentials:` (retired 1.5.3 → {})",
                 retired_home(field::UPSTREAM_CREDENTIALS)
             ));
         }
-        // The 1.5.2 hosted-login block folded into the provider definition.
+
         if get(&auth, field::METHODS).is_some() {
             markers.push(format!(
                 "`auth.methods:` (retired 1.5.3 → {})",
                 retired_home(field::METHODS)
             ));
         }
-        // An INLINE chain entry (`- ad: { settings: … }`) is gone — a chain is now a list of
-        // bare NAMES referencing `identity-providers:`. A map-shaped entry in either chain is the
-        // tell; a list of plain strings is already in the new shape (idempotent).
+
         for plane in [field::CHAIN, field::ADMIN_AUTH] {
             if get(&auth, plane)
                 .and_then(|v| v.as_sequence().cloned())
@@ -427,9 +351,7 @@ pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
             }
         }
     }
-    // The TYPE-KEYED `export:` block (`export: { <type>: { settings: … } }`) became a NAMED map
-    // (`export: { <name>: { module: <module>, settings: … } }`). Distinguished by SHAPE, not
-    // presence: an entry naming a `module:` is already the new form and passes through (idempotent).
+
     if let Some(Value::Mapping(export)) = get(root, Kind::Export.root()) {
         if export.values().any(|v| {
             v.as_mapping()
@@ -442,14 +364,7 @@ pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
             );
         }
     }
-    // The first-party Valkey store plugin was RENAMED to Valkey — repo, crate, artifact,
-    // manifest `name` AND config `alias`. A retired spelling in `store.module:` is not a "wrong
-    // backend": nothing in the renamed artifact's manifest matches it, so the store the operator
-    // asked for simply does not exist and boot dies on the loader's generic "does not match any
-    // plugin", which names neither the rename nor the fix. Caught HERE instead, with the named
-    // marker + the migrate breadcrumb. Driven by the ONE rewrite over the root migration table
-    // (`migration_table::rewrite_retired`, here without applying) so this marker and `migrate_store_module`'s
-    // rewrite cannot drift over WHICH spellings are retired.
+
     if let Some(mut store) = get(root, Kind::Store.root()).and_then(|v| v.as_mapping().cloned()) {
         if let Some((module, alias)) =
             crate::config::migration_table::rewrite_retired(Kind::Store.root(), &mut store, false)
@@ -495,9 +410,7 @@ pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
                     name.as_str().unwrap_or("?")
                 ));
             }
-            // 1.4.x `on_exhausted: { action: … }` -> 1.5.0 bare keyword / `{ fallback_pool }`. The
-            // `action:` wrapper is the exact user-reported silent pass-through (`deny_unknown_fields`
-            // rejects `action`), so it must be a named marker too.
+
             if p.as_mapping()
                 .and_then(|m| get(m, field::ON_EXHAUSTED))
                 .and_then(|v| v.as_mapping().cloned())
@@ -514,8 +427,6 @@ pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
     markers
 }
 
-/// The output of one migration run: the new YAML text plus the change / TODO / warning ledgers
-/// the CLI prints as the summary.
 pub struct MigrateOutput {
     pub yaml: String,
     pub changes: Vec<String>,
@@ -523,21 +434,13 @@ pub struct MigrateOutput {
     pub warnings: Vec<String>,
 }
 
-/// Mechanically migrate a 1.4.x config document to the 1.5.0 shape. Deterministic changes
-/// are applied; judgment calls become TODO entries; the `allowed_pools: []` semantic flip gets a
-/// LOUD warning per occurrence. Total and side-effect free.
-#[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
+#[cold]
 #[inline(never)]
 pub fn migrate_config(raw: &str) -> Result<MigrateOutput, String> {
     migrate_config_with(raw, &super::migrate_plugins::NoPlugins)
 }
 
-/// [`migrate_config`], then every configured plugin's own migration of its settings section
-/// through `host` (the composition root's: it loads each plugin's current build and asks the
-/// release index which release matches this core), applying only the needs a plugin raises against
-/// core's keys and printing every report line under the plugin's name
-/// ([`super::migrate_plugins`]).
-#[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
+#[cold]
 #[inline(never)]
 pub fn migrate_config_with(
     raw: &str,
@@ -554,59 +457,36 @@ pub fn migrate_config_with(
 
     migrate_governance(&mut root, &mut changes, &mut todos);
     migrate_auth(&mut root, &mut changes, &mut todos, &mut warnings);
-    // Runs AFTER migrate_governance/migrate_auth: both may have populated `auth.admin_auth` (the
-    // governance.admin_token secret ref), and this folds the 1.4.x TOP-LEVEL `admin_auth:` list in
-    // on top, letting the token-bearing entry win over a bare duplicate.
+
     migrate_admin_auth(&mut root, &mut changes, &mut todos);
-    // 1.5.2 scope collapse: rewrite any retired `hooks-register`/`mint` admin scope to `full`
-    // (loud per-site warning). Runs after the auth/admin_auth folds so every scope site exists.
+
     migrate_dropped_scopes(&mut root, &mut warnings);
     migrate_providers(&mut root, &mut changes);
     migrate_hooks_block(&mut root, &mut changes, &mut todos);
     migrate_pools(&mut root, &mut changes, &mut todos);
-    // 1.6.0 POOLS UNDER THEIR VERB: move the unreleased 1.6.0-dev `tool_pools:`/`agent_pools:`
-    // sections under their section's reserved `pools` sub-key. Runs AFTER `migrate_pools`, so the
-    // top-level `pools:` it reads is settled. Members of the top-level pools are left exactly as
-    // written — the 1.5.5 member grammar is the 1.6.0 grammar.
+
     migrate_unified_pools(&mut root, &mut changes, &mut todos);
-    // 1.5.3 HARD rename of the tap `at:` vocabulary. Runs AFTER migrate_hooks_block (which builds
-    // the inline-ref lists carrying the `at:` field) so every hook ref exists to rewrite.
+
     migrate_hook_stages(&mut root, &mut changes);
-    // 1.6.0 CLEAN SLATE: rewrite the retired hook-DEFINITION key spellings on the settled top-level
-    // `hooks:` named map — `plugin:` → `module:` and the single-stage `at:` → `phase:`. Runs AFTER
-    // migrate_hooks_block (which has already lifted every legacy registry/inline surface into that
-    // map) so it sees the final definition shape; idempotent on a config already in the 1.6.0 spelling.
+
     migrate_hook_def_keys(&mut root, &mut changes);
     migrate_observability(&mut root, &mut changes);
     migrate_response_headers(&mut root, &mut changes, &mut todos);
-    // 1.5.3 observability→export lift-out. Runs AFTER migrate_observability (trace-URL rename) and
-    // migrate_response_headers (emit_server_timing move) so this only sees the retired request-log
-    // + metrics keys, and rewrites them into the new `export:` surface in place.
+
     migrate_observability_export(&mut root, &mut changes);
-    // ── the 1.5.3 GRAMMAR-LOCK migrations ────────────────────────────────────────────────────────
-    // Order matters: `migrate_export_named_map` runs AFTER `migrate_observability_export` (which
-    // writes the TYPE-KEYED request-log / metrics entries this then renames into the NAMED map)
-    // and BEFORE `migrate_observability_block` folds the trace URL in as a named
-    // instance, so a single run of the migrator lands a 1.4.x config directly in the 1.5.3 shape.
+
     super::migrate_export::migrate_export_named_map(&mut root, &mut changes);
     super::migrate_export::migrate_observability_block(&mut root, &mut changes);
-    // AFTER both of the above: every export instance is in its named form by now, so the projection
-    // pass sees the final `module:` of each one.
+
     super::migrate_export::migrate_export_projection(&mut root, &mut changes, &mut todos);
     migrate_admin_require_mtls(&mut root, &mut changes);
     migrate_pools_upstream_credentials(&mut root, &mut changes, &mut todos);
     migrate_identity_providers(&mut root, &mut changes, &mut todos);
-    // 1.5.3: the first-party Valkey store plugin's rename to Valkey. Independent of every
-    // migration above (it touches only `store.module`), so its position in this list is free; it runs
-    // last so `migrate_governance`'s `governance.store:` -> `store:` lift has already produced the
-    // 1.5.x `store:` block a 1.4.x config's Valkey backend would land in.
+
     migrate_store_module(&mut root, &mut changes, &mut todos);
-    // 1.6.0 verify-on-call: the per-entry `refresh_ttl:` in the `tools:` section (a background sweep
-    // cadence, default 6h) becomes `verify_ttl:` (max verification staleness on the `tools/call` path,
-    // default 5s). A pure key rename, but the SEMANTICS changed, so it carries a loud warning per occurrence.
+
     migrate_tools_verify_ttl(&mut root, &mut changes, &mut warnings);
-    // EACH PLUGIN MIGRATES ITS OWN SETTINGS: after every core step above has settled where a
-    // plugin's section sits, and before nothing else reads one.
+
     super::migrate_plugins::migrate(
         &mut root,
         host,
@@ -615,27 +495,14 @@ pub fn migrate_config_with(
             todos: &mut todos,
         },
     );
-    // 1.6.0 Q-STORE = (B): `store:` is required. Runs LAST, after `migrate_governance` lifted a
-    // 1.4.x `governance:` database into `store:`, so only a config that still names no store gains
-    // the one 1.5.x ran it on.
+
     migrate_store_required(&mut root, &mut changes);
-    // 1.5.5 -> 1.6.0 over core's own keys: last, so it sees every key in its settled 1.6.0 place.
+
     upgrade_1_6::migrate(&mut root, &mut changes, &mut warnings);
 
     let body = serde_yaml::to_string(&Value::Mapping(root))
         .map_err(|e| format!("could not serialize the migrated config: {e}"))?;
-    // The header is written ONLY when there is something a human must act on.
-    //
-    // A migration that needs no decisions should produce a file indistinguishable from one somebody
-    // wrote by hand — a 1.5.0 config brought to 1.5.3 is almost entirely mechanical, and stamping
-    // "migrated by a tool, review before deploying" across the top of a clean result is noise the
-    // operator then has to decide whether to delete. It also aged badly: the banner said "1.5.0
-    // config" long after the target moved to 1.5.3.
-    //
-    // When there ARE warnings or TODOs the header stays, because then the file genuinely is not
-    // finished and the reader needs to know that before it reaches a cluster. serde_yaml cannot
-    // attach comments to nodes, so the ledger renders as a header block, each entry naming its
-    // config path.
+
     let mut yaml = String::new();
     if !warnings.is_empty() || !todos.is_empty() {
         let signing_key_only = warnings.is_empty()
@@ -670,18 +537,6 @@ pub(super) fn take(m: &mut Mapping, k: &str) -> Option<Value> {
     m.remove(Value::from(k))
 }
 
-/// 1.6.0 verify-on-call: rename each `tools.<id>.refresh_ttl:` (the flat shape) and each
-/// pre-release `tools.servers.<id>.refresh_ttl:` to `verify_ttl:`.
-///
-/// The KEY is renamed and the VALUE is carried over unchanged, because a rescale would guess at what
-/// the operator meant. But the meaning is not the same: `refresh_ttl` was a BACKGROUND SWEEP CADENCE
-/// (how often a daemon re-hashed the upstream with nobody watching, default `6h`); `verify_ttl` is the
-/// MAX VERIFICATION STALENESS ON THE CALL PATH (the longest an observation may be reused before a
-/// `tools/call` re-verifies, default `5s`). A value that was a sensible sweep cadence — `6h`, say — is
-/// a large, explicit security downgrade as a staleness bound: it lets a rug-pulled tool be dispatched
-/// for up to that long before the call re-verifies. So every rename carries a loud warning naming the
-/// server and the value, telling the operator to reconsider it (a few seconds is the new default;
-/// `0` is strict-live).
 fn migrate_tools_verify_ttl(
     root: &mut Mapping,
     changes: &mut Vec<String>,
@@ -690,7 +545,7 @@ fn migrate_tools_verify_ttl(
     let Some(Value::Mapping(tools)) = root.get_mut(Value::from(field::TOOLS)) else {
         return;
     };
-    // The 1.6.0 flat shape: each `tools.<id>` entry, the legacy `servers:` container aside.
+
     let flat = rename_refresh_ttl(
         tools
             .iter_mut()
@@ -717,8 +572,6 @@ fn migrate_tools_verify_ttl(
     }
 }
 
-/// Rename `refresh_ttl:` to `verify_ttl:` on each mapping entry of `entries` (the entries under
-/// `prefix`), with the per-server WARNING; true when any entry was renamed.
 fn rename_refresh_ttl<'a>(
     entries: impl Iterator<Item = (&'a Value, &'a mut Value)>,
     prefix: &str,
@@ -746,11 +599,6 @@ fn rename_refresh_ttl<'a>(
     renamed
 }
 
-/// 1.6.0 Q-STORE = (B) (owner ruling 2026-09-27): a config with no `store:` block is refused, so the
-/// migration writes the store a 1.5.x config without one ran on — `store: {module: memory}`, exactly
-/// 1.5.5's implicit behaviour made explicit. A `store:` mapping that names no `module` read as that
-/// same store in 1.5.5 (serde's default), so it gains the `module:` and keeps its `settings:`. A
-/// `store:` of any other shape, or one that names a module, is left exactly as written.
 fn migrate_store_required(root: &mut Mapping, changes: &mut Vec<String>) {
     let key = Kind::Store.root();
     let module = crate::config::migrated_store_module();
@@ -808,18 +656,13 @@ fn as_map(v: Value) -> Mapping {
 ///    check `contains_key` first — see [`migrate_hooks_block`]'s final write.
 #[must_use]
 pub(super) enum Taken<T> {
-    /// The key was present in the expected shape and has been REMOVED from the document.
     Got(T),
-    /// The key was not present at all. Nothing was changed.
+
     Absent,
-    /// The key was present in the WRONG shape. It has been LEFT EXACTLY AS WRITTEN, in place, and a
-    /// TODO naming it was already pushed — the caller must not migrate it, and must not overwrite it.
+
     Malformed,
 }
 
-/// Shape-check `m[k]`, and remove-and-return it ONLY if it matches. See [`Taken`] for why this is
-/// take-on-match rather than take-then-restore. `ctx` is the operator-facing path prefix for the TODO
-/// (`"pools.frontier"`), `want` the shape noun (`"a mapping"` / `"a list"`).
 pub(super) fn take_shaped(
     m: &mut Mapping,
     k: &str,
@@ -845,11 +688,10 @@ pub(super) fn take_shaped(
         ));
         return Taken::Malformed;
     }
-    // Shape confirmed: NOW remove it. (The `get` above borrowed `m`; that borrow ends here.)
+
     Taken::Got(m.remove(Value::from(k)).expect("just found"))
 }
 
-/// [`take_shaped`] for a MAPPING-valued key.
 pub(super) fn take_mapping(
     m: &mut Mapping,
     k: &str,
@@ -864,7 +706,6 @@ pub(super) fn take_mapping(
     }
 }
 
-/// [`take_shaped`] for a SEQUENCE-valued key.
 fn take_sequence(
     m: &mut Mapping,
     k: &str,
@@ -879,9 +720,6 @@ fn take_sequence(
     }
 }
 
-/// Render one YAML value as a SHORT single line, for a ledger entry that has to name the malformed
-/// shape it found (`auth: null`, `auth: []`, `auth: yes`). Multi-line/long renderings are truncated —
-/// a ledger line is a human-readable pointer at the operator's own document, not a copy of it.
 pub(super) fn one_line(v: &Value) -> String {
     let s = serde_yaml::to_string(v).unwrap_or_else(|_| "?".into());
     let s = s.replace('\n', " ");
@@ -893,10 +731,6 @@ pub(super) fn one_line(v: &Value) -> String {
     }
 }
 
-/// The module name an `auth.chain` / `auth.admin_auth` entry answers to: a bare string entry IS the
-/// module name; a `{ <module>: {…} }` map entry's single key is. Used to dedup + locate entries
-/// when folding the 1.4.x TOP-LEVEL `admin_auth:` list and `auth.modules` caps into the 1.5.0
-/// `auth.admin_auth` / chain entries.
 fn entry_module_name(v: &Value) -> Option<String> {
     match v {
         Value::String(s) => Some(s.clone()),
@@ -905,9 +739,6 @@ fn entry_module_name(v: &Value) -> Option<String> {
     }
 }
 
-/// Set `max_admin_scope` on the chain entry for `module`, converting a bare `- <module>` string
-/// entry into its `{ <module>: { max_admin_scope } }` map form (or merging into an existing map
-/// entry). Returns whether an entry for `module` was found + updated.
 fn set_max_admin_scope(seq: &mut [Value], module: &str, scope: Value) -> bool {
     for e in seq.iter_mut() {
         if entry_module_name(e).as_deref() != Some(module) {
@@ -928,12 +759,6 @@ fn set_max_admin_scope(seq: &mut [Value], module: &str, scope: Value) -> bool {
     false
 }
 
-/// 1.5.2 SCOPE COLLAPSE: the four-variant admin-scope diamond collapsed to `{read-only, full}` —
-/// the delegated `hooks-register` and `mint` tokens are RETIRED and no longer parse (config_validate
-/// rejects them). An UPGRADING config that still names either (in an `auth.chain`/`auth.admin_auth`
-/// entry's `max_admin_scope`, or a `role_bindings.<module>.<role>.admin_scope`) is rewritten to
-/// `full` — the compat-over-hard-fail choice — with a loud per-site WARNING so the operator can
-/// tighten it back to `read-only` if `full` is too broad.
 fn migrate_dropped_scopes(root: &mut Mapping, warnings: &mut Vec<String>) {
     fn collapsed(v: &Value) -> bool {
         matches!(v.as_str(), Some("hooks-register") | Some("mint"))
@@ -941,7 +766,7 @@ fn migrate_dropped_scopes(root: &mut Mapping, warnings: &mut Vec<String>) {
     let Some(Value::Mapping(auth)) = root.get_mut(Value::from(field::AUTH)) else {
         return;
     };
-    // (a) chain-entry `max_admin_scope:` on `auth.chain` / `auth.admin_auth`.
+
     for list_key in [field::CHAIN, field::ADMIN_AUTH] {
         if let Some(Value::Sequence(seq)) = auth.get_mut(Value::from(list_key)) {
             for entry in seq.iter_mut() {
@@ -969,7 +794,7 @@ fn migrate_dropped_scopes(root: &mut Mapping, warnings: &mut Vec<String>) {
             }
         }
     }
-    // (b) `role_bindings.<module>.<role>.admin_scope`.
+
     if let Some(Value::Mapping(rb)) = auth.get_mut(Value::from(field::ROLE_BINDINGS)) {
         for (module_k, roles) in rb.iter_mut() {
             let module = module_k.as_str().unwrap_or("").to_string();
@@ -997,12 +822,6 @@ fn migrate_dropped_scopes(root: &mut Mapping, warnings: &mut Vec<String>) {
     }
 }
 
-/// Fold a 1.4.x TOP-LEVEL `admin_auth: [<module>, …]` (a `Vec<String>` of module names) into the
-/// 1.5.0 `auth.admin_auth` (nested under `auth`, a `Vec<AuthChainEntry>`). 1.5.0's `DeployCfg`
-/// carries NO top-level `admin_auth`, so a real 1.4.x list passed straight through and tripped
-/// `deny_unknown_fields`. Bare names carry over as bare entries; when `migrate_governance` already
-/// produced an operator-credential entry (bearing the `governance.admin_token` secret ref), the
-/// token-bearing entry WINS and the bare duplicate is skipped.
 fn migrate_admin_auth(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut Vec<String>) {
     if root.contains_key(Value::from(field::ADMIN_AUTH))
         && root.get(Value::from(field::AUTH)).is_some_and(|auth| {
@@ -1039,7 +858,7 @@ fn migrate_admin_auth(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
     for name in names {
         match entry_module_name(&name) {
             Some(m) if present.insert(m.clone()) => list.push(name),
-            Some(_) => {} // already present (e.g. the token-bearing operator entry) - skip dup
+            Some(_) => {}
             None => list.push(name),
         }
     }
@@ -1049,44 +868,10 @@ fn migrate_admin_auth(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
     );
 }
 
-/// The window a period this migrator cannot express EXACTLY falls back to: the LONGEST window that
-/// still ROLLS. Never `total` — `total` is the ALL-TIME window (`WINDOW_TOTAL => 0`), which never
-/// rolls, so collapsing an unrecognized RECURRING period onto it silently converts the operator's
-/// recurring cap into a LIFETIME cap that, once spent, blocks the group forever. Every use of this
-/// fallback is accompanied by a TODO naming the period AND the window it landed on.
 const APPROX_WINDOW: &str = "month";
 
-/// Map a 1.4.x `budget_period` word to the 1.5.0 window noun (`minute` | `hour` | `day` |
-/// `month` | `total` — the only five [`crate::config::groups::LimitWindow`] spells).
-///
-/// THE ONE RULE: a migration must never silently change what the operator wrote. So the mapping is
-/// split three ways instead of a catch-all:
-///
-/// * EXACT — the 1.4.x word has a 1.5.3 window with the same meaning. Silent, amount untouched.
-/// * APPROXIMATED — the word names a real recurring period 1.5.3 has NO window for (`weekly`,
-///   `yearly`). It lands on [`APPROX_WINDOW`] and pushes a TODO naming both, because the AMOUNT the
-///   operator wrote no longer means what it meant.
-/// * UNRECOGNIZED — anything else (a typo, a period from a fork). Same fallback, same loud TODO.
-///
-/// The `_ => "total"` this replaced was the silent third case: `weekly` (a period the tree's own
-/// tests name as 1.4.x) and `hourly` both collapsed to the ALL-TIME window with no ledger entry at
-/// all, turning a recurring cap into a lifetime one. `ctx` names the limit being migrated so the
-/// TODO points at a specific group.
-///
-/// AN APPROXIMATION MAY NEVER LOOSEN THE CAP. Landing a SHORTER period on `month` (`weekly`) errs
-/// TIGHTER — a week's allowance now has to last a month — which is fail-closed and safe to leave to
-/// the operator's TODO. Landing a LONGER one on `month` (`yearly`) errs LOOSER: carrying the amount
-/// over unchanged turned `max_budget_cents: 1200000, budget_period: yearly` into 1,200,000 cents
-/// PER MONTH, i.e. TWELVE TIMES the annual cap the operator wrote, silently in force from first
-/// boot for anyone who does not act on the TODO. So the returned DIVISOR rescales a longer period's
-/// amount proportionally (a year is 12 months): the migrated limit preserves SPEND PER UNIT TIME,
-/// which is the only reading of "the same cap, expressed in a window we have" that does not hand
-/// out budget the operator never authorised. The TODO says so explicitly, with both numbers.
-///
-/// Returns `(window, divisor)`; `divisor` is always >= 1 and is 1 for every non-rescaled case.
 fn window_noun(period: &str, ctx: &str, todos: &mut Vec<String>) -> (&'static str, u64) {
     match period {
-        // EXACT — every spelling that has a 1.5.3 window meaning exactly the same thing.
         word if LEGACY_MINUTE_PERIODS.contains(&word) => {
             (super::groups::LimitWindow::Minute.as_str(), 1)
         }
@@ -1097,31 +882,22 @@ fn window_noun(period: &str, ctx: &str, todos: &mut Vec<String>) -> (&'static st
         word if LEGACY_MONTH_PERIODS.contains(&word) => {
             (super::groups::LimitWindow::Month.as_str(), 1)
         }
-        // The 1.4.x default when `budget_period:` is absent, and an explicit all-time cap. This is
-        // the ONLY path that may legitimately produce the never-rolling window.
+
         word if LEGACY_TOTAL_PERIODS.contains(&word) => {
             (super::groups::LimitWindow::Total.as_str(), 1)
         }
-        // APPROXIMATED / UNRECOGNIZED — LOUD, always.
+
         other => {
-            // How many APPROX_WINDOWs (months) the operator's period spans, WHEN the migrator can
-            // determine it. A LONGER-than-month period MUST rescale by that factor or it loosens the
-            // cap (a `quarterly` amount spent every month is 3x); a SHORTER-or-equal period already
-            // errs tighter on {APPROX_WINDOW} and is carried unchanged (divisor 1); a period the
-            // migrator genuinely cannot classify (`None`) has NO known length, so it CANNOT be
-            // rescaled safely and is flagged UNVERIFIED rather than silently claimed tighter.
             let months: Option<u64> = match other {
-                // SHORTER than a month — unchanged errs tighter (fail-closed).
                 word if LEGACY_WEEK_PERIODS.contains(&word) => Some(1),
-                // LONGER than a month — must divide by the number of months it spans.
+
                 word if LEGACY_QUARTER_PERIODS.contains(&word) => Some(MONTHS_PER_QUARTER),
                 word if LEGACY_HALF_YEAR_PERIODS.contains(&word) => Some(MONTHS_PER_HALF_YEAR),
                 word if LEGACY_YEAR_PERIODS.contains(&word) => Some(MONTHS_PER_YEAR),
-                // Genuinely unrecognized (a typo, a fork's period) — length unknown.
+
                 _ => None,
             };
-            // Divisor: the month-span when known (floor 1 for shorter/equal), else 1 (carried
-            // unchanged). NEVER rounds a longer period's amount UP — that is the loosening direction.
+
             let divisor: u64 = months.unwrap_or(1).max(1);
             let why = if months.is_some() {
                 format!("1.5.3 has no `{other}` window")
@@ -1136,17 +912,12 @@ fn window_noun(period: &str, ctx: &str, todos: &mut Vec<String>) -> (&'static st
                      the first boot. Check the rescaled number"
             )
             } else if months.is_some() {
-                // A KNOWN shorter-or-equal period: month is genuinely tighter, so unchanged is safe.
                 format!(
                     "The AMOUNT was carried over UNCHANGED, so the cap now spends over a \
                      {APPROX_WINDOW} instead of a `{other}` (tighter, never looser). Re-scale it \
                      by hand"
                 )
             } else {
-                // UNVERIFIED: the migrator could not determine this period's length, so it did NOT
-                // rescale — and if `{other}` is LONGER than a {APPROX_WINDOW}, the migrated cap is
-                // LOOSER than what you wrote. This is the one path that cannot promise the invariant,
-                // so it says so instead of falsely claiming "tighter, never looser".
                 format!(
                     "The AMOUNT was carried over UNCHANGED because this migrator could NOT determine \
                      how long a `{other}` is; if it is LONGER than a {APPROX_WINDOW} the migrated cap \
@@ -1163,15 +934,6 @@ fn window_noun(period: &str, ctx: &str, todos: &mut Vec<String>) -> (&'static st
     }
 }
 
-/// Divide a migrated cap AMOUNT by `divisor` (see [`window_noun`]): the rescale that keeps an
-/// approximated window from LOOSENING the operator's cap.
-///
-/// Rounds DOWN, never up — rounding up is the loosening direction this whole path exists to
-/// forbid — with a FLOOR OF 1, because `budget: 0` is rejected by `config_validate::validate`
-/// (`config_validate/mod.rs`, the `limit.amount == 0` arm, NOT `validate_groups`) and a migration
-/// must not emit a config that refuses to boot. A non-integer / unreadable amount (nothing 1.4.x
-/// could write, but the migrator never panics on a hand-edited document) passes through untouched
-/// rather than being guessed at.
 fn rescale_amount(amount: Value, divisor: u64) -> Value {
     if divisor <= 1 {
         return amount;
@@ -1182,12 +944,7 @@ fn rescale_amount(amount: Value, divisor: u64) -> Value {
     }
 }
 
-/// `governance:` -> store / rate_card / per_request_fee / groups / advanced / auth.admin_auth.
 fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut Vec<String>) {
-    // Take-on-match (see `Taken`): `as_map` on a taken value silently turned a non-mapping
-    // `governance:` into an empty one — i.e. removed the operator's block and replaced it with
-    // nothing. A malformed one now stays in the document (and `governance:` is retired in 1.5.x, so
-    // `--validate` also rejects it loudly) with a TODO.
     let mut gov = match take_mapping(root, field::GOVERNANCE, "", todos) {
         Taken::Got(m) => m,
         Taken::Absent | Taken::Malformed => return,
@@ -1225,15 +982,6 @@ fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
         return;
     }
 
-    // 1.4.x's ONLY durable governance backend was SQLite at `governance.db_path` (default
-    // "busbar-governance.db") -- `GovernanceCfg` never had a `store` module-selector field (verified
-    // against the real v1.4.1 schema), so gating this migration on a `store:` key that no real 1.4.x
-    // config could ever contain silently dropped `db_path` for EVERY real config and left the
-    // migrated document with no `store:` section at all -- which defaults to the EPHEMERAL in-memory
-    // store, silently orphaning every existing key/budget/audit row in the operator's real database on
-    // first restart. Tolerate a stray `store:` key if a hand-edited/forward-compat config has one, but
-    // never let its ABSENCE suppress the migration: presence of `governance:` (this function already
-    // returned early if absent) with 1.4.x's real, always-SQLite semantics is what must drive this.
     let stray_module = take(&mut gov, "store").and_then(|v| v.as_str().map(str::to_string));
     let db_path = take(&mut gov, field::DB_PATH).and_then(|v| v.as_str().map(str::to_string));
     let module = stray_module.unwrap_or_else(|| legacy_store_text("gov14_module").into());
@@ -1243,7 +991,7 @@ fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
         let mut settings = Mapping::new();
         match (module.as_str(), db_path) {
             (m, _) if m == crate::config::migrated_store_module() => {}
-            // No explicit db_path: 1.4.x's real default was "busbar-governance.db", not memory.
+
             (m, p) if m == legacy_store_text("gov14_module") => {
                 let p = p.unwrap_or_else(|| legacy_store_text("gov14_db_path").into());
                 settings.insert(field::DB_PATH.into(), p.into());
@@ -1272,13 +1020,9 @@ fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
         changes.push("governance.price_per_request_cents -> per_request_fee".into());
     }
     if let Some(p1k) = take(&mut gov, field::PRICE_PER_1K_TOKENS_CENTS) {
-        // N cents per 1k tokens = 10*N micro-units per token, on every tier of every model.
         let n = p1k.as_f64().unwrap_or(LEGACY_UNREADABLE_TOKEN_PRICE_CENTS);
         let per_tier = n * LEGACY_CENTS_PER_THOUSAND_TO_MICRO_UNITS_PER_TOKEN;
-        // NEVER SILENTLY DROP: `root.remove` takes the key whatever its shape,
-        // so a `rate_card:` that is not a mapping is put BACK verbatim and the synthesis is SKIPPED —
-        // replacing an operator's malformed-but-present card with a generated one would destroy the
-        // prices they wrote. `None` (no card at all) is the normal path and synthesizes from scratch.
+
         let existing_card = match root.remove(Value::from(field::RATE_CARD)) {
             None => Some(Mapping::new()),
             Some(Value::Mapping(m)) => Some(m),
@@ -1331,9 +1075,7 @@ fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
             );
         }
     }
-    // Take-on-match (see `Taken`): the old `take` + `if let Value::Mapping` removed a non-mapping
-    // `budget_groups:` and then wrote an EMPTY top-level `groups:` plus a "budget caps became
-    // generic limits" changelog line — announcing a migration of data it had just dropped.
+
     if let Taken::Got(gm) = take_mapping(&mut gov, field::BUDGET_GROUPS, field::GOVERNANCE, todos) {
         let mut out = Mapping::new();
         {
@@ -1378,8 +1120,6 @@ fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
         changes.push("governance.rate_sweep_interval / usage_flush_interval_ms -> advanced".into());
     }
     if let Some(token) = take(&mut gov, field::ADMIN_TOKEN) {
-        // The old field held the (env-interpolated) token VALUE. The 1.5.0 shape is a secret
-        // reference on the operator credential's module; a `${VAR}` reference converts mechanically.
         let operator = crate::config::operator_provider();
         let auth = root
             .entry(field::AUTH.into())
@@ -1415,7 +1155,7 @@ fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
         }
         changes.push(busbar_kernel_identity::operator::migrated_token(operator));
     }
-    // `enabled` was removed in 1.5.0 (governance is presence-driven).
+
     if take(&mut gov, field::ENABLED).is_some() {
         changes.push("governance.enabled removed (governance is presence-driven)".into());
     }
@@ -1427,21 +1167,14 @@ fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
     }
 }
 
-/// `auth.mode` / `auth.group_map` / `auth.client_tokens` -> chain / role_bindings / (removed).
 fn migrate_auth(
     root: &mut Mapping,
     changes: &mut Vec<String>,
     todos: &mut Vec<String>,
     warnings: &mut Vec<String>,
 ) {
-    // `group_map:` lived TOP-LEVEL in the shipped 1.4.x `DeployCfg` (NOT under `auth:`). Pull it
-    // from the top level first, then fall back to the nested `auth.group_map` an earlier
-    // transitional shape used. Sourced up front, before the `auth` mutable borrow, so both
-    // locations are reachable. A real 1.4.x config that only carried a top-level group_map used to
-    // pass it straight through -> 1.5.0 `deny_unknown_fields` rejected the unknown `group_map` key.
     let mut group_map = take(root, field::GROUP_MAP);
 
-    // Nothing auth-shaped to migrate and no group_map to home: leave the document untouched.
     if !matches!(root.get(Value::from(field::AUTH)), Some(Value::Mapping(_))) && group_map.is_none()
     {
         return;
@@ -1450,13 +1183,6 @@ fn migrate_auth(
         .entry(field::AUTH.into())
         .or_insert_with(|| Value::Mapping(Mapping::new()))
     else {
-        // `auth:` is PRESENT but not a mapping (e.g. `auth: null` / `auth: [...]` - a malformed
-        // 1.4.x shape this migrator cannot mechanically merge bindings into). The zero-side-effect
-        // contract this module documents ("never silently drop, pass through or TODO") applies to
-        // `group_map` too: it was already pulled off `root` above, so returning here without putting
-        // it somewhere would silently vanish it from the migrated document. Restore it verbatim at
-        // the top level (a human can still see and hand-migrate it) and surface a loud TODO so
-        // `--validate`/manual review does not miss it.
         if let Some(gm) = group_map {
             root.insert(field::GROUP_MAP.into(), gm);
             todos.push(
@@ -1473,9 +1199,6 @@ fn migrate_auth(
         group_map = take(auth, field::GROUP_MAP);
     }
 
-    // `auth.chain`: the 1.4.x static-token module (`tokens` / `static-tokens`) is REMOVED in 1.5.0;
-    // the data-plane signed-key verifier is `keys`. Rewrite it (deduped) so `--validate` does not
-    // reject the chain, and surface the re-mint TODO (1.x bearer tokens stop working).
     if let Some(Value::Sequence(chain)) = auth.get_mut(Value::from(field::CHAIN)) {
         let mut rewrote = false;
         let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
@@ -1510,9 +1233,6 @@ fn migrate_auth(
         }
     }
 
-    // The `keys` verifier REQUIRES a signing key (1.5.1: no auto-generation), so a config whose
-    // migrated chain uses `keys` - rewritten from `tokens` above OR already written that way - will
-    // not `--validate` until the operator provides one. Never invent a key; say so.
     let chain_uses_keys = matches!(
         auth.get(Value::from(field::CHAIN)),
         Some(Value::Sequence(c)) if c.iter().any(|e| {
@@ -1524,10 +1244,6 @@ fn migrate_auth(
         todos.push(MISSING_SIGNING_KEY.into());
     }
 
-    // `auth.modules` (per-module trust-boundary caps) is REMOVED in 1.5.0. `max_admin_scope` has a
-    // deterministic home: the chain/admin entry for that module (`{ <module>: { max_admin_scope } }`),
-    // so the admin-scope CEILING is never silently lost. `allowed_groups` (the group-assertion
-    // allowlist) has no 1.5.0 equivalent -> a TODO, never a silent drop.
     if let Some(Value::Mapping(modules)) = take(auth, field::MODULES) {
         for (mod_name, caps) in modules {
             let mod_name = mod_name.as_str().unwrap_or("?").to_string();
@@ -1615,8 +1331,7 @@ fn migrate_auth(
     let Some(gm) = group_map else {
         return;
     };
-    // Which MODULE do the old flat bindings nest under? Mechanical when the chain names exactly
-    // one external module; otherwise a placeholder + TODO.
+
     let chain_modules: Vec<String> = auth
         .get(Value::from(field::CHAIN))
         .and_then(|v| v.as_sequence())
@@ -1649,14 +1364,7 @@ fn migrate_auth(
             "<module>".to_string()
         }
     };
-    // `group_map:` itself may not be a mapping (e.g. `group_map: [foo]` / `group_map: null` - a
-    // malformed 1.4.x shape, mirroring the `auth:`-not-a-mapping case above). The `if let
-    // Value::Mapping(gm) = gm` below used to silently no-op on anything else: `bindings` stayed
-    // empty, but execution fell straight through to unconditionally push an EMPTY
-    // `auth.role_bindings.<module>: {}` plus a misleading "auth.group_map -> auth.role_bindings"
-    // changelog entry, as if the (actually-dropped) data had migrated. Catch that shape here and
-    // restore it verbatim (same "never silently drop" contract as the non-mapping `auth:` case)
-    // with a loud TODO, instead of claiming a migration that never happened.
+
     let Value::Mapping(gm) = gm else {
         root.insert(field::GROUP_MAP.into(), gm);
         todos.push(
@@ -1717,7 +1425,7 @@ fn migrate_auth(
             if let Some(scope) = take(&mut b, field::ADMIN_SCOPE) {
                 binding.insert(field::ADMIN_SCOPE.into(), scope);
             }
-            // Inline caps (rpm/tpm/budget) no longer live on a binding: generate a groups entry.
+
             let rpm = take(&mut b, field::RPM_LIMIT);
             let tpm = take(&mut b, field::TPM_LIMIT);
             let budget = take(&mut b, field::MAX_BUDGET_CENTS);
@@ -1787,7 +1495,6 @@ fn migrate_auth(
     }
 }
 
-/// `providers.*.api_key_env: VAR` -> `api_key: { env: VAR }`.
 fn migrate_providers(root: &mut Mapping, changes: &mut Vec<String>) {
     let Some(Value::Mapping(providers)) = root.get_mut(Value::from(Kind::Transport.root())) else {
         return;
@@ -1806,9 +1513,6 @@ fn migrate_providers(root: &mut Mapping, changes: &mut Vec<String>) {
     }
 }
 
-/// Convert an OLD hook `at:` scalar to the NEW `phase:` list, stage-renamed via the shared
-/// [`crate::config::RENAMED_HOOK_STAGES`] table (`route`→`candidate`, `attempt`→`routing`,
-/// `completion`→`response`). `None` when `at` is not a recognizable scalar.
 fn at_to_phase(at: &Value) -> Option<Value> {
     let s = at.as_str()?;
     let renamed = crate::config::RENAMED_HOOK_STAGES
@@ -1819,14 +1523,6 @@ fn at_to_phase(at: &Value) -> Option<Value> {
     Some(Value::Sequence(vec![Value::from(renamed)]))
 }
 
-/// Build a 1.5.3 hook DEFINITION mapping (`{ module, settings, kind, phase, … }`) from an OLD hook
-/// entry — either a 1.x REGISTRY entry (a URL or `socket:` transport) or a 1.5.0/1.5.2 INLINE ref
-/// (`{ module: … }`). `module:` is derived (the URL transport → the module of the same word +
-/// `settings.url`, socket→`socket`+`settings.path`, else the entry's own `module:`/`plugin:`); the
-/// URL transport's word is the root migration table's `hook_1x_url_transport` row (frozen 1.5.5 text:
-/// the kernel names no hook plugin). The tap `at:` becomes the renamed `phase:` list; the retired
-/// `global:`/`default:`/`signals:` flags are dropped with a todo. Total: an unrecognized shape
-/// still yields a best-effort def.
 fn hook_entry_to_def(name: &str, entry: &Value, todos: &mut Vec<String>) -> Value {
     let m = entry.as_mapping().cloned().unwrap_or_default();
     let mut def = Mapping::new();
@@ -1880,10 +1576,6 @@ fn hook_entry_to_def(name: &str, entry: &Value, todos: &mut Vec<String>) -> Valu
         def.insert(field::PHASE.into(), phase.clone());
     } else if m.get(Value::from(field::KIND)).and_then(|v| v.as_str()) == Some(LEGACY_TAP_HOOK_KIND)
     {
-        // SEMANTICS-PRESERVING (1.5.3): a legacy TAP with no `at:` fired at the REQUEST stage only.
-        // Under the frozen 1.5.3 rule an omitted `phase:` means ALL FOUR core stages, so migrating
-        // such a tap without pinning the stage would silently take it from one firing per request to
-        // four. Write the old default explicitly — a migration must never change behavior.
         def.insert(
             field::PHASE.into(),
             Value::Sequence(vec![Value::from(super::HookStage::Request.as_str())]),
@@ -1904,10 +1596,6 @@ fn hook_entry_to_def(name: &str, entry: &Value, todos: &mut Vec<String>) -> Valu
     Value::Mapping(def)
 }
 
-/// Whether a `hooks:` map is ALREADY the 1.5.3 named-definition shape (every entry is a map naming a
-/// non-empty `module:` and carrying NO legacy 1.x transport key). Used to make the
-/// migration IDEMPOTENT (a config already in the new shape passes through untouched) and to preserve
-/// the 1.x-vs-1.5.3 distinction the loud-fail detector also uses.
 fn is_new_hook_defs(hooks: &Mapping) -> bool {
     !hooks.is_empty()
         && hooks.iter().all(|(_, e)| {
@@ -1923,7 +1611,6 @@ fn is_new_hook_defs(hooks: &Mapping) -> bool {
         })
 }
 
-/// A deterministic unique name for an auto-lifted hook definition: `base`, then `base-2`, `base-3`, …
 fn uniq_def_name(defs: &Mapping, base: &str) -> String {
     if !defs.contains_key(Value::from(base)) {
         return base.to_string();
@@ -1969,8 +1656,7 @@ fn migrate_hooks_block(root: &mut Mapping, changes: &mut Vec<String>, todos: &mu
         todos.push("pools or pools.hooks: has an incompatible shape; global hook definitions and attachments were left unchanged because their all-pools references cannot be merged".into());
         return;
     }
-    // Take-on-match (see `Taken`): a `hooks:` that is not a mapping stays EXACTLY where the operator
-    // wrote it, with a TODO, instead of being lifted out and dropped.
+
     let hooks_src = match take_mapping(root, Kind::Hook.root(), "", todos) {
         Taken::Got(m) => Some(m),
         Taken::Absent | Taken::Malformed => None,
@@ -1980,11 +1666,8 @@ fn migrate_hooks_block(root: &mut Mapping, changes: &mut Vec<String>, todos: &mu
 
     if let Some(src) = hooks_src {
         if is_new_hook_defs(&src) {
-            // Already the 1.5.3 named-definition map: keep verbatim (idempotent).
             defs = src;
         } else {
-            // 1.x REGISTRY: convert every entry to a named def; a `global: true` entry also joins the
-            // all-pools attach.
             for (k, entry) in &src {
                 let Some(name) = k.as_str() else { continue };
                 defs.insert(k.clone(), hook_entry_to_def(name, entry, todos));
@@ -2003,12 +1686,9 @@ fn migrate_hooks_block(root: &mut Mapping, changes: &mut Vec<String>, todos: &mu
         }
     }
 
-    // `global_hooks:` -> the reserved `pools.hooks:` all-pools attach.
     let global_hooks_src = match take_sequence(root, field::GLOBAL_HOOKS, "", todos) {
         Taken::Got(s) => s,
-        // Absent is the normal path; Malformed left the operator's value in place with a TODO (and
-        // `global_hooks:` is a RETIRED key in 1.5.3, so a leftover one also fails `--validate` loudly
-        // — which is the point: it is no longer possible for it to just vanish).
+
         Taken::Absent | Taken::Malformed => Vec::new(),
     };
     for entry in global_hooks_src {
@@ -2040,12 +1720,11 @@ fn migrate_hooks_block(root: &mut Mapping, changes: &mut Vec<String>, todos: &mu
         }
     }
 
-    // Inline pool-hook instances -> named def + bare-name reference in that pool.
     if let Some(Value::Mapping(pools)) = root.get_mut(Value::from(field::POOLS)) {
         let pool_names: Vec<Value> = pools.keys().cloned().collect();
         for pk in pool_names {
             if pk.as_str() == Some(field::HOOKS) {
-                continue; // the reserved all-pools key, not a pool
+                continue;
             }
             let Some(Value::Mapping(p)) = pools.get_mut(&pk) else {
                 continue;
@@ -2053,10 +1732,7 @@ fn migrate_hooks_block(root: &mut Mapping, changes: &mut Vec<String>, todos: &mu
             let pool_ctx = format!("pools.{}", pk.as_str().unwrap_or("?"));
             let existing = match take_sequence(p, field::HOOKS, &pool_ctx, todos) {
                 Taken::Got(s) => s,
-                // THE reported case: `pools.<x>.hooks: baa-gate` (the scalar form 1.5.3 rejects).
-                // It stays in the document with a TODO — before this it was removed here and never
-                // written back, and since an absent `hooks:` is a legal default `--validate` then
-                // PASSED with the pool's rejecting compliance gate silently gone.
+
                 Taken::Absent | Taken::Malformed => continue,
             };
             let mut new_list: Vec<Value> = Vec::new();
@@ -2078,7 +1754,7 @@ fn migrate_hooks_block(root: &mut Mapping, changes: &mut Vec<String>, todos: &mu
                             pk.as_str().unwrap_or("?")
                         ));
                     }
-                    // A strategy keyword or an already-bare hook name passes through.
+
                     other => new_list.push(other),
                 }
             }
@@ -2089,9 +1765,6 @@ fn migrate_hooks_block(root: &mut Mapping, changes: &mut Vec<String>, todos: &mu
     }
 
     if !defs.is_empty() {
-        // The key is still present ⇒ `take_mapping` above found it MALFORMED and deliberately left
-        // the operator's value in place. Writing here would destroy exactly what that arm preserved,
-        // so it doesn't — it says so instead (`Taken`, property 2).
         if root.contains_key(Value::from(Kind::Hook.root())) {
             todos.push(format!(
                 "hooks: {} hook definition(s) lifted from `global_hooks:`/inline pool hooks could \
@@ -2109,12 +1782,10 @@ fn migrate_hooks_block(root: &mut Mapping, changes: &mut Vec<String>, todos: &mu
             .entry(field::POOLS.into())
             .or_insert_with(|| Value::Mapping(Mapping::new()));
         if let Value::Mapping(pm) = pools {
-            // Merge with any existing reserved all-pools list (idempotent dedup).
             let mut merged = match take_sequence(pm, field::HOOKS, field::POOLS, todos) {
                 Taken::Got(s) => s,
                 Taken::Absent => Vec::new(),
-                // A malformed reserved `pools.hooks:` stays as written; the attaches cannot be
-                // merged into it, so say so rather than replacing the operator's value.
+
                 Taken::Malformed => {
                     todos.push(
                         "pools.hooks: the all-pools hook attaches derived from this config could \
@@ -2137,21 +1808,11 @@ fn migrate_hooks_block(root: &mut Mapping, changes: &mut Vec<String>, todos: &mu
     }
 }
 
-/// 1.6.0-dev → 1.6.0 POOLS UNDER THEIR VERB (THE DESIGN §4 POOLS-VERBS): the unreleased
-/// `tool_pools:`/`agent_pools:` sections MOVE to their section's reserved `pools` sub-key, and a
-/// top-level `pools:` entry that names no `models:` entry is reported for the operator to move. The top-level
-/// `pools:` is the fallback plane's alone, as in 1.5.5. The grammar is unchanged (`members:` by bare
-/// name, `repeatable:`), so the move is a plain map move. A name collision is left for the operator
-/// (a todo): it is a real ambiguity, not something the tool may silently pick.
-///
-/// Rich-member `pools:` entries (a `{ model, weight, ... }` member) are the fallback plane's and are
-/// never moved: the 1.5.5 member grammar is still the 1.6.0 grammar, and a released config must
-/// migrate byte-for-byte the same way across the two versions.
 fn migrate_unified_pools(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut Vec<String>) {
     use busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS;
     let pools_key = busbar_contract::section::RESERVED_POOLS_KEY;
     let sections = [NAMED_MAP_SECTIONS[2], NAMED_MAP_SECTIONS[3]];
-    // The unreleased per-plane pool sections, by the section their pools move under.
+
     let mut moving: Vec<(String, &'static str, Value, Value)> = Vec::new();
     for (old, section) in [("tool_pools", sections[0]), ("agent_pools", sections[1])] {
         if root
@@ -2169,8 +1830,7 @@ fn migrate_unified_pools(root: &mut Mapping, changes: &mut Vec<String>, todos: &
             }
         }
     }
-    // A top-level `pools:` entry whose members are all bare names and none a `models:` entry belongs
-    // to another plane. Which one is that plane's grammar, so the operator moves it (a todo).
+
     let model = |root: &Mapping, member: &str| -> bool {
         matches!(root.get(Value::from(field::MODELS)), Some(Value::Mapping(m)) if m.contains_key(Value::from(member)))
     };
@@ -2194,7 +1854,7 @@ fn migrate_unified_pools(root: &mut Mapping, changes: &mut Vec<String>, todos: &
             }
         }
     }
-    // An entry that cannot move stays where it was written, so `--validate` refuses it loudly.
+
     let mut left: Vec<(String, Value, Value)> = Vec::new();
     for (old, section, name, def) in moving {
         let n = name.as_str().unwrap_or("?").to_string();
@@ -2245,14 +1905,7 @@ fn migrate_pools(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut Vec<
     for (pname, p) in pools.iter_mut() {
         let pname = pname.as_str().unwrap_or("?").to_string();
         let Value::Mapping(p) = p else { continue };
-        // The retired singular `policy:` key names a base ordering strategy: PREPEND it to the
-        // pool's `hooks:` list (a bare built-in name stays bare). Runs here (always) rather than
-        // in `migrate_hooks_block` (which returns early for a config with no `hooks:` registry),
-        // so a pool `policy:` migrates whether or not the config had a hooks block.
-        // Take-on-match, in BOTH keys (see `Taken`). `policy:` is only removed once it is confirmed
-        // to be a scalar name, and the prepend only happens once `hooks:` is confirmed absent or a
-        // real list — so neither key can be lifted out and dropped, and a malformed `hooks:` is
-        // never overwritten by a synthesized one-element list.
+
         let policy = p
             .get(Value::from(field::POLICY))
             .and_then(|v| v.as_str())
@@ -2327,16 +1980,6 @@ fn migrate_pools(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut Vec<
     }
 }
 
-/// Rewrite a 1.4.x `on_exhausted: { action: <string> }` to the 1.5.0 [`OnExhaustedCfg`] shape.
-///
-/// 1.4.x wrapped the behavior in an `action:` string with several accepted spellings
-/// (`reject`/`503`/`status_503`/`status503`, `least_bad`/`least-bad`/`leastbad`,
-/// `fallback_pool:<name>`). 1.5.0 uses `deny_unknown_fields` and takes a BARE keyword
-/// (`reject` / `least_bad`) or a `{ fallback_pool: <name> }` map -- so the 1.4.x `{ action: … }`
-/// wrapper is rejected at parse with the exact user-reported error ("unknown field `action`").
-/// This was a SILENT pass-through (migrate reported changes but never touched `on_exhausted`), the
-/// precise failure class this migrator exists to prevent. A value already in the 1.5.0 form (a bare
-/// string, or a `{ fallback_pool }` map with no `action:` key) is left untouched (idempotent).
 fn migrate_on_exhausted(
     pname: &str,
     p: &mut Mapping,
@@ -2346,7 +1989,7 @@ fn migrate_on_exhausted(
     let Some(oe) = p.get(Value::from(field::ON_EXHAUSTED)).cloned() else {
         return;
     };
-    // Only the 1.4.x `{ action: … }` MAP form needs rewriting; the `action` key is its tell.
+
     let Some(action) = oe
         .as_mapping()
         .and_then(|m| m.get(Value::from(field::ACTION)))
@@ -2395,8 +2038,6 @@ fn migrate_on_exhausted(
     ));
 }
 
-/// The 1.4.x trace-URL key -> its 1.5.0 spelling, inside `observability:` (both the root legacy
-/// table's frozen 1.5.5 rows: `observability_trace_key_1_4` -> `observability_trace_key`).
 fn migrate_observability(root: &mut Mapping, changes: &mut Vec<String>) {
     let Some(Value::Mapping(obs)) = root.get_mut(Value::from(field::OBSERVABILITY)) else {
         return;
@@ -2414,16 +2055,7 @@ fn migrate_observability(root: &mut Mapping, changes: &mut Vec<String>) {
     }
 }
 
-/// 1.5.3 observability→export lift-out: mechanically rewrite the retired request-log
-/// `observability.*` keys (the root migration table's `observability_log_keys`: retired key → its
-/// settings key) → `export.<observability_log_type_key>.settings.*`, and the top-level `metrics:`
-/// block → `export.<metrics_type_key>.settings.*`. Because the 1.5.5 exporters were BUILT-IN (not
-/// tarball plugins), this is a full mechanical rewrite (not just a printed TODO) — the config breaks
-/// ONCE and the sink is preserved, not lost. The type keys and the change line are frozen 1.5.5 text
-/// the root hands in; the kernel names no export instance. Idempotent: a config already in the new
-/// shape has no retired keys to move, so a second run is a no-op.
 fn migrate_observability_export(root: &mut Mapping, changes: &mut Vec<String>) {
-    // Ensure `export` exists as a mapping, returning a handle to splice a sub-exporter into.
     fn export_mut(root: &mut Mapping) -> &mut Mapping {
         let entry = root
             .entry(Kind::Export.root().into())
@@ -2437,7 +2069,6 @@ fn migrate_observability_export(root: &mut Mapping, changes: &mut Vec<String>) {
         }
     }
 
-    // (a) the request-log keys off `observability:`.
     let mut log_settings = Mapping::new();
     if let Some(Value::Mapping(obs)) = root.get_mut(Value::from(field::OBSERVABILITY)) {
         for (old, leaf) in super::migration_table::pairs("observability_log_keys") {
@@ -2445,9 +2076,7 @@ fn migrate_observability_export(root: &mut Mapping, changes: &mut Vec<String>) {
                 log_settings.insert(leaf.into(), v);
             }
         }
-        // An `observability:` mapping emptied to nothing is dropped so the migrated doc has no bare
-        // `observability: {}` (which is valid but noise). Keep it if the trace URL (or anything)
-        // remains.
+
         if obs.is_empty() {
             root.remove(Value::from(field::OBSERVABILITY));
         }
@@ -2462,7 +2091,6 @@ fn migrate_observability_export(root: &mut Mapping, changes: &mut Vec<String>) {
         changes.push(super::migration_table::text("observability_log_change").into());
     }
 
-    // (b) the top-level `metrics:` block -> export.<metrics_type_key>.settings.
     let metrics_type_key = super::migration_table::text("metrics_type_key");
     let removed_metrics = root.remove(Value::from(field::METRICS));
     if let Some(Value::Mapping(mut metrics)) = removed_metrics {
@@ -2473,7 +2101,7 @@ fn migrate_observability_export(root: &mut Mapping, changes: &mut Vec<String>) {
         if let Some(v) = take(&mut metrics, field::KEY_GAUGE_LIMIT) {
             settings.insert(field::KEY_GAUGE_LIMIT.into(), v);
         }
-        // Carry through any other keys verbatim (forward-compat) so nothing is silently dropped.
+
         for (k, v) in metrics {
             settings.insert(k, v);
         }
@@ -2484,9 +2112,6 @@ fn migrate_observability_export(root: &mut Mapping, changes: &mut Vec<String>) {
             "metrics: block -> export.{metrics_type_key}.settings (built-in exporter)"
         ));
     } else if let Some(other) = removed_metrics {
-        // Same class as the `observability:` arm above: the key IS retired, so a
-        // malformed block is still deleted — but `root.remove` already took it, so the deletion must
-        // be RECORDED or it happened invisibly.
         changes.push(format!(
             "metrics: block removed (RETIRED in 1.5.3; it was not a mapping — the value `{}` \
              carried no settings foldable into export.{metrics_type_key})",
@@ -2495,11 +2120,6 @@ fn migrate_observability_export(root: &mut Mapping, changes: &mut Vec<String>) {
     }
 }
 
-/// `observability.emit_server_timing` -> `advanced.response_headers.server_timing` (every
-/// busbar-injected response header unified under one opt-in `advanced.response_headers:` block).
-/// Unlike `migrate_observability`'s same-section rename, this one CROSSES top-level sections, so it
-/// removes the key from `observability` (if present) and inserts it under `advanced.response_headers`,
-/// creating either mapping if it did not already exist.
 fn migrate_response_headers(
     root: &mut Mapping,
     changes: &mut Vec<String>,
@@ -2511,10 +2131,7 @@ fn migrate_response_headers(
     ) {
         return;
     }
-    // Take-on-match (see `Taken`) BEFORE touching `observability:`: an `advanced:` that is not a
-    // mapping used to be removed here and replaced with a freshly-built one — the operator's
-    // `advanced:` value gone, with no todo. Now it stays as written, and the SOURCE key stays with
-    // it (nothing is half-migrated).
+
     let mut advanced = match take_mapping(root, field::ADVANCED, "", todos) {
         Taken::Got(m) => m,
         Taken::Absent => Mapping::new(),
@@ -2549,13 +2166,6 @@ fn migrate_response_headers(
         .push("observability.emit_server_timing -> advanced.response_headers.server_timing".into());
 }
 
-/// 1.5.3 HARD rename of the tap-stage `at:` vocabulary (`route`→`candidate`, `attempt`→`routing`,
-/// `completion`→`response`). The 1.5.3 rename dropped `#[serde(alias)]`, so an un-migrated `at:`
-/// value is a LOUD boot failure (`augment_config_error` names the new value); this rewrites the old
-/// strings in place so a migrated config validates. Walks every hook inline ref — the top-level
-/// `global_hooks:` list and each `pools.<name>.hooks:` list — and maps the old `at:` string using
-/// the SHARED [`crate::config::RENAMED_HOOK_STAGES`] table so the migrator and the loud-fail hint
-/// cannot drift.
 fn migrate_hook_stages(root: &mut Mapping, changes: &mut Vec<String>) {
     fn rewrite_list(list: &mut [Value], location: &str, changes: &mut Vec<String>) {
         for entry in list {
@@ -2606,7 +2216,7 @@ fn migrate_hook_def_keys(root: &mut Mapping, changes: &mut Vec<String>) {
     for (name, entry) in hooks.iter_mut() {
         let Value::Mapping(def) = entry else { continue };
         let hook_name = name.as_str().unwrap_or("?").to_string();
-        // `plugin:` → `module:` (an existing `module:` wins).
+
         if let Some(plugin) = take(def, field::PLUGIN) {
             if !def.contains_key(Value::from(field::MODULE)) {
                 def.insert(field::MODULE.into(), plugin);
@@ -2617,7 +2227,7 @@ fn migrate_hook_def_keys(root: &mut Mapping, changes: &mut Vec<String>) {
                 ));
             }
         }
-        // `at: <stage>` → `phase: [<stage>]` unless a non-empty `phase:` already stands.
+
         if let Some(at) = take(def, field::AT) {
             let phase_present = def
                 .get(Value::from(field::PHASE))
@@ -2638,16 +2248,11 @@ fn migrate_hook_def_keys(root: &mut Mapping, changes: &mut Vec<String>) {
     }
 }
 
-/// 1.5.3: `admin_insecure: <bool>` -> `admin_require_mtls: <!bool>` (the flag INVERTED so the safe
-/// posture is the default). IDEMPOTENT: no `admin_insecure` key ⇒ nothing to do; a config that
-/// already carries `admin_require_mtls` keeps it (the retired key cannot coexist — it is a boot
-/// marker — so there is no precedence question to answer).
 fn migrate_admin_require_mtls(root: &mut Mapping, changes: &mut Vec<String>) {
     let Some(old) = take(root, field::ADMIN_INSECURE) else {
         return;
     };
-    // Anything not literally `true` is treated as the guard being ON, which is the fail-SAFE read of
-    // a malformed value (a waiver must be explicit).
+
     let insecure = old.as_bool().unwrap_or(false);
     root.insert(field::ADMIN_REQUIRE_MTLS.into(), Value::from(!insecure));
     changes.push(format!(
@@ -2657,10 +2262,6 @@ fn migrate_admin_require_mtls(root: &mut Mapping, changes: &mut Vec<String>) {
     ));
 }
 
-/// 1.5.3: `auth.upstream_credentials:` -> the reserved `pools.upstream_credentials:` all-pools
-/// default. IDEMPOTENT: no `auth.upstream_credentials` ⇒ nothing to move. An existing
-/// `pools.upstream_credentials` WINS (it is already the new grammar, so it is the operator's most
-/// recent statement of intent) and the retired key is dropped with a named change entry.
 fn migrate_pools_upstream_credentials(
     root: &mut Mapping,
     changes: &mut Vec<String>,
@@ -2706,28 +2307,6 @@ fn migrate_pools_upstream_credentials(
     }
 }
 
-/// 1.5.3: rewrite a retired `store.module:` spelling of the first-party Valkey store plugin to
-/// its current alias. The plugin was renamed WHOLESALE (repo, crate, artifact, manifest
-/// `name`, config `alias`), so `redis` / `busbar-store-redis` / `busbar-store-redis-plugin` match
-/// nothing in the renamed artifact's manifest and the store the operator asked for is simply gone.
-/// Driven by the ONE rewrite over the root migration table
-/// ([`crate::config::migration_table::rewrite_retired`]), so this rewrite and [`detect_legacy_markers`]'s
-/// loud-fail cannot disagree about which spellings are retired.
-///
-/// The `settings:` bag rides through VERBATIM. The connection URL's `redis://` / `rediss://` scheme
-/// is the upstream driver's own registered scheme — an unrenamable upstream identifier, not a
-/// busbar-owned name — so touching it would break every working deployment.
-///
-/// IDEMPOTENT: a `store.module:` already on the new alias (or naming any other backend) is not in the
-/// retired table, so a second run finds nothing to rewrite and records no change.
-///
-/// TAKE-ON-MATCH (see [`Taken`]), at BOTH levels. A `store:` that is not a mapping is left EXACTLY as
-/// written, in place, with its own TODO — `take_mapping` never removes a `Malformed` value, so there
-/// is nothing to restore. Inside the block the `module:` value is only removed once it has been
-/// CONFIRMED to be a retired spelling; a `module:` this migrator does not understand is never lifted
-/// out, so there is no window in which it could be dropped. That matters more here than almost
-/// anywhere else in this module: an ABSENT `store:` is the legal `memory` default, so silently
-/// losing the block would turn a durable deployment ephemeral AND still pass `busbar --validate`.
 fn migrate_store_module(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut Vec<String>) {
     let mut store = match take_mapping(root, Kind::Store.root(), "", todos) {
         Taken::Got(m) => m,
@@ -2747,14 +2326,10 @@ fn migrate_store_module(root: &mut Mapping, changes: &mut Vec<String>, todos: &m
             legacy_store_text("retired_url_scheme"),
         ));
     }
-    // Unconditional: `take_mapping` already REMOVED the block above, so every path out of this
-    // function must put the operator's `store:` back — changed or not.
+
     root.insert(Kind::Store.root().into(), Value::Mapping(store));
 }
 
-/// The name SUFFIX a split identity-provider definition gets, per the auth plane that forced the
-/// split: `admin_auth` -> `<module>-admin` (the shape the 1.5.3 docs use), any other site -> the site
-/// name itself. Deterministic, so re-running the migration on the same input yields the same names.
 fn split_suffix(site: &str) -> &str {
     match site {
         field::ADMIN_AUTH => ADMIN_PROVIDER_SUFFIX,
@@ -2762,23 +2337,6 @@ fn split_suffix(site: &str) -> &str {
     }
 }
 
-/// 1.5.3: lift every INLINE `auth.chain:` / `auth.admin_auth:` entry and every
-/// `auth.methods:` entry into the top-level `identity-providers:` NAMED-DEFINITION map, replacing the
-/// chain entries with bare NAME references.
-///
-/// **The DEDUPE is the whole point.** One IdP that served both planes had to be written twice, once
-/// per chain, with two independent copies of its settings. This produces ONE definition per MODULE and
-/// points both chains at it — so the duplication the old grammar forced is gone after migrating, not
-/// merely expressible.
-///
-/// SHAPE-CONVERGENT and IDEMPOTENT: a bare-string chain entry is already a name reference and passes
-/// straight through, so a second run finds nothing to lift.
-///
-/// NEVER SILENTLY DROPS (the rule `migrate_auth` already states): `root.remove` takes
-/// the key unconditionally, so every early return below RESTORES the value it took, unchanged, and
-/// names it in the ledger. A malformed `auth: null` / `auth: []` / `auth: <scalar>` (real
-/// hand-edited shapes) therefore survives the migration verbatim for the operator to fix, instead of
-/// disappearing from the migrated document with no record.
 fn migrate_identity_providers(
     root: &mut Mapping,
     changes: &mut Vec<String>,
@@ -2798,15 +2356,12 @@ fn migrate_identity_providers(
         }
         return;
     };
-    // Start from any EXISTING definitions so a partially-migrated config converges rather than
-    // duplicating. Keyed by the definition NAME; `by_module` indexes them for the dedupe.
+
     let removed_defs = root.remove(Value::from(Kind::Auth.root()));
     let mut defs = match removed_defs {
         None => Mapping::new(),
         Some(Value::Mapping(m)) => m,
-        // Same rule: a malformed `identity-providers:` is put BACK verbatim (together with the
-        // `auth:` block this function had already taken) and nothing is lifted — overwriting it with
-        // synthesized definitions would destroy whatever the operator meant to write there.
+
         Some(other) => {
             let shape = one_line(&other);
             root.insert(field::AUTH.into(), Value::Mapping(auth));
@@ -2829,21 +2384,6 @@ fn migrate_identity_providers(
         })
         .collect();
 
-    // Lift one inline entry into a definition, REUSING the existing definition for that module when
-    // one is already present AND its carried fields AGREE (the dedupe). Returns the NAME the site should
-    // now reference. `site` names where the entry came from (`chain` / `admin_auth` / `methods`) and
-    // is used only to name a SPLIT definition deterministically.
-    //
-    // THE SETTINGS RULE. The dedupe folds one module written on both planes into ONE
-    // definition — but only when there is nothing to lose by folding:
-    //   * this site carries NO `settings:` ⇒ reuse (nothing to lose);
-    //   * an existing definition for this module has the IDENTICAL `settings:` ⇒ reuse (the win);
-    //   * an existing definition for this module has NO `settings:` ⇒ reuse and ADOPT this site's;
-    //   * otherwise the two sites CONFLICT (e.g. `oidc` with `issuer: data.example.com` on `chain`
-    //     and `issuer: admin.example.com` on `admin_auth`) ⇒ emit a SECOND definition named
-    //     `<module>-<site>` and reference IT from this site. Merging them would silently drop one
-    //     plane's settings and authenticate that plane against the WRONG upstream; two definitions is
-    //     the honest outcome, and it is flagged as a todo.
     let lift = |module: &str,
                 body: &Mapping,
                 site: &str,
@@ -2873,19 +2413,15 @@ fn migrate_identity_providers(
                     }
                 })
         };
-        // Every definition already standing for this module, in insertion order.
+
         let candidates: Vec<String> = by_module
             .iter()
             .filter(|(m, _)| m == module)
             .map(|(_, n)| n.clone())
             .collect();
-        // `auth.methods:` is EXEMPT from the split (freeze blocker): a method entry's flattened
-        // settings are COMPLEMENTARY to the chain entry's for the same module (a `browser_login:`
-        // plus the method's own keys), and the caller UNIONS them into the one definition on purpose.
-        // Only the two CHAINS can state genuinely disagreeing settings for one module.
+
         let may_split = site != field::METHODS;
-        // The one to reuse, per the settings rule above: an exact settings match first, then (only
-        // when this site brings settings) one that carries none and can adopt them.
+
         let reuse = if may_split {
             candidates
                 .iter()
@@ -2902,9 +2438,6 @@ fn migrate_identity_providers(
             candidates.first().cloned()
         };
         if let Some(name) = reuse {
-            // MERGE the second plane's typed fields into the ONE definition. A `token:` (the operator credential)
-            // or a `max_admin_scope:` written on only one of the two chains must survive the fold —
-            // and so must a `settings:` bag the reused definition does not carry yet.
             if let Some(Value::Mapping(existing)) = defs.get_mut(Value::from(name.as_str())) {
                 for key in [field::MAX_ADMIN_SCOPE, field::TOKEN, field::SETTINGS] {
                     if !existing.contains_key(Value::from(key)) {
@@ -2920,13 +2453,11 @@ fn migrate_identity_providers(
             ));
             return name;
         }
-        // A CONFLICTING second site (or the very first sighting of this module).
+
         let split = !candidates.is_empty();
         let base = if split {
             format!("{module}-{}", split_suffix(site))
         } else {
-            // The definition NAME defaults to the module name — the minimal, least-surprising rename,
-            // and exactly what the built-ins are referenced as.
             module.to_string()
         };
         let name = super::migrate_export::uniq_export_name(defs, &base);
@@ -2983,7 +2514,6 @@ fn migrate_identity_providers(
         let mut names: Vec<Value> = Vec::new();
         for entry in seq {
             match entry {
-                // Already a bare NAME reference — the new grammar.
                 Value::String(s) => names.push(Value::from(s)),
                 Value::Mapping(m) => {
                     let Some((module, body)) = m
@@ -3010,9 +2540,6 @@ fn migrate_identity_providers(
         auth.insert(plane.into(), Value::Sequence(names));
     }
 
-    // FREEZE BLOCKER: `auth.methods:` folds INTO the provider definition — `browser_login` plus the
-    // method's flattened opaque settings are per-provider, so they belong on the definition and not in
-    // a second parallel map that could disagree with it.
     if let Some(Value::Mapping(methods)) = take(&mut auth, field::METHODS) {
         for (k, v) in methods {
             let Some(module) = k.as_str().map(str::to_string) else {
@@ -3020,7 +2547,7 @@ fn migrate_identity_providers(
             };
             let mut body = as_map(v);
             let browser_login = take(&mut body, field::BROWSER_LOGIN);
-            // Everything else on a `methods:` entry was the module's flattened opaque settings.
+
             let mut settings = Mapping::new();
             settings.insert(field::SETTINGS.into(), Value::Mapping(body));
             let name = lift(
@@ -3036,8 +2563,7 @@ fn migrate_identity_providers(
                 if let Some(bl) = browser_login {
                     def.insert(field::BROWSER_LOGIN.into(), bl);
                 }
-                // MERGE the method's settings into the definition's, rather than replacing: the
-                // chain entry for the same module may already have contributed its own.
+
                 if let Some(Value::Mapping(from)) =
                     settings.get(Value::from(field::SETTINGS)).cloned()
                 {
@@ -3060,9 +2586,6 @@ fn migrate_identity_providers(
         }
     }
 
-    // `role_bindings:` nests by the SAME string the chains reference. Because `lift` names each
-    // definition after its module, an existing `role_bindings.<module>` table is already correct —
-    // but say so, because a hand-RENAMED definition would need the bindings renamed with it.
     if auth.contains_key(Value::from(field::ROLE_BINDINGS)) && !defs.is_empty() {
         todos.push(
             "auth.role_bindings is nested by the IDENTITY-PROVIDER NAME in 1.5.3. The migrator named \
