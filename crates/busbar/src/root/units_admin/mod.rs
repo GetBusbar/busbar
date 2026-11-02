@@ -2166,6 +2166,12 @@ pub(crate) fn authenticate(
             (principal.id, grants, Some(list))
         }
         busbar_kernel::auth::AdminDoor::Denied => return Err(ReasonCode::Unauthenticated),
+        busbar_kernel::auth::AdminDoor::Unavailable(_) => {
+            // This is a server failure, not an invalid credential. Keep the door's specific
+            // HTTP answer on the walk; AdminNode returns it without invoking the operation.
+            walk.answer = Some(authentication_unavailable_answer());
+            return Err(ReasonCode::Internal);
+        }
     };
     // The two-rung matrix the approve step compares against: the highest rung the grants reach, or
     // no grant at all (identified, not authorized: 403).

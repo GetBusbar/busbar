@@ -310,18 +310,18 @@ impl OperatorCredential {
     /// The SYNCHRONOUS PROBE of the same judgement: one ticketless, watchdog-bounded crossing on
     /// the caller's thread (`verify_now`), for a caller that cannot await (the dry run, the root's
     /// admin door). A plugin that must wait answers no verdict here, which is a
-    /// refusal (a `Reject` judgement) — the probe fails closed.
+    /// refusal with `no_verdict` retained — the probe fails closed, while an HTTP caller can
+    /// distinguish verifier unavailability from an invalid credential.
     pub fn probe(&self, request: &VerifyRequest) -> Option<Judgement> {
         let module = match self {
             Self::Unanswered => return None,
             Self::Unset => return Some(Judgement::of(AuthVerdict::Pass)),
             Self::Module(module) => module,
         };
-        Some(
-            module
-                .verify_now(request)
-                .map_or_else(|| Judgement::of(AuthVerdict::Reject), Judgement::answered),
-        )
+        Some(module.verify_now(request).map_or_else(
+            || Judgement::without_verdict(Vec::new()),
+            Judgement::answered,
+        ))
     }
 }
 

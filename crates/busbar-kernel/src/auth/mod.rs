@@ -1815,7 +1815,7 @@ async fn external_admin_module(
     let module = app.admin_modules.modules.get(name)?;
     if probe {
         return Some(module.calls.verify_now(&request).map_or_else(
-            || Judgement::of(AuthVerdict::Reject),
+            || Judgement::without_verdict(Vec::new()),
             |answer| admin_verdict_of(answer, false),
         ));
     }
@@ -1892,7 +1892,9 @@ pub fn dry_run_admin_scope(
     match probe_admin_door(app, "GET", "/", headers, false) {
         AdminDoor::Identified(_, grants) | AdminDoor::Listed(_, grants, _) => grants,
         // `Open` is unreachable past the early return above, and is no earned grant if reached.
-        AdminDoor::Open | AdminDoor::Denied => busbar_contract::authz::Grants::default(),
+        AdminDoor::Open | AdminDoor::Denied | AdminDoor::Unavailable(_) => {
+            busbar_contract::authz::Grants::default()
+        }
     }
 }
 
@@ -1912,7 +1914,9 @@ pub enum AdminDoor {
     /// gate compares first — and the allow-list is what the verb itself must then be on. A
     /// principal whose bindings name no verb is [`AdminDoor::Identified`], the 1.5.5 grant.
     Listed(Principal, busbar_contract::authz::Grants, VerbAllowList),
-    /// Refused, a module error (fail-closed `Reject`) included: 1.5.5 had no other verdict.
+    /// A verifier answered no verdict: fail closed, but retain why for the caller's 503 answer.
+    Unavailable(VerifierUnavailable),
+    /// Refused: invalid credentials or the unchanged admin overload policy.
     Denied,
 }
 
@@ -2028,7 +2032,7 @@ pub fn admin_door_admits(door: &AdminDoor, method: &str, target: &str) -> bool {
     let required = crate::admin::scope::admin_required_scope(method, path);
     match door {
         AdminDoor::Open => true,
-        AdminDoor::Denied => false,
+        AdminDoor::Denied | AdminDoor::Unavailable(_) => false,
         AdminDoor::Identified(_, grants) => grants.allows(required),
         AdminDoor::Listed(_, grants, list) => {
             grants.allows(required)
@@ -2089,8 +2093,9 @@ fn admin_door_of(
 
 /// Judge one request (`method`, `target`, `headers`) on `app`'s live admin chain, SYNCHRONOUSLY: the
 /// operator credential through its door's on-the-spot `verify_now`, an in-process stand-in inline. A
-/// chain that cannot be judged on the spot (the verifier overloaded, pending or down) is `Denied`:
-/// the probe fails closed. See [`AdminDoor`]; the middleware awaits the same verdict instead.
+/// overloaded verifier is `Denied`; a verifier that answered no verdict is `Unavailable`, so a
+/// synchronous HTTP caller preserves its 503 answer. Both fail closed. The middleware awaits the
+/// same verdict instead.
 /// An identity's replay claim is won as the door's last step, only for a request the door admits
 /// ([`admin_door_admits`]); a claim it loses is `Denied`.
 pub fn admin_door(app: &App, method: &str, target: &str, headers: &HeaderMap) -> AdminDoor {
@@ -2144,13 +2149,16 @@ fn probe_admin_verdict(
         &mut strips
     ));
     let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-    // A module that answered no verdict is the probe's `Denied`: it fails closed, and a sync
-    // caller has no 503 to answer.
-    let (verdict, cap, replay, _) = match std::future::Future::poll(judged, &mut cx) {
+    let (verdict, cap, replay, no_verdict) = match std::future::Future::poll(judged, &mut cx) {
         std::task::Poll::Ready(judged) => judged,
         // Never pending: the probe crosses on the spot and an in-process stand-in runs inline.
-        std::task::Poll::Pending => return (AdminDoor::Denied, None),
+        std::task::Poll::Pending => {
+            return (AdminDoor::Unavailable(VerifierUnavailable::NoVerdict), None)
+        }
     };
+    if no_verdict && verdict == ChainVerdict::Denied {
+        return (AdminDoor::Unavailable(VerifierUnavailable::NoVerdict), None);
+    }
     admin_door_claim_of(app, verdict, cap, replay)
 }
 
@@ -2394,14 +2402,19 @@ pub(crate) fn verifier_unavailable_response() -> Response {
 /// THE ADMIN PLANE'S ANSWER TO A VERIFIER THAT ANSWERED NO VERDICT (SIGN-auth-kind 2026-10-30): the
 /// request is refused and answered 503 in the frozen admin envelope (`code = unavailable`), with
 /// the `Retry-After` the data plane's 503 names. Never the bad credential's 401.
+pub const ADMIN_AUTH_UNAVAILABLE_MESSAGE: &str =
+    "admin authentication is unavailable (the auth module answered no verdict); retry shortly";
+
+/// The retry window shared by awaited middleware and the synchronous root admin door.
+pub const ADMIN_AUTH_RETRY_AFTER: &str = crate::limits::admission::OVERLOADED_RETRY_AFTER;
+
 fn admin_unavailable_response() -> Response {
     let mut resp = crate::admin::gate::err_json(&crate::admin::gate::ApiError::Unavailable(
-        "admin authentication is unavailable (the auth module answered no verdict); retry shortly"
-            .to_string(),
+        ADMIN_AUTH_UNAVAILABLE_MESSAGE.to_string(),
     ));
     resp.headers_mut().insert(
         axum::http::header::RETRY_AFTER,
-        HeaderValue::from_static(crate::limits::admission::OVERLOADED_RETRY_AFTER),
+        HeaderValue::from_static(ADMIN_AUTH_RETRY_AFTER),
     );
     resp
 }
@@ -2643,6 +2656,7 @@ pub(crate) async fn auth_middleware(
             // — tooling branches on the SAME `code` seam as every other admin error, never a
             // protocol-shaped body (that shaping is for the DATA plane, whose SDKs parse it).
             AdminDoor::Denied => return Err(admin_unauthorized_response()),
+            AdminDoor::Unavailable(_) => return Err(admin_unavailable_response()),
         };
         let required = crate::admin::gate::required_scope(req.method(), &path);
         // A principal holding verbs BY NAME is admitted only to a verb its allow-list reaches
