@@ -1002,3 +1002,297 @@ fn actual_operator_requests_keep_credentials_out_of_core_logs() {
         );
     }
 }
+
+#[test]
+fn a_slow_admin_door_does_not_stall_healthz() {
+    use std::io::{Read, Write};
+    use std::net::{Shutdown, TcpListener, TcpStream};
+    use std::time::{Duration, Instant};
+    crate::dist_root_install::install();
+    let library_path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
+    );
+    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
+        .expect("the actual store statement reads")
+        .expect("the actual store exports its statement");
+    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid")
+        .name;
+    let mut manifest = plugins::manifest(
+        "store",
+        &module,
+        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+    );
+    manifest.statement = Some(hex::encode(statement));
+    let library = std::fs::read(library_path).expect("the actual store library reads");
+    let directory = plugins::scratch("auth-admin-pending");
+    let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
+    std::fs::write(directory.join("store.tar.gz"), archive)
+        .expect("stage the actual store archive");
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    assert!(
+        settings.is_object(),
+        "the actual store settings are an object"
+    );
+    let oidc_path = common::plugins::token_verifier_cdylib_path()
+        .expect("the freshly built actual OIDC product is required");
+    let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
+        .expect("the actual OIDC statement reads")
+        .expect("the actual OIDC product exports its statement");
+    let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
+        .expect("the actual OIDC statement is valid")
+        .name;
+    common::credentials::install_auth_plugin(&directory, &oidc_module, "test-scope-module", true);
+    let mut oidc_settings = common::credentials::settings("api://auth-admin-pending");
+    let target = oidc_settings["jwks_url"]
+        .as_str()
+        .unwrap()
+        .strip_prefix("https://")
+        .expect("the existing issuer uses real TLS")
+        .split_once('/')
+        .unwrap()
+        .0
+        .parse()
+        .expect("the issuer endpoint is an actual loopback socket");
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind the one-connection external peer");
+    listener.set_nonblocking(true).unwrap();
+    oidc_settings.insert(
+        "jwks_url".into(),
+        serde_json::json!(format!("https://{}/jwks", listener.local_addr().unwrap())),
+    );
+    let mut token =
+        common::credentials::token_for("alice", &["minters"], "api://auth-admin-pending");
+    // A real ES256 JWT with one changed signature sextet reaches the genuine JWKS verifier
+    // and is refused after its network need completes; no synthetic verifier result is used.
+    let signature = token.rfind('.').unwrap() + 1;
+    let replacement = if token.as_bytes()[signature] == b'A' {
+        "B"
+    } else {
+        "A"
+    };
+    token.replace_range(signature..signature + 1, replacement);
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    // One owned external wire peer. It holds the first genuine TLS byte, then forwards every
+    // byte unchanged to the existing real TLS/JWKS issuer; it fabricates no protocol or outcome.
+    std::thread::scope(|peers| {
+        let wire = peers.spawn(move || {
+            let accept_deadline = Instant::now() + Duration::from_secs(10);
+            let mut downstream = loop {
+                match listener.accept() {
+                    Ok((socket, _)) => break socket,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            Instant::now() < accept_deadline,
+                            "the actual verifier must connect"
+                        );
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                    Err(error) => panic!("actual peer accept failed: {error}"),
+                }
+            };
+            downstream.set_nonblocking(false).unwrap();
+            downstream
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            downstream
+                .set_write_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let mut first = [0u8; 1];
+            downstream
+                .read_exact(&mut first)
+                .expect("the actual verifier starts TLS");
+            let entered = Instant::now();
+            entered_tx.send(entered).unwrap();
+            release_rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the pending verifier is released after the unrelated-job observation");
+            if let Some(remaining) = Duration::from_millis(800).checked_sub(entered.elapsed()) {
+                std::thread::sleep(remaining);
+            }
+            let held = entered.elapsed();
+            let mut upstream = TcpStream::connect_timeout(&target, Duration::from_secs(5))
+                .expect("connect the existing actual TLS/JWKS issuer");
+            upstream
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            upstream
+                .set_write_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            upstream
+                .write_all(&first)
+                .expect("forward the held TLS byte unchanged");
+            let mut downstream_read = downstream.try_clone().unwrap();
+            let mut upstream_write = upstream.try_clone().unwrap();
+            let (client_bytes, issuer_bytes) = std::thread::scope(|copies| {
+                let forward = copies.spawn(move || {
+                    let count = std::io::copy(
+                        &mut (&mut downstream_read).take(64 * 1024),
+                        &mut upstream_write,
+                    )
+                    .expect("forward actual client TLS bytes");
+                    let _ = upstream_write.shutdown(Shutdown::Write);
+                    assert!(count + 1 <= 64 * 1024, "client wire overflow is a failure");
+                    count + 1
+                });
+                let count =
+                    std::io::copy(&mut (&mut upstream).take(64 * 1024 + 1), &mut downstream)
+                        .expect("forward actual issuer TLS bytes");
+                let _ = downstream.shutdown(Shutdown::Both);
+                assert!(count <= 64 * 1024, "issuer wire overflow is a failure");
+                (forward.join().expect("the owned forwarder joins"), count)
+            });
+            (held, client_bytes, issuer_bytes)
+        });
+        let signing = directory.join("signing-key");
+        std::fs::write(&signing, hex::encode([9u8; 32]))
+            .expect("write the actual configured signing key");
+        let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+            "providers": {},
+            "models": {},
+            "identity-providers": {
+                "test-scope-module": { "module": oidc_module, "max_admin_scope": "full", "settings": oidc_settings }
+            },
+            "auth": {
+                "chain": [], "admin_auth": ["test-scope-module"], "signing_key": { "file": signing },
+                "key_ttl": "1h",
+                "role_bindings": { "test-scope-module": { "minters": { "admin_scope": "full" } } }
+            },
+            "groups": { "team": { "child_default": { "limits": [{ "budget": 500, "per": "month" }] } } },
+            "store": { "module": module, "settings": settings },
+            "advanced": { "allow_destinations": ["127.0.0.1"] },
+        }))
+        .expect("the product deployment parses");
+        let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+            .expect("the product deployment resolves");
+        let plugin_config = busbar_kernel::config::PluginsCfg {
+            enabled: true,
+            dir: directory.to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+            .expect("the actual Store bootstraps its config authority");
+        let overlay = busbar_kernel::config::overlay::OverlayStore::new(
+            anchor
+                .calls
+                .as_ref()
+                .cloned()
+                .expect("the actual Store exposes typed calls"),
+        )
+        .expect("the actual Store supports conditional config records");
+        let rules = Arc::new(crate::root::door_steps::Rules::default())
+            as Arc<dyn busbar_kernel::appbuild::RootRules>;
+        let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+            config,
+            plugin_config,
+            Some(overlay.clone()),
+            Default::default(),
+            Default::default(),
+            (None, None),
+            None,
+            &rules,
+            Some(anchor),
+        )
+        .expect("the actual product builds the session deployment");
+        limits.keep().expect("the product limits commit");
+        if let Some(rotate) = rotate {
+            rotate();
+        }
+        let app = Arc::new(app);
+        let router = busbar_kernel::build_router(app);
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("the one-worker runtime");
+        let admin_router = router.clone();
+        let admin = runtime.spawn(async move {
+            let response = tokio::time::timeout(
+                Duration::from_secs(10),
+                tower::ServiceExt::oneshot(
+                    admin_router,
+                    axum::http::Request::builder()
+                        .uri("/api/v1/admin/keys")
+                        .header("authorization", format!("Bearer {token}"))
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                ),
+            )
+            .await
+            .expect("the real admin request completes within its bound")
+            .unwrap();
+            let status = response.status().as_u16();
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                axum::body::to_bytes(response.into_body(), 64 * 1024),
+            )
+            .await
+            .expect("the real admin response body is bounded")
+            .unwrap();
+            status
+        });
+        entered_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the actual admin verifier reaches its real TLS/JWKS need");
+        let pending_before = !admin.is_finished();
+        let (health_tx, health_rx) = std::sync::mpsc::channel();
+        let start = Instant::now();
+        runtime.spawn(async move {
+            let response = tokio::time::timeout(
+                Duration::from_secs(10),
+                tower::ServiceExt::oneshot(
+                    router,
+                    axum::http::Request::builder()
+                        .uri("/healthz")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                ),
+            )
+            .await
+            .expect("the actual health request is bounded")
+            .unwrap();
+            health_tx.send(response.status().as_u16()).unwrap();
+        });
+        let health = health_rx.recv_timeout(Duration::from_secs(2));
+        let elapsed = start.elapsed();
+        let pending_after = !admin.is_finished();
+        release_tx
+            .send(())
+            .expect("release the owned external wire peer");
+        let status = runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(10), admin)
+                .await
+                .expect("the released real admin request finishes")
+                .expect("the request task joins")
+        });
+        let (held, client_bytes, issuer_bytes) = wire.join().expect("the owned wire peer joins");
+        assert!(
+            matches!(health, Ok(200 | 503)),
+            "/healthz returns a health verdict while actual admin verification awaits: {health:?}"
+        );
+        assert!(
+            elapsed < Duration::from_millis(400),
+            "/healthz stalled for {elapsed:?}"
+        );
+        assert_eq!(
+            status, 401,
+            "the genuine invalid signature is refused after JWKS completes"
+        );
+        assert!(
+            pending_before && pending_after,
+            "health must run during real verifier Pending"
+        );
+        assert!(
+            held >= Duration::from_millis(800),
+            "the actual network need stayed held"
+        );
+        assert!(
+            client_bytes > 1 && issuer_bytes > 0,
+            "actual TLS bytes crossed both directions"
+        );
+    });
+}

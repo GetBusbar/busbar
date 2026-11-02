@@ -508,116 +508,19 @@ fn test_unauthorized_body_carries_no_busbar_vocabulary() {
     }
 }
 
-struct SleepingAdminDoor(std::time::Duration);
-
-struct AnsweredLater(tokio::sync::oneshot::Receiver<busbar_contract::auth_calls::VerifyAnswer>);
-
-impl std::future::Future for AnsweredLater {
-    type Output = busbar_contract::auth_calls::VerifyAnswer;
-    fn poll(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        std::future::Future::poll(std::pin::Pin::new(&mut self.0), cx).map(|answer| {
-            answer.unwrap_or_else(|_| busbar_contract::auth_calls::Verified::Failed.into())
-        })
-    }
-}
-
-impl busbar_contract::auth_calls::Verifying for AnsweredLater {
-    fn settled(&mut self) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
-        self.0.try_recv().ok()
-    }
-}
-
-impl busbar_contract::auth_calls::AuthCalls for SleepingAdminDoor {
-    fn name(&self) -> &str {
-        "slow-oidc"
-    }
-    fn facts(&self) -> u32 {
-        0
-    }
-    fn verify_now(
-        &self,
-        _: &busbar_contract::auth_calls::VerifyRequest,
-    ) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
-        None
-    }
-    fn verify(
-        &self,
-        _: busbar_contract::auth_calls::VerifyRequest,
-    ) -> Box<dyn busbar_contract::auth_calls::Verifying> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let hold = self.0;
-        std::thread::spawn(move || {
-            std::thread::sleep(hold);
-            let _ = tx.send(busbar_contract::auth_calls::Verified::Pass.into());
-        });
-        Box::new(AnsweredLater(rx))
-    }
-    fn refresh(&self) -> Result<u64, String> {
-        Ok(0)
-    }
-}
-
-async fn serve_app(
-    app: std::sync::Arc<crate::state::App>,
-) -> (String, tokio::task::JoinHandle<()>) {
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    (format!("http://{addr}"), handle)
-}
-
-#[tokio::test]
-async fn a_slow_admin_door_does_not_stall_healthz() {
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let app = crate::test_support::TestApp::new()
-        .admin_chain(vec!["slow-oidc".to_string()])
-        .admin_door(
-            "slow-oidc",
-            std::sync::Arc::new(SleepingAdminDoor(std::time::Duration::from_millis(800))),
-        )
-        .build();
-    let (base, handle) = serve_app(app).await;
-    let client = reqwest::Client::new();
-
-    let admin_url = format!("{base}/api/v1/admin/keys");
-    let c2 = client.clone();
-    let admin = tokio::spawn(async move {
-        c2.get(&admin_url)
-            .bearer_auth("anything")
-            .send()
-            .await
-            .unwrap()
-    });
-
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-    let start = std::time::Instant::now();
-    let hz = client.get(format!("{base}/healthz")).send().await.unwrap();
-    let elapsed = start.elapsed();
-    assert!(
-        hz.status().as_u16() == 200 || hz.status().as_u16() == 503,
-        "/healthz must return a health verdict (200/503), not hang, while an admin module sleeps; \
-         got {}",
-        hz.status()
+#[test]
+fn an_all_pass_admin_continuation_retains_the_401_refusal() {
+    let verdict = complete_chain(chain_position_verdict("slow-oidc", AuthVerdict::Pass));
+    let door = admin_door_from_bindings(
+        &Default::default(),
+        &Operator::new("operator-provider"),
+        "operator",
+        verdict,
+        None,
+        crate::admin::seam::admin_verb_rung,
     );
-    assert!(
-        elapsed < std::time::Duration::from_millis(400),
-        "/healthz stalled for {elapsed:?} behind a sleeping admin door — the chain parked a \
-         reactor worker instead of awaiting it"
-    );
-
-    let r = admin.await.unwrap();
-    assert_eq!(
-        r.status().as_u16(),
-        401,
-        "a sleeping admin module that ultimately Passes fail-closed-denies (401), got {}",
-        r.status()
-    );
-    handle.abort();
+    let refusal = admin_principal_or_response(door).expect_err("all-Pass denies");
+    assert_eq!(refusal.status().as_u16(), 401);
 }
 
 #[tokio::test]
