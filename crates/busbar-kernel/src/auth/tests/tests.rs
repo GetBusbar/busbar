@@ -1848,40 +1848,41 @@ async fn a_replayed_signed_delivery_is_answered_401_the_second_time() {
     served.abort();
 }
 
-#[tokio::test]
-async fn an_auth_named_header_and_query_key_never_reach_the_plane() {
+#[test]
+fn named_credential_stripping_preserves_both_request_targets_and_other_headers() {
     use busbar_contract::auth_calls::Strip;
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let app = naming_app(hook_answer(
-        None,
-        vec![Strip::field("X-Hook-Secret"), Strip::query("api_key")],
-    ));
-    let (base, served) = echo_behind_the_gate(app).await;
-    let seen: serde_json::Value = reqwest::Client::new()
-        .get(format!(
-            "{base}/echo?x=1&api_key=s3cret&y=a%20b&api%5Fkey=t"
-        ))
-        .bearer_auth("signed")
+    // INTERNAL request-mutation continuation. Actual webhook verification declares field
+    // strips; no real auth product is claimed to declare these query strips.
+    let mut request = Request::builder()
+        .uri("/echo?x=1&api_key=s3cret&y=a%20b&api%5Fkey=t")
+        .header("authorization", "Bearer signed")
         .header("x-hook-secret", "hs")
         .header("x-trace", "t-1")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
+        .body(Body::empty())
         .unwrap();
-    served.abort();
-    let headers: Vec<&str> = seen["headers"]
-        .as_array()
-        .expect("names")
-        .iter()
-        .filter_map(|n| n.as_str())
-        .collect();
+    let original = axum::extract::OriginalUri(request.uri().clone());
+    request.extensions_mut().insert(original);
+    let mut consumed = consumed_from_carriers(&[AUTHORIZATION], None, false, false);
+    strike_named(
+        &mut request,
+        &mut consumed,
+        &[Strip::field("X-Hook-Secret"), Strip::query("api_key")],
+    );
+    ConsumedCredentials::strip_from(Some(&consumed), request.headers_mut());
+    let headers: Vec<&str> = request.headers().keys().map(|name| name.as_str()).collect();
     assert!(!headers.contains(&"x-hook-secret"), "{headers:?}");
     assert!(!headers.contains(&"authorization"), "{headers:?}");
     assert!(headers.contains(&"x-trace"), "{headers:?}");
-    assert_eq!(seen["uri"], "/echo?x=1&y=a%20b");
-    assert_eq!(seen["original"], "/echo?x=1&y=a%20b");
+    assert_eq!(request.uri().to_string(), "/echo?x=1&y=a%20b");
+    assert_eq!(
+        request
+            .extensions()
+            .get::<axum::extract::OriginalUri>()
+            .unwrap()
+            .0
+            .to_string(),
+        "/echo?x=1&y=a%20b"
+    );
 }
 
 fn naming_admin_app(
