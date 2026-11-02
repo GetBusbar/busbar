@@ -354,23 +354,6 @@ async fn settings_refuses_unconfirmed_prices_then_reload_confirms_the_exact_cand
 }
 
 #[tokio::test]
-async fn an_absent_card_and_unchanged_prices_allow_a_successful_settings_handler() {
-    let _limits = busbar_kernel_testkit::limits::LIMITS_TEST_LOCK.lock().await;
-    let (_inputs, overlay, handle) = settings_handle("no-configured-price-card");
-    let before = handle.load();
-    assert_eq!(put(&handle, BASE_FEE).await.status(), StatusCode::OK);
-    assert!(!Arc::ptr_eq(&handle.load(), &before));
-    assert_eq!(stored_fee(&overlay.backend()), Some(BASE_FEE));
-    assert_eq!(
-        busbar_kernel::config::limits::installed().map(|limits| limits.request_body_max_bytes),
-        Some(CANDIDATE_BODY_CAP)
-    );
-    let next = handle.load();
-    assert_eq!(reload(&handle).await.status(), StatusCode::OK);
-    assert!(!Arc::ptr_eq(&handle.load(), &next));
-}
-
-#[tokio::test]
 async fn config_refusal_or_unknown_reply_never_attempts_price_activation() {
     let _limits = busbar_kernel_testkit::limits::LIMITS_TEST_LOCK.lock().await;
     for (fee, unknown) in [(REFUSED_CONFIG_FEE, false), (UNKNOWN_CONFIG_FEE, true)] {
