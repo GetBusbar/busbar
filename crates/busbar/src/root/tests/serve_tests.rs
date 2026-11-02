@@ -1134,26 +1134,38 @@ pub(super) mod session_door {
         (port, heard)
     }
 
-    fn hook_env() -> busbar_kernel::hooks::HookEnv {
-        busbar_kernel_testkit::test_support::test_hook_env(
-            &["test-hook"],
-            busbar_kernel_testkit::test_support::HookNeeds {
-                prompt: busbar_contract::plugin_rows::NeedLevel::Rw,
-                user: busbar_contract::plugin_rows::NeedLevel::Ro,
-            },
-        )
-    }
-
-    fn global_gate(reply: serde_json::Value) -> busbar_kernel::config::HookCfg {
+    async fn global_gate(reply: serde_json::Value) -> busbar_kernel::config::HookCfg {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("the hook endpoint binds");
+        let url = format!("http://{}/hook", listener.local_addr().unwrap());
+        let router = axum::Router::new().route(
+            "/hook",
+            axum::routing::post(move || {
+                let reply = reply.clone();
+                async move { axum::Json(reply) }
+            }),
+        );
+        tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let path = std::path::PathBuf::from(
+            std::env::var_os("BUSBAR_TEST_WEBREQUEST_CDYLIB")
+                .expect("BUSBAR_TEST_WEBREQUEST_CDYLIB names the actual built hook"),
+        );
+        let statement = crate::root::loader::dispatch::rendering_of_library(&path)
+            .expect("the actual hook statement reads")
+            .expect("the actual hook exports its statement");
+        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+            .expect("the actual hook statement is valid")
+            .name;
         serde_json::from_value(serde_json::json!({
             "kind": "gate",
-            "module": "test-hook",
+            "module": module,
             "timeout_ms": 10_000,
             "on_error": "weighted",
             "prompt": "ro",
             "user": "ro",
             "priority": 0,
-            "settings": { "raw_decide_reply": reply },
+            "settings": { "url": url },
             "global": true,
             "default": false,
             "signals": [],
@@ -1494,24 +1506,103 @@ pub(super) mod session_door {
         );
         let live = Arc::clone(&served.planes[0].live);
         served.post = Some(Arc::clone(&post));
-        let app = busbar_kernel_testkit::test_support::TestApp::new()
-            .keys_chain()
-            .serve_tables(tables.clone());
-        let app = groups
-            .iter()
-            .fold(app, |app, (name, cfg)| app.group(name, cfg.clone()));
-
-        let app = if opts.hooks.is_empty() {
-            app
-        } else {
-            opts.hooks
-                .iter()
-                .fold(app.hook_env(hook_env()), |app, (name, cfg)| {
-                    app.hook(name, cfg.clone()).global_hook(name)
-                })
-                .resolve_global_gates()
+        crate::dist_root_install::install();
+        let library_path = std::path::PathBuf::from(
+            std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+                .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
+        );
+        let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
+            .expect("the actual store statement reads")
+            .expect("the actual store exports its statement");
+        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+            .expect("the actual store statement is valid")
+            .name;
+        let mut manifest = crate::root::test_plugins::manifest(
+            "store",
+            &module,
+            crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+        );
+        manifest.statement = Some(hex::encode(statement));
+        let library = std::fs::read(library_path).expect("the actual store library reads");
+        let directory = crate::root::test_plugins::scratch("serve-session-product");
+        let archive = crate::root::test_plugins::signed(
+            &crate::dist_root_install::release_key(),
+            manifest,
+            &library,
+        );
+        std::fs::write(directory.join("store.tar.gz"), archive)
+            .expect("stage the actual store archive");
+        if !opts.hooks.is_empty() {
+            let path = std::path::PathBuf::from(
+                std::env::var_os("BUSBAR_TEST_WEBREQUEST_CDYLIB")
+                    .expect("BUSBAR_TEST_WEBREQUEST_CDYLIB names the actual built hook"),
+            );
+            let statement = crate::root::loader::dispatch::rendering_of_library(&path)
+                .expect("the actual hook statement reads")
+                .expect("the actual hook exports its statement");
+            let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+                .expect("the actual hook statement is valid")
+                .name;
+            let mut manifest = crate::root::test_plugins::manifest(
+                "hook",
+                &module,
+                crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+            );
+            manifest.statement = Some(hex::encode(statement));
+            manifest.needs.prompt = busbar_contract::plugin_rows::NeedLevel::Rw;
+            manifest.needs.user = busbar_contract::plugin_rows::NeedLevel::Ro;
+            let library = std::fs::read(path).expect("the actual hook library reads");
+            let archive = crate::root::test_plugins::signed(
+                &crate::dist_root_install::release_key(),
+                manifest,
+                &library,
+            );
+            std::fs::write(directory.join("hook.tar.gz"), archive)
+                .expect("stage the actual webrequest hook");
+        }
+        let settings: serde_json::Value = serde_json::from_str(
+            &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+        )
+        .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+        let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+            "providers": {},
+            "models": {},
+            "groups": groups,
+            "hooks": opts.hooks.iter().cloned().collect::<std::collections::BTreeMap<_, _>>(),
+            "global_hooks": opts.hooks.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
+            "auth": { "chain": ["keys"], "admin_auth": [] },
+            "store": { "module": module, "settings": settings },
+            "advanced": { "allow_destinations": ["127.0.0.1"] },
+        }))
+        .expect("the session deployment parses");
+        let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+            .expect("the session deployment resolves");
+        let plugins = busbar_kernel::config::PluginsCfg {
+            enabled: true,
+            dir: directory.to_string_lossy().into_owned(),
+            ..Default::default()
         };
-        let app = app.governance(Arc::clone(&gov)).cost(cost).build();
+        let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
+            as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
+        let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+            config,
+            plugins,
+            None,
+            Default::default(),
+            Default::default(),
+            (None, None),
+            None,
+            &rules,
+        )
+        .expect("the actual product builds the session deployment");
+        limits.keep().expect("the product limits commit");
+        if let Some(rotate) = rotate {
+            rotate();
+        }
+        app.governance = Some(Arc::clone(&gov));
+        app.cost = Arc::new(cost);
+        app.serve_tables = tables.clone();
+        let app = std::sync::Arc::new(app);
         let _ = live_app.set(Arc::clone(&app));
 
         let upgrades = crate::root::serve::upgrade_carriers(crate::LINKED.transports, &[]);
@@ -1818,7 +1909,8 @@ pub(super) mod session_door {
                     "closed",
                     global_gate(serde_json::json!({
                         "reject": {"status": 409, "message": "no new sessions"}
-                    })),
+                    }))
+                    .await,
                 )],
                 ..Opts::default()
             },
