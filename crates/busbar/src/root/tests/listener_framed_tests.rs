@@ -2749,13 +2749,13 @@ async fn cancelled_pending_adoption_and_commit_ignore_their_late_wakes() {
     }
 }
 
-#[tokio::test(start_paused = true)]
+#[cfg(feature = "transport-ws")]
+#[tokio::test]
 async fn a_dropped_pending_admission_ack_cannot_publish_a_late_acceptance() {
     use busbar_kernel::plane_routes::FramedSession;
-    use busbar_test_kit::root_door_fixtures::pending_mux_accept::Mux;
+    use std::future::Future as _;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    let _publishing = anonymous_policy().await;
-    let door = Arc::new(Mux::with_pending_adoption(false));
+    let (_publishing, framer, http, ws) = actual_session_framer().await;
     let effects = Arc::new(AtomicUsize::new(0));
     let route_effects = effects.clone();
     let (dropped, ack_dropped) = tokio::sync::oneshot::channel();
@@ -2767,16 +2767,22 @@ async fn a_dropped_pending_admission_ack_cannot_publish_a_late_acceptance() {
                 let effects = route_effects.clone();
                 let dropped = dropped.lock().unwrap().take().unwrap();
                 async move {
-                    let admission =
-                        tokio::time::timeout(Duration::from_millis(10), session.admit()).await;
-                    if matches!(admission, Ok(true)) {
-                        effects.fetch_add(1, Ordering::SeqCst);
-                    }
-                    assert!(
-                        admission.is_err(),
-                        "this route drops its still-pending admission future"
-                    );
+                    let mut admission = Box::pin(session.admit());
+                    std::future::poll_fn(|cx| {
+                        let result = admission.as_mut().poll(cx);
+                        if matches!(result, Poll::Ready(true)) {
+                            effects.fetch_add(1, Ordering::SeqCst);
+                        }
+                        assert!(
+                            result.is_pending(),
+                            "the real admission command waits for its actor acknowledgement"
+                        );
+                        Poll::Ready(())
+                    })
+                    .await;
+                    drop(admission);
                     let _ = dropped.send(());
+                    // Any acceptance after the acknowledgement receiver was dropped must fail closed.
                     axum::http::StatusCode::REQUEST_TIMEOUT
                 }
             },
@@ -2786,37 +2792,40 @@ async fn a_dropped_pending_admission_ack_cannot_publish_a_late_acceptance() {
     let (_stop, stopped) = tokio::sync::watch::channel(false);
     let served = tokio::spawn(super::serve(
         server,
-        staged_mux_framer(door.clone()),
+        framer,
         router,
         false,
         Duration::from_secs(30),
         stopped,
     ));
-    client.write_all(b"1").await.unwrap();
-    tokio::time::timeout(Duration::from_secs(10), door.wait_for_adoption_pending())
-        .await
-        .expect("the stage owns an actually pending adoption ticket");
-    tokio::time::advance(Duration::from_millis(11)).await;
+    client.write_all(SESSION_REQUEST).await.unwrap();
     tokio::time::timeout(Duration::from_secs(10), ack_dropped)
         .await
-        .expect("the route drops the acknowledgement receiver")
+        .unwrap()
         .unwrap();
-    door.release_adoption();
     tokio::time::timeout(Duration::from_secs(10), served)
         .await
-        .expect("a dropped acknowledgement abandons the stage")
+        .expect("a dropped native acknowledgement abandons the actual stage")
         .unwrap();
     let mut wire = Vec::new();
     client.read_to_end(&mut wire).await.unwrap();
     assert!(
         wire.is_empty(),
-        "a late typed acceptance has no live route to commit it"
+        "a dropped acknowledgement cannot publish held handshake wire"
     );
-    assert_eq!(effects.load(Ordering::SeqCst), 0);
-    assert_eq!(door.committed_heads(), 0);
-    assert_eq!(door.commit_attempts(), 0);
-    assert_eq!(door.message_attempts(), 0);
-    assert!(door.responses().is_empty());
+    assert_eq!(
+        effects.load(Ordering::SeqCst),
+        0,
+        "no admitted application effect"
+    );
+    assert_eq!(
+        http.count(|call| matches!(call, ObservedCall::Emit { status: 101, .. })),
+        0
+    );
+    assert_eq!(
+        ws.count(|call| matches!(call, ObservedCall::Emit { status: 101, .. })),
+        0
+    );
 }
 
 #[cfg(feature = "transport-ws")]
