@@ -411,6 +411,7 @@ pub(super) async fn serve<I>(
         admission_tx,
         admissions,
         staged: None,
+        prewire: false,
         full: HashSet::new(),
         deadline: None,
         session: None,
@@ -455,6 +456,7 @@ struct Conn<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> {
     admission_tx: mpsc::UnboundedSender<busbar_kernel::plane_routes::SessionAdmission>,
     admissions: mpsc::UnboundedReceiver<busbar_kernel::plane_routes::SessionAdmission>,
     staged: Option<StagedUpgrade>,
+    prewire: bool,
 
     full: HashSet<u64>,
     deadline: Option<Pin<Box<tokio::time::Sleep>>>,
@@ -585,7 +587,8 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 CLOSE_NORMAL
             };
             let y = framing.finish(reason);
-            if self.staged.take().is_none() {
+            let staged = self.staged.take().is_some();
+            if !self.prewire && !staged {
                 self.out.extend(y.wire.iter().copied());
             }
         }
@@ -1202,6 +1205,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
         match Framing::adopt_detached_staged(door, SIDE_ACCEPT, leftover, &self.established) {
             Ok((framing, yielded)) => {
                 self.framing = Some(framing);
+                self.prewire = true;
                 self.deadline = None;
                 self.staged = Some(StagedUpgrade {
                     phase: UpgradePhase::Adopting(reply),
@@ -1298,6 +1302,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 session.body_limit = inflow.body_limit;
             }
             self.session = Some(session);
+            self.prewire = false;
             for batch in stage.yielded {
                 self.absorb(batch);
             }
