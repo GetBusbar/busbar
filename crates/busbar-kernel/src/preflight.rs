@@ -718,72 +718,7 @@ fn log_build(n: BuildNote<'_>, dir: &str) {
             "plugins: disabled (plugins.enabled is false; tarballs in the directory are inert)"
         ),
         BuildNote::Scanned { rows, copies } => {
-            let loadable = rows.loadable();
-            let skipped = rows.skipped();
-            tracing::info!(
-                dir = %dir,
-                loadable = loadable.len(),
-                skipped = skipped.len(),
-                "plugins: enabled"
-            );
-            for copy in copies {
-                tracing::info!(
-                    plugin = %copy.name,
-                    version = %copy.version,
-                    file = %copy.file,
-                    "{}",
-                    copy.line
-                );
-            }
-            for s in &skipped {
-                diag_warn!(
-                    PLUGIN_SKIPPED_TRUST_POLICY,
-                    plugin = %s.name,
-                    file = %s.file,
-                    reason = %s.reason,
-                    "plugin present but NOT loaded (trust policy)"
-                );
-
-                crate::audit::auditlog::record_plugin_refusal(
-                    crate::audit::auditlog::PluginRefusal::Trust,
-                    "file",
-                    &s.file,
-                    s.code,
-                );
-            }
-            for p in &loadable {
-                match &p.trust {
-                    busbar_contract::plugin_rows::Trust::Trusted {
-                        publisher,
-                        first_party,
-                    } => tracing::info!(
-                        plugin = %p.name,
-                        alias = %p.alias,
-                        kind = %p.kind,
-                        version = %p.version,
-                        publisher = %publisher,
-                        first_party,
-                        "plugin validated"
-                    ),
-                    busbar_contract::plugin_rows::Trust::Allowed { reason } => {
-                        diag_warn!(
-                            PLUGIN_LOADED_UNVERIFIED,
-                            plugin = %p.name,
-                            alias = %p.alias,
-                            kind = %p.kind,
-                            reason = %reason,
-                            "plugin validated as UNVERIFIED (permitted by an explicit plugins.trust opt-in)"
-                        );
-
-                        crate::audit::auditlog::record_plugin_refusal(
-                            crate::audit::auditlog::PluginRefusal::Unverified,
-                            "file",
-                            &p.file,
-                            "unverified",
-                        );
-                    }
-                }
-            }
+            log_scanned_rows(&rows.loadable(), &rows.skipped(), copies, dir);
         }
         BuildNote::FloorUnwritable(e) => diag_warn!(
             PLUGIN_FIRSTPARTY_FLOOR_UNWRITABLE,
@@ -791,6 +726,78 @@ fn log_build(n: BuildNote<'_>, dir: &str) {
             "could not persist the first-party anti-downgrade floor; it still applies to this \
              process but will not survive a restart"
         ),
+    }
+}
+
+fn log_scanned_rows(
+    loadable: &[busbar_contract::plugin_rows::Row],
+    skipped: &[busbar_contract::plugin_rows::Skipped],
+    copies: &[CopyLine],
+    dir: &str,
+) {
+    tracing::info!(
+        dir = %dir,
+        loadable = loadable.len(),
+        skipped = skipped.len(),
+        "plugins: enabled"
+    );
+    for copy in copies {
+        tracing::info!(
+            plugin = %copy.name,
+            version = %copy.version,
+            file = %copy.file,
+            "{}",
+            copy.line
+        );
+    }
+    for s in skipped {
+        diag_warn!(
+            PLUGIN_SKIPPED_TRUST_POLICY,
+            plugin = %s.name,
+            file = %s.file,
+            reason = %s.reason,
+            "plugin present but NOT loaded (trust policy)"
+        );
+
+        crate::audit::auditlog::record_plugin_refusal(
+            crate::audit::auditlog::PluginRefusal::Trust,
+            "file",
+            &s.file,
+            s.code,
+        );
+    }
+    for p in loadable {
+        match &p.trust {
+            busbar_contract::plugin_rows::Trust::Trusted {
+                publisher,
+                first_party,
+            } => tracing::info!(
+                plugin = %p.name,
+                alias = %p.alias,
+                kind = %p.kind,
+                version = %p.version,
+                publisher = %publisher,
+                first_party,
+                "plugin validated"
+            ),
+            busbar_contract::plugin_rows::Trust::Allowed { reason } => {
+                diag_warn!(
+                    PLUGIN_LOADED_UNVERIFIED,
+                    plugin = %p.name,
+                    alias = %p.alias,
+                    kind = %p.kind,
+                    reason = %reason,
+                    "plugin validated as UNVERIFIED (permitted by an explicit plugins.trust opt-in)"
+                );
+
+                crate::audit::auditlog::record_plugin_refusal(
+                    crate::audit::auditlog::PluginRefusal::Unverified,
+                    "file",
+                    &p.file,
+                    "unverified",
+                );
+            }
+        }
     }
 }
 
