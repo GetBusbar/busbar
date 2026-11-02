@@ -4,7 +4,12 @@
 mod linked;
 
 use busbar_kernel::plane_driver::registry::{PlaneDecl, PlaneDeclaration};
-use busbar_kernel_testkit::test_support::planes::TestRegistryIsolation;
+use std::sync::Arc;
+#[path = "../../../crates/busbar/src/root/tests/test_plugins.rs"]
+mod plugins;
+
+static PROBE_RUN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 static HYDRATED: AtomicUsize = AtomicUsize::new(0);
@@ -72,25 +77,117 @@ static PROBE: PlaneDecl = PlaneDecl {
 };
 
 fn boot_hooks_run(sections: &[&'static str]) -> (usize, usize) {
-    let _iso = TestRegistryIsolation::seeded(&[&PROBE]);
+    let _one = PROBE_RUN
+        .lock()
+        .expect("probe fixture serializes its counters");
+    crate::dist_root_install::install();
+    linked::install();
+    busbar_kernel::plane_driver::registry::publish_planes(&[&PROBE]);
     let (h0, s0) = (
         HYDRATED.load(Ordering::SeqCst),
         STARTED.load(Ordering::SeqCst),
     );
-    let app = busbar_kernel_testkit::test_support::TestApp::new()
-        .plane_sections(sections)
-        .build();
+    let library_path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
+    );
+    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
+        .expect("the actual store statement reads")
+        .expect("the actual store exports its statement");
+    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid")
+        .name;
+    let mut manifest = plugins::manifest(
+        "store",
+        &module,
+        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+    );
+    manifest.statement = Some(hex::encode(statement));
+    let library = std::fs::read(library_path).expect("the actual store library reads");
+    let directory = plugins::scratch("installed-door-route");
+    let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
+    std::fs::write(directory.join("store.tar.gz"), archive)
+        .expect("stage the actual store archive");
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    assert!(
+        settings.is_object(),
+        "the actual store settings are an object"
+    );
+    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+        "providers": {}, "models": {},
+        "auth": {"chain": [], "admin_auth": []},
+        "store": {"module": module, "settings": settings},
+        "advanced": {"allow_destinations": ["127.0.0.1"]}
+    }))
+    .expect("the actual deployment parses");
+    let mut config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the actual deployment resolves");
+    config.plane_sections = sections.iter().copied().collect();
+    let plugin_config = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: directory.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let rules = Arc::new(crate::root::door_steps::Rules::default())
+        as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+        config,
+        plugin_config,
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+    )
+    .expect("the actual product builds the door deployment");
+    limits.keep().expect("the product limits commit");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+    let app = Arc::new(app);
+
     busbar_kernel::boot::hydrate_all(&app).expect("hydrate");
     let handle = std::sync::Arc::new(busbar_kernel::state::AppHandle::new(app));
     busbar_kernel::boot::start_planes(&handle).expect("start");
-    (
+    let result = (
         HYDRATED.load(Ordering::SeqCst) - h0,
         STARTED.load(Ordering::SeqCst) - s0,
-    )
+    );
+    busbar_kernel::plane_driver::registry::publish_planes(&[]);
+    result
 }
 
 #[test]
 fn an_unconfigured_plane_hydrates_and_starts_nothing() {
+    const CHILD: &str = "BUSBAR_LAW7_PROBE_CHILD";
+    if std::env::var(CHILD).ok().as_deref()
+        != Some("an_unconfigured_plane_hydrates_and_starts_nothing")
+    {
+        let module = module_path!()
+            .split_once("::")
+            .expect("a mounted test module")
+            .1;
+        let test = format!("{module}::an_unconfigured_plane_hydrates_and_starts_nothing");
+        let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .args([test.as_str(), "--exact", "--nocapture", "--test-threads=1"])
+            .env(CHILD, "an_unconfigured_plane_hydrates_and_starts_nothing")
+            .output()
+            .expect("run the original behavior case in a fresh product process");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success()
+                && stdout.contains("running 1 test")
+                && stdout.contains(&format!("test {test} ... ok"))
+                && stdout.contains("1 passed; 0 failed; 0 ignored"),
+            "isolated original case failed or did not run exactly once:\n{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
     assert_eq!(
         boot_hooks_run(&[]),
         (0, 0),
@@ -100,6 +197,30 @@ fn an_unconfigured_plane_hydrates_and_starts_nothing() {
 
 #[test]
 fn a_configured_plane_still_hydrates_and_starts() {
+    const CHILD: &str = "BUSBAR_LAW7_PROBE_CHILD";
+    if std::env::var(CHILD).ok().as_deref() != Some("a_configured_plane_still_hydrates_and_starts")
+    {
+        let module = module_path!()
+            .split_once("::")
+            .expect("a mounted test module")
+            .1;
+        let test = format!("{module}::a_configured_plane_still_hydrates_and_starts");
+        let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .args([test.as_str(), "--exact", "--nocapture", "--test-threads=1"])
+            .env(CHILD, "a_configured_plane_still_hydrates_and_starts")
+            .output()
+            .expect("run the original behavior case in a fresh product process");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success()
+                && stdout.contains("running 1 test")
+                && stdout.contains(&format!("test {test} ... ok"))
+                && stdout.contains("1 passed; 0 failed; 0 ignored"),
+            "isolated original case failed or did not run exactly once:\n{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
     assert_eq!(
         boot_hooks_run(&[PROBE_SECTION]),
         (1, 1),
@@ -109,15 +230,100 @@ fn a_configured_plane_still_hydrates_and_starts() {
 
 #[test]
 fn only_a_configured_plane_builds_its_slot() {
-    let fallback = linked::fallback();
-    let _iso = TestRegistryIsolation::seeded(&[fallback, &PROBE]);
-    let build = |sections: &[&'static str]| {
-        let mut cfg = busbar_kernel_testkit::test_support::cfg_with_provider_api_key(
-            busbar_kernel::config::SecretRef::none(),
+    const CHILD: &str = "BUSBAR_LAW7_PROBE_CHILD";
+    if std::env::var(CHILD).ok().as_deref() != Some("only_a_configured_plane_builds_its_slot") {
+        let module = module_path!()
+            .split_once("::")
+            .expect("a mounted test module")
+            .1;
+        let test = format!("{module}::only_a_configured_plane_builds_its_slot");
+        let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .args([test.as_str(), "--exact", "--nocapture", "--test-threads=1"])
+            .env(CHILD, "only_a_configured_plane_builds_its_slot")
+            .output()
+            .expect("run the original behavior case in a fresh product process");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success()
+                && stdout.contains("running 1 test")
+                && stdout.contains(&format!("test {test} ... ok"))
+                && stdout.contains("1 passed; 0 failed; 0 ignored"),
+            "isolated original case failed or did not run exactly once:\n{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
         );
-        cfg.plane_sections = sections.iter().copied().collect();
+        return;
+    }
+    crate::dist_root_install::install();
+    let fallback = linked::fallback();
+    let _one = PROBE_RUN
+        .lock()
+        .expect("probe fixture serializes its counters");
+    busbar_kernel::plane_driver::registry::publish_planes(&[&PROBE]);
+    let build = |sections: &[&'static str]| {
+        let library_path = std::path::PathBuf::from(
+            std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+                .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
+        );
+        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
+            .expect("the actual store statement reads")
+            .expect("the actual store exports its statement");
+        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+            .expect("the actual store statement is valid")
+            .name;
+        let mut manifest = plugins::manifest(
+            "store",
+            &module,
+            busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        );
+        manifest.statement = Some(hex::encode(statement));
+        let library = std::fs::read(library_path).expect("the actual store library reads");
+        let directory = plugins::scratch("installed-door-route");
+        let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
+        std::fs::write(directory.join("store.tar.gz"), archive)
+            .expect("stage the actual store archive");
+        let settings: serde_json::Value = serde_json::from_str(
+            &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+        )
+        .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+        assert!(
+            settings.is_object(),
+            "the actual store settings are an object"
+        );
+        let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+            "providers": {}, "models": {},
+            "auth": {"chain": [], "admin_auth": []},
+            "store": {"module": module, "settings": settings},
+            "advanced": {"allow_destinations": ["127.0.0.1"]}
+        }))
+        .expect("the actual deployment parses");
+        let mut config = busbar_kernel::config::resolve(&deploy, &Default::default())
+            .expect("the actual deployment resolves");
+        config.plane_sections = sections.iter().copied().collect();
         let b0 = BUILT.load(Ordering::SeqCst);
-        let app = busbar_kernel_testkit::app::build_once(cfg, None).expect("build");
+        let plugin_config = busbar_kernel::config::PluginsCfg {
+            enabled: true,
+            dir: directory.to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        let rules = Arc::new(crate::root::door_steps::Rules::default())
+            as Arc<dyn busbar_kernel::appbuild::RootRules>;
+        let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+            config,
+            plugin_config,
+            None,
+            Default::default(),
+            Default::default(),
+            (None, None),
+            None,
+            &rules,
+        )
+        .expect("the actual product builds the door deployment");
+        limits.keep().expect("the product limits commit");
+        if let Some(rotate) = rotate {
+            rotate();
+        }
+        let app = Arc::new(app);
+
         (
             BUILT.load(Ordering::SeqCst) - b0,
             app.plane_slots.contains_key(PROBE.key),
@@ -135,10 +341,12 @@ fn only_a_configured_plane_builds_its_slot() {
         (1, true, true, true),
         "configured: built once, slot present"
     );
+    busbar_kernel::plane_driver::registry::publish_planes(&[]);
 }
 
 #[test]
 fn resolve_reads_the_configured_plane_sections_off_the_config() {
+    crate::dist_root_install::install();
     let tools_plane = linked::owning("tools");
     let door = linked::door_section(tools_plane);
     assert_ne!(
