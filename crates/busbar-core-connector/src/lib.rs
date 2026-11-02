@@ -101,8 +101,6 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
 
-use futures::FutureExt as _;
-
 use busbar_contract::abi::host::conn::connector::{
     DIRECTION_OUTBOUND, EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
 };
@@ -711,47 +709,132 @@ fn due_at(now: std::time::Instant, timeout_ms: u64) -> Option<std::time::Instant
 #[derive(Clone)]
 struct Due {
     at: std::time::Instant,
-    timer: Arc<std::sync::OnceLock<DeadlineTimer>>,
-    /// Keep the polled Shared clone alive: dropping it would unregister its pending waker.
-    registered: Arc<Mutex<Option<DeadlineTimer>>>,
+    timer: Arc<std::sync::OnceLock<Mutex<Option<DeadlineTimer>>>>,
+    wake: Arc<DeadlineWake>,
 }
 
-type DeadlineTimer = futures::future::Shared<std::pin::Pin<Box<tokio::time::Sleep>>>;
+type DeadlineTimer = std::pin::Pin<Box<tokio::time::Sleep>>;
+
+#[derive(Clone, Copy)]
+enum DeadlineInterest {
+    Ticket(Ticket),
+    Task,
+}
+
+#[derive(Default)]
+struct DeadlineWaiters {
+    tickets: HashMap<Ticket, Waker>,
+    tasks: Vec<Waker>,
+}
+
+#[derive(Default)]
+struct DeadlineWake {
+    cancelled: AtomicBool,
+    waiters: Mutex<DeadlineWaiters>,
+}
+
+impl DeadlineWake {
+    fn register(&self, interest: DeadlineInterest, waker: &Waker) {
+        if matches!(interest, DeadlineInterest::Ticket(NO_TICKET)) {
+            return;
+        }
+        // Cloning and destroying a host waker can run arbitrary host code.
+        let mut fresh = Some(waker.clone());
+        let previous = {
+            let mut waiters = self.waiters.lock().expect("deadline waiters");
+            if self.cancelled.load(Ordering::Acquire) {
+                None
+            } else {
+                match interest {
+                    DeadlineInterest::Ticket(ticket) => {
+                        waiters.tickets.insert(ticket, fresh.take().unwrap())
+                    }
+                    DeadlineInterest::Task => {
+                        if !waiters.tasks.iter().any(|old| old.will_wake(waker)) {
+                            waiters.tasks.push(fresh.take().unwrap());
+                        }
+                        None
+                    }
+                }
+            }
+        };
+        drop(previous);
+        drop(fresh);
+    }
+
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+        let waiters = std::mem::take(&mut *self.waiters.lock().expect("deadline waiters"));
+        drop(waiters);
+    }
+}
+
+impl Wake for DeadlineWake {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        let waiters = std::mem::take(&mut *self.waiters.lock().expect("deadline waiters"));
+        for waker in waiters.tickets.into_values().chain(waiters.tasks) {
+            waker.wake();
+        }
+    }
+}
 
 impl Due {
     fn new(at: std::time::Instant) -> Self {
         Self {
             at,
             timer: Arc::default(),
-            registered: Arc::default(),
+            wake: Arc::default(),
         }
     }
 
-    /// Poll the shared timer outside every host guard. Copies retain one clock across polls.
-    fn check(&self, waker: &Waker) -> Result<(), ConnError> {
+    fn cancel(&self) {
+        self.wake.cancel();
+        let timer = self
+            .timer
+            .get()
+            .and_then(|slot| slot.lock().expect("deadline timer").take());
+        drop(timer);
+    }
+
+    /// Poll the one timer outside every host guard. Copies retain one clock across polls.
+    fn check(&self) -> Result<(), ConnError> {
+        if self.wake.cancelled.load(Ordering::Acquire) {
+            return Ok(());
+        }
         if std::time::Instant::now() >= self.at {
             return Err(ConnError::Timeout);
         }
         let _entered = crate::io::enter_process_runtime();
         if tokio::runtime::Handle::try_current().is_ok() {
-            let mut timer = self
-                .timer
-                .get_or_init(|| {
-                    Box::pin(tokio::time::sleep_until(tokio::time::Instant::from_std(
-                        self.at,
-                    )))
-                    .shared()
-                })
-                .clone();
+            let slot = self.timer.get_or_init(|| {
+                Mutex::new(Some(Box::pin(tokio::time::sleep_until(
+                    tokio::time::Instant::from_std(self.at),
+                ))))
+            });
+            let timer = slot.lock().expect("deadline timer").take();
+            let Some(mut timer) = timer else {
+                // The in-flight poll uses the same aggregate waker for every subscriber.
+                return Ok(());
+            };
+            let waker = Waker::from(self.wake.clone());
             let ready = std::pin::Pin::new(&mut timer)
-                .poll(&mut Context::from_waker(waker))
+                .poll(&mut Context::from_waker(&waker))
                 .is_ready();
-            let previous = self
-                .registered
-                .lock()
-                .expect("deadline waiter")
-                .replace(timer);
+            let mut timer = Some(timer);
+            let previous = {
+                let mut slot = slot.lock().expect("deadline timer");
+                if !self.wake.cancelled.load(Ordering::Acquire) {
+                    slot.replace(timer.take().expect("the polled timer"))
+                } else {
+                    None
+                }
+            };
             drop(previous);
+            drop(timer);
             if ready {
                 return Err(ConnError::Timeout);
             }
@@ -802,10 +885,20 @@ impl Held {
         self
     }
 
-    /// [`ConnError::Timeout`] once the bound has passed; otherwise `waker` is woken when it passes.
-    fn within_due(&self, waker: &Waker) -> Result<(), ConnError> {
+    fn watch_deadlines(&self, interest: DeadlineInterest, waker: &Waker) {
         let due = self.due.lock().expect("due").clone();
-        due.map_or(Ok(()), |d| d.check(waker))
+        let dial_due = self.dial_due.lock().expect("dial due").clone();
+        for due in due.into_iter().chain(dial_due) {
+            if std::time::Instant::now() < due.at {
+                due.wake.register(interest, waker);
+            }
+        }
+    }
+
+    /// [`ConnError::Timeout`] once the bound has passed; subscribers are woken when it passes.
+    fn within_due(&self) -> Result<(), ConnError> {
+        let due = self.due.lock().expect("due").clone();
+        due.map_or(Ok(()), |d| d.check())
     }
 
     fn dial_bounded(self, timeout: Duration) -> Self {
@@ -815,19 +908,25 @@ impl Held {
         self
     }
 
-    fn within_dial_due(&self, waker: &Waker) -> Result<(), ConnError> {
+    fn within_dial_due(&self) -> Result<(), ConnError> {
         let due = self.dial_due.lock().expect("dial due").clone();
-        due.map_or(Ok(()), |d| d.check(waker))
+        due.map_or(Ok(()), |d| d.check())
     }
 
     fn landed(&self) {
         let due = self.dial_due.lock().expect("dial due").take();
+        if let Some(due) = &due {
+            due.cancel();
+        }
         drop(due);
     }
 
     /// The answer began: the bound is spent.
     fn answered(&self) {
         let due = self.due.lock().expect("due").take();
+        if let Some(due) = &due {
+            due.cancel();
+        }
         drop(due);
         self.landed();
     }
@@ -1705,7 +1804,7 @@ impl Connector {
         if held.retired.load(Ordering::Acquire) {
             return Err(ConnError::Closed);
         }
-        held.within_dial_due(waker.unwrap_or_else(|| Waker::noop()))?;
+        held.within_dial_due()?;
         let mut wake = waker.cloned();
         let mut judging = held.judging.lock().expect("judging");
         if held.retired.load(Ordering::Acquire) {
@@ -2122,12 +2221,14 @@ impl Connector {
         caller: InstanceId,
         conn: ConnId,
         waker: &Waker,
+        interest: DeadlineInterest,
         buf: &mut [u8],
     ) -> Result<Piece, ConnError> {
         let (_, held) = self.slab.get(caller, conn)?;
+        held.watch_deadlines(interest, waker);
         // THE WHOLE REQUEST'S BOUND, held before anything is read: past it the read is a timeout,
         // and short of it the reader is woken when it passes.
-        held.within_due(waker)?;
+        held.within_due()?;
         let mut read = match &held.dialled {
             Some(d) => self.read_dialled(&held, d, waker, buf),
             None => self.read_held(&held, waker, buf),
@@ -2529,6 +2630,7 @@ impl DeclaredConns for Connector {
                 .ok_or(ConnError::Refused)?
         };
         let waker = self.waker(caller, ticket);
+        held.watch_deadlines(DeadlineInterest::Ticket(ticket), &waker);
         if !self.settle(&held, Some(&waker))? {
             return Err(ConnError::Pending);
         }
@@ -2574,6 +2676,7 @@ impl DeclaredConns for Connector {
             return Ok(());
         }
         let waker = self.waker(caller, ticket);
+        held.watch_deadlines(DeadlineInterest::Ticket(ticket), &waker);
         if !self.settle(&held, Some(&waker))? {
             return Err(ConnError::Pending);
         }
@@ -3339,7 +3442,13 @@ impl Conns for Connector {
         ticket: Ticket,
         buf: &mut [u8],
     ) -> Result<Piece, ConnError> {
-        self.read_waking(caller, conn, &self.waker(caller, ticket), buf)
+        self.read_waking(
+            caller,
+            conn,
+            &self.waker(caller, ticket),
+            DeadlineInterest::Ticket(ticket),
+            buf,
+        )
     }
 
     fn wait(&self, caller: InstanceId, set: &[ConnId], ticket: Ticket) -> Result<usize, ConnError> {
@@ -3347,8 +3456,9 @@ impl Conns for Connector {
         let mut cx = Context::from_waker(&waker);
         for (at, conn) in set.iter().enumerate() {
             let (_, held) = self.slab.get(caller, *conn)?;
+            held.watch_deadlines(DeadlineInterest::Ticket(ticket), &waker);
             // A request past its bound is ready: its read answers the timeout.
-            if held.within_due(&waker).is_err() {
+            if held.within_due().is_err() {
                 return Ok(at);
             }
             if let Some((member, lease)) = &held.lease {
@@ -3423,6 +3533,7 @@ impl Conns for Connector {
             held.retired.store(true, Ordering::Release);
             home.take()
         };
+        held.answered();
         if let Some((member, lease)) = &held.lease {
             // The lease ends here; the member's program runs on for the next open.
             member.close(*lease);
@@ -3455,7 +3566,7 @@ impl PollConns for Connector {
         cx: &mut Context<'_>,
         buf: &mut [u8],
     ) -> Poll<Result<Piece, ConnError>> {
-        match self.read_waking(caller, conn, cx.waker(), buf) {
+        match self.read_waking(caller, conn, cx.waker(), DeadlineInterest::Task, buf) {
             Err(ConnError::Pending) => Poll::Pending,
             done => Poll::Ready(done),
         }
