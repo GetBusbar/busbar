@@ -97,6 +97,15 @@ pub fn registry(
     _data_dir: Option<&std::path::Path>,
     note: &mut dyn FnMut(Note<'_>),
 ) -> Result<PluginRegistry, String> {
+    registry_with_floor(linked, plugins, true, note)
+}
+
+fn registry_with_floor(
+    linked: Vec<LinkedPlugin>,
+    plugins: Option<&PluginsCfg>,
+    check_floor: bool,
+    note: &mut dyn FnMut(Note<'_>),
+) -> Result<PluginRegistry, String> {
     let scan = match plugins {
         None => None,
         Some(p) => Some(Scan {
@@ -111,8 +120,10 @@ pub fn registry(
     let registry = super::loader::boot::registry(Build { linked, scan }, note)?;
     // `registry` contains verified bytes only. Check before any caller can probe/open a hook,
     // resolve a secret, or bind another kind; a late Book refusal cannot undo native code.
-    if let Some(plugins) = plugins {
-        check_plugin_floor(&registry, plugins)?;
+    if check_floor {
+        if let Some(plugins) = plugins {
+            check_plugin_floor(&registry, plugins)?;
+        }
     }
     // The dropped-in secret plugins that state a door are JUDGED here, as every build judges them,
     // and join the secret axis only through [`admit_secrets`]: this build is stage 1, which
@@ -165,7 +176,7 @@ pub fn registry_rows(
 ) -> Result<Arc<dyn PluginRows>, String> {
     let mut linked: Vec<_> = i.linked.iter().map(linked_row).collect();
     linked.extend(linked_exports(crate::LINKED.export_doors)?);
-    let registry = registry(linked, i.plugins, i.data_dir, &mut |n| match n {
+    let registry = registry_with_floor(linked, i.plugins, !i.inventory_only, &mut |n| match n {
         Note::FloorUnreadable(detail) => note(BuildNote::FloorUnreadable(detail)),
         Note::Off => note(BuildNote::Off),
         Note::Scanned(scanned) => {
@@ -1042,6 +1053,26 @@ pub fn dropped_from_config(
 pub(crate) static REGISTRY: std::sync::OnceLock<crate::root::loader::PluginRegistry> =
     std::sync::OnceLock::new();
 
+/// Only the operator's pre-Store `plugins:` input can authorize an early grammar probe.
+/// Captured before recovery; a Store overlay can never supply this bootstrap authority.
+static BASE_BOOTSTRAP_PLUGINS: std::sync::OnceLock<PluginsCfg> = std::sync::OnceLock::new();
+
+/// Guard the actual early dropped-plane bind. It runs before complete config parsing because
+/// that plugin owns its grammar. Missing initialization is a refusal, never permission to load.
+pub(crate) fn authorize_early_plugin(name: &str) -> Result<(), String> {
+    let registry = REGISTRY
+        .get()
+        .ok_or("the early plugin inventory is not initialized")?;
+    let base = BASE_BOOTSTRAP_PLUGINS
+        .get()
+        .ok_or("the operator's base bootstrap archive pins are not initialized")?;
+    busbar_kernel::appbuild::validate_bootstrap_artifacts(
+        registry,
+        &std::collections::BTreeSet::from([name.to_string()]),
+        base,
+    )
+}
+
 /// The plugin registry [`dropped_from_config`] built and kept, once it has (no rescan). The door
 /// composition reads it to seal each door-plane member's egress over the dropped-in auth plugins
 /// (`root::door_steps::OutboundAuths`).
@@ -1082,6 +1113,7 @@ fn scan_configured() -> Option<crate::root::loader::PluginRegistry> {
         crate::root::boot::registry(Vec::new(), Some(&plugins), data_dir.as_deref(), &mut |_| {})
             .ok()?;
     admit_dropped_secrets(&registry).ok()?;
+    let _ = BASE_BOOTSTRAP_PLUGINS.set(plugins);
     Some(registry)
 }
 
@@ -1554,3 +1586,7 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/transport_inventory.rs"]
 mod transport_inventory_tests;
+
+#[cfg(all(test, unix, linked_every_plane_door, feature = "test-harness"))]
+#[path = "tests/bootstrap_pins.rs"]
+mod bootstrap_pin_tests;

@@ -667,13 +667,16 @@ get code executed, and a compromised or replayed plugin must not load.
 
    **Bootstrap artifacts need an operator archive pin.** The Store cannot authorize its own native
    code using a floor that cannot be read until that code opens it. Before Store recovery, every
-   selected dropped-in Store, required secret plugin, and transport therefore needs an exact
+   selected dropped-in Store, required secret plugin, transport, and early plane grammar probe
+   therefore needs an exact
    `plugins.fetch[].sha256` in the operator's base `config.yaml`, matching its archive filename.
    This is the SHA-256 of the complete signed `.tar.gz` archive, rather than the library digest
    inside its manifest. The pin is checked against the exact archive bytes retained by discovery;
    replacing the file after the scan cannot substitute another image. The existing signature,
    publisher, and `min_versions` checks still apply. Linked bootstrap plugins are bound to the
-   binary and need no archive pin. Unused dropped plugins need no bootstrap pin.
+   binary and need no archive pin. Unused dropped plugins need no bootstrap pin unless the host
+   must probe their native grammar before parsing the configuration; such dropped planes also
+   require a base archive pin before that probe.
 
    This is an explicit operator authorization for bootstrap code before the Store is readable;
    the Store floor is then checked before subsequent native loads. A Store-owned rollback pin

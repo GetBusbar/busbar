@@ -84,16 +84,16 @@ pub struct Admitted {
 /// answered in the kernel's words. `cfg` is the running `plugins:` block; the policy every call
 /// judges under is the root's one trust builder over it.
 pub trait PluginAdmission: Send + Sync {
-    /// Whether this candidate's signed transport claims are selected by the base configuration
-    /// before the Store can be recovered. This is manifest-only and opens nothing.
-    fn bootstrap_transport_selected(
+    /// Whether this candidate must load before Store recovery: a selected transport or an early
+    /// dropped-plane grammar probe. This is manifest-only and opens nothing.
+    fn bootstrap_probe_selected(
         &self,
         _tarball: &[u8],
         _config_path: &std::path::Path,
         _provider_urls: &[String],
     ) -> Result<bool, Refusal> {
         Err(Refusal::Validation(
-            "no bootstrap transport selection proof is installed".into(),
+            "no bootstrap selection proof is installed".into(),
         ))
     }
 

@@ -591,6 +591,12 @@ fn door_rows() -> Result<Vec<&'static PlaneDecl>, String> {
             let probe = Arc::clone(&probe);
             let bind: crate::root::loader::dispatch::kinds::plane::ProbeBind =
                 Arc::new(move || {
+                    if matches!(
+                        &bound.origin,
+                        crate::root::loader::boot::Origin::Dropped { .. }
+                    ) {
+                        crate::root::boot::authorize_early_plugin(&bound.name)?;
+                    }
                     crate::root::loader::boot::load_planes(
                         std::slice::from_ref(&bound),
                         crate::root::boot::plugin_logs(),
@@ -909,7 +915,7 @@ fn catalogue_registry(
         let stated =
             crate::root::loader::dispatch::LinkedRow::of(*door).map_err(|e| e.to_string())?;
         let statement = busbar_contract::abi::mechanism::rendering::read(&stated.statement)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| format!("invalid linked hook Statement: {e:?}"))?;
         rows.push(LinkedPlugin::door_of_kind(
             busbar_contract::abi::mechanism::kind::HOOK,
             &statement.name,

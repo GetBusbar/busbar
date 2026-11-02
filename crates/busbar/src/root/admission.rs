@@ -82,14 +82,14 @@ fn unpack_checked(
 pub struct RootAdmission;
 
 impl PluginAdmission for RootAdmission {
-    fn bootstrap_transport_selected(
+    fn bootstrap_probe_selected(
         &self,
         tarball: &[u8],
         config_path: &std::path::Path,
         provider_urls: &[String],
     ) -> Result<bool, Refusal> {
         let unpacked = unpack_checked(tarball, " bootstrap candidate")?;
-        if unpacked.manifest.kind != "transport" {
+        if !matches!(unpacked.manifest.kind.as_str(), "transport" | "plane") {
             return Ok(false);
         }
         let Some(stated) = unpacked
@@ -108,7 +108,8 @@ impl PluginAdmission for RootAdmission {
             },
         )
         .map_err(Refusal::Validation)?;
-        Ok(candidate.serves(&super::boot::transport_uses_for(config_path, provider_urls)))
+        Ok(unpacked.manifest.kind == "plane"
+            || candidate.serves(&super::boot::transport_uses_for(config_path, provider_urls)))
     }
 
     fn is_tarball(&self, file: &str) -> bool {

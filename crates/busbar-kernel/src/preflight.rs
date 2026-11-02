@@ -158,6 +158,9 @@ pub struct RegistryIn<'a> {
     pub plugins: Option<&'a config::PluginsCfg>,
     /// [`fleet_data_dir`].
     pub data_dir: Option<&'a std::path::Path>,
+    /// Manifest inventory used only to judge a replacement candidate. It cannot authorize a
+    /// native load; the caller separately judges the candidate's base trust and archive pin.
+    pub inventory_only: bool,
 }
 /// One `plugins.fetch` entry's outcome, as the root's fetch reports it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -611,6 +614,7 @@ pub fn linked() -> Result<Arc<dyn PluginRows>, String> {
             linked: linked_rows(),
             plugins: None,
             data_dir: None,
+            inventory_only: false,
         },
         &mut |_| {},
     )
@@ -790,6 +794,7 @@ pub fn plugins_preflight(
         linked: linked_rows(),
         plugins: Some(plugins_cfg),
         data_dir: None,
+        inventory_only: false,
     };
     let registry_build = root_rows()
         .registry_build

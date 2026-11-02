@@ -1116,7 +1116,10 @@ __attribute__((constructor)) static void mark_loaded(void) {
             crate::root::loader::sign::SigningKey::from_bytes(&[0x36; 32]).verifying_key()
         };
         let floors = std::collections::BTreeMap::from([(facts.name.clone(), minimum)]);
-        let fetch: Vec<_> = pin.into_iter().map(|pin| serde_json::json!({"url":"https://plugins.invalid/store.tar.gz","sha256":pin})).collect();
+        let fetch: Vec<_> = pin
+            .into_iter()
+            .map(|pin| serde_json::json!({"url":"http://127.0.0.1:9/store.tar.gz","sha256":pin}))
+            .collect();
         let document = serde_json::json!({
             "providers": {}, "models": {}, "store": {"module":"constructor-store","settings":{}},
             "listen":"127.0.0.1:0", "admin_listen":"127.0.0.1:0",

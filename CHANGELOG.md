@@ -132,7 +132,7 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
 ### Security
 
 - **Store-only plugin downgrade state and immutable bootstrap archives.** 1.6.0 Breaking: a dropped
-  Store, secret plugin or transport needed before Store recovery must match the complete archive's
+  Store, secret plugin, transport or plane grammar probe needed before Store recovery must match the complete archive's
   SHA-256 in the operator's base `plugins.fetch` entry before native loading. Linked bootstrap
   plugins need no hash. Previously unpinned bootstrap deployments must add those hashes. Later
   loads use the Store's per-host downgrade floor, and Busbar no longer reads or writes a local
