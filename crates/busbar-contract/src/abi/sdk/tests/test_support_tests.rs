@@ -1,24 +1,26 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The plugin test support against a REAL door: a transport built by `plugin_door!` over the
+//! Ordinary SDK tests over exported descriptors, caller-owned ABI frames and concrete callbacks.
 
-use core::ffi::c_void;
-use core::mem::size_of;
-use core::ptr;
-
-use super::*;
-use crate::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome};
+use super::zeroed;
+use crate::abi::host::service::{
+    self as svc, ClockNowIn, ClockReading, HostSlots, ItemSpan, RecordsGetIn, ServiceOut,
+};
+use crate::abi::mechanism::call::{AbiStr, Blob, InHead, OutHead, Outcome, RawOutcome};
 use crate::abi::mechanism::door::{KindTailHead, Statement};
 use crate::abi::mechanism::lifecycle::{slot, OpenIn, OpenOut};
+use crate::abi::mechanism::ticket::{CompletionHandle, HostCtx, HostTables, Ticket};
 use crate::abi::mechanism::KindCode;
 use crate::abi::sdk::door::{abi_str, statement};
 use crate::abi::sdk::life::{Life, Refreshed, Refusal};
-use crate::abi::sdk::test_support::test_in::TestIn;
 use crate::abi::transport::{
     Claim, FramePiece, FramerSink, IngestIn, TransportTail, FRAMING_STREAM, ROLE_FRAMER,
     UNIT0_UPGRADE,
 };
+use core::ffi::c_void;
+use core::mem::{offset_of, size_of};
+use core::ptr;
 
 const NONE: AbiStr = AbiStr {
     ptr: ptr::null(),
@@ -123,10 +125,6 @@ mod plugin {
     }
 }
 
-fn view() -> DoorView {
-    DoorView::of(plugin::MACRO_DOOR)
-}
-
 mod allowed_needs {
     use crate::abi::host::conn::connector::{Need, DIRECTION_OUTBOUND};
     use crate::abi::sdk::door::abi_str;
@@ -159,128 +157,6 @@ mod forbidden_needs {
         statement: super::STATEMENT.with_needs(NEEDS),
         lifecycle: life(super::Probe),
     }
-}
-
-#[test]
-fn safe_needs_validation_reads_the_exported_descriptor_and_nested_headers() {
-    assert_eq!(
-        DoorView::of(allowed_needs::MACRO_DOOR).check_needs(),
-        Ok(())
-    );
-    assert_eq!(
-        view().check_needs(),
-        Ok(()),
-        "an empty exported list passes"
-    );
-    let fault = DoorView::of(forbidden_needs::MACRO_DOOR)
-        .check_needs()
-        .expect_err("the exported authorization retention need is forbidden");
-    assert_eq!(fault.rule, crate::abi::mechanism::check::Rule::Foreign);
-    assert_eq!(fault.field, "need.keep_response_headers");
-}
-
-/// A head for slot `op` over a `T` `in`, every other byte zero.
-fn in_head<T>(op: u32) -> InHead {
-    let mut h: InHead = zeroed();
-    h.size = size_of::<T>() as u32;
-    h.op = op;
-    h
-}
-
-/// A head for a `T` `out`, every other byte zero.
-fn out_head<T>() -> OutHead {
-    let mut h: OutHead = zeroed();
-    h.size = size_of::<T>() as u32;
-    h
-}
-
-#[test]
-fn a_zeroed_struct_is_every_field_zero() {
-    let piece: FramePiece = zeroed();
-    assert_eq!(
-        (
-            piece.stream,
-            piece.offset,
-            piece.len,
-            piece.code,
-            piece.flags
-        ),
-        (0, 0, 0, 0, 0)
-    );
-    let sink = FramerSink::default();
-    assert!(sink.wire.is_null() && sink.frame.is_null() && sink.pieces.is_null());
-    assert_eq!((sink.wire_cap, sink.frame_cap, sink.pieces_cap), (0, 0, 0));
-    let pieces: Vec<FramePiece> = vec![zeroed(); 4];
-    assert!(pieces.iter().all(|p| p.len == 0 && p.declared_len == 0));
-    let array: [FramePiece; 4] = zeroed();
-    assert!(array.iter().all(|p| p.stream == 0));
-    let ingest = IngestIn::default();
-    assert!(ingest.bytes.is_null());
-    assert_eq!((ingest.head.size, ingest.head.op, ingest.len), (0, 0, 0));
-    let slots = crate::abi::host::service::HostSlots::default();
-    assert!(slots.clock_now.is_none() && slots.session_emit.is_none());
-}
-
-#[test]
-fn a_real_doors_slots_run_over_zeroed_ins_and_outs() {
-    let table = view().ops::<crate::abi::transport::Ops>();
-    let open = table.head.open.expect("the door states open");
-    let close = table.head.close.expect("the door states close");
-
-    let mut input: OpenIn = zeroed();
-    input.head = in_head::<OpenIn>(slot::OPEN);
-    let opened = unsafe { call(open, ptr::null_mut(), &input, zeroed::<OpenOut>()) };
-    assert_eq!(opened.outcome, Outcome::Ready);
-    assert!(!opened.out.instance.is_null(), "open answered an instance");
-
-    let closed = unsafe {
-        call(
-            close,
-            opened.out.instance,
-            &in_head::<InHead>(slot::CLOSE),
-            out_head::<OutHead>(),
-        )
-    };
-    assert_eq!(closed.outcome, Outcome::Ready);
-}
-
-#[test]
-fn the_statement_reads_back_its_name_claims_and_declared_answers() {
-    let v = view();
-    assert_eq!(v.kind(), Some(KindCode::Transport));
-    assert_eq!(v.name(), "probe-transport");
-    assert_eq!(v.claims(), ["probe", "probes"]);
-    assert_eq!(v.declares(), ["probe.answer"]);
-    assert_eq!(v.statement().max_inflight, 4);
-}
-
-#[test]
-fn the_kind_tail_and_each_claim_row_with_its_facts_read_back() {
-    let v = view();
-    let tail = v.kind_tail::<TransportTail>();
-    assert_eq!((tail.role, tail.framing), (ROLE_FRAMER, FRAMING_STREAM));
-    assert_eq!(tail.handshake_max_steps, 3);
-    let rows = v.claim_rows();
-    assert_eq!(rows.len(), v.claims().len(), "one row per claim");
-    assert_eq!(rows[0].selector_forms, FORMS);
-    assert!(rows[0].egress_selector_forms.is_empty());
-    assert_eq!(rows[0].facts, ["probe.fact-a", "probe.fact-b"]);
-    assert_eq!(rows[0].status_namespace, "probe-status");
-    assert_eq!((rows[0].session, rows[0].unit0_trigger), (1, UNIT0_UPGRADE));
-    assert_eq!(rows[1].facts, ["probe.fact-a"]);
-    assert_eq!(rows[1].session, 0);
-}
-
-#[test]
-#[should_panic(expected = "the door is not of the kind whose tail was asked for")]
-fn another_kinds_tail_is_refused() {
-    let _ = view().kind_tail::<crate::abi::plane::PlaneTail>();
-}
-
-#[test]
-#[should_panic(expected = "the door is not of the kind whose table was asked for")]
-fn another_kinds_table_is_refused() {
-    let _ = view().ops::<crate::abi::secret::Ops>();
 }
 
 const DIALECTS: &[AbiStr] = &[abi_str("probe-dialect")];
@@ -362,207 +238,377 @@ const PLANE_DOOR: &crate::abi::mechanism::door::Door = &unsafe {
     crate::abi::sdk::door::door::<crate::abi::plane::Ops>(PLANE_STATEMENT, PLANE_OPS, None)
 };
 
-extern "C" fn plane_door() -> &'static crate::abi::mechanism::door::Door {
-    PLANE_DOOR
+fn transport_ops() -> &'static crate::abi::transport::Ops {
+    let door = (plugin::MACRO_DOOR.door_fn())();
+    assert_eq!(door.kind(), KindCode::Transport as u32);
+    // SAFETY: this exact macro exports a static transport table.
+    unsafe { &*door.ops().cast::<crate::abi::transport::Ops>() }
 }
 
-#[test]
-fn a_plane_tails_texts_words_and_rows_read_back() {
-    // The contract states no plane door macro, so this door is laid out as `plugin_door!` lays one
-    // and handed in through the macro's own plumbing: only this crate's test names it.
-    // SAFETY: `plane_door` answers `PLANE_DOOR`, a `'static` `Door` laid out by the SDK's own
-    // `door`, `stamp` and `absent_table` const fns, over this file's `'static` Statement and tail.
-    let door = unsafe { crate::abi::sdk::door::MacroDoor::__from_door_macro(plane_door) };
-    let v = DoorView::of(door);
-    assert_eq!(v.kind(), Some(KindCode::Plane));
-    assert_eq!(v.plane_text(PlaneText::Scope), "probe-scope");
-    assert_eq!(v.plane_text(PlaneText::AuditKind), "probe_audit");
-    assert_eq!(
-        v.plane_text(PlaneText::Label),
-        "",
-        "an absent text reads empty"
-    );
-    assert_eq!(v.plane_words(PlaneWords::FeeUnits), ["per_call"]);
-    assert_eq!(v.plane_words(PlaneWords::Dialects), ["probe-dialect"]);
-    assert!(v.plane_words(PlaneWords::MetricLanes).is_empty());
-    assert_eq!(v.plane_word_list(PlaneWords::FeeUnits).len(), 1);
-    assert_eq!(
-        v.billable_classes(),
-        [
-            BillableClassRow {
-                class: "tokens_in",
-                family: "token"
+fn in_head<T>(op: u32) -> InHead {
+    let mut head: InHead = zeroed();
+    head.size = size_of::<T>() as u32;
+    head.op = op;
+    head
+}
+
+fn out_head<T>() -> OutHead {
+    let mut head: OutHead = zeroed();
+    head.size = size_of::<T>() as u32;
+    head
+}
+
+unsafe extern "C" fn clock(_: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    // SAFETY: Services::clock_now supplies these exact exclusive output and input frames,
+    // including a live, exclusively lent ClockReading.
+    let (input, out) = unsafe { (&*input.cast::<ClockNowIn>(), &mut *out) };
+    assert_eq!(input.head.op, svc::op::CLOCK_NOW);
+    assert_eq!(input.head.size as usize, size_of::<ClockNowIn>());
+    // SAFETY: the SDK clock call owns this reading until the callback returns.
+    unsafe {
+        input.reading.write(ClockReading {
+            size: size_of::<ClockReading>() as u32,
+            _reserved: 0,
+            wall_ns: 7,
+            mono_ns: 9,
+        })
+    };
+    out.outcome = RawOutcome::of(Outcome::Ready);
+    out.outcome
+}
+
+unsafe extern "C" fn records(_: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    // SAFETY: Services::records_get supplies a complete RecordsGetIn and exclusive ServiceOut.
+    let (input, out) = unsafe { (&*input.cast::<RecordsGetIn>(), &mut *out) };
+    assert_eq!(input.head.op, svc::op::RECORDS_GET);
+    // SAFETY: these exact strings are borrowed from the SDK call for this callback's duration.
+    let (kind, key) = unsafe {
+        (
+            std::slice::from_raw_parts(input.kind.ptr, input.kind.len),
+            std::slice::from_raw_parts(input.key.ptr, input.key.len),
+        )
+    };
+    assert_eq!(kind, b"kind");
+    if key != b"probe" {
+        out.value = svc::ABSENT;
+        out.outcome = RawOutcome::of(Outcome::Ready);
+        return out.outcome;
+    }
+    let record = b"value-of-probe";
+    if input.into.cap < record.len() || input.into.spans_cap < 1 {
+        out.needed_bytes = record.len() as u64;
+        out.needed_items = 1;
+        out.outcome = RawOutcome::of(Outcome::Failed);
+        return out.outcome;
+    }
+    // SAFETY: the capacity checks cover both live SDK-owned output buffers. They do not
+    // overlap this static record, and the callback writes exactly one item.
+    unsafe {
+        ptr::copy_nonoverlapping(record.as_ptr(), input.into.buf, record.len());
+        input.into.spans.write(ItemSpan {
+            key: crate::abi::mechanism::call::Span {
+                offset: crate::abi::mechanism::check::SPAN_ABSENT,
+                len: 0,
             },
-            BillableClassRow {
-                class: "per_call",
-                family: "count"
+            value: crate::abi::mechanism::call::Span {
+                offset: 0,
+                len: record.len() as u32,
             },
-        ]
+        });
+    }
+    out.value = svc::FOUND;
+    out.len = record.len() as u64;
+    out.items = 1;
+    out.outcome = RawOutcome::of(Outcome::Ready);
+    out.outcome
+}
+
+#[test]
+fn a_zeroed_struct_is_every_field_zero() {
+    let piece: FramePiece = zeroed();
+    assert_eq!(
+        (
+            piece.stream,
+            piece.offset,
+            piece.len,
+            piece.code,
+            piece.flags
+        ),
+        (0, 0, 0, 0, 0)
     );
-    assert_eq!(v.plane_rows::<crate::abi::plane::BillableClass>().len(), 2);
-    assert!(v.plane_rows::<crate::abi::plane::OpClass>().is_empty());
+    let sink = FramerSink::default();
+    assert!(sink.wire.is_null() && sink.frame.is_null() && sink.pieces.is_null());
+    assert_eq!((sink.wire_cap, sink.frame_cap, sink.pieces_cap), (0, 0, 0));
+    let pieces: Vec<FramePiece> = vec![zeroed(); 4];
+    assert!(pieces.iter().all(|p| p.len == 0 && p.declared_len == 0));
+    let array: [FramePiece; 4] = zeroed();
+    assert!(array.iter().all(|p| p.stream == 0));
+    let ingest = IngestIn::default();
+    assert!(ingest.bytes.is_null());
+    assert_eq!((ingest.head.size, ingest.head.op, ingest.len), (0, 0, 0));
+    let slots = crate::abi::host::service::HostSlots::default();
+    assert!(slots.clock_now.is_none() && slots.session_emit.is_none());
 }
 
 #[test]
-#[should_panic(expected = "the door is not of the kind whose tail was asked for")]
-fn a_plane_read_of_a_transport_door_is_refused() {
-    let _ = view().plane_words(PlaneWords::FeeUnits);
+fn needs_validation_reads_the_exported_descriptor_and_nested_headers() {
+    for (door, forbidden) in [
+        ((allowed_needs::MACRO_DOOR.door_fn())(), false),
+        ((plugin::MACRO_DOOR.door_fn())(), false),
+        ((forbidden_needs::MACRO_DOOR.door_fn())(), true),
+    ] {
+        // SAFETY: each macro exports its static Statement and its static Need list.
+        let statement = unsafe { &*door.statement() };
+        let needs = if statement.needs_len == 0 {
+            &[][..]
+        } else {
+            // SAFETY: the exact exported Need array remains static and has this declared length.
+            unsafe { std::slice::from_raw_parts(statement.needs, statement.needs_len) }
+        };
+        // SAFETY: the exact macro-exported Need rows and all their nested headers are static.
+        let result = unsafe { crate::abi::mechanism::check::check_needs(needs) };
+        if forbidden {
+            let fault = result.expect_err("authorization retention is forbidden");
+            assert_eq!(fault.rule, crate::abi::mechanism::check::Rule::Foreign);
+            assert_eq!(fault.field, "need.keep_response_headers");
+        } else {
+            assert_eq!(result, Ok(()));
+        }
+    }
 }
 
 #[test]
-fn a_failed_opens_reason_reads_back_from_the_lent_buffer() {
-    let table = view().ops::<crate::abi::transport::Ops>();
-    let open = table.head.open.expect("the door states open");
+fn real_door_slots_open_and_close_over_complete_caller_owned_frames() {
+    let table = transport_ops();
+    let mut input: OpenIn = zeroed();
+    input.head = in_head::<OpenIn>(slot::OPEN);
+    let mut output: OpenOut = zeroed();
+    output.head = out_head::<OpenOut>();
+    // SAFETY: OPEN receives its full live input/output frames and no instance. No nested loan.
+    let outcome = unsafe {
+        table.head.open.unwrap()(
+            ptr::null_mut(),
+            ptr::from_ref(&input).cast(),
+            ptr::from_mut(&mut output).cast(),
+        )
+    }
+    .outcome();
+    assert_eq!(outcome, Outcome::Ready);
+    assert!(!output.instance.is_null());
+    let close = in_head::<InHead>(slot::CLOSE);
+    let mut closed = out_head::<OutHead>();
+    // SAFETY: the same door uniquely closes the instance it just opened; both frames remain live.
+    let outcome = unsafe {
+        table.head.close.unwrap()(
+            output.instance,
+            ptr::from_ref(&close).cast(),
+            ptr::from_mut(&mut closed).cast(),
+        )
+    }
+    .outcome();
+    assert_eq!(outcome, Outcome::Ready);
+}
+
+#[test]
+fn exported_statement_retains_name_claims_answers_and_capacity() {
+    let door = (plugin::MACRO_DOOR.door_fn())();
+    assert_eq!(door.kind(), KindCode::Transport as u32);
+    // SAFETY: this exact plugin exports this static Statement and its static string arrays.
+    let s = unsafe { &*door.statement() };
+    assert_eq!(s.max_inflight, 4);
+    assert_eq!((s.claims_len, s.answers_len), (2, 1));
+    // SAFETY: all pointers below are the immutable static arrays and strings declared above.
+    unsafe {
+        assert_eq!(
+            std::slice::from_raw_parts(s.name.ptr, s.name.len),
+            b"probe-transport"
+        );
+        for (name, expected) in std::slice::from_raw_parts(s.claims, s.claims_len)
+            .iter()
+            .zip([b"probe".as_slice(), b"probes"])
+        {
+            assert_eq!(std::slice::from_raw_parts(name.ptr, name.len), expected);
+        }
+        let answer = &*s.answers;
+        assert_eq!(
+            std::slice::from_raw_parts(answer.ptr, answer.len),
+            b"probe.answer"
+        );
+    }
+}
+
+#[test]
+fn transport_tail_retains_each_claims_forms_facts_and_session() {
+    let door = (plugin::MACRO_DOOR.door_fn())();
+    // SAFETY: this transport macro's static Statement names exactly TAIL and ROWS.
+    unsafe {
+        let s = &*door.statement();
+        let tail = &*s.kind_tail.cast::<TransportTail>();
+        assert_eq!(
+            (tail.role, tail.framing, tail.handshake_max_steps),
+            (ROLE_FRAMER, FRAMING_STREAM, 3)
+        );
+        let rows = std::slice::from_raw_parts(tail.claim_rows, tail.claim_rows_len);
+        assert_eq!(rows.len(), s.claims_len);
+        assert_eq!(
+            std::slice::from_raw_parts(rows[0].selector_forms.ptr, rows[0].selector_forms.len),
+            FORMS
+        );
+        assert_eq!(rows[0].egress_selector_forms.len, 0);
+        assert_eq!((rows[0].facts_len, rows[1].facts_len), (2, 1));
+        for (fact, expected) in std::slice::from_raw_parts(rows[0].facts, rows[0].facts_len)
+            .iter()
+            .zip([b"probe.fact-a".as_slice(), b"probe.fact-b"])
+        {
+            assert_eq!(std::slice::from_raw_parts(fact.ptr, fact.len), expected);
+        }
+        let fact = &*rows[1].facts;
+        assert_eq!(
+            std::slice::from_raw_parts(fact.ptr, fact.len),
+            b"probe.fact-a"
+        );
+        assert_eq!(
+            std::slice::from_raw_parts(rows[0].status_namespace.ptr, rows[0].status_namespace.len),
+            b"probe-status"
+        );
+        assert_eq!(
+            (rows[0].session, rows[0].unit0_trigger, rows[1].session),
+            (1, UNIT0_UPGRADE, 0)
+        );
+    }
+}
+
+#[test]
+fn plane_descriptor_retains_text_lists_and_billable_rows() {
+    assert_eq!(PLANE_DOOR.kind(), KindCode::Plane as u32);
+    // SAFETY: PLANE_DOOR names the static PLANE_STATEMENT, PLANE_TAIL and their static arrays.
+    unsafe {
+        let tail = &*(*PLANE_DOOR.statement())
+            .kind_tail
+            .cast::<crate::abi::plane::PlaneTail>();
+        assert_eq!(
+            std::slice::from_raw_parts(tail.scope.ptr, tail.scope.len),
+            b"probe-scope"
+        );
+        assert_eq!(
+            std::slice::from_raw_parts(tail.audit_kind.ptr, tail.audit_kind.len),
+            b"probe_audit"
+        );
+        assert!(tail.label.ptr.is_null());
+        assert_eq!(tail.label.len, 0);
+        assert_eq!(
+            (
+                tail.fee_units_len,
+                tail.dialects_len,
+                tail.metric_lanes_len,
+                tail.op_classes_len
+            ),
+            (1, 1, 0, 0)
+        );
+        let fee = &*tail.fee_units;
+        let dialect = &*tail.dialects;
+        assert_eq!(std::slice::from_raw_parts(fee.ptr, fee.len), b"per_call");
+        assert_eq!(
+            std::slice::from_raw_parts(dialect.ptr, dialect.len),
+            b"probe-dialect"
+        );
+        let rows = std::slice::from_raw_parts(tail.billable_classes, tail.billable_classes_len);
+        assert_eq!(rows.len(), 2);
+        for (row, (class, family)) in rows.iter().zip([
+            (b"tokens_in".as_slice(), b"token".as_slice()),
+            (b"per_call", b"count"),
+        ]) {
+            assert_eq!(
+                std::slice::from_raw_parts(row.class.ptr, row.class.len),
+                class
+            );
+            assert_eq!(
+                std::slice::from_raw_parts(row.family.ptr, row.family.len),
+                family
+            );
+        }
+    }
+}
+
+#[test]
+fn failed_open_writes_its_reason_into_the_caller_owned_buffer() {
     let settings = b"boom: x";
     let mut reason = [0_u8; 64];
     let mut input: OpenIn = zeroed();
     input.head = in_head::<OpenIn>(slot::OPEN);
-    input.settings = crate::abi::mechanism::call::Blob {
+    input.settings = Blob {
         ptr: settings.as_ptr(),
         len: settings.len(),
-        ..crate::abi::mechanism::call::Blob::ABSENT
+        ..Blob::ABSENT
     };
     input.err_buf = reason.as_mut_ptr();
     input.err_cap = reason.len();
-    let got = unsafe { call(open, ptr::null_mut(), &input, zeroed::<OpenOut>()) };
-    assert_eq!(got.outcome, Outcome::Failed);
-    assert_eq!(got.error.as_deref(), Some("probe open failed: x"));
+    let mut output: OpenOut = zeroed();
+    output.head = out_head::<OpenOut>();
+    // SAFETY: the full OPEN frames and exclusive reason buffer remain live for this call.
+    let outcome = unsafe {
+        transport_ops().head.open.unwrap()(
+            ptr::null_mut(),
+            ptr::from_ref(&input).cast(),
+            ptr::from_mut(&mut output).cast(),
+        )
+    }
+    .outcome();
+    assert_eq!(outcome, Outcome::Failed);
+    assert!(output.instance.is_null());
+    assert!(output.err_len <= reason.len());
+    assert_eq!(&reason[..output.err_len], b"probe open failed: x");
     assert_eq!(
-        written_text(&reason, got.out.err_len, "open.err_len"),
-        "probe open failed: x"
-    );
-    assert_eq!(
-        written(&reason, got.out.err_len, "open.err_len"),
-        b"probe open failed: x"
+        std::str::from_utf8(&reason[..output.err_len]),
+        Ok("probe open failed: x")
     );
 }
 
 #[test]
-#[should_panic(expected = "open.err_len: the plugin states it wrote 9 bytes into a buffer of 4")]
-fn a_length_past_the_lent_capacity_is_refused() {
-    let _ = written(&[0_u8; 4], 9_usize, "open.err_len");
-}
-
-#[test]
-#[should_panic(expected = "reason: not UTF-8")]
-fn written_text_that_is_not_utf8_is_refused() {
-    let _ = written_text(&[0xff, 0xfe], 2_u64, "reason");
-}
-
-use super::fake::{FakeHost, FakeService, ServiceCall};
-use crate::abi::host::service::{
-    self as svc, ClockNowIn, ClockReading, ItemSpan, RecordsGetIn, ServiceBufs, ServiceHead,
-    ServiceOut,
-};
-use crate::abi::mechanism::call::Span;
-use crate::abi::mechanism::ticket::{CompletionHandle, HostCtx, Ticket};
-
-/// A clock at a fixed instant.
-struct Clock;
-impl FakeService for Clock {
-    type In = ClockNowIn;
-    fn serve(call: &mut ServiceCall<ClockNowIn>) -> Outcome {
-        call.put(
-            |i| &i.reading,
-            ClockReading {
-                size: size_of::<ClockReading>() as u32,
-                _reserved: 0,
-                wall_ns: 7,
-                mono_ns: 9,
-            },
-        );
-        Outcome::Ready
-    }
-}
-
-/// A record store holding one record, `probe` = `value-of-probe`, of kind `kind`.
-struct Records;
-impl FakeService for Records {
-    type In = RecordsGetIn;
-    fn serve(call: &mut ServiceCall<RecordsGetIn>) -> Outcome {
-        assert_eq!(call.text(|i| &i.kind), "kind");
-        if call.bytes(|i| &i.key) != b"probe" {
-            call.set_value(svc::ABSENT);
-            return Outcome::Ready;
-        }
-        let record = b"value-of-probe";
-        let span = ItemSpan {
-            key: Span {
-                offset: crate::abi::mechanism::check::SPAN_ABSENT,
-                len: 0,
-            },
-            value: Span {
-                offset: 0,
-                len: record.len() as u32,
-            },
-        };
-        if !call.fill(|i| &i.into, record, &[span]) {
-            return Outcome::Failed;
-        }
-        call.set_value(svc::FOUND);
-        Outcome::Ready
-    }
-}
-
-/// A double whose selector names memory outside its call's `in`.
-struct Stray;
-impl FakeService for Stray {
-    type In = RecordsGetIn;
-    fn serve(call: &mut ServiceCall<RecordsGetIn>) -> Outcome {
-        let _ = call.bytes(|_| &NONE);
-        Outcome::Ready
-    }
-}
-
-fn service_head<T>(op: u32) -> ServiceHead {
-    ServiceHead {
-        size: size_of::<T>() as u32,
-        op,
-        handle: CompletionHandle {
-            ticket: Ticket::NONE,
-            seq: 0,
-            _reserved: 0,
-        },
-    }
-}
-
-#[test]
-fn a_fake_service_answers_the_sdks_own_calls_as_the_host_does() {
+fn concrete_host_callbacks_answer_sdk_clock_records_and_short_buffer_calls() {
     use crate::abi::sdk::services::{ServiceError, Services};
     use core::task::Poll;
-    let host = FakeHost::new()
-        .serve(fake::host::CLOCK_NOW, Clock)
-        .serve(fake::host::RECORDS_GET, Records);
-
-    let services = Services::of(host.lent()).expect("the host offers services");
+    let mut slots = HostSlots::default();
+    slots.size = size_of::<HostSlots>() as u32;
+    slots.slots = svc::SERVICES;
+    slots.clock_now = Some(clock);
+    slots.records_get = Some(records);
+    let tables = HostTables {
+        size: size_of::<HostTables>() as u32,
+        _reserved: 0,
+        ctx: HostCtx::NONE,
+        wake: None,
+        conns: ptr::null(),
+        services: &slots,
+        io: ptr::null(),
+    };
+    // SAFETY: the complete tables remain live here; both callbacks are static and use no context.
+    let services = Services::of(unsafe { crate::abi::sdk::Lent::new(&tables) }).unwrap();
     let handle = CompletionHandle {
         ticket: Ticket::NONE,
         seq: 0,
         _reserved: 0,
     };
-
-    let reading = services.clock_now(handle).expect("clock.now answers");
+    let reading = services.clock_now(handle).unwrap();
     assert_eq!((reading.wall_ns, reading.mono_ns), (7, 9));
-
     let mut buf = [0_u8; 32];
-    match services.records_get(handle, "kind", b"probe", &mut buf) {
-        Poll::Ready(Ok(Some(v))) => assert_eq!(v, b"value-of-probe"),
-        other => panic!("records.get answered {other:?}"),
-    }
-    match services.records_get(handle, "kind", b"absent", &mut buf) {
-        Poll::Ready(Ok(None)) => {}
-        other => panic!("records.get of an absent key answered {other:?}"),
-    }
-
+    assert!(matches!(
+        services.records_get(handle, "kind", b"probe", &mut buf),
+        Poll::Ready(Ok(Some(b"value-of-probe")))
+    ));
+    assert!(matches!(
+        services.records_get(handle, "kind", b"absent", &mut buf),
+        Poll::Ready(Ok(None))
+    ));
     let mut small = [0_u8; 4];
-    match services.records_get(handle, "kind", b"probe", &mut small) {
-        Poll::Ready(Err(ServiceError::Short { bytes, items })) => {
-            assert_eq!((bytes, items), (14, 1));
-        }
-        other => panic!("a short records.get answered {other:?}"),
-    }
+    assert!(matches!(
+        services.records_get(handle, "kind", b"probe", &mut small),
+        Poll::Ready(Err(ServiceError::Short {
+            bytes: 14,
+            items: 1
+        }))
+    ));
     assert_eq!(small, [0; 4]);
-
     let mut spans: [ItemSpan; 1] = zeroed();
     assert!(matches!(
         services.records_list(handle, "kind", b"", None, 0, (&mut buf, &mut spans)),
@@ -571,1221 +617,166 @@ fn a_fake_service_answers_the_sdks_own_calls_as_the_host_does() {
 }
 
 #[test]
-fn a_fake_refuses_an_in_of_another_op_a_short_in_and_a_stray_selector_with_fault() {
-    let host = FakeHost::new().serve(fake::host::RECORDS_GET, Records);
-    let mut buf = [0_u8; 32];
-    let mut spans: [ItemSpan; 1] = zeroed();
-    let mut input = RecordsGetIn {
-        head: service_head::<RecordsGetIn>(svc::op::RECORDS_LIST),
-        kind: abi_str("kind"),
-        key: abi_str("probe"),
-        into: ServiceBufs {
-            buf: buf.as_mut_ptr(),
-            cap: buf.len(),
-            spans: spans.as_mut_ptr(),
-            spans_cap: spans.len(),
-        },
-    };
-    let call = |host: &FakeHost, input: &RecordsGetIn| {
-        let mut out: ServiceOut = zeroed();
-        let f = host.slots_for_tests().0.records_get.expect("served");
-        // SAFETY: `input` is the selected slot's live frame and every loan stays live; `out` is exclusive.
-        unsafe {
-            f(
-                HostCtx::NONE,
-                ptr::from_ref(input).cast(),
-                ptr::from_mut(&mut out).cast(),
-            )
-        }
-        .outcome()
-    };
-
-    assert_eq!(call(&host, &input), Outcome::Fault);
-    assert_eq!(buf, [0; 32], "nothing was written");
-
-    input.head = service_head::<ClockNowIn>(svc::op::RECORDS_GET);
-    assert_eq!(call(&host, &input), Outcome::Fault);
-
-    input.head = service_head::<RecordsGetIn>(svc::op::RECORDS_GET);
-    let stray = FakeHost::new().serve(fake::host::RECORDS_GET, Stray);
-    assert_eq!(call(&stray, &input), Outcome::Fault);
-
-    assert_eq!(call(&host, &input), Outcome::Ready);
-}
-
-use super::reply::{call, Reply};
-use crate::abi::auth::{BeginLoginOut, LoginField, BEGIN_FORM};
-use crate::abi::export::{CheckOut, ServeOut};
-use crate::abi::mechanism::call::{Blob, RawOutcome};
-use crate::abi::mechanism::check::HARD_MAX_BYTES;
-use crate::abi::plane::{PlaneRefreshOut, PlaneSnapshot};
-use crate::abi::secret::ResolveOut;
-
-/// A stand-in slot: it answers the `O` its instance points at, whole, as a plugin writes its
-extern "C" fn answer<O: Reply>(
-    instance: *mut c_void,
-    _: *const c_void,
-    out: *mut c_void,
-) -> RawOutcome {
-    // SAFETY: the test's own template `O`, and the caller's `out` of that type.
-    let mut written = unsafe { *instance.cast::<O>() };
-    // SAFETY: as above.
-    unsafe { out.cast::<O>().write(written) };
-    written.head().outcome
-}
-
-/// `answer::<O>` called over `template`.
-fn answered<O: Reply>(template: &mut O) -> super::reply::Called<'static, O> {
-    unsafe {
-        call(
-            answer::<O>,
-            ptr::from_mut(template).cast(),
-            &in_head::<InHead>(0),
-            *template,
-        )
-    }
-}
-
-fn bytes_of(b: &[u8]) -> Blob {
-    Blob {
-        ptr: b.as_ptr(),
-        len: b.len(),
-        ..Blob::ABSENT
-    }
-}
-
-fn str_of(s: &str) -> AbiStr {
-    AbiStr {
-        ptr: s.as_ptr(),
-        len: s.len(),
-    }
-}
-
-fn ready_head(lease: u64) -> OutHead {
-    let mut h: OutHead = zeroed();
-    h.outcome = RawOutcome::of(Outcome::Ready);
-    h.lease = lease;
-    h
-}
-
-#[test]
-fn lifecycle_cancel_reply_preserves_its_kind_disposition_and_owns_error_text() {
-    let mut words = String::from("cancelled after partial output");
-    let mut template: crate::abi::mechanism::lifecycle::CancelOut = zeroed();
-    template.head = ready_head(19);
-    template.head.error = str_of(&words);
-    template.disposition = 23;
-    let got = answered(&mut template);
-    words.clear();
-    assert_eq!(got.outcome, Outcome::Ready);
+fn direct_login_validator_refuses_a_null_form_with_a_nonzero_count() {
+    let mut output: crate::abi::auth::BeginLoginOut = zeroed();
+    output.shape = crate::abi::auth::BEGIN_FORM;
+    output.form_len = 2;
+    let fault = crate::abi::auth::check_begin_login(Outcome::Ready, &output).unwrap_err();
     assert_eq!(
-        got.out.disposition, 23,
-        "the generic kind owns this vocabulary"
-    );
-    assert_eq!(got.out.head.lease, 19);
-    assert_eq!(got.error.as_deref(), Some("cancelled after partial output"));
-    assert!(got.out.head.error.ptr.is_null());
-}
-
-#[test]
-fn plane_cancel_reply_preserves_each_disposition_and_record_accounting() {
-    for disposition in [
-        crate::abi::plane::CANCEL_OK_PARTIAL,
-        crate::abi::plane::CANCEL_FAILED,
-        crate::abi::plane::CANCEL_ABORTED,
-    ] {
-        let mut template: crate::abi::plane::PlaneCancelOut = zeroed();
-        template.cancel.head = ready_head(7);
-        template.cancel.disposition = disposition;
-        template.records_written = 2;
-        template.arena_written = 31;
-        let got = answered(&mut template);
-        assert_eq!(got.outcome, Outcome::Ready);
-        assert_eq!(got.out.cancel.disposition, disposition);
-        assert_eq!(got.out.cancel.head.lease, 7);
-        assert_eq!(got.out.records_written, 2);
-        assert_eq!(got.out.arena_written, 31);
-    }
-}
-
-#[test]
-#[should_panic(expected = "cancel.disposition")]
-fn a_ready_plane_cancel_reply_requires_an_actual_disposition() {
-    let mut template: crate::abi::plane::PlaneCancelOut = zeroed();
-    template.cancel.head = ready_head(0);
-    let _ = answered(&mut template);
-}
-
-#[test]
-fn plane_drive_reply_preserves_written_and_needed_session_counts() {
-    for (written, needed) in [(3, 0), (0, 9)] {
-        let mut template: crate::abi::plane::PlaneDriveOut = zeroed();
-        template.head = ready_head(0);
-        template.sessions_written = written;
-        template.sessions_needed = needed;
-        let got = answered(&mut template);
-        assert_eq!(got.outcome, Outcome::Ready);
-        assert_eq!(got.out.sessions_written, written);
-        assert_eq!(got.out.sessions_needed, needed);
-    }
-}
-
-#[test]
-fn a_plane_open_reply_yields_an_instance_proof_that_close_consumes() {
-    extern "C" fn open(_: *mut c_void, _: *const c_void, out: *mut c_void) -> RawOutcome {
-        // SAFETY: the selected plane OPEN has a complete exclusive PlaneOpenOut. Its instance
-        // owns this allocation until the sole matching CLOSE below consumes it.
-        let out = unsafe { &mut *out.cast::<crate::abi::plane::PlaneOpenOut>() };
-        out.open.instance = Box::into_raw(Box::new(37_u8)).cast();
-        out.open.head.outcome = RawOutcome::of(Outcome::Ready);
-        RawOutcome::of(Outcome::Ready)
-    }
-    extern "C" fn close(instance: *mut c_void, _: *const c_void, out: *mut c_void) -> RawOutcome {
-        // SAFETY: close_in consumes the proof for the one live allocation this OPEN returned;
-        // its exclusive output is a complete OutHead.
-        unsafe {
-            assert_eq!(*Box::from_raw(instance.cast::<u8>()), 40);
-            (*out.cast::<OutHead>()).outcome = RawOutcome::of(Outcome::Ready);
-        }
-        RawOutcome::of(Outcome::Ready)
-    }
-    extern "C" fn piece(
-        instance: *mut c_void,
-        input: *const c_void,
-        out: *mut c_void,
-    ) -> RawOutcome {
-        // SAFETY: call_piece_in verifies the exact slot, live instance and complete initialized
-        // frames, while TestIn retains the exclusive initialized reply and arena buffers.
-        unsafe {
-            assert!((37..40).contains(&*instance.cast::<u8>()));
-            let input = &*input.cast::<crate::abi::plane::OnPieceIn>();
-            let out = &mut *out.cast::<crate::abi::plane::OnPieceOut>();
-            assert_eq!(
-                input.head.size as usize,
-                size_of::<crate::abi::plane::OnPieceIn>()
-            );
-            assert_eq!(
-                out.head.size as usize,
-                size_of::<crate::abi::plane::OnPieceOut>()
-            );
-            assert_eq!(input.bytes.len, 4);
-            assert!(input.reply_cap >= 2 && input.arena_cap >= 4);
-            ptr::copy_nonoverlapping(b"ok".as_ptr(), input.reply_buf, 2);
-            ptr::copy_nonoverlapping(b"lane".as_ptr(), input.arena_buf, 4);
-            out.head.lease = 19;
-            out.emitted = if input.flags == 1 { 3 } else { 2 };
-            out.arena_written = 4;
-            out.reply_status = 201;
-            out.lane = crate::abi::mechanism::call::Span {
-                offset: 0,
-                len: if input.flags == 2 { 5 } else { 4 },
-            };
-            out.need = 3;
-            out.fault = crate::abi::transport::FAULT_HEALTHY;
-        }
-        RawOutcome::of(Outcome::Ready)
-    }
-    extern "C" fn release(
-        instance: *mut c_void,
-        input: *const c_void,
-        _: *mut c_void,
-    ) -> RawOutcome {
-        // SAFETY: the capture returns this same door's live lease and exact ReleaseIn, before
-        // CLOSE consumes the instance. The changed instance proves RELEASE actually ran.
-        unsafe {
-            let input = &*input.cast::<crate::abi::mechanism::lifecycle::ReleaseIn>();
-            assert_eq!(input.head.op, slot::RELEASE);
-            assert_eq!(input.lease, 19);
-            assert!((37..40).contains(&*instance.cast::<u8>()));
-            *instance.cast::<u8>() += 1;
-        }
-        RawOutcome::of(Outcome::Ready)
-    }
-    const OPS: &crate::abi::plane::Ops = &crate::abi::plane::Ops {
-        head: crate::abi::sdk::door::ops_head::<crate::abi::plane::Ops>(
-            None,
-            Some(open),
-            None,
-            None,
-            None,
-            None,
-            None,
-            Some(release),
-            Some(close),
-        ),
-        on_piece: Some(piece),
-        ..crate::abi::sdk::door::absent_table::<crate::abi::plane::Ops>()
-    };
-    // SAFETY: both table slots and the existing Statement/tail have immutable static backing.
-    const DOOR: &crate::abi::mechanism::door::Door = &unsafe {
-        crate::abi::sdk::door::door::<crate::abi::plane::Ops>(PLANE_STATEMENT, OPS, None)
-    };
-    extern "C" fn door() -> &'static crate::abi::mechanism::door::Door {
-        DOOR
-    }
-    // SAFETY: the reviewed static descriptor above has the same complete layout and stamped
-    // Statement that the macro emits, with exact typed plane lifecycle slots.
-    let view = DoorView::of(unsafe { crate::abi::sdk::door::MacroDoor::__from_door_macro(door) });
-    let mut opened = super::reply::call_in(
-        view.op::<crate::abi::plane::Ops>(|ops| &ops.head.open)
-            .unwrap(),
-        None,
-        &TestIn::<crate::abi::plane::PlaneOpenIn>::new(),
-        zeroed::<crate::abi::plane::PlaneOpenOut>(),
-    );
-    assert_eq!(opened.outcome, Outcome::Ready);
-    assert!(opened.owned.is_none(), "the absent snapshot stays absent");
-    let instance = opened.take_instance().expect("the plane OPEN proof");
-    assert!(opened.take_instance().is_none(), "the proof transfers once");
-    let mut body = [0; 2];
-    let mut arena = [0; 4];
-    let captured = {
-        let input = TestIn::<crate::abi::plane::OnPieceIn>::new()
-            .blob(
-                |i| &i.bytes,
-                b"ping",
-                crate::abi::mechanism::call::BLOB_OCTETS,
-            )
-            .buffer(|i| &i.reply_buf, |i| &i.reply_cap, &mut body)
-            .buffer(|i| &i.arena_buf, |i| &i.arena_cap, &mut arena);
-        let wrong_slot = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            super::reply::call_piece_in(
-                view.op::<crate::abi::plane::Ops>(|ops| &ops.head.open)
-                    .unwrap(),
-                Some(&instance),
-                &input,
-            )
-        }));
-        assert!(wrong_slot.is_err(), "an OPEN cannot receive an OnPieceOut");
-        super::reply::call_piece_in(
-            view.op::<crate::abi::plane::Ops>(|ops| &ops.on_piece)
-                .unwrap(),
-            Some(&instance),
-            &input,
-        )
-    };
-    assert_eq!(captured.outcome, Outcome::Ready);
-    assert_eq!(captured.out.emitted, 2);
-    assert_eq!(captured.out.reply_status, 201);
-    assert_eq!(
-        captured.out.lane,
-        crate::abi::mechanism::call::Span { offset: 0, len: 4 }
-    );
-    assert_eq!(captured.out.need, 3);
-    assert_eq!(captured.out.fault, crate::abi::transport::FAULT_HEALTHY);
-    assert_eq!(&body, b"ok");
-    assert_eq!(&arena, b"lane");
-    for mode in [1, 2] {
-        let input = TestIn::<crate::abi::plane::OnPieceIn>::new()
-            .blob(
-                |i| &i.bytes,
-                b"ping",
-                crate::abi::mechanism::call::BLOB_OCTETS,
-            )
-            .set(|i| &i.flags, mode)
-            .buffer(|i| &i.reply_buf, |i| &i.reply_cap, &mut body)
-            .buffer(|i| &i.arena_buf, |i| &i.arena_cap, &mut arena);
-        let malformed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            super::reply::call_piece_in(
-                view.op::<crate::abi::plane::Ops>(|ops| &ops.on_piece)
-                    .unwrap(),
-                Some(&instance),
-                &input,
-            )
-        }));
-        assert!(
-            malformed.is_err(),
-            "oversized written counts and spans are refused"
-        );
-    }
-    let closed = super::reply::close_in(
-        view.op::<crate::abi::plane::Ops>(|ops| &ops.head.close)
-            .unwrap(),
-        instance,
-        &TestIn::<InHead>::new(),
-        zeroed::<OutHead>(),
-    );
-    assert_eq!(closed.outcome, Outcome::Ready);
-}
-
-fn resolved(secret: Blob) -> ResolveOut {
-    let mut out: ResolveOut = zeroed();
-
-    out.head = ready_head(0);
-
-    out.secret = Blob {
-        flags: crate::abi::mechanism::call::BLOB_SECRET,
-        ..secret
-    };
-    out
-}
-
-fn answered_resolve(
-    template: &mut ResolveOut,
-    material: &mut [u8],
-) -> super::reply::Called<'static, ResolveOut> {
-    let mut input: crate::abi::secret::ResolveIn = zeroed();
-    input.secret_buf = material.as_mut_ptr();
-    input.secret_cap = material.len();
-    unsafe {
-        call(
-            answer::<ResolveOut>,
-            ptr::from_mut(template).cast(),
-            &input,
-            *template,
-        )
-    }
-}
-
-#[test]
-fn a_secret_is_copied_into_wiped_memory_before_the_buffer_is_wiped() {
-    let mut material = b"s3cret".to_vec();
-    let mut t = resolved(bytes_of(&material));
-    let got = answered_resolve(&mut t, &mut material);
-    material.fill(0);
-    assert_eq!(got.outcome, Outcome::Ready);
-    assert_eq!(got.owned.material(), b"s3cret");
-    assert_eq!(got.out.head.lease, 0, "the scalars stay: no lease");
-    assert!(
-        got.out.secret.ptr.is_null(),
-        "no pointer into the host buffer survives"
-    );
-    assert!(
-        !format!("{:?}", got.owned).contains("s3cret"),
-        "never printed"
+        fault.rule,
+        crate::abi::mechanism::check::Rule::NullWithCount
     );
 }
 
 #[test]
-#[should_panic(expected = "resolve.secret: NullWithCount")]
-fn a_forged_secret_with_no_pointer_is_refused() {
-    let mut t = resolved(Blob {
-        ptr: ptr::null(),
-        len: 5,
-        ..Blob::ABSENT
-    });
-    let _ = answered_resolve(&mut t, &mut [0; 5]);
-}
-
-#[test]
-#[should_panic(expected = "resolve.secret.len: OverMax")]
-fn a_secret_past_the_declared_bound_is_refused() {
-    let mut t = resolved(Blob {
-        ptr: ptr::NonNull::<u8>::dangling().as_ptr(),
-        len: HARD_MAX_BYTES as usize + 1,
-        ..Blob::ABSENT
-    });
-    let _ = answered_resolve(&mut t, &mut [0; 5]);
-}
-
-#[test]
-#[should_panic(expected = "resolve.secret_outside_buffer")]
-fn a_resolve_cannot_substitute_its_own_secret_memory() {
-    let mut t = resolved(bytes_of(b"secret"));
-    let _ = answered_resolve(&mut t, &mut [0; 6]);
-}
-
-#[test]
-#[should_panic(expected = "resolve.needed")]
-fn a_resolve_cannot_claim_more_than_the_lent_buffer() {
-    let mut material = [0; 3];
-    let mut t = resolved(Blob {
-        ptr: material.as_ptr(),
-        len: 3,
-        ..Blob::ABSENT
-    });
-    let mut input: crate::abi::secret::ResolveIn = zeroed();
-    input.secret_buf = material.as_mut_ptr();
-    input.secret_cap = 2;
-    let _ = unsafe {
-        call(
-            answer::<ResolveOut>,
-            ptr::from_mut(&mut t).cast(),
-            &input,
-            t,
-        )
-    };
-}
-
-fn answered_scrape(
-    written: usize,
-    cap: usize,
-) -> super::reply::Called<'static, crate::abi::export::ScrapeOut> {
-    let mut material = vec![0; cap];
-    let mut input: crate::abi::export::ScrapeIn = zeroed();
-    input.buf = material.as_mut_ptr();
-    input.cap = material.len();
-    let mut out: crate::abi::export::ScrapeOut = zeroed();
-    out.head = ready_head(0);
-    out.written = written;
-    unsafe {
-        call(
-            answer::<crate::abi::export::ScrapeOut>,
-            ptr::from_mut(&mut out).cast(),
-            &input,
-            out,
-        )
-    }
-}
-
-#[test]
-#[should_panic(expected = "scrape.bytes")]
-fn a_scrape_cannot_claim_more_than_the_lent_buffer() {
-    let _ = answered_scrape(3, 2);
-}
-
-#[test]
-fn a_scrape_may_fill_or_leave_the_lent_buffer_empty() {
-    assert_eq!(answered_scrape(2, 2).out.written, 2);
-    assert_eq!(answered_scrape(0, 2).out.written, 0);
-}
-
-fn served(headers: &[AbiStr], body: &[u8]) -> ServeOut {
-    let mut out: ServeOut = zeroed();
-    out.head = ready_head(3);
-    out.status_code = 200;
-    out.headers_out = headers.as_ptr();
-    out.headers_out_len = headers.len();
-    out.body = bytes_of(body);
-    out
-}
-
-#[test]
-fn a_served_reply_is_copied_before_release() {
-    let mut name = String::from("content-type");
-    let value = String::from("text/plain");
-    let mut body = b"metrics 1".to_vec();
-    let headers = [str_of(&name), str_of(&value)];
-    let mut t = served(&headers, &body);
-    let got = answered(&mut t);
-    name.clear();
-    body.fill(b'x');
-    assert_eq!(got.owned.headers, ["content-type", "text/plain"]);
-    assert_eq!(got.owned.body, b"metrics 1");
-    assert_eq!(got.out.status_code, 200);
-    assert!(got.out.headers_out.is_null() && got.out.body.ptr.is_null());
-}
-
-#[test]
-#[should_panic(expected = "serve.headers_out: misaligned")]
-fn a_forged_misaligned_header_list_is_refused() {
-    let mut t = served(&[], b"");
-    t.headers_out = ptr::without_provenance(1);
-    t.headers_out_len = 2;
-    let _ = answered(&mut t);
-}
-
-#[test]
-#[should_panic(expected = "serve.headers_out_len: OverMax")]
-fn a_header_list_past_the_declared_bound_is_refused() {
-    let mut t = served(&[], b"");
-    t.headers_out = ptr::NonNull::<AbiStr>::dangling().as_ptr();
-    t.headers_out_len = 129;
-    let _ = answered(&mut t);
-}
-
-#[test]
-fn check_findings_are_copied_before_release() {
-    let mut findings = b"[\"ok\"]".to_vec();
-    let mut t: CheckOut = zeroed();
-    t.head = ready_head(4);
-    t.findings = bytes_of(&findings);
-    let got = answered(&mut t);
-    findings.fill(0);
-    assert_eq!(got.owned, b"[\"ok\"]");
-}
-
-#[test]
-#[should_panic(expected = "check.findings.len: OverMax")]
-fn findings_past_the_declared_bound_are_refused() {
-    let mut t: CheckOut = zeroed();
-    t.head = ready_head(4);
-    t.findings = Blob {
-        ptr: ptr::NonNull::<u8>::dangling().as_ptr(),
-        len: HARD_MAX_BYTES as usize + 1,
-        ..Blob::ABSENT
-    };
-    let _ = answered(&mut t);
-}
-
-fn login(form: *const LoginField, form_len: usize) -> BeginLoginOut {
-    let mut out: BeginLoginOut = zeroed();
-    out.head = ready_head(0);
-    out.shape = BEGIN_FORM;
-    out.form = form;
-    out.form_len = form_len;
-    out
-}
-
-#[test]
-fn a_login_forms_texts_are_copied_before_release() {
-    let mut label = String::from("Your user name");
-    let form = [LoginField {
-        name: abi_str("user"),
-        label: str_of(&label),
-        kind: 1,
-        required: 1,
-    }];
-    let mut t = login(form.as_ptr(), form.len());
-    let got = answered(&mut t);
-    label.clear();
-    assert_eq!(got.owned.authorize_url, "");
-    assert_eq!(got.owned.form.len(), 1);
-    assert_eq!(got.owned.form[0].name, "user");
-    assert_eq!(got.owned.form[0].label, "Your user name");
-    assert!(got.out.form.is_null());
-}
-
-#[test]
-#[should_panic(expected = "NullWithCount")]
-fn a_forged_login_form_with_no_pointer_is_refused() {
-    let mut t = login(ptr::null(), 2);
-    let _ = answered(&mut t);
-}
-
-#[test]
-#[should_panic(expected = "begin_login.form: a count of 1025, over the bound of 1024")]
-fn a_login_form_past_the_declared_bound_is_refused() {
-    let mut t = login(ptr::NonNull::<LoginField>::dangling().as_ptr(), 1025);
-    let _ = answered(&mut t);
-}
-
-/// A snapshot a plane published, over `claims`.
-fn snapshot_of(claims: &[crate::abi::plane::Claim]) -> PlaneSnapshot {
-    PlaneSnapshot {
-        size: size_of::<PlaneSnapshot>() as u32,
+fn hosted_open_closes_over_the_same_live_concrete_tables() {
+    let mut slots = HostSlots::default();
+    slots.size = size_of::<HostSlots>() as u32;
+    slots.slots = svc::SERVICES;
+    slots.clock_now = Some(clock);
+    let tables = HostTables {
+        size: size_of::<HostTables>() as u32,
         _reserved: 0,
-        generation: 2,
-        claims: claims.as_ptr(),
-        claims_len: claims.len(),
-        admin_routes: ptr::null(),
-        admin_routes_len: 0,
-        openapi: Blob::ABSENT,
-        audience: abi_str("probe-audience"),
-        resource_metadata: NONE,
-        resource_facts: Blob::ABSENT,
-        listed: ptr::null(),
-        listed_len: 0,
-        arrival_spans: ptr::null(),
-        arrival_spans_len: 0,
-    }
-}
-
-fn refreshed(snapshot: *const PlaneSnapshot) -> PlaneRefreshOut {
-    let mut out: PlaneRefreshOut = zeroed();
-    out.head = ready_head(0);
-    out.snapshot = snapshot;
-    out
-}
-
-#[test]
-fn a_published_snapshot_is_copied_before_its_generation_retires() {
-    let mut target = String::from("/probe");
-    let claims = [crate::abi::plane::Claim {
-        verb: abi_str("POST"),
-        target: str_of(&target),
-        carrier: NONE,
-        flags: 0,
-        refusal_dialect: 0,
-        _pad: 0,
-    }];
-    let mut snapshot = snapshot_of(&claims);
-    let mut t = refreshed(ptr::from_ref(&snapshot));
-    let got = answered(&mut t);
-    target.clear();
-    snapshot.generation = 3;
-    let copy = got.owned.expect("a snapshot was published");
-    assert_eq!(
-        (copy.generation, snapshot.generation),
-        (2, 3),
-        "the copy keeps the generation the plugin has since replaced"
-    );
-    assert_eq!(copy.audience, "probe-audience");
-    assert_eq!(copy.claims.len(), 1);
-    assert_eq!(
-        (copy.claims[0].verb.as_str(), copy.claims[0].target.as_str()),
-        ("POST", "/probe")
-    );
-    assert!(got.out.snapshot.is_null());
-}
-
-#[test]
-#[should_panic(expected = "snapshot: misaligned")]
-fn a_forged_misaligned_snapshot_is_refused() {
-    let mut t = refreshed(ptr::without_provenance(1));
-    let _ = answered(&mut t);
-}
-
-#[test]
-#[should_panic(expected = "snapshot.claims: OverMax")]
-fn a_snapshot_past_the_declared_bound_is_refused() {
-    let mut snapshot = snapshot_of(&[]);
-    snapshot.claims = ptr::NonNull::<crate::abi::plane::Claim>::dangling().as_ptr();
-    snapshot.claims_len = 1025;
-    let mut t = refreshed(ptr::from_ref(&snapshot));
-    let _ = answered(&mut t);
-}
-
-fn failed_with(error: AbiStr) -> OutHead {
-    let mut h: OutHead = zeroed();
-    h.outcome = RawOutcome::of(Outcome::Failed);
-    h.error = error;
-    h
-}
-
-#[test]
-fn a_failures_text_is_copied_before_release() {
-    let mut why = String::from("the probe failed");
-    let mut t = failed_with(str_of(&why));
-    let got = answered(&mut t);
-    why.clear();
-    assert_eq!(got.outcome, Outcome::Failed);
-    assert_eq!(got.error.as_deref(), Some("the probe failed"));
-    assert!(got.out.error.ptr.is_null());
-}
-
-#[test]
-#[should_panic(expected = "head.error: NULL with a count of 3")]
-fn a_forged_failure_text_with_no_pointer_is_refused() {
-    let mut t = failed_with(AbiStr {
-        ptr: ptr::null(),
-        len: 3,
-    });
-    let _ = answered(&mut t);
-}
-
-#[test]
-#[should_panic(expected = "head.error: 16777217 bytes, over the bound of 16777216")]
-fn a_failure_text_past_the_declared_bound_is_refused() {
-    let mut t = failed_with(AbiStr {
-        ptr: ptr::NonNull::<u8>::dangling().as_ptr(),
-        len: HARD_MAX_BYTES as usize + 1,
-    });
-    let _ = answered(&mut t);
-}
-
-/// A stand-in slot that writes down the head sizes it was handed, and touches nothing past them.
-extern "C" fn heads_seen(
-    instance: *mut c_void,
-    input: *const c_void,
-    out: *mut c_void,
-) -> RawOutcome {
-    // SAFETY: the test's own `[u32; 2]`, and `call`'s `in`/`out`, each leading with its head.
-    let (seen, i, o) = unsafe {
-        (
-            &mut *instance.cast::<[u32; 2]>(),
-            &*input.cast::<InHead>(),
-            &mut *out.cast::<OutHead>(),
-        )
+        ctx: HostCtx::NONE,
+        wake: None,
+        conns: ptr::null(),
+        services: &slots,
+        io: ptr::null(),
     };
-    *seen = [i.size, o.size];
-    o.outcome = RawOutcome::of(Outcome::Ready);
-    o.outcome
-}
-
-#[test]
-fn the_heads_a_slot_reads_state_the_structs_call_passed() {
-    let mut seen = [0_u32; 2];
-
-    let lying_in = in_head::<OpenIn>(slot::OPEN);
-    let lying_out = out_head::<OpenOut>();
-    let got = unsafe {
-        call(
-            heads_seen,
-            ptr::from_mut(&mut seen).cast(),
-            &lying_in,
-            lying_out,
-        )
-    };
-    assert_eq!(got.outcome, Outcome::Ready);
-    assert_eq!(
-        seen,
-        [size_of::<InHead>() as u32, size_of::<OutHead>() as u32],
-        "a slot is never told it may read or write past what was passed"
-    );
-}
-
-#[test]
-#[should_panic(expected = "the door is not of the kind whose tail was asked for")]
-fn plane_rows_of_a_transport_door_are_refused() {
-    let _ = view().plane_rows::<crate::abi::plane::BillableClass>();
-}
-
-use crate::abi::host::conn::connector::{self as conn_abi, IoIn};
-use crate::abi::host::io::{self as io_abi, ReadIn as IoReadIn};
-
-/// A connector double that answers bytes into the `IoIn` buffer, on whichever op it serves.
-struct Answers;
-impl FakeService for Answers {
-    type In = IoIn;
-    fn serve(call: &mut ServiceCall<IoIn>) -> Outcome {
-        if call.fill_lent(|i| &i.buf, b"pong") {
-            Outcome::Ready
-        } else {
-            Outcome::Failed
-        }
-    }
-}
-
-/// An I/O double that reads back the buffer `io.read` lends for the host to WRITE.
-struct ReadsItsOwnOutput;
-impl FakeService for ReadsItsOwnOutput {
-    type In = IoReadIn;
-    fn serve(call: &mut ServiceCall<IoReadIn>) -> Outcome {
-        let _ = call.lent(|i| &i.buf);
-        Outcome::Ready
-    }
-}
-
-/// A records double that writes one byte through a pointer nested in a `ServiceBufs`.
-struct PutsIntoBufs;
-impl FakeService for PutsIntoBufs {
-    type In = RecordsGetIn;
-    fn serve(call: &mut ServiceCall<RecordsGetIn>) -> Outcome {
-        call.put(|i| &i.into.buf, 0_u8);
-        Outcome::Ready
-    }
-}
-
-fn io_in(op: u32, buf: &mut [u8]) -> IoIn {
-    IoIn {
-        head: service_head::<IoIn>(op),
-        stream: 1,
-        buf: buf.as_mut_ptr(),
-        len: buf.len(),
-    }
-}
-
-fn served_by(f: crate::abi::host::service::ServiceFn, input: *const c_void) -> Outcome {
-    let mut out: ServiceOut = zeroed();
-    // SAFETY: each test passes the frame matching `f`, with live nested loans; `out` is exclusive.
-    unsafe { f(HostCtx::NONE, input, ptr::from_mut(&mut out).cast()) }.outcome()
-}
-
-#[test]
-fn a_double_writes_only_the_regions_its_op_lends_for_writing() {
-    let host = FakeHost::new()
-        .serve(fake::conn::READ, Answers)
-        .serve(fake::conn::WRITE, Answers);
-
-    let mut buf = [0_u8; 8];
-    let input = io_in(conn_abi::service::READ, &mut buf);
-    let read = host.slots_for_tests().2.read.expect("served");
-    assert_eq!(
-        served_by(read, ptr::from_ref(&input).cast()),
-        Outcome::Ready
-    );
-    assert_eq!(&buf[..4], b"pong");
-
-    let mut sent = [7_u8; 8];
-    let input = io_in(conn_abi::service::WRITE, &mut sent);
-    let write = host.slots_for_tests().2.write.expect("served");
-    assert_eq!(
-        served_by(write, ptr::from_ref(&input).cast()),
-        Outcome::Fault
-    );
-    assert_eq!(sent, [7; 8]);
-}
-
-#[test]
-fn a_double_reading_a_write_region_or_writing_through_no_region_answers_fault() {
-    let host = FakeHost::new()
-        .serve(fake::io::READ, ReadsItsOwnOutput)
-        .serve(fake::host::RECORDS_GET, PutsIntoBufs);
-    let mut buf = [0_u8; 8];
-    let input = IoReadIn {
-        head: service_head::<IoReadIn>(io_abi::op::READ),
-        handle: 1,
-        buf: buf.as_mut_ptr(),
-        cap: buf.len(),
-    };
-    let read = host.slots_for_tests().1.read.expect("served");
-    assert_eq!(
-        served_by(read, ptr::from_ref(&input).cast()),
-        Outcome::Fault
-    );
-
-    let mut bytes = [9_u8; 4];
-    let mut spans: [ItemSpan; 1] = zeroed();
-    let input = RecordsGetIn {
-        head: service_head::<RecordsGetIn>(svc::op::RECORDS_GET),
-        kind: abi_str("kind"),
-        key: abi_str("probe"),
-        into: ServiceBufs {
-            buf: bytes.as_mut_ptr(),
-            cap: bytes.len(),
-            spans: spans.as_mut_ptr(),
-            spans_cap: spans.len(),
-        },
-    };
-    let get = host.slots_for_tests().0.records_get.expect("served");
-    assert_eq!(served_by(get, ptr::from_ref(&input).cast()), Outcome::Fault);
-    assert_eq!(bytes, [9; 4], "nothing was written");
-}
-
-/// Every `pub fn` of `src` (outside a `#[cfg(test)]` item) whose signature names a host table or a
-fn table_leaks(src: &str) -> Vec<String> {
-    const TABLE_TYPES: [&str; 5] = [
-        "ServiceFn",
-        "HostSlots",
-        "IoSlots",
-        "ConnectorSlots",
-        "HostTables",
-    ];
-    let lines: Vec<&str> = src.lines().map(str::trim).collect();
-    let mut out = Vec::new();
-    for (n, line) in lines.iter().enumerate() {
-        if !line.starts_with("pub fn ") {
-            continue;
-        }
-        let gated = lines[..n]
-            .iter()
-            .rev()
-            .take_while(|l| l.starts_with("#[") || l.starts_with("///"))
-            .any(|l| *l == "#[cfg(test)]");
-        if gated {
-            continue;
-        }
-        let signature: String = lines[n..]
-            .iter()
-            .take_while(|l| !l.ends_with('{'))
-            .chain(lines[n..].iter().find(|l| l.ends_with('{')))
-            .copied()
-            .collect::<Vec<_>>()
-            .join(" ");
-
-        let unsealed =
-            signature.replace("-> busbar_contract::abi::sdk::Lent<'_, HostTables>", "->");
-        if TABLE_TYPES.iter().any(|t| unsealed.contains(t)) {
-            out.push(format!("line {}: {signature}", n + 1));
-        }
-    }
-    out
-}
-
-#[test]
-fn the_fake_host_hands_safe_code_no_table_and_no_service_fn() {
-    let found = table_leaks(include_str!(
-        "../../../../../busbar-test-kit/src/test_support/fake.rs"
-    ));
-    assert!(found.is_empty(), "{found:?}");
-
-    for planted in [
-        "pub fn services(&self) -> &HostSlots {",
-        "pub fn tables(&self) -> *const HostTables {",
-        "pub fn lend<R>(&self, f: impl FnOnce(&HostTables) -> R) -> R {",
-        "pub fn raw(\n    &self,\n) -> Option<ServiceFn> {",
-    ] {
-        assert_eq!(table_leaks(planted).len(), 1, "{planted}");
-    }
-
-    assert!(table_leaks("#[cfg(test)]\npub fn slots(&self) -> &HostSlots {").is_empty());
-
-    assert!(
-        table_leaks("pub fn lent(&self) -> busbar_contract::abi::sdk::Lent<'_, HostTables> {")
-            .is_empty()
-    );
-
-    for planted in [
-        "pub fn lent(&self) -> (crate::abi::sdk::Lent<'_, HostTables>, &HostTables) {",
-        "pub fn lent(&self) -> Lent<'_, HostTables> {",
-        "pub fn tables(&self) -> &HostTables {",
-        "pub fn tables_of<'a>(lent: crate::abi::sdk::Lent<'a, HostTables>) -> &'a HostTables {",
-        "pub fn tables(&self) -> Option<&HostTables> {",
-    ] {
-        assert_eq!(table_leaks(planted).len(), 1, "{planted}");
-    }
-
-    for planted in [
-        "pub fn clock(&self) -> Option<ServiceFn> {",
-        "pub fn service(&self, at: usize) -> crate::abi::host::service::ServiceFn {",
-        "pub fn services_of(\n    lent: crate::abi::sdk::Lent<'_, HostTables>,\n) -> &HostSlots {",
-    ] {
-        assert_eq!(table_leaks(planted).len(), 1, "{planted}");
-    }
-}
-
-#[test]
-fn a_door_opens_over_the_tables_a_fake_host_lent_while_the_host_lives() {
-    let table = view().ops::<crate::abi::transport::Ops>();
-    let open = table.head.open.expect("the door states open");
-    let host = FakeHost::new().serve(fake::host::CLOCK_NOW, Clock);
     let mut input: OpenIn = zeroed();
     input.head = in_head::<OpenIn>(slot::OPEN);
-
-    let opened = {
-        let lent = host.lend_to(input);
-        unsafe { super::reply::call_hosted(open, ptr::null_mut(), &lent, zeroed::<OpenOut>()) }
-    };
-    assert_eq!(opened.outcome, Outcome::Ready);
-    assert!(!opened.out.instance.is_null());
-    let close = table.head.close.expect("the door states close");
-    // SAFETY: this instance was opened by the same door above and its host is still alive.
-    let closed = unsafe {
-        call(
-            close,
-            opened.out.instance,
-            &in_head::<InHead>(slot::CLOSE),
-            out_head::<OutHead>(),
+    input.host = &tables;
+    let mut output: OpenOut = zeroed();
+    output.head = out_head::<OpenOut>();
+    let table = transport_ops();
+    // SAFETY: both complete frames and all nested tables remain live through CLOSE below.
+    let outcome = unsafe {
+        table.head.open.unwrap()(
+            ptr::null_mut(),
+            ptr::from_ref(&input).cast(),
+            ptr::from_mut(&mut output).cast(),
         )
-    };
-    assert_eq!(closed.outcome, Outcome::Ready);
-    drop(opened);
-    drop(host);
-}
-
-#[test]
-fn a_door_views_slot_is_its_tables_slot_at_its_index() {
-    let v = view();
-    let table = v.ops::<crate::abi::transport::Ops>();
-    let open = v
-        .op::<crate::abi::transport::Ops>(|t| &t.head.open)
-        .expect("the door states open");
-    let close = v
-        .op::<crate::abi::transport::Ops>(|t| &t.head.close)
-        .expect("the door states close");
-    assert_eq!((open.index(), close.index()), (slot::OPEN, slot::CLOSE));
-    let (raw, door, _) = open.parts();
-    assert_eq!(raw as usize, table.head.open.unwrap() as usize);
-    assert!(ptr::eq(door, v.door()));
-}
-
-#[test]
-#[should_panic(expected = "DoorView::op: the picked reference is not a slot of the door's table")]
-fn red_a_door_views_slot_is_never_a_reference_outside_its_table() {
-    static ELSEWHERE: Option<crate::abi::mechanism::call::Op> = None;
-    let _ = view().op::<crate::abi::transport::Ops>(|_| &ELSEWHERE);
-}
-
-#[test]
-fn call_in_opens_and_close_in_closes_as_call_does_over_the_raw_slot() {
-    let v = view();
-    let open = v
-        .op::<crate::abi::transport::Ops>(|t| &t.head.open)
-        .unwrap();
-    let close = v
-        .op::<crate::abi::transport::Ops>(|t| &t.head.close)
-        .unwrap();
-
-    let mut input: OpenIn = zeroed();
-    input.head = in_head::<OpenIn>(slot::OPEN);
-    let by_raw = unsafe { call(open.parts().0, ptr::null_mut(), &input, zeroed::<OpenOut>()) };
-
-    let built = super::test_in::TestIn::<OpenIn>::new().set(|i| &i.head.op, slot::OPEN);
-    let mut by_view = super::reply::call_in(open, None, &built, zeroed::<OpenOut>());
-    assert_eq!(by_view.outcome, by_raw.outcome);
-    assert_eq!(by_view.error, by_raw.error);
-    let instance = by_view
-        .take_instance()
-        .expect("open answered READY with an instance");
-    assert!(
-        by_view.take_instance().is_none(),
-        "the instance is taken once"
-    );
-
-    let closed = super::reply::close_in(
-        close,
-        instance,
-        &super::test_in::TestIn::<InHead>::new().set(|i| &i.op, slot::CLOSE),
-        out_head::<OutHead>(),
-    );
-    assert_eq!(closed.outcome, Outcome::Ready);
-
-    let _ = unsafe {
-        call(
-            close.parts().0,
-            by_raw.out.instance,
-            &in_head::<InHead>(slot::CLOSE),
-            out_head::<OutHead>(),
+    }
+    .outcome();
+    assert_eq!(outcome, Outcome::Ready);
+    assert!(!output.instance.is_null());
+    let input = in_head::<InHead>(slot::CLOSE);
+    let mut closed = out_head::<OutHead>();
+    // SAFETY: this is the same door's unique instance, with its original host still live.
+    let outcome = unsafe {
+        table.head.close.unwrap()(
+            output.instance,
+            ptr::from_ref(&input).cast(),
+            ptr::from_mut(&mut closed).cast(),
         )
-    };
+    }
+    .outcome();
+    assert_eq!(outcome, Outcome::Ready);
 }
 
 #[test]
-#[should_panic(expected = "reply::call_in: `validate` and `open` run on no instance")]
-fn red_call_in_refuses_an_instance_for_open() {
-    let v = view();
-    let open = v
-        .op::<crate::abi::transport::Ops>(|t| &t.head.open)
-        .unwrap();
-    let built = super::test_in::TestIn::<OpenIn>::new().set(|i| &i.head.op, slot::OPEN);
-    let mut opened = super::reply::call_in(open, None, &built, zeroed::<OpenOut>());
-    let instance = opened.take_instance().unwrap();
-    let _ = super::reply::call_in(open, Some(&instance), &built, zeroed::<OpenOut>());
-}
-
-#[test]
-#[should_panic(expected = "reply::close_in: the op is not its door's close")]
-fn red_close_in_enters_close_alone() {
-    let v = view();
-    let open = v
-        .op::<crate::abi::transport::Ops>(|t| &t.head.open)
-        .unwrap();
-    let built = super::test_in::TestIn::<OpenIn>::new().set(|i| &i.head.op, slot::OPEN);
-    let mut opened = super::reply::call_in(open, None, &built, zeroed::<OpenOut>());
-    let instance = opened.take_instance().unwrap();
-    let _ = super::reply::close_in(open, instance, &built, zeroed::<OpenOut>());
-}
-
-#[test]
-fn call_hosted_in_opens_over_the_fake_hosts_tables_as_call_hosted_does() {
-    let open = view()
-        .op::<crate::abi::transport::Ops>(|t| &t.head.open)
-        .unwrap();
-    let host = FakeHost::new().serve(fake::host::CLOCK_NOW, Clock);
-    let mut input: OpenIn = zeroed();
-    input.head = in_head::<OpenIn>(slot::OPEN);
-    let by_raw = {
-        let lent = host.lend_to(input);
-        unsafe {
-            super::reply::call_hosted(open.parts().0, ptr::null_mut(), &lent, zeroed::<OpenOut>())
-        }
-    };
-    let mut by_view = {
-        let lent =
-            host.lend_in(super::test_in::TestIn::<OpenIn>::new().set(|i| &i.head.op, slot::OPEN));
-        assert!(!lent.input.host.is_null(), "the host's tables are lent");
-        super::reply::call_hosted_in(open, None, &lent, zeroed::<OpenOut>())
-    };
-    assert_eq!(by_view.outcome, by_raw.outcome);
-    let instance = by_view
-        .take_instance()
-        .expect("open answered READY with an instance");
-
-    let close = view()
-        .op::<crate::abi::transport::Ops>(|t| &t.head.close)
-        .unwrap();
-    let closed = super::reply::close_in(
-        close,
-        instance,
-        &super::test_in::TestIn::<InHead>::new().set(|i| &i.op, slot::CLOSE),
-        out_head::<OutHead>(),
+fn lifecycle_slot_indices_are_the_exported_tables_actual_offsets() {
+    use crate::abi::sdk::door::slot_at;
+    assert_eq!(
+        slot_at(
+            offset_of!(crate::abi::transport::Ops, head)
+                + offset_of!(crate::abi::mechanism::lifecycle::OpsHead, open)
+        ),
+        slot::OPEN
     );
-    assert_eq!(closed.outcome, Outcome::Ready);
-    drop(host);
+    assert_eq!(
+        slot_at(
+            offset_of!(crate::abi::transport::Ops, head)
+                + offset_of!(crate::abi::mechanism::lifecycle::OpsHead, close)
+        ),
+        slot::CLOSE
+    );
+    let door = (plugin::MACRO_DOOR.door_fn())();
+    // SAFETY: the macro exports exactly this static table with these lifecycle slots.
+    let head = unsafe { &*door.ops() };
+    assert_eq!(
+        head.open.unwrap() as usize,
+        transport_ops().head.open.unwrap() as usize
+    );
+    assert_eq!(
+        head.close.unwrap() as usize,
+        transport_ops().head.close.unwrap() as usize
+    );
 }
 
 #[test]
-#[should_panic(expected = "is the length of the pointer at byte")]
-fn red_a_test_in_does_not_set_a_length_its_builder_set_with_its_pointer() {
-    let mut err = [0_u8; 1];
-    let _ = super::test_in::TestIn::<OpenIn>::new()
-        .buffer(|i| &i.err_buf, |i| &i.err_cap, &mut err)
-        .set(|i| &i.err_cap, 4096_usize);
-}
-
-#[test]
-#[should_panic(expected = "is the length of the pointer at byte")]
-fn red_a_test_in_does_not_state_a_length_for_a_list_it_never_lent() {
-    let _ = super::test_in::TestIn::<OpenIn>::new().set(|i| &i.secrets_len, 1_usize << 20);
-}
-
-#[test]
-#[should_panic(expected = "are not one of the in's pointer and length pairs")]
-fn red_a_test_in_does_not_pair_a_list_with_another_lists_length() {
-    let secrets = [crate::abi::mechanism::call::Blob::ABSENT];
-    let _ = super::test_in::TestIn::<OpenIn>::new().list(|i| &i.secrets, |i| &i.err_cap, &secrets);
-}
-
-#[test]
-#[should_panic(expected = "is not slot 1's own `in`")]
-fn red_call_in_does_not_enter_a_slot_over_another_slots_in() {
-    let open = view()
-        .op::<crate::abi::transport::Ops>(|t| &t.head.open)
-        .unwrap();
-    let wrong = super::test_in::TestIn::<crate::abi::transport::ReadIn>::new();
-    let _ = super::reply::call_in(open, None, &wrong, zeroed::<OpenOut>());
-}
-
-#[test]
-fn a_door_views_slot_knows_its_own_in() {
-    let v = view();
-    let open = v
-        .op::<crate::abi::transport::Ops>(|t| &t.head.open)
-        .unwrap();
-    let close = v
-        .op::<crate::abi::transport::Ops>(|t| &t.head.close)
-        .unwrap();
-
-    open.check_in::<OpenIn>();
-    close.check_in::<InHead>();
-}
-
-/// Every slot `T`'s table lays out (its lifecycle's and its own) maps to an `in` type.
-fn every_slot_maps<T: crate::abi::sdk::door::KindOps>() {
-    let count = crate::abi::sdk::door::slot_count::<T>();
-    assert!(count > slot::CLOSE, "{}", core::any::type_name::<T>());
-    for index in 0..count {
-        assert!(
-            super::kit::slot_in_type::<T>(index).is_some(),
-            "{}: slot {index} maps to no `in`",
-            core::any::type_name::<T>()
-        );
-    }
-}
-
-#[test]
-fn the_slot_table_maps_every_slot_of_every_kind_to_its_own_in() {
-    every_slot_maps::<crate::abi::store::Ops>();
-    every_slot_maps::<crate::abi::secret::Ops>();
-    every_slot_maps::<crate::abi::auth::Ops>();
-    every_slot_maps::<crate::abi::hook::Ops>();
-    every_slot_maps::<crate::abi::export::Ops>();
-    every_slot_maps::<crate::abi::plane::Ops>();
-    every_slot_maps::<crate::abi::transport::Ops>();
-
-    use crate::abi::sdk::door::KindSlot;
-    fn in_of<T: KindSlot<N>, const N: u32>() -> Option<core::any::TypeId> {
-        Some(core::any::TypeId::of::<T::In>())
-    }
+fn sdk_slot_types_match_the_kinds_declared_input_and_output_frames() {
+    use crate::abi::sdk::door::{KindSlot, Lifecycle};
     use crate::abi::{auth, export, hook, plane, secret, store, transport};
+    use std::any::TypeId;
     assert_eq!(
-        super::kit::slot_in_type::<transport::Ops>(slot::OPEN),
-        in_of::<crate::abi::sdk::door::Lifecycle, { slot::OPEN }>()
+        TypeId::of::<<Lifecycle as KindSlot<{ slot::OPEN }>>::In>(),
+        TypeId::of::<OpenIn>()
     );
     assert_eq!(
-        super::kit::slot_in_type::<plane::Ops>(slot::OPEN),
-        in_of::<plane::PlaneLifecycle, { slot::OPEN }>()
+        TypeId::of::<<Lifecycle as KindSlot<{ slot::CLOSE }>>::In>(),
+        TypeId::of::<InHead>()
     );
     assert_eq!(
-        super::kit::slot_in_type::<transport::Ops>(transport::slot::LISTEN),
-        in_of::<transport::Ops, { transport::slot::LISTEN }>()
+        TypeId::of::<<transport::Ops as KindSlot<{ transport::slot::LISTEN }>>::In>(),
+        TypeId::of::<transport::ListenIn>()
     );
     assert_eq!(
-        super::kit::slot_in_type::<plane::Ops>(plane::slot::ARRIVE),
-        in_of::<plane::Ops, { plane::slot::ARRIVE }>()
+        TypeId::of::<<plane::Ops as KindSlot<{ plane::slot::ARRIVE }>>::In>(),
+        TypeId::of::<plane::ArriveIn>()
     );
     assert_eq!(
-        super::kit::slot_in_type::<auth::Ops>(auth::slot::VERIFY),
-        in_of::<auth::Ops, { auth::slot::VERIFY }>()
+        TypeId::of::<<auth::Ops as KindSlot<{ auth::slot::VERIFY }>>::In>(),
+        TypeId::of::<auth::VerifyIn>()
     );
     assert_eq!(
-        super::kit::slot_in_type::<secret::Ops>(secret::slot::RESOLVE),
-        in_of::<secret::Ops, { secret::slot::RESOLVE }>()
+        TypeId::of::<<secret::Ops as KindSlot<{ secret::slot::RESOLVE }>>::In>(),
+        TypeId::of::<secret::ResolveIn>()
     );
     assert_eq!(
-        super::kit::slot_in_type::<hook::Ops>(hook::slot::NOTIFY),
-        in_of::<hook::Ops, { hook::slot::NOTIFY }>()
+        TypeId::of::<<hook::Ops as KindSlot<{ hook::slot::NOTIFY }>>::In>(),
+        TypeId::of::<hook::NotifyIn>()
     );
     assert_eq!(
-        super::kit::slot_in_type::<export::Ops>(export::slot::SCRAPE),
-        in_of::<export::Ops, { export::slot::SCRAPE }>()
+        TypeId::of::<<export::Ops as KindSlot<{ export::slot::SCRAPE }>>::In>(),
+        TypeId::of::<export::ScrapeIn>()
     );
     assert_eq!(
-        super::kit::slot_in_type::<store::Ops>(store::slot::GET_KEY),
-        in_of::<store::Ops, { store::slot::GET_KEY }>()
+        TypeId::of::<<store::Ops as KindSlot<{ store::slot::GET_KEY }>>::In>(),
+        TypeId::of::<store::IdIn>()
+    );
+    assert_eq!(
+        TypeId::of::<<Lifecycle as KindSlot<{ slot::OPEN }>>::Out>(),
+        TypeId::of::<OpenOut>()
     );
 }
 
 #[test]
-fn safe_host_handles_own_tables_after_the_fake_host_is_dropped() {
+fn sdk_host_handles_copy_the_concrete_tables_before_the_allocations_drop() {
     use crate::abi::sdk::conn::Host;
     use crate::abi::sdk::services::Services;
     let (host, services) = {
-        let fake = FakeHost::new().serve(fake::host::CLOCK_NOW, Clock);
-        (Host::of(fake.lent()), Services::of(fake.lent()).unwrap())
+        let mut slots = HostSlots::default();
+        slots.size = size_of::<HostSlots>() as u32;
+        slots.slots = svc::SERVICES;
+        slots.clock_now = Some(clock);
+        let mut io: crate::abi::host::io::IoSlots = zeroed();
+        io.size = size_of::<crate::abi::host::io::IoSlots>() as u32;
+        io.slots = crate::abi::host::io::SLOTS;
+        let tables = HostTables {
+            size: size_of::<HostTables>() as u32,
+            _reserved: 0,
+            ctx: HostCtx::NONE,
+            wake: None,
+            conns: ptr::null(),
+            services: &slots,
+            io: &io,
+        };
+        // SAFETY: all advertised table prefixes are live through these copying constructors.
+        // Their sole callback is static, needs no context and remains callable afterward.
+        let lent = unsafe { crate::abi::sdk::Lent::new(&tables) };
+        (Host::of(lent), Services::of(lent).unwrap())
     };
-
     let handle = CompletionHandle {
         ticket: Ticket::NONE,
         seq: 0,
@@ -1797,23 +788,19 @@ fn safe_host_handles_own_tables_after_the_fake_host_is_dropped() {
         7
     );
     assert!(
-        matches!(host.connector(Ticket::NONE).clock_now(), std::task::Poll::Ready(Ok(r)) if r.mono_ns == 9)
+        matches!(host.connector(Ticket::NONE).clock_now(), core::task::Poll::Ready(Ok(r)) if r.mono_ns == 9)
     );
     assert!(host.io(Ticket::NONE).armed());
 }
 
 mod pending_open_custody {
     use super::*;
-    use crate::abi::mechanism::call::BLOB_OCTETS;
+    use crate::abi::mechanism::call::{BLOB_OCTETS, FLAG_RESUME};
     use crate::abi::mechanism::lifecycle::{CancelIn, CancelOut};
     use crate::abi::sdk::conn::Host;
     use crate::abi::sdk::life::Opening;
     use std::any::Any;
     use std::cell::RefCell;
-    use std::panic::{catch_unwind, AssertUnwindSafe};
-
-    use super::super::reply::{self, OpenStep, PendingOpen};
-
     const TICKET: Ticket = Ticket {
         slot: 19,
         generation: 1,
@@ -1865,7 +852,7 @@ mod pending_open_custody {
         let host = host.expect("the original host loan remains installed");
         let reading = host
             .services()
-            .expect("the fake host has services")
+            .expect("the concrete host has services")
             .clock_now(CompletionHandle {
                 ticket: TICKET,
                 seq: 0,
@@ -1944,81 +931,87 @@ mod pending_open_custody {
         }
     }
 
-    fn first_view() -> DoorView {
-        DoorView::of(first::MACRO_DOOR)
-    }
-
-    fn start<'h>(
-        host: &'h FakeHost,
-        secret: &'h [u8],
-        fail: bool,
-    ) -> OpenStep<'h, OpenIn, OpenOut> {
-        let secrets = [secret];
-        let settings: &'static [u8] = if fail {
-            br#"{"fail":true}"#
-        } else {
-            br#"{"fail":false}"#
-        };
-        let input = host.lend_in(
-            TestIn::<OpenIn>::new()
-                .settings(settings)
-                .blobs(|i| &i.secrets, |i| &i.secrets_len, &secrets, BLOB_OCTETS)
-                .set(|i| &i.generation, 41)
-                .set(|i| &i.head.op, slot::OPEN)
-                .set(|i| &i.head.ticket, TICKET),
-        );
-        let view = first_view();
-        reply::open_hosted_in(
-            view.op::<crate::abi::secret::Ops>(|ops| &ops.head.open)
-                .unwrap(),
-            view.op::<crate::abi::secret::Ops>(|ops| &ops.head.close)
-                .unwrap(),
-            input,
-            zeroed::<OpenOut>(),
-        )
-    }
-
-    fn pending<'h>(step: OpenStep<'h, OpenIn, OpenOut>) -> PendingOpen<'h, OpenIn, OpenOut> {
-        assert_eq!(step.answer().outcome, Outcome::Pending);
-        match step {
-            OpenStep::Pending(pending) => pending,
-            OpenStep::Complete(_) => panic!("the first OPEN must retain its unfinished instance"),
-        }
-    }
-
-    fn cancel_input(ticket: Ticket) -> TestIn<'static, CancelIn> {
-        TestIn::<CancelIn>::new()
-            .set(|i| &i.head.op, slot::CANCEL)
-            .set(|i| &i.ticket, ticket)
-    }
-
     #[test]
-    fn a_pending_open_resumes_once_over_its_original_host_and_nested_secret_loan() {
+    fn pending_open_resumes_once_over_its_original_host_and_nested_secret() {
         reset();
-        let host = FakeHost::new().serve(fake::host::CLOCK_NOW, Clock);
-        let secret = String::from("nested-secret");
-        let opening = pending(start(&host, secret.as_bytes(), false));
-        assert_eq!(counts().opens, 1);
-        let mut completed = match opening.resume() {
-            OpenStep::Complete(answer) => answer,
-            OpenStep::Pending(_) => panic!("the resumed OPEN must complete"),
+        let mut slots = HostSlots::default();
+        slots.size = size_of::<HostSlots>() as u32;
+        slots.slots = svc::SERVICES;
+        slots.clock_now = Some(clock);
+        let tables = HostTables {
+            size: size_of::<HostTables>() as u32,
+            _reserved: 0,
+            ctx: HostCtx::NONE,
+            wake: None,
+            conns: ptr::null(),
+            services: &slots,
+            io: ptr::null(),
         };
-        assert_eq!(completed.outcome, Outcome::Ready);
-        let instance = completed.take_instance().expect("the completed OPEN proof");
-        assert!(completed.take_instance().is_none());
-        let close = first_view()
-            .op::<crate::abi::secret::Ops>(|ops| &ops.head.close)
-            .unwrap();
-        assert_eq!(
-            reply::close_in(
-                close,
-                instance,
-                &TestIn::<InHead>::new().set(|i| &i.op, slot::CLOSE),
-                zeroed::<OutHead>(),
+        let secret = String::from("nested-secret");
+        let secrets = [Blob {
+            ptr: secret.as_ptr(),
+            len: secret.len(),
+            fmt: BLOB_OCTETS,
+            ..Blob::ABSENT
+        }];
+        let settings = br#"{"fail":false}"#;
+        let mut reason = [0_u8; 64];
+        let mut input: OpenIn = zeroed();
+        input.head = in_head::<OpenIn>(slot::OPEN);
+        input.head.ticket = TICKET;
+        input.host = &tables;
+        input.settings = Blob::json(settings);
+        input.secrets = secrets.as_ptr();
+        input.secrets_len = secrets.len();
+        input.generation = 41;
+        input.err_buf = reason.as_mut_ptr();
+        input.err_cap = reason.len();
+        let door = (first::MACRO_DOOR.door_fn())();
+        // SAFETY: this exact macro exports a static secret Ops table.
+        let table = unsafe { &*door.ops().cast::<crate::abi::secret::Ops>() };
+        let mut output: OpenOut = zeroed();
+        output.head = out_head::<OpenOut>();
+        // SAFETY: OPEN has no instance; its complete frames, host tables, settings, secret array,
+        // nested secret bytes and exclusive reason buffer stay live through every operation below.
+        let outcome = unsafe {
+            table.head.open.unwrap()(
+                ptr::null_mut(),
+                ptr::from_ref(&input).cast(),
+                ptr::from_mut(&mut output).cast(),
             )
-            .outcome,
-            Outcome::Ready
-        );
+        }
+        .outcome();
+        assert_eq!(outcome, Outcome::Pending);
+        assert!(!output.instance.is_null());
+        let instance = output.instance;
+        assert_eq!(counts().opens, 1);
+        input.head.flags = FLAG_RESUME;
+        output = zeroed();
+        output.head = out_head::<OpenOut>();
+        // SAFETY: the same door resumes its live pending instance on the original ticket and
+        // original complete frames and nested loans; output is exclusive for this call.
+        let outcome = unsafe {
+            table.head.open.unwrap()(
+                instance,
+                ptr::from_ref(&input).cast(),
+                ptr::from_mut(&mut output).cast(),
+            )
+        }
+        .outcome();
+        assert_eq!(outcome, Outcome::Ready);
+        assert_eq!(output.instance, instance);
+        let close = in_head::<InHead>(slot::CLOSE);
+        let mut closed = out_head::<OutHead>();
+        // SAFETY: this same door uniquely closes its live instance while the original host is live.
+        let outcome = unsafe {
+            table.head.close.unwrap()(
+                instance,
+                ptr::from_ref(&close).cast(),
+                ptr::from_mut(&mut closed).cast(),
+            )
+        }
+        .outcome();
+        assert_eq!(outcome, Outcome::Ready);
         assert_eq!(
             counts(),
             Counts {
@@ -2034,17 +1027,75 @@ mod pending_open_custody {
     }
 
     #[test]
-    fn a_failed_pending_open_retires_its_partial_instance_without_close() {
+    fn failed_pending_open_retires_its_partial_instance_without_close() {
         reset();
-        let host = FakeHost::new().serve(fake::host::CLOCK_NOW, Clock);
-        let secret = String::from("nested-secret");
-        let opening = pending(start(&host, secret.as_bytes(), true));
-        let mut completed = match opening.resume() {
-            OpenStep::Complete(answer) => answer,
-            OpenStep::Pending(_) => panic!("the scripted resume must fail"),
+        let mut slots = HostSlots::default();
+        slots.size = size_of::<HostSlots>() as u32;
+        slots.slots = svc::SERVICES;
+        slots.clock_now = Some(clock);
+        let tables = HostTables {
+            size: size_of::<HostTables>() as u32,
+            _reserved: 0,
+            ctx: HostCtx::NONE,
+            wake: None,
+            conns: ptr::null(),
+            services: &slots,
+            io: ptr::null(),
         };
-        assert_eq!(completed.outcome, Outcome::Failed);
-        assert!(completed.take_instance().is_none());
+        let secret = String::from("nested-secret");
+        let secrets = [Blob {
+            ptr: secret.as_ptr(),
+            len: secret.len(),
+            fmt: BLOB_OCTETS,
+            ..Blob::ABSENT
+        }];
+        let settings = br#"{"fail":true}"#;
+        let mut reason = [0_u8; 64];
+        let mut input: OpenIn = zeroed();
+        input.head = in_head::<OpenIn>(slot::OPEN);
+        input.head.ticket = TICKET;
+        input.host = &tables;
+        input.settings = Blob::json(settings);
+        input.secrets = secrets.as_ptr();
+        input.secrets_len = secrets.len();
+        input.generation = 41;
+        input.err_buf = reason.as_mut_ptr();
+        input.err_cap = reason.len();
+        let door = (first::MACRO_DOOR.door_fn())();
+        // SAFETY: this exact macro exports a static secret Ops table.
+        let table = unsafe { &*door.ops().cast::<crate::abi::secret::Ops>() };
+        let mut output: OpenOut = zeroed();
+        output.head = out_head::<OpenOut>();
+        // SAFETY: OPEN has no instance; its complete frames, host tables, settings, secret array,
+        // nested secret bytes and exclusive reason buffer stay live through every operation below.
+        let outcome = unsafe {
+            table.head.open.unwrap()(
+                ptr::null_mut(),
+                ptr::from_ref(&input).cast(),
+                ptr::from_mut(&mut output).cast(),
+            )
+        }
+        .outcome();
+        assert_eq!(outcome, Outcome::Pending);
+        assert!(!output.instance.is_null());
+        let instance = output.instance;
+        input.head.flags = FLAG_RESUME;
+        output = zeroed();
+        output.head = out_head::<OpenOut>();
+        // SAFETY: the same door resumes its live pending instance on the original ticket and
+        // original complete frames and nested loans; output is exclusive for this call.
+        let outcome = unsafe {
+            table.head.open.unwrap()(
+                instance,
+                ptr::from_ref(&input).cast(),
+                ptr::from_mut(&mut output).cast(),
+            )
+        }
+        .outcome();
+        assert_eq!(outcome, Outcome::Failed);
+        assert!(output.instance.is_null());
+        assert!(output.err_len <= reason.len());
+        assert_eq!(&reason[..output.err_len], b"scripted pending OPEN failure");
         assert_eq!(
             counts(),
             Counts {
@@ -2059,21 +1110,87 @@ mod pending_open_custody {
     }
 
     #[test]
-    fn cancelling_then_closing_a_pending_open_keeps_the_actual_disposition_and_drops_once() {
+    fn cancelling_then_closing_pending_open_keeps_disposition_and_drops_once() {
         reset();
-        let host = FakeHost::new().serve(fake::host::CLOCK_NOW, Clock);
+        let mut slots = HostSlots::default();
+        slots.size = size_of::<HostSlots>() as u32;
+        slots.slots = svc::SERVICES;
+        slots.clock_now = Some(clock);
+        let tables = HostTables {
+            size: size_of::<HostTables>() as u32,
+            _reserved: 0,
+            ctx: HostCtx::NONE,
+            wake: None,
+            conns: ptr::null(),
+            services: &slots,
+            io: ptr::null(),
+        };
         let secret = String::from("nested-secret");
-        let mut opening = pending(start(&host, secret.as_bytes(), false));
-        let cancelled = opening.cancel(
-            first_view()
-                .op::<crate::abi::secret::Ops>(|ops| &ops.head.cancel)
-                .unwrap(),
-            &cancel_input(TICKET),
-            zeroed::<CancelOut>(),
-        );
-        assert_eq!(cancelled.outcome, Outcome::Ready);
-        assert_eq!(cancelled.out.disposition, PendingLife::CANCEL);
-        assert_eq!(opening.close().outcome, Outcome::Ready);
+        let secrets = [Blob {
+            ptr: secret.as_ptr(),
+            len: secret.len(),
+            fmt: BLOB_OCTETS,
+            ..Blob::ABSENT
+        }];
+        let settings = br#"{"fail":false}"#;
+        let mut reason = [0_u8; 64];
+        let mut input: OpenIn = zeroed();
+        input.head = in_head::<OpenIn>(slot::OPEN);
+        input.head.ticket = TICKET;
+        input.host = &tables;
+        input.settings = Blob::json(settings);
+        input.secrets = secrets.as_ptr();
+        input.secrets_len = secrets.len();
+        input.generation = 41;
+        input.err_buf = reason.as_mut_ptr();
+        input.err_cap = reason.len();
+        let door = (first::MACRO_DOOR.door_fn())();
+        // SAFETY: this exact macro exports a static secret Ops table.
+        let table = unsafe { &*door.ops().cast::<crate::abi::secret::Ops>() };
+        let mut output: OpenOut = zeroed();
+        output.head = out_head::<OpenOut>();
+        // SAFETY: OPEN has no instance; its complete frames, host tables, settings, secret array,
+        // nested secret bytes and exclusive reason buffer stay live through every operation below.
+        let outcome = unsafe {
+            table.head.open.unwrap()(
+                ptr::null_mut(),
+                ptr::from_ref(&input).cast(),
+                ptr::from_mut(&mut output).cast(),
+            )
+        }
+        .outcome();
+        assert_eq!(outcome, Outcome::Pending);
+        assert!(!output.instance.is_null());
+        let instance = output.instance;
+        let cancel = CancelIn {
+            head: in_head::<CancelIn>(slot::CANCEL),
+            ticket: TICKET,
+        };
+        let mut cancelled: CancelOut = zeroed();
+        cancelled.head = out_head::<CancelOut>();
+        // SAFETY: the same door's live instance receives its exact CANCEL frame and original ticket.
+        let outcome = unsafe {
+            table.head.cancel.unwrap()(
+                instance,
+                ptr::from_ref(&cancel).cast(),
+                ptr::from_mut(&mut cancelled).cast(),
+            )
+        }
+        .outcome();
+        assert_eq!(outcome, Outcome::Ready);
+        assert_eq!(cancelled.disposition, PendingLife::CANCEL);
+        let close = in_head::<InHead>(slot::CLOSE);
+        let mut closed = out_head::<OutHead>();
+        // SAFETY: this same door uniquely closes its live instance while the original host is live.
+        let outcome = unsafe {
+            table.head.close.unwrap()(
+                instance,
+                ptr::from_ref(&close).cast(),
+                ptr::from_mut(&mut closed).cast(),
+            )
+        }
+        .outcome();
+        assert_eq!(outcome, Outcome::Ready);
         assert_eq!(
             counts(),
             Counts {
@@ -2089,11 +1206,70 @@ mod pending_open_custody {
     }
 
     #[test]
-    fn dropping_an_unfinished_open_closes_while_its_original_host_is_live() {
+    fn closing_unfinished_open_retires_while_its_original_host_is_live() {
         reset();
-        let host = FakeHost::new().serve(fake::host::CLOCK_NOW, Clock);
+        let mut slots = HostSlots::default();
+        slots.size = size_of::<HostSlots>() as u32;
+        slots.slots = svc::SERVICES;
+        slots.clock_now = Some(clock);
+        let tables = HostTables {
+            size: size_of::<HostTables>() as u32,
+            _reserved: 0,
+            ctx: HostCtx::NONE,
+            wake: None,
+            conns: ptr::null(),
+            services: &slots,
+            io: ptr::null(),
+        };
         let secret = String::from("nested-secret");
-        drop(pending(start(&host, secret.as_bytes(), false)));
+        let secrets = [Blob {
+            ptr: secret.as_ptr(),
+            len: secret.len(),
+            fmt: BLOB_OCTETS,
+            ..Blob::ABSENT
+        }];
+        let settings = br#"{"fail":false}"#;
+        let mut reason = [0_u8; 64];
+        let mut input: OpenIn = zeroed();
+        input.head = in_head::<OpenIn>(slot::OPEN);
+        input.head.ticket = TICKET;
+        input.host = &tables;
+        input.settings = Blob::json(settings);
+        input.secrets = secrets.as_ptr();
+        input.secrets_len = secrets.len();
+        input.generation = 41;
+        input.err_buf = reason.as_mut_ptr();
+        input.err_cap = reason.len();
+        let door = (first::MACRO_DOOR.door_fn())();
+        // SAFETY: this exact macro exports a static secret Ops table.
+        let table = unsafe { &*door.ops().cast::<crate::abi::secret::Ops>() };
+        let mut output: OpenOut = zeroed();
+        output.head = out_head::<OpenOut>();
+        // SAFETY: OPEN has no instance; its complete frames, host tables, settings, secret array,
+        // nested secret bytes and exclusive reason buffer stay live through every operation below.
+        let outcome = unsafe {
+            table.head.open.unwrap()(
+                ptr::null_mut(),
+                ptr::from_ref(&input).cast(),
+                ptr::from_mut(&mut output).cast(),
+            )
+        }
+        .outcome();
+        assert_eq!(outcome, Outcome::Pending);
+        assert!(!output.instance.is_null());
+        let instance = output.instance;
+        let close = in_head::<InHead>(slot::CLOSE);
+        let mut closed = out_head::<OutHead>();
+        // SAFETY: this same door uniquely closes its live instance while the original host is live.
+        let outcome = unsafe {
+            table.head.close.unwrap()(
+                instance,
+                ptr::from_ref(&close).cast(),
+                ptr::from_mut(&mut closed).cast(),
+            )
+        }
+        .outcome();
+        assert_eq!(outcome, Outcome::Ready);
         assert_eq!(
             counts(),
             Counts {
@@ -2108,61 +1284,182 @@ mod pending_open_custody {
     }
 
     #[test]
-    fn another_doors_cancel_and_another_ticket_never_enter_the_pending_instance() {
+    fn resume_on_another_ticket_does_not_enter_the_pending_continuation() {
         reset();
-        let host = FakeHost::new().serve(fake::host::CLOCK_NOW, Clock);
-        let secret = String::from("nested-secret");
-        let mut opening = pending(start(&host, secret.as_bytes(), false));
-        let foreign = DoorView::of(other::MACRO_DOOR)
-            .op::<crate::abi::secret::Ops>(|ops| &ops.head.cancel)
-            .unwrap();
-        assert!(catch_unwind(AssertUnwindSafe(|| {
-            let _ = opening.cancel(foreign, &cancel_input(TICKET), zeroed::<CancelOut>());
-        }))
-        .is_err());
-        let cancel = first_view()
-            .op::<crate::abi::secret::Ops>(|ops| &ops.head.cancel)
-            .unwrap();
-        let wrong_ticket = Ticket {
-            generation: TICKET.generation + 1,
-            ..TICKET
+        let mut slots = HostSlots::default();
+        slots.size = size_of::<HostSlots>() as u32;
+        slots.slots = svc::SERVICES;
+        slots.clock_now = Some(clock);
+        let tables = HostTables {
+            size: size_of::<HostTables>() as u32,
+            _reserved: 0,
+            ctx: HostCtx::NONE,
+            wake: None,
+            conns: ptr::null(),
+            services: &slots,
+            io: ptr::null(),
         };
-        assert!(catch_unwind(AssertUnwindSafe(|| {
-            let _ = opening.cancel(cancel, &cancel_input(wrong_ticket), zeroed::<CancelOut>());
-        }))
-        .is_err());
-        assert_eq!(counts().cancels, 0, "neither rejected call reached the SDK");
-        assert_eq!(opening.close().outcome, Outcome::Ready);
-        assert_eq!(counts().closes, 1);
-        assert_eq!(counts().drops, 1);
+        let secret = String::from("nested-secret");
+        let secrets = [Blob {
+            ptr: secret.as_ptr(),
+            len: secret.len(),
+            fmt: BLOB_OCTETS,
+            ..Blob::ABSENT
+        }];
+        let settings = br#"{"fail":false}"#;
+        let mut reason = [0_u8; 64];
+        let mut input: OpenIn = zeroed();
+        input.head = in_head::<OpenIn>(slot::OPEN);
+        input.head.ticket = TICKET;
+        input.host = &tables;
+        input.settings = Blob::json(settings);
+        input.secrets = secrets.as_ptr();
+        input.secrets_len = secrets.len();
+        input.generation = 41;
+        input.err_buf = reason.as_mut_ptr();
+        input.err_cap = reason.len();
+        let door = (first::MACRO_DOOR.door_fn())();
+        // SAFETY: this exact macro exports a static secret Ops table.
+        let table = unsafe { &*door.ops().cast::<crate::abi::secret::Ops>() };
+        let mut output: OpenOut = zeroed();
+        output.head = out_head::<OpenOut>();
+        // SAFETY: OPEN has no instance; its complete frames, host tables, settings, secret array,
+        // nested secret bytes and exclusive reason buffer stay live through every operation below.
+        let outcome = unsafe {
+            table.head.open.unwrap()(
+                ptr::null_mut(),
+                ptr::from_ref(&input).cast(),
+                ptr::from_mut(&mut output).cast(),
+            )
+        }
+        .outcome();
+        assert_eq!(outcome, Outcome::Pending);
+        assert!(!output.instance.is_null());
+        let instance = output.instance;
+        assert!(!ptr::eq(door, (other::MACRO_DOOR.door_fn())()));
+        input.head.ticket.generation += 1;
+        input.head.flags = FLAG_RESUME;
+        output = zeroed();
+        output.head = out_head::<OpenOut>();
+        // SAFETY: the same door resumes its live pending instance on the original ticket and
+        // original complete frames and nested loans; output is exclusive for this call.
+        let outcome = unsafe {
+            table.head.open.unwrap()(
+                instance,
+                ptr::from_ref(&input).cast(),
+                ptr::from_mut(&mut output).cast(),
+            )
+        }
+        .outcome();
+        assert_eq!(outcome, Outcome::Fault);
+        assert!(output.instance.is_null());
+        assert_eq!(
+            counts(),
+            Counts {
+                opens: 1,
+                steps: 1,
+                drops: 1,
+                parked_drops: 1,
+                ..Counts::default()
+            }
+        );
     }
 
     #[test]
-    fn a_cancelled_pending_open_cannot_resume_and_still_retires_once() {
+    fn cancelled_pending_open_cannot_resume_and_retires_once() {
         reset();
-        let host = FakeHost::new().serve(fake::host::CLOCK_NOW, Clock);
+        let mut slots = HostSlots::default();
+        slots.size = size_of::<HostSlots>() as u32;
+        slots.slots = svc::SERVICES;
+        slots.clock_now = Some(clock);
+        let tables = HostTables {
+            size: size_of::<HostTables>() as u32,
+            _reserved: 0,
+            ctx: HostCtx::NONE,
+            wake: None,
+            conns: ptr::null(),
+            services: &slots,
+            io: ptr::null(),
+        };
         let secret = String::from("nested-secret");
-        let mut opening = pending(start(&host, secret.as_bytes(), false));
-        let _ = opening.cancel(
-            first_view()
-                .op::<crate::abi::secret::Ops>(|ops| &ops.head.cancel)
-                .unwrap(),
-            &cancel_input(TICKET),
-            zeroed::<CancelOut>(),
-        );
-        assert!(catch_unwind(AssertUnwindSafe(|| {
-            let _ = opening.resume();
-        }))
-        .is_err());
+        let secrets = [Blob {
+            ptr: secret.as_ptr(),
+            len: secret.len(),
+            fmt: BLOB_OCTETS,
+            ..Blob::ABSENT
+        }];
+        let settings = br#"{"fail":false}"#;
+        let mut reason = [0_u8; 64];
+        let mut input: OpenIn = zeroed();
+        input.head = in_head::<OpenIn>(slot::OPEN);
+        input.head.ticket = TICKET;
+        input.host = &tables;
+        input.settings = Blob::json(settings);
+        input.secrets = secrets.as_ptr();
+        input.secrets_len = secrets.len();
+        input.generation = 41;
+        input.err_buf = reason.as_mut_ptr();
+        input.err_cap = reason.len();
+        let door = (first::MACRO_DOOR.door_fn())();
+        // SAFETY: this exact macro exports a static secret Ops table.
+        let table = unsafe { &*door.ops().cast::<crate::abi::secret::Ops>() };
+        let mut output: OpenOut = zeroed();
+        output.head = out_head::<OpenOut>();
+        // SAFETY: OPEN has no instance; its complete frames, host tables, settings, secret array,
+        // nested secret bytes and exclusive reason buffer stay live through every operation below.
+        let outcome = unsafe {
+            table.head.open.unwrap()(
+                ptr::null_mut(),
+                ptr::from_ref(&input).cast(),
+                ptr::from_mut(&mut output).cast(),
+            )
+        }
+        .outcome();
+        assert_eq!(outcome, Outcome::Pending);
+        assert!(!output.instance.is_null());
+        let instance = output.instance;
+        let cancel = CancelIn {
+            head: in_head::<CancelIn>(slot::CANCEL),
+            ticket: TICKET,
+        };
+        let mut cancelled: CancelOut = zeroed();
+        cancelled.head = out_head::<CancelOut>();
+        // SAFETY: the same door's live instance receives its exact CANCEL frame and original ticket.
+        let outcome = unsafe {
+            table.head.cancel.unwrap()(
+                instance,
+                ptr::from_ref(&cancel).cast(),
+                ptr::from_mut(&mut cancelled).cast(),
+            )
+        }
+        .outcome();
+        assert_eq!(outcome, Outcome::Ready);
+        assert_eq!(cancelled.disposition, PendingLife::CANCEL);
+        input.head.flags = FLAG_RESUME;
+        output = zeroed();
+        output.head = out_head::<OpenOut>();
+        // SAFETY: the same door resumes its live pending instance on the original ticket and
+        // original complete frames and nested loans; output is exclusive for this call.
+        let outcome = unsafe {
+            table.head.open.unwrap()(
+                instance,
+                ptr::from_ref(&input).cast(),
+                ptr::from_mut(&mut output).cast(),
+            )
+        }
+        .outcome();
+        assert_eq!(outcome, Outcome::Fault);
+        assert!(output.instance.is_null());
         assert_eq!(
-            counts().steps,
-            1,
-            "a cancelled operation was never re-entered"
+            counts(),
+            Counts {
+                opens: 1,
+                steps: 1,
+                cancels: 1,
+                drops: 1,
+                parked_drops: 1,
+                ..Counts::default()
+            }
         );
-        assert_eq!(counts().resumes, 0);
-        assert_eq!(counts().cancels, 1);
-        assert_eq!(counts().closes, 1);
-        assert_eq!(counts().drops, 1);
-        assert_eq!(counts().parked_drops, 1);
     }
 }
