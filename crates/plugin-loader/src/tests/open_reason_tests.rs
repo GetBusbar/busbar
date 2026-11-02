@@ -1,75 +1,123 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::cell::RefCell;
+use std::sync::OnceLock;
 
 use busbar_contract::abi::mechanism::call::{Blob, OutHead, Outcome, BLOB_OCTETS};
-use busbar_contract::abi::mechanism::door::DoorFn;
 use busbar_contract::abi::mechanism::lifecycle::{slot, OpenIn, OpenOut, ValidateIn};
-use busbar_contract::abi::sdk::door::{blank_in, blank_out};
+use busbar_contract::abi::sdk::capture::{CaptureHome, CaptureRetention, CaptureSlot};
+use busbar_contract::abi::sdk::door::{blank_in, blank_out, kind_op, Lifecycle};
+use busbar_contract::abi::sdk::life::{self, Life, Refusal};
+use busbar_contract::abi::sdk::Safe;
 
-use super::open_reason_plugins as witness;
-use super::OPEN_REASON_CAP;
-use crate::dispatch::kinds::secret::Secret;
-use crate::dispatch::kinds::store::Store;
-use crate::dispatch::{
-    load_dropped, load_linked, Bind, DispatchConfig, Dispatcher, Frame, LinkedRow, NoSink,
-};
-use crate::store_v3::LoadedStore;
+use super::{Called, OPEN_REASON_CAP};
 
-fn dispatcher() -> Arc<Dispatcher> {
-    Arc::new(Dispatcher::new(DispatchConfig::default()))
-}
-
-fn bind(d: &Dispatcher) -> Bind {
-    Bind {
-        instance: Arc::from("the-instance"),
-        max_inflight_cap: 16,
-        sink: Arc::new(NoSink),
-        dispatcher: d.adopter(),
-        conns: crate::dispatch::ConnTable::NoNeeds,
+// Individual SDK callbacks need capture storage even when their bodies emit no diagnostics.
+// This supplies that storage without building a plugin door, kind table or registry.
+struct CallbackCapture;
+impl CaptureHome for CallbackCapture {
+    fn with<R>(f: impl FnOnce(&mut CaptureSlot) -> R) -> R {
+        thread_local! {
+            static SLOT: RefCell<CaptureSlot> = RefCell::new(CaptureSlot::new());
+        }
+        SLOT.with(|slot| f(&mut slot.borrow_mut()))
+    }
+    fn retention() -> &'static CaptureRetention {
+        static RETENTION: OnceLock<CaptureRetention> = OnceLock::new();
+        RETENTION.get_or_init(CaptureRetention::default)
     }
 }
 
-fn dropped_path(example: &str) -> PathBuf {
-    crate::both_ways::example_cdylib(example)
+// Failure text is test input. Neither callback can create a successful instance or operate a
+// product; their owned Strings must be copied into the caller's reason loans before returning.
+struct FailureOnly;
+impl Life for FailureOnly {
+    const CANCEL: u32 = 0;
+
+    fn validate(settings: &[u8]) -> Result<(), Refusal> {
+        Err(Refusal::failed(format!(
+            "invalid: {}",
+            String::from_utf8_lossy(settings)
+        )))
+    }
+    fn open(settings: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
+        Err(Refusal::failed(
+            String::from_utf8_lossy(settings).into_owned(),
+        ))
+    }
 }
 
-fn store_text(settings: &[u8]) -> String {
-    let d = dispatcher();
-    let door: DoorFn = witness::store::door;
-    let row = LinkedRow::of(door).expect("the store door states its Statement");
-    let linked = load_linked::<Store>(&row, bind(&d)).expect("the linked store door loads");
-    let text = LoadedStore::open(linked, d.clone(), settings, mint).expect_err("it never opens");
-    let path = dropped_path("open_reason_store_door");
-    let dropped = load_dropped::<Store>(&path, &row.statement, bind(&d))
-        .expect("the dropped store door loads");
-    let dropped_text =
-        LoadedStore::open(dropped, d.clone(), settings, mint).expect_err("it never opens");
-    assert_eq!(dropped_text, text, "linked and dropped in read differently");
-    text
+fn called(outcome: Outcome, error: Option<Vec<u8>>) -> Called {
+    Called {
+        outcome,
+        error,
+        lease: 0,
+        recall: None,
+    }
 }
 
+fn octets(bytes: &[u8]) -> Blob {
+    Blob {
+        ptr: bytes.as_ptr(),
+        len: bytes.len(),
+        fmt: BLOB_OCTETS,
+        flags: 0,
+    }
+}
+
+fn failed_open(reason: &[u8], buffer: &mut [u8]) -> (Outcome, OpenOut) {
+    let mut input: OpenIn = blank_in();
+    input.head.op = slot::OPEN;
+    input.settings = octets(reason);
+    input.err_buf = buffer.as_mut_ptr();
+    input.err_cap = buffer.len();
+    let mut out: OpenOut = blank_out();
+    let callback =
+        kind_op::<Lifecycle, Safe<life::Open<FailureOnly>>, CallbackCapture, { slot::OPEN }>()
+            .expect("the SDK provides this lifecycle callback");
+    // SAFETY: this is the SDK OPEN callback for these exact initialized ABI frames. NULL is
+    // the initial instance; reason and the exclusive nonoverlapping output loan remain live
+    // through the complete call. FailureOnly always fails, so no instance can escape it.
+    let outcome = unsafe {
+        callback(
+            std::ptr::null_mut(),
+            std::ptr::from_ref(&input).cast(),
+            std::ptr::from_mut(&mut out).cast(),
+        )
+    }
+    .outcome();
+    (outcome, out)
+}
+
+// The compatibility label is a formatter input. Fictional Store behavior and linked/dropped
+// settings-echo parity are retired; these tests make no public-loader admission claim.
 #[test]
 fn a_store_whose_open_fails_reads_as_1_5_5_did() {
     assert_eq!(
-        store_text(b"boom: x"),
+        called(Outcome::Failed, Some(b"boom: x".to_vec())).open_failure("open-reason-store"),
         "plugin 'open-reason-store' open failed: boom: x"
     );
 }
 
 #[test]
 fn an_over_long_reason_is_cut_on_a_char_boundary() {
-    assert_eq!(
-        OPEN_REASON_CAP % 2,
-        0,
-        "the witness assumes an even capacity"
-    );
+    assert_eq!(OPEN_REASON_CAP % 2, 0, "the input assumes an even capacity");
     let long = format!("a{}", "é".repeat(OPEN_REASON_CAP));
     let kept = format!("a{}", "é".repeat((OPEN_REASON_CAP - 2) / 2));
     assert_eq!(kept.len(), OPEN_REASON_CAP - 1);
-    let text = store_text(long.as_bytes());
+    let mut buffer = vec![0xa5; OPEN_REASON_CAP + 1];
+    let (outcome, out) = failed_open(long.as_bytes(), &mut buffer[..OPEN_REASON_CAP]);
+    assert_eq!(outcome, Outcome::Failed);
+    assert_eq!(out.head.outcome.outcome(), Outcome::Failed);
+    assert!(out.instance.is_null());
+    assert_eq!(out.err_len, kept.len());
+    assert_eq!(out.head.error.ptr, buffer.as_ptr());
+    assert_eq!(out.head.error.len, out.err_len);
+    assert_eq!(out.head.lease, 0);
+    assert!(buffer[out.err_len..].iter().all(|b| *b == 0xa5));
+    let text =
+        called(outcome, Some(buffer[..out.err_len].to_vec())).open_failure("open-reason-store");
     let reason = text
         .split_once(" open failed: ")
         .map(|(_, r)| r)
@@ -80,50 +128,75 @@ fn an_over_long_reason_is_cut_on_a_char_boundary() {
 
 #[test]
 fn a_plugin_that_writes_no_reason_reads_as_a_stable_text() {
-    assert_eq!(
-        store_text(b""),
-        "plugin 'open-reason-store' open failed: status 1"
-    );
-}
-
-fn octets(b: &[u8]) -> Blob {
-    Blob {
-        ptr: b.as_ptr(),
-        len: b.len(),
-        fmt: BLOB_OCTETS,
-        flags: 0,
+    for error in [None, Some(Vec::new())] {
+        assert_eq!(
+            called(Outcome::Failed, error).open_failure("open-reason-store"),
+            "plugin 'open-reason-store' open failed: status 1"
+        );
     }
+    assert_eq!(
+        called(Outcome::Fault, None).open_failure("open-reason-store"),
+        "plugin 'open-reason-store' open failed: status 3"
+    );
+    assert_eq!(
+        called(Outcome::Fault, Some(b"boom: x".to_vec())).open_failure("open-reason-store"),
+        "plugin 'open-reason-store' open failed: boom: x"
+    );
 }
 
 #[test]
 fn an_sdk_validate_and_open_say_their_own_owned_words_through_the_lent_buffers() {
-    let d = dispatcher();
-    let door: DoorFn = witness::life::door;
-    let row = LinkedRow::of(door).expect("the life door states its Statement");
-    let p = load_linked::<Secret>(&row, bind(&d)).expect("the linked life door loads");
+    let mut validation = [0xa5; 65];
+    let mut input: ValidateIn = blank_in();
+    input.head.op = slot::VALIDATE;
+    input.settings = octets(b"no port");
+    input.err_buf = validation.as_mut_ptr();
+    input.err_cap = validation.len() - 1;
+    let mut out: OutHead = blank_out();
+    let callback = kind_op::<
+        Lifecycle,
+        Safe<life::Validate<FailureOnly>>,
+        CallbackCapture,
+        { slot::VALIDATE },
+    >()
+    .expect("the SDK provides this lifecycle callback");
+    // SAFETY: this is the SDK VALIDATE callback for these exact initialized ABI frames; its
+    // initial instance is NULL, and the settings and exclusive output reason loan remain live
+    // and nonoverlapping for the call. The owned failure String dies inside this callback.
+    let outcome = unsafe {
+        callback(
+            std::ptr::null_mut(),
+            std::ptr::from_ref(&input).cast(),
+            std::ptr::from_mut(&mut out).cast(),
+        )
+    }
+    .outcome();
+    assert_eq!(outcome, Outcome::Failed);
+    assert_eq!(out.outcome.outcome(), Outcome::Failed);
+    assert_eq!(out.error.ptr, validation.as_ptr());
+    assert_eq!(out.error.len, b"invalid: no port".len());
+    assert_eq!(&validation[..out.error.len], b"invalid: no port");
+    assert!(validation[out.error.len..].iter().all(|b| *b == 0xa5));
+    assert_eq!(out.lease, 0);
+    let validated = called(outcome, Some(validation[..out.error.len].to_vec()));
+    validation.fill(0);
+    assert_eq!(validated.error.as_deref(), Some(&b"invalid: no port"[..]));
 
-    let mut vi: ValidateIn = blank_in();
-    vi.settings = octets(b"no port");
-    let mut v = Frame::new(vi, blank_out::<OutHead>());
-    let c = p.call(slot::VALIDATE, &mut v);
-    assert_eq!(c.outcome, Outcome::Failed);
-    assert_eq!(c.error.as_deref(), Some(&b"invalid: no port"[..]));
-
-    let mut oi: OpenIn = blank_in();
-    oi.settings = octets(b"boom: x");
-    let mut o = Frame::new(oi, blank_out::<OpenOut>());
-    let c = p.call(slot::OPEN, &mut o);
-    assert_eq!(c.outcome, Outcome::Failed);
+    let mut opening = [0xa5; 65];
+    let (outcome, out) = failed_open(b"boom: x", &mut opening[..64]);
+    assert_eq!(outcome, Outcome::Failed);
+    assert_eq!(out.head.outcome.outcome(), Outcome::Failed);
+    assert!(out.instance.is_null());
+    assert_eq!(out.head.error.ptr, opening.as_ptr());
+    assert_eq!(out.err_len, b"boom: x".len());
+    assert_eq!(out.head.error.len, out.err_len);
+    assert_eq!(&opening[..out.err_len], b"boom: x");
+    assert!(opening[out.err_len..].iter().all(|b| *b == 0xa5));
+    assert_eq!(out.head.lease, 0);
+    let opened = called(outcome, Some(opening[..out.err_len].to_vec()));
+    opening.fill(0);
     assert_eq!(
-        c.open_failure(p.name()),
+        opened.open_failure("open-reason-life"),
         "plugin 'open-reason-life' open failed: boom: x"
     );
-}
-
-fn mint() -> busbar_contract::abi::store::OpId {
-    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    busbar_contract::abi::store::OpId::from_parts(
-        0x0e45,
-        N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1,
-    )
 }

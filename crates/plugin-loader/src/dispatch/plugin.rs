@@ -2657,10 +2657,6 @@ impl From<Crossed> for Called {
 }
 
 #[cfg(test)]
-#[path = "../../tests/fixtures/open_reason_plugins.rs"]
-mod open_reason_plugins;
-
-#[cfg(test)]
 #[path = "../tests/open_reason_tests.rs"]
 mod open_reason_tests;
 
