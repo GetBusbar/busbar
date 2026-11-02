@@ -239,11 +239,9 @@ pub fn run(c: &AbiCanaries) -> (Vec<Sink>, Vec<String>) {
         std::env::remove_var(v);
     }
 
-    let dispatcher = busbar_plugin_loader::dispatch::Dispatcher::new(
-        busbar_plugin_loader::dispatch::DispatchConfig::default(),
-    );
-    let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
-    let outbound = busbar_plugin_loader::auth_axis::AuthRows::new(reg, Arc::new(dispatcher));
+    let outbound =
+        busbar_plugin_loader::auth_axis::AuthRows::new(reg, crate::root::dispatch::dispatcher())
+            .with_table(crate::root::connector::the().clone());
     let settings = serde_json::json!({});
     match outbound.serving("api-key", &settings) {
         Ok(Some(serving)) => {

@@ -318,7 +318,6 @@ fn admin_modules_rebuilt_on_reload() {
     common::root_install::install();
     let dir = tmp_plugin_dir("admin-modules-reload");
     write_auth_plugin(&dir, "idp.tar.gz", "acme-idp", "admin-oidc");
-    busbar_kernel_testkit::test_support::register_neutral_test_plane();
     let config = dir.join("config.yaml");
     let providers = dir.join("providers.yaml");
     std::fs::write(&providers, "{}\n").unwrap();
@@ -434,7 +433,6 @@ fn a_v1_auth_plugin_is_refused_at_boot_and_the_current_one_builds_browser_login(
         ),
     )
     .unwrap();
-    busbar_kernel_testkit::test_support::register_neutral_test_plane();
     let loaded = busbar_kernel::load_config_from_disk(
         &config,
         Some(&dir2.join("providers.yaml")),
