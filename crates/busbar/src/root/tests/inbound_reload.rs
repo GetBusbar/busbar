@@ -138,6 +138,30 @@ fn app(provider: &Arc<Provider>) -> Arc<busbar_kernel::state::App> {
     crate::dist_root_install::install();
     crate::root::linked::register_stores(&crate::LINKED);
     let store = crate::root::real_store::store();
+    let library_path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+            .expect("the actual Store artifact is required"),
+    );
+    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
+        .expect("the actual Store statement reads")
+        .expect("the actual Store carries its statement");
+    let mut manifest = common::plugins::manifest(
+        "store",
+        store.name(),
+        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+    );
+    manifest.statement = Some(hex::encode(statement));
+    let directory = common::plugins::scratch(&format!("{}-store", provider.name));
+    let library = std::fs::read(&library_path).expect("the actual Store image reads");
+    let archive =
+        common::plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
+    std::fs::write(directory.join("store.tar.gz"), archive)
+        .expect("the actual signed Store is staged");
+    let store_plugins = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: directory.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
     let settings: serde_json::Value = serde_json::from_str(
         &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
     )
@@ -154,7 +178,7 @@ fn app(provider: &Arc<Provider>) -> Arc<busbar_kernel::state::App> {
         Arc::new(crate::root::door_steps::Rules::default());
     let (mut app, _rotation, _limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         cfg,
-        Default::default(),
+        store_plugins,
         None,
         Default::default(),
         Default::default(),
