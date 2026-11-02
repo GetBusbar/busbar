@@ -51,9 +51,6 @@ pub const WINDOW_HOUR: &str = "hour";
 // ── Virtual-key / bearer-secret formats ──────────────────────────────────────────────────────────
 /// The `"vk_"` prefix prepended to the 16-hex-char hash prefix to form a virtual-key id.
 const VK_ID_PREFIX: &str = "vk_";
-/// Number of hex characters from the SHA-256 hash used as the suffix of a virtual-key id.
-#[cfg_attr(not(test), allow(dead_code))]
-const VK_ID_HASH_PREFIX_LEN: usize = 16;
 /// The `"sk-bb-"` prefix for bearer secrets returned by `generate_secret`. Gated with it: no
 /// production path mints a hashed bearer secret any more.
 #[cfg(test)]

@@ -300,9 +300,11 @@ pub mod timing;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_hooks;
 #[cfg(test)]
+#[allow(dead_code, unused_imports)] // Shared external-kit APIs include helpers used only by downstream suites.
 #[path = "../../busbar-kernel-testkit/src/test_support/mod.rs"]
 mod test_support;
 #[cfg(test)]
+#[allow(dead_code)] // The private unit-test mount does not consume every external seam entry.
 #[path = "../../busbar-kernel-testkit/src/testkit.rs"]
 mod testkit;
 pub mod topology;
