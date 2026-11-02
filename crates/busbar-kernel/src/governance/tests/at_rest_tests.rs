@@ -3,7 +3,6 @@
 
 use super::*;
 use crate::governance::{GovState, NewKeySpec};
-use crate::test_support::store_double::MemoryStore;
 use busbar_contract::records::{CredentialSecret, RecordStore, SecretForm};
 use std::sync::Arc;
 
@@ -139,8 +138,7 @@ fn an_at_rest_key_is_32_bytes_or_64_hex_characters() {
     assert!(!e.contains("short-secret-value"), "{e}");
 }
 
-fn signing_gov(store: Arc<MemoryStore>, seed: u8) -> GovState {
-    store.pin_token_clock(NOW);
+fn signing_gov(store: Arc<busbar_plugin_loader::store_v3::LoadedStore>, seed: u8) -> GovState {
     let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
         &[seed; 32],
         crate::governance::signing::DEFAULT_KID,
@@ -148,7 +146,11 @@ fn signing_gov(store: Arc<MemoryStore>, seed: u8) -> GovState {
     GovState::new_with_signer(store, None, Some(signer)).unwrap()
 }
 
-fn node(store: Arc<MemoryStore>, seed: u8, prev: Option<u8>) -> GovState {
+fn node(
+    store: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
+    seed: u8,
+    prev: Option<u8>,
+) -> GovState {
     let g = signing_gov(store, 7);
     g.set_at_rest_keys(Some(keys(seed, prev)));
     g
@@ -180,7 +182,7 @@ fn read(g: &GovState, public_id: &str) -> (String, bool) {
     (s.expose(&crate::seal::lend()).clone(), live)
 }
 
-fn row(store: &MemoryStore) -> CredentialSecret {
+fn row(store: &busbar_plugin_loader::store_v3::LoadedStore) -> CredentialSecret {
     let rows = store.list_credentials_since(0).unwrap();
     assert_eq!(rows.len(), 1);
     rows.into_iter().next().unwrap()
@@ -192,7 +194,7 @@ fn kid_of(envelope: &str) -> &str {
 
 #[test]
 fn a_minted_recoverable_credential_reaches_the_store_sealed_and_still_authenticates() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let g = node(store.clone(), 1, None);
     let (public_id, secret) = mint(&g);
     let r = row(&store);
@@ -204,7 +206,7 @@ fn a_minted_recoverable_credential_reaches_the_store_sealed_and_still_authentica
 
 #[test]
 fn minting_a_recoverable_credential_without_an_at_rest_key_is_refused_with_the_sentence() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let g = signing_gov(store.clone(), 7);
     let e = try_mint(&g).unwrap_err().to_string();
     assert!(e.contains(NO_KEY_REFUSAL), "{e}");
@@ -229,7 +231,7 @@ fn minting_a_recoverable_credential_without_an_at_rest_key_is_refused_with_the_s
 
 #[test]
 fn rotation_reseals_a_row_under_the_new_key_and_it_still_authenticates() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let (public_id, secret) = mint(&node(store.clone(), 1, None));
     let before = row(&store);
     assert_eq!(kid_of(&before.secret), keys(1, None).kid());
@@ -256,7 +258,7 @@ fn rotation_reseals_a_row_under_the_new_key_and_it_still_authenticates() {
 
 #[test]
 fn two_nodes_rotating_together_reseal_a_row_once() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let (public_id, secret) = mint(&node(store.clone(), 1, None));
     let x = node(store.clone(), 2, Some(1));
     let y = node(store.clone(), 2, Some(1));
@@ -271,7 +273,7 @@ fn two_nodes_rotating_together_reseal_a_row_once() {
 
 #[test]
 fn a_rewrap_never_revives_a_revoked_row() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let (public_id, _) = mint(&node(store.clone(), 1, None));
     let rotated = node(store.clone(), 2, Some(1));
     let candidates = store.list_credentials_since(0).unwrap();
@@ -289,7 +291,7 @@ fn a_rewrap_never_revives_a_revoked_row() {
 
 #[test]
 fn a_row_under_neither_key_does_not_authenticate() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let (public_id, secret) = mint(&node(store.clone(), 1, None));
     let stranger = node(store.clone(), 3, Some(4));
     let (got, live) = read(&stranger, &public_id);
@@ -305,7 +307,7 @@ fn a_row_under_neither_key_does_not_authenticate() {
 
 #[test]
 fn a_legacy_plain_row_is_resealed_under_the_key() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let g = node(store.clone(), 1, None);
     let (public_id, secret) = mint(&g);
 
@@ -329,7 +331,7 @@ mod immutable_store {
         MeteringDelta, MeteringRow, RecordStoreError, RecordStoreResult, UsageLedger, VirtualKey,
     };
 
-    struct ImmutableStore(Arc<MemoryStore>);
+    struct ImmutableStore(Arc<busbar_plugin_loader::store_v3::LoadedStore>);
 
     impl RecordStore for ImmutableStore {
         fn put_key(&self, key: &VirtualKey) -> RecordStoreResult<()> {
@@ -396,7 +398,7 @@ mod immutable_store {
     }
 
     fn rewrap(legacy_plaintext: bool) {
-        let backing = Arc::new(MemoryStore::new());
+        let backing = crate::real_store::store();
         let (public_id, secret) = mint(&node(backing.clone(), 1, None));
         if legacy_plaintext {
             let mut old = row(&backing);
@@ -445,7 +447,7 @@ mod immutable_store {
 
     #[test]
     fn racing_rewraps_apply_once_and_stale_replay_cannot_increment_revision() {
-        let store = Arc::new(MemoryStore::new());
+        let store = crate::real_store::store();
         mint(&node(store.clone(), 1, None));
         let expected = row(&store);
         let replacement = keys(2, Some(1))
@@ -487,7 +489,7 @@ mod immutable_store {
     #[test]
     fn rewrap_cannot_resurrect_a_revoked_or_deleted_snapshot() {
         for delete in [false, true] {
-            let store = Arc::new(MemoryStore::new());
+            let store = crate::real_store::store();
             mint(&node(store.clone(), 1, None));
             let expected = row(&store);
             let replacement = keys(2, Some(1))

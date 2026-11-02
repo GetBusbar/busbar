@@ -67,6 +67,7 @@ test-support = ["busbar-kernel-identity/test-support"]
 timing = ["dep:libc"]
 
 [dev-dependencies]
+busbar-plugin-loader = { path = "../plugin-loader" }
 sha2 = { workspace = true }
 # External integration tests use the dev-only kit, never kernel fixture exports.
 busbar-kernel-testkit = { path = "../busbar-kernel-testkit" }

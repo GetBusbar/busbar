@@ -1387,9 +1387,6 @@ impl<T> IntoStoreResult<T> for Result<T, getrandom::Error> {
     }
 }
 
-#[cfg(test)]
-pub use crate::test_support::store_double::MemoryStore;
-
 pub fn spawn_budget_flusher(
     gov: std::sync::Arc<GovState>,
     mut shutdown: tokio::sync::broadcast::Receiver<()>,

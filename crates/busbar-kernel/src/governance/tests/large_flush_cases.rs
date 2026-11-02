@@ -20,14 +20,25 @@ enum Reply {
     LoseAfter,
     CancelAfter,
 }
-#[derive(Default)]
 struct ChunkStore {
-    inner: MemoryStore,
+    inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
     legacy: bool,
     replies: std::sync::Mutex<VecDeque<Reply>>,
     batches: std::sync::Mutex<Vec<Batch>>,
     before_batch: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
     before_delete: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
+}
+impl Default for ChunkStore {
+    fn default() -> Self {
+        Self {
+            inner: crate::real_store::store(),
+            legacy: false,
+            replies: Default::default(),
+            batches: Default::default(),
+            before_batch: Default::default(),
+            before_delete: Default::default(),
+        }
+    }
 }
 impl RecordStore for ChunkStore {
     fn supports_usage_batch_deduped(&self) -> bool {

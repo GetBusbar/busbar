@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use crate::governance::MemoryStore;
 use busbar_contract::abi::store::OpId;
 use busbar_contract::records::correction::{Decision, Request, UsageAddress, UsageChange};
 use busbar_contract::records::{ModelTokens, RecordStore, UsageLedger, UNIT_INPUT};
@@ -25,7 +24,14 @@ fn raw(slot: &str, count: u64) -> UsageLedger {
     }
 }
 
-fn publish(store: &MemoryStore, day: u64, lane: &str, up: u64, down: u64, op: OpId) {
+fn publish(
+    store: &busbar_plugin_loader::store_v3::LoadedStore,
+    day: u64,
+    lane: &str,
+    up: u64,
+    down: u64,
+    op: OpId,
+) {
     let slot = adjustment_slot(KEY, lane, ERA);
     let mut usage = Vec::new();
     for (bucket, count) in [(ADJUST_UP_BUCKET, up), (ADJUST_DOWN_BUCKET, down)] {
@@ -55,8 +61,12 @@ fn publish(store: &MemoryStore, day: u64, lane: &str, up: u64, down: u64, op: Op
     );
 }
 
-fn state() -> (Arc<MemoryStore>, GovState, u64) {
-    let store = Arc::new(MemoryStore::new());
+fn state() -> (
+    Arc<busbar_plugin_loader::store_v3::LoadedStore>,
+    GovState,
+    u64,
+) {
+    let store = crate::real_store::store();
     store
         .put_key(&VirtualKey {
             id: KEY.into(),

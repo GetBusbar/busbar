@@ -8,7 +8,7 @@ const FIRST_INPUT: u64 = 7;
 const LATER_INPUT: u64 = 11;
 
 struct UnknownFlushStore {
-    inner: MemoryStore,
+    inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
     fail_after_commit: std::sync::atomic::AtomicBool,
     unwind: bool,
 }
@@ -77,7 +77,7 @@ fn accrue_plain(gov: &GovState, bucket: &str, count: u64) {
 
 fn ordinary_unknown_result_retries_once(unwind: bool) {
     let store = Arc::new(UnknownFlushStore {
-        inner: MemoryStore::new(),
+        inner: crate::real_store::store(),
         fail_after_commit: std::sync::atomic::AtomicBool::new(true),
         unwind,
     });
