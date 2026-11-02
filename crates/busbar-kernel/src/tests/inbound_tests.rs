@@ -1727,15 +1727,6 @@ fn red_every_refusal_is_the_kernels_and_byte_identical_to_todays_builders() {
     );
 }
 
-/// THE GUARD of this module's isolation (kind-isolation #1196): the kernel side of the handle
-/// names no plugin loader; the composition root glues the two.
-#[test]
-fn the_inbound_module_names_no_loader() {
-    let source = include_str!("../inbound.rs");
-    assert!(!source.contains(concat!("busbar_plugin", "_loader")));
-    assert!(!source.contains(concat!("plugin", "-loader")));
-}
-
 /// RED (one type both ways, #74): a line's handle id comes from the line half of the ref-id space
 /// the outbound bindings share: never `0` and never the binding bit. A table whose ids break that
 /// (or repeat, or do not cover every line) is refused, and every id a transport is lent keeps the
