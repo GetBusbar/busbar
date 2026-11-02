@@ -192,6 +192,52 @@ fn custody_piece(
 }
 
 fn custody_head(conn: &mut super::Conn<tokio::io::DuplexStream>, stream: u64, target: &str) {
+    use busbar_contract::abi::mechanism::ticket::Ticket;
+    use busbar_contract::abi::transport::guest_policy::Open;
+    let scope = conn
+        .framing
+        .as_ref()
+        .and_then(|framing| framing.scope())
+        .cloned();
+    let opened = scope.as_ref().is_some_and(|scope| {
+        if scope.policy_generation(stream, false).is_some() {
+            return false;
+        }
+        scope
+            .open_stream(
+                Ticket::NONE,
+                Open {
+                    stream,
+                    known_generation: 0,
+                },
+            )
+            .unwrap();
+        let generation = scope.policy_generation(stream, false).unwrap();
+        let guests = conn
+            .framer
+            .guests()
+            .expect("the actual listener lends its guest line");
+        crate::root::inbound::host()
+            .hand_in(busbar_kernel::inbound::HandIn {
+                owner: scope.owner(),
+                generation,
+                auth: guests.lines()[0].auth.id,
+                unit: busbar_contract::abi::host::service::UnitRef::NONE,
+                line: 0,
+                conn: conn.framing.as_ref().unwrap().token(),
+                stream,
+                framing: Some(scope.leg()),
+                head: busbar_kernel::inbound::Head {
+                    method: "POST".into(),
+                    target: target.into(),
+                    authority: String::new(),
+                    query: None,
+                    fields: Vec::new(),
+                },
+            })
+            .expect("the actual host admits the continuation's request");
+        true
+    });
     conn.heads.insert(
         stream,
         busbar_core_connector::framer::Head {
@@ -202,6 +248,9 @@ fn custody_head(conn: &mut super::Conn<tokio::io::DuplexStream>, stream: u64, ta
         },
     );
     conn.piece(custody_piece(stream, Vec::new(), true, false));
+    if opened {
+        scope.unwrap().operation_finished(Ticket::NONE, false);
+    }
 }
 
 #[tokio::test]
@@ -578,104 +627,35 @@ async fn a_session_that_drops_its_reader_ends_without_waiting_for_its_writer() {
     );
 }
 
-struct RefuseAnswer {
-    inner: H1Accept,
-    outcome: busbar_contract::abi::mechanism::call::Outcome,
-}
-
-impl FramerDoor for RefuseAnswer {
-    fn facts(&self) -> &busbar_core_connector::framer::DoorFacts {
-        self.inner.facts()
-    }
-    fn accepts(&self) -> bool {
-        true
-    }
-    fn instance(&self) -> Option<u64> {
-        self.inner.instance()
-    }
-    fn cross(
-        &self,
-        call: busbar_core_connector::framer::Call<'_>,
-    ) -> busbar_core_connector::framer::Crossed {
-        use busbar_contract::abi::mechanism::call::Outcome;
-        use busbar_core_connector::framer::{Call, Crossed};
-        if matches!(&call, Call::Refuse(..)) && self.outcome != Outcome::Ready {
-            return Crossed {
-                outcome: self.outcome,
-                error: Some(b"refusal rendering failed".to_vec()),
-            };
-        }
-        self.inner.cross(call)
-    }
-}
-
 #[tokio::test]
-async fn a_failed_refusal_ends_the_connection_and_a_rendered_refusal_keeps_it_live() {
+async fn framer_results_retire_failed_continuations_independent_of_response_head_state() {
     use busbar_contract::abi::mechanism::call::Outcome;
-    use busbar_core_connector::framer::{Established, Framing};
+    use busbar_core_connector::framer::{Refused, Yielded};
     let _publishing = anonymous_policy().await;
     for outcome in [Outcome::Ready, Outcome::Refused, Outcome::Failed] {
         for head_sent in [false, true] {
-            let door: Arc<dyn FramerDoor> = Arc::new(RefuseAnswer {
-                inner: H1Accept::new(true),
-                outcome,
-            });
-            let framer = data_framer(Arc::new(move |scheme| {
-                (scheme == DATA_SCHEME).then(|| Arc::clone(&door))
-            }))
-            .unwrap();
-            let established = Established {
-                scheme: Established::scheme_of(false),
-                ..Established::default()
+            let router = Router::new().route(
+                "/stall",
+                axum::routing::post(|body: axum::body::Body| async move {
+                    std::future::pending::<()>().await;
+                    drop(body);
+                    "done"
+                }),
+            );
+            let (_client, mut conn) = custody_conn(router);
+            custody_head(&mut conn, 3, "/stall");
+            conn.inflows.get_mut(&3).unwrap().head_sent = head_sent;
+            // Test the root's existing Result continuation directly. These values do not claim
+            // that a real transport produced an invented refusal outcome on a particular input.
+            let result = if outcome == Outcome::Ready {
+                Ok(Yielded::default())
+            } else {
+                Err(Refused {
+                    outcome,
+                    error: "refusal rendering failed".into(),
+                })
             };
-            let (framing, _) = Framing::begin_lent(
-                Arc::clone(framer.door()),
-                busbar_contract::abi::transport::SIDE_ACCEPT,
-                "",
-                &established,
-                framer.guests(),
-            )
-            .unwrap();
-            let (_client, server) = tokio::io::duplex(1024);
-            let (tx, ops) = tokio::sync::mpsc::unbounded_channel();
-            let (admission_tx, admissions) = tokio::sync::mpsc::unbounded_channel();
-            let mut conn = super::Conn {
-                io: crate::root::listener::Lingering(Some(server)),
-                framing: Some(framing),
-                framer,
-                router: Router::new(),
-                secured: false,
-                established,
-                timeout: Duration::from_secs(30),
-                out: Default::default(),
-                read_done: false,
-                ended: false,
-                heads: Default::default(),
-                inflows: Default::default(),
-                tasks: tokio::task::JoinSet::new(),
-                ops,
-                tx,
-                pending: Default::default(),
-                admission_tx,
-                admissions,
-                staged: None,
-                prewire: false,
-                full: Default::default(),
-                deadline: None,
-                session: None,
-                agreed: 0,
-                stopping: false,
-                failed: false,
-                first_byte: None,
-            };
-            conn.pending.push_back((
-                3,
-                super::Op::Refuse {
-                    status: 400,
-                    head_sent,
-                },
-            ));
-            conn.apply_front();
+            assert_eq!(conn.took(result), outcome == Outcome::Ready);
             assert_eq!(
                 conn.failed,
                 outcome != Outcome::Ready,
@@ -684,6 +664,7 @@ async fn a_failed_refusal_ends_the_connection_and_a_rendered_refusal_keeps_it_li
             let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
             assert_eq!(conn.poll(&mut cx).is_ready(), outcome != Outcome::Ready);
             assert_eq!(conn.framing.is_none(), outcome != Outcome::Ready);
+            conn.tasks.abort_all();
         }
     }
 }
