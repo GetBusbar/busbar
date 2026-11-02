@@ -12,7 +12,7 @@ const LANE_PROTOCOL: &str = "unregistered-lane-protocol";
 
 #[test]
 fn test_render_exposes_emitted_counter() {
-    init();
+    crate::snapshot::init_for_test(Duration::from_secs(3600));
     metrics::counter!(
         REQUESTS_TOTAL,
         "ingress_protocol" => "acme",
@@ -35,7 +35,7 @@ fn test_render_exposes_emitted_counter() {
 
 #[test]
 fn test_enabled_recorder_installed_retaining_and_describe_after_init() {
-    init();
+    crate::snapshot::init_for_test(Duration::from_secs(3600));
     assert!(
         enabled(),
         "enabled() must be true once init() has run (ENABLED.set(true))"
@@ -71,9 +71,9 @@ fn test_gauge_idle_timeout_is_exactly_24_hours() {
 
 #[test]
 fn test_init_is_idempotent_and_does_not_panic() {
-    init();
-    init();
-    init();
+    crate::snapshot::init_for_test(Duration::from_secs(3600));
+    crate::snapshot::init_for_test(Duration::from_secs(3600));
+    crate::snapshot::init_for_test(Duration::from_secs(3600));
 
     let _ = render();
 }
@@ -103,7 +103,7 @@ fn sample_vkey(id: &str) -> VirtualKey {
 
 #[test]
 fn test_scrape_gauges_key_spend_and_remaining() {
-    init();
+    crate::snapshot::init_for_test(Duration::from_secs(3600));
 
     let key = sample_vkey("vk_spend_test01");
     let gov = gov_with_key(key.clone());
@@ -161,7 +161,7 @@ fn test_scrape_gauges_key_spend_and_remaining() {
 
 #[test]
 fn test_scrape_gauges_uncapped_group_bucket_no_remaining() {
-    init();
+    crate::snapshot::init_for_test(Duration::from_secs(3600));
 
     let mut key = sample_vkey("vk_uncapped_test01");
     key.group = Some("uncapped-grp".to_string());
@@ -219,7 +219,7 @@ fn test_scrape_gauges_uncapped_group_bucket_no_remaining() {
 #[test]
 #[allow(clippy::field_reassign_with_default)]
 fn test_scrape_gauges_bucket_model_tier_and_key_labels() {
-    init();
+    crate::snapshot::init_for_test(Duration::from_secs(3600));
 
     let mut key = sample_vkey("vk_bucket_test1");
     key.group = Some("growth".to_string());
@@ -320,7 +320,7 @@ fn key_gauge_latch() -> std::sync::MutexGuard<'static, ()> {
 #[test]
 fn test_key_gauge_limit_truncation() {
     let _latch = key_gauge_latch();
-    init();
+    crate::snapshot::init_for_test(Duration::from_secs(3600));
 
     const LIMIT: usize = crate::config::DEFAULT_KEY_GAUGE_LIMIT;
     let store = crate::real_store::store();
@@ -438,7 +438,7 @@ fn test_key_gauge_limit_warning_fires_exactly_past_the_boundary() {
     use crate::test_support::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
     let _latch = key_gauge_latch();
-    init();
+    crate::snapshot::init_for_test(Duration::from_secs(3600));
     const LIMIT: usize = crate::config::DEFAULT_KEY_GAUGE_LIMIT;
 
     let app_at_limit = app_with_n_keys(LIMIT);
@@ -473,7 +473,7 @@ fn test_key_gauge_limit_warning_fires_exactly_past_the_boundary() {
 
 #[test]
 fn test_cardinality_invariant_no_raw_secret_in_labels() {
-    init();
+    crate::snapshot::init_for_test(Duration::from_secs(3600));
 
     let key = sample_vkey("vk_carinv_test01");
     let gov = gov_with_key(key);
@@ -555,7 +555,7 @@ fn only_gauges_are_expired() {
 
 #[test]
 fn money_gauge_bytes_are_the_1_5_5_bytes() {
-    init();
+    crate::snapshot::init_for_test(Duration::from_secs(3600));
     const P53: i64 = 1 << 53;
     let cents: &[i64] = &[
         0,
@@ -679,7 +679,7 @@ fn spend_of(out: &str, key: &str) -> String {
 ///     figure.
 #[test]
 fn a_scrape_reprices_only_the_buckets_whose_facts_moved() {
-    init();
+    crate::snapshot::init_for_test(Duration::from_secs(3600));
     let ids = ["vk_view_a", "vk_view_b", "vk_view_c"];
     let gov = gov_with_key(sample_vkey(ids[0]));
     let store = gov.store();
@@ -869,7 +869,7 @@ fn lines_of(out: &str, family: &str, needle: &str) -> Vec<String> {
 
 #[test]
 fn bucket_token_and_spend_gauges_are_the_1_5_5_lines() {
-    init();
+    crate::snapshot::init_for_test(Duration::from_secs(3600));
     let _iso = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[
         &GAUGE_FALLBACK_PLANE,
         &GAUGE_AUDIO_PLANE,
@@ -933,7 +933,7 @@ fn bucket_token_and_spend_gauges_are_the_1_5_5_lines() {
 
 #[test]
 fn bucket_token_gauges_follow_the_lane_planes_declared_token_classes() {
-    init();
+    crate::snapshot::init_for_test(Duration::from_secs(3600));
     let _iso = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[
         &GAUGE_FALLBACK_PLANE,
         &GAUGE_AUDIO_PLANE,
