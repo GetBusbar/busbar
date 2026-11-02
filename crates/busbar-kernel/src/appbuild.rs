@@ -533,24 +533,36 @@ pub fn bootstrap_dependency_names(
     cfg: &config::RootCfg,
     registry: &dyn busbar_contract::plugin_rows::PluginRows,
 ) -> std::collections::BTreeSet<String> {
-    let mut modules = std::collections::BTreeSet::new();
-    let mut add = |module: &str| {
-        let name = registry
+    let fields: Vec<_> = cfg.store.as_ref().map_or_else(Vec::new, |store| {
+        registry
+            .secret_slots(&store.module)
+            .into_iter()
+            .chain(registry.reference_slots(&store.module))
+            .collect()
+    });
+    bootstrap_dependency_names_from_metadata(cfg, &fields, |module| {
+        registry
             .resolve(module)
             .map(|row| row.name)
             .or_else(|| registry.unresolved_reason(module).map(|row| row.name))
-            .unwrap_or_else(|| module.to_string());
-        modules.insert(name);
+            .unwrap_or_else(|| module.to_string())
+    })
+}
+
+pub fn bootstrap_dependency_names_from_metadata(
+    cfg: &config::RootCfg,
+    fields: &[String],
+    mut canonical: impl FnMut(&str) -> String,
+) -> std::collections::BTreeSet<String> {
+    let mut modules = std::collections::BTreeSet::new();
+    let mut add = |module: &str| {
+        modules.insert(canonical(module));
     };
     if let Some(store) = &cfg.store {
         add(&store.module);
         let mut tree = serde_json::Value::Object(store.settings.clone());
-        let fields = registry
-            .secret_slots(&store.module)
-            .into_iter()
-            .chain(registry.reference_slots(&store.module));
         for path in fields {
-            for at in busbar_contract::secret_fields::declared_references(&tree, &path) {
+            for at in busbar_contract::secret_fields::declared_references(&tree, path) {
                 if let Some(value) = busbar_contract::secret_fields::value_at_mut(&mut tree, &at) {
                     if let config::secret::SettingShape::Reference(reference) =
                         config::secret::classify_setting(value)
