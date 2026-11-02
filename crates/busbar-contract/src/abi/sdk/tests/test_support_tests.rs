@@ -1356,8 +1356,8 @@ mod pending_open_custody {
         input.head.flags = FLAG_RESUME;
         output = zeroed();
         output.head = out_head::<OpenOut>();
-        // SAFETY: the same door resumes its live pending instance on the original ticket and
-        // original complete frames and nested loans; output is exclusive for this call.
+        // SAFETY: the same door receives its live instance and complete frames with all original
+        // nested loans. The deliberately changed ticket is rejected before entering its continuation.
         let outcome = unsafe {
             table.head.open.unwrap()(
                 instance,
