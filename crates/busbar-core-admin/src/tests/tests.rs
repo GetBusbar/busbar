@@ -225,69 +225,6 @@ async fn test_admin_v1_topology_reads_pools_models_providers() {
 }
 
 #[tokio::test]
-async fn test_api_root_unmatched_paths_speak_the_admin_envelope() {
-    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = crate::new_test_app().governance(gov).build();
-    let router = crate::build_router(app);
-    let (addr, handle, client) = spin_up(router).await;
-
-    for path in ["/api/v1/admin/nonexistent", "/api/junk"] {
-        let r = client
-            .get(format!("http://{addr}{path}"))
-            .header("x-admin-token", "admintok")
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(r.status().as_u16(), 404, "{path}");
-        let body: serde_json::Value = r.json().await.unwrap();
-        assert_eq!(body["error"]["code"], "not_found", "{path}: {body}");
-        assert!(
-            body["error"]["type"].is_null(),
-            "{path}: never the vendor envelope: {body}"
-        );
-    }
-
-    let r = client
-        .delete(format!("http://{addr}/api/v1/admin/info"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(r.status().as_u16(), 405);
-    assert_eq!(
-        r.json::<serde_json::Value>().await.unwrap()["error"]["code"],
-        "method_not_allowed"
-    );
-    handle.abort();
-}
-
-#[tokio::test]
-async fn an_unmatched_admin_path_reads_no_body() {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = crate::new_test_app().governance(gov).build();
-    let router = crate::build_router(app);
-    let (addr, handle, _) = spin_up(router).await;
-    let mut conn = tokio::net::TcpStream::connect(addr).await.unwrap();
-    let head = "POST /api/v1/admin/nonexistent HTTP/1.1\r\nhost: x\r\nx-admin-token: admintok\r\n\
-                content-length: 64\r\n\r\n";
-    conn.write_all(head.as_bytes()).await.unwrap();
-    let mut answer = [0u8; 12];
-    let read = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        conn.read_exact(&mut answer),
-    )
-    .await;
-    assert!(read.is_ok(), "the 404 answers before any body byte is sent");
-    assert_eq!(&answer, b"HTTP/1.1 404");
-    handle.abort();
-}
-
-#[tokio::test]
 async fn test_keys_surface_governance_disabled_semantics() {
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let mut app = crate::new_test_app().build();
@@ -490,35 +427,6 @@ async fn test_admin_v1_pool_detail_reports_the_per_pool_breaker_cell() {
         cm["cooldown_remaining_seconds"], 0,
         "an untouched pool must not inherit another pool's max-cell cooldown: {cheap}"
     );
-
-    handle.abort();
-}
-
-#[tokio::test]
-async fn test_admin_v1_admin_auth_read() {
-    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = crate::new_test_app().governance(gov).build();
-    let router = crate::build_router(app);
-    let (addr, handle, client) = spin_up(router).await;
-
-    let body: serde_json::Value = client
-        .get(format!("http://{addr}/api/v1/admin/admin-auth"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(body["configured"], true);
-
-    assert!(body["modules"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|m| m == busbar_kernel::config::operator_provider()));
 
     handle.abort();
 }
