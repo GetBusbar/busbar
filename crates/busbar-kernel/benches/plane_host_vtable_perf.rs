@@ -267,8 +267,11 @@ fn assert_transport_hot_path_delta_under_budget() {
     });
     let (slot_p50, slot_p99) = percentiles(|| {
         let f = read_slot(black_box(ops_ptr));
+        // SAFETY: this live local table contains only carrier_read, which ignores all three
+        // pointers and returns Pending. Its NULL arguments therefore require no pointee storage.
         black_box(
-            f(black_box(instance), black_box(input), black_box(out)).outcome() == Outcome::Pending,
+            unsafe { f(black_box(instance), black_box(input), black_box(out)) }.outcome()
+                == Outcome::Pending,
         );
     });
 
@@ -362,11 +365,14 @@ fn hot_path(c: &mut Criterion) {
     c.bench_function("TRANSPORT_DOOR_CALL", |b| {
         b.iter(|| {
             let f = read_slot(black_box(ops_ptr));
-            black_box(f(
-                black_box(std::ptr::null_mut()),
-                black_box(std::ptr::null()),
-                black_box(std::ptr::null_mut()),
-            ))
+            // SAFETY: the live table contains carrier_read, a no-dereference Pending stub.
+            black_box(unsafe {
+                f(
+                    black_box(std::ptr::null_mut()),
+                    black_box(std::ptr::null()),
+                    black_box(std::ptr::null_mut()),
+                )
+            })
         });
     });
 
