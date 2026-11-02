@@ -443,6 +443,27 @@ struct PluginRef<'a> {
     remedy: &'a str,
 }
 
+fn missing_plugin_error(
+    dir: &str,
+    want: PluginRef<'_>,
+    loadable: &[busbar_contract::plugin_rows::Row],
+) -> String {
+    format!(
+        "{} is installed in '{dir}' (plugins ARE enabled; loadable: [{}]). Two things to \
+                 check: is the plugin subsystem enabled? (it is) — and is the signed {}tarball \
+                 actually IN the folder? \
+                 Add it to plugins.fetch or drop the signed tarball in the directory, or {}.",
+        want.missing,
+        loadable
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", "),
+        want.label,
+        want.remedy
+    )
+}
+
 fn require_plugin(
     registry: &dyn PluginRows,
     dir: &str,
@@ -460,21 +481,7 @@ fn require_plugin(
                 "{} plugin '{}' ({}) but it was not loaded: {}",
                 want.matched, s.name, s.file, s.reason
             ),
-            None => format!(
-                "{} is installed in '{dir}' (plugins ARE enabled; loadable: [{}]). Two things to \
-                 check: is the plugin subsystem enabled? (it is) — and is the signed {}tarball \
-                 actually IN the folder? \
-                 Add it to plugins.fetch or drop the signed tarball in the directory, or {}.",
-                want.missing,
-                registry
-                    .loadable()
-                    .iter()
-                    .map(|p| p.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                want.label,
-                want.remedy
-            ),
+            None => missing_plugin_error(dir, want, &registry.loadable()),
         }),
     }
 }
@@ -1125,3 +1132,7 @@ mod central2_secret_claim_tests;
 #[cfg(test)]
 #[path = "tests/central2_boot_log_tests.rs"]
 mod central2_boot_log_tests;
+
+#[cfg(test)]
+#[path = "tests/central2_missing_plugin_tests.rs"]
+mod central2_missing_plugin_tests;

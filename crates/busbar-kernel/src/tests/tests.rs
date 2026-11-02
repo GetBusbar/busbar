@@ -646,37 +646,6 @@ fn the_preflight_warns_about_a_malformed_floor() {
     let _ = std::fs::remove_dir_all(directory);
 }
 
-#[test]
-fn unknown_store_name_is_a_clear_boot_error() {
-    let dir = tmp_plugin_dir("unknown-store");
-    let mut cfg = plugins_cfg(&dir, true);
-    cfg.trust.allow_unsigned = true;
-    crate::test_support::rows::drop_in(
-        &dir,
-        vec![dropped(
-            "acme-store-x",
-            "x",
-            busbar_contract::abi::mechanism::kind::STORE,
-        )],
-        Vec::new(),
-    );
-    let err = crate::plugins_preflight(
-        Some(&gov_with_store("dynamo")),
-        None,
-        &Default::default(),
-        &Default::default(),
-        &cfg,
-        &Default::default(),
-    )
-    .unwrap_err();
-    assert!(err.contains("'dynamo'"), "names the missing store: {err}");
-    assert!(
-        err.contains("acme-store-x"),
-        "lists what is available: {err}"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
 // ROOT pure-framework disposition: env_var_guard_restores_on_panic tested only
 // the deleted test kit's EnvVarGuard destructor, not product interpolation or policy.
 // Its two fake-helper bookkeeping assertions retire with that helper.
