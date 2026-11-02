@@ -4,6 +4,12 @@
 [cargo-vet]
 version = "0.10"
 
+[policy.h2]
+audit-as-crates-io = true
+
+[policy.tungstenite]
+audit-as-crates-io = true
+
 [[exemptions.adler2]]
 version = "2.0.1"
 criteria = "safe-to-deploy"
