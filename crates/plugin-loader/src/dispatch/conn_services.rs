@@ -1240,7 +1240,7 @@ pub(crate) fn purge(id: InstanceId, table: &Arc<dyn DeclaredConns>) {
         drop(Closes {
             streams: gone.into_values().collect(),
             waits: st.take_waits(|_, _| true),
-            ..Closes::default()
+            dials: Vec::new(),
         });
     }
     forget_authority(id, table);
