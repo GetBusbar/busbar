@@ -55,6 +55,250 @@ fn render_metrics() -> String {
     .expect("the actual exporter emits UTF-8")
 }
 
+#[cfg(linked_driver_proofs)]
+#[derive(Clone)]
+enum ProviderReply {
+    Ok {
+        status: axum::http::StatusCode,
+        body: serde_json::Value,
+    },
+    ServerError {
+        status: axum::http::StatusCode,
+        body: serde_json::Value,
+    },
+    RateLimit {
+        status: axum::http::StatusCode,
+        provider_signal: Option<&'static str>,
+        retry_after: Option<u64>,
+    },
+    Billing {
+        status: axum::http::StatusCode,
+        code: &'static str,
+        message: &'static str,
+    },
+    Auth {
+        status: axum::http::StatusCode,
+    },
+    Sse {
+        events: Vec<String>,
+        abort_at_index: Option<usize>,
+    },
+    SseTransportError {
+        ok_events: Vec<String>,
+    },
+    Gated {
+        status: axum::http::StatusCode,
+        body: serde_json::Value,
+        started: std::sync::Arc<tokio::sync::Notify>,
+        release: std::sync::Arc<tokio::sync::Notify>,
+    },
+}
+
+#[cfg(linked_driver_proofs)]
+impl Default for ProviderReply {
+    fn default() -> Self {
+        Self::Ok {
+            status: axum::http::StatusCode::OK,
+            body: serde_json::json!({"ok": true}),
+        }
+    }
+}
+
+#[cfg(linked_driver_proofs)]
+#[derive(Default)]
+struct ProviderRequests {
+    replies: std::sync::Mutex<Vec<ProviderReply>>,
+    last: std::sync::Mutex<Option<(axum::http::HeaderMap, Vec<u8>)>>,
+}
+
+#[cfg(linked_driver_proofs)]
+impl ProviderRequests {
+    fn new() -> Self {
+        Self::default()
+    }
+    fn push(&self, reply: ProviderReply) {
+        self.replies.lock().unwrap().push(reply);
+    }
+    fn next_response(&self) -> Option<ProviderReply> {
+        self.replies.lock().unwrap().pop()
+    }
+    fn get_last_request_body(&self) -> Option<Vec<u8>> {
+        self.last
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|(_, body)| body.clone())
+    }
+    fn get_last_request_header(&self, name: &str) -> Option<String> {
+        self.last
+            .lock()
+            .unwrap()
+            .as_ref()?
+            .0
+            .get(name)?
+            .to_str()
+            .ok()
+            .map(str::to_owned)
+    }
+}
+
+#[cfg(linked_driver_proofs)]
+struct ProviderEndpoint {
+    address: std::net::SocketAddr,
+    accept: tokio::task::JoinHandle<()>,
+}
+
+#[cfg(linked_driver_proofs)]
+impl Drop for ProviderEndpoint {
+    fn drop(&mut self) {
+        self.accept.abort();
+    }
+}
+
+#[cfg(linked_driver_proofs)]
+impl ProviderEndpoint {
+    fn address(&self) -> std::net::SocketAddr {
+        self.address
+    }
+
+    async fn new(requests: std::sync::Arc<ProviderRequests>) -> Self {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let accept = tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let requests = requests.clone();
+                tokio::spawn(async move {
+                    let mut received = Vec::new();
+                    let mut chunk = [0u8; 8192];
+                    let (headers, body) = loop {
+                        let count = socket.read(&mut chunk).await.unwrap();
+                        if count == 0 {
+                            return;
+                        }
+                        received.extend_from_slice(&chunk[..count]);
+                        let Some(end) = received.windows(4).position(|bytes| bytes == b"\r\n\r\n")
+                        else {
+                            continue;
+                        };
+                        let head = std::str::from_utf8(&received[..end]).unwrap();
+                        let mut headers = axum::http::HeaderMap::new();
+                        for line in head.lines().skip(1) {
+                            let (name, value) = line.split_once(':').expect("an HTTP header");
+                            headers.append(
+                                axum::http::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                                axum::http::HeaderValue::from_str(value.trim()).unwrap(),
+                            );
+                        }
+                        let length = headers
+                            .get("content-length")
+                            .map(|value| value.to_str().unwrap().parse::<usize>().unwrap())
+                            .unwrap_or(0);
+                        if received.len() >= end + 4 + length {
+                            break (headers, received[end + 4..end + 4 + length].to_vec());
+                        }
+                    };
+                    *requests.last.lock().unwrap() = Some((headers, body));
+                    let reply = requests.next_response().unwrap_or_default();
+                    let mut extra = String::new();
+                    let mut gated = None;
+                    let mut transport_error = false;
+                    let mut content_type = "application/json";
+                    let (status, body) = match reply {
+                        ProviderReply::Ok { status, body }
+                        | ProviderReply::ServerError { status, body } => (status, body.to_string()),
+                        ProviderReply::Auth { status } => (
+                            status,
+                            serde_json::json!({"error": "Unauthorized"}).to_string(),
+                        ),
+                        ProviderReply::Billing {
+                            status,
+                            code,
+                            message,
+                        } => (
+                            status,
+                            serde_json::json!({"error": {"code": code, "message": message}})
+                                .to_string(),
+                        ),
+                        ProviderReply::RateLimit {
+                            status,
+                            provider_signal,
+                            retry_after,
+                        } => {
+                            if let Some(wait) = retry_after {
+                                extra = format!("retry-after: {wait}\r\n");
+                            }
+                            let message = if provider_signal == Some("1302") {
+                                "rate_limit"
+                            } else {
+                                "Rate limit exceeded"
+                            };
+                            (status, serde_json::json!({"error": {"message": message, "code": provider_signal.unwrap_or("429")}}).to_string())
+                        }
+                        ProviderReply::Sse {
+                            events,
+                            abort_at_index,
+                        } => {
+                            content_type = "text/event-stream";
+                            let count = abort_at_index.unwrap_or(events.len());
+                            let mut body = events
+                                .into_iter()
+                                .take(count)
+                                .map(|event| format!("data: {event}\n\n"))
+                                .collect::<String>();
+                            if abort_at_index.is_some() {
+                                let error = serde_json::json!({"type": "error", "error": {"message": "upstream abort", "source": "upstream"}});
+                                body.push_str(&format!("event: error\ndata: {error}\n\n"));
+                            } else {
+                                body.push_str("data: [DONE]\n\n");
+                            }
+                            (axum::http::StatusCode::OK, body)
+                        }
+                        ProviderReply::SseTransportError { ok_events } => {
+                            content_type = "text/event-stream";
+                            transport_error = true;
+                            (
+                                axum::http::StatusCode::OK,
+                                ok_events
+                                    .into_iter()
+                                    .map(|event| format!("data: {event}\n\n"))
+                                    .collect::<String>(),
+                            )
+                        }
+                        ProviderReply::Gated {
+                            status,
+                            body,
+                            started,
+                            release,
+                        } => {
+                            gated = Some((started, release));
+                            (status, body.to_string())
+                        }
+                    };
+                    let length = body.len() + usize::from(transport_error);
+                    let head = format!("HTTP/1.1 {} {}\r\ncontent-type: {content_type}\r\ncontent-length: {length}\r\n{extra}connection: close\r\n\r\n", status.as_u16(), status.canonical_reason().unwrap_or("response"));
+                    if socket.write_all(head.as_bytes()).await.is_err() {
+                        return;
+                    }
+                    if let Some((started, release)) = gated {
+                        started.notify_one();
+                        release.notified().await;
+                    }
+                    if socket.write_all(body.as_bytes()).await.is_err() {
+                        return;
+                    }
+                    if transport_error {
+                        socket.flush().await.unwrap();
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    }
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+        Self { address, accept }
+    }
+}
+
 #[tokio::test]
 async fn an_empty_plane_set_still_stages_the_core_listener_lines() {
     use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
@@ -6345,8 +6589,8 @@ async fn the_pools_doors_hooks_see_each_candidates_standing() {
 }
 
 #[cfg(linked_driver_proofs)]
-fn event_stream(events: Vec<String>) -> busbar_kernel_testkit::test_support::MockResponse {
-    busbar_kernel_testkit::test_support::MockResponse::Sse {
+fn event_stream(events: Vec<String>) -> ProviderReply {
+    ProviderReply::Sse {
         events,
         abort_at_index: None,
     }
@@ -6359,22 +6603,21 @@ mod pools_door_walk_and_breaker {
     use std::sync::Arc;
 
     use axum::http::StatusCode;
-    use busbar_kernel_testkit::test_support::{MockResponse, MockServer, MockServerState};
 
     fn now() -> u64 {
         busbar_kernel::store::now()
     }
 
-    async fn mock(replies: Vec<MockResponse>) -> (Arc<MockServerState>, MockServer) {
-        let state = Arc::new(MockServerState::new());
+    async fn mock(replies: Vec<ProviderReply>) -> (Arc<ProviderRequests>, ProviderEndpoint) {
+        let state = Arc::new(ProviderRequests::new());
         for reply in replies.into_iter().rev() {
             state.push(reply);
         }
-        let server = MockServer::new(Arc::clone(&state)).await;
+        let server = ProviderEndpoint::new(Arc::clone(&state)).await;
         (state, server)
     }
 
-    fn port_of(server: &MockServer) -> u16 {
+    fn port_of(server: &ProviderEndpoint) -> u16 {
         server.address().port()
     }
 
@@ -6465,7 +6708,7 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_replaces_every_caller_credential_with_the_members() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-caller-credentials";
-        let (state, server) = mock(vec![MockResponse::Ok {
+        let (state, server) = mock(vec![ProviderReply::Ok {
             status: StatusCode::OK,
             body: serde_json::from_str(SERVED_BY_TWIN).expect("JSON"),
         }])
@@ -6581,7 +6824,7 @@ mod pools_door_walk_and_breaker {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-unmapped-part";
         let far_dialect = door_word("messages_dialect");
-        let (state, server) = mock(vec![MockResponse::Ok {
+        let (state, server) = mock(vec![ProviderReply::Ok {
             status: StatusCode::OK,
             body: messages_answer_saying("hi"),
         }])
@@ -6651,7 +6894,7 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_relays_every_event_of_a_streamed_answer() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-ten-events";
-        let (_state, server) = mock(vec![MockResponse::Sse {
+        let (_state, server) = mock(vec![ProviderReply::Sse {
             events: events(10),
             abort_at_index: None,
         }])
@@ -6684,12 +6927,12 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_fails_over_a_fault_before_the_first_byte_and_cools_the_member() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-pre-first-byte";
-        let (_failing, down) = mock(vec![MockResponse::ServerError {
+        let (_failing, down) = mock(vec![ProviderReply::ServerError {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             body: serde_json::json!({ "error": "lane 0 failed" }),
         }])
         .await;
-        let (_serving, up) = mock(vec![MockResponse::Sse {
+        let (_serving, up) = mock(vec![ProviderReply::Sse {
             events: events(3),
             abort_at_index: None,
         }])
@@ -6715,12 +6958,12 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_records_a_cut_after_the_first_byte_and_does_not_fail_over() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-midstream-abort";
-        let (_cut, cutting) = mock(vec![MockResponse::Sse {
+        let (_cut, cutting) = mock(vec![ProviderReply::Sse {
             events: events(5),
             abort_at_index: Some(1),
         }])
         .await;
-        let (sibling_state, sibling) = mock(vec![MockResponse::Sse {
+        let (sibling_state, sibling) = mock(vec![ProviderReply::Sse {
             events: vec!["lane1-ok".to_string()],
             abort_at_index: None,
         }])
@@ -6758,7 +7001,7 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_trips_on_an_own_credential_401_but_not_on_a_passthrough_one() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-passthrough-401";
-        let (_state, server) = mock(vec![MockResponse::Auth {
+        let (_state, server) = mock(vec![ProviderReply::Auth {
             status: StatusCode::UNAUTHORIZED,
         }])
         .await;
@@ -6784,7 +7027,7 @@ mod pools_door_walk_and_breaker {
         drop(passthrough);
 
         let instance = "rehome-walk-own-401";
-        let (_state, server) = mock(vec![MockResponse::Auth {
+        let (_state, server) = mock(vec![ProviderReply::Auth {
             status: StatusCode::UNAUTHORIZED,
         }])
         .await;
@@ -6915,8 +7158,12 @@ mod pools_door_walk_and_breaker {
 
     async fn mapped_member(
         instance: &'static str,
-        reply: MockResponse,
-    ) -> (DoorRig, (u16, axum::http::HeaderMap, String), MockServer) {
+        reply: ProviderReply,
+    ) -> (
+        DoorRig,
+        (u16, axum::http::HeaderMap, String),
+        ProviderEndpoint,
+    ) {
         let (_state, server) = mock(vec![reply]).await;
         let rig = rig(
             instance,
@@ -6938,7 +7185,7 @@ mod pools_door_walk_and_breaker {
         let instance = "rehome-walk-billing-code";
         let (rig, _, _server) = mapped_member(
             instance,
-            MockResponse::Billing {
+            ProviderReply::Billing {
                 status: StatusCode::PAYMENT_REQUIRED,
                 code: "1113",
                 message: "insufficient balance",
@@ -6960,7 +7207,7 @@ mod pools_door_walk_and_breaker {
         let instance = "rehome-walk-rate-limit-code";
         let (rig, _, _server) = mapped_member(
             instance,
-            MockResponse::RateLimit {
+            ProviderReply::RateLimit {
                 status: StatusCode::TOO_MANY_REQUESTS,
                 provider_signal: Some("1302"),
                 retry_after: None,
@@ -6980,7 +7227,7 @@ mod pools_door_walk_and_breaker {
         let instance = "rehome-walk-rate-limit-bare";
         let (rig, _, _server) = mapped_member(
             instance,
-            MockResponse::RateLimit {
+            ProviderReply::RateLimit {
                 status: StatusCode::TOO_MANY_REQUESTS,
                 provider_signal: None,
                 retry_after: None,
@@ -6997,7 +7244,7 @@ mod pools_door_walk_and_breaker {
         let instance = "rehome-walk-server-error";
         let (rig, _, _server) = mapped_member(
             instance,
-            MockResponse::ServerError {
+            ProviderReply::ServerError {
                 status: StatusCode::INTERNAL_SERVER_ERROR,
                 body: serde_json::json!({ "error": "server error" }),
             },
@@ -7015,7 +7262,7 @@ mod pools_door_walk_and_breaker {
         let instance = "rehome-walk-auth-down";
         let (rig, (status, _, text), _server) = mapped_member(
             instance,
-            MockResponse::Auth {
+            ProviderReply::Auth {
                 status: StatusCode::UNAUTHORIZED,
             },
         )
@@ -7047,7 +7294,7 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_classifies_by_the_mapped_code_not_the_status() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-code-drives-mapped";
-        let (_state, server) = mock(vec![MockResponse::Billing {
+        let (_state, server) = mock(vec![ProviderReply::Billing {
             status: StatusCode::PAYMENT_REQUIRED,
             code: "1113",
             message: "insufficient balance",
@@ -7071,7 +7318,7 @@ mod pools_door_walk_and_breaker {
         drop(mapped);
 
         let instance = "rehome-walk-code-drives-unmapped";
-        let (_state, server) = mock(vec![MockResponse::Ok {
+        let (_state, server) = mock(vec![ProviderReply::Ok {
             status: StatusCode::BAD_REQUEST,
             body: serde_json::json!({ "error": "not a known error" }),
         }])
@@ -7097,7 +7344,7 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_relays_a_callers_fault_verbatim_and_counts_it_apart() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-client-fault";
-        let (_state, server) = mock(vec![MockResponse::Ok {
+        let (_state, server) = mock(vec![ProviderReply::Ok {
             status: StatusCode::BAD_REQUEST,
             body: serde_json::json!({ "error": "invalid_request", "message": "bad input" }),
         }])
@@ -7133,7 +7380,7 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_sheds_an_exhausted_pool_with_a_retry_after() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-exhaustion";
-        let limited = || MockResponse::RateLimit {
+        let limited = || ProviderReply::RateLimit {
             status: StatusCode::TOO_MANY_REQUESTS,
             provider_signal: Some("1302"),
             retry_after: None,
@@ -7196,12 +7443,12 @@ mod pools_door_walk_and_breaker {
 
     async fn benched_once(
         instance: &'static str,
-        reply: MockResponse,
+        reply: ProviderReply,
         band: std::ops::RangeInclusive<u64>,
     ) {
         let _one = ONE_PUBLISHER.lock().await;
         let clock = HeldClock::at(HELD_AT);
-        let (state, server) = mock(vec![reply, MockResponse::default()]).await;
+        let (state, server) = mock(vec![reply, ProviderReply::default()]).await;
         let rig = rig(
             instance,
             RigOpts {
@@ -7251,7 +7498,7 @@ mod pools_door_walk_and_breaker {
     async fn a_single_member_pool_benches_one_failure_below_the_trip_with_1_5_5s_wait() {
         benched_once(
             "rehome-walk-single-bench-unstated",
-            MockResponse::RateLimit {
+            ProviderReply::RateLimit {
                 status: StatusCode::TOO_MANY_REQUESTS,
                 provider_signal: None,
                 retry_after: None,
@@ -7261,7 +7508,7 @@ mod pools_door_walk_and_breaker {
         .await;
         benched_once(
             "rehome-walk-single-bench-stated",
-            MockResponse::RateLimit {
+            ProviderReply::RateLimit {
                 status: StatusCode::TOO_MANY_REQUESTS,
                 provider_signal: None,
                 retry_after: Some(60),
@@ -7275,7 +7522,7 @@ mod pools_door_walk_and_breaker {
     async fn a_transient_failure_is_benched_on_the_walks_clock() {
         benched_once(
             "rehome-walk-single-bench-walk-clock",
-            MockResponse::ServerError {
+            ProviderReply::ServerError {
                 status: StatusCode::INTERNAL_SERVER_ERROR,
                 body: serde_json::json!({ "error": "server error" }),
             },
@@ -7334,8 +7581,8 @@ mod pools_door_walk_and_breaker {
         assert_eq!(healthy.served(), 8);
     }
 
-    fn too_long(window: u64) -> MockResponse {
-        MockResponse::ServerError {
+    fn too_long(window: u64) -> ProviderReply {
+        ProviderReply::ServerError {
             status: StatusCode::BAD_REQUEST,
             body: serde_json::json!({"error": {"type": "invalid_request_error",
                 "message": format!("prompt is too long: 250000 tokens > {window} maximum")}}),
@@ -7347,7 +7594,7 @@ mod pools_door_walk_and_breaker {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-context-length";
         let (_refusing_state, refusing) = mock(vec![too_long(200_000)]).await;
-        let (_serving_state, serving) = mock(vec![MockResponse::Ok {
+        let (_serving_state, serving) = mock(vec![ProviderReply::Ok {
             status: StatusCode::OK,
             body: messages_answer_saying("ok"),
         }])
@@ -7377,7 +7624,7 @@ mod pools_door_walk_and_breaker {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-larger-window";
         let (_small_state, small) = mock(vec![too_long(8_000)]).await;
-        let (large_state, large) = mock(vec![MockResponse::Ok {
+        let (large_state, large) = mock(vec![ProviderReply::Ok {
             status: StatusCode::OK,
             body: messages_answer_saying("ok"),
         }])
@@ -7437,7 +7684,7 @@ mod pools_door_walk_and_breaker {
         let instance = "rehome-walk-clean-ends";
         const RUNS: usize = 8;
         let clean = || {
-            MockResponse::Sse {
+            ProviderReply::Sse {
             events: vec![
                 r#"{"type":"message_start"}"#.to_string(),
                 r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}"#.to_string(),
@@ -7471,7 +7718,7 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_presents_no_credential_for_a_passthrough_caller_with_none() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-passthrough-none";
-        let (state, server) = mock(vec![MockResponse::Ok {
+        let (state, server) = mock(vec![ProviderReply::Ok {
             status: StatusCode::OK,
             body: serde_json::from_str(SERVED_BY_TWIN).expect("JSON"),
         }])
@@ -7510,13 +7757,13 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_keeps_a_real_mid_stream_failure_with_its_member() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-real-midstream";
-        let (_bad_state, bad) = mock(vec![MockResponse::SseTransportError {
+        let (_bad_state, bad) = mock(vec![ProviderReply::SseTransportError {
             ok_events: vec![
                 r#"{"choices":[{"delta":{"content":"MEMBER-1-REAL-FIRST-FRAME"}}]}"#.to_string(),
             ],
         }])
         .await;
-        let (_good_state, good) = mock(vec![MockResponse::Sse {
+        let (_good_state, good) = mock(vec![ProviderReply::Sse {
             events: vec![
                 r#"{"choices":[{"delta":{"content":"MEMBER-2-MUST-NEVER-APPEAR"}}]}"#.to_string(),
             ],
@@ -7567,12 +7814,12 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_reroutes_a_tripped_primary_to_its_twin_without_dialling_it() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-tripped-primary";
-        let (primary_state, primary) = mock(vec![MockResponse::Ok {
+        let (primary_state, primary) = mock(vec![ProviderReply::Ok {
             status: StatusCode::OK,
             body: messages_answer_saying("from the primary"),
         }])
         .await;
-        let (twin_state, twin) = mock(vec![MockResponse::Ok {
+        let (twin_state, twin) = mock(vec![ProviderReply::Ok {
             status: StatusCode::OK,
             body: messages_answer_saying("from the twin"),
         }])
@@ -8620,7 +8867,6 @@ mod pools_door_money {
 
     use axum::http::StatusCode;
     use busbar_kernel::config::groups::{LimitCfg, LimitMetric, LimitWindow};
-    use busbar_kernel_testkit::test_support::{MockResponse, MockServer, MockServerState};
 
     use super::super::hook_seat_tests::DoorRig;
 
@@ -8628,12 +8874,12 @@ mod pools_door_money {
         busbar_kernel::store::now()
     }
 
-    async fn mock(replies: Vec<MockResponse>) -> (Arc<MockServerState>, MockServer) {
-        let state = Arc::new(MockServerState::new());
+    async fn mock(replies: Vec<ProviderReply>) -> (Arc<ProviderRequests>, ProviderEndpoint) {
+        let state = Arc::new(ProviderRequests::new());
         for reply in replies.into_iter().rev() {
             state.push(reply);
         }
-        let server = MockServer::new(Arc::clone(&state)).await;
+        let server = ProviderEndpoint::new(Arc::clone(&state)).await;
         (state, server)
     }
 
@@ -8876,8 +9122,8 @@ mod pools_door_money {
 
     async fn thirty_tokens_a_minute(
         instance: &'static str,
-        replies: Vec<MockResponse>,
-    ) -> (DoorRig, MockServer) {
+        replies: Vec<ProviderReply>,
+    ) -> (DoorRig, ProviderEndpoint) {
         let (_state, server) = mock(replies).await;
         let limits = [limit(LimitMetric::Tokens, 30, LimitWindow::Minute)];
         let rig = rig(
@@ -8898,7 +9144,7 @@ mod pools_door_money {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-money-tpm-whole";
         inside_one_minute().await;
-        let ok = || MockResponse::Ok {
+        let ok = || ProviderReply::Ok {
             status: StatusCode::OK,
             body: chat_160(),
         };
@@ -8983,7 +9229,7 @@ mod pools_door_money {
             busbar_kernel::config::limits::LimitsResolved::with_request_body_max_bytes(CAP),
         )));
         let instance = "rehome-money-over-cap";
-        let (_state, server) = mock(vec![MockResponse::Ok {
+        let (_state, server) = mock(vec![ProviderReply::Ok {
             status: StatusCode::OK,
             body: serde_json::json!({
                 "id": "chatcmpl-huge",
@@ -9546,7 +9792,6 @@ mod pools_door_counts_and_routes {
     use axum::http::StatusCode;
     use busbar_contract::Signal;
     use busbar_kernel::store::BreakerState;
-    use busbar_kernel_testkit::test_support::{MockResponse, MockServer, MockServerState};
 
     use super::super::hook_seat_tests::DoorRig;
 
@@ -9554,12 +9799,12 @@ mod pools_door_counts_and_routes {
         busbar_kernel::store::now()
     }
 
-    async fn mock(replies: Vec<MockResponse>) -> (Arc<MockServerState>, MockServer) {
-        let state = Arc::new(MockServerState::new());
+    async fn mock(replies: Vec<ProviderReply>) -> (Arc<ProviderRequests>, ProviderEndpoint) {
+        let state = Arc::new(ProviderRequests::new());
         for reply in replies.into_iter().rev() {
             state.push(reply);
         }
-        let server = MockServer::new(Arc::clone(&state)).await;
+        let server = ProviderEndpoint::new(Arc::clone(&state)).await;
         (state, server)
     }
 
@@ -9853,7 +10098,7 @@ mod pools_door_counts_and_routes {
     async fn the_pools_door_serves_a_fallback_pool_the_key_may_reach() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-route-fallback-acl";
-        let (state, server) = mock(vec![MockResponse::Ok {
+        let (state, server) = mock(vec![ProviderReply::Ok {
             status: StatusCode::OK,
             body: messages_answer(),
         }])
@@ -9889,7 +10134,7 @@ mod pools_door_counts_and_routes {
     async fn the_pools_door_serves_an_ad_hoc_provider_route() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-route-adhoc";
-        let (state, server) = mock(vec![MockResponse::Ok {
+        let (state, server) = mock(vec![ProviderReply::Ok {
             status: StatusCode::OK,
             body: messages_answer(),
         }])
@@ -9925,7 +10170,7 @@ mod pools_door_counts_and_routes {
     async fn the_pools_door_serves_a_model_named_directly() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-route-direct-model";
-        let (state, server) = mock(vec![MockResponse::Ok {
+        let (state, server) = mock(vec![ProviderReply::Ok {
             status: StatusCode::OK,
             body: messages_answer(),
         }])
@@ -9989,8 +10234,8 @@ mod pools_door_counts_and_routes {
         status: StatusCode,
         started: &Arc<tokio::sync::Notify>,
         release: &Arc<tokio::sync::Notify>,
-    ) -> MockResponse {
-        MockResponse::Gated {
+    ) -> ProviderReply {
+        ProviderReply::Gated {
             status,
             body: serde_json::json!({"error": {"message": "boom"}}),
             started: Arc::clone(started),
@@ -10135,7 +10380,7 @@ mod pools_door_counts_and_routes {
             Arc::new(tokio::sync::Notify::new()),
             Arc::new(tokio::sync::Notify::new()),
         );
-        let (_state, server) = mock(vec![MockResponse::Gated {
+        let (_state, server) = mock(vec![ProviderReply::Gated {
             status: StatusCode::BAD_REQUEST,
             body: serde_json::json!({"error": {"message": "malformed request"}}),
             started: Arc::clone(&started),
