@@ -504,6 +504,7 @@ fn a_dropped_framers_sealed_opening_keeps_its_exact_wire_bytes_through_tls() {
     const BODY: &[u8] = b"application-body-unchanged";
     const METHOD: &[u8] = b"POST";
     const TARGET: &[u8] = b"/v1/wire-custody";
+    const PROTOCOL: &[u8] = b"http/1.1";
     let door = composing_door();
     let scheme = door
         .facts()
@@ -530,7 +531,14 @@ fn a_dropped_framers_sealed_opening_keeps_its_exact_wire_bytes_through_tls() {
             rustls_pki_types::PrivateKeyDer::try_from(signing_key.serialize_der()).unwrap(),
         )
         .unwrap();
-    server.alpn_protocols = framer::accept_offer(door.as_ref()).unwrap();
+    // The stateless encode_head oracle below renders the ordinary HTTP/1.1 envelope. Negotiate
+    // that declared protocol here too: a valid h2 negotiation produces different wire bytes.
+    let protocol = framer::accept_offer(door.as_ref())
+        .unwrap()
+        .into_iter()
+        .find(|protocol| protocol.as_slice() == PROTOCOL)
+        .expect("the framer offers the HTTP/1.1 wire this witness compares");
+    server.alpn_protocols = vec![protocol];
     support::worker().block_on(async {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let far = listener.local_addr().unwrap();
@@ -544,6 +552,7 @@ fn a_dropped_framers_sealed_opening_keeps_its_exact_wire_bytes_through_tls() {
                 .accept(socket)
                 .await
                 .unwrap();
+            assert_eq!(socket.get_ref().1.alpn_protocol(), Some(PROTOCOL));
             let mut got = Vec::new();
             let mut buffer = [0_u8; 1024];
             while !got.ends_with(BODY) {
@@ -595,6 +604,14 @@ fn a_dropped_framers_sealed_opening_keeps_its_exact_wire_bytes_through_tls() {
         .await
         .unwrap()
         .unwrap();
+        assert_eq!(
+            connection.established().agreed_protocol.as_deref(),
+            Some(PROTOCOL)
+        );
+        assert_eq!(
+            connection.established().scheme,
+            busbar_contract::abi::host::service::SCHEME_SECURE
+        );
         let got = read.await.unwrap();
         assert_eq!(
             got, expected,
