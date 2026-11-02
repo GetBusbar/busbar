@@ -119,6 +119,10 @@ fn chain_position_verdict(module: &str, verdict: AuthVerdict) -> Option<ChainVer
     }
 }
 
+fn complete_chain(verdict: Option<ChainVerdict>) -> ChainVerdict {
+    verdict.unwrap_or(ChainVerdict::Denied)
+}
+
 fn deny_unavailable_chain(verdict: Result<ChainVerdict, VerifierUnavailable>) -> ChainVerdict {
     verdict.unwrap_or(ChainVerdict::Denied)
 }
@@ -967,14 +971,14 @@ impl AuthMiddleware {
                 if matches!(verdict, ChainVerdict::Identified { .. }) {
                     *claim = ReplayClaim::of(&entry.provider, judged.replay, now);
                 }
-                return Ok(verdict);
+                return Ok(complete_chain(Some(verdict)));
             }
         }
 
         if self.keys_in_chain {
             return Ok(keys_arm_verdict(gov, candidate, now, expected_aud));
         }
-        Ok(ChainVerdict::Denied)
+        Ok(complete_chain(None))
     }
 
     pub fn flush_verified(&self, module: Option<&str>) -> Result<u64, String> {
@@ -1324,12 +1328,12 @@ async fn run_admin_chain(
             if matches!(verdict, ChainVerdict::Identified { .. }) {
                 carried.replay = outcome.replay.map(|r| (name.clone(), r));
                 let cap = module_admin_scope_cap(app, name);
-                return (verdict, cap);
+                return (complete_chain(Some(verdict)), cap);
             }
-            return (verdict, None);
+            return (complete_chain(Some(verdict)), None);
         }
     }
-    (ChainVerdict::Denied, None)
+    (complete_chain(None), None)
 }
 
 async fn external_admin_module(
@@ -1397,7 +1401,11 @@ pub fn dry_run_admin_scope(
         return busbar_contract::authz::Grants::default();
     }
 
-    match probe_admin_door(app, "GET", "/", headers, false) {
+    admin_scope_from_door(probe_admin_door(app, "GET", "/", headers, false))
+}
+
+fn admin_scope_from_door(door: AdminDoor) -> busbar_contract::authz::Grants {
+    match door {
         AdminDoor::Identified(_, grants) | AdminDoor::Listed(_, grants, _) => grants,
 
         AdminDoor::Open | AdminDoor::Denied | AdminDoor::Unavailable(_) => {
@@ -1463,6 +1471,37 @@ fn admin_head(
     }
 }
 
+fn admin_chain_outcome(
+    verdict: ChainVerdict,
+    no_verdict: bool,
+) -> Result<ChainVerdict, VerifierUnavailable> {
+    if no_verdict && verdict == ChainVerdict::Denied {
+        Err(VerifierUnavailable::NoVerdict)
+    } else {
+        Ok(verdict)
+    }
+}
+
+fn admin_probe_projection(
+    verdict: Result<ChainVerdict, VerifierUnavailable>,
+    project: impl FnOnce(ChainVerdict) -> (AdminDoor, Option<PendingClaim>),
+) -> (AdminDoor, Option<PendingClaim>) {
+    match verdict {
+        Ok(verdict) => project(verdict),
+        Err(error) => (AdminDoor::Unavailable(error), None),
+    }
+}
+
+fn unclaimed_admin_replay(
+    identified: bool,
+    replay: Option<(String, Box<Replay>)>,
+    now: u64,
+) -> Option<ReplayClaim> {
+    replay
+        .filter(|_| identified)
+        .and_then(|(provider, replay)| ReplayClaim::of(&provider, Some(replay), now))
+}
+
 async fn judge_admin_door(
     app: &App,
     method: &str,
@@ -1474,9 +1513,7 @@ async fn judge_admin_door(
 ) -> Result<AdminDoor, VerifierUnavailable> {
     let (verdict, cap, replay, no_verdict) =
         judge_admin_chain(app, method, target, headers, probe, strips).await;
-    if no_verdict && verdict == ChainVerdict::Denied {
-        return Err(VerifierUnavailable::NoVerdict);
-    }
+    let verdict = admin_chain_outcome(verdict, no_verdict)?;
     let (door, pending) = admin_door_claim_of(app, verdict, cap, replay);
 
     if claim && admin_door_admits(&door, method, target) && !claim_won(pending.as_ref()).await {
@@ -1510,9 +1547,7 @@ fn admin_door_claim_of(
 ) -> (AdminDoor, Option<PendingClaim>) {
     let identified = matches!(verdict, ChainVerdict::Identified { .. });
     let now = busbar_kernel::store::now();
-    let claim = replay
-        .filter(|_| identified)
-        .and_then(|(provider, replay)| ReplayClaim::of(&provider, Some(replay), now));
+    let claim = unclaimed_admin_replay(identified, replay, now);
     (
         admin_door_of(app, verdict, cap),
         PendingClaim::of(claim, app.governance.clone()),
@@ -1659,10 +1694,9 @@ fn probe_admin_verdict(
             return (AdminDoor::Unavailable(VerifierUnavailable::NoVerdict), None)
         }
     };
-    if no_verdict && verdict == ChainVerdict::Denied {
-        return (AdminDoor::Unavailable(VerifierUnavailable::NoVerdict), None);
-    }
-    admin_door_claim_of(app, verdict, cap, replay)
+    admin_probe_projection(admin_chain_outcome(verdict, no_verdict), |verdict| {
+        admin_door_claim_of(app, verdict, cap, replay)
+    })
 }
 
 fn admin_scope_from_bindings(
@@ -1869,6 +1903,17 @@ pub const ADMIN_AUTH_UNAVAILABLE_MESSAGE: &str =
 
 pub const ADMIN_AUTH_RETRY_AFTER: &str = crate::limits::admission::OVERLOADED_RETRY_AFTER;
 
+fn admin_principal_or_response(door: AdminDoor) -> Result<Option<Principal>, Response> {
+    match door {
+        AdminDoor::Identified(principal, _) | AdminDoor::Listed(principal, _, _) => {
+            Ok(Some(principal))
+        }
+        AdminDoor::Open => Ok(None),
+        AdminDoor::Denied => Err(admin_unauthorized_response()),
+        AdminDoor::Unavailable(_) => Err(admin_unavailable_response()),
+    }
+}
+
 fn admin_unavailable_response() -> Response {
     let mut resp = crate::admin::gate::err_json(&crate::admin::gate::ApiError::Unavailable(
         ADMIN_AUTH_UNAVAILABLE_MESSAGE.to_string(),
@@ -2043,15 +2088,9 @@ pub(crate) async fn auth_middleware(
         strike_named(&mut req, &mut consumed, &strips);
         req.extensions_mut().insert(consumed);
 
-        let principal = match door {
-            AdminDoor::Identified(principal, _) | AdminDoor::Listed(principal, _, _) => {
-                Some(principal)
-            }
-
-            AdminDoor::Open => None,
-
-            AdminDoor::Denied => return Err(admin_unauthorized_response()),
-            AdminDoor::Unavailable(_) => return Err(admin_unavailable_response()),
+        let principal = match admin_principal_or_response(door) {
+            Ok(principal) => principal,
+            Err(response) => return Err(response),
         };
         let required = crate::admin::gate::required_scope(req.method(), &path);
 

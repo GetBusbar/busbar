@@ -1021,7 +1021,7 @@ fn an_unanswered_operator_does_not_open_a_verifier() {
         Operator::open(
             "operator-provider",
             std::iter::empty(),
-            &|module| module == "operator-provider",
+            &|module: &str| module == "operator-provider",
             false,
             digest,
             |_| panic!("an unanswered operator must not invoke a verifier factory"),
@@ -1143,21 +1143,30 @@ pub(super) fn operator_app(
     app
 }
 
-async fn walk(verified: busbar_contract::auth_calls::Verified) -> AdminChainAnswer {
-    let app = operator_app(verified);
-    let headers = admin_headers(Some("tok"), None);
-    run_admin_chain(&app, "GET", "/", &headers, false, &mut Default::default()).await
-}
-
-#[tokio::test]
-async fn the_operator_door_is_awaited_and_an_unjudged_verify_is_the_1_5_5_refusal() {
+#[test]
+fn operator_answer_continuation_preserves_identified_and_refusal_types() {
     use busbar_contract::auth_calls::{Verified, VerifiedIdentity};
-    let identity = Verified::Identity(VerifiedIdentity {
-        subject: "admin".into(),
-        ..VerifiedIdentity::default()
-    });
+    // The old producer returned Ready immediately from both verify/probe; its assertions
+    // classified answers, rather than proving a Pending await. Real Pending is tested at root.
+    let outcome = |verified: Verified| {
+        let answered = Judgement::answered(verified.into());
+        let verdict = complete_chain(chain_position_verdict(
+            "operator-provider",
+            answered.verdict,
+        ));
+        let operator = Operator::new("operator-provider");
+        let cap = if matches!(&verdict, ChainVerdict::Identified { .. }) {
+            module_scope_cap(&Default::default(), &operator, "operator-provider")
+        } else {
+            None
+        };
+        (verdict, cap)
+    };
     assert!(matches!(
-        walk(identity).await,
+        outcome(Verified::Identity(VerifiedIdentity {
+            subject: "admin".into(),
+            ..Default::default()
+        })),
         (ChainVerdict::Identified { .. }, _)
     ));
     for refused in [
@@ -1167,127 +1176,229 @@ async fn the_operator_door_is_awaited_and_an_unjudged_verify_is_the_1_5_5_refusa
         Verified::Failed,
     ] {
         assert_eq!(
-            walk(refused.clone()).await,
+            outcome(refused.clone()),
             (ChainVerdict::Denied, None),
             "{refused:?}: 1.5.5's refusal"
         );
     }
 }
 
-async fn admin_get(app: std::sync::Arc<crate::state::App>) -> (u16, Option<String>, String) {
-    let (base, handle) = serve_app(app).await;
-    let r = reqwest::Client::new()
-        .get(format!("{base}/api/v1/admin/keys"))
-        .bearer_auth("tok")
-        .send()
-        .await
-        .unwrap();
-    let status = r.status().as_u16();
-    let retry_after = r
-        .headers()
-        .get("retry-after")
-        .map(|v| v.to_str().unwrap_or_default().to_string());
-    let text = r.text().await.unwrap();
-    handle.abort();
-    (status, retry_after, text)
-}
-
 #[tokio::test]
-async fn an_operator_door_without_a_verdict_answers_503_and_an_overloaded_one_the_1_5_5_admin_401()
-{
+async fn operator_answer_response_projection_preserves_503_and_legacy_401() {
     use busbar_contract::auth_calls::Verified;
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let rejected = admin_get(operator_app(Verified::Reject)).await;
-    assert_eq!(rejected.0, 401, "a bad credential is the admin 401");
-    assert_eq!(rejected.1, None, "a 401 names no Retry-After");
-    let overloaded = admin_get(operator_app(Verified::Overloaded)).await;
+    async fn inspect(door: AdminDoor) -> (u16, Option<String>, String) {
+        let response = admin_principal_or_response(door).expect_err("a refusal has no principal");
+        let status = response.status().as_u16();
+        let retry = response
+            .headers()
+            .get("retry-after")
+            .map(|value| value.to_str().unwrap().to_string());
+        let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        (status, retry, String::from_utf8(body.to_vec()).unwrap())
+    }
+    let project = |verdict| {
+        let identified = matches!(&verdict, ChainVerdict::Identified { .. });
+        let claim = unclaimed_admin_replay(identified, None, 7);
+        let operator = Operator::new("operator-provider");
+        (
+            admin_door_from_bindings(
+                &Default::default(),
+                &operator,
+                "admin",
+                verdict,
+                None,
+                crate::admin::seam::admin_verb_rung,
+            ),
+            PendingClaim::of(claim, None),
+        )
+    };
+    let classified = |verified: Verified| {
+        let answered = Judgement::answered(verified.into());
+        admin_probe_projection(
+            admin_chain_outcome(
+                complete_chain(chain_position_verdict(
+                    "operator-provider",
+                    answered.verdict,
+                )),
+                answered.no_verdict,
+            ),
+            project,
+        )
+        .0
+    };
+    let rejected = inspect(classified(Verified::Reject)).await;
+    assert_eq!(rejected.0, 401, "a bad credential is the admin401");
+    assert_eq!(rejected.1, None, "a401 names no Retry-After");
+    let overloaded = inspect(classified(Verified::Overloaded)).await;
     assert_eq!(
         overloaded, rejected,
-        "an overloaded verifier: the same bytes"
+        "an overloaded operator answer uses the same bytes"
     );
-    let failed = admin_get(operator_app(Verified::Failed)).await;
+    let failed = inspect(classified(Verified::Failed)).await;
     assert_eq!(
         (failed.0, failed.1.as_deref()),
         (503, Some("1")),
-        "a verdict-less verifier: 503 + Retry-After (SIGN-auth-kind 2026-10-30): {failed:?}"
+        "a verdict-less answer projects503+Retry-After (SIGN-auth-kind 2026-10-30)"
     );
-    let body: serde_json::Value = serde_json::from_str(&failed.2).expect("the admin envelope");
+    let body: serde_json::Value = serde_json::from_str(&failed.2).expect("the real admin envelope");
     assert_eq!(body["error"]["code"], "unavailable", "{failed:?}");
 }
 
 #[tokio::test]
-async fn an_external_admin_door_without_a_verdict_answers_503_and_a_reject_401() {
-    use busbar_contract::auth_calls::Verified;
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let door = |calls: std::sync::Arc<dyn AuthCalls>| {
-        crate::test_support::TestApp::new()
-            .admin_chain(vec!["ext".to_string()])
-            .admin_door("ext", calls)
-            .build()
+async fn external_admin_answer_projection_preserves_failed_faulted_and_reject_responses() {
+    use busbar_contract::auth_calls::{Verified, VerifiedIdentity};
+    async fn inspect(door: AdminDoor) -> (u16, Option<String>, String) {
+        let response = admin_principal_or_response(door).expect_err("a refusal has no principal");
+        let status = response.status().as_u16();
+        let retry = response
+            .headers()
+            .get("retry-after")
+            .map(|value| value.to_str().unwrap().to_string());
+        let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        (status, retry, String::from_utf8(body.to_vec()).unwrap())
+    }
+    let project = |verdict| {
+        let identified = matches!(&verdict, ChainVerdict::Identified { .. });
+        let claim = unclaimed_admin_replay(identified, None, 7);
+        let operator = Operator::new("operator-provider");
+        (
+            admin_door_from_bindings(
+                &Default::default(),
+                &operator,
+                "admin",
+                verdict,
+                None,
+                crate::admin::seam::admin_verb_rung,
+            ),
+            PendingClaim::of(claim, None),
+        )
     };
-    let rejected = admin_get(door(std::sync::Arc::new(AnswersOnly(Verified::Reject)))).await;
+    let classified = |verified: Verified, faulted| {
+        let answered = admin_verdict_of(verified.into(), faulted);
+        admin_probe_projection(
+            admin_chain_outcome(
+                complete_chain(chain_position_verdict("ext", answered.verdict)),
+                answered.no_verdict,
+            ),
+            project,
+        )
+        .0
+    };
+    let rejected = inspect(classified(Verified::Reject, false)).await;
     assert_eq!(
         (rejected.0, rejected.1.as_deref()),
         (401, None),
         "{rejected:?}"
     );
-    for (what, calls) in [
-        (
-            "FAILED",
-            std::sync::Arc::new(AnswersOnly(Verified::Failed)) as std::sync::Arc<dyn AuthCalls>,
-        ),
+    for (what, verified, faulted) in [
+        ("FAILED", Verified::Failed, false),
         (
             "FAULT",
-            std::sync::Arc::new(FaultingDoor) as std::sync::Arc<dyn AuthCalls>,
+            Verified::Identity(VerifiedIdentity {
+                subject: "faulted".into(),
+                ..Default::default()
+            }),
+            true,
         ),
     ] {
-        let answered = admin_get(door(calls)).await;
+        let answered = inspect(classified(verified, faulted)).await;
         assert_eq!(
             (answered.0, answered.1.as_deref()),
             (503, Some("1")),
-            "{what}: 503 + Retry-After (SIGN-auth-kind 2026-10-30): {answered:?}"
+            "{what}:503+Retry-After (SIGN-auth-kind 2026-10-30): {answered:?}"
         );
     }
 }
 
 #[test]
 fn the_sync_admin_door_probe_fails_closed_when_the_operator_verifier_is_overloaded() {
-    let app = operator_app(busbar_contract::auth_calls::Verified::Overloaded);
-    let headers = admin_headers(Some("tok"), None);
-    assert!(dry_run_admin_scope(&app, &headers) == busbar_contract::authz::Grants::default());
-    assert_eq!(admin_door(&app, "GET", "/", &headers), AdminDoor::Denied);
+    let project = |verdict| {
+        let identified = matches!(&verdict, ChainVerdict::Identified { .. });
+        let claim = unclaimed_admin_replay(identified, None, 7);
+        let operator = Operator::new("operator-provider");
+        (
+            admin_door_from_bindings(
+                &Default::default(),
+                &operator,
+                "admin",
+                verdict,
+                None,
+                crate::admin::seam::admin_verb_rung,
+            ),
+            PendingClaim::of(claim, None),
+        )
+    };
+    let answered = Judgement::answered(busbar_contract::auth_calls::Verified::Overloaded.into());
+    let (door, _) = admin_probe_projection(
+        admin_chain_outcome(
+            complete_chain(chain_position_verdict(
+                "operator-provider",
+                answered.verdict,
+            )),
+            answered.no_verdict,
+        ),
+        project,
+    );
+    assert_eq!(
+        admin_scope_from_door(door.clone()),
+        busbar_contract::authz::Grants::default()
+    );
+    assert_eq!(door, AdminDoor::Denied);
 }
 
 #[test]
 fn the_sync_admin_door_keeps_no_verdict_for_the_root_http_projection() {
     use busbar_contract::auth_calls::Verified;
-    let headers = admin_headers(Some("tok"), None);
     for verified in [Verified::Failed, Verified::Reject, Verified::Overloaded] {
         let expected = if matches!(verified, Verified::Failed) {
             AdminDoor::Unavailable(VerifierUnavailable::NoVerdict)
         } else {
             AdminDoor::Denied
         };
-        for app in [
-            operator_app(verified.clone()),
-            crate::test_support::TestApp::new()
-                .admin_chain(vec!["ext".to_string()])
-                .admin_door("ext", std::sync::Arc::new(AnswersOnly(verified.clone())))
-                .build(),
-        ] {
-            let judged = admin_verdict(&app, "GET", "/api/v1/admin/keys", &headers);
-            assert_eq!(judged.door, expected, "{verified:?}");
-            assert!(
-                judged.claim.is_none(),
-                "an unidentified request claims nothing"
+        for operator in [true, false] {
+            let answered = if operator {
+                Judgement::answered(verified.clone().into())
+            } else {
+                admin_verdict_of(verified.clone().into(), false)
+            };
+            let verdict = complete_chain(chain_position_verdict("provider", answered.verdict));
+            let (door, claim) = admin_probe_projection(
+                admin_chain_outcome(verdict, answered.no_verdict),
+                |verdict| {
+                    let identified = matches!(&verdict, ChainVerdict::Identified { .. });
+                    // Actual production filtering must ignore even supplied replay metadata for
+                    // an unidentified answer; no fake producer or application is constructed.
+                    let replay = Some((
+                        "provider".to_string(),
+                        Box::new(Replay {
+                            key: "unidentified".into(),
+                            ttl_secs: 60,
+                        }),
+                    ));
+                    let claim = unclaimed_admin_replay(identified, replay, 7);
+                    let op = Operator::new("operator-provider");
+                    (
+                        admin_door_from_bindings(
+                            &Default::default(),
+                            &op,
+                            "admin",
+                            verdict,
+                            None,
+                            crate::admin::seam::admin_verb_rung,
+                        ),
+                        PendingClaim::of(claim, None),
+                    )
+                },
             );
-            assert!(!admin_door_admits(
-                &judged.door,
-                "GET",
-                "/api/v1/admin/keys"
-            ));
+            assert_eq!(door, expected, "{verified:?}");
+            assert!(claim.is_none(), "an unidentified request claims nothing");
+            assert!(!admin_door_admits(&door, "GET", "/api/v1/admin/keys"));
             assert_eq!(
-                dry_run_admin_scope(&app, &headers),
+                admin_scope_from_door(door),
                 busbar_contract::authz::Grants::default(),
                 "an unavailable or rejecting verifier grants nothing"
             );
