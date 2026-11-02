@@ -139,6 +139,14 @@ fn program_section(secret: &SecretRef) -> serde_yaml::Value {
     );
     fs.insert("command".into(), "/bin/sh".into());
     fs.insert(
+        "cwd".into(),
+        std::env::current_dir()
+            .expect("an absolute fixture cwd")
+            .to_str()
+            .expect("a UTF-8 fixture cwd")
+            .into(),
+    );
+    fs.insert(
         "args".into(),
         serde_yaml::Value::Sequence(vec![
             "-c".into(),
@@ -156,7 +164,7 @@ fn program_section(secret: &SecretRef) -> serde_yaml::Value {
     }
     fs.insert(
         "pin".into(),
-        serde_yaml::from_str("{ mechanism: pinned_pubkey, key: \"sha256/K=\" }").expect("a pin"),
+        serde_yaml::from_str("{ mechanism: local_program, key: \"/bin/sh\" }").expect("a pin"),
     );
     fs.insert(
         "tools_allow".into(),
@@ -337,7 +345,8 @@ async fn tool_door_an_unresolved_subject_token_refuses_the_boot_naming_its_sourc
     let secret = SecretRef::env(unset("TOOLS_EXCHANGE_COMPOSE"));
     refused_naming_its_source(&secret);
     let mut server = TlsToolServer::listing(Arc::new(Mutex::new(three_tools()))).await;
-    let Err(refusal) = server.try_rig(instance, exchange_section(&server, &secret), &|app| app) else {
+    let Err(refusal) = server.try_rig(instance, exchange_section(&server, &secret), &|app| app)
+    else {
         panic!("a subject token that does not resolve refuses the composition");
     };
     println!("SECRET-SOURCE {instance}: compose refused (operator): {refusal}");

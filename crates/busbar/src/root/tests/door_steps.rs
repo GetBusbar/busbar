@@ -3365,6 +3365,9 @@ pub(crate) mod tool_door {
             busbar_kernel_testkit::test_support::TestApp,
         ) -> busbar_kernel_testkit::test_support::TestApp,
     ) -> Rig {
+        let row = super::door_boundary::row();
+        super::door_boundary::registry(row);
+        let slot = super::door_boundary::slot_over(row, tools.clone());
         Rig::with(
             instance,
             port,
@@ -3372,16 +3375,19 @@ pub(crate) mod tool_door {
             None,
             Some(tools),
             Footing::own(),
-            configure,
+            &|app| super::door_boundary::dispatched(configure(app), row, &slot),
         )
     }
 
-    /// [`rig_tools`], the composition's refusal answered: what the boot would refuse with.
+    /// [`rig_tools`], the composition's refusal answered: what boot would refuse with.
     pub(crate) fn try_rig_tools(
         instance: &'static str,
         port: u16,
         tools: serde_yaml::Value,
     ) -> Result<Rig, String> {
+        let row = super::door_boundary::row();
+        super::door_boundary::registry(row);
+        let slot = super::door_boundary::slot_over(row, tools.clone());
         Rig::try_with(
             instance,
             port,
@@ -3389,7 +3395,7 @@ pub(crate) mod tool_door {
             None,
             Some(tools),
             Footing::own(),
-            &|app| app,
+            &|app| super::door_boundary::dispatched(app, row, &slot),
         )
     }
 
@@ -7765,12 +7771,20 @@ pub(crate) mod program_member {
         fs.insert("transport".into(), "stdio".into());
         fs.insert("command".into(), "/bin/sh".into());
         fs.insert(
+            "cwd".into(),
+            std::env::current_dir()
+                .expect("an absolute fixture cwd")
+                .to_str()
+                .expect("a UTF-8 fixture cwd")
+                .into(),
+        );
+        fs.insert(
             "args".into(),
             serde_yaml::Value::Sequence(vec!["-c".into(), script.into()]),
         );
         fs.insert(
             "pin".into(),
-            serde_yaml::from_str("{ mechanism: pinned_pubkey, key: \"sha256/K=\" }").unwrap(),
+            serde_yaml::from_str("{ mechanism: local_program, key: \"/bin/sh\" }").unwrap(),
         );
         fs.insert(
             "tools_allow".into(),
@@ -7812,7 +7826,7 @@ pub(crate) mod program_member {
         let instance = "door-program-member";
         let rig = rig_tools(instance, 0, section(), &|app| app);
 
-        let (status, body) = send(&rig.router, Some(&rig.token), CALL).await;
+        let (status, body) = send(&rig.router, Some(&rig.bound_token()), CALL).await;
         assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
         let first = text(&body);
         assert!(first.starts_with("from the server "), "{first}");
@@ -7828,7 +7842,7 @@ pub(crate) mod program_member {
         );
         assert_eq!(fact(&first, "calls"), "1");
 
-        let (status, body) = send(&rig.router, Some(&rig.token), CALL).await;
+        let (status, body) = send(&rig.router, Some(&rig.bound_token()), CALL).await;
         assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
         let second = text(&body);
         assert_eq!(
@@ -7855,7 +7869,7 @@ pub(crate) mod program_member {
         let _one = PUBLISHING.lock().await;
         let _first = crate::root::doors::dispatcher();
         let rig = rig_tools("door-program-member-own", 0, section(), &|app| app);
-        let (status, body) = send(&rig.router, Some(&rig.token), CALL).await;
+        let (status, body) = send(&rig.router, Some(&rig.bound_token()), CALL).await;
         assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
         let text = text(&body);
         assert!(text.starts_with("from the server "), "{text}");
@@ -7893,7 +7907,7 @@ mod program_member_supervised {
 
         // Called every 150 ms for 3.6 s: well past the four backoffs (1.5 s), well inside a minute.
         for _ in 0..24 {
-            let _ = send(&rig.router, Some(&rig.token), CALL).await;
+            let _ = send(&rig.router, Some(&rig.bound_token()), CALL).await;
             tokio::time::sleep(std::time::Duration::from_millis(150)).await;
         }
         let spawned = std::fs::read_to_string(&spawns)
@@ -7949,12 +7963,20 @@ done
         fs.insert("transport".into(), "stdio".into());
         fs.insert("command".into(), "/bin/sh".into());
         fs.insert(
+            "cwd".into(),
+            std::env::current_dir()
+                .expect("an absolute fixture cwd")
+                .to_str()
+                .expect("a UTF-8 fixture cwd")
+                .into(),
+        );
+        fs.insert(
             "args".into(),
             serde_yaml::Value::Sequence(vec!["-c".into(), script().into()]),
         );
         fs.insert(
             "pin".into(),
-            serde_yaml::from_str("{ mechanism: pinned_pubkey, key: \"sha256/K=\" }").unwrap(),
+            serde_yaml::from_str("{ mechanism: local_program, key: \"/bin/sh\" }").unwrap(),
         );
         fs.insert(
             "grants".into(),
@@ -8006,7 +8028,7 @@ done
         let rig = rig_tools(instance, 0, section(true), &|app| app);
 
         // THE ASK reaches the caller verbatim, under busbar's sealed state.
-        let (status, body) = call(&rig.router, &rig.token, CALL).await;
+        let (status, body) = call(&rig.router, &rig.bound_token(), CALL).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["id"], 30, "{body}");
         assert_eq!(body["result"]["resultType"], "input_required", "{body}");
@@ -8022,7 +8044,7 @@ done
 
         // THE ANSWER reaches the child under its own id, and the call it owed is answered.
         let answered = retry(serde_json::json!({ "srv-ask-1": draft() }), &state);
-        let (status, body) = call(&rig.router, &rig.token, &answered).await;
+        let (status, body) = call(&rig.router, &rig.bound_token(), &answered).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(
             body["result"]["content"][0]["text"], "answered with the callers own draft",
@@ -8030,11 +8052,11 @@ done
         );
 
         // RED: a spent state, and a forged one, are refused.
-        let (status, body) = call(&rig.router, &rig.token, &answered).await;
+        let (status, body) = call(&rig.router, &rig.bound_token(), &answered).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "a spent state: {body}");
         let (status, body) = call(
             &rig.router,
-            &rig.token,
+            &rig.bound_token(),
             &retry(serde_json::json!({ "srv-ask-1": draft() }), "forged"),
         )
         .await;
@@ -8046,7 +8068,7 @@ done
 
         // RED: busbar answers none of the child's requests itself, so a retry that leaves one
         // unanswered is refused, unspent; the whole answer then goes through.
-        let (status, body) = call(&rig.router, &rig.token, CALL).await;
+        let (status, body) = call(&rig.router, &rig.bound_token(), CALL).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         let state = body["result"]["requestState"]
             .as_str()
@@ -8058,7 +8080,7 @@ done
         );
         let (status, body) = call(
             &rig.router,
-            &rig.token,
+            &rig.bound_token(),
             &retry(serde_json::json!({}), &state),
         )
         .await;
@@ -8066,7 +8088,7 @@ done
         assert_eq!(body["error"]["data"]["reason"], "ask_unanswered", "{body}");
         let (status, body) = call(
             &rig.router,
-            &rig.token,
+            &rig.bound_token(),
             &retry(serde_json::json!({ "srv-ask-2": draft() }), &state),
         )
         .await;
@@ -8082,7 +8104,7 @@ done
         let _one = PUBLISHING.lock().await;
         let instance = "door-program-ask-ungranted";
         let rig = rig_tools(instance, 0, section(false), &|app| app);
-        let (status, body) = call(&rig.router, &rig.token, CALL).await;
+        let (status, body) = call(&rig.router, &rig.bound_token(), CALL).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert!(body["result"].get("inputRequests").is_none(), "{body}");
         assert_eq!(
