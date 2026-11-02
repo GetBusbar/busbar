@@ -23,8 +23,8 @@ impl StoreCalls for FailOverlayReads {
     }
     fn apply_usage_correction<'a>(
         &'a self,
-        request: &'a crate::records::correction::Request,
-    ) -> StoreCall<'a, crate::records::correction::Decision> {
+        request: &'a busbar_contract::records::correction::Request,
+    ) -> StoreCall<'a, busbar_contract::records::correction::Decision> {
         self.actual.apply_usage_correction(request)
     }
     fn supports_record_transaction(&self) -> bool {
@@ -32,8 +32,8 @@ impl StoreCalls for FailOverlayReads {
     }
     fn record_transaction<'a>(
         &'a self,
-        request: &'a crate::abi::sdk::store::conditional::Request,
-    ) -> StoreCall<'a, crate::abi::sdk::store::conditional::Decision> {
+        request: &'a busbar_contract::abi::sdk::store::conditional::Request,
+    ) -> StoreCall<'a, busbar_contract::abi::sdk::store::conditional::Decision> {
         self.actual.record_transaction(request)
     }
     fn add_usage_batch<'a>(
@@ -79,13 +79,16 @@ impl StoreCalls for FailOverlayReads {
     ) -> StoreCall<'a, Vec<(Vec<u8>, RecordBytes)>> {
         self.actual.record_scan(schema, prefix, limit)
     }
-    fn put_key<'a>(&'a self, key: &'a crate::records::VirtualKey) -> StoreCall<'a, ()> {
+    fn put_key<'a>(&'a self, key: &'a busbar_contract::records::VirtualKey) -> StoreCall<'a, ()> {
         self.actual.put_key(key)
     }
-    fn get_key<'a>(&'a self, id: &'a str) -> StoreCall<'a, Option<crate::records::VirtualKey>> {
+    fn get_key<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> StoreCall<'a, Option<busbar_contract::records::VirtualKey>> {
         self.actual.get_key(id)
     }
-    fn list_keys(&self) -> StoreCall<'_, Vec<crate::records::VirtualKey>> {
+    fn list_keys(&self) -> StoreCall<'_, Vec<busbar_contract::records::VirtualKey>> {
         self.actual.list_keys()
     }
     fn delete_key<'a>(&'a self, id: &'a str) -> StoreCall<'a, ()> {
@@ -93,15 +96,15 @@ impl StoreCalls for FailOverlayReads {
     }
     fn put_key_with_credential<'a>(
         &'a self,
-        key: &'a crate::records::VirtualKey,
-        secret: &'a crate::records::CredentialSecret,
+        key: &'a busbar_contract::records::VirtualKey,
+        secret: &'a busbar_contract::records::CredentialSecret,
     ) -> StoreCall<'a, ()> {
         self.actual.put_key_with_credential(key, secret)
     }
     fn list_credentials<'a>(
         &'a self,
         key_id: &'a str,
-    ) -> StoreCall<'a, Vec<crate::records::CredentialMeta>> {
+    ) -> StoreCall<'a, Vec<busbar_contract::records::CredentialMeta>> {
         self.actual.list_credentials(key_id)
     }
     fn revoke_credential<'a>(&'a self, id: &'a str, reason: &'a str) -> StoreCall<'a, ()> {
@@ -110,7 +113,7 @@ impl StoreCalls for FailOverlayReads {
     fn list_credentials_since(
         &self,
         since: u64,
-    ) -> StoreCall<'_, Vec<crate::records::CredentialSecret>> {
+    ) -> StoreCall<'_, Vec<busbar_contract::records::CredentialSecret>> {
         self.actual.list_credentials_since(since)
     }
     fn add_denylist<'a>(&'a self, sub: &'a str, reason: &'a str) -> StoreCall<'a, ()> {
@@ -119,13 +122,19 @@ impl StoreCalls for FailOverlayReads {
     fn list_denylist(&self) -> StoreCall<'_, Vec<String>> {
         self.actual.list_denylist()
     }
-    fn list_metering(&self, bucket: u64) -> StoreCall<'_, Vec<crate::records::MeteringRow>> {
+    fn list_metering(
+        &self,
+        bucket: u64,
+    ) -> StoreCall<'_, Vec<busbar_contract::records::MeteringRow>> {
         self.actual.list_metering(bucket)
     }
-    fn list_audit(&self) -> StoreCall<'_, Vec<crate::records::AuditRecord>> {
+    fn list_audit(&self) -> StoreCall<'_, Vec<busbar_contract::records::AuditRecord>> {
         self.actual.list_audit()
     }
-    fn list_audit_tail(&self, limit: u64) -> StoreCall<'_, Vec<crate::records::AuditRecord>> {
+    fn list_audit_tail(
+        &self,
+        limit: u64,
+    ) -> StoreCall<'_, Vec<busbar_contract::records::AuditRecord>> {
         self.actual.list_audit_tail(limit)
     }
     fn upsert_plane_record<'a>(&'a self, record: PlaneRecordRef<'a>) -> StoreCall<'a, ()> {
