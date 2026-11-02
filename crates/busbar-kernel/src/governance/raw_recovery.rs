@@ -635,19 +635,38 @@ impl GovState {
         mut plain: ExactUsageDelta,
         mut dated: ExactUsageDelta,
     ) -> RecordStoreResult<DurableUsageFlight> {
+        // Read correction and raw exposure from one stable selected snapshot.
+        // This is CPU-only under the caller's shard lock; a changed snapshot is
+        // retried with the ordinary pending delta still in the cell.
+        let epoch = self.recovery_selection_epoch();
+        let (correction_plain, correction_dated) =
+            self.quarantined_correction_negative_capacity(bucket, window)?;
+        let observations = self.selected_recovery_events();
+        if epoch != self.recovery_selection_epoch() {
+            return Err(invalid("selected raw custody changed during capture"));
+        }
+        let owned_snapshot: std::collections::BTreeSet<_> = observations
+            .iter()
+            .map(|event| event.operation_id)
+            .collect();
+        let before = SegmentedUsage::of(&plain, &dated)?;
         let mut prerequisite =
             self.stage_quarantined_correction_negatives(bucket, window, &mut plain, &mut dated)?;
-        let quarantine = self.quarantined_correction_owns_target(bucket, window);
         let mut remaining = SegmentedUsage::of(&plain, &dated)?;
+        let mut allocated = before;
+        allocated.subtract(&remaining)?;
+        let mut capacity = SegmentedUsage::of(&correction_plain, &correction_dated)?;
+        // The helper reports SELECTED exposure; this capture's staged negative
+        // is not selected yet and must be deducted exactly once.
+        capacity.merge(&allocated);
+        let selection_changed = epoch != self.recovery_selection_epoch();
         let mut owners = Vec::new();
-        let mut capacity = SegmentedUsage::default();
         // A selected parent can own an exact child template before child Intent.
         // Those positive segments gate negatives without guessing Store rows.
-        for event in self.selected_recovery_events() {
+        for event in observations {
             let links: Links = decode(&event.payload)?;
             for child in links.handoffs {
-                if child.kind != RecoveryKind::Usage
-                    || self.recovery_event(child.operation_id).is_some()
+                if child.kind != RecoveryKind::Usage || owned_snapshot.contains(&child.operation_id)
                 {
                     continue;
                 }
@@ -684,7 +703,7 @@ impl GovState {
         }
         // Exactly one immutable checkpoint is staged per capture. Any remaining
         // negative segments keep their ordinary pending ownership for next tick.
-        if prerequisite.is_none() {
+        if prerequisite.is_none() && !selection_changed {
             for (event, mut custody, own_capacity) in owners {
                 let mut after = remaining.clone();
                 let negative = after.take_negatives(Some(&own_capacity));
@@ -715,7 +734,10 @@ impl GovState {
                 break;
             }
         }
-        let deferred = remaining.take_negatives(if quarantine { None } else { Some(&capacity) });
+        // A concurrent selection can only defer this capture's remaining
+        // negatives to the next tick; it cannot spend a stale capacity twice.
+        let changed = selection_changed || epoch != self.recovery_selection_epoch();
+        let deferred = remaining.take_negatives(if changed { None } else { Some(&capacity) });
         let (deferred_plain, deferred_dated) = deferred.deltas();
         let (plain, dated) = remaining.deltas();
         Ok(DurableUsageFlight {

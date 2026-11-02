@@ -338,6 +338,7 @@ pub(super) struct RecoveryBook {
     sink: std::sync::OnceLock<std::sync::Arc<dyn RecoverySink>>,
     entries: std::sync::Mutex<std::collections::BTreeMap<[u8; 16], RecoveryEntry>>,
     attaching: super::BudgetFlushRunner,
+    selection_epoch: std::sync::atomic::AtomicU64,
 }
 
 #[derive(Default)]
@@ -425,6 +426,8 @@ impl RecoveryBook {
             .set(sink)
             .map_err(|_| RecoveryError::Conflict("recovery sink already attached".into()))?;
         *entries = replayed;
+        self.selection_epoch
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
         Ok(())
     }
 
@@ -526,6 +529,8 @@ impl RecoveryBook {
                 | RecoveryState::VerdictNotLanded
         );
         entry.selected = entry.pending.take();
+        self.selection_epoch
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
         Ok(())
     }
 }
@@ -862,6 +867,12 @@ impl super::GovState {
         self.recovery_book.attached()
     }
 
+    pub(super) fn recovery_selection_epoch(&self) -> u64 {
+        self.recovery_book
+            .selection_epoch
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
     pub(super) fn selected_recovery_events(&self) -> Vec<RecoveryEvent> {
         self.recovery_book
             .entries
@@ -940,6 +951,9 @@ impl super::GovState {
             return;
         }
         entries.remove(&operation_id);
+        self.recovery_book
+            .selection_epoch
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
     }
 
     pub(super) fn verify_external_recovery_origin(
@@ -1069,6 +1083,9 @@ impl super::GovState {
             let mut confirmed = adoption.clone();
             confirmed.imported = true;
             entry.adoption = Some(confirmed);
+            self.recovery_book
+                .selection_epoch
+                .fetch_add(1, std::sync::atomic::Ordering::Release);
             return Ok(());
         }
     }
