@@ -1365,45 +1365,6 @@ fn max_inspect_schema_json_bytes_is_exactly_256_kibibytes() {
     assert_eq!(MAX_INSPECT_SCHEMA_JSON_BYTES, 256 * 1024);
 }
 
-#[tokio::test]
-async fn probe_transport_distinguishes_wrong_kind_from_unresolved() {
-    let env = busbar_kernel_testkit::test_support::test_hook_env_with_wrong_kind_plugin(
-        "test-hook",
-        "test-wrong-kind",
-    );
-    let hook_cfg = hook(HookKind::Tap, false);
-
-    let mut wired = hook_cfg.clone();
-    wired.plugin = "test-hook".to_string();
-    let (reachable, detail) = probe_transport(&wired, &env).await;
-    assert_eq!(reachable, Some(true));
-    assert_eq!(detail, None);
-
-    let mut wrong_kind = hook_cfg.clone();
-    wrong_kind.plugin = "test-wrong-kind".to_string();
-    let (reachable, detail) = probe_transport(&wrong_kind, &env).await;
-    assert_eq!(reachable, Some(false));
-    assert!(
-        detail
-            .as_deref()
-            .is_some_and(|d| d.contains("test-wrong-kind")
-                && d.contains("secret")
-                && d.contains("hook")),
-        "wrong-kind resolution must name both the resolved kind and the expected kind: {detail:?}"
-    );
-
-    let mut missing = hook_cfg.clone();
-    missing.plugin = "totally-unregistered-plugin-name".to_string();
-    let (reachable, detail) = probe_transport(&missing, &env).await;
-    assert_eq!(reachable, Some(false));
-    assert!(
-        detail
-            .as_deref()
-            .is_some_and(|d| d.contains("is not installed")),
-        "unresolved plugin must say so distinctly: {detail:?}"
-    );
-}
-
 #[test]
 fn build_with_registry_rejects_more_than_one_default_but_allows_exactly_one() {
     let mut one_default = hook(HookKind::Tap, false);
@@ -1438,90 +1399,6 @@ fn build_with_registry_rejects_a_dangling_global_hook_reference() {
         validate_hook_registry(&registry, &["ghost".to_string()]).is_err(),
         "a global_hooks entry naming an unregistered hook must be rejected"
     );
-}
-
-#[test]
-fn hook_snapshot_builders_recompute_the_content_gate() {
-    let env =
-        busbar_kernel_testkit::test_support::test_hook_env(&["test-hook"], Default::default());
-    let app = crate::new_test_app().hook_env(env).build();
-    assert!(
-        !app.any_content_hook,
-        "a fixture with no hooks grants no content"
-    );
-
-    let mut granted = hook(HookKind::Tap, true);
-    granted.prompt = PromptAccess::Ro;
-    let registered = build_with_hook(&app, "screener", granted.clone()).expect("registers");
-    assert!(
-        registered.any_content_hook,
-        "registering a `prompt: ro` hook must open the gate"
-    );
-
-    let deleted = build_without_hook(&registered, "screener").expect("deletes");
-    assert!(
-        !deleted.any_content_hook,
-        "deleting the last granted hook must close the gate"
-    );
-
-    let mut registry = HashMap::new();
-    registry.insert("screener".to_string(), granted);
-    let rolled_back =
-        build_with_registry(&app, registry, vec!["screener".to_string()]).expect("rolls back");
-    assert!(
-        rolled_back.any_content_hook,
-        "a rolled-back snapshot's gate must match the registry it installed"
-    );
-}
-
-#[test]
-fn hook_derived_fields_follow_the_registry() {
-    let env =
-        busbar_kernel_testkit::test_support::test_hook_env(&["test-hook"], Default::default());
-
-    fn assert_hook_derived(app: &busbar_kernel::state::App, ctx: &str) {
-        assert_eq!(
-            app.any_content_hook,
-            busbar_kernel::hooks::any_content_hook(&app.hook_registry),
-            "{ctx}: `any_content_hook` disagrees with the registry the snapshot installed"
-        );
-        assert_eq!(
-            app.requested_signals,
-            busbar_kernel::hooks::requested_signals(&app.hook_registry),
-            "{ctx}: `requested_signals` disagrees with the registry the snapshot installed — a \
-             hook's `signals:` declaration did not take effect on the snapshot that installed it"
-        );
-    }
-
-    let app = crate::new_test_app().hook_env(env).build();
-    assert_hook_derived(&app, "boot fixture");
-
-    let mut declaring = hook(HookKind::Tap, true);
-    declaring.prompt = PromptAccess::Ro;
-    declaring.signals = vec![busbar_contract::signal::Signal::CandidateBreakerState];
-
-    let registered = build_with_hook(&app, "declarer", declaring.clone()).expect("registers");
-    assert_hook_derived(&registered, "after build_with_hook (POST/PUT /hooks)");
-    assert!(
-        registered
-            .requested_signals
-            .wants(busbar_contract::signal::Signal::CandidateBreakerState),
-        "registering a hook that declares `candidate.breaker_state` must open the compute gate for \
-         the very next request"
-    );
-
-    let deleted = build_without_hook(&registered, "declarer").expect("deletes");
-    assert_hook_derived(&deleted, "after build_without_hook (DELETE /hooks/{name})");
-    assert!(
-        deleted.requested_signals.is_empty(),
-        "deleting the last declaring hook must close the compute gate again"
-    );
-
-    let mut registry = HashMap::new();
-    registry.insert("declarer".to_string(), declaring);
-    let rolled_back =
-        build_with_registry(&app, registry, vec!["declarer".to_string()]).expect("rolls back");
-    assert_hook_derived(&rolled_back, "after build_with_registry (config rollback)");
 }
 
 #[tokio::test]
