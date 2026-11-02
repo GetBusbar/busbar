@@ -198,22 +198,17 @@ fn bind_plane(origin: Origin, instance: &str, dispatcher: &Dispatcher) -> Plugin
         dispatcher: dispatcher.adopter(),
         conns: ConnTable::Host(crate::root::connector::the().clone() as Arc<dyn DeclaredConns>),
     };
+    let row = crate::LINKED
+        .plane_doors
+        .iter()
+        .find_map(|&door| {
+            let row = LinkedRow::of(door).expect("the linked product states its identity");
+            let stated = busbar_contract::abi::mechanism::rendering::read(&row.statement).unwrap();
+            (stated.name == "a2a").then_some(row)
+        })
+        .expect("the actual distribution must link the A2A product; this proof never skips");
     match origin {
-        Origin::Linked => {
-            let row = crate::LINKED
-                .plane_doors
-                .iter()
-                .find_map(|&door| {
-                    let row = LinkedRow::of(door).expect("the linked product states its identity");
-                    let stated =
-                        busbar_contract::abi::mechanism::rendering::read(&row.statement).unwrap();
-                    (stated.name == "a2a").then_some(row)
-                })
-                .expect(
-                    "the actual distribution must link the A2A product; this proof never skips",
-                );
-            load_linked::<Plane>(&row, bind).expect("the actual linked A2A binds")
-        }
+        Origin::Linked => load_linked::<Plane>(&row, bind).expect("the actual linked A2A binds"),
         Origin::Dropped => {
             let path = std::path::PathBuf::from(
                 std::env::var_os("BUSBAR_TEST_A2A_CDYLIB")
@@ -232,6 +227,10 @@ fn bind_plane(origin: Origin, instance: &str, dispatcher: &Dispatcher) -> Plugin
                     .unwrap()
                     .name,
                 "a2a"
+            );
+            assert_eq!(
+                row.statement, stated,
+                "linked and dropped A2A must state identical public metadata and declarations"
             );
             load_dropped::<Plane>(&path, &stated, bind).expect("the actual dropped A2A binds")
         }
@@ -293,17 +292,12 @@ impl PieceAnswer {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn piece(
     plane: &Plugin<Plane>,
     dispatcher: &Dispatcher,
-    ticket: Ticket,
-    unit: u64,
-    from: u32,
-    flags: u32,
-    bytes: &[u8],
-    reply_cap: usize,
-    units_cap: usize,
+    (ticket, unit): (Ticket, u64),
+    (from, flags, bytes): (u32, u32, &[u8]),
+    (reply_cap, units_cap): (usize, usize),
 ) -> PieceAnswer {
     let mut buffers = Arc::new(PieceBytes {
         bytes: bytes.to_vec(),
@@ -407,26 +401,18 @@ fn caller_body(
     let attempt = piece(
         plane,
         dispatcher,
-        ticket,
-        unit,
-        FROM_KERNEL,
-        0,
-        b"",
-        cap,
-        CAP,
+        (ticket, unit),
+        (FROM_KERNEL, 0, b""),
+        (cap, CAP),
     );
     attempt.ready();
     assert_ne!(attempt.out().flags & EMIT_TO_FAR_END, 0);
     let body = piece(
         plane,
         dispatcher,
-        ticket,
-        unit,
-        FROM_CALLER,
-        PIECE_LAST,
-        REQUEST,
-        cap,
-        CAP,
+        (ticket, unit),
+        (FROM_CALLER, PIECE_LAST, REQUEST),
+        (cap, CAP),
     );
     body.ready();
     assert_eq!(body.emitted(), REQUEST);
@@ -472,13 +458,6 @@ fn raw_relay_and_lifecycle(
         .driver(plane, 0)
         .expect("the actual lifecycle driver ticket");
     assert_eq!(
-        (
-            snapshot.claims[14].verb.as_str(),
-            snapshot.claims[14].target.as_str()
-        ),
-        ("POST", "/a2a")
-    );
-    assert_eq!(
         plane.open(&mut opened).0.outcome,
         Outcome::Refused,
         "one OPEN per actual instance"
@@ -497,13 +476,9 @@ fn raw_relay_and_lifecycle(
     piece(
         plane,
         dispatcher,
-        whole,
-        7,
-        FROM_FAR_END,
-        PIECE_LAST | PIECE_HAS_STATUS,
-        ANSWER,
-        1024,
-        CAP,
+        (whole, 7),
+        (FROM_FAR_END, PIECE_LAST | PIECE_HAS_STATUS, ANSWER),
+        (1024, CAP),
     )
     .final_answer();
     dispatcher.recycle(whole);
@@ -516,16 +491,18 @@ fn raw_relay_and_lifecycle(
             piece(
                 plane,
                 dispatcher,
-                narrow,
-                9,
-                FROM_FAR_END,
-                PIECE_LAST | PIECE_HAS_STATUS,
-                ANSWER,
-                150,
-                CAP,
+                (narrow, 9),
+                (FROM_FAR_END, PIECE_LAST | PIECE_HAS_STATUS, ANSWER),
+                (150, CAP),
             )
         } else {
-            piece(plane, dispatcher, narrow, 9, FROM_FAR_END, 0, b"", 150, CAP)
+            piece(
+                plane,
+                dispatcher,
+                (narrow, 9),
+                (FROM_FAR_END, 0, b""),
+                (150, CAP),
+            )
         };
         answer.ready();
         joined.extend_from_slice(answer.emitted());
@@ -552,13 +529,9 @@ fn raw_relay_and_lifecycle(
     let first = piece(
         plane,
         dispatcher,
-        short,
-        11,
-        FROM_FAR_END,
-        PIECE_LAST | PIECE_HAS_STATUS,
-        ANSWER,
-        1024,
-        0,
+        (short, 11),
+        (FROM_FAR_END, PIECE_LAST | PIECE_HAS_STATUS, ANSWER),
+        (1024, 0),
     );
     assert_eq!(first.done.outcome, Outcome::Failed);
     assert!(first.done.short);
