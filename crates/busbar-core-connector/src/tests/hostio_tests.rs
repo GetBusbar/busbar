@@ -20,6 +20,30 @@ use super::*;
 const OWNER: u64 = 1;
 
 #[test]
+fn replacing_a_ticket_grant_does_not_lend_the_new_suppliers_program_to_the_old_owner() {
+    worker().block_on(async {
+        let io = HostIo::new();
+        let old = Program::from_settings(&serde_json::json!({"command": "/bin/cat"})).unwrap();
+        let new = Program::from_settings(&serde_json::json!({"command": "/bin/cat", "cwd": "/", "env": {"PRIVATE": "replacement-value"}})).unwrap();
+        let held = crate::spawn_env::HeldEnv::written_only();
+        io.admit_for(ticket(93), Admission::Spawn(old, held.clone()), Some(OWNER));
+        let old_handle = io.spawn(OWNER, ticket(93), &Spawn { program: "/bin/cat", args: &[], env: &[] }).unwrap();
+        io.admit_for(ticket(93), Admission::Spawn(new, held), Some(OWNER + 1));
+        let request = Spawn { program: "/bin/cat", args: &[], env: &[("PRIVATE", "replacement-value")] };
+        assert!(matches!(io.spawn(OWNER, ticket(93), &request), Err(IoRefusal::Refused(_))));
+        assert_eq!(io.held(), 1, "the old supplier spawned the replacement recipe");
+        let new_handle = io.spawn(OWNER + 1, ticket(93), &request).unwrap();
+        assert_ne!(new_handle, old_handle);
+        assert_eq!(io.settle(ticket(93)), (Some(new_handle), None));
+        assert!(io.program_receipt(OWNER + 1, new_handle));
+        assert!(!io.program_receipt(OWNER, new_handle));
+        io.close(OWNER, old_handle).unwrap();
+        io.close(OWNER + 1, new_handle).unwrap();
+        assert_eq!(io.held(), 0);
+    });
+}
+
+#[test]
 fn an_omitted_program_directory_inherits_and_a_missing_directory_spawns_nothing() {
     worker().block_on(async {
         let io = HostIo::new();
