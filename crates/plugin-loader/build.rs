@@ -47,6 +47,10 @@ const STORE_ROWS: &[&str] = &["store"];
 const PACKAGING_SUFFIX: &str = "_plugin";
 
 fn main() {
+    println!(
+        "cargo:rustc-env=BUSBAR_PLUGIN_TARGET={}",
+        env::var("TARGET").expect("cargo sets TARGET for build scripts")
+    );
     println!("cargo:rerun-if-changed=Cargo.toml");
     // busbar-test-kit's source compiles into this crate's tests, and its unit tests run only here.
     println!("cargo::rustc-check-cfg=cfg(loader_self_tests)");
