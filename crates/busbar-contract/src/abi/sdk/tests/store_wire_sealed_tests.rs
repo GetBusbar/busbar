@@ -56,6 +56,7 @@ struct Script {
     established: u64,
     closed: usize,
     dial_timeouts: Vec<u32>,
+    dial_targets: Vec<Vec<u8>>,
     upgrade_flags: Vec<u32>,
 }
 
@@ -72,9 +73,18 @@ fn script<R>(f: impl FnOnce(&mut Script) -> R) -> R {
 
 extern "C" fn establish(_: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
     // SAFETY: the existing connector callback receives its initialized EstablishIn.
-    let timeout = unsafe { (*input.cast::<EstablishIn>()).timeout_ms };
+    let (timeout, target) = unsafe {
+        let input = &*input.cast::<EstablishIn>();
+        let target = if input.target.len == 0 {
+            Vec::new()
+        } else {
+            std::slice::from_raw_parts(input.target.ptr, input.target.len).to_vec()
+        };
+        (input.timeout_ms, target)
+    };
     let stream = script(|s| {
         s.dial_timeouts.push(timeout);
+        s.dial_targets.push(target);
         s.established += 1;
         s.established
     });
@@ -621,4 +631,27 @@ fn wire_dial_timeout_and_upgrade_flags_reach_the_host_unchanged() {
         drop(parked);
         drop(pool);
     }
+}
+
+/// Target/byte forwarding only. The actual connector's unix-target ordinary test
+/// proves the separate real socket crossing; this existing ABI witness does not.
+#[test]
+fn a_unix_store_target_and_its_bytes_reach_the_host_unchanged() {
+    let _serial = serial();
+    let pool = Pool::new(1);
+    let host = make_host(Security::Clear, false, []);
+    let (answer, parked) = enter(&pool, &host, None, |wire| {
+        Box::pin(async move {
+            wire.connect(0, Some("unix:/operator/db.sock")).await?;
+            wire.write_all(b"hello").await
+        })
+    });
+    assert_eq!(answer, Step::Ready(Ok(())));
+    assert_eq!(
+        script(|s| s.dial_targets.clone()),
+        vec![b"unix:/operator/db.sock".to_vec()]
+    );
+    assert_eq!(script(|s| s.accepted.clone()), b"hello");
+    drop(parked);
+    drop(pool);
 }
