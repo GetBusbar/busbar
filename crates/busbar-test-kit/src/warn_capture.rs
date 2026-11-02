@@ -50,6 +50,7 @@ impl Default for WarnCapture {
 }
 
 impl WarnCapture {
+    /// A capture that admits DEBUG-and-above (DEBUG, INFO, WARN, ERROR).
     pub fn capturing_debug() -> Self {
         Self::at(Level::DEBUG)
     }
@@ -63,14 +64,17 @@ impl WarnCapture {
         }
     }
 
+    /// Every captured event so far, each as `"{message} {field}={value} ..."`.
     pub fn messages(&self) -> Vec<String> {
         self.messages.lock().map(|m| m.clone()).unwrap_or_default()
     }
 
+    /// True when some captured event contains `needle`.
     pub fn contains(&self, needle: &str) -> bool {
         self.messages().iter().any(|m| m.contains(needle))
     }
 
+    /// How many captured events contain `needle` (a warn-once latch asserts this stays at 1).
     pub fn count(&self, needle: &str) -> usize {
         self.messages()
             .iter()
