@@ -723,7 +723,14 @@ fn opened(
 
 fn bind(label: &str, sink: Arc<Tape>, d: &Dispatcher) -> Bind {
     Bind {
-        instance: Arc::from(label),
+        instance: {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            format!(
+                "{label}-{}",
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            )
+            .into()
+        },
         max_inflight_cap: 64,
         sink,
         dispatcher: d.adopter(),

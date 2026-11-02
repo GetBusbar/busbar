@@ -6,24 +6,32 @@
 #![allow(unsafe_code)]
 
 use std::collections::VecDeque;
+use std::os::raw::c_void;
 use std::path::{Path, PathBuf};
+use std::sync::PoisonError;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use busbar_contract::abi::export::{slot as export_slot, DeliverIn, ExportStream};
-use busbar_contract::abi::mechanism::call::{Outcome, BLOB_JSON, BLOB_JSONL};
-use busbar_contract::abi::mechanism::door::{Door, DoorFn};
+use busbar_contract::abi::export::{slot as export_slot, DeliverIn, ExportStream, Ops};
+use busbar_contract::abi::mechanism::call::{
+    Diag, MetricEntry, OutHead, Outcome, RawOutcome, BLOB_JSON, BLOB_JSONL, DIAG_LOG,
+    DIAG_LOG_DROPPED,
+};
+use busbar_contract::abi::mechanism::door::{Door, DoorFn, DoorParts};
+use busbar_contract::abi::mechanism::lifecycle::OpsHead;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, CancelIn, CancelOut, RefreshIn};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::export_calls::{Delivered, ExportCalls};
 use busbar_plugin_loader::dispatch::kinds::export::Export;
 use busbar_plugin_loader::dispatch::{
-    load_dropped, load_dropped_bytes, load_linked, rendering_of_library, Bind, ConnTable,
-    Diagnostic, DispatchConfig, Dispatcher, Dropped, EnvelopeSink, Frame, LinkedRow, Metric,
-    NoSink, Plugin,
+    load_dropped, load_dropped_bytes, load_linked, rendering_of, rendering_of_library, Bind,
+    ConnTable, Diagnostic, DispatchConfig, Dispatcher, Dropped, EnvelopeSink, Frame, LinkedRow,
+    Metric, NoSink, Plugin,
 };
+use busbar_plugin_loader::export_axis::ExportRows;
 use busbar_plugin_loader::export_door::ExportInstance;
-use busbar_plugin_loader::sign::Declares;
+use busbar_plugin_loader::sign::{Declares, Manifest};
+use busbar_plugin_loader::{LinkedPlugin, PluginRegistry};
 
 use crate::host_disk::{append, Append, DiskLane, LANE_BOUND};
 use crate::host_services::KernelServices;
@@ -114,14 +122,66 @@ impl EnvelopeSink for Tape {
     }
 }
 
-fn file_declares() -> Declares {
-    let mut declared = Declares::from_declares_json(
+fn file_declaration() -> Declares {
+    Declares::from_declares_json(
         &std::fs::read(input("BUSBAR_TEST_EXPORT_FILE_DECLARES"))
             .expect("the actual file declaration"),
     )
-    .expect("the actual file declaration parses");
+    .expect("the actual file declaration parses")
+}
+fn file_declares() -> Declares {
+    let mut declared = file_declaration();
     declared.metrics.clear();
     declared
+}
+fn file_manifest(name: &str, declares: Declares) -> Manifest {
+    let mut manifest: Manifest = serde_json::from_slice(
+        &std::fs::read(input("BUSBAR_TEST_EXPORT_FILE_MANIFEST"))
+            .expect("the actual file manifest"),
+    )
+    .expect("the actual manifest parses");
+    manifest.name = name.into();
+    manifest.alias = name.into();
+    manifest.declares = declares;
+    manifest.statement = Some(hex::encode(
+        rendering_of(FILE_DOOR).expect("the actual file Statement"),
+    ));
+    manifest
+}
+fn file_registries(manifest: Manifest) -> [PluginRegistry; 2] {
+    let linked = PluginRegistry::empty()
+        .link(vec![LinkedPlugin::door(manifest.clone(), FILE_DOOR)])
+        .expect("the actual descriptor admits");
+    let release = busbar_plugin_loader::sign::SigningKey::from_bytes(&[11; 32]);
+    let signer = if manifest.publisher == busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER {
+        release.clone()
+    } else {
+        busbar_plugin_loader::sign::SigningKey::from_bytes(&[22; 32])
+    };
+    let publisher = (manifest.publisher.clone(), signer.verifying_key());
+    let bytes = std::fs::read(input("BUSBAR_TEST_EXPORT_FILE_CDYLIB")).unwrap();
+    let signed = busbar_plugin_loader::sign::sign(&signer, manifest, &bytes);
+    let dir = scratch("actual-file-package");
+    std::fs::write(
+        dir.join("exporter.tar.gz"),
+        busbar_plugin_loader::tarball::package(&signed, "exporter", &bytes).unwrap(),
+    )
+    .unwrap();
+    let policy = busbar_plugin_loader::sign::TrustPolicy {
+        first_party_key: Some(release.verifying_key()),
+        first_party_keys: vec![busbar_plugin_loader::sign::FirstPartyKey::unnamed(
+            release.verifying_key(),
+        )],
+        publishers: std::iter::once(publisher)
+            .filter(|(_, key)| *key != release.verifying_key())
+            .collect(),
+        binary_version: signed.version.clone(),
+        ..Default::default()
+    };
+    let dropped = busbar_plugin_loader::scan_and_validate(&dir, &policy)
+        .expect("the actual byte package admits");
+    std::fs::remove_dir_all(dir).unwrap();
+    [linked, dropped]
 }
 fn renaming(mut declared: Declares) -> Declares {
     declared.keep.insert("path".into(), 2);
@@ -133,9 +193,16 @@ fn dispatcher() -> Arc<Dispatcher> {
         Arc::new(KernelServices::new()),
     ))
 }
+fn instance_label(base: &str) -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    format!(
+        "{base}-{}",
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
+}
 fn bind(label: &str, tape: Arc<Tape>, dispatcher: &Dispatcher) -> Bind {
     Bind {
-        instance: Arc::from(label),
+        instance: instance_label(label).into(),
         max_inflight_cap: 64,
         sink: tape,
         dispatcher: dispatcher.adopter(),
@@ -688,4 +755,372 @@ fn accepted_event_json_reaches_the_actual_disk_lane_unchanged() {
     assert_eq!(records.len(), ONE_RECORD);
     assert_eq!(records[FIRST_RECORD], expected);
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn a_linked_and_a_dropped_in_export_sink_register_one_row_and_fold_the_same() {
+    let name = "export-fixture";
+    let doors = file_registries(file_manifest(name, renaming(file_declares())));
+    let dir = scratch("k5");
+    let path = dir.join("requests.jsonl");
+    let [linked, dropped] = doors.map(|registry| {
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let tape = Arc::new(Tape::default());
+        let sink = ExportRows::new(&registry, dispatcher())
+            .with_envelope(tape.clone())
+            .open(name, &instance_label("export.tail"), &file_settings(&path))
+            .expect("the export sink opens through its alias");
+        let streams = sink.streams().to_vec();
+        let routes = sink.routes().len();
+
+        for n in [1, 2] {
+            deliver(sink.as_ref(), &big_line(n));
+        }
+        until("both lines on disk", || {
+            ns(&path) == Some(vec![2]) && ns(&archive(&path, 1)) == Some(vec![1])
+        });
+        drop(sink);
+        let transcript = serde_json::json!({
+            "streams": streams,
+            "routes": routes,
+            "folds": tape.seen(),
+        })
+        .to_string();
+        ({ let row = registry.resolve(name).expect("the actual exporter row resolves");
+ serde_json::json!({"manifest": Manifest { sha256: String::new(), signature: String::new(), ..row.manifest.clone() },
+ "alias_resolves_to": registry.resolve(&row.manifest.alias).map(|alias| alias.manifest.name.clone()) }).to_string() }, transcript)
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        !linked.0.starts_with("no row"),
+        "the linked door registered no row: {}",
+        linked.0
+    );
+    assert!(
+        linked.1.contains("request-log file rotated by rename"),
+        "the linked sink reported the rotation its deliveries caused: {}",
+        linked.1
+    );
+    assert_eq!(
+        linked, dropped,
+        "the two doors must register one row and fold the same"
+    );
+}
+
+const S1_HOST_SERIES: &str = "busbar_s1_host_owned_total";
+#[test]
+fn a_first_party_series_is_granted_through_either_door_and_to_nobody_else() {
+    use busbar_contract::abi::mechanism::observe::SeriesDecl;
+
+    let d = dispatcher();
+    d.observing()
+        .install_host_series(|name| name == S1_HOST_SERIES);
+    let declared = file_declaration();
+    let series: Vec<(String, String)> = declared
+        .metrics
+        .iter()
+        .map(|s| (s.name.clone(), s.kind.clone()))
+        .collect();
+
+    assert!(
+        series
+            .iter()
+            .any(|(n, _)| n == "busbar_file_logs_dropped_total"),
+        "{series:?}"
+    );
+    let name = "s1-fixture";
+    let doors = file_registries(file_manifest(name, renaming(declared.clone())));
+    let dir = scratch("s1");
+    let path = dir.join("requests.jsonl");
+    let [linked, dropped] = doors.map(|registry| {
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let tape = Arc::new(Tape::default());
+        let sink = ExportRows::new(&registry, Arc::clone(&d))
+            .with_envelope(tape.clone())
+            .open(name, &instance_label("export.tail"), &file_settings(&path))
+            .expect("a first-party declaration opens");
+        for n in [1, 2] {
+            deliver(sink.as_ref(), &big_line(n));
+        }
+        until("both lines on disk", || ns(&path) == Some(vec![2]));
+
+        let granted: Vec<bool> = series
+            .iter()
+            .map(|(s, k)| busbar_plugin_loader::observe::first_party_series(name, s, k))
+            .collect();
+        drop(sink);
+        assert!(
+            series
+                .iter()
+                .all(|(s, k)| !busbar_plugin_loader::observe::first_party_series(name, s, k)),
+            "the grant goes with the instance"
+        );
+        let transcript =
+            serde_json::json!({ "granted": granted, "folds": tape.seen() }).to_string();
+        ({ let row = registry.resolve(name).expect("the actual exporter row resolves");
+ serde_json::json!({"manifest": Manifest { sha256: String::new(), signature: String::new(), ..row.manifest.clone() },
+ "alias_resolves_to": registry.resolve(&row.manifest.alias).map(|alias| alias.manifest.name.clone()) }).to_string() }, transcript)
+    });
+    let every_granted = format!(
+        r#""granted":{}"#,
+        serde_json::json!(vec![true; series.len()])
+    );
+    assert!(
+        linked.1.contains(&every_granted)
+            && linked.1.contains("request-log file rotated by rename"),
+        "the linked door grants every declared series and the sink reports: {}",
+        linked.1
+    );
+    assert_eq!(linked, dropped, "both doors grant and fold the same");
+
+    let mut third = file_manifest("s1-third-party", declared.clone());
+    third.publisher = "acme".into();
+    let [_, registry] = file_registries(third);
+    let sink = ExportRows::new(&registry, Arc::clone(&d))
+        .open(
+            "s1-third-party",
+            &instance_label("export.tail"),
+            &file_settings(&path),
+        )
+        .expect("a third party opens; its declaration is simply not granted");
+    drop(sink);
+    for (s, k) in &series {
+        assert!(!busbar_plugin_loader::observe::first_party_series(
+            "s1-third-party",
+            s,
+            k
+        ));
+    }
+
+    let mut collides = declared;
+    collides.metrics = vec![SeriesDecl::new(S1_HOST_SERIES, "counter")];
+    let registry = PluginRegistry::empty()
+        .link(vec![LinkedPlugin::door(
+            file_manifest("s1-collides", collides),
+            FILE_DOOR,
+        )])
+        .expect("the linked door admits the sink");
+    let Err(refused) = ExportRows::new(&registry, Arc::clone(&d)).open(
+        "s1-collides",
+        &instance_label("export.tail"),
+        &file_settings(&path),
+    ) else {
+        panic!("a claim on a host series is refused");
+    };
+    assert!(
+        refused.contains(S1_HOST_SERIES) && refused.contains("the host itself emits"),
+        "{refused}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn entry_text(id: u32, severity: u8, text: &[u8]) -> String {
+    let text = String::from_utf8_lossy(text);
+    match id {
+        DIAG_LOG => format!("log {severity} {text}"),
+        DIAG_LOG_DROPPED => format!("logs-dropped {text}"),
+        id => format!("diag {id} {severity} {text}"),
+    }
+}
+fn metric_text(family: u32, kind: u8, value: f64) -> String {
+    format!("metric {family} {kind} {value}")
+}
+static PRE_ENVELOPE_PLUGIN_LOCAL: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+struct RealOps(Ops);
+// SAFETY: the table is the dlopened image's `'static` data (its pointers name its code), never
+// written; the library stays loaded for the life of the process (the RED arm leaks it).
+unsafe impl Send for RealOps {}
+// SAFETY: as above.
+unsafe impl Sync for RealOps {}
+static PRE_ENVELOPE_REAL: OnceLock<RealOps> = OnceLock::new();
+
+struct ShimDoor(Door, Ops);
+// SAFETY: built once from the image's `'static` door and never written after; every pointer names
+// the image's `'static` data or [`PRE_ENVELOPE_DOORS`] itself.
+unsafe impl Send for ShimDoor {}
+// SAFETY: as above.
+unsafe impl Sync for ShimDoor {}
+static PRE_ENVELOPE_DOORS: OnceLock<Box<ShimDoor>> = OnceLock::new();
+
+/// Move the reply's #85 envelope out of the `out` the host reads into the plugin's own store —
+/// where a dropped-in `cdylib`'s statically-linked facade sent what it observed before the
+/// envelope: the reply the host reads carries none of it.
+///
+/// # Safety
+/// `out` leads with an [`OutHead`] the op just wrote, its envelope arrays valid for this call.
+unsafe fn keep_plugin_local(out: *mut c_void) {
+    if out.is_null() {
+        return;
+    }
+    // SAFETY: the caller's contract.
+    let head = unsafe { &mut *out.cast::<OutHead>() };
+    let env = &mut head.envelope;
+    let mut local = PRE_ENVELOPE_PLUGIN_LOCAL
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if !env.metrics.is_null() {
+        // SAFETY: the plugin's array of `metrics_len` entries, valid until its next op.
+        let metrics: &[MetricEntry] =
+            unsafe { std::slice::from_raw_parts(env.metrics, env.metrics_len) };
+        local.extend(
+            metrics
+                .iter()
+                .map(|m| metric_text(m.family_idx, m.kind, m.value)),
+        );
+    }
+    if !env.diags.is_null() {
+        // SAFETY: as above.
+        let diags: &[Diag] = unsafe { std::slice::from_raw_parts(env.diags, env.diags_len) };
+        local.extend(diags.iter().map(|d| {
+            let text = if d.text.ptr.is_null() {
+                &[][..]
+            } else {
+                // SAFETY: the plugin's text, valid until its next op.
+                unsafe { std::slice::from_raw_parts(d.text.ptr, d.text.len) }
+            };
+            entry_text(d.id_idx, d.severity, text)
+        }));
+    }
+    env.metrics = std::ptr::null();
+    env.metrics_len = 0;
+    env.diags = std::ptr::null();
+    env.diags_len = 0;
+}
+
+/// One forwarding op per slot of the export table: the real image's op, then its envelope kept
+/// plugin-local.
+macro_rules! pre_envelope_ops {
+    ($($name:ident => $($field:ident).+;)*) => {
+        $(
+            extern "C" fn $name(i: *mut c_void, input: *const c_void, out: *mut c_void) -> RawOutcome {
+                let real = PRE_ENVELOPE_REAL.get().expect("the RED arm sets the table first");
+                let op = real.0.$($field).+.expect("a forwarding op wraps a present op");
+                // SAFETY: the shim forwards the original instance and unchanged ABI frame to
+                // the real op for this same slot; its checked loans remain live for the call.
+                let answered = unsafe { op(i, input, out) };
+                // SAFETY: every op's `out` leads with its `OutHead`, written by the op just now.
+                unsafe { keep_plugin_local(out) };
+                answered
+            }
+        )*
+        /// The real table with every present op replaced by its forwarding op.
+        fn pre_envelope_ops(real: &Ops) -> Ops {
+            let mut ops = *real;
+            $(
+                if real.$($field).+.is_some() {
+                    ops.$($field).+ = Some($name);
+                }
+            )*
+            ops
+        }
+    };
+}
+
+pre_envelope_ops! {
+    pre_validate => head.validate;
+    pre_open => head.open;
+    pre_refresh => head.refresh;
+    pre_retire => head.retire;
+    pre_tick => head.tick;
+    pre_drive => head.drive;
+    pre_cancel => head.cancel;
+    pre_release => head.release;
+    pre_close => head.close;
+    pre_deliver => deliver;
+    pre_scrape => scrape;
+    pre_status => status;
+    pre_check => check;
+    pre_serve => serve;
+}
+
+extern "C" fn pre_envelope_door() -> *const Door {
+    &PRE_ENVELOPE_DOORS
+        .get()
+        .expect("the RED arm builds the door first")
+        .0
+}
+
+#[test]
+fn the_pre_envelope_path_loses_a_dropped_in_plugins_counters() {
+    let dir = scratch("pre-envelope");
+    let path = dir.join("requests.jsonl");
+
+    let compiled_in = run_compiled_in(&path);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+
+    // The descriptor holder keeps the actual product image loaded throughout this
+    // narrow envelope-withholding observer. Every op below forwards unchanged.
+    let door = *FILE_DOOR();
+    // SAFETY: as above: the export kind's table, `'static` in the image.
+    let real_ops = unsafe { *door.ops().cast::<Ops>() };
+    let _ = PRE_ENVELOPE_REAL.set(RealOps(real_ops));
+    let shim = PRE_ENVELOPE_DOORS.get_or_init(|| {
+        let mut shim = Box::new(ShimDoor(door, pre_envelope_ops(&real_ops)));
+        let parts = DoorParts {
+            ops: std::ptr::from_ref(&shim.1).cast::<OpsHead>(),
+            ..shim.0.parts()
+        };
+        // SAFETY: the image's own `'static` Statement over the boxed shim table, built once and
+        // held for the process.
+        shim.0 = unsafe { Door::__from_parts(parts) };
+        shim
+    });
+    assert_eq!(
+        shim.0.statement(),
+        door.statement(),
+        "the image's own Statement"
+    );
+    PRE_ENVELOPE_PLUGIN_LOCAL
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clear();
+    let tape = Arc::new(Tape::default());
+    let d = dispatcher();
+    let row = LinkedRow::of_raw(pre_envelope_door).expect("the image's Statement renders");
+    assert_eq!(
+        row.statement,
+        rendering_of(FILE_DOOR).expect("renders"),
+        "the pre-envelope door states the real sink's Statement"
+    );
+    let plugin = load_linked::<Export>(&row, bind("#11-pre-envelope", tape.clone(), &d))
+        .expect("the pre-envelope door loads");
+    let sink = opened(plugin, d, &file_settings(&path));
+
+    script(&sink, &path);
+    drop(sink);
+    let _ = std::fs::remove_dir_all(&dir);
+    let dropped_in_pre_envelope = tape.seen();
+    let plugin_local = std::mem::take(
+        &mut *PRE_ENVELOPE_PLUGIN_LOCAL
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner),
+    );
+
+    assert_eq!(
+        compiled_in.len(),
+        2,
+        "the compiled-in build must report both rotations: {compiled_in:?}"
+    );
+
+    assert_eq!(
+        plugin_local, compiled_in,
+        "the pre-envelope build must have observed what the compiled-in one reported, or the \
+         divergence below is a broken fixture rather than the defect"
+    );
+
+    assert!(
+        dropped_in_pre_envelope.is_empty(),
+        "the defect: a dropped-in plugin's observations land where nothing reads — the host \
+         ingested {dropped_in_pre_envelope:?}"
+    );
+    assert_ne!(
+        compiled_in, dropped_in_pre_envelope,
+        "compiled-in ≡ dropped-in was ASSERTED and false for anything a plugin observes — this \
+         inequality is what #85's envelope exists to remove, and \
+         `compiled_in_and_dropped_in_report_identical_observations` is what proves it did"
+    );
 }
