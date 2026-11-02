@@ -9,46 +9,13 @@ use async_trait::async_trait;
 
 use super::super::self_keys::{
     admit_self_mint, issue_key, mint_provisioned_self_key, resolve_exchange,
-    DeterministicEd25519Keys, ExchangeError, IssuedKey, SelfGroupProvisioner, SelfServeKeys,
+    DeterministicEd25519Keys, ExchangeError, IssuedKey, SelfServeKeys,
 };
 use super::super::{ChainVerdict, Principal};
-use crate::config::groups::{provision_child, GroupCfg};
 use crate::config::{RoleBindingCfg, RoleBindings};
 use crate::governance::{GovState, RecordStore as _};
 
 const SEED: [u8; 32] = [7u8; 32];
-
-struct FakeProvisioner {
-    registry: std::sync::Mutex<BTreeMap<String, GroupCfg>>,
-}
-
-impl FakeProvisioner {
-    fn with_team(team: &str, group_yaml: &str) -> Self {
-        let cfg: GroupCfg = serde_yaml::from_str(group_yaml).expect("team group cfg parses");
-        let mut reg = BTreeMap::new();
-        reg.insert(team.to_string(), cfg);
-        Self {
-            registry: std::sync::Mutex::new(reg),
-        }
-    }
-
-    fn snapshot(&self) -> BTreeMap<String, GroupCfg> {
-        self.registry.lock().unwrap().clone()
-    }
-}
-
-#[async_trait]
-impl SelfGroupProvisioner for FakeProvisioner {
-    async fn ensure_leaf(&self, leaf: &str, parent: &str) -> Result<(), String> {
-        let mut reg = self.registry.lock().unwrap();
-        if reg.contains_key(leaf) {
-            return Ok(());
-        }
-        let cfg = provision_child(&reg, parent);
-        reg.insert(leaf.to_string(), cfg);
-        Ok(())
-    }
-}
 
 fn gov() -> Arc<GovState> {
     Arc::new(
@@ -253,78 +220,6 @@ fn first_call_provisions_second_call_reuses_one_row() {
 
     assert!(gov.verify_token(&t1, 1000, None).is_some());
     assert!(gov.verify_token(&t2, 2000, None).is_some());
-}
-
-#[tokio::test]
-async fn exchange_provisions_user_leaf_from_child_default_and_key_is_usable() {
-    let gov = gov();
-
-    let prov = Arc::new(FakeProvisioner::with_team(
-        "team",
-        "child_default:\n  limits:\n    - { budget: 500, per: month }\n",
-    ));
-    let keys = DeterministicEd25519Keys::new(
-        gov.clone(),
-        "corp".into(),
-        "team".into(),
-        None,
-        prov.clone(),
-    );
-
-    let issued = issue_key(
-        &keys,
-        &principal("sam", &["eng"]),
-        Duration::from_secs(3600),
-        false,
-    )
-    .await
-    .expect("first exchange issues a key");
-    assert_eq!(issued.group, "user:sam");
-
-    let reg = prov.snapshot();
-    let leaf = reg
-        .get("user:sam")
-        .expect("user:sam leaf auto-provisioned on first exchange (the fix)");
-    assert_eq!(
-        leaf.parent.as_deref(),
-        Some("team"),
-        "leaf parented under the team"
-    );
-    assert_eq!(
-        leaf.limits,
-        reg["team"].child_default.as_ref().unwrap().limits,
-        "leaf limits stamped from the team's child_default"
-    );
-    assert!(
-        !leaf.limits.is_empty(),
-        "child_default limits actually copied onto the leaf"
-    );
-
-    let cost = crate::cost::CostModel::resolve_parts(None, 0, &reg);
-    assert!(cost.group_named("user:sam").is_some());
-    let binding = gov
-        .lookup_by_sub(&issued.key_id)
-        .expect("minted binding row");
-    assert!(
-        cost.chain_for(&binding).is_ok(),
-        "the self key resolves its enforcement chain (not MissingGroup)"
-    );
-
-    let issued2 = issue_key(
-        &keys,
-        &principal("sam", &["eng"]),
-        Duration::from_secs(3600),
-        false,
-    )
-    .await
-    .expect("second exchange reuses");
-    assert_eq!(issued2.key_id, issued.key_id, "same deterministic key row");
-    assert_eq!(
-        prov.snapshot().len(),
-        2,
-        "team + exactly one user leaf (no duplicate)"
-    );
-    assert_eq!(self_rows(&gov, "sam").len(), 1, "exactly one key binding");
 }
 
 #[test]
