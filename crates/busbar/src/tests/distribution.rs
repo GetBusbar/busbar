@@ -454,3 +454,12 @@ mod kernel_application_external_accepted_events;
 
 #[path = "kernel_application/recovery_flusher_actual.rs"]
 mod kernel_application_recovery_flusher_actual;
+
+#[path = "kernel_application/auth_governance_routes.rs"]
+mod kernel_application_auth_governance_routes;
+
+#[path = "kernel_application/auth_linked_contracts.rs"]
+mod kernel_application_auth_linked_contracts;
+
+#[path = "kernel_application/plugin_routes_actual.rs"]
+mod kernel_application_plugin_routes_actual;
