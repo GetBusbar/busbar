@@ -74,6 +74,7 @@ fn provider(name: &'static str) -> Arc<Provider> {
 
 fn app(provider: &Arc<Provider>) -> Arc<busbar_kernel::state::App> {
     let calls: Arc<dyn AuthCalls> = provider.clone();
+    crate::root::linked::register_stores(&crate::LINKED);
     let store = crate::root::real_store::store();
     let settings: serde_json::Value = serde_json::from_str(
         &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),

@@ -183,6 +183,11 @@ async fn deployment(instance: &'static str) -> Deployment {
         busbar_core_connector::spawn_env::linked_spawn_secret,
     )
     .unwrap();
+    // The production builder can bind credential readers through the root's
+    // actual AuthAxis. Give that process-wide axis the composed connector.
+    if crate::root::connector::installed().is_none() {
+        let _ = crate::root::connector::install(connector.clone());
+    }
     let services = serving::planes_tests::composed_services();
     let dispatcher = Arc::new(Dispatcher::with_services(
         DispatchConfig::default(),
