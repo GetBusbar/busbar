@@ -76,6 +76,8 @@ fn cells_routing(app: LiveApp, pools: &[&str], direct: &[&str]) -> WalkCells {
 
 #[test]
 fn retained_destinations_follow_the_model_name_across_reorder_and_removal() {
+    use busbar_kernel::plane_driver::MemberSignals as _;
+    use busbar_kernel_egress::ports::Telemetry as _;
     let first = TestApp::new()
         .lane(LaneSpec::new("m-z", "wire", "http://127.0.0.1:9"))
         .build();
@@ -90,21 +92,40 @@ fn retained_destinations_follow_the_model_name_across_reorder_and_removal() {
     let slot = Arc::new(std::sync::OnceLock::new());
     slot.set(Arc::downgrade(&handle)).unwrap();
     let cells = cells_routing(LiveApp::new(slot, Arc::clone(&first)), &["p"], &[]);
+    let signals = ModelSignals {
+        app: cells.live.clone(),
+        names: Arc::clone(&cells.plan.names),
+        permits: Arc::new(crate::root::egress_ports::MemberPermits::new(Vec::new())),
+        reservoirs: Arc::default(),
+    };
+    let telemetry = ModelTelemetry {
+        app: cells.live.clone(),
+        names: Arc::clone(&cells.plan.names),
+        queued: crate::root::egress_ports::WalkTelemetry::default(),
+        reservoirs: Arc::default(),
+    };
     let token = busbar_kernel::test_support::tokens::pass();
     let destination = DestinationId::new(0);
     let now = wall_secs();
     handle.swap(Arc::clone(&second));
     cells.observe("p", destination, Outcome::HardDown, now, &token);
-    assert_eq!(
-        second.store.snapshot(0, now).err,
-        0,
+    assert!(
+        matches!(
+            second.store.breaker_state_snapshot_in("", 0),
+            busbar_kernel::store::BreakerState::Closed
+        ),
         "new index0 is another model"
     );
-    assert_eq!(
-        second.store.snapshot(1, now).err,
-        1,
+    assert!(
+        matches!(
+            second.store.breaker_state_snapshot_in("", 1),
+            busbar_kernel::store::BreakerState::Open { .. }
+        ),
         "the original model moved to index1"
     );
+    telemetry.upstream_latency(destination, 23.0);
+    assert_eq!(second.store.lane_latency_ms(0), None);
+    assert_eq!(signals.standing("p", destination).latency_ms, Some(23.0));
     handle.swap(Arc::clone(&removed));
     assert!(
         !cells.admissible(destination),
@@ -116,6 +137,13 @@ fn retained_destinations_follow_the_model_name_across_reorder_and_removal() {
     ));
     cells.probed(destination, Outcome::HardDown, now, &token);
     cells.observe("p", destination, Outcome::Success, now, &token);
+    telemetry.upstream_latency(destination, 91.0);
+    assert_eq!(signals.standing("p", destination).budget_remaining, Some(0));
+    assert_eq!(removed.store.lane_latency_ms(0), None);
+    assert!(matches!(
+        removed.store.breaker_state_snapshot_in("", 0),
+        busbar_kernel::store::BreakerState::Closed
+    ));
     assert_eq!(removed.store.snapshot(0, now).ok, 0);
     assert_eq!(removed.store.snapshot(0, now).err, 0);
 }
