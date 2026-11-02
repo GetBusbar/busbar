@@ -29,18 +29,8 @@ path = "tests/fixtures/dispatch_test_plugin.rs"
 crate-type = ["cdylib"]
 
 [[example]]
-name = "plane_door_plugin"
-path = "tests/fixtures/plane_door_plugin.rs"
-crate-type = ["cdylib"]
-
-[[example]]
 name = "log_witness_door"
 path = "tests/fixtures/log_witness_door.rs"
-crate-type = ["cdylib"]
-
-[[example]]
-name = "store_v3_door"
-path = "tests/fixtures/store_v3_door.rs"
 crate-type = ["cdylib"]
 
 [[example]]
@@ -54,18 +44,8 @@ path = "tests/fixtures/conditional_store_legacy_door.rs"
 crate-type = ["cdylib"]
 
 [[example]]
-name = "open_reason_store_door"
-path = "tests/fixtures/open_reason_store_door.rs"
-crate-type = ["cdylib"]
-
-[[example]]
 name = "secret_broken_door"
 path = "tests/fixtures/secret_broken_door.rs"
-crate-type = ["cdylib"]
-
-[[example]]
-name = "hook_door"
-path = "tests/fixtures/hook_door.rs"
 crate-type = ["cdylib"]
 
 [[example]]
@@ -81,11 +61,6 @@ crate-type = ["cdylib"]
 [[example]]
 name = "json_contract_auth"
 path = "tests/fixtures/json_contract_auth.rs"
-crate-type = ["cdylib"]
-
-[[example]]
-name = "neutral_frame_door"
-path = "tests/fixtures/neutral_frame_door.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
@@ -111,38 +86,13 @@ jsonschema = { workspace = true, optional = true }
 [dev-dependencies]
 base64 = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "io-util"] }
-busbar-export-file = { git = "https://git.getbusbar.dev/GetBusbar/busbar-export-file", rev = "30122e9b9a28ddbfcff99013bd45a4c41cd55a03" }
-busbar-export-file-plugin = { git = "https://git.getbusbar.dev/GetBusbar/busbar-export-file", rev = "30122e9b9a28ddbfcff99013bd45a4c41cd55a03", features = ["dropped-in"] }
-busbar-export-webhook = { git = "https://git.getbusbar.dev/GetBusbar/busbar-export-webhook", rev = "7910df0ff03141729bb0fdfecfa6b883b906aa86" }
-busbar-export-webhook-plugin = { git = "https://git.getbusbar.dev/GetBusbar/busbar-export-webhook", rev = "7910df0ff03141729bb0fdfecfa6b883b906aa86", features = ["dropped-in"] }
-busbar-export-prometheus = { git = "https://git.getbusbar.dev/GetBusbar/busbar-export-prometheus", rev = "0a29868e09cd67b08aa8808e6080501ac48d051a" }
-busbar-export-prometheus-plugin = { git = "https://git.getbusbar.dev/GetBusbar/busbar-export-prometheus", rev = "0a29868e09cd67b08aa8808e6080501ac48d051a", features = ["dropped-in"] }
-busbar-export-otlp = { git = "https://git.getbusbar.dev/GetBusbar/busbar-export-otlp", rev = "4138201b7e5874400ea705ce9d656b5c09e1cdf4" }
-busbar-export-otlp-plugin = { git = "https://git.getbusbar.dev/GetBusbar/busbar-export-otlp", rev = "4138201b7e5874400ea705ce9d656b5c09e1cdf4", features = ["dropped-in"] }
-busbar-stub-store = { path = "stubs/store/logic" }
-busbar-secret-env = { git = "https://git.getbusbar.dev/GetBusbar/busbar-secret-env", rev = "80e13fcd3ac788f20d74abc46a231abed69c981c" }
-busbar-secret-env-plugin = { git = "https://git.getbusbar.dev/GetBusbar/busbar-secret-env", rev = "80e13fcd3ac788f20d74abc46a231abed69c981c" }
-busbar-stub-auth-verify = { path = "stubs/auth-verify/logic" }
-busbar-stub-auth-verify-plugin = { path = "stubs/auth-verify/plugin" }
 h2 = { workspace = true }
 log = { workspace = true }
 tungstenite = { workspace = true }
-busbar-stub-transport-plugin = { path = "stubs/transport/plugin" }
-busbar-stub-transport = { path = "stubs/transport/logic" }
 busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
-
-[package.metadata.busbar.both-ways]
-store = "busbar-stub-store"
-auth-verify = "busbar-stub-auth-verify"
-secret = "busbar-secret-env"
-transport = "busbar-stub-transport"
-export = "busbar-export-file"
-export-carried = "busbar-export-webhook"
-export-scrape = "busbar-export-prometheus"
-export-trace = "busbar-export-otlp"
 
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Networking_WinSock"] }

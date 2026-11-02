@@ -48,26 +48,6 @@ pub mod store_adapter;
 pub mod store_v3;
 pub mod tarball;
 
-#[cfg(test)]
-#[allow(unsafe_code)]
-#[path = "../../busbar-test-kit/src/conformance/mod.rs"]
-pub mod conformance;
-#[cfg(test)]
-#[path = "../../busbar-test-kit/src/https_conns.rs"]
-pub mod https_conns;
-#[cfg(test)]
-#[path = "../../busbar-test-kit/src/services_double.rs"]
-pub mod services_double;
-#[cfg(test)]
-#[path = "../../busbar-test-kit/src/stand_in.rs"]
-pub mod stand_in;
-#[cfg(test)]
-#[path = "../../busbar-test-kit/src/tcp_conns.rs"]
-pub mod tcp_conns;
-#[cfg(test)]
-#[path = "../../busbar-test-kit/src/test_issuer.rs"]
-pub mod test_issuer;
-
 pub mod rows;
 
 pub use sign::EgressPolicy;
@@ -288,3 +268,128 @@ mod transport_door_tests;
 #[cfg(test)]
 #[path = "tests/hook_door_conformance_tests.rs"]
 mod hook_door_conformance_tests;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/conformance_auth_clock_tests.rs"]
+mod conformance_auth_clock_tests;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/conformance_auth_form_tests.rs"]
+mod conformance_auth_form_tests;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/conformance_auth_outbound_custody_tests.rs"]
+mod conformance_auth_outbound_custody_tests;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/conformance_auth_short_tests.rs"]
+mod conformance_auth_short_tests;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/conformance_auth_unjudged_tests.rs"]
+mod conformance_auth_unjudged_tests;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/conformance_datagram_tests.rs"]
+mod conformance_datagram_tests;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/conformance_declared_tests.rs"]
+mod conformance_declared_tests;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/conformance_export_unjudged_tests.rs"]
+mod conformance_export_unjudged_tests;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/conformance_newer_schema_tests.rs"]
+mod conformance_newer_schema_tests;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/conformance_plane_arrive_tests.rs"]
+mod conformance_plane_arrive_tests;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/conformance_plane_host_tests.rs"]
+mod conformance_plane_host_tests;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/conformance_plane_lending_tests.rs"]
+mod conformance_plane_lending_tests;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/conformance_plane_release_tests.rs"]
+mod conformance_plane_release_tests;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/conformance_plane_sessions_tests.rs"]
+mod conformance_plane_sessions_tests;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/conformance_plane_settings_tests.rs"]
+mod conformance_plane_settings_tests;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/conformance_ready_result_tests.rs"]
+mod conformance_ready_result_tests;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/conformance_secret_contract_tests.rs"]
+mod conformance_secret_contract_tests;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/conformance_store_runs_tests.rs"]
+mod conformance_store_runs_tests;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/conformance_suite_tests.rs"]
+mod conformance_suite_tests;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/conformance_transport_opening_tests.rs"]
+mod conformance_transport_opening_tests;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/conformance_transport_role_tests.rs"]
+mod conformance_transport_role_tests;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/https_timeout_tests.rs"]
+mod https_timeout_tests;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/services_double_tests.rs"]
+mod services_double_tests;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/stand_in_tests.rs"]
+mod stand_in_tests;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/warn_capture_tests.rs"]
+mod warn_capture_tests;
