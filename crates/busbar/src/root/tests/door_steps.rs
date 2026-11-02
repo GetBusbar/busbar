@@ -988,13 +988,14 @@ fn downgrade_book(
     std::sync::Arc<busbar_kernel::state::App>,
     std::sync::Arc<busbar_contract::records::VirtualKey>,
 ) {
+    let governance_store = crate::root::real_store::store();
     let gov = std::sync::Arc::new(
-        busbar_kernel::governance::GovState::new_with_signer(
-            crate::root::real_store::records(),
-            None,
-            None,
-        )
-        .expect("the real store opens governance"),
+        busbar_kernel::governance::GovState::new_with_signer(governance_store.clone(), None, None)
+            .expect("the real store opens governance"),
+    );
+    assert!(
+        gov.attach_store_calls(governance_store),
+        "attach the actual store calls"
     );
     let groups = std::collections::BTreeMap::from([(
         "team".to_string(),
@@ -2506,6 +2507,8 @@ pub(crate) mod tool_door {
     pub(crate) fn line_door() -> DoorFn {
         static DOOR: std::sync::OnceLock<DoorFn> = std::sync::OnceLock::new();
         *DOOR.get_or_init(|| {
+            #[cfg(distribution_root)]
+            crate::dist_root_install::install();
             let section = endpoint_section();
             let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
             crate::root::connector::install_io(&dispatcher);
@@ -7303,15 +7306,67 @@ pub(crate) mod hook_parity {
         prompt: &str,
         settings: serde_json::Value,
     ) -> busbar_kernel::config::HookCfg {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("the hook sidecar binds a real listener");
+        listener.set_nonblocking(true).unwrap();
+        let endpoint = format!("http://{}/hook", listener.local_addr().unwrap());
+        let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+        let router = axum::Router::new().route(
+            "/hook",
+            axum::routing::post(move |axum::Json(body): axum::Json<serde_json::Value>| {
+                let settings = settings.clone();
+                async move {
+                    let rejected = settings
+                        .get("reject_if_contains")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|needle| {
+                            body["request"]["messages"].to_string().contains(needle)
+                        });
+                    let reply = if rejected {
+                        serde_json::json!({"reject":{
+                            "status":settings.get("reject_status")
+                                .and_then(serde_json::Value::as_u64).unwrap_or(403),
+                            "message":"blocked by test gate"
+                        }})
+                    } else if body["op"] == "transform" {
+                        settings
+                            .get("raw_transform_reply")
+                            .cloned()
+                            .unwrap_or_else(|| serde_json::json!({}))
+                    } else {
+                        settings
+                            .get("raw_decide_reply")
+                            .cloned()
+                            .unwrap_or_else(|| serde_json::json!({}))
+                    };
+                    axum::Json(reply)
+                }
+            }),
+        );
+        tokio::spawn(async move {
+            axum::serve(listener, router)
+                .await
+                .expect("the actual hook sidecar serves");
+        });
+        let path = std::path::PathBuf::from(
+            std::env::var_os("BUSBAR_TEST_WEBREQUEST_CDYLIB")
+                .expect("BUSBAR_TEST_WEBREQUEST_CDYLIB names the actual built webrequest product"),
+        );
+        let statement = crate::root::loader::dispatch::rendering_of_library(&path)
+            .expect("the actual hook statement reads")
+            .expect("the actual hook states itself");
+        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+            .expect("the actual hook statement is valid")
+            .name;
         serde_json::from_value(serde_json::json!({
             "kind": "gate",
-            "module": "test-hook",
+            "module": module,
             "timeout_ms": 10_000,
             "on_error": "weighted",
             "prompt": prompt,
             "user": "ro",
             "priority": 0,
-            "settings": settings,
+            "settings": {"url":endpoint},
             "global": false,
             "default": false,
             "signals": [],
@@ -7322,13 +7377,45 @@ pub(crate) mod hook_parity {
     }
 
     pub(crate) fn hook_env() -> busbar_kernel::hooks::HookEnv {
-        busbar_kernel_testkit::test_support::test_hook_env(
-            &["test-hook"],
-            busbar_kernel_testkit::test_support::HookNeeds {
-                prompt: busbar_contract::plugin_rows::NeedLevel::Rw,
-                user: busbar_contract::plugin_rows::NeedLevel::Ro,
-            },
+        let _ = super::tool_door::line_door();
+        let path = std::path::PathBuf::from(
+            std::env::var_os("BUSBAR_TEST_WEBREQUEST_CDYLIB")
+                .expect("BUSBAR_TEST_WEBREQUEST_CDYLIB names the actual built webrequest product"),
+        );
+        let statement = crate::root::loader::dispatch::rendering_of_library(&path)
+            .expect("the actual hook statement reads")
+            .expect("the actual hook states itself");
+        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+            .expect("the actual hook statement is valid")
+            .name;
+        let mut manifest = crate::root::test_plugins::manifest(
+            "hook",
+            &module,
+            crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+        );
+        manifest.statement = Some(hex::encode(statement));
+        manifest.needs.prompt = busbar_contract::plugin_rows::NeedLevel::Rw;
+        manifest.needs.user = busbar_contract::plugin_rows::NeedLevel::Ro;
+        let release = crate::root::test_plugins::key(0x5a);
+        let directory = crate::root::test_plugins::scratch(&format!(
+            "door-hooks-{}",
+            busbar_kernel::door::op_id().counter(),
+        ));
+        let library = std::fs::read(path).expect("the actual hook library reads");
+        let archive = crate::root::test_plugins::signed(&release, manifest, &library);
+        std::fs::write(directory.join("hook.tar.gz"), archive)
+            .expect("stage the actual hook archive");
+        let registry = crate::root::loader::scan_and_validate(
+            &directory,
+            &crate::root::test_plugins::release_policy(&release),
         )
+        .expect("the actual root loader admits the signed hook");
+        crate::root::linked::register_stores(&crate::LINKED);
+        busbar_kernel::hooks::HookEnv::new(
+            std::sync::Arc::new(registry),
+            std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only()),
+        )
+        .expect("the actual root constructs the hook environment")
     }
 
     pub(crate) fn rig(
@@ -7341,15 +7428,24 @@ pub(crate) mod hook_parity {
             if hooks.is_empty() {
                 return app;
             }
-            app.set_container_hooks(
-                surface("plane_key"),
-                vec![("fs".to_string(), Vec::new())],
-                hooks.iter().map(|(n, _)| (*n).to_string()).collect(),
-            );
-            let mut app = app.hook_env(env.clone());
+            app.hook_env = env.clone();
             for (name, cfg) in &hooks {
-                app = app.hook(name, cfg.clone());
+                app.hook_registry.insert((*name).to_string(), cfg.clone());
             }
+            app.requested_signals = busbar_kernel::hooks::requested_signals(&app.hook_registry);
+            app.any_content_hook = busbar_kernel::hooks::any_content_hook(&app.hook_registry);
+            let attached = hooks
+                .iter()
+                .map(|(name, _)| (*name).to_string())
+                .collect::<Vec<_>>();
+            app.plane_gates.insert(
+                surface("plane_key"),
+                app.resolve_container_gates(std::iter::once(("fs", &[][..])), &attached),
+            );
+            app.plane_rewrites.insert(
+                surface("plane_key"),
+                app.resolve_container_rewrites(std::iter::once(("fs", &[][..])), &attached),
+            );
             app
         })
     }
@@ -9639,13 +9735,14 @@ fn a_first_section_of_an_unloaded_plane_is_refused_naming_the_section_and_the_pl
 fn the_doors_admission_check_reads_the_arrival_window_and_not_the_clock() {
     use busbar_kernel::config::groups::{LimitCfg, LimitMetric, LimitWindow};
     use busbar_kernel::governance::SECS_PER_DAY;
+    let governance_store = crate::root::real_store::store();
     let gov = std::sync::Arc::new(
-        busbar_kernel::governance::GovState::new_with_signer(
-            crate::root::real_store::records(),
-            None,
-            None,
-        )
-        .expect("the real store opens governance"),
+        busbar_kernel::governance::GovState::new_with_signer(governance_store.clone(), None, None)
+            .expect("the real store opens governance"),
+    );
+    assert!(
+        gov.attach_store_calls(governance_store),
+        "attach the actual store calls"
     );
     let groups = std::collections::BTreeMap::from([(
         "team".to_string(),
