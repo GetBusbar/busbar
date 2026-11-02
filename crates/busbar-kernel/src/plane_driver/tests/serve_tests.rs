@@ -226,10 +226,13 @@ async fn a_door_plane_admin_route_sees_no_consumed_credential_and_its_row_names_
             &[],
         )
         .expect("publishes");
-    let app = crate::test_support::TestApp::new()
-        .admin_chain(vec![crate::config::operator_provider().to_string()])
-        .build();
-    let consumed = crate::auth::gate_consumed(&app, true, false);
+    let consumed = crate::auth::ConsumedCredentials::carrying(&[
+        axum::http::HeaderName::from_static("x-admin-token"),
+        axum::http::header::AUTHORIZATION,
+        axum::http::HeaderName::from_static("x-api-key"),
+        axum::http::HeaderName::from_static("x-goog-api-key"),
+        axum::http::HeaderName::from_static("dpop"),
+    ]);
     let mut headers = axum::http::HeaderMap::new();
     for (name, value) in [
         ("x-admin-token", "operator-secret"),
