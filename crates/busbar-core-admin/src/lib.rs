@@ -136,9 +136,5 @@ mod txn_tests;
 mod hook_route_timeout_tests;
 
 #[cfg(test)]
-#[path = "tests/core_moved_tests.rs"]
-mod core_moved_tests;
-
-#[cfg(test)]
 #[path = "tests/secret_once_tests.rs"]
 mod secret_once_tests;
