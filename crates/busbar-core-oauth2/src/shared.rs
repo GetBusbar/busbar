@@ -505,9 +505,17 @@ impl Shared {
             })?;
             cell.at = now_secs();
             cell.id.clone_from(&id);
-            cell.b
+            let now = now_secs();
+            if cell
+                .b
                 .clients
-                .insert(bucket.id.clone(), Indexed { at: now_secs() });
+                .get(&bucket.id)
+                .is_none_or(|i| now.saturating_sub(i.at) > INDEX_GRACE_SECS / 2)
+            {
+                cell.b
+                    .clients
+                    .insert(bucket.id.clone(), Indexed { at: now });
+            }
             let schema = atomic_schema(SUBJECT_INDEX);
             request.predicates.push(Predicate {
                 schema: schema.clone(),
@@ -524,6 +532,67 @@ impl Shared {
         for grant in bucket.devices.values() {
             let (code, owner) = user_code(grant);
             codes.insert(digest(&code), owner);
+        }
+        let previous: Option<Cell<Bucket>> = request
+            .predicates
+            .iter()
+            .find(|p| p.schema == atomic_schema("bucket"))
+            .and_then(|p| match &p.expected {
+                Expected::Bytes(body) => Some(body.as_slice()),
+                Expected::Absent => None,
+            })
+            .map(authority_body)
+            .transpose()?
+            .flatten()
+            .map(|body| decode("bucket", body))
+            .transpose()?;
+        let mut released = BTreeMap::new();
+        if let Some(previous) = previous {
+            for grant in previous.b.devices.values() {
+                let (code, owner) = user_code(grant);
+                let id = digest(&code);
+                if !codes.contains_key(&id) {
+                    released.insert(id, owner);
+                }
+            }
+        }
+        for (id, owner) in released {
+            let raw = self.authority("uc", &id).await?;
+            let cell: Option<Cell<Option<String>>> = raw
+                .as_deref()
+                .map(authority_body)
+                .transpose()?
+                .flatten()
+                .map(|body| decode("uc", body))
+                .transpose()?;
+            let Some(mut cell) = cell else {
+                continue;
+            };
+            if cell.b.as_deref() != Some(owner.as_str()) {
+                continue;
+            }
+            let value = if now_secs().saturating_sub(cell.at) > RETIRE_AFTER_SECS {
+                format!("-{}", nonce()?).into_bytes()
+            } else {
+                cell.v = cell.v.checked_add(1).ok_or_else(|| {
+                    StorageError::new("oauth_as store: user-code index version exhausted")
+                })?;
+                cell.b = None;
+                cell.at = now_secs();
+                cell.id.clone_from(&id);
+                live_body(&encode("uc", &cell)?)
+            };
+            let schema = atomic_schema("uc");
+            request.predicates.push(Predicate {
+                schema: schema.clone(),
+                key: id.as_bytes().to_vec(),
+                expected: raw.map_or(Expected::Absent, Expected::Bytes),
+            });
+            request.mutations.push(Mutation::Put {
+                schema,
+                key: id.into_bytes(),
+                value,
+            });
         }
         for (id, owner) in codes {
             let raw = self.authority("uc", &id).await?;
@@ -884,7 +953,7 @@ impl Shared {
             if let Some(guard) = family_guard {
                 request.predicates.push(guard);
             }
-            if kind_name == "bucket" && !retire {
+            if kind_name == "bucket" {
                 let body = encode(kind_name, &value)?;
                 let bucket = decode::<Bucket>(kind_name, &body)?;
                 self.bucket_indexes(request, &bucket).await?;
@@ -1164,29 +1233,6 @@ impl Shared {
             }
         })
         .await
-    }
-
-    async fn release_user_code(
-        &self,
-        normalized: &str,
-        device_code: &str,
-    ) -> Result<(), StorageError> {
-        self.cas_cell::<Option<String>, ()>("uc", &digest(normalized), |held, _| {
-            if held.as_deref() == Some(device_code) {
-                *held = None;
-                Ok(Swap::Retire((), true))
-            } else {
-                Ok(Swap::Keep(()))
-            }
-        })
-        .await
-    }
-
-    async fn release_all(&self, freed: Vec<(String, String)>) -> Result<(), StorageError> {
-        for (uc, dc) in freed {
-            self.release_user_code(&uc, &dc).await?;
-        }
-        Ok(())
     }
 
     async fn user_code_owner(&self, normalized: &str) -> Result<Option<String>, StorageError> {
@@ -1531,13 +1577,11 @@ impl Storage for SharedStorage {
                  identity a barrier can be recorded for",
             ));
         }
-        let mut freed = Vec::new();
         let existed = self
             .shared
             .update(client_id.as_str(), |b, _| {
                 let existed = b.client.take().is_some();
                 Times::merge(&mut b.client_barrier, window);
-                freed = b.devices.values().map(user_code).collect();
                 b.tokens.clear();
                 b.refresh.clear();
                 b.codes.clear();
@@ -1547,7 +1591,6 @@ impl Storage for SharedStorage {
                 Ok(Swap::Write(existed))
             })
             .await?;
-        self.shared.release_all(freed).await?;
         Ok(existed)
     }
 
@@ -1557,18 +1600,11 @@ impl Storage for SharedStorage {
         s.hold_user_code(&normalized, &grant.device_code).await?;
         let client = grant.client_id.as_str().to_string();
         s.index("dev", &grant.device_code, &client).await?;
-        let mut previous = None;
         s.update(&client, |b, _| {
-            previous = b
-                .devices
-                .insert(grant.device_code.clone(), grant.clone())
-                .map(|p| normalize_user_code(&p.user_code));
+            b.devices.insert(grant.device_code.clone(), grant.clone());
             Ok(Swap::Write(()))
         })
         .await?;
-        if let Some(old) = previous.filter(|old| *old != normalized) {
-            s.release_user_code(&old, &grant.device_code).await?;
-        }
         Ok(())
     }
 
@@ -1595,16 +1631,9 @@ impl Storage for SharedStorage {
         &self,
         device_code: &str,
     ) -> Result<Option<DeviceGrant>, StorageError> {
-        let taken = self
-            .shared
+        self.shared
             .take("dev", device_code, |b| b.devices.remove(device_code))
-            .await?;
-        if let Some(g) = &taken {
-            self.shared
-                .release_user_code(&normalize_user_code(&g.user_code), device_code)
-                .await?;
-        }
-        Ok(taken)
+            .await
     }
 
     async fn compare_and_swap_device_grant(
@@ -1633,25 +1662,16 @@ impl Storage for SharedStorage {
                 ));
             }
         }
-        let mut previous = None;
         let swapped = s
             .update(&client, |b, _| {
                 if !is_expected(b) {
                     return Ok(Swap::Keep(false));
                 }
-                previous = b
-                    .devices
-                    .insert(updated.device_code.clone(), updated.clone())
-                    .map(|p| normalize_user_code(&p.user_code));
+                b.devices
+                    .insert(updated.device_code.clone(), updated.clone());
                 Ok(Swap::Write(true))
             })
             .await?;
-        if swapped {
-            s.hold_user_code(&normalized, &updated.device_code).await?;
-            if let Some(old) = previous.filter(|old| *old != normalized) {
-                s.release_user_code(&old, &updated.device_code).await?;
-            }
-        }
         Ok(swapped)
     }
 
@@ -1970,7 +1990,6 @@ impl Storage for SharedStorage {
         let Some(client) = self.shared.client_of("cons", consent_id).await? else {
             return Ok(0);
         };
-        let mut freed = Vec::new();
         let removed = self
             .shared
             .update(&client, |b, _| {
@@ -2002,19 +2021,14 @@ impl Storage for SharedStorage {
                     .retain(|_, r| !of_grant(&r.client_id, r.subject.as_deref()));
                 b.codes
                     .retain(|_, c| !of_grant(&c.client_id, Some(c.subject.as_str())));
-                freed = Vec::new();
                 b.devices.retain(|_, d| {
                     let gone = d.client_id == cid
                         && matches!(&d.state, DeviceGrantState::Approved { subject: s } if *s == subject);
-                    if gone {
-                        freed.push(user_code(d));
-                    }
                     !gone
                 });
                 Ok(Swap::Write((before - b.records()) as u64))
             })
             .await?;
-        self.shared.release_all(freed).await?;
         Ok(removed)
     }
 
@@ -2045,7 +2059,7 @@ impl Storage for SharedStorage {
             // Judged first on the body the listing already read: a client with nothing to reclaim
             // is not read again. Every node sweeps every client each minute, so a second read of
             // each would be a store read per client per node per minute, to change nothing.
-            let acts = match sweep_bucket(&mut cell.b, cell.at, now, &mut Vec::new()) {
+            let acts = match sweep_bucket(&mut cell.b, cell.at, now) {
                 Swap::Keep(_) => false,
                 Swap::Write(_) => true,
                 Swap::Retire(_, changed) => {
@@ -2055,22 +2069,16 @@ impl Storage for SharedStorage {
             if !acts {
                 continue;
             }
-            let mut freed = Vec::new();
             // One bucket that will not swap (a held version, a store fault) is skipped and said,
             // never the end of the sweep: the next tick tries it again.
             let swept = s
-                .update(&cell.b.id, |b, at| Ok(sweep_bucket(b, at, now, &mut freed)))
+                .update(&cell.b.id, |b, at| Ok(sweep_bucket(b, at, now)))
                 .await;
             match swept {
                 Ok(n) => removed += n,
                 Err(e) => {
                     tracing::warn!(error = %e, "oauth_as: a client's records were not swept this tick; the next tick tries them again");
                     continue;
-                }
-            }
-            for (uc, dc) in freed {
-                if let Err(e) = s.release_user_code(&uc, &dc).await {
-                    tracing::warn!(error = %e, "oauth_as: a lapsed device grant's user code was not released this tick");
                 }
             }
         }
@@ -2110,27 +2118,15 @@ impl Storage for SharedStorage {
 }
 
 /// Reclaim what has lapsed by `now` in one client's records, whose current version was written at
-/// `at`, noting each lapsed device grant's user code in `freed`: the sweep's one change to a
-/// bucket, judged on the listed body and then made under the version the swap reads.
-fn sweep_bucket(
-    b: &mut Bucket,
-    at: u64,
-    now: SystemTime,
-    freed: &mut Vec<(String, String)>,
-) -> Swap<u64> {
+/// `at`: the sweep's one change to a bucket, judged on the listed body and then made under the
+/// version the swap reads. Its user-code releases commit in the same conditional transaction.
+fn sweep_bucket(b: &mut Bucket, at: u64, now: SystemTime) -> Swap<u64> {
     fn lapse<V>(map: &mut BTreeMap<String, V>, mut live: impl FnMut(&V) -> bool) -> u64 {
         let before = map.len();
         map.retain(|_, v| live(v));
         (before - map.len()) as u64
     }
-    freed.clear();
-    let mut n = lapse(&mut b.devices, |g| {
-        let keep = now < g.expires_at;
-        if !keep {
-            freed.push(user_code(g));
-        }
-        keep
-    });
+    let mut n = lapse(&mut b.devices, |g| now < g.expires_at);
     n += lapse(&mut b.codes, |c| now < c.expires_at);
     n += lapse(&mut b.pushed, |p| now < p.expires_at);
     n += lapse(&mut b.tokens, |t| now < t.expires_at);
@@ -2286,7 +2282,10 @@ impl Shared {
     /// entries atomically. A subject whose index names no client is retired. A client whose
     /// records will not read is kept, and one entry indexed again meanwhile is kept.
     async fn sweep_subjects(&self) -> Result<(), StorageError> {
-        let now_s = now_secs();
+        self.sweep_subjects_at(now_secs()).await
+    }
+
+    async fn sweep_subjects_at(&self, now_s: u64) -> Result<(), StorageError> {
         let mut buckets: BTreeMap<String, Option<Bucket>> = BTreeMap::new();
         for cell in self.list::<Cell<SubjectIndex>>(SUBJECT_INDEX).await? {
             if cell.id.is_empty() {
@@ -2313,21 +2312,97 @@ impl Shared {
             if gone.is_empty() && !cell.b.clients.is_empty() {
                 continue;
             }
-            let swept = self.cas_cell::<SubjectIndex, ()>(SUBJECT_INDEX, &cell.id, |ix, _| {
-                let before = ix.clients.len();
-                ix.clients.retain(|c, i| gone.get(c) != Some(&*i));
-                let changed = ix.clients.len() != before;
-                Ok(if ix.clients.is_empty() {
-                    Swap::Retire((), changed)
-                } else {
-                    Swap::when(changed, ())
-                })
-            });
+            let swept = self.sweep_subject(&cell.id, &gone);
             if let Err(e) = swept.await {
                 tracing::warn!(error = %e, "oauth_as: a subject's index was not swept this tick");
             }
         }
         Ok(())
+    }
+
+    async fn sweep_subject(
+        &self,
+        id: &str,
+        gone: &BTreeMap<String, Indexed>,
+    ) -> Result<(), StorageError> {
+        for attempt in 0..SWAP_ATTEMPTS {
+            let raw = self.authority(SUBJECT_INDEX, id).await?;
+            let cell: Option<Cell<SubjectIndex>> = raw
+                .as_deref()
+                .map(authority_body)
+                .transpose()?
+                .flatten()
+                .map(|body| decode(SUBJECT_INDEX, body))
+                .transpose()?;
+            let Some(mut cell) = cell else {
+                return Ok(());
+            };
+            let mut guards = Vec::new();
+            let mut changed = false;
+            for (client, indexed) in gone {
+                if cell.b.clients.get(client) != Some(indexed) {
+                    continue;
+                }
+                let bucket_id = digest(client);
+                let snapshot = match self.authority("bucket", &bucket_id).await {
+                    Ok(raw) => raw,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "oauth_as: a client's subject entry could not be rejudged");
+                        continue;
+                    }
+                };
+                let bucket: Option<Cell<Bucket>> = match snapshot
+                    .as_deref()
+                    .map(authority_body)
+                    .transpose()?
+                    .flatten()
+                    .map(|body| decode("bucket", body))
+                    .transpose()
+                {
+                    Ok(bucket) => bucket,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "oauth_as: a client's subject entry could not be rejudged");
+                        continue;
+                    }
+                };
+                if bucket.is_some_and(|b| b.b.consents.values().any(|c| digest(&c.subject) == id)) {
+                    continue;
+                }
+                cell.b.clients.remove(client);
+                changed = true;
+                guards.push(Predicate {
+                    schema: atomic_schema("bucket"),
+                    key: bucket_id.into_bytes(),
+                    expected: snapshot.map_or(Expected::Absent, Expected::Bytes),
+                });
+            }
+            let retired =
+                cell.b.clients.is_empty() && now_secs().saturating_sub(cell.at) > RETIRE_AFTER_SECS;
+            if !changed && !retired {
+                return Ok(());
+            }
+            let value = if retired {
+                format!("-{}", nonce()?).into_bytes()
+            } else {
+                cell.v = cell.v.checked_add(1).ok_or_else(|| {
+                    StorageError::new("oauth_as store: subject index version exhausted")
+                })?;
+                cell.at = now_secs();
+                cell.id = id.to_string();
+                live_body(&encode(SUBJECT_INDEX, &cell)?)
+            };
+            let mut request = Self::candidate(&atomic_schema(SUBJECT_INDEX), id, raw, value);
+            Arc::make_mut(&mut request).predicates.extend(guards);
+            match self.submit(request).await? {
+                Decision::Applied => return Ok(()),
+                Decision::ConditionConflict => {
+                    tokio::time::sleep(Duration::from_millis(u64::from(attempt.min(20)))).await
+                }
+            }
+        }
+        Err(StorageError::new(
+            "oauth_as store: subject sweep repeatedly conflicted",
+        ))
     }
 
     /// Delete every row of `kind_name` whose `until` (read by `of`, with the row's own id) has

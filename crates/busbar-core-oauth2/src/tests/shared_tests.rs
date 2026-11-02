@@ -1797,3 +1797,127 @@ async fn a_cancelled_family_revocation_commits_its_barrier_and_cascade_together(
         oauth_as::store::WriteOutcome::RefusedRevoked
     ));
 }
+
+fn device(device_code: &str, user_code: &str) -> oauth_as::device::DeviceGrant {
+    let now = std::time::SystemTime::now();
+    oauth_as::device::DeviceGrant {
+        device_code: device_code.into(),
+        user_code: user_code.into(),
+        client_id: oauth_as::client::ClientId::new("atomic-client"),
+        scope: oauth_as::scope::ScopeSet::default(),
+        state: oauth_as::device::DeviceGrantState::Pending,
+        created_at: now,
+        expires_at: now + std::time::Duration::from_secs(600),
+        interval: std::time::Duration::from_secs(5),
+        last_poll_at: None,
+    }
+}
+
+#[tokio::test]
+async fn a_cancelled_device_take_releases_its_user_code_in_the_backend_decision() {
+    let store = OneStore::default();
+    let a = Arc::new(SharedStorage::new(Arc::new(Shared::new(store.calls()))));
+    let b = SharedStorage::new(Arc::new(Shared::new(store.calls())));
+    a.put_device_grant(device("old-device", "ABCD-EFGH"))
+        .await
+        .unwrap();
+    let (release, accepted, decided) = store.delay_decision("bucket", false);
+    let taker = {
+        let a = a.clone();
+        tokio::spawn(async move { a.take_device_grant("old-device").await })
+    };
+    accepted.notified().await;
+    taker.abort();
+    assert!(taker.await.unwrap_err().is_cancelled());
+    drop(a);
+    release.notify_one();
+    decided.notified().await;
+    assert!(b.get_device_grant("old-device").await.unwrap().is_none());
+    b.put_device_grant(device("new-device", "ABCD-EFGH"))
+        .await
+        .unwrap();
+    assert_eq!(
+        b.find_device_grant_by_user_code("ABCDEFGH")
+            .await
+            .unwrap()
+            .unwrap()
+            .device_code,
+        "new-device"
+    );
+}
+
+#[tokio::test]
+async fn replacing_a_device_user_code_releases_only_the_previous_code() {
+    let store = OneStore::default();
+    let s = SharedStorage::new(Arc::new(Shared::new(store.calls())));
+    s.put_device_grant(device("first-device", "ABCD-EFGH"))
+        .await
+        .unwrap();
+    let mut updated = device("first-device", "JKLM-NPQR");
+    updated.state = oauth_as::device::DeviceGrantState::Approved {
+        subject: "operator".into(),
+    };
+    assert!(s
+        .compare_and_swap_device_grant(&oauth_as::device::DeviceGrantState::Pending, updated)
+        .await
+        .unwrap());
+    assert!(s
+        .find_device_grant_by_user_code("ABCDEFGH")
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        s.find_device_grant_by_user_code("JKLMNPQR")
+            .await
+            .unwrap()
+            .unwrap()
+            .device_code,
+        "first-device"
+    );
+    s.put_device_grant(device("second-device", "ABCD-EFGH"))
+        .await
+        .unwrap();
+    s.take_device_grant("first-device").await.unwrap();
+    assert_eq!(
+        s.find_device_grant_by_user_code("ABCDEFGH")
+            .await
+            .unwrap()
+            .unwrap()
+            .device_code,
+        "second-device"
+    );
+}
+
+#[tokio::test]
+async fn a_delayed_subject_sweep_cannot_detach_a_new_consent() {
+    let store = OneStore::default();
+    let a = Arc::new(Shared::new(store.calls()));
+    let b = SharedStorage::new(Arc::new(Shared::new(store.calls())));
+    a.index_subject("alice", "atomic-client").await.unwrap();
+    let id = crate::shared::digest("alice");
+    let (_, _, _, index) = a
+        .read_cell::<crate::shared::SubjectIndex>(crate::shared::SUBJECT_INDEX, &id)
+        .await
+        .unwrap();
+    let (release, accepted, decided) = store.delay_decision("ix.subj", false);
+    let sweep = {
+        let a = a.clone();
+        tokio::spawn(async move { a.sweep_subject(&id, &index.clients).await })
+    };
+    accepted.notified().await;
+    b.put_consent(oauth_as::consent::ConsentRecord {
+        consent_id: "new-consent".into(),
+        client_id: oauth_as::client::ClientId::new("atomic-client"),
+        subject: "alice".into(),
+        scope: oauth_as::scope::ScopeSet::default(),
+        resource: Vec::new(),
+        granted_at: std::time::SystemTime::now(),
+        authentication: None,
+    })
+    .await
+    .unwrap();
+    release.notify_one();
+    decided.notified().await;
+    sweep.await.unwrap().unwrap();
+    assert_eq!(b.consents_for_subject("alice").await.unwrap().len(), 1);
+}
