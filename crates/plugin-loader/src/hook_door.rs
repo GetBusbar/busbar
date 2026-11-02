@@ -68,9 +68,16 @@ fn open(plugin: &Plugin<Hook>, settings: &[u8]) -> Result<(), String> {
 type Rebind = Box<dyn Fn() -> Result<Plugin<Hook>, String> + Send + Sync>;
 
 enum State {
-    Live(Arc<Plugin<Hook>>),
+    Live {
+        plugin: Arc<Plugin<Hook>>,
+        // Opening a trial alone does not show that its serving slots recovered.
+        next_fault_window: Duration,
+    },
 
-    Quarantined { trial_at: Instant, window: Duration },
+    Quarantined {
+        trial_at: Instant,
+        window: Duration,
+    },
 
     Trialing,
 }
@@ -220,18 +227,23 @@ impl Inner {
                 let mut state = self.lock();
                 let now = Instant::now();
                 match &*state {
-                    State::Live(p) if !p.is_faulted() => return Ok(Arc::clone(p)),
-                    State::Live(_) => {
-                        let State::Live(p) = std::mem::replace(
+                    State::Live { plugin, .. } if !plugin.is_faulted() => {
+                        return Ok(Arc::clone(plugin));
+                    }
+                    State::Live {
+                        next_fault_window, ..
+                    } => {
+                        let window = *next_fault_window;
+                        let State::Live { plugin, .. } = std::mem::replace(
                             &mut *state,
                             State::Quarantined {
-                                trial_at: now + QUARANTINE_FIRST,
-                                window: QUARANTINE_FIRST,
+                                trial_at: now + window,
+                                window,
                             },
                         ) else {
                             unreachable!("matched live")
                         };
-                        (Duration::ZERO, Some(p), None)
+                        (Duration::ZERO, Some(plugin), None)
                     }
                     State::Quarantined { trial_at, window } if now >= *trial_at => {
                         let window = *window;
@@ -379,7 +391,10 @@ impl Inner {
                     checkpoint: restored,
                 })
             });
-            *state = State::Live(Arc::clone(&p));
+            *state = State::Live {
+                plugin: Arc::clone(&p),
+                next_fault_window: (window * 2).min(QUARANTINE_MAX),
+            };
             return Ok(p);
         });
         if let Err(error) = &opened {
@@ -473,9 +488,10 @@ impl Inner {
         {
             let mut state = self.lock();
             let window = match &*state {
-                State::Live(current) if std::ptr::eq(current.as_ref(), plugin) => {
-                    Some(QUARANTINE_FIRST)
-                }
+                State::Live {
+                    plugin: current,
+                    next_fault_window,
+                } if std::ptr::eq(current.as_ref(), plugin) => Some(*next_fault_window),
 
                 _ => None,
             };
@@ -488,6 +504,25 @@ impl Inner {
         }
 
         close(plugin);
+    }
+
+    fn served(&self, plugin: &Plugin<Hook>, op: u32) {
+        if !matches!(
+            op,
+            slot::DECIDE | slot::TRANSFORM | slot::SERVE | slot::NOTIFY
+        ) {
+            return;
+        }
+        let mut state = self.lock();
+        if let State::Live {
+            plugin: current,
+            next_fault_window,
+        } = &mut *state
+        {
+            if std::ptr::eq(current.as_ref(), plugin) && !plugin.is_faulted() {
+                *next_fault_window = QUARANTINE_FIRST;
+            }
+        }
     }
 
     async fn submit<I, O>(
@@ -611,14 +646,19 @@ impl Inner {
                     (Outcome::Ready | Outcome::Failed, _) if done.disposition.is_some() => {
                         Err(Answered::TimedOut)
                     }
-                    (Outcome::Ready | Outcome::Failed, Some(out)) => Ok(Submitted {
-                        plugin,
-                        outcome: done.outcome,
-                        out,
-                        error: text(done.error),
-                        lease: done.lease,
-                        lent,
-                    }),
+                    (Outcome::Ready | Outcome::Failed, Some(out)) => {
+                        if done.outcome == Outcome::Ready && !done.short {
+                            self.served(&plugin, s);
+                        }
+                        Ok(Submitted {
+                            plugin,
+                            outcome: done.outcome,
+                            out,
+                            error: text(done.error),
+                            lease: done.lease,
+                            lent,
+                        })
+                    }
                     (Outcome::Fault, _) => {
                         self.faulted(&plugin);
                         Err(Answered::Broken(format!(
@@ -683,8 +723,9 @@ impl std::fmt::Debug for HookInstance {
 
 impl Drop for Inner {
     fn drop(&mut self) {
-        if let State::Live(p) = self.state.get_mut().unwrap_or_else(|p| p.into_inner()) {
-            close(p);
+        if let State::Live { plugin, .. } = self.state.get_mut().unwrap_or_else(|p| p.into_inner())
+        {
+            close(plugin);
         }
     }
 }
@@ -723,7 +764,10 @@ impl HookInstance {
                     pending: 0,
                     uncertain: false,
                 }),
-                state: Mutex::new(State::Live(plugin)),
+                state: Mutex::new(State::Live {
+                    plugin,
+                    next_fault_window: QUARANTINE_FIRST,
+                }),
                 next_worker: AtomicU32::new(0),
                 orders,
             }),
@@ -733,7 +777,7 @@ impl HookInstance {
     #[must_use]
     pub fn quarantined(&self) -> bool {
         match &*self.inner.lock() {
-            State::Live(p) => p.is_faulted(),
+            State::Live { plugin, .. } => plugin.is_faulted(),
             State::Quarantined { .. } | State::Trialing => true,
         }
     }
