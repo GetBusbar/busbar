@@ -53,8 +53,8 @@ pub(in crate::governance) struct PendingCorrection {
     verdict_pending: Arc<std::sync::atomic::AtomicBool>,
 }
 
-struct Deciding(Arc<std::sync::atomic::AtomicBool>);
-impl Drop for Deciding {
+pub(in crate::governance) struct CorrectionRecoveryRun(Arc<std::sync::atomic::AtomicBool>);
+impl Drop for CorrectionRecoveryRun {
     fn drop(&mut self) {
         self.0.store(false, Ordering::Release);
     }
@@ -93,6 +93,128 @@ fn address(bucket: &str, window: u64) -> UsageAddress {
 }
 
 impl GovState {
+    pub(in crate::governance) fn hold_foreign_correction_recovery(
+        &self,
+        operation_id: [u8; 16],
+    ) -> Result<Option<CorrectionRecoveryRun>, RecoveryError> {
+        let pending = self
+            .corrections
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .values()
+            .find(|pending| pending.request.op_id.0 == operation_id)
+            .cloned();
+        let Some(pending) = pending else {
+            return Ok(None);
+        };
+        if pending
+            .running
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            return Err(RecoveryError::Conflict(
+                "original correction sender is still running".into(),
+            ));
+        }
+        Ok(Some(CorrectionRecoveryRun(pending.running.clone())))
+    }
+
+    /// Prepare foreign adoption transitions without performing persistence or runtime effects.
+    pub(in crate::governance) fn stage_foreign_correction_verdict(
+        event: &RecoveryEvent,
+        resolution: &RecoveryResolution,
+    ) -> Result<Vec<RecoveryEvent>, RecoveryError> {
+        resolution.validate_quiescence()?;
+        if event.kind != RecoveryKind::Correction
+            || event.operation_id != resolution.operation_id
+            || event.body_fingerprint != resolution.body_fingerprint
+            || event.revision != resolution.expected_revision
+        {
+            return Err(RecoveryError::Conflict(
+                "foreign correction head differs".into(),
+            ));
+        }
+        if resolution.actor.trim().is_empty()
+            || resolution.actor.len() > 256
+            || resolution.reason.trim().is_empty()
+            || resolution.reason.len() > 4096
+        {
+            return Err(RecoveryError::Invalid(
+                "foreign correction verdict requires an actor and reason".into(),
+            ));
+        }
+        let mut custody = recovery::Custody::decode(&event.payload)
+            .map_err(|error| RecoveryError::Invalid(error.to_string()))?;
+        custody
+            .validate_event(event)
+            .map_err(|error| RecoveryError::Invalid(error.to_string()))?;
+        let successor =
+            |previous: &RecoveryEvent, state, payload| -> Result<RecoveryEvent, RecoveryError> {
+                let next = RecoveryEvent {
+                    operation_id: previous.operation_id,
+                    revision: previous.revision.checked_add(1).ok_or_else(|| {
+                        RecoveryError::Invalid("foreign correction revision exhausted".into())
+                    })?,
+                    previous_event: Some(previous.fingerprint()?),
+                    kind: previous.kind,
+                    body_fingerprint: previous.body_fingerprint,
+                    state,
+                    first_sent_at_ms: previous.first_sent_at_ms,
+                    payload,
+                };
+                next.follows(Some(previous))?;
+                Ok(next)
+            };
+        let desired = match resolution.verdict {
+            RecoveryVerdict::Landed => RecoveryState::VerdictLanded,
+            RecoveryVerdict::NotLanded => RecoveryState::VerdictNotLanded,
+        };
+        match event.state {
+            RecoveryState::Settled => Ok(Vec::new()),
+            RecoveryState::Applied | RecoveryState::VerdictLanded
+                if resolution.verdict != RecoveryVerdict::Landed =>
+            {
+                Err(RecoveryError::Conflict(
+                    "foreign correction already has a landed outcome".into(),
+                ))
+            }
+            RecoveryState::ConditionConflict | RecoveryState::VerdictNotLanded
+                if resolution.verdict != RecoveryVerdict::NotLanded =>
+            {
+                Err(RecoveryError::Conflict(
+                    "foreign correction already has an unlanded outcome".into(),
+                ))
+            }
+            RecoveryState::Intent | RecoveryState::LandedUnknown => {
+                let mut events = Vec::new();
+                let previous = if event.state == RecoveryState::Intent {
+                    custody.mark_age_unknown();
+                    let unknown = successor(
+                        event,
+                        RecoveryState::LandedUnknown,
+                        custody
+                            .encode()
+                            .map_err(|error| RecoveryError::Invalid(error.to_string()))?,
+                    )?;
+                    events.push(unknown.clone());
+                    unknown
+                } else {
+                    event.clone()
+                };
+                custody.record_verdict(resolution);
+                events.push(successor(
+                    &previous,
+                    desired,
+                    custody
+                        .encode()
+                        .map_err(|error| RecoveryError::Invalid(error.to_string()))?,
+                )?);
+                Ok(events)
+            }
+            _ => Ok(vec![successor(event, event.state, event.payload.clone())?]),
+        }
+    }
+
     fn correction_quarantine_events(&self) -> Vec<RecoveryEvent> {
         self.selected_recovery_events()
             .into_iter()
@@ -323,7 +445,7 @@ impl GovState {
                 "original correction sender is still running".into(),
             ));
         }
-        let _running = Deciding(pending.running.clone());
+        let _running = CorrectionRecoveryRun(pending.running.clone());
         let _claim = self.correction_claims.claim(pending.request.key_id.clone());
         let state = match resolution.verdict {
             RecoveryVerdict::Landed => RecoveryState::VerdictLanded,
@@ -533,6 +655,12 @@ impl GovState {
             .unwrap_or_else(|p| p.into_inner()) = Some(event.clone());
         self.keep_recovery_event(&event)?;
         self.drive_recovery_children(&event)?;
+        self.resume_raw_recovery()?;
+        if !self.recovery_children_settled(&event)? {
+            return Err(unresolved(
+                "revalidated correction has unconfirmed dependent negatives",
+            ));
+        }
         Ok(())
     }
 
@@ -677,7 +805,7 @@ impl GovState {
                 "the same immutable operation is already in flight",
             ));
         }
-        let _running = Deciding(pending.running.clone());
+        let _running = CorrectionRecoveryRun(pending.running.clone());
         if pending.verdict_pending.load(Ordering::Acquire) {
             return Err(unresolved(
                 "audited correction verdict awaits conditional revalidation",
