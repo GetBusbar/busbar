@@ -528,7 +528,6 @@ pub mod seam {
         pub credential_form: CredentialFormFn,
     }
 
-    /// Register the flow's handlers (the first registration stands).
     pub fn install(seam: LoginSeam) {
         crate::oauth_as::seam::install_hosted_login(seam);
     }
