@@ -181,12 +181,25 @@ fn plane_remainder<'de, D: Deserializer<'de>>(
     de: D,
     lifted: &mut Lifted,
 ) -> Result<serde_yaml::Value, D::Error> {
-    let [card_key, fees_key] = PLANE_CARD_KEYS;
     let decl = crate::plane_driver::registry::plane_decl_for_config_section(section_key);
+    plane_remainder_in(
+        section_key,
+        decl.map_or(section_key, |d| d.key),
+        decl.map_or("entry", |d| d.subject_noun),
+        de,
+        lifted,
+    )
+}
 
-    let noun = decl.map_or("entry", |d| d.subject_noun);
+fn plane_remainder_in<'de, D: Deserializer<'de>>(
+    section_key: &'static str,
+    plane: &str,
+    noun: &str,
+    de: D,
+    lifted: &mut Lifted,
+) -> Result<serde_yaml::Value, D::Error> {
+    let [card_key, fees_key] = PLANE_CARD_KEYS;
     let mut section = crate::config_validate::deal::read_section(de, section_key, noun)?;
-    let plane = decl.map_or(section_key, |d| d.key);
     let mut map = section.as_mapping_mut();
     let mut take = |key: &str| map.as_mut().and_then(|m| m.remove(key));
     let fail =
@@ -400,3 +413,7 @@ pub fn deploy_from_deserializer<'de, D: Deserializer<'de>>(de: D) -> Result<Depl
 pub fn deploy_from_yaml_value(value: serde_yaml::Value) -> Result<DeployCfg, serde_yaml::Error> {
     deploy_from_deserializer(value)
 }
+
+#[cfg(test)]
+#[path = "tests/plane_remainder_tests.rs"]
+mod plane_remainder_tests;
