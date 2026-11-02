@@ -6,6 +6,11 @@ All notable changes to Busbar are documented here. The format is based on
 
 ## [1.6.0], unreleased
 
+- Cross-dialect Bedrock document requests use a neutral attachment label when the source filename is not a valid native document name.
+- Cross-dialect Anthropic answers omit unrepresentable citations with a named warning and audit record instead of inventing source indices.
+- Cross-dialect Bedrock citations use source web locations without reinterpreting answer offsets as source-document coordinates.
+- Cross-dialect Anthropic delivery refuses malformed tool arguments with a native error while retaining provider-reported work.
+
 Busbar 1.6.0 is 1.5.5 plus three more planes. Everything a model-plane request already got — the
 caller's key, its grants, its budget, hooks and the audit chain — applies to an MCP tool call, an
 A2A agent task and a live voice session unchanged, and a deployment that declares none of them
