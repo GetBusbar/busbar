@@ -491,9 +491,13 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
     fn poll(&mut self, cx: &mut Context<'_>) -> Poll<()> {
         loop {
             let mut moved = false;
-            let abandoned = self.staged.as_mut().is_some_and(
-                |stage| matches!(&mut stage.phase, UpgradePhase::Adopting(reply) if reply.poll_closed(cx).is_ready()),
-            );
+            let abandoned = self
+                .staged
+                .as_mut()
+                .is_some_and(|stage| match &mut stage.phase {
+                    UpgradePhase::Adopting(reply) => reply.poll_closed(cx).is_ready(),
+                    _ => false,
+                });
             if (self.stopping || abandoned) && self.staged.is_some() {
                 self.abandon_stage();
             }
@@ -1167,7 +1171,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 if let Some(inflow) = self.inflows.get_mut(&stream) {
                     inflow.refused = true;
                 }
-                let refused = framing.refuse(Some(stream), &[], 400, false);
+                let refused = framing.emit_head(stream, &[], true, 400);
                 self.took(refused);
                 let _ = reply.send(false);
                 return;
