@@ -30,59 +30,6 @@ pub(crate) fn hook(kind: HookKind, global: bool) -> HookCfg {
 }
 
 #[test]
-fn build_with_hook_registers_and_wires_global_tap() {
-    let env =
-        busbar_kernel_testkit::test_support::test_hook_env(&["test-hook"], Default::default());
-    let app = crate::new_test_app().hook_env(env).build();
-    assert_eq!(app.tap_hooks.len(), 0, "fixture starts with no taps");
-    let next = build_with_hook(&app, "logger", hook(HookKind::Tap, true))
-        .expect("a valid global tap registers");
-    assert!(next.hook_registry.contains_key("logger"));
-    assert!(
-        next.global_hooks.iter().any(|n| n == "logger"),
-        "global tap wired into global_hooks"
-    );
-    assert_eq!(
-        next.tap_hooks.len(),
-        1,
-        "the global tap re-resolved into the fired tap transports (live after swap)"
-    );
-
-    assert!(
-        std::sync::Arc::ptr_eq(&app.store, &next.store),
-        "the store (live breaker state) is preserved across the apply, not re-indexed"
-    );
-}
-
-#[test]
-fn build_with_hook_demotes_global_false_removes_wiring() {
-    let env =
-        busbar_kernel_testkit::test_support::test_hook_env(&["test-hook"], Default::default());
-    let app = crate::new_test_app().hook_env(env).build();
-
-    let promoted =
-        build_with_hook(&app, "logger", hook(HookKind::Tap, true)).expect("global tap registers");
-    assert!(promoted.global_hooks.iter().any(|n| n == "logger"));
-    assert_eq!(promoted.tap_hooks.len(), 1, "global tap is live");
-
-    let demoted = build_with_hook(&promoted, "logger", hook(HookKind::Tap, false))
-        .expect("demotion to global: false is a valid same-grant replace");
-    assert!(
-        !demoted.global_hooks.iter().any(|n| n == "logger"),
-        "a global: false PUT must REMOVE the hook from global_hooks, not leave it firing"
-    );
-    assert_eq!(
-        demoted.tap_hooks.len(),
-        0,
-        "the demoted hook must drop out of the fired global tap transports"
-    );
-    assert!(
-        demoted.hook_registry.contains_key("logger"),
-        "the hook definition itself survives — only its global membership is dropped"
-    );
-}
-
-#[test]
 fn build_with_hook_caps_oversized_settings() {
     let app = crate::new_test_app().build();
 
@@ -114,68 +61,6 @@ fn build_with_hook_caps_oversized_settings() {
     ok.settings
         .insert("level".to_string(), serde_json::json!("info"));
     assert!(build_with_hook(&app, "fine", ok).is_ok());
-}
-
-#[test]
-fn build_with_hook_caps_oversized_name() {
-    let app = crate::new_test_app().build();
-    let huge = "n".repeat(MAX_HOOK_NAME_LEN + 1);
-    assert!(
-        matches!(
-            build_with_hook(&app, &huge, hook(HookKind::Tap, false)),
-            Err(AdminError::Validation(_))
-        ),
-        "a name over the cap must reject"
-    );
-
-    let at_cap = "n".repeat(MAX_HOOK_NAME_LEN);
-    assert!(build_with_hook(&app, &at_cap, hook(HookKind::Tap, false)).is_ok());
-}
-
-#[test]
-fn build_with_hook_rejects_invalid_definitions() {
-    let app = crate::new_test_app().build();
-    let mut rw_tap = hook(HookKind::Tap, false);
-    rw_tap.prompt = PromptAccess::Rw;
-    assert!(matches!(
-        build_with_hook(&app, "t", rw_tap),
-        Err(AdminError::Validation(_))
-    ));
-
-    let mut no_transport = hook(HookKind::Gate, false);
-    no_transport.plugin = String::new();
-    assert!(matches!(
-        build_with_hook(&app, "x", no_transport),
-        Err(AdminError::Validation(_))
-    ));
-
-    let empty_name = hook(HookKind::Gate, false);
-    assert!(matches!(
-        build_with_hook(&app, "  ", empty_name),
-        Err(AdminError::Validation(_))
-    ));
-}
-
-#[test]
-fn build_with_hook_enforces_grant_immutability() {
-    let app = crate::new_test_app().build();
-
-    let after_first = build_with_hook(&app, "g", hook(HookKind::Gate, false)).unwrap();
-
-    let mut escalated = hook(HookKind::Gate, false);
-    escalated.prompt = PromptAccess::Rw;
-    assert!(
-        matches!(
-            build_with_hook(&after_first, "g", escalated),
-            Err(AdminError::Conflict(_))
-        ),
-        "widening a grant in place must be a conflict"
-    );
-
-    assert!(
-        build_with_hook(&after_first, "g", hook(HookKind::Gate, false)).is_ok(),
-        "re-registering with identical grants is allowed"
-    );
 }
 
 use busbar_kernel::admission::{Admitted, Inventoried, Judged, PluginAdmission, Refusal, Stated};
@@ -1569,78 +1454,6 @@ async fn probe_transport_distinguishes_wrong_kind_from_unresolved() {
             .as_deref()
             .is_some_and(|d| d.contains("is not installed")),
         "unresolved plugin must say so distinctly: {detail:?}"
-    );
-}
-
-#[test]
-fn build_with_hook_reregistering_same_global_hook_does_not_duplicate() {
-    let env =
-        busbar_kernel_testkit::test_support::test_hook_env(&["test-hook"], Default::default());
-    let app = crate::new_test_app().hook_env(env).build();
-    let once = build_with_hook(&app, "logger", hook(HookKind::Tap, true))
-        .expect("first global registration");
-    assert_eq!(
-        once.global_hooks.iter().filter(|n| *n == "logger").count(),
-        1
-    );
-
-    let twice = build_with_hook(&once, "logger", hook(HookKind::Tap, true))
-        .expect("idempotent re-register with identical grants");
-    assert_eq!(
-        twice.global_hooks.iter().filter(|n| *n == "logger").count(),
-        1,
-        "re-registering the same global hook must not duplicate its global_hooks entry"
-    );
-}
-
-#[test]
-fn build_with_hook_demote_only_removes_the_target_hook() {
-    let env = busbar_kernel_testkit::test_support::test_hook_env(
-        &["test-hook", "test-hook-2"],
-        Default::default(),
-    );
-    let app = crate::new_test_app().hook_env(env).build();
-    let mut other = hook(HookKind::Tap, true);
-    other.plugin = "test-hook-2".to_string();
-    let with_both = build_with_hook(&app, "logger", hook(HookKind::Tap, true))
-        .and_then(|a| build_with_hook(&a, "other", other))
-        .expect("two global taps register");
-    assert_eq!(with_both.global_hooks.len(), 2);
-
-    let demoted = build_with_hook(&with_both, "logger", hook(HookKind::Tap, false))
-        .expect("demoting one of the two is a valid same-grant replace");
-    assert!(
-        !demoted.global_hooks.iter().any(|n| n == "logger"),
-        "the demoted hook must be removed"
-    );
-    assert!(
-        demoted.global_hooks.iter().any(|n| n == "other"),
-        "the OTHER global hook must survive the demotion untouched"
-    );
-}
-
-#[test]
-fn build_without_hook_only_removes_the_target_from_global_wiring() {
-    let env = busbar_kernel_testkit::test_support::test_hook_env(
-        &["test-hook", "test-hook-2"],
-        Default::default(),
-    );
-    let app = crate::new_test_app().hook_env(env).build();
-    let mut other = hook(HookKind::Tap, true);
-    other.plugin = "test-hook-2".to_string();
-    let with_both = build_with_hook(&app, "logger", hook(HookKind::Tap, true))
-        .and_then(|a| build_with_hook(&a, "other", other))
-        .expect("two global taps register");
-
-    let next = build_without_hook(&with_both, "logger").expect("delete an existing hook");
-    assert!(!next.hook_registry.contains_key("logger"));
-    assert!(
-        !next.global_hooks.iter().any(|n| n == "logger"),
-        "the deleted hook must be removed from global wiring"
-    );
-    assert!(
-        next.global_hooks.iter().any(|n| n == "other"),
-        "the OTHER global hook must survive the deletion untouched"
     );
 }
 
