@@ -517,19 +517,6 @@ async fn register_defaulting_to(
 }
 
 #[tokio::test]
-async fn a_request_naming_no_scope_is_shown_the_default_it_is_granted() {
-    const DEFAULTED: &str = "flow-test-defaulted";
-    let (origin, app) = serve().await;
-    register_defaulting_to(&app, DEFAULTED, &["read", "write"]).await;
-    let (shown, granted) = shown_and_granted(&origin, &app, DEFAULTED, "").await;
-    assert_eq!(granted, "read write", "the registered default is granted");
-    assert_eq!(
-        shown, granted,
-        "the consent screen must name the scope the approval grants"
-    );
-}
-
-#[tokio::test]
 async fn a_metadata_document_client_naming_no_scope_is_shown_the_default_it_is_granted() {
     let (origin, app) = serve().await;
     oauth_as_plane(&app)
@@ -548,19 +535,6 @@ async fn a_metadata_document_client_naming_no_scope_is_shown_the_default_it_is_g
         shown, granted,
         "the consent screen must name the scope the approval grants"
     );
-}
-
-#[tokio::test]
-async fn the_consent_screen_names_a_requested_scope_and_an_empty_grant() {
-    const EMPTY: &str = "flow-test-empty-default";
-    let (origin, app) = serve().await;
-    let (shown, granted) = shown_and_granted(&origin, &app, CLIENT_ID, "&scope=read").await;
-    assert_eq!((shown.as_str(), granted.as_str()), (SCOPE, SCOPE));
-
-    register_defaulting_to(&app, EMPTY, &[]).await;
-    let (shown, granted) = shown_and_granted(&origin, &app, EMPTY, "").await;
-    assert_eq!(granted, "", "an empty default grants nothing");
-    assert_eq!(shown, "no scopes", "and the screen says so");
 }
 
 #[tokio::test]

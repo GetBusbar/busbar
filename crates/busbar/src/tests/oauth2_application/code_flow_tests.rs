@@ -15,6 +15,10 @@ const CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
 const SCOPE: &str = "read";
 
 async fn serve() -> (String, Arc<busbar_kernel::state::App>) {
+    serve_with_scopes(&[SCOPE]).await
+}
+
+async fn serve_with_scopes(scopes: &[&str]) -> (String, Arc<busbar_kernel::state::App>) {
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -22,7 +26,7 @@ async fn serve() -> (String, Arc<busbar_kernel::state::App>) {
     let origin = format!("http://{}", listener.local_addr().unwrap());
     let config = OauthAsCfg {
         issuer: origin.clone(),
-        default_grant: vec![SCOPE.into()],
+        default_grant: scopes.iter().map(|scope| (*scope).into()).collect(),
         ..Default::default()
     };
     let app = application_with_resource_auth(Some(&config), None, true);
@@ -34,9 +38,13 @@ async fn serve() -> (String, Arc<busbar_kernel::state::App>) {
 }
 
 async fn register_client(origin: &str) -> String {
+    register_client_with_scope(origin, SCOPE).await
+}
+
+async fn register_client_with_scope(origin: &str, scope: &str) -> String {
     let response = reqwest::Client::new().post(format!("{origin}/register")).json(&serde_json::json!({
         "redirect_uris":[REDIRECT_URI],"token_endpoint_auth_method":"none",
-        "response_types":["code"],"grant_types":["authorization_code","refresh_token"],"scope":SCOPE,"client_name":"Flow Test",
+        "response_types":["code"],"grant_types":["authorization_code","refresh_token"],"scope":scope,"client_name":"Flow Test",
     })).send().await.expect("register actual public client");
     let status = response.status();
     let body = response.text().await.unwrap();
@@ -309,4 +317,103 @@ async fn dynamic_client_registration_admits_a_client_end_to_end() {
     let record = verified_claims(&app, &access).await;
     assert_eq!(record["client_id"].as_str(), Some(client_id.as_str()));
     assert_eq!(record["scope"].as_str(), Some(SCOPE));
+}
+
+fn requesting(page: &str) -> String {
+    page.split_once("<p>Requesting: <code>")
+        .and_then(|(_, rest)| rest.split_once("</code>"))
+        .map(|(scope, _)| scope.to_string())
+        .unwrap_or_else(|| panic!("the screen names what it is asking for: {page}"))
+}
+
+async fn shown_and_granted(
+    origin: &str,
+    app: &busbar_kernel::state::App,
+    client_id: &str,
+    scope_param: &str,
+) -> (String, String) {
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("client");
+    let mut jar = Jar::new(false);
+    let authorize = format!(
+        "{origin}/authorize?response_type=code&client_id={}\
+         &redirect_uri=http%3A%2F%2F127.0.0.1%3A9999%2Fcb&state=s1{scope_param}\
+         &code_challenge={CHALLENGE}&code_challenge_method=S256",
+        encode_component(client_id)
+    );
+    let (status, headers, body) =
+        send(&client, &mut jar, reqwest::Method::GET, &authorize, None).await;
+    assert_eq!(status, 302, "authorize must redirect to consent: {body}");
+    let consent = location(&headers, origin);
+    let (status, _headers, page) =
+        send(&client, &mut jar, reqwest::Method::GET, &consent, None).await;
+    assert_eq!(status, 200, "the consent screen must render: {page}");
+    let shown = requesting(&page);
+
+    let return_to = percent_decode(
+        &query_param(&consent, "return").expect("the screen carries the pending request"),
+    );
+    let (status, headers, body) = send(
+        &client,
+        &mut jar,
+        reqwest::Method::POST,
+        &format!("{origin}/consent"),
+        Some(&[("return", return_to.as_str())]),
+    )
+    .await;
+    assert_eq!(status, 302, "an approval must redirect back: {body}");
+    let back = location(&headers, origin);
+    let (status, headers, body) = send(&client, &mut jar, reqwest::Method::GET, &back, None).await;
+    assert_eq!(status, 302, "the approved request must redirect: {body}");
+    let redirect = location(&headers, origin);
+    let code = query_param(&redirect, "code")
+        .unwrap_or_else(|| panic!("the approved request must carry a code: {redirect}"));
+    let (status, _headers, body) = send(
+        &client,
+        &mut jar,
+        reqwest::Method::POST,
+        &format!("{origin}/token"),
+        Some(&[
+            ("grant_type", "authorization_code"),
+            ("code", code.as_str()),
+            ("client_id", client_id),
+            ("redirect_uri", REDIRECT_URI),
+            ("code_verifier", VERIFIER),
+        ]),
+    )
+    .await;
+    assert_eq!(status, 200, "the code must be exchangeable: {body}");
+    let token: serde_json::Value = serde_json::from_str(&body).expect("a token response is JSON");
+    let access = token["access_token"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no access_token: {body}"));
+    let record = verified_claims(app, access).await;
+    (shown, record["scope"].as_str().unwrap_or("").to_owned())
+}
+
+#[tokio::test]
+async fn a_request_naming_no_scope_is_shown_the_default_it_is_granted() {
+    let (origin, app) = serve_with_scopes(&["read", "write"]).await;
+    let defaulted = register_client_with_scope(&origin, "read write").await;
+    let (shown, granted) = shown_and_granted(&origin, &app, &defaulted, "").await;
+    assert_eq!(granted, "read write", "the registered default is granted");
+    assert_eq!(
+        shown, granted,
+        "the consent screen must name the scope the approval grants"
+    );
+}
+
+#[tokio::test]
+async fn the_consent_screen_names_a_requested_scope_and_an_empty_grant() {
+    let (origin, app) = serve().await;
+    let client_id = register_client(&origin).await;
+    let (shown, granted) = shown_and_granted(&origin, &app, &client_id, "&scope=read").await;
+    assert_eq!((shown.as_str(), granted.as_str()), (SCOPE, SCOPE));
+
+    let empty = register_client_with_scope(&origin, "").await;
+    let (shown, granted) = shown_and_granted(&origin, &app, &empty, "").await;
+    assert_eq!(granted, "", "an empty default grants nothing");
+    assert_eq!(shown, "no scopes", "and the screen says so");
 }
