@@ -782,7 +782,7 @@ fn one_seal_after_two_reloads() {
     let rules =
         Arc::new(root::door_steps::Rules::default()) as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (boot, rotate, limits) = busbar_kernel::build_app_from_config(
-        config.clone(),
+        config,
         Default::default(),
         None,
         Default::default(),
@@ -801,8 +801,10 @@ fn one_seal_after_two_reloads() {
         .governance
         .clone()
         .expect("a boot resolves the store its book opens over");
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the unchanged product deployment resolves for the first reload");
     let (first, rotate, limits) = busbar_kernel::build_app_from_config(
-        config.clone(),
+        config,
         Default::default(),
         None,
         Default::default(),
@@ -816,6 +818,8 @@ fn one_seal_after_two_reloads() {
     if let Some(rotate) = rotate {
         rotate();
     }
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the unchanged product deployment resolves for the second reload");
     let (second, rotate, limits) = busbar_kernel::build_app_from_config(
         config,
         Default::default(),
