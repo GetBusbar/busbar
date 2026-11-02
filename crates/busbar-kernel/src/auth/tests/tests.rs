@@ -3061,10 +3061,11 @@ fn the_client_token_is_read_off_the_default_inbound_styles_own_lines() {
 
 #[test]
 fn the_gate_strips_the_styles_lines_and_the_operator_credentials() {
-    let app = crate::test_support::TestApp::new()
-        .admin_chain(vec![crate::config::operator_provider().to_string()])
-        .build();
-    let consumed = gate_consumed(&app, false, false);
+    // Internal stripping continuation over explicit carrier DATA. The root's actual carrier
+    // tests separately prove what the installed default style/operator rows declare.
+    let style = ["authorization", "x-api-key", "x-goog-api-key"].map(HeaderName::from_static);
+    let operator = [X_ADMIN_TOKEN.to_string()];
+    let consumed = consumed_from_carriers(&style, Some(&operator), false, false);
     let mut headers = HeaderMap::new();
     for name in [
         "authorization",

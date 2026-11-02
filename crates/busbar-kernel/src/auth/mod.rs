@@ -1834,9 +1834,23 @@ fn admin_unavailable_response() -> Response {
 }
 
 pub(crate) fn gate_consumed(app: &App, is_admin: bool, dpop_proven: bool) -> ConsumedCredentials {
-    let mut consumed = ConsumedCredentials::carrying(app.auth.carriers());
-    if !app.admin_chain.is_empty() {
-        consumed.carry(&header_names(app.admin_modules.operator.carriers()));
+    consumed_from_carriers(
+        app.auth.carriers(),
+        (!app.admin_chain.is_empty()).then(|| app.admin_modules.operator.carriers()),
+        is_admin,
+        dpop_proven,
+    )
+}
+
+fn consumed_from_carriers(
+    carriers: &[HeaderName],
+    operator_carriers: Option<&[String]>,
+    is_admin: bool,
+    dpop_proven: bool,
+) -> ConsumedCredentials {
+    let mut consumed = ConsumedCredentials::carrying(carriers);
+    if let Some(operator_carriers) = operator_carriers {
+        consumed.carry(&header_names(operator_carriers));
     }
     if dpop_proven || is_admin {
         consumed.carry(&[dpop::DPOP_HEADER]);
