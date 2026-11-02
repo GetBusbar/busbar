@@ -972,6 +972,7 @@ async fn a_kernel_keys_listener_prepares_and_keeps_real_key_verification() {
     use busbar_kernel::inbound::{Call, HandIn, Head, Inbound, Listener, Seals};
     const PATH: &str = "/exports/private/secured";
     const OWNER: u64 = 27;
+    const LISTENER: u64 = 29;
     const GENERATION: u64 = 1;
     const FRAMING: u64 = 31;
     let topology = topology();
@@ -1070,8 +1071,9 @@ async fn a_kernel_keys_listener_prepares_and_keeps_real_key_verification() {
     );
     let ids: Vec<_> = (1..=guests.lines().len() as u64).collect();
     inbound
-        .install(
+        .install_at(
             OWNER,
+            LISTENER,
             GENERATION,
             Listener {
                 guests,
@@ -1086,9 +1088,9 @@ async fn a_kernel_keys_listener_prepares_and_keeps_real_key_verification() {
         )
         .unwrap();
     inbound
-        .framing_started(OWNER, 0, FRAMING, GENERATION)
+        .framing_started(OWNER, LISTENER, FRAMING, GENERATION)
         .unwrap();
-    let specs = inbound.specs(OWNER, GENERATION).unwrap();
+    let specs = inbound.specs_at(OWNER, LISTENER, GENERATION).unwrap();
     let line = specs
         .iter()
         .find(|spec| spec.points == expected_points.bits())
