@@ -55,7 +55,7 @@ fn adapter_over_published_schema() -> StoreAdapter {
 }
 
 fn backing() -> Arc<dyn busbar_contract::records::RecordStore> {
-    Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new())
+    crate::root::real_store::records()
 }
 
 /// A clock the test moves by hand, so the replay window can be watched closing without waiting it

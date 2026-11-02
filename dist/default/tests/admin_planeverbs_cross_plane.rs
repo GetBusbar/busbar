@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-mod linked;
-
 fn register_planes() {
-    linked::install();
+    crate::dist_root_install::install();
 }
 
 #[test]
@@ -105,7 +103,7 @@ fn the_not_found_names_the_plane_s_own_subject() {
 fn the_audit_naming_is_derived_from_the_plane() {
     use busbar_kernel::audit::auditlog::AUDIT_LOG as AUDIT;
 
-    let _ = busbar_kernel_testkit::test_support::TestApp::new().build();
+    register_planes();
     let principal = busbar_contract::auth::AuthPrincipal(None);
     for decl in verb_planes() {
         assert_eq!(

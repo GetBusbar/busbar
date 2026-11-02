@@ -3,36 +3,14 @@
 
 #![cfg(linked_axis_plane_door)]
 
-mod common;
+mod linked;
 
 use busbar_kernel::plane_driver::registry::{
     check_owned_config_claims, PlaneDecl, CORE_OWNED_CONCRETE_SECTIONS,
 };
-use busbar_kernel_testkit::test_support::planes::register_test_plane;
-
-include!(concat!(env!("OUT_DIR"), "/linked_plane_doors.rs"));
 
 fn linked_planes() -> &'static [&'static PlaneDecl] {
-    static PLANES: std::sync::OnceLock<Vec<&'static PlaneDecl>> = std::sync::OnceLock::new();
-    PLANES.get_or_init(|| {
-        LINKED_PLANE_DOORS
-            .iter()
-            .map(|door| {
-                let candidate = busbar_plugin_loader::boot::Candidate::linked(*door)
-                    .expect("the linked plane states a valid declaration");
-                let registration =
-                    busbar_plugin_loader::dispatch::kinds::plane::stated_registration(
-                        &candidate,
-                        std::sync::Arc::new(|| {
-                            Err("declaration inspection does not bind a plane".into())
-                        }),
-                    )
-                    .expect("the linked plane states its registration without binding");
-                busbar_kernel::plane_driver::door::fold(registration)
-                    .expect("the door declaration folds into a registry row")
-            })
-            .collect()
-    })
+    linked::planes()
 }
 
 fn owning_planes() -> Vec<&'static PlaneDecl> {
@@ -122,9 +100,7 @@ fn dup_claim_guard_refuses_a_planted_collision() {
 
 #[test]
 fn registering_an_owning_plane_puts_its_section_into_config_sections() {
-    for d in owning_planes() {
-        register_test_plane(d);
-    }
+    linked::install();
     let sections = busbar_kernel::config::plane_sections::config_sections();
     for d in owning_planes() {
         assert!(

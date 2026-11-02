@@ -656,11 +656,43 @@ async fn the_admin_catalog_row_for_a_harness_signed_plugin(
         crate::root::loader::tarball::package(&manifest, "lib.so", artifact).expect("it packs"),
     )
     .expect("the tarball is written");
-    let app = busbar_kernel_testkit::test_support::TestApp::new()
-        .admin_chain(vec![])
-        .plugins_dir(dir.clone())
-        .plugin_admission(&crate::root::admission::ADMISSION)
-        .build();
+    crate::dist_root_install::install();
+    let module = busbar_kernel::preflight::root_rows()
+        .stores
+        .first()
+        .expect("the distribution links its actual store")
+        .0;
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .unwrap();
+    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+        "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
+        "store": {"module": module, "settings": settings},
+        "advanced": {"allow_destinations": ["127.0.0.1"]}
+    }))
+    .unwrap();
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
+    let rules = Arc::new(crate::root::door_steps::Rules::default())
+        as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+        config,
+        Default::default(),
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+    )
+    .expect("the product builds the admin trust deployment");
+    limits.keep().unwrap();
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+    app.plugins_dir = dir.clone();
+    app.plugin_admission = Some(&crate::root::admission::ADMISSION);
+    let app = Arc::new(app);
     let router = busbar_core_admin::build_router(app);
     let request = axum::http::Request::builder()
         .uri("/api/v1/admin/plugins?type=store")
@@ -957,16 +989,22 @@ __attribute__((constructor)) static void mark_loaded(void) {
     );
     let library = std::fs::read(image).unwrap();
     let key = crate::root::loader::sign::SigningKey::from_bytes(&[0x35; 32]);
-    let stated = crate::root::loader::dispatch::rendering_of(
-        busbar_kernel_testkit::test_support::store_double::door,
-    )
-    .unwrap();
-    let facts = busbar_contract::abi::mechanism::rendering::read(&stated).unwrap();
+    let library_path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+            .expect("the constructor test uses the actual product store statement"),
+    );
+    let stated = crate::root::loader::dispatch::rendering_of_library(&library_path)
+        .unwrap()
+        .expect("the actual product store states itself");
+    let mut facts = busbar_contract::abi::mechanism::rendering::read(&stated).unwrap();
+    facts.name = "busbar-store-bootstrap-constructor".into();
     let make = |version: &str| {
         let head = busbar_contract::abi::mechanism::rendering::RENDERING_MAGIC.len() + 16;
         let len = |at: usize| u32::from_le_bytes(stated[at..at + 4].try_into().unwrap()) as usize;
         let at = head + 4 + len(head);
-        let mut rendering = stated[..at].to_vec();
+        let mut rendering = stated[..head].to_vec();
+        rendering.extend_from_slice(&(facts.name.len() as u32).to_le_bytes());
+        rendering.extend_from_slice(facts.name.as_bytes());
         rendering.extend_from_slice(&(version.len() as u32).to_le_bytes());
         rendering.extend_from_slice(version.as_bytes());
         rendering.extend_from_slice(&stated[at + 4 + len(at)..]);

@@ -1,10 +1,309 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+fn metric_sum(name: &str, labels: &[(&str, &str)]) -> f64 {
+    busbar_kernel::snapshot::snapshot()
+        .expect("the real metrics recorder is installed")
+        .iter()
+        .flat_map(|family| &family.samples)
+        .filter(|sample| {
+            sample.name == name
+                && labels
+                    .iter()
+                    .all(|&(key, value)| sample.labels.iter().any(|(k, v)| k == key && v == value))
+        })
+        .map(|sample| sample.value.parse::<f64>().expect("a numeric sample"))
+        .sum()
+}
+
+fn render_metrics() -> String {
+    use crate::root::loader::dispatch::{
+        kinds::export::Export, load_dropped, rendering_of_library, Bind, ConnTable, DispatchConfig,
+        Dispatcher, NoSink,
+    };
+    use busbar_contract::export_calls::ExportCalls as _;
+    let path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_TEST_PROMETHEUS_CDYLIB")
+            .expect("BUSBAR_TEST_PROMETHEUS_CDYLIB names the actual built metrics exporter"),
+    );
+    let statement = rendering_of_library(&path)
+        .expect("the actual exporter statement reads")
+        .expect("the actual exporter carries its statement");
+    let dispatcher = std::sync::Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let plugin = load_dropped::<Export>(
+        &path,
+        &statement,
+        Bind {
+            instance: "serve-test-metrics".into(),
+            max_inflight_cap: 64,
+            sink: std::sync::Arc::new(NoSink),
+            dispatcher: dispatcher.adopter(),
+            conns: ConnTable::NoNeeds,
+        },
+    )
+    .expect("the actual exporter loads through its memory ABI");
+    let exporter =
+        crate::root::loader::export_door::ExportInstance::open(plugin, dispatcher, b"{}")
+            .expect("the actual exporter opens");
+    let families =
+        busbar_kernel::snapshot::snapshot().expect("the real metrics recorder is installed");
+    String::from_utf8(
+        exporter
+            .scrape(&families)
+            .expect("the actual exporter scrapes"),
+    )
+    .expect("the actual exporter emits UTF-8")
+}
+
+#[cfg(linked_driver_proofs)]
+#[derive(Clone)]
+enum ProviderReply {
+    Ok {
+        status: axum::http::StatusCode,
+        body: serde_json::Value,
+    },
+    ServerError {
+        status: axum::http::StatusCode,
+        body: serde_json::Value,
+    },
+    RateLimit {
+        status: axum::http::StatusCode,
+        provider_signal: Option<&'static str>,
+        retry_after: Option<u64>,
+    },
+    Billing {
+        status: axum::http::StatusCode,
+        code: &'static str,
+        message: &'static str,
+    },
+    Auth {
+        status: axum::http::StatusCode,
+    },
+    Sse {
+        events: Vec<String>,
+        abort_at_index: Option<usize>,
+    },
+    SseTransportError {
+        ok_events: Vec<String>,
+    },
+    Gated {
+        status: axum::http::StatusCode,
+        body: serde_json::Value,
+        started: std::sync::Arc<tokio::sync::Notify>,
+        release: std::sync::Arc<tokio::sync::Notify>,
+    },
+}
+
+#[cfg(linked_driver_proofs)]
+impl Default for ProviderReply {
+    fn default() -> Self {
+        Self::Ok {
+            status: axum::http::StatusCode::OK,
+            body: serde_json::json!({"ok": true}),
+        }
+    }
+}
+
+#[cfg(linked_driver_proofs)]
+#[derive(Default)]
+struct ProviderRequests {
+    replies: std::sync::Mutex<Vec<ProviderReply>>,
+    last: std::sync::Mutex<Option<(axum::http::HeaderMap, Vec<u8>)>>,
+}
+
+#[cfg(linked_driver_proofs)]
+impl ProviderRequests {
+    fn new() -> Self {
+        Self::default()
+    }
+    fn push(&self, reply: ProviderReply) {
+        self.replies.lock().unwrap().push(reply);
+    }
+    fn next_response(&self) -> Option<ProviderReply> {
+        self.replies.lock().unwrap().pop()
+    }
+    fn get_last_request_body(&self) -> Option<Vec<u8>> {
+        self.last
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|(_, body)| body.clone())
+    }
+    fn get_last_request_header(&self, name: &str) -> Option<String> {
+        self.last
+            .lock()
+            .unwrap()
+            .as_ref()?
+            .0
+            .get(name)?
+            .to_str()
+            .ok()
+            .map(str::to_owned)
+    }
+}
+
+#[cfg(linked_driver_proofs)]
+struct ProviderEndpoint {
+    address: std::net::SocketAddr,
+    accept: tokio::task::JoinHandle<()>,
+}
+
+#[cfg(linked_driver_proofs)]
+impl Drop for ProviderEndpoint {
+    fn drop(&mut self) {
+        self.accept.abort();
+    }
+}
+
+#[cfg(linked_driver_proofs)]
+impl ProviderEndpoint {
+    fn address(&self) -> std::net::SocketAddr {
+        self.address
+    }
+
+    async fn new(requests: std::sync::Arc<ProviderRequests>) -> Self {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let accept = tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let requests = requests.clone();
+                tokio::spawn(async move {
+                    let mut received = Vec::new();
+                    let mut chunk = [0u8; 8192];
+                    let (headers, body) = loop {
+                        let count = socket.read(&mut chunk).await.unwrap();
+                        if count == 0 {
+                            return;
+                        }
+                        received.extend_from_slice(&chunk[..count]);
+                        let Some(end) = received.windows(4).position(|bytes| bytes == b"\r\n\r\n")
+                        else {
+                            continue;
+                        };
+                        let head = std::str::from_utf8(&received[..end]).unwrap();
+                        let mut headers = axum::http::HeaderMap::new();
+                        for line in head.lines().skip(1) {
+                            let (name, value) = line.split_once(':').expect("an HTTP header");
+                            headers.append(
+                                axum::http::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                                axum::http::HeaderValue::from_str(value.trim()).unwrap(),
+                            );
+                        }
+                        let length = headers
+                            .get("content-length")
+                            .map(|value| value.to_str().unwrap().parse::<usize>().unwrap())
+                            .unwrap_or(0);
+                        if received.len() >= end + 4 + length {
+                            break (headers, received[end + 4..end + 4 + length].to_vec());
+                        }
+                    };
+                    *requests.last.lock().unwrap() = Some((headers, body));
+                    let reply = requests.next_response().unwrap_or_default();
+                    let mut extra = String::new();
+                    let mut gated = None;
+                    let mut transport_error = false;
+                    let mut content_type = "application/json";
+                    let (status, body) = match reply {
+                        ProviderReply::Ok { status, body }
+                        | ProviderReply::ServerError { status, body } => (status, body.to_string()),
+                        ProviderReply::Auth { status } => (
+                            status,
+                            serde_json::json!({"error": "Unauthorized"}).to_string(),
+                        ),
+                        ProviderReply::Billing {
+                            status,
+                            code,
+                            message,
+                        } => (
+                            status,
+                            serde_json::json!({"error": {"code": code, "message": message}})
+                                .to_string(),
+                        ),
+                        ProviderReply::RateLimit {
+                            status,
+                            provider_signal,
+                            retry_after,
+                        } => {
+                            if let Some(wait) = retry_after {
+                                extra = format!("retry-after: {wait}\r\n");
+                            }
+                            let message = if provider_signal == Some("1302") {
+                                "rate_limit"
+                            } else {
+                                "Rate limit exceeded"
+                            };
+                            (status, serde_json::json!({"error": {"message": message, "code": provider_signal.unwrap_or("429")}}).to_string())
+                        }
+                        ProviderReply::Sse {
+                            events,
+                            abort_at_index,
+                        } => {
+                            content_type = "text/event-stream";
+                            let count = abort_at_index.unwrap_or(events.len());
+                            let mut body = events
+                                .into_iter()
+                                .take(count)
+                                .map(|event| format!("data: {event}\n\n"))
+                                .collect::<String>();
+                            if abort_at_index.is_some() {
+                                let error = serde_json::json!({"type": "error", "error": {"message": "upstream abort", "source": "upstream"}});
+                                body.push_str(&format!("event: error\ndata: {error}\n\n"));
+                            } else {
+                                body.push_str("data: [DONE]\n\n");
+                            }
+                            (axum::http::StatusCode::OK, body)
+                        }
+                        ProviderReply::SseTransportError { ok_events } => {
+                            content_type = "text/event-stream";
+                            transport_error = true;
+                            (
+                                axum::http::StatusCode::OK,
+                                ok_events
+                                    .into_iter()
+                                    .map(|event| format!("data: {event}\n\n"))
+                                    .collect::<String>(),
+                            )
+                        }
+                        ProviderReply::Gated {
+                            status,
+                            body,
+                            started,
+                            release,
+                        } => {
+                            gated = Some((started, release));
+                            (status, body.to_string())
+                        }
+                    };
+                    let length = body.len() + usize::from(transport_error);
+                    let head = format!("HTTP/1.1 {} {}\r\ncontent-type: {content_type}\r\ncontent-length: {length}\r\n{extra}connection: close\r\n\r\n", status.as_u16(), status.canonical_reason().unwrap_or("response"));
+                    if socket.write_all(head.as_bytes()).await.is_err() {
+                        return;
+                    }
+                    if let Some((started, release)) = gated {
+                        started.notify_one();
+                        release.notified().await;
+                    }
+                    if socket.write_all(body.as_bytes()).await.is_err() {
+                        return;
+                    }
+                    if transport_error {
+                        socket.flush().await.unwrap();
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    }
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+        Self { address, accept }
+    }
+}
+
 #[tokio::test]
 async fn an_empty_plane_set_still_stages_the_core_listener_lines() {
     use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
     let _publishing = crate::root::PUBLISHING.lock().await;
+    crate::dist_root_install::install();
     crate::root::inbound::stage(busbar_kernel::guest::GuestList::default(), Vec::new());
     super::door_mounts(
         super::Served::default(),
@@ -15,7 +314,68 @@ async fn an_empty_plane_set_still_stages_the_core_listener_lines() {
         &[],
     )
     .unwrap();
-    let app = busbar_kernel_testkit::test_support::TestApp::new().build();
+    let library_path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
+    );
+    let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
+        .expect("the actual store statement reads")
+        .expect("the actual store exports its statement");
+    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid")
+        .name;
+    let mut manifest = crate::root::test_plugins::manifest(
+        "store",
+        &module,
+        crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+    );
+    manifest.statement = Some(hex::encode(statement));
+    let library = std::fs::read(library_path).expect("the actual store library reads");
+    let directory = crate::root::test_plugins::scratch("serve-empty-plane-set");
+    let archive = crate::root::test_plugins::signed(
+        &crate::dist_root_install::release_key(),
+        manifest,
+        &library,
+    );
+    std::fs::write(directory.join("store.tar.gz"), archive)
+        .expect("stage the actual store archive");
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+        "providers": {},
+        "models": {},
+        "auth": { "chain": [], "admin_auth": [] },
+        "store": { "module": module, "settings": settings },
+        "advanced": { "allow_destinations": ["127.0.0.1"] },
+    }))
+    .expect("the empty-plane deployment parses");
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the empty-plane deployment resolves");
+    let plugins = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: directory.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
+        as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+        config,
+        plugins,
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+    )
+    .expect("the actual product builds the empty-plane deployment");
+    limits.keep().expect("the product limits commit");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+    let app = std::sync::Arc::new(app);
     let generation =
         crate::root::inbound::publish(&app).expect("the no-plane listener is published");
     let specs = crate::root::inbound::host()
@@ -433,11 +793,71 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     );
     let money_steps = Arc::clone(&composed.money);
     served.post = Some(Arc::clone(&post));
-    let app = busbar_kernel_testkit::test_support::TestApp::new()
-        .keys_chain()
-        .governance(Arc::clone(&gov))
-        .cost(CostModel::flat(1))
-        .build();
+    crate::dist_root_install::install();
+    let library_path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
+    );
+    let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
+        .expect("the actual store statement reads")
+        .expect("the actual store exports its statement");
+    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid")
+        .name;
+    let mut manifest = crate::root::test_plugins::manifest(
+        "store",
+        &module,
+        crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+    );
+    manifest.statement = Some(hex::encode(statement));
+    let library = std::fs::read(library_path).expect("the actual store library reads");
+    let directory = crate::root::test_plugins::scratch("serve-production-498");
+    let archive = crate::root::test_plugins::signed(
+        &crate::dist_root_install::release_key(),
+        manifest,
+        &library,
+    );
+    std::fs::write(directory.join("store.tar.gz"), archive)
+        .expect("stage the actual store archive");
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+        "providers": {},
+        "models": {},
+        "auth": { "chain": ["keys"], "admin_auth": [] },
+        "store": { "module": module, "settings": settings },
+        "advanced": { "allow_destinations": ["127.0.0.1"] },
+    }))
+    .expect("the door deployment parses");
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the door deployment resolves");
+    let plugins = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: directory.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
+        as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+        config,
+        plugins,
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+    )
+    .expect("the actual product builds the door deployment");
+    limits.keep().expect("the product limits commit");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+    app.governance = Some(Arc::clone(&gov));
+    app.cost = Arc::new(CostModel::flat(1));
+    let app = std::sync::Arc::new(app);
 
     let doors = door_routes(served, || CARD.pin(), &[], &[]).expect("its claims mount");
     let (router, _admin, _handle) =
@@ -513,7 +933,69 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
 async fn the_data_router_built_with_the_door_serves_only_its_claims() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-door";
-    let app = busbar_kernel_testkit::test_support::TestApp::new().build();
+    crate::dist_root_install::install();
+    let library_path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
+    );
+    let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
+        .expect("the actual store statement reads")
+        .expect("the actual store exports its statement");
+    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid")
+        .name;
+    let mut manifest = crate::root::test_plugins::manifest(
+        "store",
+        &module,
+        crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+    );
+    manifest.statement = Some(hex::encode(statement));
+    let library = std::fs::read(library_path).expect("the actual store library reads");
+    let directory = crate::root::test_plugins::scratch("serve-production-578");
+    let archive = crate::root::test_plugins::signed(
+        &crate::dist_root_install::release_key(),
+        manifest,
+        &library,
+    );
+    std::fs::write(directory.join("store.tar.gz"), archive)
+        .expect("stage the actual store archive");
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+        "providers": {},
+        "models": {},
+        "auth": { "chain": [], "admin_auth": [] },
+        "store": { "module": module, "settings": settings },
+        "advanced": { "allow_destinations": ["127.0.0.1"] },
+    }))
+    .expect("the door deployment parses");
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the door deployment resolves");
+    let plugins = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: directory.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
+        as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+        config,
+        plugins,
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+    )
+    .expect("the actual product builds the door deployment");
+    limits.keep().expect("the product limits commit");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+    let app = std::sync::Arc::new(app);
 
     let (bare, _admin, _handle) =
         busbar_kernel::build_split_routers_serving(Arc::clone(&app), Vec::new(), 1 << 20, 0, false);
@@ -598,7 +1080,69 @@ async fn the_data_router_built_with_the_door_serves_only_its_claims() {
 async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-door-carriers";
-    let app = busbar_kernel_testkit::test_support::TestApp::new().build();
+    crate::dist_root_install::install();
+    let library_path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
+    );
+    let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
+        .expect("the actual store statement reads")
+        .expect("the actual store exports its statement");
+    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid")
+        .name;
+    let mut manifest = crate::root::test_plugins::manifest(
+        "store",
+        &module,
+        crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+    );
+    manifest.statement = Some(hex::encode(statement));
+    let library = std::fs::read(library_path).expect("the actual store library reads");
+    let directory = crate::root::test_plugins::scratch("serve-production-663");
+    let archive = crate::root::test_plugins::signed(
+        &crate::dist_root_install::release_key(),
+        manifest,
+        &library,
+    );
+    std::fs::write(directory.join("store.tar.gz"), archive)
+        .expect("stage the actual store archive");
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+        "providers": {},
+        "models": {},
+        "auth": { "chain": [], "admin_auth": [] },
+        "store": { "module": module, "settings": settings },
+        "advanced": { "allow_destinations": ["127.0.0.1"] },
+    }))
+    .expect("the door deployment parses");
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the door deployment resolves");
+    let plugins = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: directory.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
+        as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+        config,
+        plugins,
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+    )
+    .expect("the actual product builds the door deployment");
+    limits.keep().expect("the product limits commit");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+    let app = std::sync::Arc::new(app);
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     crate::root::connector::install_io(&dispatcher);
 
@@ -834,26 +1378,38 @@ pub(super) mod session_door {
         (port, heard)
     }
 
-    fn hook_env() -> busbar_kernel::hooks::HookEnv {
-        busbar_kernel_testkit::test_support::test_hook_env(
-            &["test-hook"],
-            busbar_kernel_testkit::test_support::HookNeeds {
-                prompt: busbar_contract::plugin_rows::NeedLevel::Rw,
-                user: busbar_contract::plugin_rows::NeedLevel::Ro,
-            },
-        )
-    }
-
-    fn global_gate(reply: serde_json::Value) -> busbar_kernel::config::HookCfg {
+    async fn global_gate(reply: serde_json::Value) -> busbar_kernel::config::HookCfg {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("the hook endpoint binds");
+        let url = format!("http://{}/hook", listener.local_addr().unwrap());
+        let router = axum::Router::new().route(
+            "/hook",
+            axum::routing::post(move || {
+                let reply = reply.clone();
+                async move { axum::Json(reply) }
+            }),
+        );
+        tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let path = std::path::PathBuf::from(
+            std::env::var_os("BUSBAR_TEST_WEBREQUEST_CDYLIB")
+                .expect("BUSBAR_TEST_WEBREQUEST_CDYLIB names the actual built hook"),
+        );
+        let statement = crate::root::loader::dispatch::rendering_of_library(&path)
+            .expect("the actual hook statement reads")
+            .expect("the actual hook exports its statement");
+        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+            .expect("the actual hook statement is valid")
+            .name;
         serde_json::from_value(serde_json::json!({
             "kind": "gate",
-            "module": "test-hook",
+            "module": module,
             "timeout_ms": 10_000,
             "on_error": "weighted",
             "prompt": "ro",
             "user": "ro",
             "priority": 0,
-            "settings": { "raw_decide_reply": reply },
+            "settings": { "url": url },
             "global": true,
             "default": false,
             "signals": [],
@@ -1004,7 +1560,7 @@ pub(super) mod session_door {
         opts: Opts,
         api_key: &str,
     ) -> Option<Result<SessionDoor, String>> {
-        busbar_kernel_testkit::test_support::metrics::init();
+        busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(10));
         let budget = opts.budget;
         let (port, heard) = match (opts.far_end, opts.far) {
             (Some(far_end), _) => far_end,
@@ -1194,24 +1750,103 @@ pub(super) mod session_door {
         );
         let live = Arc::clone(&served.planes[0].live);
         served.post = Some(Arc::clone(&post));
-        let app = busbar_kernel_testkit::test_support::TestApp::new()
-            .keys_chain()
-            .serve_tables(tables.clone());
-        let app = groups
-            .iter()
-            .fold(app, |app, (name, cfg)| app.group(name, cfg.clone()));
-
-        let app = if opts.hooks.is_empty() {
-            app
-        } else {
-            opts.hooks
-                .iter()
-                .fold(app.hook_env(hook_env()), |app, (name, cfg)| {
-                    app.hook(name, cfg.clone()).global_hook(name)
-                })
-                .resolve_global_gates()
+        crate::dist_root_install::install();
+        let library_path = std::path::PathBuf::from(
+            std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+                .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
+        );
+        let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
+            .expect("the actual store statement reads")
+            .expect("the actual store exports its statement");
+        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+            .expect("the actual store statement is valid")
+            .name;
+        let mut manifest = crate::root::test_plugins::manifest(
+            "store",
+            &module,
+            crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+        );
+        manifest.statement = Some(hex::encode(statement));
+        let library = std::fs::read(library_path).expect("the actual store library reads");
+        let directory = crate::root::test_plugins::scratch("serve-session-product");
+        let archive = crate::root::test_plugins::signed(
+            &crate::dist_root_install::release_key(),
+            manifest,
+            &library,
+        );
+        std::fs::write(directory.join("store.tar.gz"), archive)
+            .expect("stage the actual store archive");
+        if !opts.hooks.is_empty() {
+            let path = std::path::PathBuf::from(
+                std::env::var_os("BUSBAR_TEST_WEBREQUEST_CDYLIB")
+                    .expect("BUSBAR_TEST_WEBREQUEST_CDYLIB names the actual built hook"),
+            );
+            let statement = crate::root::loader::dispatch::rendering_of_library(&path)
+                .expect("the actual hook statement reads")
+                .expect("the actual hook exports its statement");
+            let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+                .expect("the actual hook statement is valid")
+                .name;
+            let mut manifest = crate::root::test_plugins::manifest(
+                "hook",
+                &module,
+                crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+            );
+            manifest.statement = Some(hex::encode(statement));
+            manifest.needs.prompt = busbar_contract::plugin_rows::NeedLevel::Rw;
+            manifest.needs.user = busbar_contract::plugin_rows::NeedLevel::Ro;
+            let library = std::fs::read(path).expect("the actual hook library reads");
+            let archive = crate::root::test_plugins::signed(
+                &crate::dist_root_install::release_key(),
+                manifest,
+                &library,
+            );
+            std::fs::write(directory.join("hook.tar.gz"), archive)
+                .expect("stage the actual webrequest hook");
+        }
+        let settings: serde_json::Value = serde_json::from_str(
+            &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+        )
+        .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+        let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+            "providers": {},
+            "models": {},
+            "groups": groups,
+            "hooks": opts.hooks.iter().cloned().collect::<std::collections::BTreeMap<_, _>>(),
+            "global_hooks": opts.hooks.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
+            "auth": { "chain": ["keys"], "admin_auth": [] },
+            "store": { "module": module, "settings": settings },
+            "advanced": { "allow_destinations": ["127.0.0.1"] },
+        }))
+        .expect("the session deployment parses");
+        let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+            .expect("the session deployment resolves");
+        let plugins = busbar_kernel::config::PluginsCfg {
+            enabled: true,
+            dir: directory.to_string_lossy().into_owned(),
+            ..Default::default()
         };
-        let app = app.governance(Arc::clone(&gov)).cost(cost).build();
+        let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
+            as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
+        let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+            config,
+            plugins,
+            None,
+            Default::default(),
+            Default::default(),
+            (None, None),
+            None,
+            &rules,
+        )
+        .expect("the actual product builds the session deployment");
+        limits.keep().expect("the product limits commit");
+        if let Some(rotate) = rotate {
+            rotate();
+        }
+        app.governance = Some(Arc::clone(&gov));
+        app.cost = Arc::new(cost);
+        app.serve_tables = tables.clone();
+        let app = std::sync::Arc::new(app);
         let _ = live_app.set(Arc::clone(&app));
 
         let upgrades = crate::root::serve::upgrade_carriers(crate::LINKED.transports, &[]);
@@ -1518,7 +2153,8 @@ pub(super) mod session_door {
                     "closed",
                     global_gate(serde_json::json!({
                         "reject": {"status": 409, "message": "no new sessions"}
-                    })),
+                    }))
+                    .await,
                 )],
                 ..Opts::default()
             },
@@ -2517,7 +3153,7 @@ mod tools_door {
     }
 
     fn scraped(family: &str, labels: &[(&str, &str)]) -> f64 {
-        busbar_kernel_testkit::test_support::export_axis::render()
+        crate::root::serve::door_tests::render_metrics()
             .lines()
             .filter(|l| !l.starts_with('#') && l.starts_with(&format!("{family}{{")))
             .filter(|l| {
@@ -2548,7 +3184,7 @@ mod tools_door {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_failing_tool_server_trips_its_breaker_cell_through_the_composed_door() {
-        busbar_kernel_testkit::test_support::metrics::init();
+        busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(10));
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-trip";
         let mut bad_server = answering_calls_with(503).await;
@@ -3693,7 +4329,7 @@ mod tools_door {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_client_fault_answer_is_relayed_and_never_penalizes_the_member() {
-        busbar_kernel_testkit::test_support::metrics::init();
+        busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(10));
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-disposition";
         let mut faulted_server = answering_calls_with(400).await;
@@ -3795,7 +4431,7 @@ mod tools_door {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_doors_traffic_appears_on_the_metrics_scrape_under_its_plane() {
         use crate::root::door_steps::tests::door_boundary;
-        busbar_kernel_testkit::test_support::metrics::init();
+        busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(10));
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-metrics";
         let mut port_server = TlsToolServer::new().await;
@@ -4216,9 +4852,7 @@ mod tools_door {
             crate::LINKED.auths,
             crate::root::auth_bindings::operator_words(),
         );
-        busbar_kernel_testkit::test_support::install_root_auth_axis(
-            crate::root::dispatch::auth_axis,
-        );
+        crate::dist_root_install::install();
         let chain = vec![busbar_kernel::config::operator_provider().to_string()];
         let rig = port_server.rig(instance, tools, &|app| app.admin_chain(chain.clone()));
         let (server, tool) = (grant_field("scope_server"), grant_field("scope_tool"));
@@ -4754,7 +5388,7 @@ impl Serving {
             &self.lane(),
             MEMBER,
             self.egress.clock.now_secs(),
-            &busbar_kernel_testkit::test_support::tokens::pass(),
+            &busbar_contract::caps::Pass::mint(&busbar_kernel::seal::acquire()),
         )
     }
 
@@ -4763,7 +5397,7 @@ impl Serving {
             &self.lane(),
             MEMBER,
             self.egress.clock.now_secs(),
-            &busbar_kernel_testkit::test_support::tokens::pass(),
+            &busbar_contract::caps::Pass::mint(&busbar_kernel::seal::acquire()),
         )
     }
 
@@ -4863,7 +5497,7 @@ async fn serve_configured(
     allowed_pools: Option<Vec<String>>,
     api_key: &str,
 ) -> Result<Serving, String> {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(10));
     let judge = crate::root::connector::guard_for(&busbar_kernel::config::Destinations {
         block_private_addresses: false,
         ..Default::default()
@@ -5032,12 +5666,72 @@ async fn serve_configured(
         .clone()
         .expect("the composition sealed its egress");
     let plane = composed.facts.plane.clone();
-    let app = busbar_kernel_testkit::test_support::TestApp::new()
-        .keys_chain()
-        .governance(Arc::clone(&gov))
-        .groups_tree(groups)
-        .cost(cost)
-        .build();
+    crate::dist_root_install::install();
+    let library_path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
+    );
+    let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
+        .expect("the actual store statement reads")
+        .expect("the actual store exports its statement");
+    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid")
+        .name;
+    let mut manifest = crate::root::test_plugins::manifest(
+        "store",
+        &module,
+        crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+    );
+    manifest.statement = Some(hex::encode(statement));
+    let library = std::fs::read(library_path).expect("the actual store library reads");
+    let directory = crate::root::test_plugins::scratch("serve-production-5097");
+    let archive = crate::root::test_plugins::signed(
+        &crate::dist_root_install::release_key(),
+        manifest,
+        &library,
+    );
+    std::fs::write(directory.join("store.tar.gz"), archive)
+        .expect("stage the actual store archive");
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+        "providers": {},
+        "models": {},
+        "groups": groups,
+        "auth": { "chain": ["keys"], "admin_auth": [] },
+        "store": { "module": module, "settings": settings },
+        "advanced": { "allow_destinations": ["127.0.0.1"] },
+    }))
+    .expect("the door deployment parses");
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the door deployment resolves");
+    let plugins = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: directory.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
+        as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+        config,
+        plugins,
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+    )
+    .expect("the actual product builds the door deployment");
+    limits.keep().expect("the product limits commit");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+    app.governance = Some(Arc::clone(&gov));
+    app.cost = Arc::new(cost);
+    let app = std::sync::Arc::new(app);
     let doors = door_routes(served, || CARD.pin(), &[], &[]).expect("its claims mount");
     let (router, _admin, handle) =
         busbar_kernel::build_split_routers_serving(Arc::clone(&app), doors, 1 << 20, 0, false);
@@ -5399,7 +6093,7 @@ async fn the_pools_doors_traffic_appears_on_the_metrics_scrape() {
     )
     .await;
     let attempts = || {
-        busbar_kernel_testkit::test_support::metric_sum(
+        crate::root::serve::door_tests::metric_sum(
             busbar_kernel::telemetry::UPSTREAM_ATTEMPTS_TOTAL,
             &[("pool", pool), ("lane", "m0")],
         )
@@ -5419,7 +6113,7 @@ async fn the_pools_doors_traffic_appears_on_the_metrics_scrape() {
         after > before,
         "this pool's attempt was counted: {before} -> {after}"
     );
-    let scrape = busbar_kernel_testkit::test_support::export_axis::render();
+    let scrape = crate::root::serve::door_tests::render_metrics();
     assert!(
         scrape
             .lines()
@@ -5895,8 +6589,8 @@ async fn the_pools_doors_hooks_see_each_candidates_standing() {
 }
 
 #[cfg(linked_driver_proofs)]
-fn event_stream(events: Vec<String>) -> busbar_kernel_testkit::test_support::MockResponse {
-    busbar_kernel_testkit::test_support::MockResponse::Sse {
+fn event_stream(events: Vec<String>) -> ProviderReply {
+    ProviderReply::Sse {
         events,
         abort_at_index: None,
     }
@@ -5909,22 +6603,21 @@ mod pools_door_walk_and_breaker {
     use std::sync::Arc;
 
     use axum::http::StatusCode;
-    use busbar_kernel_testkit::test_support::{MockResponse, MockServer, MockServerState};
 
     fn now() -> u64 {
         busbar_kernel::store::now()
     }
 
-    async fn mock(replies: Vec<MockResponse>) -> (Arc<MockServerState>, MockServer) {
-        let state = Arc::new(MockServerState::new());
+    async fn mock(replies: Vec<ProviderReply>) -> (Arc<ProviderRequests>, ProviderEndpoint) {
+        let state = Arc::new(ProviderRequests::new());
         for reply in replies.into_iter().rev() {
             state.push(reply);
         }
-        let server = MockServer::new(Arc::clone(&state)).await;
+        let server = ProviderEndpoint::new(Arc::clone(&state)).await;
         (state, server)
     }
 
-    fn port_of(server: &MockServer) -> u16 {
+    fn port_of(server: &ProviderEndpoint) -> u16 {
         server.address().port()
     }
 
@@ -6015,7 +6708,7 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_replaces_every_caller_credential_with_the_members() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-caller-credentials";
-        let (state, server) = mock(vec![MockResponse::Ok {
+        let (state, server) = mock(vec![ProviderReply::Ok {
             status: StatusCode::OK,
             body: serde_json::from_str(SERVED_BY_TWIN).expect("JSON"),
         }])
@@ -6131,7 +6824,7 @@ mod pools_door_walk_and_breaker {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-unmapped-part";
         let far_dialect = door_word("messages_dialect");
-        let (state, server) = mock(vec![MockResponse::Ok {
+        let (state, server) = mock(vec![ProviderReply::Ok {
             status: StatusCode::OK,
             body: messages_answer_saying("hi"),
         }])
@@ -6201,7 +6894,7 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_relays_every_event_of_a_streamed_answer() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-ten-events";
-        let (_state, server) = mock(vec![MockResponse::Sse {
+        let (_state, server) = mock(vec![ProviderReply::Sse {
             events: events(10),
             abort_at_index: None,
         }])
@@ -6234,12 +6927,12 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_fails_over_a_fault_before_the_first_byte_and_cools_the_member() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-pre-first-byte";
-        let (_failing, down) = mock(vec![MockResponse::ServerError {
+        let (_failing, down) = mock(vec![ProviderReply::ServerError {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             body: serde_json::json!({ "error": "lane 0 failed" }),
         }])
         .await;
-        let (_serving, up) = mock(vec![MockResponse::Sse {
+        let (_serving, up) = mock(vec![ProviderReply::Sse {
             events: events(3),
             abort_at_index: None,
         }])
@@ -6265,12 +6958,12 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_records_a_cut_after_the_first_byte_and_does_not_fail_over() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-midstream-abort";
-        let (_cut, cutting) = mock(vec![MockResponse::Sse {
+        let (_cut, cutting) = mock(vec![ProviderReply::Sse {
             events: events(5),
             abort_at_index: Some(1),
         }])
         .await;
-        let (sibling_state, sibling) = mock(vec![MockResponse::Sse {
+        let (sibling_state, sibling) = mock(vec![ProviderReply::Sse {
             events: vec!["lane1-ok".to_string()],
             abort_at_index: None,
         }])
@@ -6308,7 +7001,7 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_trips_on_an_own_credential_401_but_not_on_a_passthrough_one() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-passthrough-401";
-        let (_state, server) = mock(vec![MockResponse::Auth {
+        let (_state, server) = mock(vec![ProviderReply::Auth {
             status: StatusCode::UNAUTHORIZED,
         }])
         .await;
@@ -6334,7 +7027,7 @@ mod pools_door_walk_and_breaker {
         drop(passthrough);
 
         let instance = "rehome-walk-own-401";
-        let (_state, server) = mock(vec![MockResponse::Auth {
+        let (_state, server) = mock(vec![ProviderReply::Auth {
             status: StatusCode::UNAUTHORIZED,
         }])
         .await;
@@ -6465,8 +7158,12 @@ mod pools_door_walk_and_breaker {
 
     async fn mapped_member(
         instance: &'static str,
-        reply: MockResponse,
-    ) -> (DoorRig, (u16, axum::http::HeaderMap, String), MockServer) {
+        reply: ProviderReply,
+    ) -> (
+        DoorRig,
+        (u16, axum::http::HeaderMap, String),
+        ProviderEndpoint,
+    ) {
         let (_state, server) = mock(vec![reply]).await;
         let rig = rig(
             instance,
@@ -6488,7 +7185,7 @@ mod pools_door_walk_and_breaker {
         let instance = "rehome-walk-billing-code";
         let (rig, _, _server) = mapped_member(
             instance,
-            MockResponse::Billing {
+            ProviderReply::Billing {
                 status: StatusCode::PAYMENT_REQUIRED,
                 code: "1113",
                 message: "insufficient balance",
@@ -6510,7 +7207,7 @@ mod pools_door_walk_and_breaker {
         let instance = "rehome-walk-rate-limit-code";
         let (rig, _, _server) = mapped_member(
             instance,
-            MockResponse::RateLimit {
+            ProviderReply::RateLimit {
                 status: StatusCode::TOO_MANY_REQUESTS,
                 provider_signal: Some("1302"),
                 retry_after: None,
@@ -6530,7 +7227,7 @@ mod pools_door_walk_and_breaker {
         let instance = "rehome-walk-rate-limit-bare";
         let (rig, _, _server) = mapped_member(
             instance,
-            MockResponse::RateLimit {
+            ProviderReply::RateLimit {
                 status: StatusCode::TOO_MANY_REQUESTS,
                 provider_signal: None,
                 retry_after: None,
@@ -6547,7 +7244,7 @@ mod pools_door_walk_and_breaker {
         let instance = "rehome-walk-server-error";
         let (rig, _, _server) = mapped_member(
             instance,
-            MockResponse::ServerError {
+            ProviderReply::ServerError {
                 status: StatusCode::INTERNAL_SERVER_ERROR,
                 body: serde_json::json!({ "error": "server error" }),
             },
@@ -6565,7 +7262,7 @@ mod pools_door_walk_and_breaker {
         let instance = "rehome-walk-auth-down";
         let (rig, (status, _, text), _server) = mapped_member(
             instance,
-            MockResponse::Auth {
+            ProviderReply::Auth {
                 status: StatusCode::UNAUTHORIZED,
             },
         )
@@ -6597,7 +7294,7 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_classifies_by_the_mapped_code_not_the_status() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-code-drives-mapped";
-        let (_state, server) = mock(vec![MockResponse::Billing {
+        let (_state, server) = mock(vec![ProviderReply::Billing {
             status: StatusCode::PAYMENT_REQUIRED,
             code: "1113",
             message: "insufficient balance",
@@ -6621,7 +7318,7 @@ mod pools_door_walk_and_breaker {
         drop(mapped);
 
         let instance = "rehome-walk-code-drives-unmapped";
-        let (_state, server) = mock(vec![MockResponse::Ok {
+        let (_state, server) = mock(vec![ProviderReply::Ok {
             status: StatusCode::BAD_REQUEST,
             body: serde_json::json!({ "error": "not a known error" }),
         }])
@@ -6647,7 +7344,7 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_relays_a_callers_fault_verbatim_and_counts_it_apart() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-client-fault";
-        let (_state, server) = mock(vec![MockResponse::Ok {
+        let (_state, server) = mock(vec![ProviderReply::Ok {
             status: StatusCode::BAD_REQUEST,
             body: serde_json::json!({ "error": "invalid_request", "message": "bad input" }),
         }])
@@ -6683,7 +7380,7 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_sheds_an_exhausted_pool_with_a_retry_after() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-exhaustion";
-        let limited = || MockResponse::RateLimit {
+        let limited = || ProviderReply::RateLimit {
             status: StatusCode::TOO_MANY_REQUESTS,
             provider_signal: Some("1302"),
             retry_after: None,
@@ -6746,12 +7443,12 @@ mod pools_door_walk_and_breaker {
 
     async fn benched_once(
         instance: &'static str,
-        reply: MockResponse,
+        reply: ProviderReply,
         band: std::ops::RangeInclusive<u64>,
     ) {
         let _one = ONE_PUBLISHER.lock().await;
         let clock = HeldClock::at(HELD_AT);
-        let (state, server) = mock(vec![reply, MockResponse::default()]).await;
+        let (state, server) = mock(vec![reply, ProviderReply::default()]).await;
         let rig = rig(
             instance,
             RigOpts {
@@ -6801,7 +7498,7 @@ mod pools_door_walk_and_breaker {
     async fn a_single_member_pool_benches_one_failure_below_the_trip_with_1_5_5s_wait() {
         benched_once(
             "rehome-walk-single-bench-unstated",
-            MockResponse::RateLimit {
+            ProviderReply::RateLimit {
                 status: StatusCode::TOO_MANY_REQUESTS,
                 provider_signal: None,
                 retry_after: None,
@@ -6811,7 +7508,7 @@ mod pools_door_walk_and_breaker {
         .await;
         benched_once(
             "rehome-walk-single-bench-stated",
-            MockResponse::RateLimit {
+            ProviderReply::RateLimit {
                 status: StatusCode::TOO_MANY_REQUESTS,
                 provider_signal: None,
                 retry_after: Some(60),
@@ -6825,7 +7522,7 @@ mod pools_door_walk_and_breaker {
     async fn a_transient_failure_is_benched_on_the_walks_clock() {
         benched_once(
             "rehome-walk-single-bench-walk-clock",
-            MockResponse::ServerError {
+            ProviderReply::ServerError {
                 status: StatusCode::INTERNAL_SERVER_ERROR,
                 body: serde_json::json!({ "error": "server error" }),
             },
@@ -6884,8 +7581,8 @@ mod pools_door_walk_and_breaker {
         assert_eq!(healthy.served(), 8);
     }
 
-    fn too_long(window: u64) -> MockResponse {
-        MockResponse::ServerError {
+    fn too_long(window: u64) -> ProviderReply {
+        ProviderReply::ServerError {
             status: StatusCode::BAD_REQUEST,
             body: serde_json::json!({"error": {"type": "invalid_request_error",
                 "message": format!("prompt is too long: 250000 tokens > {window} maximum")}}),
@@ -6897,7 +7594,7 @@ mod pools_door_walk_and_breaker {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-context-length";
         let (_refusing_state, refusing) = mock(vec![too_long(200_000)]).await;
-        let (_serving_state, serving) = mock(vec![MockResponse::Ok {
+        let (_serving_state, serving) = mock(vec![ProviderReply::Ok {
             status: StatusCode::OK,
             body: messages_answer_saying("ok"),
         }])
@@ -6927,7 +7624,7 @@ mod pools_door_walk_and_breaker {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-larger-window";
         let (_small_state, small) = mock(vec![too_long(8_000)]).await;
-        let (large_state, large) = mock(vec![MockResponse::Ok {
+        let (large_state, large) = mock(vec![ProviderReply::Ok {
             status: StatusCode::OK,
             body: messages_answer_saying("ok"),
         }])
@@ -6987,7 +7684,7 @@ mod pools_door_walk_and_breaker {
         let instance = "rehome-walk-clean-ends";
         const RUNS: usize = 8;
         let clean = || {
-            MockResponse::Sse {
+            ProviderReply::Sse {
             events: vec![
                 r#"{"type":"message_start"}"#.to_string(),
                 r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}"#.to_string(),
@@ -7021,7 +7718,7 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_presents_no_credential_for_a_passthrough_caller_with_none() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-passthrough-none";
-        let (state, server) = mock(vec![MockResponse::Ok {
+        let (state, server) = mock(vec![ProviderReply::Ok {
             status: StatusCode::OK,
             body: serde_json::from_str(SERVED_BY_TWIN).expect("JSON"),
         }])
@@ -7060,13 +7757,13 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_keeps_a_real_mid_stream_failure_with_its_member() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-real-midstream";
-        let (_bad_state, bad) = mock(vec![MockResponse::SseTransportError {
+        let (_bad_state, bad) = mock(vec![ProviderReply::SseTransportError {
             ok_events: vec![
                 r#"{"choices":[{"delta":{"content":"MEMBER-1-REAL-FIRST-FRAME"}}]}"#.to_string(),
             ],
         }])
         .await;
-        let (_good_state, good) = mock(vec![MockResponse::Sse {
+        let (_good_state, good) = mock(vec![ProviderReply::Sse {
             events: vec![
                 r#"{"choices":[{"delta":{"content":"MEMBER-2-MUST-NEVER-APPEAR"}}]}"#.to_string(),
             ],
@@ -7117,12 +7814,12 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_reroutes_a_tripped_primary_to_its_twin_without_dialling_it() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-tripped-primary";
-        let (primary_state, primary) = mock(vec![MockResponse::Ok {
+        let (primary_state, primary) = mock(vec![ProviderReply::Ok {
             status: StatusCode::OK,
             body: messages_answer_saying("from the primary"),
         }])
         .await;
-        let (twin_state, twin) = mock(vec![MockResponse::Ok {
+        let (twin_state, twin) = mock(vec![ProviderReply::Ok {
             status: StatusCode::OK,
             body: messages_answer_saying("from the twin"),
         }])
@@ -8170,9 +8867,6 @@ mod pools_door_money {
 
     use axum::http::StatusCode;
     use busbar_kernel::config::groups::{LimitCfg, LimitMetric, LimitWindow};
-    use busbar_kernel_testkit::test_support::{
-        metric_sum, MockResponse, MockServer, MockServerState,
-    };
 
     use super::super::hook_seat_tests::DoorRig;
 
@@ -8180,12 +8874,12 @@ mod pools_door_money {
         busbar_kernel::store::now()
     }
 
-    async fn mock(replies: Vec<MockResponse>) -> (Arc<MockServerState>, MockServer) {
-        let state = Arc::new(MockServerState::new());
+    async fn mock(replies: Vec<ProviderReply>) -> (Arc<ProviderRequests>, ProviderEndpoint) {
+        let state = Arc::new(ProviderRequests::new());
         for reply in replies.into_iter().rev() {
             state.push(reply);
         }
-        let server = MockServer::new(Arc::clone(&state)).await;
+        let server = ProviderEndpoint::new(Arc::clone(&state)).await;
         (state, server)
     }
 
@@ -8428,8 +9122,8 @@ mod pools_door_money {
 
     async fn thirty_tokens_a_minute(
         instance: &'static str,
-        replies: Vec<MockResponse>,
-    ) -> (DoorRig, MockServer) {
+        replies: Vec<ProviderReply>,
+    ) -> (DoorRig, ProviderEndpoint) {
         let (_state, server) = mock(replies).await;
         let limits = [limit(LimitMetric::Tokens, 30, LimitWindow::Minute)];
         let rig = rig(
@@ -8450,7 +9144,7 @@ mod pools_door_money {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-money-tpm-whole";
         inside_one_minute().await;
-        let ok = || MockResponse::Ok {
+        let ok = || ProviderReply::Ok {
             status: StatusCode::OK,
             body: chat_160(),
         };
@@ -8524,13 +9218,18 @@ mod pools_door_money {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_keeps_the_budget_unit_of_an_over_cap_answer() {
         let _one = ONE_PUBLISHER.lock().await;
-        let _limits = busbar_kernel_testkit::limits::LIMITS_TEST_LOCK.lock().await;
         const CAP: usize = 4096;
-        let _cap = busbar_kernel_testkit::limits::InstallGuard::install(
-            &busbar_kernel::config::limits::LimitsResolved::with_request_body_max_bytes(CAP),
-        );
+        struct RestoreLimits(Option<busbar_kernel::config::limits::LimitsResolved>);
+        impl Drop for RestoreLimits {
+            fn drop(&mut self) {
+                busbar_kernel::config::limits::swap_installed(self.0.take());
+            }
+        }
+        let _cap = RestoreLimits(busbar_kernel::config::limits::swap_installed(Some(
+            busbar_kernel::config::limits::LimitsResolved::with_request_body_max_bytes(CAP),
+        )));
         let instance = "rehome-money-over-cap";
-        let (_state, server) = mock(vec![MockResponse::Ok {
+        let (_state, server) = mock(vec![ProviderReply::Ok {
             status: StatusCode::OK,
             body: serde_json::json!({
                 "id": "chatcmpl-huge",
@@ -9093,9 +9792,6 @@ mod pools_door_counts_and_routes {
     use axum::http::StatusCode;
     use busbar_contract::Signal;
     use busbar_kernel::store::BreakerState;
-    use busbar_kernel_testkit::test_support::{
-        metric_sum, MockResponse, MockServer, MockServerState,
-    };
 
     use super::super::hook_seat_tests::DoorRig;
 
@@ -9103,12 +9799,12 @@ mod pools_door_counts_and_routes {
         busbar_kernel::store::now()
     }
 
-    async fn mock(replies: Vec<MockResponse>) -> (Arc<MockServerState>, MockServer) {
-        let state = Arc::new(MockServerState::new());
+    async fn mock(replies: Vec<ProviderReply>) -> (Arc<ProviderRequests>, ProviderEndpoint) {
+        let state = Arc::new(ProviderRequests::new());
         for reply in replies.into_iter().rev() {
             state.push(reply);
         }
-        let server = MockServer::new(Arc::clone(&state)).await;
+        let server = ProviderEndpoint::new(Arc::clone(&state)).await;
         (state, server)
     }
 
@@ -9268,7 +9964,7 @@ mod pools_door_counts_and_routes {
         assert_eq!(status, 404, "an unknown model is a 404");
         let after = unresolved_client_errors();
         assert_eq!(after - before, 1.0, "this unknown request was counted once");
-        let scrape = busbar_kernel_testkit::test_support::export_axis::render();
+        let scrape = crate::root::serve::door_tests::render_metrics();
         assert!(
             !scrape.contains(probe),
             "the raw model is never a label:\n{scrape}"
@@ -9393,7 +10089,7 @@ mod pools_door_counts_and_routes {
                 "`{model}` counts under `{label}`: {before} -> {after}"
             );
         }
-        let scrape = busbar_kernel_testkit::test_support::export_axis::render();
+        let scrape = crate::root::serve::door_tests::render_metrics();
         assert!(!scrape.contains("pool=\"anything-else\""), "{scrape}");
         assert!(!scrape.contains("pool=\"\""), "{scrape}");
     }
@@ -9402,7 +10098,7 @@ mod pools_door_counts_and_routes {
     async fn the_pools_door_serves_a_fallback_pool_the_key_may_reach() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-route-fallback-acl";
-        let (state, server) = mock(vec![MockResponse::Ok {
+        let (state, server) = mock(vec![ProviderReply::Ok {
             status: StatusCode::OK,
             body: messages_answer(),
         }])
@@ -9438,7 +10134,7 @@ mod pools_door_counts_and_routes {
     async fn the_pools_door_serves_an_ad_hoc_provider_route() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-route-adhoc";
-        let (state, server) = mock(vec![MockResponse::Ok {
+        let (state, server) = mock(vec![ProviderReply::Ok {
             status: StatusCode::OK,
             body: messages_answer(),
         }])
@@ -9474,7 +10170,7 @@ mod pools_door_counts_and_routes {
     async fn the_pools_door_serves_a_model_named_directly() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-route-direct-model";
-        let (state, server) = mock(vec![MockResponse::Ok {
+        let (state, server) = mock(vec![ProviderReply::Ok {
             status: StatusCode::OK,
             body: messages_answer(),
         }])
@@ -9538,8 +10234,8 @@ mod pools_door_counts_and_routes {
         status: StatusCode,
         started: &Arc<tokio::sync::Notify>,
         release: &Arc<tokio::sync::Notify>,
-    ) -> MockResponse {
-        MockResponse::Gated {
+    ) -> ProviderReply {
+        ProviderReply::Gated {
             status,
             body: serde_json::json!({"error": {"message": "boom"}}),
             started: Arc::clone(started),
@@ -9684,7 +10380,7 @@ mod pools_door_counts_and_routes {
             Arc::new(tokio::sync::Notify::new()),
             Arc::new(tokio::sync::Notify::new()),
         );
-        let (_state, server) = mock(vec![MockResponse::Gated {
+        let (_state, server) = mock(vec![ProviderReply::Gated {
             status: StatusCode::BAD_REQUEST,
             body: serde_json::json!({"error": {"message": "malformed request"}}),
             started: Arc::clone(&started),
@@ -10623,11 +11319,28 @@ fn exposition_metric_name(line: &str) -> Option<&str> {
 #[cfg(linked_driver_proofs)]
 #[test]
 fn a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric() {
-    use busbar_kernel_testkit::test_support::warn_capture::WarnCapture;
-    use tracing_subscriber::layer::SubscriberExt as _;
-    busbar_kernel_testkit::test_support::metrics::init();
-    let cap = WarnCapture::capturing_debug();
-    let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(cap.clone()));
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(10));
+    #[derive(Clone)]
+    struct EventWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for EventWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let writer = EventWriter(events.clone());
+    let dispatch = tracing::Dispatch::new(
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish(),
+    );
     let mut statuses: Vec<(&str, u16)> = Vec::new();
     tracing::dispatcher::with_default(&dispatch, || {
         let on_workers = dispatch.clone();
@@ -10688,7 +11401,11 @@ fn a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric() {
     );
     assert_eq!(status_of("healthz"), 200, "statuses: {statuses:?}");
 
-    let events = cap.messages();
+    let events: Vec<String> = String::from_utf8(events.lock().unwrap().clone())
+        .expect("tracing emits UTF-8")
+        .lines()
+        .map(str::to_owned)
+        .collect();
     let hits: Vec<&String> = events
         .iter()
         .filter(|m| mentions_a_silence_marker(m))
@@ -10703,7 +11420,7 @@ fn a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric() {
             .join("\n")
     );
 
-    let exposition = busbar_kernel_testkit::test_support::export_axis::render();
+    let exposition = crate::root::serve::door_tests::render_metrics();
     let leaked: Vec<&str> = exposition
         .lines()
         .filter_map(exposition_metric_name)
@@ -10865,7 +11582,7 @@ fn exposition_family<'a>(exposition: &'a str, family: &str) -> Vec<&'a str> {
 async fn a_model_plane_request_is_counted_exactly_once() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-counted-once";
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(10));
     let rig = rig(
         instance,
         RigOpts {
@@ -10876,12 +11593,12 @@ async fn a_model_plane_request_is_counted_exactly_once() {
     .await;
 
     let labels = [("pool", "p")];
-    let before = busbar_kernel_testkit::test_support::metric_sum(
+    let before = crate::root::serve::door_tests::metric_sum(
         busbar_kernel::snapshot::REQUESTS_TOTAL,
         &labels,
     );
     let _ = rig.chat().await;
-    let after = busbar_kernel_testkit::test_support::metric_sum(
+    let after = crate::root::serve::door_tests::metric_sum(
         busbar_kernel::snapshot::REQUESTS_TOTAL,
         &labels,
     );
@@ -10900,7 +11617,7 @@ async fn the_model_plane_families_stay_v1_5_4_shaped_on_a_real_scrape() {
     let instance = "serve-door-model-families";
     let pool = "t065-model-family-pool";
     let far = seat_far_end(200, SERVED_BY_TWIN).await;
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(10));
     let rig = rig(
         instance,
         RigOpts {
@@ -10917,11 +11634,11 @@ async fn the_model_plane_families_stay_v1_5_4_shaped_on_a_real_scrape() {
     );
     let counts = || {
         (
-            busbar_kernel_testkit::test_support::metric_sum(
+            crate::root::serve::door_tests::metric_sum(
                 busbar_kernel::snapshot::REQUESTS_TOTAL,
                 &labels,
             ),
-            busbar_kernel_testkit::test_support::metric_sum(&duration_count, &labels),
+            crate::root::serve::door_tests::metric_sum(&duration_count, &labels),
         )
     };
     let before = counts();
@@ -10945,7 +11662,7 @@ async fn the_model_plane_families_stay_v1_5_4_shaped_on_a_real_scrape() {
         after.1 > before.1,
         "this pool's duration observed: {before:?} -> {after:?}"
     );
-    let exposition = busbar_kernel_testkit::test_support::export_axis::render();
+    let exposition = crate::root::serve::door_tests::render_metrics();
     let model_counters = exposition_family(&exposition, busbar_kernel::snapshot::REQUESTS_TOTAL);
     assert!(
         model_counters.iter().any(|line| line.contains("pool=\"t065-model-family-pool\"") && exposition_label_keys(line)

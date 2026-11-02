@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_kernel_testkit::test_support::governance::GovStateFixtures;
 use std::collections::BTreeMap;
 
 use busbar_kernel_ledger::cost::{
-    self as ledger_cost, Author, CardEntryDraft, History, HistorySeq, LaneClass, LedgerEntry,
-    MoneyError, RateCard,
+    self as ledger_cost, Author, CardEntryDraft, History, LaneClass, LedgerEntry, MoneyError,
+    RateCard,
 };
 
 const LANE: &str = "gpt-4o";
@@ -33,8 +32,9 @@ fn usage_lines(pairs: &[(&'static str, u64)]) -> Vec<busbar_contract::caps::Usag
 }
 
 fn usage_report(pairs: &[(&'static str, u64)]) -> busbar_contract::caps::Usage {
-    let token =
-        busbar_kernel_testkit::test_support::tokens::grant::<busbar_contract::caps::Consumption>();
+    let token = busbar_contract::caps::Grant::<busbar_contract::caps::Consumption>::mint(
+        &busbar_kernel::seal::acquire(),
+    );
     busbar_contract::caps::Usage::report(&token, usage_lines(pairs))
         .expect("a report within the line bound")
 }
@@ -318,10 +318,8 @@ fn d5_an_unpriced_class_on_a_priced_lane_refuses_everywhere() {
         0,
     );
     let counts: [(&str, u64); 3] = [(INPUT, 1_000), (OUTPUT, 250), (CACHE_READ, 10_000_000)];
-    let one = ledger_cost::price_ledger(
-        &[one_entry(LANE, &counts, 0, 0)],
-        &History::opening(card.clone(), 0),
-    );
+    let history = History::opening(card.clone(), 0);
+    let one = ledger_cost::price_ledger(&[one_entry(LANE, &counts, 0, 0)], &history);
     let derived =
         ledger_cost::MeteredRow::new(LANE, enforcement_units(&counts), 0, &BTreeMap::new())
             .spend_micros_at_card(&card);
@@ -333,7 +331,7 @@ fn d5_an_unpriced_class_on_a_priced_lane_refuses_everywhere() {
         0,
         0,
     );
-    let settled = ledger_cost::price_fail_closed(&History::opening(card, 0).current(), &posting);
+    let settled = ledger_cost::price_fail_closed(&history.current(), &posting);
 
     rule("D5  a priced lane, a class the card is silent about (#42)");
     row("THE ONE FUNCTION", &one);
@@ -343,7 +341,7 @@ fn d5_an_unpriced_class_on_a_priced_lane_refuses_everywhere() {
         settled.as_ref().err(),
     );
     let refusal = MoneyError::ClassUnpriced {
-        card_seq: HistorySeq::OPENING,
+        card_seq: history.head_key(),
         lane: LANE.to_string(),
         class: CACHE_READ.to_string(),
     };
@@ -354,8 +352,12 @@ fn d5_an_unpriced_class_on_a_priced_lane_refuses_everywhere() {
     );
     assert_eq!(
         derived,
-        Err(refusal),
-        "the read-time derivation refuses too — never 7,000"
+        Err(MoneyError::ClassUnpriced {
+            card_seq: None,
+            lane: LANE.to_string(),
+            class: CACHE_READ.to_string(),
+        }),
+        "the undated read-time derivation refuses too — never 7,000"
     );
     assert!(
         matches!(settled, Err(ledger_cost::Unpriceable::ClassUnpriced { ref class, .. }) if class == CACHE_READ),
@@ -491,8 +493,7 @@ fn d8_the_gauge_figure_is_the_one_functions_integer_up_to_the_egress_boundary() 
     rule("D8  `busbar_*_spend_cents` — integer up to MONEY_EGRESS");
     let requests: u64 = (1u64 << 53) + 1;
     let kernel = kernel_cost_model(None, 1);
-    let store =
-        std::sync::Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new());
+    let store = crate::root::real_store::records();
     const BUCKET: &str = "fee-only-gauge";
     const NOW: u64 = 1_700_000_000;
     busbar_contract::records::RecordStore::put_usage(
@@ -727,20 +728,24 @@ fn accrued_on_the_book(
     card_yaml: Option<&str>,
     units: &[(&str, u64)],
 ) -> (Result<i64, String>, BTreeMap<String, u64>) {
-    let gov = busbar_kernel::governance::GovState::new(
-        std::sync::Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new()),
-        None,
-    )
-    .expect("a governance book over a memory store");
+    let gov = busbar_kernel::governance::GovState::new(crate::root::real_store::records(), None)
+        .expect("a governance book over the actual product store");
     let card: Option<BTreeMap<String, busbar_kernel::config::RateEntryCfg>> =
         card_yaml.map(|yaml| serde_yaml::from_str(yaml).expect("the card parses"));
     let cost = busbar_kernel::cost::CostModel::resolve_parts(card.as_ref(), 0, &BTreeMap::new());
+    gov.set_signing_key(Some(
+        busbar_kernel::governance::signing::TokenSigner::generate(
+            busbar_kernel::governance::signing::DEFAULT_KID,
+        )
+        .expect("the product signing key is generated"),
+    ));
     let (key, _secret) = gov
-        .create_key(
+        .mint_signed(
             busbar_kernel::governance::NewKeySpec {
                 name: "open-class".to_string(),
                 ..Default::default()
             },
+            u64::MAX,
             OPEN_AT,
         )
         .expect("create key");

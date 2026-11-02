@@ -403,12 +403,9 @@ fn binding_the_node_to_the_book_journals_every_card_applied_after_it() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-#[test]
-fn the_exit_arm_seals_no_money_figure_into_the_record() {
-    use busbar_contract::caps::{Admittance, Hold, Posted, Usage, WriteMoney};
-    use busbar_kernel_testkit::test_support::tokens::{end, grant, origin, pass};
-
-    let node = Node::new();
+#[tokio::test]
+async fn the_exit_arm_seals_no_money_figure_into_the_record() {
+    let node = Arc::new(Node::new());
     let durability = crate::root::durability::build(
         &crate::root::durability::DurabilityConfig { data_dir: None },
         Box::new(busbar_kernel_wal::NullShipper::new()),
@@ -419,24 +416,24 @@ fn the_exit_arm_seals_no_money_figure_into_the_record() {
 
     const MONEY: u64 = 150;
     let who = PrincipalId::new("acct:h2");
-    let hold = Hold::open(&grant::<Admittance>(), who.clone());
-    let usage = Usage::report(&grant::<busbar_contract::caps::Consumption>(), Vec::new())
-        .expect("an empty report fits the record");
-    let posted = Posted::settle(hold, MONEY, &usage, &grant::<WriteMoney>());
-    assert_eq!(posted.quantity(), MONEY, "the posting carries the count");
-    let ended = Ended::Settled {
-        end: end(Outcome::Completed, Ok(posted)),
-        requests: 0,
-        fee: 0,
+    let post = NodeEndPost::new(Arc::clone(&node));
+    let ended = drive_to_end(&node, &post, Some(MONEY)).await;
+    let Ended::Settled { end, .. } = &ended else {
+        panic!("the actual teller settles the unit");
     };
+    assert_eq!(
+        end.posted().expect("the actual teller posts").quantity(),
+        MONEY,
+        "the posting carries the count"
+    );
     let seal = UnitSeal {
         facts: busbar_contract::caps::AuditFacts {
             op_class: busbar_contract::caps::OpClassId::new("call"),
             finish: busbar_contract::FinishClass::Complete,
         },
-        pass: pass(),
+        pass: busbar_kernel::teller::verb_audit_pass(&node.kernel),
         key: UnitKey::new(77),
-        origin: origin(OriginKind::Client),
+        origin: node.kernel.origin(OriginKind::Client),
         parent: None,
     };
     node.seal_end(
@@ -467,6 +464,7 @@ const PRINCIPAL: &str = "acct:door";
 const DESTINATION: &str = "door-dest";
 
 struct DoorUnit {
+    reported: Option<u64>,
     decode_refusal: Option<ReasonCode>,
 
     screen: Option<ReasonCode>,
@@ -481,6 +479,7 @@ struct DoorUnit {
 impl DoorUnit {
     fn served() -> Self {
         DoorUnit {
+            reported: None,
             decode_refusal: None,
             screen: None,
             pause_screen: false,
@@ -645,7 +644,10 @@ impl busbar_kernel::teller::UnitEnds for DoorUnit {
     }
 
     fn evidence(&self, _ctx: &UnitCtx) -> Evidence {
-        Evidence::default()
+        Evidence {
+            reported: self.reported,
+            ..Evidence::default()
+        }
     }
 }
 
@@ -762,8 +764,11 @@ fn late_of(report: Report) -> Late {
     Box::new(move || Some((report.usage, report.fee_count, report.lane)))
 }
 
-async fn drive_to_end(node: &Node, post: &NodeEndPost) -> Ended {
-    let unit = DoorUnit::served();
+async fn drive_to_end(node: &Node, post: &NodeEndPost, reported: Option<u64>) -> Ended {
+    let unit = DoorUnit {
+        reported,
+        ..DoorUnit::served()
+    };
     let key = node.mint();
     let call = node.kernel.next_call();
     let meter = Arc::new(AccrualMeter::new());
@@ -847,7 +852,7 @@ async fn a_driven_planes_abandoned_end_seals_one_audit_record() {
         finish: busbar_contract::FinishClass::Complete,
     };
 
-    let ended = drive_to_end(&node, &site).await;
+    let ended = drive_to_end(&node, &site, None).await;
     site.open(
         UnitKey::new(51),
         who.clone(),
@@ -857,7 +862,7 @@ async fn a_driven_planes_abandoned_end_seals_one_audit_record() {
     site.audited(
         UnitKey::new(51),
         facts,
-        busbar_kernel_testkit::test_support::tokens::pass(),
+        busbar_kernel::teller::verb_audit_pass(&node.kernel),
     );
     let before = records();
     site.post(&ctx(51), ended);
@@ -867,7 +872,7 @@ async fn a_driven_planes_abandoned_end_seals_one_audit_record() {
         "exactly one audit record for the abandoned unit"
     );
 
-    let ended = drive_to_end(&node, &site).await;
+    let ended = drive_to_end(&node, &site, None).await;
     site.open(UnitKey::new(52), who, Arrived::at(EPOCH * 1_000, 1), None);
     let before = records();
     site.post(&ctx(52), ended);
@@ -984,9 +989,7 @@ async fn a_full_journal_lane_refuses_a_new_unit_with_the_reason() {
             )
             .expect("the store reads back"),
         ));
-        let token = busbar_kernel_testkit::test_support::tokens::grant::<
-            busbar_contract::caps::DurableWrite,
-        >();
+        let token = crate::root::kernel::new_kernel().durability_token();
         for _ in 0..3 {
             let _lost = book.lock().unwrap().journal.append(
                 &token,

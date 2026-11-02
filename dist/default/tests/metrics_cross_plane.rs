@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-mod linked;
-
 use busbar_contract::records::{UsageLedger, VirtualKey};
 use busbar_kernel::governance::{
     GovState, MeteringDelta, MeteringRow, RecordStore, RecordStoreError, RecordStoreResult,
@@ -11,16 +9,116 @@ use busbar_kernel::snapshot::{
     refresh_scrape_gauges, LANE_AVAILABLE, LANE_AVAILABLE_PERMITS, LANE_INFLIGHT,
     LANE_RECOVERY_HINT_MS, LANE_STATE, POOL_QUEUED,
 };
-use busbar_kernel::store::{now, LaneRuntime};
-use busbar_kernel_testkit::test_support::export_axis::render;
-use busbar_kernel_testkit::test_support::metrics::init;
-use busbar_kernel_testkit::test_support::protocols::PROTO_OPENAI;
-use busbar_kernel_testkit::test_support::store_double::MemoryStore;
-use busbar_kernel_testkit::test_support::{LaneSpec, TestApp};
+use busbar_kernel::store::now;
 use std::sync::Arc;
 
 fn register_planes() {
-    linked::install();
+    crate::dist_root_install::install();
+}
+
+#[path = "../../../crates/busbar/src/root/tests/test_plugins.rs"]
+mod plugins;
+
+fn init() {
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(60));
+}
+
+fn render() -> String {
+    use busbar_contract::export_calls::ExportAxis as _;
+    let sink = crate::root::exports::EXPORTS
+        .open(
+            "prometheus",
+            "metrics-cross-plane",
+            &serde_json::json!({ "buffer_seconds": 60 }),
+        )
+        .expect("the actual linked scrape sink opens");
+    let families = busbar_kernel::snapshot::snapshot().expect("the product recorder is installed");
+    String::from_utf8(sink.scrape(&families).expect("the product sink scrapes"))
+        .expect("the scrape is UTF-8")
+}
+
+fn app(model: &str, pools: &[&str], cap: Option<usize>) -> busbar_kernel::state::App {
+    crate::dist_root_install::install();
+    let library_path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
+    );
+    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
+        .expect("the actual store statement reads")
+        .expect("the actual store exports its statement");
+    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid")
+        .name;
+    let mut manifest = plugins::manifest(
+        "store",
+        &module,
+        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+    );
+    manifest.statement = Some(hex::encode(statement));
+    let library = std::fs::read(library_path).expect("the actual store library reads");
+    let directory = plugins::scratch(&format!(
+        "metrics-cross-plane-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
+    let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
+    std::fs::write(directory.join("store.tar.gz"), archive)
+        .expect("stage the actual store archive");
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    assert!(
+        settings.is_object(),
+        "the actual store settings are an object"
+    );
+    let credential = directory.join("upstream-credential");
+    std::fs::write(&credential, b"metrics-unused-upstream-credential")
+        .expect("write the normal file-backed upstream credential");
+    let pools: serde_json::Map<String, serde_json::Value> = pools
+        .iter()
+        .map(|pool| {
+            (
+                (*pool).to_string(),
+                serde_json::json!({ "members": [model] }),
+            )
+        })
+        .collect();
+    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+        "providers": { "local": {
+            "protocol": "openai", "base_url": "http://127.0.0.1:1",
+            "api_key": { "file": credential },
+        } },
+        "models": { (model): { "provider": "local", "max_concurrent": cap } },
+        "pools": pools,
+        "auth": { "chain": [], "admin_auth": [] },
+        "store": { "module": module, "settings": settings },
+        "advanced": { "allow_destinations": ["127.0.0.1"] },
+    }))
+    .expect("the product deployment parses");
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the product deployment resolves");
+    let plugin_config = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: directory.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let rules = Arc::new(crate::root::door_steps::Rules::default())
+        as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+        config,
+        plugin_config,
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+    )
+    .expect("the actual product builds the door deployment");
+    drop(limits);
+    drop(rotate);
+    app.governance = None;
+    app
 }
 
 fn sample_vkey(id: &str) -> VirtualKey {
@@ -55,10 +153,7 @@ fn test_scrape_gauges_lane_state_no_governance() {
     register_planes();
     init();
 
-    let app = TestApp::new()
-        .lane(LaneSpec::new("model-x", PROTO_OPENAI, "http://x"))
-        .pool("pool-x", &[(0, 1)])
-        .build();
+    let app = app("model-x", &["pool-x"], None);
 
     refresh_scrape_gauges(&app);
 
@@ -78,15 +173,11 @@ fn test_scrape_gauges_lane_available_flips_on_saturation() {
     register_planes();
     init();
 
-    let sem = Arc::new(tokio::sync::Semaphore::new(1));
-    let app = TestApp::new()
-        .lane(
-            LaneSpec::new("cap-model", PROTO_OPENAI, "http://c")
-                .max(1)
-                .sem(sem.clone()),
-        )
-        .pool("cap-pool", &[(0, 1)])
-        .build();
+    let app = app("cap-model", &["cap-pool"], Some(1));
+    let sem = app
+        .store
+        .lane_semaphore(0)
+        .expect("the product lane's semaphore");
 
     refresh_scrape_gauges(&app);
     let out = render();
@@ -149,13 +240,7 @@ fn test_scrape_gauges_unbounded_lane_omits_available_permits() {
     register_planes();
     init();
 
-    let app = TestApp::new()
-        .lane(
-            LaneSpec::new("unb-model", PROTO_OPENAI, "http://u")
-                .max(tokio::sync::Semaphore::MAX_PERMITS),
-        )
-        .pool("unb-pool", &[(0, 1)])
-        .build();
+    let app = app("unb-model", &["unb-pool"], None);
 
     refresh_scrape_gauges(&app);
     let out = render();
@@ -178,10 +263,7 @@ fn test_scrape_gauges_breaker_open_lane_unavailable() {
     register_planes();
     init();
 
-    let app = TestApp::new()
-        .lane(LaneSpec::new("brk-model", PROTO_OPENAI, "http://b"))
-        .pool("brk-pool", &[(0, 1)])
-        .build();
+    let app = app("brk-model", &["brk-pool"], None);
 
     let t = now();
     app.store.force_open_in("brk-pool", 0, t + 30);
@@ -211,10 +293,7 @@ fn test_scrape_gauges_breaker_open_lane_unavailable() {
 fn test_scrape_gauges_pool_queued_defined_reads_zero() {
     register_planes();
     init();
-    let app = TestApp::new()
-        .lane(LaneSpec::new("q-model", PROTO_OPENAI, "http://q"))
-        .pool("q-pool", &[(0, 1)])
-        .build();
+    let app = app("q-model", &["q-pool"], None);
     refresh_scrape_gauges(&app);
     let out = render();
     assert_eq!(
@@ -225,7 +304,7 @@ fn test_scrape_gauges_pool_queued_defined_reads_zero() {
 }
 
 struct ScrapeTimeBrokenKeyListStore {
-    inner: MemoryStore,
+    inner: Arc<dyn RecordStore>,
     calls: std::sync::atomic::AtomicUsize,
 }
 impl RecordStore for ScrapeTimeBrokenKeyListStore {
@@ -274,18 +353,15 @@ fn test_scrape_gauges_lane_state_survives_governance_all_keys_failure() {
 
     let key = sample_vkey("vk_broken_store01");
     let store = Arc::new(ScrapeTimeBrokenKeyListStore {
-        inner: MemoryStore::new(),
+        inner: crate::root::real_store::records(),
         calls: std::sync::atomic::AtomicUsize::new(0),
     });
     store.put_key(&key).unwrap();
 
     let gov = Arc::new(GovState::new(store, None).unwrap());
 
-    let app = TestApp::new()
-        .lane(LaneSpec::new("model-broken", PROTO_OPENAI, "http://broken"))
-        .pool("pool-broken", &[(0, 1)])
-        .governance(gov)
-        .build();
+    let mut app = app("model-broken", &["pool-broken"], None);
+    app.governance = Some(gov);
 
     refresh_scrape_gauges(&app);
 
@@ -311,10 +387,7 @@ fn test_lane_state_healthy_is_zero() {
     register_planes();
     init();
 
-    let app = TestApp::new()
-        .lane(LaneSpec::new("model-h", PROTO_OPENAI, "http://h"))
-        .pool("pool-h", &[(0, 1)])
-        .build();
+    let app = app("model-h", &["pool-h"], None);
 
     refresh_scrape_gauges(&app);
 
@@ -344,11 +417,8 @@ fn test_lane_state_tripped_pool_reads_two_despite_healthy_sibling_pool() {
     register_planes();
     init();
 
-    let (app, store) = TestApp::new()
-        .lane(LaneSpec::new("model-ho", PROTO_OPENAI, "http://ho"))
-        .pool("pool-tripped", &[(0, 1)])
-        .pool("pool-sibling", &[(0, 1)])
-        .build_with_store();
+    let app = app("model-ho", &["pool-tripped", "pool-sibling"], None);
+    let store = app.store.clone();
 
     let t = now();
 
@@ -381,10 +451,8 @@ fn test_lane_state_by_model_tripped_default_cell_reads_two_despite_healthy_pool_
     register_planes();
     init();
 
-    let (app, store) = TestApp::new()
-        .lane(LaneSpec::new("model-by", PROTO_OPENAI, "http://by"))
-        .pool("some-pool", &[(0, 1)])
-        .build_with_store();
+    let app = app("model-by", &["some-pool"], None);
+    let store = app.store.clone();
 
     let t = now();
     let _ = store.cooldown_remaining_in("some-pool", 0, t);
@@ -410,11 +478,8 @@ fn test_lane_state_half_open_probe_on_own_cell_reads_one() {
     register_planes();
     init();
 
-    let (app, store) = TestApp::new()
-        .lane(LaneSpec::new("model-probe", PROTO_OPENAI, "http://probe"))
-        .pool("pool-probe", &[(0, 1)])
-        .pool("pool-probe-sib", &[(0, 1)])
-        .build_with_store();
+    let app = app("model-probe", &["pool-probe", "pool-probe-sib"], None);
+    let store = app.store.clone();
 
     let t = now();
     let _ = store.cooldown_remaining_in("pool-probe-sib", 0, t);
@@ -457,11 +522,8 @@ fn test_lane_state_by_model_default_cell_untouched_zero_cooldown_reports_healthy
     register_planes();
     init();
 
-    let (app, store) = TestApp::new()
-        .lane(LaneSpec::new("model-zero", PROTO_OPENAI, "http://zero"))
-        .pool("poolX", &[(0, 1)])
-        .pool("poolY", &[(0, 1)])
-        .build_with_store();
+    let app = app("model-zero", &["poolX", "poolY"], None);
+    let store = app.store.clone();
 
     let t = now();
 
@@ -496,18 +558,7 @@ fn the_scrapes_pool_queued_gauge_reads_the_live_depth() {
 
     let pool = "q-live-pool";
 
-    let dialect = busbar_kernel_testkit::ingress::protocols::residual_default_dialect()
-        .or_else(|| {
-            busbar_kernel_testkit::ingress::protocols::detect_protocol(
-                "/v1/chat/completions",
-                &axum::http::HeaderMap::new(),
-            )
-        })
-        .expect("a linked plane states a dialect");
-    let app = TestApp::new()
-        .lane(LaneSpec::new("q-live-model", dialect, "http://q"))
-        .pool(pool, &[(0, 1)])
-        .build();
+    let app = app("q-live-model", &[pool], None);
     let door_tables = ConfigTables::default();
 
     set_pool_queued_depth(pool, 1);

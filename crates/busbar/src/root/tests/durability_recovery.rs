@@ -4,7 +4,6 @@
 use super::*;
 use crate::root::durability::{build_on_store, wait_for, DurabilityConfig, JournalLane};
 use busbar_contract::caps::AdminVerb;
-use busbar_contract::store_calls::{StoreAxis as _, StoreDoor};
 use busbar_kernel_seams::verb_store::{Store as VerbStore, StoreError as VerbStoreError};
 
 const STORE: &str = "configured";
@@ -17,37 +16,10 @@ struct Opened {
 }
 
 fn ephemeral_store() -> Opened {
-    let axis = crate::root::loader::store_v3::DoorStoreAxis {
-        dispatcher: {
-            let d = Arc::new(crate::root::loader::dispatch::Dispatcher::new(
-                crate::root::loader::dispatch::DispatchConfig::default(),
-            ));
-
-            let _ = d.lend_seal(busbar_kernel::seal::lend());
-            d
-        },
-        logs: crate::root::boot::plugin_logs().clone(),
-
-        conns: crate::root::loader::dispatch::ConnTable::NoNeeds,
-        mint: busbar_kernel::door::op_id,
-    };
-    let opened = axis
-        .open(
-            StoreDoor::Linked(
-                crate::LINKED
-                    .stores
-                    .iter()
-                    .find(|s| s.1)
-                    .expect("the build links an ephemeral store")
-                    .2,
-            ),
-            STORE,
-            b"{}",
-        )
-        .expect("the ephemeral store opens through its door");
+    let opened = crate::root::real_store::store();
     Opened {
-        records: opened.records,
-        calls: opened.calls.expect("a door-opened store has its v3 slots"),
+        records: opened.clone(),
+        calls: opened,
     }
 }
 
@@ -150,7 +122,7 @@ fn the_v3_key_credential_and_denylist_ops_answer_as_the_op_set_did() {
 }
 
 fn admin() -> Grant<AdminVerb> {
-    busbar_kernel_testkit::test_support::tokens::grant::<AdminVerb>()
+    crate::root::kernel::new_kernel().admin_token()
 }
 
 fn boot(store: &Opened) -> (Arc<Mutex<Durability>>, Arc<dyn VerbStore + Send + Sync>) {
@@ -161,7 +133,7 @@ fn boot(store: &Opened) -> (Arc<Mutex<Durability>>, Arc<dyn VerbStore + Send + S
     ));
     let verbs = node_verb_store(
         Arc::clone(&book),
-        busbar_kernel_testkit::test_support::tokens::grant::<DurableWrite>(),
+        crate::root::kernel::new_kernel().durability_token(),
         STORE,
     )
     .expect("a node over a configured store binds the verb store");

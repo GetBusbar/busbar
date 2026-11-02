@@ -21,19 +21,22 @@ fn no_verb_name_carries_a_plane_key_or_a_protocol_name() {
     );
     let mut identities: Vec<&'static str> = plane_keys.clone();
     identities.extend(
-        busbar_kernel_testkit::ingress::protocols::registry()
-            .decls()
+        linked::planes()
             .iter()
-            .map(|d| d.name),
+            .flat_map(|decl| (decl.wire_format_names)(decl).iter().copied()),
     );
     let verbs: Vec<OpVerb> = OpVerb::ALL
         .iter()
         .copied()
-        .chain(
-            busbar_kernel_testkit::test_support::protocols::declared_verbs()
-                .iter()
-                .copied(),
-        )
+        .chain([
+            OpVerb::CHAT,
+            OpVerb::EMBEDDINGS,
+            OpVerb::MODERATION,
+            OpVerb::IMAGE,
+            OpVerb::TRANSCRIPTION,
+            OpVerb::SPEECH,
+            OpVerb::RERANK,
+        ])
         .collect();
     assert!(
         verbs.len() > OpVerb::ALL.len(),

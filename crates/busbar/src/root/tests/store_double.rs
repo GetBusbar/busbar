@@ -1,44 +1,60 @@
-use std::collections::BTreeMap;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Poll, Waker};
+use std::time::{Duration, Instant};
 
-use busbar_contract::abi::sdk::store::conditional::{Decision, Expected, Mutation, Request};
+use busbar_contract::abi::sdk::store::conditional::{Decision, Mutation, Request};
 use busbar_contract::abi::store::OpId;
 use busbar_contract::kinds::RecordBytes;
-use busbar_contract::records::{MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta};
+use busbar_contract::records::{
+    AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneRecordRef,
+    PlaneSelector, RecordStore, UsageDelta, VirtualKey,
+};
 use busbar_contract::store_calls::{StoreCall, StoreCalls, StoreFailure};
 
-type Rows = BTreeMap<(String, Vec<u8>), RecordBytes>;
-
-type Claims = BTreeMap<(String, String), u64>;
+use crate::root::loader::store_v3::LoadedStore;
 
 type ScanProbe = Arc<Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>;
-
 type PutProbe = Arc<Mutex<Option<Arc<dyn Fn() -> Option<StoreFailure> + Send + Sync>>>>;
 type TransactionProbe =
     Arc<Mutex<Option<Arc<dyn Fn(&Request) -> Option<StoreFailure> + Send + Sync>>>>;
 
-/// The double. Cheap to clone; every clone is the same store.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(crate) struct RecordSlots {
-    rows: Arc<Mutex<Rows>>,
-    claims: Arc<Mutex<Claims>>,
+    inner: Arc<LoadedStore>,
     refusing: Arc<AtomicBool>,
     unreadable: Arc<AtomicBool>,
-    /// `0`: no budget. `n + 1`: take `n` more puts, then refuse every one after.
     budget: Arc<AtomicUsize>,
     puts: Arc<AtomicUsize>,
+    observed_transactions: Arc<Mutex<HashSet<[u8; 16]>>>,
     probe: ScanProbe,
     put_probe: PutProbe,
-    /// Keep every put and answer it FAILED: a store that committed and lost the ack.
     lost_acks: Arc<AtomicBool>,
     transaction_acks_lost: Arc<AtomicBool>,
-    /// Calls remain genuinely Pending until the test releases them.
     paused: Arc<AtomicBool>,
     parked: Arc<Mutex<Vec<Waker>>>,
-    receipts: Arc<Mutex<BTreeMap<[u8; 16], Request>>>,
     transaction_probe: TransactionProbe,
+}
+
+impl Default for RecordSlots {
+    fn default() -> Self {
+        Self {
+            inner: crate::root::real_store::store(),
+            refusing: Arc::default(),
+            unreadable: Arc::default(),
+            budget: Arc::default(),
+            puts: Arc::default(),
+            observed_transactions: Arc::default(),
+            probe: Arc::default(),
+            put_probe: Arc::default(),
+            lost_acks: Arc::default(),
+            transaction_acks_lost: Arc::default(),
+            paused: Arc::default(),
+            parked: Arc::default(),
+            transaction_probe: Arc::default(),
+        }
+    }
 }
 
 impl RecordSlots {
@@ -48,6 +64,10 @@ impl RecordSlots {
 
     pub(crate) fn calls(&self) -> Arc<dyn StoreCalls> {
         Arc::new(self.clone())
+    }
+
+    pub(crate) fn records(&self) -> Arc<dyn RecordStore> {
+        self.inner.clone()
     }
 
     pub(crate) fn on_transaction(
@@ -127,6 +147,23 @@ impl RecordSlots {
                 == Ok(1)
     }
 
+    fn before_put(&self) -> Result<(), StoreFailure> {
+        let probe = self
+            .put_probe
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        if let Some(why) = probe.and_then(|probe| probe()) {
+            return Err(why);
+        }
+        if self.refuses_put() {
+            return Err(StoreFailure::Refused(
+                "the test store refuses writes".into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn lose_acks(&self, losing: bool) {
         self.lost_acks.store(losing, Ordering::Release);
     }
@@ -140,56 +177,65 @@ impl RecordSlots {
     }
 
     pub(crate) fn corrupt(&self, schema: &str, key: &[u8]) {
-        let mut rows = self.rows.lock().unwrap_or_else(|p| p.into_inner());
-        let at = (schema.to_string(), key.to_vec());
-        let row = rows.get(&at).expect("the row is there").as_slice().to_vec();
-        let mut edited = row;
+        let mut edited = completed(self.inner.record_get(schema, key))
+            .expect("the product store reads the row")
+            .expect("the row is there")
+            .as_slice()
+            .to_vec();
         if let Some(last) = edited.last_mut() {
             *last ^= 0xff;
         }
-        rows.insert(at, RecordBytes::new(edited).expect("the same length"));
+        self.put_row(schema, key, &edited);
     }
 
     pub(crate) fn redeem(&self, kind: &str, token: &str, expires_at: u64, now: u64) -> bool {
-        let mut claims = self.claims.lock().unwrap_or_else(|p| p.into_inner());
-        claims.retain(|_, lapses| *lapses > now);
-        claims
-            .insert((kind.to_string(), token.to_string()), expires_at)
-            .is_none()
+        completed(StoreCalls::redeem_plane_token(
+            self.inner.as_ref(),
+            kind,
+            token,
+            expires_at,
+            now,
+        ))
+        .expect("the product store redeems the token")
     }
 
     pub(crate) fn put_row(&self, schema: &str, key: &[u8], value: &[u8]) {
-        self.rows.lock().unwrap_or_else(|p| p.into_inner()).insert(
-            (schema.to_string(), key.to_vec()),
-            RecordBytes::new(value.to_vec()).expect("a test row fits a slot"),
-        );
+        let value = RecordBytes::new(value.to_vec()).expect("a test row fits a slot");
+        completed(self.inner.record_put(schema, key, &value))
+            .expect("the product store keeps the fixture row");
     }
 
     pub(crate) fn rows_under(&self, schema: &str) -> usize {
-        self.rows
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .keys()
-            .filter(|(s, _)| s == schema)
-            .count()
+        completed(self.inner.record_scan(schema, b"", u32::MAX))
+            .expect("the product store scans the rows")
+            .len()
     }
 }
 
-fn not_this<'a, T: Send + 'a>() -> StoreCall<'a, T> {
-    Box::pin(async { Err(StoreFailure::Failed("not a journal slot".to_string())) })
+fn completed<T>(call: StoreCall<'_, T>) -> Result<T, StoreFailure> {
+    crate::root::card_store::wait_until(call, Some(Instant::now() + Duration::from_secs(30)))
+        .expect("the product store answers the fixture operation")
 }
 
 impl StoreCalls for RecordSlots {
+    fn supports_usage_correction(&self) -> bool {
+        StoreCalls::supports_usage_correction(self.inner.as_ref())
+    }
+
+    fn apply_usage_correction<'a>(
+        &'a self,
+        request: &'a busbar_contract::records::correction::Request,
+    ) -> StoreCall<'a, busbar_contract::records::correction::Decision> {
+        StoreCalls::apply_usage_correction(self.inner.as_ref(), request)
+    }
+
     fn supports_record_transaction(&self) -> bool {
-        true
+        self.inner.supports_record_transaction()
     }
 
     fn record_transaction<'a>(&'a self, request: &'a Request) -> StoreCall<'a, Decision> {
         Box::pin(async move {
             self.ready().await;
-            request
-                .validate()
-                .map_err(|why| StoreFailure::Refused(why.into()))?;
             let probe = self
                 .transaction_probe
                 .lock()
@@ -198,89 +244,52 @@ impl StoreCalls for RecordSlots {
             if let Some(why) = probe.and_then(|probe| probe(request)) {
                 return Err(why);
             }
-            let probe = self
-                .put_probe
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .clone();
-            if let Some(why) = probe.and_then(|probe| probe()) {
-                return Err(why);
-            }
-            let mut receipts = self.receipts.lock().unwrap_or_else(|p| p.into_inner());
-            if let Some(kept) = receipts.get(&request.op_id.0) {
-                return if kept == request {
-                    if self.transaction_acks_lost.load(Ordering::Acquire) {
-                        Err(StoreFailure::Failed(
-                            "the test store lost the transaction ack".into(),
-                        ))
-                    } else {
-                        Ok(Decision::Applied)
-                    }
-                } else {
-                    Err(StoreFailure::Conflict)
-                };
-            }
-            if self.refuses_put() {
-                return Err(StoreFailure::Refused(
-                    "the test store refuses writes".into(),
-                ));
-            }
-            let mut rows = self.rows.lock().unwrap_or_else(|p| p.into_inner());
-            for p in &request.predicates {
-                let got = rows.get(&(p.schema.clone(), p.key.clone()));
-                let matches = match &p.expected {
-                    Expected::Absent => got.is_none(),
-                    Expected::Bytes(bytes) => got.is_some_and(|v| v.as_slice() == bytes.as_slice()),
-                };
-                if !matches {
-                    return Ok(Decision::ConditionConflict);
+            self.before_put()?;
+            let decision = self.inner.record_transaction(request).await?;
+            if decision == Decision::Applied {
+                if self
+                    .observed_transactions
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .insert(request.op_id.0)
+                {
+                    self.puts.fetch_add(
+                        request
+                            .mutations
+                            .iter()
+                            .filter(|mutation| matches!(mutation, Mutation::Put { .. }))
+                            .count(),
+                        Ordering::AcqRel,
+                    );
+                }
+                if self.lost_acks.load(Ordering::Acquire)
+                    || self.transaction_acks_lost.load(Ordering::Acquire)
+                {
+                    return Err(StoreFailure::Failed(
+                        "the test store lost the transaction ack".into(),
+                    ));
                 }
             }
-            for m in &request.mutations {
-                match m {
-                    Mutation::Put { schema, key, value } => {
-                        rows.insert(
-                            (schema.clone(), key.clone()),
-                            RecordBytes::new(value.clone()).expect("validated transaction"),
-                        );
-                        self.puts.fetch_add(1, Ordering::AcqRel);
-                    }
-                    Mutation::Delete { schema, key } => {
-                        rows.remove(&(schema.clone(), key.clone()));
-                    }
-                    Mutation::DeleteRange {
-                        schema,
-                        prefix,
-                        exact_key_length,
-                    } => rows.retain(|(s, key), _| {
-                        s != schema
-                            || !key.starts_with(prefix)
-                            || key.len() as u64 != *exact_key_length
-                    }),
-                }
-            }
-            receipts.insert(request.op_id.0, request.clone());
-            if self.lost_acks.load(Ordering::Acquire)
-                || self.transaction_acks_lost.load(Ordering::Acquire)
-            {
-                Err(StoreFailure::Failed(
-                    "the test store lost the transaction ack".into(),
-                ))
-            } else {
-                Ok(Decision::Applied)
-            }
+            Ok(decision)
         })
     }
+
     fn add_usage_batch<'a>(
         &'a self,
-        _: OpId,
-        _: &'a [(&'a str, u64, UsageDelta)],
+        op: OpId,
+        cells: &'a [(&'a str, u64, UsageDelta)],
     ) -> StoreCall<'a, ()> {
-        not_this()
+        self.inner.add_usage_batch(op, cells)
     }
-    fn add_metering_batch<'a>(&'a self, _: OpId, _: &'a [MeteringDelta]) -> StoreCall<'a, ()> {
-        not_this()
+
+    fn add_metering_batch<'a>(
+        &'a self,
+        op: OpId,
+        deltas: &'a [MeteringDelta],
+    ) -> StoreCall<'a, ()> {
+        self.inner.add_metering_batch(op, deltas)
     }
+
     fn record_put<'a>(
         &'a self,
         schema: &'a str,
@@ -289,49 +298,24 @@ impl StoreCalls for RecordSlots {
     ) -> StoreCall<'a, ()> {
         Box::pin(async move {
             self.ready().await;
-            let probe = self
-                .put_probe
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .clone();
-            if let Some(failure) = probe.and_then(|probe| probe()) {
-                return Err(failure);
+            self.before_put()?;
+            self.inner.record_put(schema, key, value).await?;
+            self.puts.fetch_add(1, Ordering::AcqRel);
+            if self.lost_acks.load(Ordering::Acquire) {
+                return Err(StoreFailure::Failed("the test store lost the ack".into()));
             }
-            let refused = self.refuses_put();
-            if !refused {
-                self.rows
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .insert((schema.to_string(), key.to_vec()), value.clone());
-                self.puts.fetch_add(1, Ordering::AcqRel);
-            }
-            let lost = self.lost_acks.load(Ordering::Acquire);
-            if refused {
-                Err(StoreFailure::Refused(
-                    "the test store refuses writes".to_string(),
-                ))
-            } else if lost {
-                Err(StoreFailure::Failed(
-                    "the test store lost the ack".to_string(),
-                ))
-            } else {
-                Ok(())
-            }
+            Ok(())
         })
     }
+
     fn record_get<'a>(
         &'a self,
         schema: &'a str,
         key: &'a [u8],
     ) -> StoreCall<'a, Option<RecordBytes>> {
-        let got = self
-            .rows
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .get(&(schema.to_string(), key.to_vec()))
-            .cloned();
-        Box::pin(async move { Ok(got) })
+        self.inner.record_get(schema, key)
     }
+
     fn record_scan<'a>(
         &'a self,
         schema: &'a str,
@@ -340,47 +324,105 @@ impl StoreCalls for RecordSlots {
     ) -> StoreCall<'a, Vec<(Vec<u8>, RecordBytes)>> {
         Box::pin(async move {
             self.ready().await;
-
             let probe = self.probe.lock().unwrap_or_else(|p| p.into_inner()).clone();
             if let Some(probe) = probe {
                 probe();
             }
             if self.unreadable.load(Ordering::Acquire) {
-                return Err(StoreFailure::Failed(
-                    "the test store will not read".to_string(),
-                ));
+                return Err(StoreFailure::Failed("the test store will not read".into()));
             }
-            let rows: Vec<(Vec<u8>, RecordBytes)> = self
-                .rows
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .iter()
-                .filter(|((s, k), _)| s == schema && k.starts_with(prefix))
-                .take(limit as usize)
-                .map(|((_, k), v)| (k.clone(), v.clone()))
-                .collect();
-            Ok(rows)
+            self.inner.record_scan(schema, prefix, limit).await
         })
     }
-    fn upsert_plane_record<'a>(&'a self, _: PlaneRecordRef<'a>) -> StoreCall<'a, ()> {
-        not_this()
+
+    fn put_key<'a>(&'a self, key: &'a VirtualKey) -> StoreCall<'a, ()> {
+        StoreCalls::put_key(self.inner.as_ref(), key)
     }
-    fn get_plane_record<'a>(&'a self, _: &'a str, _: &'a str) -> StoreCall<'a, Option<Vec<u8>>> {
-        not_this()
+
+    fn get_key<'a>(&'a self, id: &'a str) -> StoreCall<'a, Option<VirtualKey>> {
+        StoreCalls::get_key(self.inner.as_ref(), id)
     }
-    fn append_plane_record<'a>(&'a self, _: OpId, _: PlaneRecordRef<'a>) -> StoreCall<'a, ()> {
-        not_this()
+
+    fn list_keys(&self) -> StoreCall<'_, Vec<VirtualKey>> {
+        StoreCalls::list_keys(self.inner.as_ref())
     }
+
+    fn delete_key<'a>(&'a self, id: &'a str) -> StoreCall<'a, ()> {
+        StoreCalls::delete_key(self.inner.as_ref(), id)
+    }
+
+    fn put_key_with_credential<'a>(
+        &'a self,
+        key: &'a VirtualKey,
+        secret: &'a CredentialSecret,
+    ) -> StoreCall<'a, ()> {
+        StoreCalls::put_key_with_credential(self.inner.as_ref(), key, secret)
+    }
+
+    fn list_credentials<'a>(&'a self, key_id: &'a str) -> StoreCall<'a, Vec<CredentialMeta>> {
+        StoreCalls::list_credentials(self.inner.as_ref(), key_id)
+    }
+
+    fn revoke_credential<'a>(&'a self, id: &'a str, reason: &'a str) -> StoreCall<'a, ()> {
+        StoreCalls::revoke_credential(self.inner.as_ref(), id, reason)
+    }
+
+    fn list_credentials_since(&self, since: u64) -> StoreCall<'_, Vec<CredentialSecret>> {
+        StoreCalls::list_credentials_since(self.inner.as_ref(), since)
+    }
+
+    fn add_denylist<'a>(&'a self, sub: &'a str, reason: &'a str) -> StoreCall<'a, ()> {
+        StoreCalls::add_denylist(self.inner.as_ref(), sub, reason)
+    }
+
+    fn list_denylist(&self) -> StoreCall<'_, Vec<String>> {
+        StoreCalls::list_denylist(self.inner.as_ref())
+    }
+
+    fn list_metering(&self, bucket: u64) -> StoreCall<'_, Vec<MeteringRow>> {
+        StoreCalls::list_metering(self.inner.as_ref(), bucket)
+    }
+
+    fn list_audit(&self) -> StoreCall<'_, Vec<AuditRecord>> {
+        StoreCalls::list_audit(self.inner.as_ref())
+    }
+
+    fn list_audit_tail(&self, limit: u64) -> StoreCall<'_, Vec<AuditRecord>> {
+        StoreCalls::list_audit_tail(self.inner.as_ref(), limit)
+    }
+
+    fn upsert_plane_record<'a>(&'a self, record: PlaneRecordRef<'a>) -> StoreCall<'a, ()> {
+        StoreCalls::upsert_plane_record(self.inner.as_ref(), record)
+    }
+
+    fn get_plane_record<'a>(
+        &'a self,
+        kind: &'a str,
+        id: &'a str,
+    ) -> StoreCall<'a, Option<Vec<u8>>> {
+        StoreCalls::get_plane_record(self.inner.as_ref(), kind, id)
+    }
+
+    fn append_plane_record<'a>(
+        &'a self,
+        op: OpId,
+        record: PlaneRecordRef<'a>,
+    ) -> StoreCall<'a, ()> {
+        StoreCalls::append_plane_record(self.inner.as_ref(), op, record)
+    }
+
     fn list_plane_records<'a>(
         &'a self,
-        _: &'a str,
-        _: &'a PlaneSelector<'a>,
+        kind: &'a str,
+        selector: &'a PlaneSelector<'a>,
     ) -> StoreCall<'a, Vec<Vec<u8>>> {
-        not_this()
+        StoreCalls::list_plane_records(self.inner.as_ref(), kind, selector)
     }
-    fn delete_plane_record<'a>(&'a self, _: &'a str, _: &'a str) -> StoreCall<'a, ()> {
-        not_this()
+
+    fn delete_plane_record<'a>(&'a self, kind: &'a str, id: &'a str) -> StoreCall<'a, ()> {
+        StoreCalls::delete_plane_record(self.inner.as_ref(), kind, id)
     }
+
     fn redeem_plane_token<'a>(
         &'a self,
         kind: &'a str,
@@ -388,16 +430,28 @@ impl StoreCalls for RecordSlots {
         expires_at: u64,
         now: u64,
     ) -> StoreCall<'a, bool> {
-        let first = self.redeem(kind, token, expires_at, now);
-        Box::pin(async move { Ok(first) })
+        StoreCalls::redeem_plane_token(self.inner.as_ref(), kind, token, expires_at, now)
     }
+
     fn plane_token_live<'a>(
         &'a self,
-        _: &'a str,
-        _: &'a str,
-        _: u64,
-        _: u64,
+        kind: &'a str,
+        token: &'a str,
+        expires_at: u64,
+        now: u64,
     ) -> StoreCall<'a, bool> {
-        not_this()
+        StoreCalls::plane_token_live(self.inner.as_ref(), kind, token, expires_at, now)
+    }
+
+    fn list_plane_record_parents<'a>(&'a self, kind: &'a str) -> StoreCall<'a, Vec<String>> {
+        StoreCalls::list_plane_record_parents(self.inner.as_ref(), kind)
+    }
+
+    fn purge_plane_records_before<'a>(&'a self, kind: &'a str, before: u64) -> StoreCall<'a, u64> {
+        StoreCalls::purge_plane_records_before(self.inner.as_ref(), kind, before)
+    }
+
+    fn purge_usage_before(&self, before: u64) -> StoreCall<'_, u64> {
+        StoreCalls::purge_usage_before(self.inner.as_ref(), before)
     }
 }

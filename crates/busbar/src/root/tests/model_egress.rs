@@ -1,11 +1,52 @@
 use super::*;
-use busbar_kernel_testkit::test_support::{LaneSpec, TestApp};
 
 #[test]
 fn queue_depth_counts_waiters_from_overlapping_egress_generations() {
     use busbar_kernel::plane_driver::route_tables::{ConfigTables, EngineTablesView};
     use busbar_kernel_egress::ports::Telemetry as _;
-    let app = TestApp::new().build();
+    let app = {
+        crate::dist_root_install::install();
+        crate::root::test_plane_registry::register();
+        let dialects: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/plane_node_dialects.json"))
+                .expect("the actual linked dialects are recorded");
+        let dialect = dialects["body_model"]
+            .as_object()
+            .and_then(|rows| rows.keys().next())
+            .expect("the distribution links a model dialect");
+        let models = "{}";
+        let pools = "{}";
+        let yaml = format!(
+        "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
+    );
+        let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
+        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+        let store = crate::root::real_store::store();
+        let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
+            Arc::new(crate::root::door_steps::Rules::default());
+        let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+            cfg,
+            Default::default(),
+            None,
+            Default::default(),
+            Default::default(),
+            (None, None),
+            None,
+            &rules,
+            Some(busbar_contract::store_calls::OpenedStore {
+                records: store.clone(),
+                calls: Some(store),
+            }),
+        )
+        .expect("the product builds the configured model generation");
+        limits
+            .keep()
+            .expect("the model generation commits its limits");
+        if let Some(rotate) = rotate {
+            rotate();
+        }
+        Arc::new(app)
+    };
     let make = || ModelTelemetry {
         app: LiveApp::fixed(Arc::clone(&app)),
         names: Arc::default(),
@@ -72,16 +113,135 @@ fn cells_routing(app: LiveApp, pools: &[&str], direct: &[&str]) -> WalkCells {
 fn retained_destinations_follow_the_model_name_across_reorder_and_removal() {
     use busbar_kernel::plane_driver::MemberSignals as _;
     use busbar_kernel_egress::ports::Telemetry as _;
-    let first = TestApp::new()
-        .lane(LaneSpec::new("m-z", "wire", "http://127.0.0.1:9"))
-        .build();
-    let second = TestApp::new()
-        .lane(LaneSpec::new("m-a", "wire", "http://127.0.0.1:9"))
-        .lane(LaneSpec::new("m-z", "wire", "http://127.0.0.1:9"))
-        .build();
-    let removed = TestApp::new()
-        .lane(LaneSpec::new("m-a", "wire", "http://127.0.0.1:9"))
-        .build();
+    let first = {
+        crate::dist_root_install::install();
+        crate::root::test_plane_registry::register();
+        let dialects: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/plane_node_dialects.json"))
+                .expect("the actual linked dialects are recorded");
+        let dialect = dialects["body_model"]
+            .as_object()
+            .and_then(|rows| rows.keys().next())
+            .expect("the distribution links a model dialect");
+        let models = "{m-z: {provider: wire}}";
+        let pools = "{}";
+        let yaml = format!(
+        "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
+    );
+        let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
+        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+        let store = crate::root::real_store::store();
+        let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
+            Arc::new(crate::root::door_steps::Rules::default());
+        let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+            cfg,
+            Default::default(),
+            None,
+            Default::default(),
+            Default::default(),
+            (None, None),
+            None,
+            &rules,
+            Some(busbar_contract::store_calls::OpenedStore {
+                records: store.clone(),
+                calls: Some(store),
+            }),
+        )
+        .expect("the product builds the configured model generation");
+        limits
+            .keep()
+            .expect("the model generation commits its limits");
+        if let Some(rotate) = rotate {
+            rotate();
+        }
+        Arc::new(app)
+    };
+    let second = {
+        crate::dist_root_install::install();
+        crate::root::test_plane_registry::register();
+        let dialects: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/plane_node_dialects.json"))
+                .expect("the actual linked dialects are recorded");
+        let dialect = dialects["body_model"]
+            .as_object()
+            .and_then(|rows| rows.keys().next())
+            .expect("the distribution links a model dialect");
+        let models = "{m-a: {provider: wire}, m-z: {provider: wire}}";
+        let pools = "{}";
+        let yaml = format!(
+        "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
+    );
+        let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
+        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+        let store = crate::root::real_store::store();
+        let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
+            Arc::new(crate::root::door_steps::Rules::default());
+        let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+            cfg,
+            Default::default(),
+            None,
+            Default::default(),
+            Default::default(),
+            (None, None),
+            None,
+            &rules,
+            Some(busbar_contract::store_calls::OpenedStore {
+                records: store.clone(),
+                calls: Some(store),
+            }),
+        )
+        .expect("the product builds the configured model generation");
+        limits
+            .keep()
+            .expect("the model generation commits its limits");
+        if let Some(rotate) = rotate {
+            rotate();
+        }
+        Arc::new(app)
+    };
+    let removed = {
+        crate::dist_root_install::install();
+        crate::root::test_plane_registry::register();
+        let dialects: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/plane_node_dialects.json"))
+                .expect("the actual linked dialects are recorded");
+        let dialect = dialects["body_model"]
+            .as_object()
+            .and_then(|rows| rows.keys().next())
+            .expect("the distribution links a model dialect");
+        let models = "{m-a: {provider: wire}}";
+        let pools = "{}";
+        let yaml = format!(
+        "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
+    );
+        let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
+        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+        let store = crate::root::real_store::store();
+        let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
+            Arc::new(crate::root::door_steps::Rules::default());
+        let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+            cfg,
+            Default::default(),
+            None,
+            Default::default(),
+            Default::default(),
+            (None, None),
+            None,
+            &rules,
+            Some(busbar_contract::store_calls::OpenedStore {
+                records: store.clone(),
+                calls: Some(store),
+            }),
+        )
+        .expect("the product builds the configured model generation");
+        limits
+            .keep()
+            .expect("the model generation commits its limits");
+        if let Some(rotate) = rotate {
+            rotate();
+        }
+        Arc::new(app)
+    };
     let handle = Arc::new(busbar_kernel::state::AppHandle::new(Arc::clone(&first)));
     let slot = Arc::new(std::sync::OnceLock::new());
     slot.set(Arc::downgrade(&handle)).unwrap();
@@ -98,7 +258,7 @@ fn retained_destinations_follow_the_model_name_across_reorder_and_removal() {
         queued: crate::root::egress_ports::WalkTelemetry::default(),
         reservoirs: Arc::default(),
     };
-    let token = busbar_kernel_testkit::test_support::tokens::pass();
+    let token = busbar_kernel::test_hooks::tokens::pass();
     let destination = DestinationId::new(0);
     let now = wall_secs();
     handle.swap(Arc::clone(&second));
@@ -144,13 +304,93 @@ fn retained_destinations_follow_the_model_name_across_reorder_and_removal() {
 
 #[test]
 fn budget_refunds_and_probe_releases_keep_their_originating_unit() {
-    let first = TestApp::new()
-        .lane(LaneSpec::new("m-z", "wire", "http://127.0.0.1:9").budget(2))
-        .build();
-    let second = TestApp::new()
-        .lane(LaneSpec::new("m-a", "wire", "http://127.0.0.1:9").budget(11))
-        .lane(LaneSpec::new("m-z", "wire", "http://127.0.0.1:9").budget(7))
-        .build();
+    let first = {
+        crate::dist_root_install::install();
+        crate::root::test_plane_registry::register();
+        let dialects: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/plane_node_dialects.json"))
+                .expect("the actual linked dialects are recorded");
+        let dialect = dialects["body_model"]
+            .as_object()
+            .and_then(|rows| rows.keys().next())
+            .expect("the distribution links a model dialect");
+        let models = "{m-z: {provider: wire, max_requests: 2}}";
+        let pools = "{}";
+        let yaml = format!(
+        "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
+    );
+        let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
+        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+        let store = crate::root::real_store::store();
+        let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
+            Arc::new(crate::root::door_steps::Rules::default());
+        let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+            cfg,
+            Default::default(),
+            None,
+            Default::default(),
+            Default::default(),
+            (None, None),
+            None,
+            &rules,
+            Some(busbar_contract::store_calls::OpenedStore {
+                records: store.clone(),
+                calls: Some(store),
+            }),
+        )
+        .expect("the product builds the configured model generation");
+        limits
+            .keep()
+            .expect("the model generation commits its limits");
+        if let Some(rotate) = rotate {
+            rotate();
+        }
+        Arc::new(app)
+    };
+    let second = {
+        crate::dist_root_install::install();
+        crate::root::test_plane_registry::register();
+        let dialects: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/plane_node_dialects.json"))
+                .expect("the actual linked dialects are recorded");
+        let dialect = dialects["body_model"]
+            .as_object()
+            .and_then(|rows| rows.keys().next())
+            .expect("the distribution links a model dialect");
+        let models =
+            "{m-a: {provider: wire, max_requests: 11}, m-z: {provider: wire, max_requests: 7}}";
+        let pools = "{}";
+        let yaml = format!(
+        "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
+    );
+        let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
+        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+        let store = crate::root::real_store::store();
+        let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
+            Arc::new(crate::root::door_steps::Rules::default());
+        let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+            cfg,
+            Default::default(),
+            None,
+            Default::default(),
+            Default::default(),
+            (None, None),
+            None,
+            &rules,
+            Some(busbar_contract::store_calls::OpenedStore {
+                records: store.clone(),
+                calls: Some(store),
+            }),
+        )
+        .expect("the product builds the configured model generation");
+        limits
+            .keep()
+            .expect("the model generation commits its limits");
+        if let Some(rotate) = rotate {
+            rotate();
+        }
+        Arc::new(app)
+    };
     let handle = Arc::new(busbar_kernel::state::AppHandle::new(Arc::clone(&first)));
     let slot = Arc::new(std::sync::OnceLock::new());
     slot.set(Arc::downgrade(&handle)).unwrap();
@@ -158,7 +398,7 @@ fn budget_refunds_and_probe_releases_keep_their_originating_unit() {
     let destination = DestinationId::new(0);
     assert!(cells.spend_budget(destination));
     assert_eq!(first.store.lane_budget_remaining(0), Some(1));
-    let token = busbar_kernel_testkit::test_support::tokens::pass();
+    let token = busbar_kernel::test_hooks::tokens::pass();
     let now = wall_secs();
     cells.observe("p", destination, Outcome::HardDown, now, &token);
     let later = now + busbar_kernel_breaker::DEFAULT_HARD_DOWN_COOLDOWN_SECS + 1;
@@ -190,15 +430,52 @@ fn wall_secs() -> u64 {
 #[test]
 fn a_successful_probe_counts_once_on_the_lanes_ok_whatever_its_pools() {
     let pools = ["first", "second", "third"];
-    let app = TestApp::new()
-        .lane(LaneSpec::new("m0", "wire-under-test", "http://127.0.0.1:9"))
-        .pool(pools[0], &[(0, 1)])
-        .pool(pools[1], &[(0, 1)])
-        .pool(pools[2], &[(0, 1)])
-        .build();
+    let app = {
+        crate::dist_root_install::install();
+        crate::root::test_plane_registry::register();
+        let dialects: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/plane_node_dialects.json"))
+                .expect("the actual linked dialects are recorded");
+        let dialect = dialects["body_model"]
+            .as_object()
+            .and_then(|rows| rows.keys().next())
+            .expect("the distribution links a model dialect");
+        let models = "{m0: {provider: wire}}";
+        let pools = "{first: {members: [m0]}, second: {members: [m0]}, third: {members: [m0]}}";
+        let yaml = format!(
+        "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
+    );
+        let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
+        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+        let store = crate::root::real_store::store();
+        let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
+            Arc::new(crate::root::door_steps::Rules::default());
+        let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+            cfg,
+            Default::default(),
+            None,
+            Default::default(),
+            Default::default(),
+            (None, None),
+            None,
+            &rules,
+            Some(busbar_contract::store_calls::OpenedStore {
+                records: store.clone(),
+                calls: Some(store),
+            }),
+        )
+        .expect("the product builds the configured model generation");
+        limits
+            .keep()
+            .expect("the model generation commits its limits");
+        if let Some(rotate) = rotate {
+            rotate();
+        }
+        Arc::new(app)
+    };
     let cells = cells_over(Arc::clone(&app), &pools);
     let dest = DestinationId::new(0);
-    let token = busbar_kernel_testkit::test_support::tokens::pass();
+    let token = busbar_kernel::test_hooks::tokens::pass();
     let now = wall_secs();
 
     for pool in pools {
@@ -218,13 +495,52 @@ fn a_successful_probe_counts_once_on_the_lanes_ok_whatever_its_pools() {
 
 #[test]
 fn a_success_is_recorded_on_the_walks_clock() {
-    let app = TestApp::new()
-        .lane(LaneSpec::new("m0", "wire-under-test", "http://127.0.0.1:9"))
-        .pool("p", &[(0, 1)])
-        .build();
+    let app = {
+        crate::dist_root_install::install();
+        crate::root::test_plane_registry::register();
+        let dialects: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/plane_node_dialects.json"))
+                .expect("the actual linked dialects are recorded");
+        let dialect = dialects["body_model"]
+            .as_object()
+            .and_then(|rows| rows.keys().next())
+            .expect("the distribution links a model dialect");
+        let models = "{m0: {provider: wire}}";
+        let pools = "{p: {members: [m0]}}";
+        let yaml = format!(
+        "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
+    );
+        let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
+        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+        let store = crate::root::real_store::store();
+        let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
+            Arc::new(crate::root::door_steps::Rules::default());
+        let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+            cfg,
+            Default::default(),
+            None,
+            Default::default(),
+            Default::default(),
+            (None, None),
+            None,
+            &rules,
+            Some(busbar_contract::store_calls::OpenedStore {
+                records: store.clone(),
+                calls: Some(store),
+            }),
+        )
+        .expect("the product builds the configured model generation");
+        limits
+            .keep()
+            .expect("the model generation commits its limits");
+        if let Some(rotate) = rotate {
+            rotate();
+        }
+        Arc::new(app)
+    };
     let cells = cells_over(Arc::clone(&app), &["p"]);
     let dest = DestinationId::new(0);
-    let token = busbar_kernel_testkit::test_support::tokens::pass();
+    let token = busbar_kernel::test_hooks::tokens::pass();
     let now = wall_secs() + 3_600;
 
     for _ in 0..6 {
@@ -255,13 +571,52 @@ fn a_success_is_recorded_on_the_walks_clock() {
 
 #[test]
 fn a_probe_success_joins_the_walks_window() {
-    let app = TestApp::new()
-        .lane(LaneSpec::new("m0", "wire-under-test", "http://127.0.0.1:9"))
-        .pool("p", &[(0, 1)])
-        .build();
+    let app = {
+        crate::dist_root_install::install();
+        crate::root::test_plane_registry::register();
+        let dialects: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/plane_node_dialects.json"))
+                .expect("the actual linked dialects are recorded");
+        let dialect = dialects["body_model"]
+            .as_object()
+            .and_then(|rows| rows.keys().next())
+            .expect("the distribution links a model dialect");
+        let models = "{m0: {provider: wire}}";
+        let pools = "{p: {members: [m0]}}";
+        let yaml = format!(
+        "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
+    );
+        let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
+        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+        let store = crate::root::real_store::store();
+        let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
+            Arc::new(crate::root::door_steps::Rules::default());
+        let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+            cfg,
+            Default::default(),
+            None,
+            Default::default(),
+            Default::default(),
+            (None, None),
+            None,
+            &rules,
+            Some(busbar_contract::store_calls::OpenedStore {
+                records: store.clone(),
+                calls: Some(store),
+            }),
+        )
+        .expect("the product builds the configured model generation");
+        limits
+            .keep()
+            .expect("the model generation commits its limits");
+        if let Some(rotate) = rotate {
+            rotate();
+        }
+        Arc::new(app)
+    };
     let cells = cells_over(Arc::clone(&app), &["p"]);
     let dest = DestinationId::new(0);
-    let token = busbar_kernel_testkit::test_support::tokens::pass();
+    let token = busbar_kernel::test_hooks::tokens::pass();
     let now = wall_secs() + 3_600;
 
     assert!(!cells.observe("p", dest, Outcome::Success, now, &token));
@@ -293,14 +648,54 @@ fn a_probe_success_joins_the_walks_window() {
 
 #[test]
 fn probe_failures_and_hard_downs_cool_on_the_walks_clock() {
-    let token = busbar_kernel_testkit::test_support::tokens::pass();
+    let token = busbar_kernel::test_hooks::tokens::pass();
     let dest = DestinationId::new(0);
     let now = wall_secs() + 3_600;
     let fresh = || {
-        let app = TestApp::new()
-            .lane(LaneSpec::new("m0", "wire-under-test", "http://127.0.0.1:9"))
-            .pool("p", &[(0, 1)])
-            .build();
+        let app = {
+            crate::dist_root_install::install();
+            crate::root::test_plane_registry::register();
+            let dialects: serde_json::Value =
+                serde_json::from_str(include_str!("fixtures/plane_node_dialects.json"))
+                    .expect("the actual linked dialects are recorded");
+            let dialect = dialects["body_model"]
+                .as_object()
+                .and_then(|rows| rows.keys().next())
+                .expect("the distribution links a model dialect");
+            let models = "{m0: {provider: wire}}";
+            let pools = "{p: {members: [m0]}}";
+            let yaml = format!(
+        "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
+    );
+            let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
+            let cfg =
+                busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+            let store = crate::root::real_store::store();
+            let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
+                Arc::new(crate::root::door_steps::Rules::default());
+            let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+                cfg,
+                Default::default(),
+                None,
+                Default::default(),
+                Default::default(),
+                (None, None),
+                None,
+                &rules,
+                Some(busbar_contract::store_calls::OpenedStore {
+                    records: store.clone(),
+                    calls: Some(store),
+                }),
+            )
+            .expect("the product builds the configured model generation");
+            limits
+                .keep()
+                .expect("the model generation commits its limits");
+            if let Some(rotate) = rotate {
+                rotate();
+            }
+            Arc::new(app)
+        };
         let cells = cells_over(Arc::clone(&app), &["p"]);
 
         assert!(!cells.observe("p", dest, Outcome::Success, now, &token));
@@ -376,11 +771,51 @@ fn the_all_pools_credential_default_reaches_every_pool_without_its_own_and_every
 
 #[test]
 fn a_direct_routes_fault_is_recorded_on_the_lanes_default_cell() {
-    let app = TestApp::new()
-        .lane(LaneSpec::new("m0", "wire-under-test", "http://127.0.0.1:9"))
-        .build();
+    let app = {
+        crate::dist_root_install::install();
+        crate::root::test_plane_registry::register();
+        let dialects: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/plane_node_dialects.json"))
+                .expect("the actual linked dialects are recorded");
+        let dialect = dialects["body_model"]
+            .as_object()
+            .and_then(|rows| rows.keys().next())
+            .expect("the distribution links a model dialect");
+        let models = "{m0: {provider: wire}}";
+        let pools = "{}";
+        let yaml = format!(
+        "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
+    );
+        let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
+        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+        let store = crate::root::real_store::store();
+        let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
+            Arc::new(crate::root::door_steps::Rules::default());
+        let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+            cfg,
+            Default::default(),
+            None,
+            Default::default(),
+            Default::default(),
+            (None, None),
+            None,
+            &rules,
+            Some(busbar_contract::store_calls::OpenedStore {
+                records: store.clone(),
+                calls: Some(store),
+            }),
+        )
+        .expect("the product builds the configured model generation");
+        limits
+            .keep()
+            .expect("the model generation commits its limits");
+        if let Some(rotate) = rotate {
+            rotate();
+        }
+        Arc::new(app)
+    };
     let cells = cells_routing(LiveApp::fixed(Arc::clone(&app)), &[], &["m0"]);
-    let token = busbar_kernel_testkit::test_support::tokens::pass();
+    let token = busbar_kernel::test_hooks::tokens::pass();
     let now = wall_secs();
 
     cells.observe(
@@ -410,10 +845,47 @@ fn a_direct_routes_fault_is_recorded_on_the_lanes_default_cell() {
 #[test]
 fn a_walk_spanning_a_config_apply_records_into_the_new_store() {
     let generation = || {
-        TestApp::new()
-            .lane(LaneSpec::new("m0", "wire-under-test", "http://127.0.0.1:9"))
-            .pool("p", &[(0, 1)])
-            .build()
+        crate::dist_root_install::install();
+        crate::root::test_plane_registry::register();
+        let dialects: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/plane_node_dialects.json"))
+                .expect("the actual linked dialects are recorded");
+        let dialect = dialects["body_model"]
+            .as_object()
+            .and_then(|rows| rows.keys().next())
+            .expect("the distribution links a model dialect");
+        let models = "{m0: {provider: wire}}";
+        let pools = "{p: {members: [m0]}}";
+        let yaml = format!(
+        "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
+    );
+        let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
+        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+        let store = crate::root::real_store::store();
+        let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
+            Arc::new(crate::root::door_steps::Rules::default());
+        let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+            cfg,
+            Default::default(),
+            None,
+            Default::default(),
+            Default::default(),
+            (None, None),
+            None,
+            &rules,
+            Some(busbar_contract::store_calls::OpenedStore {
+                records: store.clone(),
+                calls: Some(store),
+            }),
+        )
+        .expect("the product builds the configured model generation");
+        limits
+            .keep()
+            .expect("the model generation commits its limits");
+        if let Some(rotate) = rotate {
+            rotate();
+        }
+        Arc::new(app)
     };
     let (first, second) = (generation(), generation());
     let handle = Arc::new(busbar_kernel::state::AppHandle::new(Arc::clone(&first)));
@@ -421,7 +893,7 @@ fn a_walk_spanning_a_config_apply_records_into_the_new_store() {
     let _ = live.set(Arc::downgrade(&handle));
     let cells = cells_routing(LiveApp::new(live, Arc::clone(&first)), &["p"], &[]);
     let dest = DestinationId::new(0);
-    let token = busbar_kernel_testkit::test_support::tokens::pass();
+    let token = busbar_kernel::test_hooks::tokens::pass();
     let now = wall_secs();
     let fault = Outcome::Transient { retry_after: None };
 
@@ -444,7 +916,49 @@ fn a_walk_spanning_a_config_apply_records_into_the_new_store() {
 
 #[test]
 fn live_egress_borrows_its_owner_and_never_reverts_after_that_owner_retires() {
-    let boot = TestApp::new().build();
+    let boot = {
+        crate::dist_root_install::install();
+        crate::root::test_plane_registry::register();
+        let dialects: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/plane_node_dialects.json"))
+                .expect("the actual linked dialects are recorded");
+        let dialect = dialects["body_model"]
+            .as_object()
+            .and_then(|rows| rows.keys().next())
+            .expect("the distribution links a model dialect");
+        let models = "{}";
+        let pools = "{}";
+        let yaml = format!(
+        "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
+    );
+        let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
+        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+        let store = crate::root::real_store::store();
+        let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
+            Arc::new(crate::root::door_steps::Rules::default());
+        let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+            cfg,
+            Default::default(),
+            None,
+            Default::default(),
+            Default::default(),
+            (None, None),
+            None,
+            &rules,
+            Some(busbar_contract::store_calls::OpenedStore {
+                records: store.clone(),
+                calls: Some(store),
+            }),
+        )
+        .expect("the product builds the configured model generation");
+        limits
+            .keep()
+            .expect("the model generation commits its limits");
+        if let Some(rotate) = rotate {
+            rotate();
+        }
+        Arc::new(app)
+    };
     let retired_boot = Arc::downgrade(&boot);
     let slot = Arc::new(std::sync::OnceLock::new());
     let source = LiveApp::new(slot.clone(), boot.clone());
@@ -452,7 +966,49 @@ fn live_egress_borrows_its_owner_and_never_reverts_after_that_owner_retires() {
         Arc::ptr_eq(&source.load(), &boot),
         "boot remains usable before the handle exists"
     );
-    let current = TestApp::new().build();
+    let current = {
+        crate::dist_root_install::install();
+        crate::root::test_plane_registry::register();
+        let dialects: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/plane_node_dialects.json"))
+                .expect("the actual linked dialects are recorded");
+        let dialect = dialects["body_model"]
+            .as_object()
+            .and_then(|rows| rows.keys().next())
+            .expect("the distribution links a model dialect");
+        let models = "{}";
+        let pools = "{}";
+        let yaml = format!(
+        "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
+    );
+        let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
+        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+        let store = crate::root::real_store::store();
+        let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
+            Arc::new(crate::root::door_steps::Rules::default());
+        let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+            cfg,
+            Default::default(),
+            None,
+            Default::default(),
+            Default::default(),
+            (None, None),
+            None,
+            &rules,
+            Some(busbar_contract::store_calls::OpenedStore {
+                records: store.clone(),
+                calls: Some(store),
+            }),
+        )
+        .expect("the product builds the configured model generation");
+        limits
+            .keep()
+            .expect("the model generation commits its limits");
+        if let Some(rotate) = rotate {
+            rotate();
+        }
+        Arc::new(app)
+    };
     let owner = Arc::new(busbar_kernel::state::AppHandle::new(current.clone()));
     let _ = slot.set(Arc::downgrade(&owner));
     assert!(Arc::ptr_eq(&source.load(), &current));
@@ -491,7 +1047,50 @@ fn a_keyless_lane_is_not_probed() {
         lanes: [("m-keyed".to_string(), 0), ("m-local".to_string(), 1)]
             .into_iter()
             .collect(),
-        app: LiveApp::fixed(TestApp::new().build()),
+        app: LiveApp::fixed({
+            crate::dist_root_install::install();
+            crate::root::test_plane_registry::register();
+            let dialects: serde_json::Value =
+                serde_json::from_str(include_str!("fixtures/plane_node_dialects.json"))
+                    .expect("the actual linked dialects are recorded");
+            let dialect = dialects["body_model"]
+                .as_object()
+                .and_then(|rows| rows.keys().next())
+                .expect("the distribution links a model dialect");
+            let models = "{}";
+            let pools = "{}";
+            let yaml = format!(
+        "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
+    );
+            let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
+            let cfg =
+                busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+            let store = crate::root::real_store::store();
+            let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
+                Arc::new(crate::root::door_steps::Rules::default());
+            let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+                cfg,
+                Default::default(),
+                None,
+                Default::default(),
+                Default::default(),
+                (None, None),
+                None,
+                &rules,
+                Some(busbar_contract::store_calls::OpenedStore {
+                    records: store.clone(),
+                    calls: Some(store),
+                }),
+            )
+            .expect("the product builds the configured model generation");
+            limits
+                .keep()
+                .expect("the model generation commits its limits");
+            if let Some(rotate) = rotate {
+                rotate();
+            }
+            Arc::new(app)
+        }),
     };
     let (_, members) = serving.probe_members();
     let probed: Vec<&str> = members.iter().map(|(_, m)| m.name.as_str()).collect();

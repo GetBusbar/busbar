@@ -1,6 +1,44 @@
 use super::*;
 use busbar_kernel_audit::{Recipe, UsageLine};
 use busbar_kernel_wal::{decode_run, verify_journal, NullShipper};
+use std::sync::{Arc, Mutex};
+
+#[derive(Clone, Default)]
+pub(super) struct Warnings(Arc<Mutex<Vec<String>>>);
+
+impl Warnings {
+    pub(super) fn messages(&self) -> Vec<String> {
+        self.0.lock().unwrap().clone()
+    }
+
+    pub(super) fn contains(&self, text: &str) -> bool {
+        self.messages().iter().any(|message| message.contains(text))
+    }
+
+    fn count(&self, text: &str) -> usize {
+        self.messages()
+            .iter()
+            .filter(|message| message.contains(text))
+            .count()
+    }
+}
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Warnings {
+    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        if *event.metadata().level() > tracing::Level::WARN {
+            return;
+        }
+        struct Fields(String);
+        impl tracing::field::Visit for Fields {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                self.0.push_str(&format!(" {}={value:?}", field.name()));
+            }
+        }
+        let mut fields = Fields(String::new());
+        event.record(&mut fields);
+        self.0.lock().unwrap().push(fields.0);
+    }
+}
 
 struct ScratchDir {
     path: PathBuf,
@@ -59,7 +97,7 @@ impl Drop for ScratchDir {
 }
 
 fn token() -> Grant<DurableWrite> {
-    busbar_kernel_testkit::test_support::tokens::grant::<DurableWrite>()
+    crate::root::kernel::new_kernel().durability_token()
 }
 
 fn boot(
@@ -144,7 +182,7 @@ fn audit_inputs(unit: u64) -> AuditInputs {
         },
         wall: 1_700_000_000 + unit,
         mono: unit * 1_000,
-        origin: busbar_kernel_testkit::test_support::tokens::origin(OriginKind::Client),
+        origin: crate::root::kernel::new_kernel().origin(OriginKind::Client),
         outcome: OutcomeFacts {
             unit_end: Outcome::Completed,
             step: None,
@@ -170,7 +208,7 @@ fn audit_inputs(unit: u64) -> AuditInputs {
 }
 
 fn audit_pass() -> busbar_contract::caps::Pass<busbar_contract::caps::Audit> {
-    busbar_kernel_testkit::test_support::tokens::pass()
+    busbar_kernel::teller::verb_audit_pass(&crate::root::kernel::new_kernel())
 }
 
 #[test]
@@ -879,7 +917,7 @@ fn a_chain_read_between_two_parts_of_a_queued_record_warns_nothing() {
     );
     assert_eq!(lane.pending(), 1, "the record is still the lane's");
 
-    let cap = busbar_kernel_testkit::test_support::warn_capture::WarnCapture::default();
+    let cap = crate::root::durability::tests::Warnings::default();
     let chain =
         tracing::subscriber::with_default(tracing_subscriber::registry().with(cap.clone()), || {
             durability.chain()
@@ -988,7 +1026,7 @@ fn the_stored_walk_does_not_call_this_nodes_record_mid_put_torn() {
     let (lane, own, keys) = durability
         .stored_walk_inputs()
         .expect("a book over the store");
-    let cap = busbar_kernel_testkit::test_support::warn_capture::WarnCapture::default();
+    let cap = crate::root::durability::tests::Warnings::default();
     let walk =
         tracing::subscriber::with_default(tracing_subscriber::registry().with(cap.clone()), || {
             walk_stored_chains(&lane, own, &keys)
@@ -1002,7 +1040,7 @@ fn the_stored_walk_does_not_call_this_nodes_record_mid_put_torn() {
 
     let stray = newest + 10;
     slots.put_row(JOURNAL_SCHEMA, &part_key(own, stray, 1), &[0, 2, 9]);
-    let cap = busbar_kernel_testkit::test_support::warn_capture::WarnCapture::default();
+    let cap = crate::root::durability::tests::Warnings::default();
     let _ =
         tracing::subscriber::with_default(tracing_subscriber::registry().with(cap.clone()), || {
             walk_stored_chains(&lane, own, &keys)
@@ -1504,7 +1542,7 @@ fn a_malformed_registry_row_cannot_make_stored_verification_report_complete() {
         .findings
         .iter()
         .all(|why| !why.contains("private-invalid-id")));
-    let captured = busbar_kernel_testkit::test_support::warn_capture::WarnCapture::default();
+    let captured = crate::root::durability::tests::Warnings::default();
     let migrated = tracing::subscriber::with_default(
         tracing_subscriber::registry().with(captured.clone()),
         || store_identity::stored_chains(slots.calls().as_ref(), own),
