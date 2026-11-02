@@ -12,6 +12,63 @@ mod plugins;
 async fn create_and_rotate_operation_namespaces_survive_cache_loss() {
     for create_first in [true, false] {
         for lose_cache in [false, true] {
+            const CHILD: &str = "BUSBAR_ADMIN_OPERATION_NAMESPACE_ROW";
+            let row = format!("{create_first}-{lose_cache}");
+            let witness = format!("actual namespace row {row} completed");
+            if let Ok(selected) = std::env::var(CHILD) {
+                if selected != row {
+                    continue;
+                }
+            } else {
+                struct Child(std::process::Child);
+                impl Drop for Child {
+                    fn drop(&mut self) {
+                        let _ = self.0.kill();
+                        let _ = self.0.wait();
+                    }
+                }
+                let name = std::thread::current()
+                    .name()
+                    .expect("exact test name")
+                    .to_string();
+                let mut child = Child(
+                    std::process::Command::new(std::env::current_exe().unwrap())
+                        .args(["--exact", &name, "--nocapture"])
+                        .env(CHILD, &row)
+                        .stdout(std::process::Stdio::piped())
+                        .spawn()
+                        .expect("start the isolated actual-root matrix row"),
+                );
+                let until = std::time::Instant::now() + std::time::Duration::from_secs(90);
+                loop {
+                    if let Some(status) = child.0.try_wait().unwrap() {
+                        use std::io::Read;
+                        let mut output = String::new();
+                        child
+                            .0
+                            .stdout
+                            .take()
+                            .unwrap()
+                            .read_to_string(&mut output)
+                            .unwrap();
+                        assert!(
+                            status.success(),
+                            "namespace row {row} failed: {status}: {output}"
+                        );
+                        assert!(
+                            output.contains(&witness),
+                            "namespace row {row} did not complete its assertions: {output}"
+                        );
+                        break;
+                    }
+                    assert!(
+                        std::time::Instant::now() < until,
+                        "namespace row {row} timed out"
+                    );
+                    std::thread::park_timeout(std::time::Duration::from_millis(5));
+                }
+                continue;
+            }
             busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
             crate::dist_root_install::install();
             let store_library = PathBuf::from(
@@ -97,9 +154,12 @@ async fn create_and_rotate_operation_namespaces_survive_cache_loss() {
                 None,
                 &rules,
                 Some(anchor),
-                false,
+                true,
             )
             .expect("the real root composes the configured Store and admin application");
+            limits.stage_boot();
+            let _book = crate::root::boot::book(&app, &module)
+                .expect("the actual row Store binds its rate history and usage recovery");
             limits.keep().expect("the actual limits commit");
             if let Some(rotate) = rotate {
                 rotate();
@@ -191,6 +251,7 @@ async fn create_and_rotate_operation_namespaces_survive_cache_loss() {
             );
             server.abort();
             let _ = server.await;
+            println!("{witness}");
         }
     }
 }
