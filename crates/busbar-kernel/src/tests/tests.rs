@@ -1406,7 +1406,7 @@ fn secrets_block_rejects_non_secret_kind() {
 #[test]
 fn boot_refuses_a_provider_api_key_that_does_not_resolve() {
     crate::test_support::register_neutral_test_plane();
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     const SENTINEL: &str = "sk-sentinel-must-never-be-printed";
     let set_var = format!("BUSBAR_TEST_PROVIDER_KEY_SET_{}", std::process::id());
     let unset_var = format!("BUSBAR_TEST_PROVIDER_KEY_UNSET_{}", std::process::id());
@@ -1451,7 +1451,7 @@ fn boot_refuses_a_provider_api_key_that_does_not_resolve() {
 #[test]
 fn boot_starts_a_keyless_lane_declared_none() {
     crate::test_support::register_neutral_test_plane();
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let mut cfg = cfg_with_provider_api_key(crate::config::SecretRef::none());
     cfg.models
         .insert("m0".to_string(), model_cfg_for_provider("acme"));
@@ -1635,57 +1635,6 @@ fn secret_ref_wrong_kind_plugin_fails_at_preflight() {
 }
 
 #[test]
-fn a_rebuild_carries_the_session_store_and_defaults_scan_off() {
-    crate::test_support::register_neutral_test_plane();
-    crate::snapshot::init();
-    let cfg = || {
-        cfg_with_provider_api_key(crate::config::SecretRef::env(
-            "BUSBAR_TEST_NO_SUCH_KEY_SESSION_STORE",
-        ))
-    };
-    let prior = build_once(cfg(), None).expect("boot");
-    assert!(
-        !prior.incremental_scan,
-        "with BUSBAR_INCREMENTAL_SCAN unset the gate incremental scan must default OFF"
-    );
-    let next = build_once(cfg(), Some(&prior)).expect("rebuild");
-    assert!(
-        std::sync::Arc::ptr_eq(&prior.session_store, &next.session_store),
-        "an apply must carry the process-lifetime session substrate across the rebuild"
-    );
-}
-
-#[test]
-fn an_apply_carries_the_node_amendment_journal_its_governance_owns() {
-    crate::test_support::register_neutral_test_plane();
-    crate::snapshot::init();
-    let cfg = || {
-        cfg_with_provider_api_key(crate::config::SecretRef::env(
-            "BUSBAR_TEST_NO_SUCH_KEY_AMENDMENT_JOURNAL",
-        ))
-    };
-    let prior = build_once(cfg(), None).expect("boot");
-    let gov = prior
-        .governance
-        .clone()
-        .expect("the boot builds governance");
-    assert!(
-        std::sync::Arc::ptr_eq(&prior.amendments, gov.amendments()),
-        "the boot generation carries the journal its governance owns"
-    );
-    let next = build_once(cfg(), Some(&prior)).expect("apply");
-    assert!(
-        std::sync::Arc::ptr_eq(&next.amendments, &prior.amendments),
-        "an apply carries the prior generation's journal, never a new one"
-    );
-    let next_gov = next.governance.clone().expect("the apply keeps governance");
-    assert!(
-        std::sync::Arc::ptr_eq(&next.amendments, next_gov.amendments()),
-        "and it is still the journal governance owns"
-    );
-}
-
-#[test]
 fn secrets_block_rejects_alias_and_canonical_for_one_module() {
     let (dir, reg) = secret_registry("secrets-alias-collision");
     let mut secrets = std::collections::BTreeMap::new();
@@ -1722,35 +1671,9 @@ fn secrets_block_rejects_alias_and_canonical_for_one_module() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-#[test]
-fn a_rejected_config_leaves_no_limits_behind() {
-    crate::snapshot::init();
-
-    const ILLEGAL: usize = 4096;
-
-    const _: () = assert!(ILLEGAL < crate::config::REQUEST_BODY_MAX_BYTES_FLOOR);
-
-    let mut cfg = cfg_with_provider_api_key(crate::config::SecretRef::none());
-    cfg.limits.request_body_max_bytes = ILLEGAL;
-
-    let Err(err) = build_once(cfg, None) else {
-        panic!("a below-floor body cap must fail validation")
-    };
-    assert!(
-        err.contains("request_body_max_bytes"),
-        "the build failed for the expected reason: {err}"
-    );
-    assert_ne!(
-        busbar_kernel_egress::upstream::max_translate_body_bytes(),
-        ILLEGAL,
-        "the REJECTED config's limits are installed process-wide — an invalid apply changed the \
-         live signed-ingress and cross-protocol translate body caps"
-    );
-}
-
 #[tokio::test]
 async fn oversized_request_413_is_reshaped_on_the_live_stack() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let app = crate::test_support::TestApp::new().build();
 
     let (mut router, _handle) = crate::build_router_with_limits(app, 64, 1024, false);
@@ -1794,77 +1717,6 @@ async fn oversized_request_413_is_reshaped_on_the_live_stack() {
         v.get("error").is_some(),
         "the 413 must carry the error envelope; got {v}"
     );
-}
-
-#[tokio::test]
-async fn server_timing_header_absent_by_default_present_when_enabled() {
-    crate::snapshot::init();
-    let client = reqwest::Client::new();
-
-    let app = crate::test_support::TestApp::new().build();
-    let (router, _handle) = crate::build_router_with_limits(app, 1 << 20, 1024, false);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let r = client
-        .get(format!("http://{addr}/healthz"))
-        .send()
-        .await
-        .unwrap();
-    assert!(
-        r.headers().get("server-timing").is_none(),
-        "Server-Timing must be ABSENT by default (advanced.response_headers.server_timing defaults \
-         false): {:?}",
-        r.headers().get("server-timing")
-    );
-    server.abort();
-
-    let app = crate::test_support::TestApp::new().build();
-    let (router, _handle) = crate::build_router_with_limits(app, 1 << 20, 1024, true);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let r = client
-        .get(format!("http://{addr}/healthz"))
-        .send()
-        .await
-        .unwrap();
-    let st = r
-        .headers()
-        .get("server-timing")
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
-    server.abort();
-    let st = st.expect("Server-Timing must be PRESENT when server_timing_enabled == true");
-    assert!(
-        st.starts_with("busbar;dur="),
-        "unexpected Server-Timing shape: {st}"
-    );
-}
-
-#[tokio::test]
-async fn route_policy_headers_absent_by_default_on_the_live_stack() {
-    crate::snapshot::init();
-    let app = crate::test_support::TestApp::new().build();
-    let (router, _handle) = crate::build_router_with_limits(app, 1 << 20, 1024, false);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-
-    let r = reqwest::Client::new()
-        .get(format!("http://{addr}/healthz"))
-        .send()
-        .await
-        .unwrap();
-    assert!(
-        r.headers().get("x-busbar-route-policy").is_none(),
-        "x-busbar-route-policy must be ABSENT by default"
-    );
-    assert!(
-        r.headers().get("x-busbar-route-target").is_none(),
-        "x-busbar-route-target must be ABSENT by default"
-    );
-    server.abort();
 }
 
 const BOOT_LEGACY_14X_CONFIG: &str = r#"
@@ -2137,50 +1989,6 @@ fn auth_scope_caps_are_keyed_by_provider_name_not_module() {
 }
 
 #[test]
-fn a_configuration_the_root_rules_refuse_is_refused_by_the_build() {
-    crate::test_support::register_neutral_test_plane();
-    const REFUSED: &str = "https://refused.root-rules.test";
-    struct Refusing;
-    impl crate::appbuild::RootRules for Refusing {
-        fn check(&self, cfg: &crate::config::RootCfg) -> Result<(), String> {
-            if cfg.public_url.as_deref() == Some(REFUSED) {
-                Err("`agent_push.ca` is not a usable trust anchor".to_string())
-            } else {
-                Ok(())
-            }
-        }
-    }
-    crate::snapshot::init();
-    let rules: std::sync::Arc<dyn crate::appbuild::RootRules> = std::sync::Arc::new(Refusing);
-    let build = |public_url: Option<&str>| {
-        let mut cfg = cfg_with_provider_api_key(crate::config::SecretRef::env(
-            "BUSBAR_TEST_NO_SUCH_KEY_ROOT_RULES",
-        ));
-        cfg.public_url = public_url.map(str::to_string);
-        crate::build_app_from_config(
-            cfg,
-            crate::config::PluginsCfg::default(),
-            None,
-            std::collections::HashSet::new(),
-            std::collections::HashSet::new(),
-            (None, None),
-            None,
-            &rules,
-        )
-    };
-    assert_eq!(
-        build(Some(REFUSED)).map(|_| ()),
-        Err("`agent_push.ca` is not a usable trust anchor".to_string()),
-        "the rules' words, before anything is built"
-    );
-    let (app, _, _) = build(None).expect("a configuration they pass builds as before");
-    assert!(
-        std::sync::Arc::ptr_eq(&app.root_rules, &rules),
-        "the built App keeps the rules it was built under"
-    );
-}
-
-#[test]
 fn a_plane_the_boot_did_not_open_builds_no_slot_and_is_reported_awaiting_restart() {
     const SECTION: &str = "pending-red";
     static PENDING: crate::plane_driver::registry::PlaneDecl =
@@ -2213,7 +2021,7 @@ fn a_plane_the_boot_did_not_open_builds_no_slot_and_is_reported_awaiting_restart
         crate::test_support::neutral_fallback_plane(),
         &PENDING,
     ]);
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let build = |rules: std::sync::Arc<dyn crate::appbuild::RootRules>, writes: bool| {
         let mut cfg = cfg_with_provider_api_key(crate::config::SecretRef::env(
             "BUSBAR_TEST_NO_SUCH_KEY_PENDING_PLANE",
@@ -2323,7 +2131,7 @@ fn build_with(
 #[test]
 fn a_built_generations_limits_are_in_force_only_once_it_is_live() {
     crate::test_support::register_neutral_test_plane();
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let _lock = crate::config::limits::LIMITS_TEST_LOCK.blocking_lock();
     let _restore = RestorePublished(crate::config::limits::installed());
     let running = tagged_limits(1);
@@ -2392,7 +2200,7 @@ fn a_built_generations_limits_are_in_force_only_once_it_is_live() {
 #[tokio::test]
 async fn a_panicking_handler_fails_only_its_own_request() {
     use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let app = crate::test_support::TestApp::new().build();
     let handle = std::sync::Arc::new(crate::state::AppHandle::new(app));
     async fn boom() -> &'static str {
@@ -2473,7 +2281,7 @@ async fn both_served_routers_answer_a_panic_500_log_it_and_keep_serving() {
     use crate::plane_routes::{PlaneReqCtx, PlaneRouteSpec};
     use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
     use tracing_subscriber::layer::SubscriberExt as _;
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let cap = crate::test_support::warn_capture::WarnCapture::default();
     let _subscriber =
         tracing::subscriber::set_default(tracing_subscriber::registry().with(cap.clone()));
@@ -2616,10 +2424,9 @@ async fn a_500_on_the_native_api_root_is_the_frozen_internal_envelope() {
 }
 
 pub(crate) fn frozen_text(key: &str) -> serde_yaml::Value {
-    let doc: serde_yaml::Value = serde_yaml::from_str(include_str!(
-        "../../../busbar-kernel-testkit/tests/fixtures/frozen_customer_text.yaml"
-    ))
-    .expect("the frozen-text fixture parses");
+    let doc: serde_yaml::Value =
+        serde_yaml::from_str(include_str!("fixtures/frozen_customer_text.yaml"))
+            .expect("the frozen-text fixture parses");
     doc.get(key)
         .cloned()
         .unwrap_or_else(|| panic!("the frozen-text fixture has no `{key}`"))

@@ -12,7 +12,6 @@ mod relay_tests;
 mod walk_tests;
 mod zero_copy_tests;
 
-use crate::test_support::tokens::pass;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -155,7 +154,7 @@ impl Node {
         Walker {
             node: self,
             pools,
-            token: pass::<Route>(),
+            token: Pass::<Route>::mint(&crate::seal::acquire()),
             walk,
             shape: None,
         }
@@ -221,7 +220,7 @@ impl Node {
         pool: &str,
         mut before: impl FnMut(&Node, u32),
     ) -> Routed {
-        let token = pass::<Route>();
+        let token = Pass::<Route>::mint(&crate::seal::acquire());
         let far = egress.unit(self.unit_route(pool));
         let mut attempt_no = 0;
         'attempt: loop {
@@ -291,7 +290,7 @@ impl Node {
 
     pub fn abandon_mid_answer(&self, pool: &str) {
         let egress = self.egress();
-        let token = pass::<Route>();
+        let token = Pass::<Route>::mint(&crate::seal::acquire());
         let far: EgressFarEnd<'_> = egress.unit(self.unit_route(pool));
         self.rt.block_on(async {
             let Pick::Member { name, pool, .. } = far.member(&token, 1).await else {
@@ -311,7 +310,7 @@ impl Node {
 
     pub fn cancel_after_first_piece(&self, pool: &str) -> Vec<u8> {
         let egress = self.egress();
-        let token = pass::<Route>();
+        let token = Pass::<Route>::mint(&crate::seal::acquire());
         let far: EgressFarEnd<'_> = egress.unit(self.unit_route(pool));
         let first = self.rt.block_on(async {
             let Pick::Member { name, pool, .. } = far.member(&token, 1).await else {
@@ -347,7 +346,7 @@ impl Node {
         members: &'a [Member],
         ctx: &mut RequestCtx,
     ) -> Option<busbar_kernel_egress::select::Picked<'a>> {
-        let token = pass::<Route>();
+        let token = Pass::<Route>::mint(&crate::seal::acquire());
         busbar_kernel_egress::select::pick_among(
             &busbar_kernel_egress::select::PickInput {
                 breaker: self.breaker.as_ref(),

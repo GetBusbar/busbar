@@ -12,17 +12,7 @@ pub fn install(rows: Rows) {
 }
 
 pub fn rows() -> Rows {
-    if let Some(rows) = ROWS.get() {
-        return rows;
-    }
-    #[cfg(test)]
-    {
-        crate::test_support::migration::rows()
-    }
-    #[cfg(not(test))]
-    {
-        &[]
-    }
+    ROWS.get().copied().unwrap_or(&[])
 }
 
 pub fn text(key: &str) -> &'static str {

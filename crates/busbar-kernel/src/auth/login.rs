@@ -188,7 +188,16 @@ async fn door_login_call(
     let mut call = submit_door(&*calls, step);
     let outcome = (&mut call).await;
     drop(permit);
-    if call.faulted() {
+    finish_door_login(method, op, call.faulted(), outcome)
+}
+
+fn finish_door_login(
+    method: &str,
+    op: &'static str,
+    faulted: bool,
+    outcome: LoginOutcome,
+) -> LoginOutcome {
+    if faulted {
         diag_warn!(LOGIN_PLUGIN_PANICKED, method = %method, op, error = "the login plugin faulted", "login plugin call panicked; rejecting (fail-closed)");
         return LoginOutcome::Reject;
     }
@@ -553,3 +562,7 @@ pub mod seam {
 #[cfg(test)]
 #[path = "tests/login_tests.rs"]
 mod login_tests;
+
+#[cfg(test)]
+#[path = "tests/login_fault_tests.rs"]
+mod login_fault_tests;

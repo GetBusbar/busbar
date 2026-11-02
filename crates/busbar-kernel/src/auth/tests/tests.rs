@@ -57,47 +57,62 @@ fn admin_scope_resolution() {
         ],
     );
     let module = Some("test-groups-module");
-    let app = crate::test_support::TestApp::new()
-        .role_bindings(rb)
-        .build();
-
-    assert_eq!(admin_scope_for(&app, None, None), Grants::of(Scope::Full));
+    let operator = Operator::new("operator-provider");
+    let operator_id = "operator:local";
 
     assert_eq!(
-        admin_scope_for(
-            &app,
-            Some(crate::config::operator_provider()),
-            Some(&Principal::from_id(crate::config::operator_principal_id()))
+        admin_scope_from_bindings(&rb, &operator, operator_id, None, None),
+        Grants::of(Scope::Full)
+    );
+
+    assert_eq!(
+        admin_scope_from_bindings(
+            &rb,
+            &operator,
+            operator_id,
+            Some("operator-provider"),
+            Some(&Principal::from_id(operator_id))
         ),
         Grants::of(Scope::Full)
     );
 
     assert_eq!(
-        admin_scope_for(
-            &app,
+        admin_scope_from_bindings(
+            &rb,
+            &operator,
+            operator_id,
             module,
-            Some(&Principal::from_id(crate::config::operator_principal_id()))
+            Some(&Principal::from_id(operator_id))
         ),
         Grants::default()
     );
 
     let p = grp_principal("test:alice", &["viewers", "admins"]);
-    assert!(admin_scope_for(&app, module, Some(&p)).allows(Scope::Full));
+    assert!(
+        admin_scope_from_bindings(&rb, &operator, operator_id, module, Some(&p))
+            .allows(Scope::Full)
+    );
     let p = grp_principal("test:alice", &["viewers"]);
     assert_eq!(
-        admin_scope_for(&app, module, Some(&p)),
+        admin_scope_from_bindings(&rb, &operator, operator_id, module, Some(&p)),
         Grants::of(Scope::ReadOnly)
     );
 
     let p = grp_principal("test:alice", &["strangers"]);
-    assert_eq!(admin_scope_for(&app, module, Some(&p)), Grants::default());
+    assert_eq!(
+        admin_scope_from_bindings(&rb, &operator, operator_id, module, Some(&p)),
+        Grants::default()
+    );
 
     let p = grp_principal("test:alice", &["no-admin"]);
-    assert_eq!(admin_scope_for(&app, module, Some(&p)), Grants::default());
+    assert_eq!(
+        admin_scope_from_bindings(&rb, &operator, operator_id, module, Some(&p)),
+        Grants::default()
+    );
 
     let stranger = Principal::from_id("test:bob");
     assert_eq!(
-        admin_scope_for(&app, module, Some(&stranger)),
+        admin_scope_from_bindings(&rb, &operator, operator_id, module, Some(&stranger)),
         Grants::default()
     );
 }
@@ -109,22 +124,33 @@ fn admin_scope_bindings_are_module_scoped() {
         "other-module",
         &[("admins", binding(None, None, Some("full")))],
     );
-    let app = crate::test_support::TestApp::new()
-        .role_bindings(rb)
-        .build();
+    let operator = Operator::new("operator-provider");
+    let operator_id = "operator:local";
     let p = grp_principal("test:alice", &["admins"]);
     assert!(
-        admin_scope_for(&app, Some("test-groups-module"), Some(&p)) == Grants::default(),
+        admin_scope_from_bindings(
+            &rb,
+            &operator,
+            operator_id,
+            Some("test-groups-module"),
+            Some(&p)
+        ) == Grants::default(),
         "a role asserted by module A must not ride module B's binding"
     );
 
     assert_eq!(
-        admin_scope_for(&app, Some("other-module"), Some(&p)),
+        admin_scope_from_bindings(&rb, &operator, operator_id, Some("other-module"), Some(&p)),
         Grants::of(Scope::Full)
     );
 
     assert_eq!(
-        admin_scope_for(&app, Some("unbound-module"), Some(&p)),
+        admin_scope_from_bindings(
+            &rb,
+            &operator,
+            operator_id,
+            Some("unbound-module"),
+            Some(&p)
+        ),
         Grants::default()
     );
 }
@@ -171,59 +197,23 @@ fn test_extract_bearer_token_malformed_no_panic() {
 }
 
 #[test]
-fn test_chain_identifies_with_module_and_principal() {
-    let mw = AuthMiddleware::new_builtin(&chain_cfg(&["test-groups-module"]));
-    match mw.run_chain(Some("grp:dev")) {
-        ChainVerdict::Identified {
-            module, principal, ..
-        } => {
-            assert_eq!(module, "test-groups-module");
-            assert_eq!(principal.id, "test:dev");
-            assert_eq!(principal.roles, vec!["dev".to_string()]);
-        }
-        other => panic!("expected Identified, got {other:?}"),
-    }
-    assert!(mw.validate_token(Some("grp:dev")));
-    assert!(!mw.is_open());
-}
-
-#[test]
-fn test_nonempty_chain_fails_closed_on_all_pass() {
-    let mw = AuthMiddleware::new_builtin(&chain_cfg(&["test-groups-module"]));
-    assert_eq!(
-        mw.run_chain(Some("not-a-recognized-credential")),
-        ChainVerdict::Denied,
-        "an unrecognized credential must be denied by a configured chain"
-    );
-    assert_eq!(
-        mw.run_chain(None),
-        ChainVerdict::Denied,
-        "no credential at all must be denied by a configured chain"
-    );
-    assert!(!mw.validate_token(Some("tok3")));
-    assert!(!mw.validate_token(None));
-    assert!(!mw.validate_token(Some("")));
-}
-
-#[test]
 fn an_identified_principal_with_no_grant_is_refused() {
     let identified = |module: &str, principal: Principal| ChainVerdict::Identified {
         module: module.to_string(),
         principal,
         resolved: None,
     };
-    let refused =
-        |app: &crate::state::App, v: ChainVerdict, why: &str| match resolve_data_plane_identity(
-            app, v,
-        ) {
+    let refused = |role_bindings: &crate::config::RoleBindings, v: ChainVerdict, why: &str| {
+        match resolve_identity_from_bindings(role_bindings, v) {
             Err(IdentityRefusal::NoGrant) => {}
             other => panic!(
                 "{why}: refused NoGrant, got {:?}",
                 other.map(|(_, gov)| gov.key.map(|k| k.id.clone()))
             ),
-        };
+        }
+    };
 
-    let bare = crate::test_support::TestApp::new().build();
+    let bare = crate::config::RoleBindings::new();
     refused(
         &bare,
         identified("test-groups-module", grp_principal("test:nobody", &[])),
@@ -239,9 +229,7 @@ fn an_identified_principal_with_no_grant_is_refused() {
         "test-groups-module",
         &[("dev", binding(Some(&["pa"]), None, None))],
     );
-    let governed = crate::test_support::TestApp::new()
-        .role_bindings(table)
-        .build();
+    let governed = table;
     refused(
         &governed,
         identified("test-groups-module", grp_principal("test:nobody", &[])),
@@ -253,13 +241,13 @@ fn an_identified_principal_with_no_grant_is_refused() {
         "an unbound role under a governed module",
     );
 
-    let (who, gov) = resolve_data_plane_identity(
+    let (who, gov) = resolve_identity_from_bindings(
         &governed,
         identified("test-groups-module", grp_principal("test:dev", &["dev"])),
     )
     .expect("a bound role earns a key and is admitted");
     assert!(who.0.is_some() && gov.key.is_some());
-    let (who, gov) = resolve_data_plane_identity(&bare, ChainVerdict::Open).expect("open door");
+    let (who, gov) = resolve_identity_from_bindings(&bare, ChainVerdict::Open).expect("open door");
     assert!(who.0.is_none() && gov.key.is_none());
 }
 
@@ -290,35 +278,6 @@ fn the_refuse_every_ungoverned_rule_against_1_5_5s_guard() {
             "{principal:?}"
         );
     }
-}
-
-#[test]
-fn test_empty_chain_is_open_front_door() {
-    let mw = AuthMiddleware::new_builtin(&crate::config::AuthCfg::default_none());
-    assert!(mw.is_open());
-    assert_eq!(mw.run_chain(None), ChainVerdict::Open);
-    assert_eq!(mw.run_chain(Some("anything")), ChainVerdict::Open);
-    assert!(mw.validate_token(None));
-    assert!(mw.validate_token(Some("anything")));
-}
-
-#[test]
-fn test_keys_in_chain_sets_flag_not_module() {
-    let mw = AuthMiddleware::new_builtin(&chain_cfg(&["keys"]));
-    assert!(mw.keys_in_chain, "chain: [keys] must set keys_in_chain");
-    assert!(
-        mw.chain_names().is_empty(),
-        "keys is engine-handled, never a boxed module"
-    );
-
-    let mw = AuthMiddleware::new_builtin(&crate::config::AuthCfg::default_none());
-    assert!(!mw.keys_in_chain, "an empty chain must not claim keys");
-
-    let mw = AuthMiddleware::new_builtin(&chain_cfg(&["keys", "test-groups-module"]));
-    assert!(mw.keys_in_chain);
-    assert_eq!(mw.chain_names(), vec!["test-groups-module"]);
-    assert!(mw.validate_token(Some("grp:dev")));
-    assert!(!mw.validate_token(Some("wrong")), "still fail-closed");
 }
 
 #[test]
@@ -459,123 +418,6 @@ fn test_synth_key_reserved_id_prefixes_refused() {
 
 const X_ADMIN_TOKEN: &str = "x-admin-token";
 
-fn extract(req: &Request<Body>) -> Option<String> {
-    AuthMiddleware::new_builtin(&crate::config::AuthCfg::default_none())
-        .extract_client_token(req.headers())
-}
-
-fn admin_candidate(headers: &HeaderMap) -> Option<String> {
-    carried_credential(
-        &header_names(&crate::test_support::outbound_auth::double_operator_carriers()),
-        headers,
-    )
-}
-
-fn req_with(name: &str, value: &str) -> Request<Body> {
-    Request::builder()
-        .uri("/v1/messages")
-        .header(name, value)
-        .body(Body::empty())
-        .expect("test request must build")
-}
-
-#[test]
-fn test_extract_client_token_authorization_bearer() {
-    let req = req_with("authorization", "Bearer tok-abc");
-    assert_eq!(extract(&req), Some("tok-abc".to_string()));
-}
-
-#[test]
-fn test_extract_client_token_x_api_key() {
-    let req = req_with("x-api-key", "tok-x-api-key");
-    assert_eq!(extract(&req), Some("tok-x-api-key".to_string()));
-}
-
-#[test]
-fn test_extract_client_token_x_goog_api_key() {
-    let req = req_with("x-goog-api-key", "tok-x-goog-api-key");
-    assert_eq!(extract(&req), Some("tok-x-goog-api-key".to_string()));
-}
-
-#[test]
-fn test_extract_client_token_precedence_is_authorization_first() {
-    let req = Request::builder()
-        .uri("/v1/messages")
-        .header("authorization", "Bearer from-auth")
-        .header("x-api-key", "from-x-api-key")
-        .header("x-goog-api-key", "from-goog")
-        .body(Body::empty())
-        .unwrap();
-    assert_eq!(extract(&req), Some("from-auth".to_string()));
-
-    let req = Request::builder()
-        .uri("/v1/messages")
-        .header("x-api-key", "from-x-api-key")
-        .header("x-goog-api-key", "from-goog")
-        .body(Body::empty())
-        .unwrap();
-    assert_eq!(extract(&req), Some("from-x-api-key".to_string()));
-}
-
-#[test]
-fn test_extract_client_token_empty_carrier_falls_through() {
-    let req = Request::builder()
-        .uri("/v1/messages")
-        .header("x-api-key", "")
-        .header("x-goog-api-key", "tok-x-goog-api-key")
-        .body(Body::empty())
-        .unwrap();
-    assert_eq!(extract(&req), Some("tok-x-goog-api-key".to_string()));
-}
-
-#[test]
-fn test_extract_client_token_none_when_no_carrier() {
-    let req = Request::builder()
-        .uri("/v1/messages")
-        .body(Body::empty())
-        .unwrap();
-    assert_eq!(extract(&req), None);
-}
-
-#[test]
-fn test_extract_client_token_non_bearer_authorization_falls_through_to_x_api_key() {
-    for non_bearer in [
-        "AWS4-HMAC-SHA256 Credential=AKIA.../20240101/us-east-1/svc/aws4_request, \
-             SignedHeaders=host;x-amz-date, Signature=deadbeef",
-        "Basic dXNlcjpwYXNz",
-    ] {
-        let req = Request::builder()
-            .uri("/v1/messages")
-            .header("authorization", non_bearer)
-            .header("x-api-key", "tok")
-            .body(Body::empty())
-            .expect("test request must build");
-        assert_eq!(
-            extract(&req),
-            Some("tok".to_string()),
-            "a non-bearer Authorization ('{non_bearer}') must fall through to x-api-key"
-        );
-    }
-}
-
-#[test]
-fn test_extract_client_token_non_bearer_authorization_falls_through_to_x_goog_api_key() {
-    let req = Request::builder()
-        .uri("/v1/messages")
-        .header(
-            "authorization",
-            "AWS4-HMAC-SHA256 Credential=AKIA.../svc/aws4_request",
-        )
-        .header("x-goog-api-key", "goog-tok")
-        .body(Body::empty())
-        .expect("test request must build");
-    assert_eq!(
-        extract(&req),
-        Some("goog-tok".to_string()),
-        "a non-bearer Authorization must fall through to x-goog-api-key"
-    );
-}
-
 fn residual_app() -> std::sync::Arc<crate::state::App> {
     crate::test_support::TestApp::new().build()
 }
@@ -619,7 +461,7 @@ fn a_door_refusal_retains_its_exact_query_in_a_wiping_target() {
         zeroize::Zeroizing::new(target.to_owned()),
     );
     wiped_when_dropped(&door.1);
-    let response = unauthorized_response(&residual_app(), "/v1/responses", Some(&door));
+    let response = refuse_door(&door);
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(seen.lock().unwrap().as_deref(), Some(target));
 }
@@ -663,34 +505,11 @@ fn test_unauthorized_body_carries_no_busbar_vocabulary() {
     }
 }
 
-#[test]
-fn test_extract_admin_header_token_empty_filtered() {
-    let blank = req_with(X_ADMIN_TOKEN, "");
-    assert_eq!(
-        admin_candidate(blank.headers()),
-        None,
-        "a blank x-admin-token must be treated as absent (None)"
-    );
-
-    let present = req_with(X_ADMIN_TOKEN, "admintok");
-    assert_eq!(
-        admin_candidate(present.headers()),
-        Some("admintok".to_string()),
-        "a non-empty x-admin-token must be carried verbatim"
-    );
-
-    let absent = Request::builder()
-        .uri("/api/v1/admin/keys")
-        .body(Body::empty())
-        .expect("test request must build");
-    assert_eq!(admin_candidate(absent.headers()), None);
-}
-
 #[tokio::test]
 async fn forbidden_admin_requests_audit_once_per_window() {
     use crate::test_support::TestApp;
 
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
 
     let unique = format!(
         "unbound-{}",
@@ -816,7 +635,7 @@ async fn serve_app(
 
 #[tokio::test]
 async fn admin_plugin_full_binding_allows_mutation() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let rb = bindings_for(
         "test-scope-module",
         &[("minters", binding(None, None, Some("full")))],
@@ -851,7 +670,7 @@ async fn admin_plugin_full_binding_allows_mutation() {
 
 #[tokio::test]
 async fn admin_plugin_readonly_binding_get_ok_post_403() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let rb = bindings_for(
         "test-scope-module",
         &[("viewers", binding(None, None, Some("read-only")))],
@@ -902,7 +721,7 @@ async fn admin_plugin_readonly_binding_get_ok_post_403() {
 
 #[tokio::test]
 async fn admin_max_admin_scope_caps_binding() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let rb = bindings_for(
         "test-scope-module",
         &[("ops", binding(None, None, Some("full")))],
@@ -934,7 +753,7 @@ async fn admin_max_admin_scope_caps_binding() {
 
 #[tokio::test]
 async fn roleless_external_admin_principal_denied() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let app = crate::test_support::TestApp::new()
         .admin_chain(vec!["ext-admin".to_string()])
         .admin_module("ext-admin", Box::new(RolelessAdminModule))
@@ -958,7 +777,7 @@ async fn roleless_external_admin_principal_denied() {
 
 #[tokio::test]
 async fn a_slow_admin_door_does_not_stall_healthz() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let app = crate::test_support::TestApp::new()
         .admin_chain(vec!["slow-oidc".to_string()])
         .admin_door(
@@ -1014,7 +833,7 @@ async fn test_audience_bound_token_is_rejected_on_the_data_plane() {
     use serde_json::json;
     use std::sync::Arc;
 
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
 
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state).await;
@@ -1126,7 +945,7 @@ async fn test_governance_rejects_empty_token_even_if_empty_secret_key_exists() {
     use serde_json::json;
     use std::sync::Arc;
 
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
 
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state).await;
@@ -1200,30 +1019,6 @@ async fn test_governance_rejects_empty_token_even_if_empty_secret_key_exists() {
 }
 
 #[test]
-fn test_auth_middleware_debug_redacts_tokens() {
-    let cfg = chain_cfg(&["keys", "test-groups-module"]);
-    let mw = AuthMiddleware::new_builtin(&cfg);
-    let dbg = format!("{mw:?}");
-    assert!(
-        dbg.contains("chain_len"),
-        "AuthMiddleware Debug should report the chain length: {dbg}"
-    );
-    assert!(
-        dbg.contains("keys_in_chain"),
-        "AuthMiddleware Debug should report the keys flag: {dbg}"
-    );
-
-    for forbidden in ["token", "secret", "credential"] {
-        assert!(
-            !dbg.to_ascii_lowercase()
-                .replace("keys_in_chain", "")
-                .contains(forbidden),
-            "AuthMiddleware Debug printed an unexpected field '{forbidden}': {dbg}"
-        );
-    }
-}
-
-#[test]
 fn test_caller_token_debug_redacts_value() {
     let secret = "sk-caller-secret-CCCC";
     let present = CallerToken(Some(secret.to_string()));
@@ -1252,7 +1047,7 @@ async fn test_governance_active_with_admin_token_rejects_missing_vkey() {
     use serde_json::json;
     use std::sync::Arc;
 
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
 
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state).await;
@@ -1293,85 +1088,47 @@ async fn test_governance_active_with_admin_token_rejects_missing_vkey() {
     server.shutdown().await;
 }
 
-/// The module `max_admin_scope` ceiling (App.auth_scope_caps) still caps what role_bindings
-/// grant, exercised through `dry_run_admin_scope` (the same chain -> bindings -> cap pipeline
-/// the admin middleware runs):
-///   - an external module DEFAULTS to a read-only ceiling, so a full binding is capped;
-///   - an explicit `max_admin_scope: full` cap lifts the ceiling;
-///   - module scoping holds through the full stack: a binding under another module's table
-///     earns the identified principal nothing;
-///   - a credential no module identifies is denied outright.
+/// Internal policy continuation: real callers supply their verified principal and configured
+/// bindings/caps to these same production functions. Real OIDC refusal is covered separately in
+/// the root's test_nonempty_chain_fails_closed_on_all_pass, including the old not-a-grp input.
 #[test]
 fn test_admin_scope_cap_ceilings_external_module() {
     use busbar_contract::authz::{Grants, Scope};
-    crate::snapshot::init();
-
-    let mk_app = |cap: Option<&str>, bind_module: &str| {
-        let mut app = crate::test_support::TestApp::new().build();
-        let a = std::sync::Arc::get_mut(&mut app).expect("freshly built App Arc is unshared");
-        a.admin_chain = vec!["test-scope-module".to_string()];
-        a.role_bindings = bindings_for(bind_module, &[("ops", binding(None, None, Some("full")))]);
-        if let Some(c) = cap {
-            a.auth_scope_caps
-                .insert("test-scope-module".to_string(), c.to_string());
-        }
-        app
+    let operator = Operator::new("operator-provider");
+    let principal = grp_principal("test:ops", &["ops"]);
+    let module = "test-scope-module";
+    let granted = |configured: Option<&str>, bind_module: &str| {
+        let bindings = bindings_for(bind_module, &[("ops", binding(None, None, Some("full")))]);
+        let caps = configured
+            .map(|cap| (module.to_string(), cap.to_string()))
+            .into_iter()
+            .collect();
+        cap_admin_scope(
+            admin_scope_from_bindings(
+                &bindings,
+                &operator,
+                "operator:local",
+                Some(module),
+                Some(&principal),
+            ),
+            module_scope_cap(&caps, &operator, module),
+        )
     };
 
-    let app = mk_app(None, "test-scope-module");
     assert_eq!(
-        dry_run_admin_scope(&app, &admin_headers(Some("grp:ops"), None)),
+        granted(None, module),
         Grants::of(Scope::ReadOnly),
         "an external module without an explicit cap must be ceilinged to read-only"
     );
-
-    let app = mk_app(Some("full"), "test-scope-module");
     assert_eq!(
-        dry_run_admin_scope(&app, &admin_headers(Some("grp:ops"), None)),
+        granted(Some("full"), module),
         Grants::of(Scope::Full),
         "an explicit full cap must let the full binding through"
     );
-
-    let app = mk_app(Some("full"), "other-module");
-    assert!(
-        dry_run_admin_scope(&app, &admin_headers(Some("grp:ops"), None)) == Grants::default(),
-        "a binding under another module's table must grant nothing"
-    );
-
-    let app = mk_app(Some("full"), "test-scope-module");
-    assert!(
-        dry_run_admin_scope(&app, &admin_headers(Some("not-a-grp"), None)) == Grants::default()
-    );
-}
-
-#[test]
-fn test_dry_run_empty_admin_chain_is_not_full() {
-    use busbar_contract::authz::{Grants, Scope};
-    crate::snapshot::init();
-
-    let mut app = crate::test_support::TestApp::new().build();
-    let a = std::sync::Arc::get_mut(&mut app).expect("freshly built App Arc is unshared");
-    a.admin_chain = vec![];
-
-    let g = dry_run_admin_scope(&app, &admin_headers(None, None));
-    assert!(
-        !g.contains(Scope::Full),
-        "an empty admin_auth chain must NOT dry-run to Full — that masks the fail-open the \
-         PUT /admin/admin-auth lock-out guard reads"
-    );
     assert_eq!(
-        g,
+        granted(Some("full"), "other-module"),
         Grants::default(),
-        "an empty chain is reported as no earned grant, never full"
-    );
-
-    assert!(
-        !dry_run_admin_scope(
-            &app,
-            &admin_headers(Some("anything"), Some("x-admin-token"))
-        )
-        .contains(Scope::Full),
-        "an empty chain must not grant Full to any presented credential"
+        "a binding under another module's table must grant nothing"
     );
 }
 
@@ -1430,7 +1187,7 @@ fn dp_ok_state() -> std::sync::Arc<crate::test_support::MockServerState> {
 #[tokio::test]
 async fn test_1_5_2_keys_chain_disabled_vkey_rejected() {
     use crate::test_support::{LaneSpec, MockServer, TestApp};
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let server = MockServer::new(dp_ok_state()).await;
     let (gov, secret) = dp_gov_with_key();
     let key_id = gov.all_keys().unwrap()[0].id.clone();
@@ -1457,66 +1214,6 @@ async fn test_1_5_2_keys_chain_disabled_vkey_rejected() {
     );
     handle.abort();
     server.shutdown().await;
-}
-
-#[test]
-fn test_1_5_2_keys_arm_resolves_the_vkey() {
-    use crate::governance::{GovState, NewKeySpec};
-    crate::snapshot::init();
-    let store = crate::real_store::store();
-    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
-        &[9u8; 32],
-        crate::governance::signing::DEFAULT_KID,
-    );
-    let gov = GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap();
-    let (_k, secret) = gov
-        .mint_signed(
-            NewKeySpec {
-                name: "ce".to_string(),
-                allowed_pools: None,
-                group: None,
-                labels: Default::default(),
-                ..Default::default()
-            },
-            2_000_000_000,
-            1_000_000_000,
-        )
-        .unwrap();
-    let secret = secret.expose(&crate::seal::lend()).as_str();
-    let mw = AuthMiddleware::new_builtin(&chain_cfg(&["keys"]));
-    let now = busbar_kernel::store::now();
-    let verdict = mw.run_chain_with(Some(secret), Some(&gov), now, None);
-    assert!(
-        matches!(
-            verdict,
-            ChainVerdict::Identified {
-                resolved: Some(_),
-                ..
-            }
-        ),
-        "the keys arm must resolve the vkey"
-    );
-}
-
-#[test]
-fn a_keys_only_chain_is_not_an_open_front_door() {
-    let mw = AuthMiddleware::new_builtin(&chain_cfg(&["keys"]));
-    assert!(mw.keys_in_chain, "precondition: keys sets the flag");
-    assert!(
-        mw.chain_names().is_empty(),
-        "precondition: keys installs no boxed module"
-    );
-    assert!(
-        !mw.is_open(),
-        "chain: [keys] authenticates, so the front door is CLOSED — reporting it open grants \
-         VerbScope::Full to every caller at Root::admin_grant"
-    );
-
-    let none = AuthMiddleware::new_builtin(&crate::config::AuthCfg::default_none());
-    assert!(none.is_open(), "no module and no keys arm IS the open door");
-
-    let both = AuthMiddleware::new_builtin(&chain_cfg(&["keys", "test-groups-module"]));
-    assert!(!both.is_open(), "a boxed module closes the door regardless");
 }
 
 #[test]
@@ -1695,7 +1392,7 @@ async fn admin_get(app: std::sync::Arc<crate::state::App>) -> (u16, Option<Strin
 async fn an_operator_door_without_a_verdict_answers_503_and_an_overloaded_one_the_1_5_5_admin_401()
 {
     use busbar_contract::auth_calls::Verified;
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let rejected = admin_get(operator_app(Verified::Reject)).await;
     assert_eq!(rejected.0, 401, "a bad credential is the admin 401");
     assert_eq!(rejected.1, None, "a 401 names no Retry-After");
@@ -1717,7 +1414,7 @@ async fn an_operator_door_without_a_verdict_answers_503_and_an_overloaded_one_th
 #[tokio::test]
 async fn an_external_admin_door_without_a_verdict_answers_503_and_a_reject_401() {
     use busbar_contract::auth_calls::Verified;
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let door = |calls: std::sync::Arc<dyn AuthCalls>| {
         crate::test_support::TestApp::new()
             .admin_chain(vec!["ext".to_string()])
@@ -2032,7 +1729,7 @@ fn at_capacity_503() -> (u16, Option<String>, Option<String>, String) {
 async fn a_data_plane_door_without_a_verdict_answers_503_like_an_overloaded_one_and_a_reject_401() {
     use crate::test_support::{LaneSpec, MockServer, TestApp};
     use busbar_contract::auth_calls::Verified;
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let server = MockServer::new(dp_ok_state()).await;
     let ask = |auth: AuthMiddleware, path: &'static str| {
         let app = TestApp::new()
@@ -2514,7 +2211,7 @@ fn naming_app(
 
 #[tokio::test]
 async fn a_replayed_signed_delivery_is_answered_401_the_second_time() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let app = naming_app(hook_answer(Some("standard-webhooks/msg_1"), Vec::new()));
     let (base, served) = echo_behind_the_gate(app).await;
     let deliver = || async {
@@ -2535,7 +2232,7 @@ async fn a_replayed_signed_delivery_is_answered_401_the_second_time() {
 #[tokio::test]
 async fn an_auth_named_header_and_query_key_never_reach_the_plane() {
     use busbar_contract::auth_calls::Strip;
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let app = naming_app(hook_answer(
         None,
         vec![Strip::field("X-Hook-Secret"), Strip::query("api_key")],
@@ -2648,7 +2345,7 @@ async fn still_unclaimed(gov: &crate::governance::GovState, provider: &str, key:
 
 #[tokio::test]
 async fn a_delivery_refused_for_its_grant_leaves_its_replay_key_unclaimed() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let gov = replay_gov();
     let answer = hook_answer(Some("standard-webhooks/msg_r6"), Vec::new());
     let deliver = |base: String| async move {
@@ -2730,7 +2427,7 @@ async fn an_admin_identity_refused_for_scope_leaves_its_replay_key_unclaimed() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_racing_identical_deliveries_admit_at_most_one() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let app = replay_app(
         hook_answer(Some("standard-webhooks/msg_race"), Vec::new()),
         replay_gov(),
@@ -2799,7 +2496,7 @@ async fn door_serve(
     app: std::sync::Arc<crate::state::App>,
     paths: &[&str],
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let doors = paths.iter().map(|p| admitting_door(p)).collect();
     let (router, _admin, _handle) = crate::build_split_routers_serving(
         app,
@@ -3239,7 +2936,7 @@ async fn test_1_5_2_open_chain_valid_vkey_ignored_not_metered() {
         app: std::sync::Arc<crate::state::App>,
         gov: std::sync::Arc<crate::governance::GovState>,
     ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
-        crate::snapshot::init();
+        crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
         let mut door = admitting_door("/pa/v1/messages");
         let echo = door.handler.clone();
         door.handler = std::sync::Arc::new(move |ctx| {
@@ -3352,7 +3049,7 @@ async fn test_unauthorized_body_carries_no_busbar_vocabulary_on_the_live_stack()
         "unauthorized",
         "admin",
     ];
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let app = door_app()
         .auth(std::sync::Arc::new(AuthMiddleware::new_builtin(
             &chain_cfg(&["test-groups-module"]),
@@ -3398,7 +3095,7 @@ async fn test_unauthorized_body_carries_no_busbar_vocabulary_on_the_live_stack()
 
 #[tokio::test]
 async fn test_admin_prefix_is_boundary_safe() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let app = crate::test_support::TestApp::new()
         .lane(
             crate::test_support::LaneSpec::new("test-model", LANE_PROTOCOL, "http://127.0.0.1:1")
@@ -3607,7 +3304,7 @@ fn verbs_binding(yaml: &str) -> crate::config::RoleBindingCfg {
 #[test]
 fn a_role_granting_verbs_by_name_is_identified_with_its_allow_list() {
     use busbar_contract::authz::{Grants, Scope};
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let app = verbs_app(verbs_binding("verbs: [post_config_apply]"), "full");
     let door = admin_door(
         &app,
@@ -3645,7 +3342,7 @@ fn a_role_granting_verbs_by_name_is_identified_with_its_allow_list() {
 
 #[test]
 fn verbs_star_is_exactly_admin_scope_full() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let star = verbs_app(verbs_binding("verbs: \"*\""), "full");
     let full = verbs_app(binding(None, None, Some("full")), "full");
     let headers = admin_headers(Some("grp:ops"), None);
@@ -3666,7 +3363,7 @@ fn verbs_star_is_exactly_admin_scope_full() {
 #[test]
 fn a_binding_without_verbs_is_judged_by_its_rung_alone() {
     use busbar_contract::authz::{Grants, Scope};
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let headers = admin_headers(Some("grp:ops"), None);
     for (scope, rung) in [("read-only", Scope::ReadOnly), ("full", Scope::Full)] {
         let app = verbs_app(binding(None, None, Some(scope)), "full");
@@ -3681,7 +3378,7 @@ fn a_binding_without_verbs_is_judged_by_its_rung_alone() {
 #[test]
 fn the_providers_ceiling_caps_a_named_verb() {
     use busbar_contract::authz::{Grants, Scope};
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let app = verbs_app(
         verbs_binding("verbs: [get_keys, post_config_apply]"),
         "read-only",
@@ -3705,7 +3402,7 @@ fn the_providers_ceiling_caps_a_named_verb() {
 
 #[tokio::test]
 async fn the_admin_gate_admits_only_the_listed_verbs() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let app = verbs_app(verbs_binding("verbs: [post_config_apply]"), "full");
     let (base, handle) = serve_app(app).await;
     let client = reqwest::Client::new();

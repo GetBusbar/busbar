@@ -16,7 +16,26 @@
 use super::{Journal, NeutralRecord, Restored};
 use crate::audit::{frame_prelude, ChainLabels, ChainedRecord, Digest, Framing};
 use crate::store::plane_view::{decode, encode, PlaneStore};
-use crate::test_support::warn_capture::DiagCapture;
+#[derive(Clone, Default)]
+struct AuditDiagnosticCodes(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for AuditDiagnosticCodes {
+    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        if *event.metadata().level() != tracing::Level::ERROR {
+            return;
+        }
+        struct Code<'a>(&'a mut Vec<String>);
+        impl tracing::field::Visit for Code<'_> {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "diag" {
+                    self.0.push(format!("{value:?}"));
+                }
+            }
+        }
+        let mut codes = self.0.lock().unwrap();
+        event.record(&mut Code(&mut codes));
+    }
+}
 use busbar_contract::records::{
     PlaneRecord, PlaneRecordRef, PlaneSelector, RecordStoreError, RecordStoreResult,
 };
@@ -278,7 +297,7 @@ fn restore_scoped_skips_one_undecodable_record_and_keeps_the_rest() {
     let j2: Journal<NeutralRec> = Journal::new(1024);
     j2.set_sink(store.clone());
 
-    let cap = DiagCapture::default();
+    let cap = AuditDiagnosticCodes::default();
     let restored = {
         let subscriber = tracing_subscriber::registry().with(cap.clone());
         let _g = tracing::subscriber::set_default(subscriber);
@@ -618,7 +637,7 @@ fn a_failed_append_resumes_past_a_row_boot_already_reported_unreadable() {
         )
         .is_err());
     store.set_failing(false);
-    let capture = DiagCapture::default();
+    let capture = AuditDiagnosticCodes::default();
     let third = {
         let subscriber = tracing_subscriber::registry().with(capture.clone());
         let _guard = tracing::subscriber::set_default(subscriber);

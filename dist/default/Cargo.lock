@@ -533,6 +533,7 @@ dependencies = [
  "prost",
  "rcgen",
  "reqwest",
+ "ring",
  "rustls",
  "rustls-pki-types",
  "serde",

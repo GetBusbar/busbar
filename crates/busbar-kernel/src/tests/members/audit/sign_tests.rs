@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use crate::test_support::tokens::pass;
+use busbar_contract::caps::Pass;
 use busbar_contract::{
     caps::{
         Audit as AuditStep, KernelSeal, LocatorPtr, MeterClassId, Origin, OriginKind, Outcome,
@@ -123,9 +123,12 @@ fn empty_group_inputs() -> AuditInputs {
 fn the_published_recipe_hashes_to_the_digest_the_chain_seals() {
     let mut chain = AuditChain::new();
     for record in [
-        chain.seal(inputs(1), &pass::<AuditStep>()),
-        chain.seal(empty_group_inputs(), &pass::<AuditStep>()),
-        chain.seal(inputs(3), &pass::<AuditStep>()),
+        chain.seal(inputs(1), &Pass::<AuditStep>::mint(&crate::seal::acquire())),
+        chain.seal(
+            empty_group_inputs(),
+            &Pass::<AuditStep>::mint(&crate::seal::acquire()),
+        ),
+        chain.seal(inputs(3), &Pass::<AuditStep>::mint(&crate::seal::acquire())),
     ] {
         assert_eq!(
             digest_over(&digest_fields(&record)),
@@ -139,7 +142,7 @@ fn the_published_recipe_hashes_to_the_digest_the_chain_seals() {
 #[test]
 fn every_recipe_field_is_published_under_its_own_name() {
     let mut chain = AuditChain::new().signing_with(signer());
-    let record = chain.seal(inputs(1), &pass::<AuditStep>());
+    let record = chain.seal(inputs(1), &Pass::<AuditStep>::mint(&crate::seal::acquire()));
     let body = expose::range_body(&chain, std::slice::from_ref(&record), 1, 1);
     for field in digest_fields(&record) {
         let name = field
@@ -162,7 +165,7 @@ fn every_recipe_field_is_published_under_its_own_name() {
 #[test]
 fn a_sealed_record_verifies_against_the_published_key() {
     let mut chain = AuditChain::new().signing_with(signer());
-    let record = chain.seal(inputs(1), &pass::<AuditStep>());
+    let record = chain.seal(inputs(1), &Pass::<AuditStep>::mint(&crate::seal::acquire()));
 
     let published = AuditVerifyingKey::from_hex(&signer().public_key_hex())
         .expect("the published key is 64 lowercase hex");
@@ -182,7 +185,7 @@ fn a_sealed_record_verifies_against_the_published_key() {
 #[test]
 fn altering_any_field_breaks_the_signature_including_the_cosmetic_ones() {
     let mut chain = AuditChain::new().signing_with(signer());
-    let sealed = chain.seal(inputs(1), &pass::<AuditStep>());
+    let sealed = chain.seal(inputs(1), &Pass::<AuditStep>::mint(&crate::seal::acquire()));
     let published =
         AuditVerifyingKey::from_hex(&signer().public_key_hex()).expect("a published key");
 
@@ -261,9 +264,10 @@ fn altering_any_field_breaks_the_signature_including_the_cosmetic_ones() {
 #[test]
 fn a_foreign_key_and_an_absent_signature_are_different_answers() {
     let mut signed_chain = AuditChain::new().signing_with(signer());
-    let signed = signed_chain.seal(inputs(1), &pass::<AuditStep>());
+    let signed = signed_chain.seal(inputs(1), &Pass::<AuditStep>::mint(&crate::seal::acquire()));
     let mut unsigned_chain = AuditChain::new();
-    let unsigned = unsigned_chain.seal(inputs(1), &pass::<AuditStep>());
+    let unsigned =
+        unsigned_chain.seal(inputs(1), &Pass::<AuditStep>::mint(&crate::seal::acquire()));
     assert_eq!(unsigned.signature, None);
     assert_eq!(unsigned.key_id, None);
 
@@ -284,8 +288,8 @@ fn a_foreign_key_and_an_absent_signature_are_different_answers() {
 fn turning_signing_on_does_not_move_the_sealed_digest() {
     let mut unsigned = AuditChain::new();
     let mut signed = AuditChain::new().signing_with(signer());
-    let a = unsigned.seal(inputs(1), &pass::<AuditStep>());
-    let b = signed.seal(inputs(1), &pass::<AuditStep>());
+    let a = unsigned.seal(inputs(1), &Pass::<AuditStep>::mint(&crate::seal::acquire()));
+    let b = signed.seal(inputs(1), &Pass::<AuditStep>::mint(&crate::seal::acquire()));
     assert_eq!(a.hash, b.hash, "the signature entered the digest");
     assert!(a.signature.is_none());
     assert!(b.signature.is_some());
@@ -383,7 +387,7 @@ fn head_history_survives_a_restart_rebuilt_from_its_records() {
     for step in 0..18u64 {
         let mut i = inputs(step + 1);
         i.wall = start + step * 1_200;
-        records.push(chain.seal(i, &pass::<AuditStep>()));
+        records.push(chain.seal(i, &Pass::<AuditStep>::mint(&crate::seal::acquire())));
     }
     let anchors_before = chain.heads().anchors();
     assert_eq!(
@@ -433,8 +437,8 @@ fn head_history_survives_a_restart_rebuilt_from_its_records() {
 fn the_genesis_head_is_always_an_anchor() {
     let mut history = HeadHistory::every(86_400);
     let mut chain = AuditChain::new();
-    let first = chain.seal(inputs(1), &pass::<AuditStep>());
-    let second = chain.seal(inputs(2), &pass::<AuditStep>());
+    let first = chain.seal(inputs(1), &Pass::<AuditStep>::mint(&crate::seal::acquire()));
+    let second = chain.seal(inputs(2), &Pass::<AuditStep>::mint(&crate::seal::acquire()));
     test_support::observe(&mut history, &first);
     test_support::observe(&mut history, &second);
     assert_eq!(history.series().len(), 1);
@@ -457,7 +461,7 @@ fn nothing_shrinks_the_head_history() {
     let mut chain = AuditChain::new();
     let mut last = 0;
     for i in 1..=50u64 {
-        let record = chain.seal(inputs(i), &pass::<AuditStep>());
+        let record = chain.seal(inputs(i), &Pass::<AuditStep>::mint(&crate::seal::acquire()));
         test_support::observe(&mut history, &record);
         assert!(
             history.series().len() > last,
@@ -469,7 +473,8 @@ fn nothing_shrinks_the_head_history() {
 
     const TWO_YEARS_AND_AN_HOUR: u64 = 2 * 8_760 + 1;
     let mut hourly = HeadHistory::new();
-    let mut record = AuditChain::new().seal(inputs(1), &pass::<AuditStep>());
+    let mut record =
+        AuditChain::new().seal(inputs(1), &Pass::<AuditStep>::mint(&crate::seal::acquire()));
     let genesis_wall = record.wall;
     for hour in 0..TWO_YEARS_AND_AN_HOUR {
         record.seq = hour + 1;
@@ -501,7 +506,7 @@ fn history_grows_by_one(history: &mut HeadHistory, record: &AuditRecord) {
 fn the_head_read_answers_with_the_tip_and_the_recipe_it_was_sealed_under() {
     let mut chain = AuditChain::new().signing_with(signer());
     let last = (1..=3)
-        .map(|i| chain.seal(inputs(i), &pass::<AuditStep>()))
+        .map(|i| chain.seal(inputs(i), &Pass::<AuditStep>::mint(&crate::seal::acquire())))
         .last();
     let last = last.expect("three records were sealed");
     let body = expose::head_body(&chain);
@@ -526,7 +531,7 @@ fn the_head_read_answers_with_the_tip_and_the_recipe_it_was_sealed_under() {
 fn the_range_read_is_inclusive_and_clips_rather_than_refusing() {
     let mut chain = AuditChain::new().signing_with(signer());
     let records: Vec<_> = (1..=5)
-        .map(|i| chain.seal(inputs(i), &pass::<AuditStep>()))
+        .map(|i| chain.seal(inputs(i), &Pass::<AuditStep>::mint(&crate::seal::acquire())))
         .collect();
 
     let two_three = expose::range_body(&chain, &records, 2, 3);
@@ -544,7 +549,10 @@ fn the_range_read_is_inclusive_and_clips_rather_than_refusing() {
 #[test]
 fn an_empty_group_publishes_an_empty_array() {
     let mut chain = AuditChain::new().signing_with(signer());
-    let record = chain.seal(empty_group_inputs(), &pass::<AuditStep>());
+    let record = chain.seal(
+        empty_group_inputs(),
+        &Pass::<AuditStep>::mint(&crate::seal::acquire()),
+    );
     let body = expose::range_body(&chain, std::slice::from_ref(&record), 1, 1);
     assert!(
         body.contains("\"lines_count\":\"0\",\"lines\":[]"),
@@ -565,7 +573,7 @@ fn caller_named_text_survives_into_the_published_body() {
     let mut chain = AuditChain::new().signing_with(signer());
     let mut i = inputs(1);
     i.what.op_class = OpClassId::new("tool\"a\\b\nc\u{1}d|e");
-    let record = chain.seal(i, &pass::<AuditStep>());
+    let record = chain.seal(i, &Pass::<AuditStep>::mint(&crate::seal::acquire()));
     let body = expose::range_body(&chain, std::slice::from_ref(&record), 1, 1);
 
     let expected = format!("tool{}\"a{}{}b{}nc{}u0001d|e", "\\", "\\", "\\", "\\", "\\");
@@ -581,7 +589,7 @@ fn caller_named_text_survives_into_the_published_body() {
 fn the_published_bodies_parse_and_the_wide_numbers_are_text() {
     let mut chain = AuditChain::new().signing_with(signer());
     let records: Vec<_> = (1..=2)
-        .map(|i| chain.seal(inputs(i), &pass::<AuditStep>()))
+        .map(|i| chain.seal(inputs(i), &Pass::<AuditStep>::mint(&crate::seal::acquire())))
         .collect();
     let mut keys = AuditKeySet::new();
     keys.insert(AuditVerifyingKey::from_hex(&signer().public_key_hex()).expect("a public key"));
@@ -647,7 +655,7 @@ fn the_published_bodies_parse_and_the_wide_numbers_are_text() {
 #[test]
 fn the_body_keeps_the_texts_texts_and_the_numbers_decimal_text() {
     let mut chain = AuditChain::new().signing_with(signer());
-    let record = chain.seal(inputs(1), &pass::<AuditStep>());
+    let record = chain.seal(inputs(1), &Pass::<AuditStep>::mint(&crate::seal::acquire()));
     let parsed: serde_json::Value = serde_json::from_str(&expose::range_body(
         &chain,
         std::slice::from_ref(&record),
@@ -678,7 +686,7 @@ fn the_body_keeps_the_texts_texts_and_the_numbers_decimal_text() {
 fn a_node_above_two_to_the_fifty_three_is_published_exactly() {
     let node: u64 = 16_045_690_984_833_335_023;
     let mut chain = AuditChain::new().signing_with(signer()).sealing_as(node);
-    let record = chain.seal(inputs(1), &pass::<AuditStep>());
+    let record = chain.seal(inputs(1), &Pass::<AuditStep>::mint(&crate::seal::acquire()));
     let body = expose::range_body(&chain, std::slice::from_ref(&record), 1, 1);
     assert!(
         body.contains("\"node\":\"16045690984833335023\","),
@@ -731,7 +739,7 @@ fn the_legacy_v4_worked_example_keeps_its_exact_record_hash_and_signature() {
     let mut chain = AuditChain::new()
         .signing_with(signer())
         .sealing_as(WORKED_EXAMPLE_NODE);
-    let mut record = chain.seal(worked_example_inputs(), &pass::<AuditStep>());
+    let mut record = chain.seal(worked_example_inputs(), &Pass::<AuditStep>::mint(&crate::seal::acquire()));
     record.usage.rate_card_version = None;
     record.recipe = busbar_kernel_audit::Recipe::V4 {
         legacy_rate_card_version: 3,
@@ -796,7 +804,7 @@ fn the_worked_examples_preimage_is_the_length_the_spec_quotes() {
     let mut chain = AuditChain::new()
         .signing_with(signer())
         .sealing_as(WORKED_EXAMPLE_NODE);
-    let mut record = chain.seal(worked_example_inputs(), &pass::<AuditStep>());
+    let mut record = chain.seal(worked_example_inputs(), &Pass::<AuditStep>::mint(&crate::seal::acquire()));
     record.usage.rate_card_version = None;
     record.recipe = busbar_kernel_audit::Recipe::V4 {
         legacy_rate_card_version: 3,

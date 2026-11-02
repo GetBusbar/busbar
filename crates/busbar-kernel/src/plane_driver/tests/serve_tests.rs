@@ -375,7 +375,7 @@ async fn two_apps_lent_two_tables_each_serve_only_their_own_instance() {
 #[test]
 fn a_rebuild_carries_the_published_admin_table() {
     crate::test_support::register_neutral_test_plane();
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let cfg = || {
         crate::test_support::cfg_with_provider_api_key(crate::config::SecretRef::env(
             "BUSBAR_TEST_NO_SUCH_KEY_SERVE_TABLES",

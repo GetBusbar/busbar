@@ -4249,12 +4249,7 @@ pub(crate) async fn openapi(State(handle): State<Arc<AppHandle>>) -> Response {
     })
     .await;
     match served {
-        Ok(body) => (
-            StatusCode::OK,
-            [(CONTENT_TYPE, busbar_contract::protocol::APPLICATION_JSON)],
-            body,
-        )
-            .into_response(),
+        Ok(body) => openapi_document_response(body),
         Err(join_err) => {
             diag_error!(
                 busbar_kernel::diagnostics::ADMIN_STORE_TASK_JOIN_FAILED,
@@ -4265,6 +4260,15 @@ pub(crate) async fn openapi(State(handle): State<Arc<AppHandle>>) -> Response {
             err_json(&AdminError::Internal)
         }
     }
+}
+
+pub(super) fn openapi_document_response(body: String) -> Response {
+    (
+        StatusCode::OK,
+        [(CONTENT_TYPE, busbar_contract::protocol::APPLICATION_JSON)],
+        body,
+    )
+        .into_response()
 }
 
 pub(crate) fn openapi_for_configured_planes(

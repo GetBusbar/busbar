@@ -14,9 +14,6 @@ use oauth_as::grant::GrantType;
 use oauth_as::scope::ScopeSet;
 
 use crate::config::OauthAsCfg;
-use busbar_kernel_testkit::test_support::TestApp;
-
-use crate::testkit::{oauth_as_plane, TestAppOauthExt};
 
 const REDIRECT_URI: &str = "http://127.0.0.1:9999/cb";
 
@@ -129,143 +126,6 @@ fn path_matches(request_path: &str, cookie_path: &str) -> bool {
         return false;
     }
     cookie_path.ends_with('/') || request_path[cookie_path.len()..].starts_with('/')
-}
-
-pub(crate) async fn send(
-    client: &reqwest::Client,
-    jar: &mut Jar,
-    method: reqwest::Method,
-    url: &str,
-    form: Option<&[(&str, &str)]>,
-) -> (reqwest::StatusCode, reqwest::header::HeaderMap, String) {
-    let path = path_of(url);
-    let mut req = client.request(method, url);
-    if let Some(cookie) = jar.header_for(&path) {
-        req = req.header(reqwest::header::COOKIE, cookie);
-    }
-    if let Some(form) = form {
-        req = req.form(form);
-    }
-    let resp = req.send().await.expect("request");
-    let status = resp.status();
-    let headers = resp.headers().clone();
-    for value in headers.get_all(reqwest::header::SET_COOKIE) {
-        jar.store(value.to_str().expect("ASCII Set-Cookie"), &path);
-    }
-    let body = resp.text().await.expect("body");
-    (status, headers, body)
-}
-
-pub(crate) fn path_of(url: &str) -> String {
-    let rest = url
-        .strip_prefix("http://")
-        .or_else(|| url.strip_prefix("https://"));
-    let with_query = match rest {
-        Some(rest) => match rest.find('/') {
-            Some(i) => &rest[i..],
-            None => "/",
-        },
-        None => url,
-    };
-    with_query
-        .split_once('?')
-        .map_or(with_query, |(p, _)| p)
-        .to_string()
-}
-
-pub(crate) fn query_param(url: &str, name: &str) -> Option<String> {
-    url.split(['?', '&'])
-        .skip(1)
-        .filter_map(|p| p.split_once('='))
-        .find(|(k, _)| *k == name)
-        .map(|(_, v)| v.to_string())
-}
-
-pub(crate) fn location(headers: &reqwest::header::HeaderMap, origin: &str) -> String {
-    let raw = headers
-        .get(reqwest::header::LOCATION)
-        .expect("a redirect carries Location")
-        .to_str()
-        .expect("ASCII Location")
-        .to_string();
-    if raw.starts_with('/') {
-        format!("{origin}{raw}")
-    } else {
-        raw
-    }
-}
-
-async fn serve() -> (String, Arc<busbar_kernel::state::App>) {
-    serve_with_admin_chain(Vec::new()).await
-}
-
-pub(crate) async fn serve_with_admin_chain(
-    admin_chain: Vec<String>,
-) -> (String, Arc<busbar_kernel::state::App>) {
-    serve_with_store(admin_chain, None).await
-}
-
-async fn serve_with_store(
-    admin_chain: Vec<String>,
-    store: Option<Arc<dyn StoreCalls>>,
-) -> (String, Arc<busbar_kernel::state::App>) {
-    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind");
-    let addr = listener.local_addr().expect("addr");
-    let origin = format!("http://{addr}");
-
-    let cfg = OauthAsCfg {
-        issuer: origin.clone(),
-        signing_key: None,
-        key_id: None,
-        default_grant: vec![SCOPE.to_string()],
-        access_token_ttl_secs: None,
-        refresh_token_ttl_secs: None,
-        fapi2: false,
-        clients: Vec::new(),
-    };
-    let builder = TestApp::new().admin_chain(admin_chain);
-    let app = match store {
-        None => builder.oauth_as(&cfg).build(),
-        Some(store) => {
-            crate::testkit::install_test_seam();
-            let identity = crate::config::AsIdentity::from_cfg(&cfg).expect("valid config");
-            let plane = crate::plane::AsPlane::build_carrying(
-                identity,
-                None,
-                Vec::new(),
-                crate::cimd::unconnected(),
-                Arc::new(crate::plane::Carried::over(Some(store))),
-            )
-            .expect("shared-store plane");
-            builder.oauth_as_plane(Arc::new(plane)).build()
-        }
-    };
-
-    let scopes = ScopeSet::from_tokens([SCOPE]).expect("scope");
-    oauth_as_plane(&app)
-        .expect("configured")
-        .server()
-        .register_client(Client {
-            client_id: ClientId::new(CLIENT_ID),
-            auth: ClientAuth::Public,
-            grant_types: vec![GrantType::AuthorizationCode, GrantType::RefreshToken],
-            redirect_uris: vec![REDIRECT_URI.to_string()],
-            allowed_scopes: scopes.clone(),
-            default_scopes: scopes,
-            name: Some("Flow Test".to_string()),
-            registration: None,
-        })
-        .await
-        .expect("register client");
-
-    let router = busbar_kernel::build_router(Arc::clone(&app));
-    tokio::spawn(async move {
-        axum::serve(listener, router).await.expect("serve");
-    });
-    (origin, app)
 }
 
 #[test]
@@ -389,332 +249,9 @@ fn the_session_cookie_carries_exactly_the_attributes_it_should() {
     }
 }
 
-#[tokio::test]
-async fn the_authorization_code_flow_mints_and_exchanges_a_code() {
-    let (origin, app) = serve().await;
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .expect("client");
-
-    let mut jar = Jar::new(false);
-
-    let authorize = format!(
-        "{origin}/authorize?response_type=code&client_id={CLIENT_ID}\
-         &redirect_uri=http%3A%2F%2F127.0.0.1%3A9999%2Fcb&state=s1&scope={SCOPE}\
-         &code_challenge={CHALLENGE}&code_challenge_method=S256"
-    );
-
-    let (status, headers, body) =
-        send(&client, &mut jar, reqwest::Method::GET, &authorize, None).await;
-    assert_eq!(status, 302, "authorize must redirect to consent: {body}");
-    let consent = location(&headers, &origin);
-    assert!(
-        consent.starts_with(&format!("{origin}/consent?return=")),
-        "the redirect must name this deployment's consent screen: {consent}"
-    );
-
-    let (status, headers, body) =
-        send(&client, &mut jar, reqwest::Method::GET, &consent, None).await;
-    assert_eq!(status, 200, "the consent screen must render: {body}");
-    let set_cookie = headers
-        .get_all(reqwest::header::SET_COOKIE)
-        .iter()
-        .map(|v| v.to_str().expect("ASCII").to_string())
-        .collect::<Vec<_>>();
-    assert!(
-        !set_cookie.is_empty(),
-        "the consent screen must open a session"
-    );
-
-    assert!(
-        jar.header_for("/consent").is_some(),
-        "the consent POST reads the session cookie; Set-Cookie was {set_cookie:?}"
-    );
-    assert!(
-        jar.header_for("/authorize").is_some(),
-        "`/authorize` is where the approval resolver reads the session cookie, and it is a SIBLING \
-         of `/consent`, not a child: a cookie the browser will not send here cannot mint a code. \
-         Set-Cookie was {set_cookie:?}"
-    );
-
-    let return_to =
-        query_param(&consent, "return").expect("the screen carries the pending request");
-    let return_to = percent_decode(&return_to);
-    let (status, headers, body) = send(
-        &client,
-        &mut jar,
-        reqwest::Method::POST,
-        &format!("{origin}/consent"),
-        Some(&[("return", return_to.as_str())]),
-    )
-    .await;
-    assert_eq!(status, 302, "an approval must redirect back: {body}");
-    let back = location(&headers, &origin);
-    assert!(
-        path_of(&back) == "/authorize",
-        "the approval hands the browser back to the authorization endpoint: {back}"
-    );
-
-    let (status, headers, body) = send(&client, &mut jar, reqwest::Method::GET, &back, None).await;
-    assert_eq!(status, 302, "the approved request must redirect: {body}");
-    let redirect = location(&headers, &origin);
-    assert!(
-        redirect.starts_with(REDIRECT_URI),
-        "an approved request goes to the CLIENT's redirect URI, not back to the consent screen. \
-         Got: {redirect}"
-    );
-    let code = query_param(&redirect, "code").unwrap_or_else(|| {
-        panic!("the approved authorization request must carry a code: {redirect}")
-    });
-    assert!(!code.is_empty(), "an empty code is not a code");
-    assert_eq!(
-        query_param(&redirect, "state").as_deref(),
-        Some("s1"),
-        "RFC 6749 §4.1.2: the client's `state` is returned verbatim"
-    );
-
-    let (status, _headers, body) = send(
-        &client,
-        &mut jar,
-        reqwest::Method::POST,
-        &format!("{origin}/token"),
-        Some(&[
-            ("grant_type", "authorization_code"),
-            ("code", code.as_str()),
-            ("client_id", CLIENT_ID),
-            ("redirect_uri", REDIRECT_URI),
-            ("code_verifier", VERIFIER),
-        ]),
-    )
-    .await;
-    assert_eq!(status, 200, "the code must be exchangeable: {body}");
-    let token: serde_json::Value = serde_json::from_str(&body).expect("a token response is JSON");
-    let access = token["access_token"]
-        .as_str()
-        .unwrap_or_else(|| panic!("no access_token: {body}"))
-        .to_string();
-
-    let record = oauth_as_plane(&app)
-        .expect("configured")
-        .server()
-        .introspect(&access)
-        .await
-        .expect("introspection must not fail")
-        .expect("the freshly minted token must be live");
-    assert_eq!(record.client_id.as_str(), CLIENT_ID);
-    assert_eq!(
-        record.subject.as_deref(),
-        Some("busbar-operator"),
-        "the code was minted for the operator, who is this plane's only resource owner"
-    );
-    assert_eq!(record.scope.to_string(), SCOPE);
-
-    assert_eq!(
-        busbar_kernel::auth::audience::inspect_bearer(&access, &origin),
-        busbar_kernel::auth::audience::Binding::Bound,
-        "the access token must carry this deployment's audience"
-    );
-
-    let (status, headers, body) =
-        send(&client, &mut jar, reqwest::Method::GET, &authorize, None).await;
-    assert_eq!(status, 302, "{body}");
-    assert_eq!(
-        path_of(&location(&headers, &origin)),
-        "/consent",
-        "a spent approval must not authorise a second request"
-    );
-}
-
-#[tokio::test]
-async fn a_multi_scope_or_default_scope_request_is_approved_on_its_first_consent() {
-    const MULTI: &str = "flow-test-multi-scope";
-    let (origin, app) = serve().await;
-    let scopes = ScopeSet::from_tokens(["read", "write"]).expect("scope");
-    oauth_as_plane(&app)
-        .expect("configured")
-        .server()
-        .register_client(Client {
-            client_id: ClientId::new(MULTI),
-            auth: ClientAuth::Public,
-            grant_types: vec![GrantType::AuthorizationCode, GrantType::RefreshToken],
-            redirect_uris: vec![REDIRECT_URI.to_string()],
-            allowed_scopes: scopes.clone(),
-            default_scopes: scopes,
-            name: Some("Multi Scope".to_string()),
-            registration: None,
-        })
-        .await
-        .expect("register client");
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .expect("client");
-
-    for scope in ["&scope=write%20read", "&scope=read%20read%20write", ""] {
-        let mut jar = Jar::new(false);
-        let authorize = format!(
-            "{origin}/authorize?response_type=code&client_id={MULTI}\
-             &redirect_uri=http%3A%2F%2F127.0.0.1%3A9999%2Fcb&state=s1{scope}\
-             &code_challenge={CHALLENGE}&code_challenge_method=S256"
-        );
-        let (status, headers, body) =
-            send(&client, &mut jar, reqwest::Method::GET, &authorize, None).await;
-        assert_eq!(
-            status, 302,
-            "{scope:?}: authorize must redirect to consent: {body}"
-        );
-        let consent = location(&headers, &origin);
-        let (status, _headers, body) =
-            send(&client, &mut jar, reqwest::Method::GET, &consent, None).await;
-        assert_eq!(
-            status, 200,
-            "{scope:?}: the consent screen must render: {body}"
-        );
-        let return_to = percent_decode(
-            &query_param(&consent, "return").expect("the screen carries the pending request"),
-        );
-        let (status, headers, body) = send(
-            &client,
-            &mut jar,
-            reqwest::Method::POST,
-            &format!("{origin}/consent"),
-            Some(&[("return", return_to.as_str())]),
-        )
-        .await;
-        assert_eq!(
-            status, 302,
-            "{scope:?}: an approval must redirect back: {body}"
-        );
-        let back = location(&headers, &origin);
-        let (status, headers, body) =
-            send(&client, &mut jar, reqwest::Method::GET, &back, None).await;
-        assert_eq!(status, 302, "{scope:?}: {body}");
-        let redirect = location(&headers, &origin);
-        assert!(
-            redirect.starts_with(REDIRECT_URI),
-            "{scope:?}: an approved request goes to the client's redirect URI on its FIRST \
-             approval, not back to the consent screen. Got: {redirect}"
-        );
-        assert!(
-            query_param(&redirect, "code").is_some_and(|c| !c.is_empty()),
-            "{scope:?}: the approved request carries a code: {redirect}"
-        );
-    }
-}
-
-fn requesting(page: &str) -> String {
-    page.split_once("<p>Requesting: <code>")
-        .and_then(|(_, rest)| rest.split_once("</code>"))
-        .map(|(scope, _)| scope.to_string())
-        .unwrap_or_else(|| panic!("the screen names what it is asking for: {page}"))
-}
-
-async fn shown_and_granted(
-    origin: &str,
-    app: &busbar_kernel::state::App,
-    client_id: &str,
-    scope_param: &str,
-) -> (String, String) {
-    shown_and_granted_after_lookup_failure(origin, app, client_id, scope_param, None).await
-}
-
-async fn shown_and_granted_after_lookup_failure(
-    origin: &str,
-    app: &busbar_kernel::state::App,
-    client_id: &str,
-    scope_param: &str,
-    fault: Option<&FailClientRead>,
-) -> (String, String) {
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .expect("client");
-    let mut jar = Jar::new(false);
-    let authorize = format!(
-        "{origin}/authorize?response_type=code&client_id={}\
-         &redirect_uri=http%3A%2F%2F127.0.0.1%3A9999%2Fcb&state=s1{scope_param}\
-         &code_challenge={CHALLENGE}&code_challenge_method=S256",
-        encode_component(client_id)
-    );
-    let (status, headers, body) =
-        send(&client, &mut jar, reqwest::Method::GET, &authorize, None).await;
-    assert_eq!(status, 302, "authorize must redirect to consent: {body}");
-    let consent = location(&headers, origin);
-    if let Some(fault) = fault {
-        fault.fail_next.store(true, Ordering::SeqCst);
-        let (status, headers, page) =
-            send(&client, &mut jar, reqwest::Method::GET, &consent, None).await;
-        assert_eq!(
-            status, 503,
-            "an unresolved grant cannot be approved: {page}"
-        );
-        assert!(
-            !page.contains("<form"),
-            "no approval form on lookup failure: {page}"
-        );
-        assert_eq!(headers[reqwest::header::CACHE_CONTROL], "no-store");
-    }
-    let (status, _headers, page) =
-        send(&client, &mut jar, reqwest::Method::GET, &consent, None).await;
-    assert_eq!(status, 200, "the consent screen must render: {page}");
-    let shown = requesting(&page);
-
-    let return_to = percent_decode(
-        &query_param(&consent, "return").expect("the screen carries the pending request"),
-    );
-    let (status, headers, body) = send(
-        &client,
-        &mut jar,
-        reqwest::Method::POST,
-        &format!("{origin}/consent"),
-        Some(&[("return", return_to.as_str())]),
-    )
-    .await;
-    assert_eq!(status, 302, "an approval must redirect back: {body}");
-    let back = location(&headers, origin);
-    let (status, headers, body) = send(&client, &mut jar, reqwest::Method::GET, &back, None).await;
-    assert_eq!(status, 302, "the approved request must redirect: {body}");
-    let redirect = location(&headers, origin);
-    let code = query_param(&redirect, "code")
-        .unwrap_or_else(|| panic!("the approved request must carry a code: {redirect}"));
-    let (status, _headers, body) = send(
-        &client,
-        &mut jar,
-        reqwest::Method::POST,
-        &format!("{origin}/token"),
-        Some(&[
-            ("grant_type", "authorization_code"),
-            ("code", code.as_str()),
-            ("client_id", client_id),
-            ("redirect_uri", REDIRECT_URI),
-            ("code_verifier", VERIFIER),
-        ]),
-    )
-    .await;
-    assert_eq!(status, 200, "the code must be exchangeable: {body}");
-    let token: serde_json::Value = serde_json::from_str(&body).expect("a token response is JSON");
-    let access = token["access_token"]
-        .as_str()
-        .unwrap_or_else(|| panic!("no access_token: {body}"));
-    let record = oauth_as_plane(app)
-        .expect("configured")
-        .server()
-        .introspect(access)
-        .await
-        .expect("introspection must not fail")
-        .expect("the freshly minted token must be live");
-    (shown, record.scope.to_string())
-}
-
-async fn register_defaulting_to(
-    app: &busbar_kernel::state::App,
-    client_id: &str,
-    default: &[&str],
-) {
+async fn register_defaulting_to(plane: &crate::plane::AsPlane, client_id: &str, default: &[&str]) {
     let scopes = ScopeSet::from_tokens(default.iter().copied()).expect("scope");
-    oauth_as_plane(app)
-        .expect("configured")
+    plane
         .server()
         .register_client(Client {
             client_id: ClientId::new(client_id),
@@ -731,76 +268,83 @@ async fn register_defaulting_to(
 }
 
 #[tokio::test]
-async fn a_request_naming_no_scope_is_shown_the_default_it_is_granted() {
-    const DEFAULTED: &str = "flow-test-defaulted";
-    let (origin, app) = serve().await;
-    register_defaulting_to(&app, DEFAULTED, &["read", "write"]).await;
-    let (shown, granted) = shown_and_granted(&origin, &app, DEFAULTED, "").await;
-    assert_eq!(granted, "read write", "the registered default is granted");
-    assert_eq!(
-        shown, granted,
-        "the consent screen must name the scope the approval grants"
-    );
-}
-
-#[tokio::test]
 async fn a_metadata_document_client_naming_no_scope_is_shown_the_default_it_is_granted() {
-    let (origin, app) = serve().await;
-    oauth_as_plane(&app)
-        .expect("configured")
+    let plane = owner_plane();
+    plane
         .server()
         .store()
         .set_fetcher(Arc::new(StubDocumentHost(serde_json::json!({
-            "client_id": CIMD_CLIENT_ID,
-            "redirect_uris": [REDIRECT_URI],
-            "token_endpoint_auth_method": "none",
-            "client_name": "an agent",
+            "client_id":CIMD_CLIENT_ID,"redirect_uris":[REDIRECT_URI],
+            "token_endpoint_auth_method":"none","client_name":"an agent",
         }))));
-    let (shown, granted) = shown_and_granted(&origin, &app, CIMD_CLIENT_ID, "").await;
+    let shown = plane
+        .granted_scope(CIMD_CLIENT_ID, None)
+        .await
+        .expect("the actual owner resolves the consent grant");
+    let token = approved_token(&plane, CIMD_CLIENT_ID).await;
+    let record = plane
+        .server()
+        .introspect(&token.access_token)
+        .await
+        .expect("introspection must not fail")
+        .expect("the freshly minted token must be live");
+    let granted = record.scope.to_string();
     assert_eq!(granted, SCOPE, "the operator's default_grant is granted");
     assert_eq!(
         shown, granted,
-        "the consent screen must name the scope the approval grants"
+        "the consent grant resolver must name the scope the approval grants"
     );
-}
-
-#[tokio::test]
-async fn the_consent_screen_names_a_requested_scope_and_an_empty_grant() {
-    const EMPTY: &str = "flow-test-empty-default";
-    let (origin, app) = serve().await;
-    let (shown, granted) = shown_and_granted(&origin, &app, CLIENT_ID, "&scope=read").await;
-    assert_eq!((shown.as_str(), granted.as_str()), (SCOPE, SCOPE));
-
-    register_defaulting_to(&app, EMPTY, &[]).await;
-    let (shown, granted) = shown_and_granted(&origin, &app, EMPTY, "").await;
-    assert_eq!(granted, "", "an empty default grants nothing");
-    assert_eq!(shown, "no scopes", "and the screen says so");
 }
 
 #[tokio::test]
 async fn a_failed_default_scope_lookup_refuses_consent_and_recovers() {
-    let calls = crate::testkit::store_calls();
     let fault = Arc::new(FailClientRead {
-        inner: calls,
+        inner: crate::testkit::store_calls(),
         fail_next: AtomicBool::new(false),
     });
-    let (origin, app) = serve_with_store(Vec::new(), Some(fault.clone())).await;
-    let (shown, granted) =
-        shown_and_granted_after_lookup_failure(&origin, &app, CLIENT_ID, "", Some(&fault)).await;
+    let plane = owner_plane_with_store(fault.clone());
+    register_defaulting_to(&plane, CLIENT_ID, &[SCOPE]).await;
+    fault.fail_next.store(true, Ordering::SeqCst);
+    assert!(
+        plane.granted_scope(CLIENT_ID, None).await.is_err(),
+        "an unresolved grant cannot be approved"
+    );
+    let shown = plane
+        .granted_scope(CLIENT_ID, None)
+        .await
+        .expect("the lookup recovers");
+    let token = approved_token(&plane, CLIENT_ID).await;
+    let record = plane
+        .server()
+        .introspect(&token.access_token)
+        .await
+        .unwrap()
+        .unwrap();
+    let granted = record.scope.to_string();
     assert_eq!(
         granted, SCOPE,
         "the recovered request grants its registered default"
     );
-    assert_eq!(shown, granted, "the recovered screen names the grant");
-
-    const EMPTY: &str = "flow-test-shared-empty-default";
-    register_defaulting_to(&app, EMPTY, &[]).await;
-    let (shown, granted) = shown_and_granted(&origin, &app, EMPTY, "").await;
     assert_eq!(
-        granted, "",
+        shown, granted,
+        "the recovered consent resolver names the grant"
+    );
+    const EMPTY: &str = "flow-test-shared-empty-default";
+    register_defaulting_to(&plane, EMPTY, &[]).await;
+    let shown = plane.granted_scope(EMPTY, None).await.unwrap();
+    let token = approved_token(&plane, EMPTY).await;
+    let record = plane
+        .server()
+        .introspect(&token.access_token)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        record.scope.to_string(),
+        "",
         "a successfully resolved empty default remains valid"
     );
-    assert_eq!(shown, "no scopes");
+    assert_eq!(shown, "");
 }
 
 struct FailClientRead {
@@ -933,151 +477,6 @@ impl StoreCalls for FailClientRead {
     }
 }
 
-async fn mint_access_token(origin: &str, client_id: &str) -> String {
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .expect("client");
-    let mut jar = Jar::new(false);
-
-    let authorize = format!(
-        "{origin}/authorize?response_type=code&client_id={}\
-         &redirect_uri=http%3A%2F%2F127.0.0.1%3A9999%2Fcb&state=s1&scope={SCOPE}\
-         &code_challenge={CHALLENGE}&code_challenge_method=S256",
-        encode_component(client_id)
-    );
-
-    let (status, headers, body) =
-        send(&client, &mut jar, reqwest::Method::GET, &authorize, None).await;
-    assert_eq!(status, 302, "authorize must redirect to consent: {body}");
-    let consent = location(&headers, origin);
-
-    let (status, _headers, body) =
-        send(&client, &mut jar, reqwest::Method::GET, &consent, None).await;
-    assert_eq!(status, 200, "the consent screen must render: {body}");
-
-    let return_to =
-        query_param(&consent, "return").expect("the screen carries the pending request");
-    let return_to = percent_decode(&return_to);
-    let (status, headers, body) = send(
-        &client,
-        &mut jar,
-        reqwest::Method::POST,
-        &format!("{origin}/consent"),
-        Some(&[("return", return_to.as_str())]),
-    )
-    .await;
-    assert_eq!(status, 302, "an approval must redirect back: {body}");
-    let back = location(&headers, origin);
-
-    let (status, headers, body) = send(&client, &mut jar, reqwest::Method::GET, &back, None).await;
-    assert_eq!(status, 302, "the approved request must redirect: {body}");
-    let redirect = location(&headers, origin);
-    assert!(
-        redirect.starts_with(REDIRECT_URI),
-        "an approved request goes to the client's redirect URI: {redirect}"
-    );
-    let code = query_param(&redirect, "code")
-        .unwrap_or_else(|| panic!("the approved request must carry a code: {redirect}"));
-
-    let (status, _headers, body) = send(
-        &client,
-        &mut jar,
-        reqwest::Method::POST,
-        &format!("{origin}/token"),
-        Some(&[
-            ("grant_type", "authorization_code"),
-            ("code", code.as_str()),
-            ("client_id", client_id),
-            ("redirect_uri", REDIRECT_URI),
-            ("code_verifier", VERIFIER),
-        ]),
-    )
-    .await;
-    assert_eq!(status, 200, "the code must be exchangeable: {body}");
-    let token: serde_json::Value = serde_json::from_str(&body).expect("a token response is JSON");
-    token["access_token"]
-        .as_str()
-        .unwrap_or_else(|| panic!("no access_token: {body}"))
-        .to_string()
-}
-
-pub(crate) fn encode_component(s: &str) -> String {
-    s.bytes()
-        .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                char::from(b).to_string()
-            }
-            other => format!("%{other:02X}"),
-        })
-        .collect()
-}
-
-#[tokio::test]
-async fn dynamic_client_registration_admits_a_client_end_to_end() {
-    let (origin, app) = serve().await;
-
-    let resp = reqwest::Client::new()
-        .post(format!("{origin}/register"))
-        .json(&serde_json::json!({
-            "redirect_uris": [REDIRECT_URI],
-            "token_endpoint_auth_method": "none",
-            "response_types": ["code"],
-            "grant_types": ["authorization_code", "refresh_token"],
-            "client_name": "an agent",
-            "scope": SCOPE,
-        }))
-        .send()
-        .await
-        .expect("register");
-    assert_eq!(
-        resp.status(),
-        201,
-        "RFC 7591 §3.2.1: a registration is 201 Created; the endpoint mounts with the plane, \
-         unconditionally"
-    );
-    let registration: serde_json::Value = resp.json().await.expect("a registration response");
-    let client_id = registration["client_id"]
-        .as_str()
-        .unwrap_or_else(|| panic!("no client_id in {registration}"))
-        .to_string();
-
-    let access = mint_access_token(&origin, &client_id).await;
-    let record = oauth_as_plane(&app)
-        .expect("configured")
-        .server()
-        .introspect(&access)
-        .await
-        .expect("introspection must not fail")
-        .expect("the freshly minted token must be live");
-    assert_eq!(record.client_id.as_str(), client_id);
-    assert_eq!(record.scope.to_string(), SCOPE);
-}
-
-async fn register(origin: &str, body: &str) -> u16 {
-    reqwest::Client::new()
-        .post(format!("{origin}/register"))
-        .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .body(body.to_string())
-        .send()
-        .await
-        .expect("register")
-        .status()
-        .as_u16()
-}
-
-fn registration(name: &str) -> String {
-    serde_json::json!({
-        "redirect_uris": [REDIRECT_URI],
-        "token_endpoint_auth_method": "none",
-        "response_types": ["code"],
-        "grant_types": ["authorization_code", "refresh_token"],
-        "client_name": name,
-        "scope": SCOPE,
-    })
-    .to_string()
-}
-
 const CIMD_CLIENT_ID: &str = "https://client.example/oauth-client";
 
 struct StubDocumentHost(serde_json::Value);
@@ -1100,24 +499,18 @@ impl crate::cimd::CimdFetch for StubDocumentHost {
 
 #[tokio::test]
 async fn a_client_id_metadata_document_admits_a_client_end_to_end() {
-    let (origin, app) = serve().await;
-    oauth_as_plane(&app)
-        .expect("configured")
+    let plane = owner_plane();
+    plane
         .server()
         .store()
         .set_fetcher(Arc::new(StubDocumentHost(serde_json::json!({
-            "client_id": CIMD_CLIENT_ID,
-            "redirect_uris": [REDIRECT_URI],
-            "token_endpoint_auth_method": "none",
-            "client_name": "an agent",
-            "scope": SCOPE,
+            "client_id":CIMD_CLIENT_ID,"redirect_uris":[REDIRECT_URI],
+            "token_endpoint_auth_method":"none","client_name":"an agent","scope":SCOPE,
         }))));
-
-    let access = mint_access_token(&origin, CIMD_CLIENT_ID).await;
-    let record = oauth_as_plane(&app)
-        .expect("configured")
+    let token = approved_token(&plane, CIMD_CLIENT_ID).await;
+    let record = plane
         .server()
-        .introspect(&access)
+        .introspect(&token.access_token)
         .await
         .expect("introspection must not fail")
         .expect("the freshly minted token must be live");
@@ -1129,265 +522,167 @@ async fn a_client_id_metadata_document_admits_a_client_end_to_end() {
     assert_eq!(record.scope.to_string(), SCOPE);
 }
 
-pub(crate) fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'%' if i + 2 < bytes.len() => match u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                Ok(b) => {
-                    out.push(b);
-                    i += 3;
-                }
-                Err(_) => {
-                    out.push(b'%');
-                    i += 1;
-                }
-            },
-            b => {
-                out.push(b);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8(out).expect("the server produced UTF-8")
+fn owner_plane() -> Arc<crate::plane::AsPlane> {
+    owner_plane_with_store(crate::testkit::store_calls())
 }
 
-const OFFSITE_CLIENT_ID: &str = "offsite-callback-client";
-const OFFSITE_REDIRECT_URI: &str = "https://client.example/cb";
+fn owner_plane_with_store(store: Arc<dyn StoreCalls>) -> Arc<crate::plane::AsPlane> {
+    let config = OauthAsCfg {
+        issuer: "https://as.example.com".into(),
+        default_grant: vec![SCOPE.into()],
+        ..Default::default()
+    };
+    let block = serde_yaml::to_value(config).expect("owner config serializes");
+    crate::plane::seam_build::<crate::NoConnections>(
+        &block,
+        Vec::new(),
+        Vec::new(),
+        None,
+        Some(store),
+    )
+    .expect("the actual owner seam builds over the supplied Store product")
+    .downcast::<crate::plane::AsPlane>()
+    .unwrap_or_else(|_| panic!("the owner seam returns its plane"))
+}
 
-#[tokio::test]
-async fn the_consent_screen_names_the_client_and_the_redirect_host() {
-    let (origin, app) = serve().await;
-    let scopes = ScopeSet::from_tokens([SCOPE]).expect("scope");
-    oauth_as_plane(&app)
-        .expect("configured")
+async fn approved_token(
+    plane: &crate::plane::AsPlane,
+    client_id: &str,
+) -> oauth_as::token::TokenResponse {
+    let request = oauth_as::authorization::AuthorizationRequest::from_pairs([
+        ("response_type", "code"),
+        ("client_id", client_id),
+        ("redirect_uri", REDIRECT_URI),
+        ("code_challenge", CHALLENGE),
+        ("code_challenge_method", "S256"),
+    ]);
+    let validated = plane
         .server()
-        .register_client(Client {
-            client_id: ClientId::new(OFFSITE_CLIENT_ID),
-            auth: ClientAuth::Public,
-            grant_types: vec![GrantType::AuthorizationCode],
-            redirect_uris: vec![OFFSITE_REDIRECT_URI.to_string()],
-            allowed_scopes: scopes.clone(),
-            default_scopes: scopes,
-            name: None,
-            registration: None,
+        .validate_authorization_request(&request)
+        .await
+        .expect("request validates");
+    let code = plane
+        .server()
+        .issue_authorization_code(oauth_as::server::UserApproval::granted(
+            &validated,
+            "busbar-operator",
+        ))
+        .await
+        .expect("the approved owner request mints a code");
+    plane
+        .server()
+        .token(oauth_as::server::TokenRequest::AuthorizationCode {
+            client_id: ClientId::new(client_id),
+            client_secret: None,
+            code: code.code,
+            redirect_uri: Some(REDIRECT_URI.into()),
+            code_verifier: Some(VERIFIER.into()),
         })
         .await
-        .expect("register the offsite client");
-
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .expect("client");
-    let mut jar = Jar::new(false);
-
-    let authorize = format!(
-        "{origin}/authorize?response_type=code&client_id={OFFSITE_CLIENT_ID}\
-         &redirect_uri=https%3A%2F%2Fclient.example%2Fcb&state=s1&scope={SCOPE}\
-         &code_challenge={CHALLENGE}&code_challenge_method=S256"
-    );
-    let (status, headers, body) =
-        send(&client, &mut jar, reqwest::Method::GET, &authorize, None).await;
-    assert_eq!(status, 302, "authorize must redirect to consent: {body}");
-    let consent = location(&headers, &origin);
-    let (status, _headers, page) =
-        send(&client, &mut jar, reqwest::Method::GET, &consent, None).await;
-    assert_eq!(status, 200, "the consent screen must render: {page}");
-
-    assert!(
-        page.contains(OFFSITE_CLIENT_ID),
-        "the screen must NAME the client asking for authorization: {page}"
-    );
-    assert!(
-        page.contains(SCOPE),
-        "the screen must name the scopes being requested: {page}"
-    );
-
-    let visible = strip_hidden_return(&page);
-    assert!(
-        visible.contains("client.example"),
-        "the consent screen must name the HOST the approval sends the credential to \
-         (client.example, from redirect_uri {OFFSITE_REDIRECT_URI}) somewhere the operator can READ \
-         it. Without it, an operator approving \"{OFFSITE_CLIENT_ID} for scope {SCOPE}\" cannot tell \
-         a legitimate registration from one pointing at an attacker's callback. Visible page, with \
-         the hidden `return` field removed:\n{visible}"
-    );
-}
-
-fn strip_hidden_return(page: &str) -> String {
-    let marker = "name=return value=\"";
-    let Some(start) = page.find(marker) else {
-        return page.to_string();
-    };
-    let after = start + marker.len();
-    let Some(end) = page[after..].find('"') else {
-        return page.to_string();
-    };
-    format!("{}{}", &page[..after], &page[after + end..])
-}
-
-#[tokio::test]
-async fn an_unauthenticated_visitor_is_never_shown_the_consent_screen() {
-    let (origin, _app) = serve_with_admin_chain(vec!["test-scope-module".to_string()]).await;
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .expect("client");
-    let mut jar = Jar::new(false);
-
-    let authorize = format!(
-        "{origin}/authorize?response_type=code&client_id={CLIENT_ID}\
-         &redirect_uri=http%3A%2F%2F127.0.0.1%3A9999%2Fcb&state=s1&scope={SCOPE}\
-         &code_challenge={CHALLENGE}&code_challenge_method=S256"
-    );
-    let (status, headers, body) =
-        send(&client, &mut jar, reqwest::Method::GET, &authorize, None).await;
-    assert_eq!(
-        status, 302,
-        "the authorization endpoint must answer with a redirect, not with a page describing the \
-         request: {body}"
-    );
-    assert!(
-        !body.contains(CLIENT_ID),
-        "the redirect away from /authorize must not itself carry a body naming the client: {body}"
-    );
-
-    let consent = location(&headers, &origin);
-    let (status, _headers, page) =
-        send(&client, &mut jar, reqwest::Method::GET, &consent, None).await;
-    assert!(
-        status == 401 || status == 403,
-        "the consent screen is `RouteAuth::Admin`: an anonymous visitor must be refused, got \
-         {status}: {page}"
-    );
-    assert!(
-        !page.contains(CLIENT_ID),
-        "an anonymous visitor must NOT be told which client is asking — that page is the phishing \
-         surface: {page}"
-    );
+        .expect("the approved code exchanges")
 }
 
 #[tokio::test]
 async fn an_unencodable_login_redirect_fails_closed_rather_than_proceeding() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind");
-    let addr = listener.local_addr().expect("addr");
-    let real_origin = format!("http://{addr}");
-
-    let bad_issuer = "http://bad\rhost/defect2".to_string();
-    let cfg = OauthAsCfg {
-        issuer: bad_issuer,
-        signing_key: None,
-        key_id: None,
-        default_grant: vec![SCOPE.to_string()],
-        access_token_ttl_secs: None,
-        refresh_token_ttl_secs: None,
-        fapi2: false,
-        clients: Vec::new(),
+    use http_body_util::BodyExt as _;
+    let config = OauthAsCfg {
+        issuer: "http://bad\rhost/defect2".into(),
+        default_grant: vec![SCOPE.into()],
+        ..Default::default()
     };
-    let app = TestApp::new().oauth_as(&cfg).build();
-
-    let scopes = ScopeSet::from_tokens([SCOPE]).expect("scope");
-    oauth_as_plane(&app)
-        .expect("configured")
-        .server()
-        .register_client(Client {
-            client_id: ClientId::new(CLIENT_ID),
-            auth: ClientAuth::Public,
-            grant_types: vec![GrantType::AuthorizationCode, GrantType::RefreshToken],
-            redirect_uris: vec![REDIRECT_URI.to_string()],
-            allowed_scopes: scopes.clone(),
-            default_scopes: scopes,
-            name: Some("Defect 2".to_string()),
-            registration: None,
-        })
+    let identity = crate::config::AsIdentity::from_cfg(&config)
+        .expect("the owner identity retains the malformed host input");
+    let response = crate::consent::login_redirect(
+        &identity.consent_url(),
+        "/defect2/authorize?response_type=code&client_id=flow-test-client",
+    );
+    let status = response.status().as_u16();
+    let bytes = response
+        .into_body()
+        .collect()
         .await
-        .expect("register client");
-
-    let router = busbar_kernel::build_router(Arc::clone(&app));
-    tokio::spawn(async move {
-        axum::serve(listener, router).await.expect("serve");
-    });
-
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .expect("client");
-    let authorize = format!(
-        "{real_origin}/defect2/authorize?response_type=code&client_id={CLIENT_ID}\
-         &redirect_uri=http%3A%2F%2F127.0.0.1%3A9999%2Fcb&state=s1&scope={SCOPE}\
-         &code_challenge={CHALLENGE}&code_challenge_method=S256"
-    );
-    let resp = client.get(&authorize).send().await.expect("request");
-    let status = resp.status();
-    let body = resp.text().await.expect("body");
-
-    assert_eq!(
-        status, 502,
-        "an unencodable login redirect must fail closed with a 502, not proceed as though the \
-         resource owner had answered: got {status} {body}"
-    );
+        .expect("response body")
+        .to_bytes();
+    let body = String::from_utf8(bytes.to_vec()).expect("response text");
+    assert_eq!(status,502,
+        "an unencodable login redirect must fail closed with a 502, not proceed as though the resource owner had answered: got {status} {body}");
 }
 
 #[tokio::test]
-async fn a_return_target_a_browser_reads_as_off_site_is_refused_on_approve_and_deny() {
-    let (origin, _app) = serve().await;
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .expect("client");
-    let mut jar = Jar::new(false);
-    let authorize = format!(
-        "{origin}/authorize?response_type=code&client_id={CLIENT_ID}\
-         &redirect_uri=http%3A%2F%2F127.0.0.1%3A9999%2Fcb&state=s1&scope={SCOPE}\
-         &code_challenge={CHALLENGE}&code_challenge_method=S256"
-    );
-    let (_, headers, _) = send(&client, &mut jar, reqwest::Method::GET, &authorize, None).await;
-    let consent = location(&headers, &origin);
-    let (status, _, body) = send(&client, &mut jar, reqwest::Method::GET, &consent, None).await;
-    assert_eq!(
-        status, 200,
-        "the consent screen renders and opens a session: {body}"
-    );
-    assert!(
-        jar.header_for("/consent").is_some(),
-        "the session cookie is live"
-    );
-
-    for answer in ["approve", "deny"] {
-        for bypass in ["/\t/evil.example", "/\n/evil.example", "/\\evil.example"] {
-            let (status, headers, _) = send(
-                &client,
-                &mut jar,
-                reqwest::Method::POST,
-                &format!("{origin}/consent"),
-                Some(&[("return", bypass), ("answer", answer)]),
-            )
-            .await;
-            assert_eq!(
-                status, 400,
-                "{answer} with return {bypass:?} must be refused"
-            );
-            assert!(
-                headers.get(reqwest::header::LOCATION).is_none(),
-                "{answer} with return {bypass:?} redirected the browser"
-            );
-        }
-    }
-
-    let (status, _, _) = send(
-        &client,
-        &mut jar,
-        reqwest::Method::GET,
-        &format!("{origin}/consent?return=%2F%09%2Fevil.example"),
+async fn issued_code_tokens_retain_their_live_private_records_for_each_default_scope() {
+    let block = serde_yaml::to_value(OauthAsCfg {
+        issuer: "https://as.example.com".into(),
+        default_grant: vec!["read".into(), "write".into()],
+        ..Default::default()
+    })
+    .unwrap();
+    let opaque = crate::plane::seam_build::<crate::NoConnections>(
+        &block,
+        Vec::new(),
+        Vec::new(),
         None,
+        Some(crate::testkit::store_calls()),
     )
-    .await;
-    assert_eq!(
-        status, 400,
-        "the consent screen renders for an off-site return target"
-    );
+    .expect("the actual owner seam builds over the supplied Store product");
+    let plane = opaque
+        .downcast::<crate::plane::AsPlane>()
+        .unwrap_or_else(|_| panic!("the owner seam returns its own plane"));
+    for (index, default) in ["read", "read write", ""].into_iter().enumerate() {
+        let client_id = format!("owner-record-{index}");
+        let scope = ScopeSet::parse(default).expect("scope");
+        plane
+            .server()
+            .register_client(Client {
+                client_id: ClientId::new(&client_id),
+                auth: ClientAuth::Public,
+                grant_types: vec![GrantType::AuthorizationCode, GrantType::RefreshToken],
+                redirect_uris: vec![REDIRECT_URI.into()],
+                allowed_scopes: scope.clone(),
+                default_scopes: scope,
+                name: None,
+                registration: None,
+            })
+            .await
+            .expect("the real owner storage registers the client");
+        let request = oauth_as::authorization::AuthorizationRequest::from_pairs([
+            ("response_type", "code"),
+            ("client_id", client_id.as_str()),
+            ("redirect_uri", REDIRECT_URI),
+            ("code_challenge", CHALLENGE),
+            ("code_challenge_method", "S256"),
+        ]);
+        let validated = plane
+            .server()
+            .validate_authorization_request(&request)
+            .await
+            .expect("request validates");
+        let code = plane
+            .server()
+            .issue_authorization_code(oauth_as::server::UserApproval::granted(
+                &validated,
+                "busbar-operator",
+            ))
+            .await
+            .expect("the approved owner request mints a code");
+        let token = plane
+            .server()
+            .token(oauth_as::server::TokenRequest::AuthorizationCode {
+                client_id: ClientId::new(&client_id),
+                client_secret: None,
+                code: code.code,
+                redirect_uri: Some(REDIRECT_URI.into()),
+                code_verifier: Some(VERIFIER.into()),
+            })
+            .await
+            .expect("the approved code exchanges");
+        let record = plane
+            .server()
+            .introspect(&token.access_token)
+            .await
+            .expect("introspection must not fail")
+            .expect("the freshly minted token must be live");
+        assert_eq!(record.client_id.as_str(), client_id);
+        assert_eq!(record.subject.as_deref(), Some("busbar-operator"));
+        assert_eq!(record.scope.to_string(), default);
+    }
 }

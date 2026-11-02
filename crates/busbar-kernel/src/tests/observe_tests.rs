@@ -524,12 +524,28 @@ fn hook_envelope_metrics_are_carried_but_not_folded() {
 
 #[test]
 fn a_hooks_diagnostic_is_emitted_while_its_metrics_stay_frozen() {
-    use crate::test_support::warn_capture::WarnCapture;
-    use tracing_subscriber::layer::SubscriberExt as _;
+    use std::io::Write;
+    #[derive(Clone, Default)]
+    struct HookLog(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+    impl Write for HookLog {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
     let d = crate::diagnostics::PLUGINS_DIR_FINGERPRINT_FAILED;
     let banner = format!("BUSBAR-{}", d.code);
-    let cap = WarnCapture::capturing_debug();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let cap = HookLog::default();
+    let writer = cap.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_writer(move || writer.clone())
+        .with_ansi(false)
+        .without_time()
+        .finish();
     tracing::subscriber::with_default(subscriber, || {
         OBSERVER.observe(
             &*TEST_GRANTS,
@@ -542,10 +558,11 @@ fn a_hooks_diagnostic_is_emitted_while_its_metrics_stay_frozen() {
             })],
         );
     });
+    let text = String::from_utf8(cap.0.lock().unwrap().clone()).unwrap();
     assert!(
-        cap.contains("hook-raised-condition-556"),
+        text.contains("hook-raised-condition-556"),
         "a hook's registered diagnostic must reach the operator's log; captured: {:?}",
-        cap.messages()
+        text
     );
 }
 

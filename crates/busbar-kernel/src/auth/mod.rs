@@ -1184,13 +1184,17 @@ pub(crate) type RefusalDoor = (
     zeroize::Zeroizing<String>,
 );
 
+fn refuse_door((refuse, target): &RefusalDoor) -> Response {
+    refuse(busbar_contract::caps::ReasonCode::Unauthenticated, target)
+}
+
 fn unauthorized_response(
     app: &crate::state::App,
     path: &str,
     door: Option<&RefusalDoor>,
 ) -> Response {
-    if let Some((refuse, target)) = door {
-        return refuse(busbar_contract::caps::ReasonCode::Unauthenticated, target);
+    if let Some(door) = door {
+        return refuse_door(door);
     }
     let ingress = ingress_for_path(app, path);
 
@@ -1356,13 +1360,20 @@ fn module_admin_scope_cap(
     app: &crate::state::App,
     module: &str,
 ) -> Option<busbar_contract::authz::Scope> {
+    module_scope_cap(&app.auth_scope_caps, &app.admin_modules.operator, module)
+}
+
+fn module_scope_cap(
+    caps: &std::collections::HashMap<String, String>,
+    operator: &Operator,
+    module: &str,
+) -> Option<busbar_contract::authz::Scope> {
     use busbar_contract::authz::Scope;
-    if app.admin_modules.operator.is(module) {
+    if operator.is(module) {
         return None;
     }
     Some(
-        app.auth_scope_caps
-            .get(module)
+        caps.get(module)
             .map(String::as_str)
             .and_then(Scope::parse)
             .unwrap_or(Scope::ReadOnly),
@@ -1538,6 +1549,13 @@ async fn judge_admin_chain(
     (verdict, cap, carried.replay, carried.no_verdict)
 }
 
+fn cap_admin_scope(
+    grants: busbar_contract::authz::Grants,
+    cap: Option<busbar_contract::authz::Scope>,
+) -> busbar_contract::authz::Grants {
+    cap.map_or(grants, |cap| grants.capped_by(cap))
+}
+
 fn admin_door_of(
     app: &App,
     verdict: ChainVerdict,
@@ -1550,7 +1568,7 @@ fn admin_door_of(
             module, principal, ..
         } => {
             let grants = admin_scope_for(app, Some(&module), Some(&principal));
-            let rungs = cap.map_or(grants, |c| grants.capped_by(c));
+            let rungs = cap_admin_scope(grants, cap);
             let named = admin_verbs_named(app, &module, &principal, cap);
             if named.is_empty() {
                 return AdminDoor::Identified(principal, rungs);
@@ -1625,19 +1643,34 @@ fn admin_scope_for(
     module: Option<&str>,
     principal: Option<&Principal>,
 ) -> busbar_contract::authz::Grants {
+    admin_scope_from_bindings(
+        &app.role_bindings,
+        &app.admin_modules.operator,
+        crate::config::operator_principal_id(),
+        module,
+        principal,
+    )
+}
+
+fn admin_scope_from_bindings(
+    role_bindings: &crate::config::RoleBindings,
+    operator: &Operator,
+    operator_principal: &str,
+    module: Option<&str>,
+    principal: Option<&Principal>,
+) -> busbar_contract::authz::Grants {
     use busbar_contract::authz::{Grants, Scope};
     let Some(p) = principal else {
         return Grants::of(Scope::Full);
     };
 
     if p.roles.is_empty() {
-        let op = &app.admin_modules.operator;
-        if op.mints(module, &p.id, crate::config::operator_principal_id()) {
+        if operator.mints(module, &p.id, operator_principal) {
             return Grants::of(Scope::Full);
         }
         return Grants::default();
     }
-    let Some(table) = module.and_then(|m| app.role_bindings.get(m)) else {
+    let Some(table) = module.and_then(|m| role_bindings.get(m)) else {
         return Grants::default();
     };
 
@@ -2249,6 +2282,13 @@ pub fn resolve_data_plane_identity(
     app: &crate::state::App,
     verdict: ChainVerdict,
 ) -> Result<(AuthPrincipal, crate::governance::GovCtx), IdentityRefusal> {
+    resolve_identity_from_bindings(&app.role_bindings, verdict)
+}
+
+fn resolve_identity_from_bindings(
+    role_bindings: &crate::config::RoleBindings,
+    verdict: ChainVerdict,
+) -> Result<(AuthPrincipal, crate::governance::GovCtx), IdentityRefusal> {
     match verdict {
         ChainVerdict::Open => Ok((AuthPrincipal(None), crate::governance::GovCtx::default())),
         ChainVerdict::Denied => Err(IdentityRefusal::Denied),
@@ -2258,10 +2298,10 @@ pub fn resolve_data_plane_identity(
             resolved,
         } => {
             let gov_key = resolved.or_else(|| {
-                crate::governance::synthesize_bound_key(&module, &principal, &app.role_bindings)
+                crate::governance::synthesize_bound_key(&module, &principal, role_bindings)
             });
             let Some(key) = gov_key else {
-                if admits_ungoverned(&module, &principal, &app.role_bindings) {
+                if admits_ungoverned(&module, &principal, role_bindings) {
                     return Ok((
                         AuthPrincipal(Some(principal)),
                         crate::governance::GovCtx { key: None },
@@ -2377,23 +2417,6 @@ impl AuthMiddleware {
         }
     }
 
-    pub fn with_fallback_test_metadata(
-        mut self,
-        carriers: &[&str],
-        issued: Option<(String, busbar_contract::auth_calls::IssuedShape)>,
-    ) -> Self {
-        if self.carriers.is_empty() {
-            self.carriers = carriers
-                .iter()
-                .filter_map(|word| HeaderName::from_bytes(word.as_bytes()).ok())
-                .collect();
-        }
-        if self.issued.is_none() {
-            self.issued = issued;
-        }
-        self
-    }
-
     #[cfg(test)]
     pub fn from_doors_for_test(chain: Vec<(String, std::sync::Arc<dyn AuthCalls>)>) -> Self {
         let carriers = test_inbound_style();
@@ -2454,35 +2477,6 @@ mod plugin_chain_tests;
 #[cfg(test)]
 #[path = "tests/acceptance_1_5_5_tests.rs"]
 mod acceptance_1_5_5_tests;
-
-#[cfg(test)]
-#[path = "tests/c7_injection_tests.rs"]
-mod c7_injection_tests;
-
-#[cfg(test)]
-#[test]
-fn fallback_test_metadata_fills_absence_and_keeps_existing_values() {
-    let expected = crate::test_support::issued::double();
-    let mut replacement = expected.clone();
-    replacement.0 = "different-issued-kind".to_string();
-    let middleware = AuthMiddleware::from_calls_for_test(Vec::new(), &[])
-        .with_fallback_test_metadata(&["x-original-credential"], Some(expected.clone()))
-        .with_fallback_test_metadata(&["x-replacement-credential"], Some(replacement));
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        "x-original-credential",
-        HeaderValue::from_static("original"),
-    );
-    headers.insert(
-        "x-replacement-credential",
-        HeaderValue::from_static("replacement"),
-    );
-    assert_eq!(
-        middleware.extract_client_token(&headers).as_deref(),
-        Some("original")
-    );
-    assert_eq!(middleware.issued_credential(), Some(expected));
-}
 
 #[cfg(test)]
 #[path = "tests/ticket_store_tests.rs"]

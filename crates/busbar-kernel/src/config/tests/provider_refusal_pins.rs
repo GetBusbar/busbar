@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use super::{resolve, ProviderDef, ProviderDeploy};
 
 fn deployment_refusal(key: &str) -> String {
-    crate::test_support::register_neutral_test_plane();
     crate::config::deploy_from_yaml_str(&format!(
         "providers:\n  p:\n    api_key: {{env: K}}\n    {key}: [a]\n"
     ))

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use crate::test_support::tokens::pass;
+use busbar_contract::caps::Pass;
 use std::sync::{Arc, Mutex};
 
 use tracing_subscriber::layer::SubscriberExt as _;
@@ -66,7 +66,7 @@ fn first_attempt(node: &Node) -> (Pick, Vec<Opened>) {
     let egress = node.egress();
     let picked = tracing::subscriber::with_default(subscriber, || {
         node.rt.block_on(async {
-            let token = pass::<busbar_contract::caps::Route>();
+            let token = Pass::<busbar_contract::caps::Route>::mint(&crate::seal::acquire());
             let far = egress.unit(node.unit_route("primary"));
             let picked = far.member(&token, 1).await;
             drop(far.attempt_span(&token));

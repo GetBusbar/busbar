@@ -1304,6 +1304,3 @@ mod router_door_tests;
 #[path = "tests/router_session_tests.rs"]
 mod router_session_tests;
 
-#[cfg(test)]
-#[path = "../../busbar-kernel-testkit/src/websocket.rs"]
-mod session_socket_test_adapter;

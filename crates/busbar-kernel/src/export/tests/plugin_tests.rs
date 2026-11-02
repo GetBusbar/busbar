@@ -543,9 +543,6 @@ fn a_reference_at_a_reference_capable_url_reaches_the_sink_resolved() {
 
 #[test]
 fn export_reference_diagnostics_keep_secret_and_plain_fields_distinct() {
-    use crate::test_support::warn_capture::WarnCapture;
-    use tracing_subscriber::layer::SubscriberExt as _;
-
     let url_var = format!("BUSBAR_T_EXPORT_CLASS_URL_{}", std::process::id());
     let token_var = format!("BUSBAR_T_EXPORT_CLASS_TOKEN_{}", std::process::id());
     let url = "https://classification.example/collector";
@@ -556,8 +553,13 @@ fn export_reference_diagnostics_keep_secret_and_plain_fields_distinct() {
         "url": { "env": url_var },
         "auth_header": { "name": "Authorization", "value": { "env": token_var } },
     }));
-    let cap = WarnCapture::capturing_debug();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let output = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_max_level(tracing::Level::DEBUG)
+        .with_writer(output.clone())
+        .finish();
     let handed = tracing::subscriber::with_default(subscriber, || {
         sink_settings(&DeclaringAxis, "declaring-sink", &written)
     });
@@ -581,7 +583,8 @@ fn export_reference_diagnostics_keep_secret_and_plain_fields_distinct() {
             .as_value(),
         &Value::Object(literal.clone())
     );
-    let events = cap.messages();
+    let captured = String::from_utf8(output.lock().unwrap().clone()).expect("UTF-8 diagnostics");
+    let events: Vec<_> = captured.lines().collect();
     assert!(
         events
             .iter()
@@ -591,14 +594,14 @@ fn export_reference_diagnostics_keep_secret_and_plain_fields_distinct() {
     assert!(
         events
             .iter()
-            .any(|line| line.contains("setting=url ")
+            .any(|line| line.contains("setting=\"url\" ")
                 && line.contains("reference-capable (not secret)")),
         "the URL reference must retain its plain-setting classification"
     );
     assert!(
         events
             .iter()
-            .any(|line| line.contains("setting=auth_header.value ")
+            .any(|line| line.contains("setting=\"auth_header.value\" ")
                 && line.contains("SECRET REFERENCE")),
         "the declared credential must be identified as a secret reference"
     );

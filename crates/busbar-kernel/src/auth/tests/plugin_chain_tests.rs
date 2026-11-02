@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use crate::auth::{AuthMiddleware, ChainVerdict};
+use crate::auth::AuthMiddleware;
 use crate::config::{AuthCfg, AuthChainEntry, PluginsCfg};
 use crate::tests::{dropped, tmp_plugin_dir};
 use std::path::Path;
@@ -25,33 +25,14 @@ fn chain_with(module: &str, settings: serde_json::Map<String, serde_json::Value>
     }
 }
 
-struct PlatformRole;
-impl busbar_contract::auth::AuthModule for PlatformRole {
-    fn name(&self) -> &'static str {
-        "platform-role-module"
-    }
-    fn authenticate(&self, candidate: Option<&str>) -> busbar_contract::auth::AuthVerdict {
-        match candidate {
-            Some("alice") => busbar_contract::auth::AuthVerdict::Identify(crate::auth::Principal {
-                id: "oidc:alice".to_string(),
-                name: None,
-                roles: vec!["platform".to_string()],
-                ttl_secs: None,
-            }),
-            _ => busbar_contract::auth::AuthVerdict::Pass,
-        }
-    }
-}
-
+/// Internal policy continuation after identity has been verified. The root's
+/// a_verified_oidc_role_is_bound_under_the_provider_name separately checks that the actual
+/// OIDC product delivers the provider identity and platform role used here.
 #[test]
 fn auth_plugin_role_binding_and_scope_cap_apply() {
     use busbar_contract::authz::Scope;
-    crate::snapshot::init();
-
     let mut cfg = chain_with("idp", serde_json::Map::new());
-
     cfg.chain[0].max_admin_scope = Some("read-only".into());
-
     let mut roles = std::collections::BTreeMap::new();
     roles.insert(
         "platform".to_string(),
@@ -61,28 +42,13 @@ fn auth_plugin_role_binding_and_scope_cap_apply() {
         },
     );
     cfg.role_bindings.insert("idp".into(), roles);
-
-    let mw = AuthMiddleware::from_doors_for_test(vec![(
-        "idp".to_string(),
-        std::sync::Arc::new(crate::auth::stand_in::InProcessAuth::new(Box::new(
-            PlatformRole,
-        ))) as std::sync::Arc<dyn busbar_contract::auth_calls::AuthCalls>,
-    )]);
-
-    let principal = match mw.run_chain(Some("alice")) {
-        ChainVerdict::Identified {
-            module, principal, ..
-        } => {
-            assert_eq!(module, "idp", "role_bindings key = the PROVIDER NAME");
-            principal
-        }
-        other => panic!("expected Identify, got {other:?}"),
-    };
-
-    let bound = crate::auth::admin_scope_for(
-        &crate::test_support::TestApp::new()
-            .role_bindings(cfg.role_bindings.clone())
-            .build(),
+    let operator = crate::auth::Operator::new("operator-provider");
+    let mut principal = crate::auth::Principal::from_id("oidc:alice");
+    principal.roles = vec!["platform".to_string()];
+    let bound = crate::auth::admin_scope_from_bindings(
+        &cfg.role_bindings,
+        &operator,
+        "operator:local",
         Some("idp"),
         Some(&principal),
     );
@@ -91,23 +57,16 @@ fn auth_plugin_role_binding_and_scope_cap_apply() {
         busbar_contract::authz::Grants::of(Scope::Full),
         "role binds full under the provider name"
     );
-
     for (configured, expected) in [("read-only", Scope::ReadOnly), ("full", Scope::Full)] {
         cfg.chain[0].max_admin_scope = Some(configured.into());
-        let mut app = crate::test_support::TestApp::new()
-            .admin_chain(vec!["idp".into()])
-            .admin_module("idp", Box::new(PlatformRole))
-            .role_bindings(cfg.role_bindings.clone())
-            .build();
-        std::sync::Arc::get_mut(&mut app)
-            .expect("fresh app is unshared")
-            .auth_scope_caps = crate::router::project_auth_scope_caps(&cfg);
-        let mut headers = axum::http::HeaderMap::new();
-        headers.insert("authorization", "Bearer alice".parse().unwrap());
+        let caps = crate::router::project_auth_scope_caps(&cfg);
         assert_eq!(
-            crate::auth::dry_run_admin_scope(&app, &headers),
+            crate::auth::cap_admin_scope(
+                bound,
+                crate::auth::module_scope_cap(&caps, &operator, "idp"),
+            ),
             busbar_contract::authz::Grants::of(expected),
-            "the configured {configured} ceiling must reach the real admin authorization path"
+            "the configured {configured} ceiling reaches the production authorization policy"
         );
     }
 }

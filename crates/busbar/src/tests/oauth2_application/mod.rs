@@ -14,8 +14,15 @@ use busbar_kernel::state::App;
 mod plugins;
 
 mod browser;
+mod code_flow_tests;
+mod consent_tests;
+mod device_tests;
+mod directory;
 mod fapi2_tests;
+mod hosted_credential_tests;
+mod hosted_provider_tests;
 mod hosted_routes_tests;
+mod issuer;
 mod mount_tests;
 mod registration_tests;
 
@@ -30,11 +37,18 @@ fn application_with_resource_auth(
     prior: Option<&App>,
     resource_auth: bool,
 ) -> Arc<App> {
-    build_application(oauth_as, prior, resource_auth, None)
+    build_application(oauth_as, prior, resource_auth, None, None)
 }
 
 fn application_with_document(document: serde_json::Value) -> Arc<App> {
-    build_application(None, None, false, Some(document))
+    build_application(None, None, false, Some(document), None)
+}
+
+fn application_with_auth_plugin(
+    document: serde_json::Value,
+    library: &std::path::Path,
+) -> Arc<App> {
+    build_application(None, None, false, Some(document), Some(library))
 }
 
 fn build_application(
@@ -42,6 +56,7 @@ fn build_application(
     prior: Option<&App>,
     resource_auth: bool,
     document: Option<serde_json::Value>,
+    auth_library: Option<&std::path::Path>,
 ) -> Arc<App> {
     static BUILDING: Mutex<()> = Mutex::new(());
     let _building = BUILDING
@@ -92,16 +107,19 @@ fn build_application(
     if let Some(block) = oauth_as {
         document["oauth_as"] = serde_json::to_value(block).expect("the OAuth config serializes");
     }
-    if resource_auth {
-        let block = oauth_as.expect("resource auth verifies this configured authorization server");
-        let path = plugins::token_verifier_cdylib_path().expect(
-            "build the pinned auth-oidc product cdylib before running OAuth application tests",
-        );
+    let auth_library = auth_library.map(std::path::Path::to_owned).or_else(|| {
+        resource_auth.then(|| {
+            plugins::token_verifier_cdylib_path().expect(
+                "build the pinned auth-oidc product cdylib before running OAuth application tests",
+            )
+        })
+    });
+    let auth_name = auth_library.map(|path| {
         let statement = busbar_plugin_loader::dispatch::rendering_of_library(&path)
-            .expect("the actual OIDC statement reads")
-            .expect("the actual OIDC library states itself");
+            .expect("the actual auth statement reads")
+            .expect("the actual auth library states itself");
         let name = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual OIDC statement is valid")
+            .expect("the actual auth statement is valid")
             .name;
         let mut manifest = plugins::manifest(
             "auth",
@@ -109,10 +127,15 @@ fn build_application(
             busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
         );
         manifest.statement = Some(hex::encode(statement));
-        let library = std::fs::read(path).expect("the actual OIDC library reads");
+        let library = std::fs::read(&path).expect("the actual auth library reads");
         let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
-        std::fs::write(directory.join("oauth-resource.tar.gz"), archive)
-            .expect("stage the actual OIDC archive");
+        std::fs::write(directory.join("auth-product.tar.gz"), archive)
+            .expect("stage the actual auth archive");
+        name
+    });
+    if resource_auth {
+        let block = oauth_as.expect("resource auth verifies this configured authorization server");
+        let name = auth_name.expect("the actual resource verifier was staged");
         document["identity-providers"] = serde_json::json!({
             "oauth-resource": {
                 "module": name,

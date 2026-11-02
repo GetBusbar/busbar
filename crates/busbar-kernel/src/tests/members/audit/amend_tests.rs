@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use crate::test_support::tokens::pass;
+use busbar_contract::caps::Pass;
 use busbar_contract::{
     caps::{Audit as AuditStep, KernelSeal},
     count::Count,
@@ -108,7 +108,10 @@ fn a_correction() -> AmendBody {
 #[test]
 fn an_access_records_who_read_what_and_never_what_they_read() {
     let mut chain = AmendChain::new();
-    let amendment = chain.append(an_access(), &pass::<AuditStep>());
+    let amendment = chain.append(
+        an_access(),
+        &Pass::<AuditStep>::mint(&crate::seal::acquire()),
+    );
     assert_eq!(amendment.class(), AmendClass::Access);
     match &amendment.body {
         AmendBody::Access(a) => {
@@ -133,8 +136,14 @@ fn an_export_access_is_recorded_the_same_way_a_hook_access_is() {
             1,
         )
     };
-    let hook = AmendChain::new().append(access_by(Reader::Hook), &pass::<AuditStep>());
-    let export = AmendChain::new().append(access_by(Reader::Export), &pass::<AuditStep>());
+    let hook = AmendChain::new().append(
+        access_by(Reader::Hook),
+        &Pass::<AuditStep>::mint(&crate::seal::acquire()),
+    );
+    let export = AmendChain::new().append(
+        access_by(Reader::Export),
+        &Pass::<AuditStep>::mint(&crate::seal::acquire()),
+    );
 
     assert_eq!(export.class(), AmendClass::Access);
     assert_eq!(export.class(), hook.class());
@@ -165,7 +174,10 @@ fn an_export_access_is_recorded_the_same_way_a_hook_access_is() {
 #[test]
 fn a_correction_names_what_it_amends_and_why() {
     let mut chain = AmendChain::new();
-    let amendment = chain.append(a_correction(), &pass::<AuditStep>());
+    let amendment = chain.append(
+        a_correction(),
+        &Pass::<AuditStep>::mint(&crate::seal::acquire()),
+    );
     assert_eq!(amendment.class(), AmendClass::Adjust);
     match &amendment.body {
         AmendBody::Adjust(a) => {
@@ -183,7 +195,10 @@ fn a_correction_names_what_it_amends_and_why() {
 #[test]
 fn the_original_figure_survives_the_correction() {
     let mut chain = AmendChain::new();
-    let amendment = chain.append(a_correction(), &pass::<AuditStep>());
+    let amendment = chain.append(
+        a_correction(),
+        &Pass::<AuditStep>::mint(&crate::seal::acquire()),
+    );
     match &amendment.body {
         AmendBody::Adjust(a) => {
             assert_eq!(
@@ -205,9 +220,18 @@ fn the_original_figure_survives_the_correction() {
 #[test]
 fn accesses_and_corrections_share_one_chain_so_their_order_survives() {
     let mut chain = AmendChain::new();
-    let first = chain.append(an_access(), &pass::<AuditStep>());
-    let second = chain.append(a_correction(), &pass::<AuditStep>());
-    let third = chain.append(an_access(), &pass::<AuditStep>());
+    let first = chain.append(
+        an_access(),
+        &Pass::<AuditStep>::mint(&crate::seal::acquire()),
+    );
+    let second = chain.append(
+        a_correction(),
+        &Pass::<AuditStep>::mint(&crate::seal::acquire()),
+    );
+    let third = chain.append(
+        an_access(),
+        &Pass::<AuditStep>::mint(&crate::seal::acquire()),
+    );
 
     assert_eq!(first.seq, 1);
     assert_eq!(second.seq, 2);
@@ -221,9 +245,18 @@ fn accesses_and_corrections_share_one_chain_so_their_order_survives() {
 fn editing_an_amendment_is_caught() {
     let mut chain = AmendChain::new();
     let mut run = vec![
-        chain.append(an_access(), &pass::<AuditStep>()),
-        chain.append(a_correction(), &pass::<AuditStep>()),
-        chain.append(an_access(), &pass::<AuditStep>()),
+        chain.append(
+            an_access(),
+            &Pass::<AuditStep>::mint(&crate::seal::acquire()),
+        ),
+        chain.append(
+            a_correction(),
+            &Pass::<AuditStep>::mint(&crate::seal::acquire()),
+        ),
+        chain.append(
+            an_access(),
+            &Pass::<AuditStep>::mint(&crate::seal::acquire()),
+        ),
     ];
     assert!(AmendChain::verify(&run).is_ok());
 
@@ -243,9 +276,18 @@ fn editing_an_amendment_is_caught() {
 fn removing_an_amendment_from_the_middle_is_caught() {
     let mut chain = AmendChain::new();
     let mut run = vec![
-        chain.append(an_access(), &pass::<AuditStep>()),
-        chain.append(a_correction(), &pass::<AuditStep>()),
-        chain.append(an_access(), &pass::<AuditStep>()),
+        chain.append(
+            an_access(),
+            &Pass::<AuditStep>::mint(&crate::seal::acquire()),
+        ),
+        chain.append(
+            a_correction(),
+            &Pass::<AuditStep>::mint(&crate::seal::acquire()),
+        ),
+        chain.append(
+            an_access(),
+            &Pass::<AuditStep>::mint(&crate::seal::acquire()),
+        ),
     ];
     run.remove(1);
     let brk = AmendChain::verify(&run).unwrap_err();
@@ -257,10 +299,13 @@ fn a_journal_bounds_what_it_holds() {
     let mut journal = AmendJournal::new();
     journal.append(
         one_count("x", Subject::Aggregate, 10, 9),
-        &pass::<AuditStep>(),
+        &Pass::<AuditStep>::mint(&crate::seal::acquire()),
     );
     for _ in 0..AMENDMENTS_RETAINED {
-        journal.append(an_access(), &pass::<AuditStep>());
+        journal.append(
+            an_access(),
+            &Pass::<AuditStep>::mint(&crate::seal::acquire()),
+        );
     }
     assert_eq!(journal.recent().count(), AMENDMENTS_RETAINED);
     assert_eq!(journal.released(), 1);
@@ -271,9 +316,18 @@ fn a_journal_bounds_what_it_holds() {
 fn truncating_the_head_of_an_amendment_run_is_caught() {
     let mut chain = AmendChain::new();
     let mut run = vec![
-        chain.append(an_access(), &pass::<AuditStep>()),
-        chain.append(a_correction(), &pass::<AuditStep>()),
-        chain.append(an_access(), &pass::<AuditStep>()),
+        chain.append(
+            an_access(),
+            &Pass::<AuditStep>::mint(&crate::seal::acquire()),
+        ),
+        chain.append(
+            a_correction(),
+            &Pass::<AuditStep>::mint(&crate::seal::acquire()),
+        ),
+        chain.append(
+            an_access(),
+            &Pass::<AuditStep>::mint(&crate::seal::acquire()),
+        ),
     ];
     assert!(AmendChain::verify(&run).is_ok());
 
@@ -287,9 +341,18 @@ fn truncating_the_head_of_an_amendment_run_is_caught() {
 fn truncating_the_tail_of_an_amendment_run_is_caught_against_the_chain_head() {
     let mut chain = AmendChain::new();
     let mut run = vec![
-        chain.append(an_access(), &pass::<AuditStep>()),
-        chain.append(a_correction(), &pass::<AuditStep>()),
-        chain.append(an_access(), &pass::<AuditStep>()),
+        chain.append(
+            an_access(),
+            &Pass::<AuditStep>::mint(&crate::seal::acquire()),
+        ),
+        chain.append(
+            a_correction(),
+            &Pass::<AuditStep>::mint(&crate::seal::acquire()),
+        ),
+        chain.append(
+            an_access(),
+            &Pass::<AuditStep>::mint(&crate::seal::acquire()),
+        ),
     ];
     assert!(chain.verify_to_head(&run).is_ok());
 
@@ -304,16 +367,25 @@ fn truncating_the_tail_of_an_amendment_run_is_caught_against_the_chain_head() {
 fn an_empty_run_verifies_alone_and_fails_against_a_chain_that_sealed_one() {
     assert!(AmendChain::verify(&[]).is_ok());
     let mut chain = AmendChain::new();
-    let _ = chain.append(a_correction(), &pass::<AuditStep>());
+    let _ = chain.append(
+        a_correction(),
+        &Pass::<AuditStep>::mint(&crate::seal::acquire()),
+    );
     assert!(chain.verify_to_head(&[]).is_err());
 }
 
 #[test]
 fn a_chain_resumed_from_a_persisted_tail_continues_it() {
     let mut chain = AmendChain::new();
-    let first = chain.append(an_access(), &pass::<AuditStep>());
+    let first = chain.append(
+        an_access(),
+        &Pass::<AuditStep>::mint(&crate::seal::acquire()),
+    );
     let mut resumed = AmendChain::resume(chain.head().to_string(), chain.next_seq());
-    let second = resumed.append(a_correction(), &pass::<AuditStep>());
+    let second = resumed.append(
+        a_correction(),
+        &Pass::<AuditStep>::mint(&crate::seal::acquire()),
+    );
     assert_eq!(second.seq, 2);
     assert_eq!(second.prev_hash, first.hash);
     assert!(AmendChain::verify(&[first, second]).is_ok());
@@ -325,11 +397,11 @@ fn a_principal_pseudonym_that_reads_as_a_node_does_not_digest_as_one() {
     let mut other = AmendChain::new();
     let as_principal = one.append(
         one_count("e", Subject::PrincipalId("7".into()), 10, 5),
-        &pass::<AuditStep>(),
+        &Pass::<AuditStep>::mint(&crate::seal::acquire()),
     );
     let as_node = other.append(
         one_count("e", Subject::Node(7), 10, 5),
-        &pass::<AuditStep>(),
+        &Pass::<AuditStep>::mint(&crate::seal::acquire()),
     );
     assert_ne!(as_principal.hash, as_node.hash);
 }
@@ -337,8 +409,14 @@ fn a_principal_pseudonym_that_reads_as_a_node_does_not_digest_as_one() {
 #[test]
 fn the_sealed_digest_of_an_amendment_is_the_frozen_hex() {
     let mut chain = AmendChain::new();
-    let access = chain.append(an_access(), &pass::<AuditStep>());
-    let adjust = chain.append(a_correction(), &pass::<AuditStep>());
+    let access = chain.append(
+        an_access(),
+        &Pass::<AuditStep>::mint(&crate::seal::acquire()),
+    );
+    let adjust = chain.append(
+        a_correction(),
+        &Pass::<AuditStep>::mint(&crate::seal::acquire()),
+    );
     assert_eq!(
         access.hash, "2a9ac567b083d3fc25768d98445737fb2aee7a20db291930467a7abbfa83944b",
         "the amendment digest MOVED. Every stored correction now reports itself tampered. Restore \
@@ -367,8 +445,11 @@ fn a_pooled_adjustment_digests_its_pool_and_an_unscoped_one_digests_as_sealed() 
             a.pool = pool.map(str::to_string);
         }
         let mut chain = AmendChain::new();
-        chain.append(an_access(), &pass::<AuditStep>());
-        chain.append(body, &pass::<AuditStep>())
+        chain.append(
+            an_access(),
+            &Pass::<AuditStep>::mint(&crate::seal::acquire()),
+        );
+        chain.append(body, &Pass::<AuditStep>::mint(&crate::seal::acquire()))
     };
     assert_eq!(
         pooled(None).hash,
@@ -431,7 +512,7 @@ fn an_amendment_names_the_audit_record_it_amends() {
             controls: Controls::default(),
             correlation_label: None,
         },
-        &pass::<AuditStep>(),
+        &Pass::<AuditStep>::mint(&crate::seal::acquire()),
     );
 
     let mut chain = AmendChain::new();
@@ -448,7 +529,7 @@ fn an_amendment_names_the_audit_record_it_amends() {
             2,
         )
         .unwrap(),
-        &pass::<AuditStep>(),
+        &Pass::<AuditStep>::mint(&crate::seal::acquire()),
     );
     match &amendment.body {
         AmendBody::Adjust(a) => assert_eq!(a.amends_hash, record.hash),
@@ -459,13 +540,22 @@ fn an_amendment_names_the_audit_record_it_amends() {
 #[test]
 fn a_journal_rebuilt_from_its_run_reads_and_continues_as_the_one_that_sealed_it() {
     let mut sealed = AmendJournal::new();
-    sealed.append(an_access(), &pass::<AuditStep>());
-    sealed.append(a_correction(), &pass::<AuditStep>());
+    sealed.append(
+        an_access(),
+        &Pass::<AuditStep>::mint(&crate::seal::acquire()),
+    );
+    sealed.append(
+        a_correction(),
+        &Pass::<AuditStep>::mint(&crate::seal::acquire()),
+    );
     let run: Vec<_> = sealed.recent().cloned().collect();
 
     let mut rebuilt = AmendJournal::restore(run.clone()).expect("a whole run rebuilds");
     assert_eq!(rebuilt.head(), sealed.head());
-    let next = rebuilt.append(an_access(), &pass::<AuditStep>());
+    let next = rebuilt.append(
+        an_access(),
+        &Pass::<AuditStep>::mint(&crate::seal::acquire()),
+    );
     assert_eq!((next.seq, next.prev_hash.as_str()), (3, sealed.head()));
     assert_eq!(rebuilt.verify(), Ok(()));
 

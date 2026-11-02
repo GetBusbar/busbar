@@ -1,30 +1,29 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::sync::Arc;
-
-use busbar_contract::plugin_rows::PluginRows;
 use serde_json::json;
 
-use super::undeclared_secret_refs;
+use super::check_declared_paths;
 
-fn rows() -> Arc<dyn PluginRows> {
-    crate::test_support::rows::Rows::new()
-        .with_dropped_secret_slots(
-            crate::tests::dropped("acme-store", "acme", "store"),
-            &["dsn", "replicas.*.password"],
-        )
-        .with_dropped_secret_slots(
-            crate::tests::dropped("busbar-auth-github", "github", "auth"),
-            &["client_secret"],
-        )
-        .into_rows()
+fn check(cfg: &crate::config::RootCfg) -> Result<(), String> {
+    check_declared_paths(
+        cfg,
+        |module| match module {
+            "acme-store" => vec!["dsn".into(), "replicas.*.password".into()],
+            "github" => vec!["client_secret".into()],
+            _ => Vec::new(),
+        },
+        |_| Vec::new(),
+    )
 }
 
 fn store_with(settings: serde_json::Value) -> crate::config::RootCfg {
-    let mut cfg = crate::test_support::cfg_with_provider_api_key(crate::config::SecretRef::env(
-        "PROVIDER_KEY",
-    ));
+    let deploy: crate::config::DeployCfg = serde_yaml::from_str(
+        "providers: {}\nstore: {module: acme-store}\nauth: {chain: [], admin_auth: []}\n",
+    )
+    .expect("the kernel-owned config parses");
+    let mut cfg = crate::config::resolve(&deploy, &Default::default())
+        .expect("the kernel-owned config resolves");
     let serde_json::Value::Object(settings) = settings else {
         panic!("an object");
     };
@@ -38,7 +37,7 @@ fn store_with(settings: serde_json::Value) -> crate::config::RootCfg {
 #[test]
 fn a_reference_at_an_undeclared_field_is_refused_naming_field_plugin_and_the_way_out() {
     let cfg = store_with(json!({"dsn": {"env": "PG_DSN"}, "base": {"env": "BASE"}}));
-    let e = undeclared_secret_refs(rows().as_ref(), &cfg).expect_err("refused");
+    let e = check(&cfg).expect_err("refused");
     assert!(e.contains("store.settings.base"), "names the field: {e}");
     assert!(e.contains("'acme-store'"), "names the plugin: {e}");
     assert!(
@@ -54,7 +53,7 @@ fn a_reference_at_an_undeclared_field_is_refused_naming_field_plugin_and_the_way
 #[test]
 fn a_reference_nested_at_any_depth_is_refused() {
     let cfg = store_with(json!({"pool": {"hosts": [{"auth": {"file": "/run/k"}}]}}));
-    let e = undeclared_secret_refs(rows().as_ref(), &cfg).expect_err("refused");
+    let e = check(&cfg).expect_err("refused");
     assert!(e.contains("store.settings.pool.hosts.0.auth"), "{e}");
 }
 
@@ -66,7 +65,7 @@ fn references_at_a_declared_exact_path_and_a_declared_wildcard_path_are_accepted
         "data": {"literal": {"env": "HOME"}},
         "name": "plain"
     }));
-    assert_eq!(undeclared_secret_refs(rows().as_ref(), &cfg), Ok(()));
+    assert_eq!(check(&cfg), Ok(()));
 }
 
 #[test]
@@ -89,7 +88,7 @@ fn q123_a_github_base_written_as_a_reference_is_refused() {
             settings,
         },
     );
-    let e = undeclared_secret_refs(rows().as_ref(), &cfg).expect_err("refused");
+    let e = check(&cfg).expect_err("refused");
     assert!(
         e.contains("identity-providers.github.settings.api_base"),
         "{e}"
@@ -99,44 +98,44 @@ fn q123_a_github_base_written_as_a_reference_is_refused() {
 
 #[test]
 fn core_fields_are_not_plugin_settings() {
-    assert_eq!(
-        undeclared_secret_refs(rows().as_ref(), &store_with(json!({}))),
-        Ok(())
-    );
+    assert_eq!(check(&store_with(json!({}))), Ok(()));
 }
 
 #[test]
 fn a_reference_at_a_reference_capable_url_is_accepted_and_elsewhere_refused() {
-    let rows = || {
-        let mut rows = crate::test_support::rows::Rows::new();
-        for (name, alias, kind) in [
-            ("busbar-store-postgres", "postgres", "store"),
-            ("busbar-store-valkey", "valkey", "store"),
-            ("busbar-store-mysql", "mysql", "store"),
-            ("busbar-hook-webrequest", "webrequest", "hook"),
-            ("busbar-export-otlp", "otlp", "export"),
-            ("busbar-export-webhook", "request-log-webhook", "export"),
-        ] {
-            rows = rows
-                .with_dropped_reference_slots(crate::tests::dropped(name, alias, kind), &["url"]);
-        }
-        rows.into_rows()
+    let check = |cfg: &crate::config::RootCfg| {
+        check_declared_paths(
+            cfg,
+            |_| Vec::new(),
+            |module| {
+                if [
+                    "postgres",
+                    "valkey",
+                    "mysql",
+                    "webrequest",
+                    "otlp",
+                    "request-log-webhook",
+                ]
+                .contains(&module)
+                {
+                    vec!["url".into()]
+                } else {
+                    Vec::new()
+                }
+            },
+        )
     };
     for store in ["postgres", "valkey", "mysql"] {
         let mut cfg = store_with(json!({"url": {"env": "STORE_URL"}}));
         if let Some(s) = cfg.store.as_mut() {
             s.module = store.into();
         }
-        assert_eq!(
-            undeclared_secret_refs(rows().as_ref(), &cfg),
-            Ok(()),
-            "{store}"
-        );
+        assert_eq!(check(&cfg), Ok(()), "{store}");
         let mut cfg = store_with(json!({"url": "postgres://x", "pool": {"env": "POOL"}}));
         if let Some(s) = cfg.store.as_mut() {
             s.module = store.into();
         }
-        let e = undeclared_secret_refs(rows().as_ref(), &cfg).expect_err("refused");
+        let e = check(&cfg).expect_err("refused");
         assert!(e.contains("store.settings.pool"), "{store}: {e}");
     }
 
@@ -157,5 +156,5 @@ fn a_reference_at_a_reference_capable_url_is_accepted_and_elsewhere_refused() {
         .expect("an export");
         cfg.export_defs.insert(name.into(), def);
     }
-    assert_eq!(undeclared_secret_refs(rows().as_ref(), &cfg), Ok(()));
+    assert_eq!(check(&cfg), Ok(()));
 }

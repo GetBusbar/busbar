@@ -1012,7 +1012,7 @@ fn test_additive_flush_carries_refund_deltas() {
 
 #[test]
 fn test_metering_accumulator_is_bounded_and_lossless_under_sustained_store_outage() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
 
     struct MeteringDownStore {
         inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
@@ -2109,7 +2109,7 @@ impl RecordStore for RecordingBarrierStore {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_write_behind_flush_serializes_and_counts_exactly_once() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel::<()>(1);
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
     let store = Arc::new(RecordingBarrierStore {

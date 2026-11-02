@@ -368,7 +368,7 @@ fn a_login_method_with_no_auth_axis_is_refused_in_1_5_5_words() {
 
 #[tokio::test]
 async fn the_kernel_serves_no_hosted_login_page_of_its_own() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let app = crate::test_support::TestApp::new()
         .public_url("https://busbar.example.com")
         .build();

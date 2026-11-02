@@ -46,7 +46,7 @@ async fn served(
     headers: &[(&str, String)],
     authorization_server: bool,
 ) -> (u16, String) {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let mut app = TestApp::new().idp_chain();
     if authorization_server {
         app = app.oauth_as_plane(std::sync::Arc::new(()));
