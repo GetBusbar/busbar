@@ -1734,23 +1734,37 @@ pub(crate) async fn flush_credential_cache(
                 )),
             }
         };
-    let flushed = match app.flush_verified_credentials(module.as_deref()) {
+    credential_flush_response(
+        app.flush_verified_credentials(module.as_deref()),
+        module.as_deref(),
+        principal.actor_id(),
+    )
+}
+
+// HTTP/audit projection of the completed refresh operation. Module invocation and
+// selection remain owned by App::flush_verified_credentials.
+fn credential_flush_response(
+    result: Result<u64, String>,
+    module: Option<&str>,
+    actor: &str,
+) -> Response {
+    let flushed = match result {
         Ok(count) => count,
         Err(_) => {
             tracing::warn!("credential cache flush incomplete: an auth module failed to refresh; other modules may already have refreshed");
             return reject(
                 "auth.cache_flush",
-                module.as_deref().unwrap_or("*"),
-                principal.actor_id(),
+                module.unwrap_or("*"),
+                actor,
                 &AdminError::Internal,
             );
         }
     };
     audit::AUDIT.record_by(
         "auth.cache_flush",
-        module.as_deref().unwrap_or("*"),
+        module.unwrap_or("*"),
         audit::OUTCOME_APPLIED,
-        principal.actor_id(),
+        actor,
     );
     ok_json(StatusCode::OK, &json!({ "flushed": flushed }))
 }
@@ -4443,3 +4457,7 @@ fn empty_chain_refusal(operator: impl std::fmt::Display) -> AdminError {
 #[cfg(test)]
 #[path = "tests/patch_tests.rs"]
 mod patch_tests;
+
+#[cfg(test)]
+#[path = "../tests/credential_flush_response.rs"]
+mod credential_flush_response_tests;

@@ -782,30 +782,38 @@ impl App {
     }
 
     pub fn flush_verified_credentials(&self, module: Option<&str>) -> Result<u64, String> {
-        let mut flushed = 0;
-        let mut failure = None;
-        for (_, instance) in self
-            .admin_modules
-            .modules
-            .iter()
-            .filter(|(name, _)| module.is_none_or(|m| m == name.as_str()))
-        {
-            match instance.calls.refresh() {
-                Ok(count) => flushed += count,
-                Err(error) => {
-                    failure.get_or_insert(error);
-                }
-            }
-        }
-        match self.auth.flush_verified(module) {
+        credential_flush_results(
+            self.admin_modules
+                .modules
+                .iter()
+                .filter(|(name, _)| module.is_none_or(|m| m == name.as_str()))
+                .map(|(_, instance)| instance.calls.refresh())
+                .chain(std::iter::once_with(|| self.auth.flush_verified(module))),
+        )
+    }
+}
+
+// Fold settled refresh answers without short-circuiting: all selected admin modules,
+// followed by the data chain, must be attempted even after a refusal.
+fn credential_flush_results(
+    results: impl IntoIterator<Item = Result<u64, String>>,
+) -> Result<u64, String> {
+    let mut flushed = 0;
+    let mut failure = None;
+    for result in results {
+        match result {
             Ok(count) => flushed += count,
             Err(error) => {
                 failure.get_or_insert(error);
             }
         }
-        failure.map_or(Ok(flushed), Err)
     }
+    failure.map_or(Ok(flushed), Err)
 }
+
+#[cfg(test)]
+#[path = "tests/credential_flush_results.rs"]
+mod credential_flush_result_tests;
 
 impl App {
     pub fn plane_configured(&self, decl: &crate::plane_driver::registry::PlaneDeclaration) -> bool {
