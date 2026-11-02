@@ -91,6 +91,54 @@ fn address(bucket: &str, window: u64) -> UsageAddress {
 }
 
 impl GovState {
+    pub(in crate::governance) fn quarantined_correction_owns_target(
+        &self,
+        bucket: &str,
+        window: u64,
+    ) -> bool {
+        self.corrections.lock().unwrap_or_else(|p| p.into_inner()).values().any(|pending| {
+            pending.quarantined && pending.targets.iter().any(|(target, at)| target == bucket && *at == window)
+        })
+    }
+
+    pub(in crate::governance) fn stage_quarantined_correction_negatives(
+        &self,
+        bucket: &str,
+        window: u64,
+        plain: &mut ExactUsageDelta,
+        dated: &mut ExactUsageDelta,
+    ) -> RecordStoreResult<Option<RecoveryEvent>> {
+        let pending: Vec<_> = self.corrections.lock().unwrap_or_else(|p| p.into_inner()).values()
+            .filter(|pending| pending.quarantined && pending.targets.iter().any(|(target, at)| target == bucket && *at == window))
+            .cloned().collect();
+        for pending in pending {
+            let mut retained = pending.recovery_event.lock().unwrap_or_else(|p| p.into_inner());
+            let selected = self.recovery_event(pending.request.op_id.0)
+                .ok_or_else(|| unresolved("quarantined correction has no selected parent"))?;
+            if retained.as_ref() != Some(&selected) {
+                return Err(unresolved("quarantined correction checkpoint is not yet selected"));
+            }
+            let mut custody = recovery::Custody::decode(&selected.payload)?;
+            let Some((remaining_plain, remaining_dated)) = custody.absorb_negatives(bucket, window, plain, dated)? else {
+                continue;
+            };
+            let state = if selected.state == RecoveryState::Intent {
+                custody.mark_age_unknown();
+                RecoveryState::LandedUnknown
+            } else {
+                selected.state
+            };
+            let event = self.new_recovery_event(selected.operation_id, selected.kind,
+                selected.body_fingerprint, state, selected.first_sent_at_ms, custody.encode()?)
+                .map_err(|error| unresolved(&error.to_string()))?;
+            *retained = Some(event.clone());
+            *plain = remaining_plain;
+            *dated = remaining_dated;
+            return Ok(Some(event));
+        }
+        Ok(None)
+    }
+
     pub(in crate::governance) fn restore_correction_recovery(
         &self,
         event: &RecoveryEvent,
@@ -260,6 +308,19 @@ impl GovState {
             return Ok(decision);
         }
         if pending.quarantined {
+            self.confirm_pending_recovery(pending.request.op_id.0)?;
+            let selected = self.recovery_event(pending.request.op_id.0)
+                .ok_or_else(|| unresolved("quarantined correction has no selected event"))?;
+            if selected.state == RecoveryState::Intent {
+                let mut custody = recovery::Custody::decode(&selected.payload)?;
+                custody.mark_age_unknown();
+                let event = self.new_recovery_event(selected.operation_id, selected.kind,
+                    selected.body_fingerprint, RecoveryState::LandedUnknown,
+                    selected.first_sent_at_ms, custody.encode()?)
+                    .map_err(|error| unresolved(&error.to_string()))?;
+                *pending.recovery_event.lock().unwrap_or_else(|p| p.into_inner()) = Some(event.clone());
+                self.keep_recovery_event(&event)?;
+            }
             return Err(unresolved("historical correction is quarantined pending an audited verdict and fresh revalidation"));
         }
         let receipt = *pending.receipt.lock().unwrap_or_else(|p| p.into_inner());

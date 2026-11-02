@@ -19,6 +19,96 @@ fn change_unit(debt: &mut ExactUsageDelta, model: &str, unit: &str, change: i128
     }
 }
 
+fn unit(debt: &ExactUsageDelta, model: &str, unit: &str) -> i128 {
+    debt.models.iter().find(|row| row.model == model)
+        .and_then(|row| row.usage_units.get(unit)).copied().unwrap_or(0)
+}
+
+/// Allocate a negative dated segment together with its plain counterpart. Aggregate plain
+/// counters may have netted a positive in another era and therefore need not be negative yet.
+fn absorb_with_capacity(
+    plain: &mut ExactUsageDelta,
+    dated: &mut ExactUsageDelta,
+    plain_capacity: &ExactUsageDelta,
+    dated_capacity: &ExactUsageDelta,
+    held_plain: &ExactUsageDelta,
+    held_dated: &ExactUsageDelta,
+) -> RecordStoreResult<(ExactUsageDelta, ExactUsageDelta)> {
+    let mut available_plain = plain_capacity.clone();
+    available_plain.merge(held_plain);
+    let mut available_dated = dated_capacity.clone();
+    available_dated.merge(held_dated);
+    let mut legacy = plain.clone();
+    let mut legacy_capacity = available_plain.clone();
+    for row in &dated.models {
+        let (tag, model) = row.model.split_once(ERA_MODEL_SEP)
+            .map_or((row.model.as_str(), None), |(tag, model)| (tag, Some(model)));
+        parse_era_tag(tag)?.filter(|era| *era != RawRateEra::legacy(0))
+            .ok_or_else(|| unresolved("dependent negative has no exact raw era"))?;
+        for (name, count) in &row.usage_units {
+            if let Some(model) = model {
+                change_unit(&mut legacy, model, name, -*count);
+            } else if name == ERA_FEE_UNIT {
+                legacy.billable_requests -= count;
+            } else {
+                return Err(unresolved("dependent fee contains an unknown raw unit"));
+            }
+        }
+    }
+    for row in &available_dated.models {
+        let (_, model) = row.model.split_once(ERA_MODEL_SEP)
+            .map_or((row.model.as_str(), None), |(tag, model)| (tag, Some(model)));
+        for (name, count) in &row.usage_units {
+            if let Some(model) = model {
+                change_unit(&mut legacy_capacity, model, name, -(*count).max(0));
+            } else if name == ERA_FEE_UNIT {
+                legacy_capacity.billable_requests -= (*count).max(0);
+            }
+        }
+    }
+    let mut absorbed_plain = ExactUsageDelta::default();
+    let mut absorbed_dated = ExactUsageDelta::default();
+    let requests = (-plain.requests.min(0)).min(available_plain.requests.max(0));
+    plain.requests += requests;
+    absorbed_plain.requests = -requests;
+    let dated_source = dated.clone();
+    for row in &dated_source.models {
+        let (_, model) = row.model.split_once(ERA_MODEL_SEP)
+            .map_or((row.model.as_str(), None), |(tag, model)| (tag, Some(model)));
+        for (name, count) in &row.usage_units {
+            if *count >= 0 { continue; }
+            let capacity = model.map_or(available_plain.billable_requests, |model| unit(&available_plain, model, name));
+            let amount = (-*count).min(capacity.max(0)).min(unit(&available_dated, &row.model, name).max(0));
+            if amount == 0 { continue; }
+            change_unit(dated, &row.model, name, amount);
+            change_unit(&mut absorbed_dated, &row.model, name, -amount);
+            change_unit(&mut available_dated, &row.model, name, -amount);
+            if let Some(model) = model {
+                change_unit(plain, model, name, amount);
+                change_unit(&mut absorbed_plain, model, name, -amount);
+                change_unit(&mut available_plain, model, name, -amount);
+            } else {
+                plain.billable_requests += amount;
+                absorbed_plain.billable_requests -= amount;
+                available_plain.billable_requests -= amount;
+            }
+        }
+    }
+    let fee = (-legacy.billable_requests.min(0))
+        .min(legacy_capacity.billable_requests.max(0)).min(available_plain.billable_requests.max(0));
+    plain.billable_requests += fee;
+    absorbed_plain.billable_requests -= fee;
+    for row in &legacy.models {
+        for (name, count) in &row.usage_units {
+            let amount = (-(*count).min(0)).min(unit(&legacy_capacity, &row.model, name).max(0))
+                .min(unit(&available_plain, &row.model, name).max(0));
+            change_unit(plain, &row.model, name, amount);
+            change_unit(&mut absorbed_plain, &row.model, name, -amount);
+        }
+    }
+    Ok((absorbed_plain, absorbed_dated))
+}
+
 fn negate(mut debt: ExactUsageDelta) -> ExactUsageDelta {
     debt.requests = -debt.requests;
     debt.billable_requests = -debt.billable_requests;
@@ -435,6 +525,10 @@ struct RawTarget {
     window: u64,
     before: RawCell,
     accepted: RawCell,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    absorbed_plain: Option<RawDebt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    absorbed_dated: Option<RawDebt>,
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -451,6 +545,8 @@ pub(super) struct Custody {
     handoffs: Vec<RecoveryChild>,
     #[serde(default)]
     terminal: bool,
+    #[serde(default)]
+    age_unknown: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     audit: Option<OperatorAudit>,
     targets: Vec<RawTarget>,
@@ -491,6 +587,10 @@ impl From<RawDecision> for Decision {
 }
 
 impl Custody {
+    pub(super) fn mark_age_unknown(&mut self) {
+        self.age_unknown = true;
+    }
+
     pub(super) fn stage_settlement(
         gov: &GovState,
         pending: &PendingCorrection,
@@ -602,6 +702,8 @@ impl Custody {
                     window: *window,
                     before: RawCell::capture(cell)?,
                     accepted: RawCell::capture(&branch.accepted)?,
+                    absorbed_plain: None,
+                    absorbed_dated: None,
                 })
             })
             .collect::<RecordStoreResult<_>>()?;
@@ -614,6 +716,7 @@ impl Custody {
             origin: previous.as_ref().and_then(|custody| custody.origin.clone()),
             handoffs: previous.as_ref().map(|custody| custody.handoffs.clone()).unwrap_or_default(),
             terminal: false,
+            age_unknown: false,
             audit: previous.and_then(|custody| custody.audit),
             targets,
         })
@@ -672,6 +775,53 @@ impl Custody {
             self.handoffs.push(child);
         }
         Ok(())
+    }
+
+    pub(super) fn absorb_negatives(
+        &mut self,
+        bucket: &str,
+        window: u64,
+        plain: &ExactUsageDelta,
+        dated: &ExactUsageDelta,
+    ) -> RecordStoreResult<Option<(ExactUsageDelta, ExactUsageDelta)>> {
+        let capacity = |bucket: &str| -> RecordStoreResult<ExactUsageDelta> {
+            let row = self.request.usage.iter().find(|row| {
+                row.address.bucket_id == bucket && row.address.window_start == window
+            }).ok_or_else(|| unresolved("quarantined target has no original raw row"))?;
+            let mut capacity = ExactUsageDelta {
+                requests: (i128::from(row.replacement.requests) - i128::from(row.expected.requests)).max(0),
+                billable_requests: (i128::from(row.replacement.billable_requests) - i128::from(row.expected.billable_requests)).max(0),
+                ..Default::default()
+            };
+            for model in &row.replacement.models {
+                let before = row.expected.models.iter().find(|before| before.model == model.model);
+                for (unit, count) in &model.usage_units {
+                    let previous = before.and_then(|before| before.usage_units.get(unit)).copied().unwrap_or(0);
+                    change_unit(&mut capacity, &model.model, unit, (i128::from(*count) - i128::from(previous)).max(0));
+                }
+            }
+            Ok(capacity)
+        };
+        let plain_capacity = capacity(bucket)?;
+        let dated_capacity = capacity(&era_bucket(bucket))?;
+        let target = self.targets.iter_mut().find(|target| target.bucket == bucket && target.window == window)
+            .ok_or_else(|| unresolved("quarantined negative is outside correction targets"))?;
+        let mut held_plain = target.absorbed_plain.clone().map(RawDebt::restore).transpose()?.unwrap_or_default();
+        let mut held_dated = target.absorbed_dated.clone().map(RawDebt::restore).transpose()?.unwrap_or_default();
+        let mut remaining_plain = plain.clone();
+        let mut remaining_dated = dated.clone();
+        let (absorbed_plain, absorbed_dated) = absorb_with_capacity(
+            &mut remaining_plain, &mut remaining_dated,
+            &plain_capacity, &dated_capacity, &held_plain, &held_dated,
+        )?;
+        if absorbed_plain.is_zero() && absorbed_dated.is_zero() {
+            return Ok(None);
+        }
+        held_plain.merge(&absorbed_plain);
+        held_dated.merge(&absorbed_dated);
+        target.absorbed_plain = Some(RawDebt::capture(&held_plain)?);
+        target.absorbed_dated = Some(RawDebt::capture(&held_dated)?);
+        Ok(Some((remaining_plain, remaining_dated)))
     }
 
     /// Reconstitute raw branches before hydration. The caller owns durable event ordering and
