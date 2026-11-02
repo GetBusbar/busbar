@@ -9,11 +9,14 @@ use crate::dispatch::kinds::plane::{open_door, Plane};
 use crate::dispatch::{
     load_linked, Bind, ConnTable, DispatchConfig, Dispatcher, LinkedRow, NoSink,
 };
-use busbar_contract::abi::mechanism::call::{Blob, Outcome, RawOutcome, BLOB_OCTETS};
+use busbar_contract::abi::mechanism::call::{Blob, InHead, Outcome, RawOutcome, BLOB_OCTETS};
 use busbar_contract::abi::mechanism::door::{Door, DoorParts};
 use busbar_contract::abi::mechanism::lifecycle::{OpsHead, ReleaseIn};
 use busbar_contract::abi::mechanism::ticket::CompletionHandle;
-use busbar_contract::abi::plane::{Ops, PlaneDriveIn, PlaneDriveOut, PlaneOpenIn};
+use busbar_contract::abi::plane::{
+    OnPieceIn, OnPieceOut, Ops, PlaneCancelIn, PlaneCancelOut, PlaneDriveIn, PlaneDriveOut,
+    PlaneOpenIn,
+};
 use busbar_contract::abi::sdk::completion_retirement::{self as wire, Domain, Handle, Retirement};
 use busbar_contract::abi::sdk::services::Services;
 use std::collections::HashMap;
@@ -32,8 +35,10 @@ enum Defect {
     Malformed,
     Owner,
     Nonce,
+    Cancel,
 }
 static NEXT: AtomicU8 = AtomicU8::new(0);
+static TEST_LOCK: Mutex<()> = Mutex::new(());
 struct State {
     services: Services,
     retirement: Retirement,
@@ -84,7 +89,8 @@ extern "C" fn open(
             3 => Defect::Short,
             4 => Defect::Malformed,
             5 => Defect::Owner,
-            _ => Defect::Nonce,
+            6 => Defect::Nonce,
+            _ => Defect::Cancel,
         };
         states().lock().unwrap().insert(
             input.open.head.host.handle,
@@ -175,6 +181,9 @@ extern "C" fn drive(
                 ack.capability.nonce += 1;
             }
         }
+        if state.defect == Defect::Cancel {
+            ack = None;
+        }
         let bytes = ack
             .map(|ack| wire::append_ack(&[], &ack).expect("complete ACK framing"))
             .unwrap_or_else(|| b"answer-owner".to_vec())
@@ -187,12 +196,20 @@ extern "C" fn drive(
         };
         let lease = state.next_lease;
         state.next_lease -= 1;
-        if state.retirement.queued() {
+        output.head.extensions = Blob::ZERO;
+        output.head.error = busbar_contract::abi::mechanism::call::AbiStr::ZERO;
+        if state.retirement.queued() && state.defect != Defect::Cancel {
             output.head.extensions = Blob {
                 ptr: bytes.as_ptr(),
                 len: bytes.len(),
                 fmt: BLOB_OCTETS,
                 flags: 0,
+            };
+        }
+        if output.head.extensions.len == 0 {
+            output.head.error = busbar_contract::abi::mechanism::call::AbiStr {
+                ptr: bytes.as_ptr(),
+                len: bytes.len(),
             };
         }
         output.head.lease = lease;
@@ -236,6 +253,83 @@ extern "C" fn release(
         unsafe { actual_ops().head.release.expect("actual MCP RELEASE")(instance, input, output) }
     })
 }
+extern "C" fn pending_piece(
+    _: *mut std::ffi::c_void,
+    _: *const std::ffi::c_void,
+    output: *mut std::ffi::c_void,
+) -> RawOutcome {
+    guarded(|| {
+        // SAFETY: initialized exclusive ON_PIECE output supplied by the dispatcher.
+        unsafe {
+            (*output.cast::<OnPieceOut>()).head.outcome = RawOutcome::of(Outcome::Pending);
+        }
+        RawOutcome::of(Outcome::Pending)
+    })
+}
+extern "C" fn cancel(
+    _: *mut std::ffi::c_void,
+    input: *const std::ffi::c_void,
+    output: *mut std::ffi::c_void,
+) -> RawOutcome {
+    guarded(|| {
+        // SAFETY: these are the loader's initialized, exclusive plane CANCEL frames.
+        let (input, output) = unsafe {
+            (
+                &*input.cast::<PlaneCancelIn>(),
+                &mut *output.cast::<PlaneCancelOut>(),
+            )
+        };
+        let mut all = states().lock().unwrap();
+        let state = all
+            .get_mut(&input.cancel.head.host.handle)
+            .expect("bound actual MCP instance");
+        let ack = state
+            .retirement
+            .acknowledgement(0)
+            .unwrap()
+            .expect("unconsumed driver receipt");
+        let bytes = wire::append_ack(&[], &ack).unwrap().into_boxed_slice();
+        let lease = state.next_lease;
+        state.next_lease -= 1;
+        output.cancel.head.extensions = Blob {
+            ptr: bytes.as_ptr(),
+            len: bytes.len(),
+            fmt: BLOB_OCTETS,
+            flags: 0,
+        };
+        output.cancel.head.lease = lease;
+        output.cancel.head.outcome = RawOutcome::of(Outcome::Ready);
+        output.cancel.disposition = busbar_contract::abi::plane::CANCEL_ABORTED;
+        state.leases.insert(lease, bytes);
+        RawOutcome::of(Outcome::Ready)
+    })
+}
+extern "C" fn close(
+    instance: *mut std::ffi::c_void,
+    input: *const std::ffi::c_void,
+    output: *mut std::ffi::c_void,
+) -> RawOutcome {
+    guarded(|| {
+        // SAFETY: the loader supplies a valid CLOSE head until this callback returns.
+        let host = unsafe { (*input.cast::<InHead>()).host.handle };
+        if states()
+            .lock()
+            .unwrap()
+            .get(&host)
+            .is_some_and(|s| !s.leases.is_empty())
+        {
+            return RawOutcome::of(Outcome::Fault);
+        }
+        // SAFETY: no boundary-owned answer remains lent; exact actual instance and CLOSE frames.
+        let result =
+            unsafe { actual_ops().head.close.expect("actual MCP CLOSE")(instance, input, output) };
+        if result.outcome() == Outcome::Ready {
+            // Services callbacks are no longer retained beyond their actual instance lifetime.
+            states().lock().unwrap().remove(&host);
+        }
+        result
+    })
+}
 extern "C" fn door() -> &'static Door {
     static DOOR: OnceLock<usize> = OnceLock::new();
     let addr = DOOR.get_or_init(|| {
@@ -245,9 +339,15 @@ extern "C" fn door() -> &'static Door {
             open: Some(open),
             drive: Some(drive),
             release: Some(release),
+            cancel: Some(cancel),
+            close: Some(close),
             ..ops.head
         };
-        let ops = Box::leak(Box::new(Ops { head, ..ops }));
+        let ops = Box::leak(Box::new(Ops {
+            head,
+            on_piece: Some(pending_piece),
+            ..ops
+        }));
         // SAFETY: actual retained Statement/table except the three exact ABI boundary controls.
         let door = unsafe {
             Door::__from_parts(DoorParts {
@@ -294,6 +394,7 @@ fn until(mut predicate: impl FnMut() -> bool) {
 }
 #[test]
 fn automatic_driver_checks_ack_before_releasing_its_answer_lease() {
+    let _serial = TEST_LOCK.lock().unwrap();
     for defect in [
         Defect::Pending,
         Defect::Ready,
@@ -322,6 +423,7 @@ fn automatic_driver_checks_ack_before_releasing_its_answer_lease() {
         )
         .unwrap();
         open_door(&plugin, b"{}", b"{}", None).expect("actual MCP lifecycle opens");
+        let host = plugin.inner.ctx().handle;
         let driver = dispatcher.driver(&plugin, 0).unwrap();
         crate::dispatch::ticket::host_wake(plugin.inner.ctx(), driver);
         if matches!(defect, Defect::Ready | Defect::Pending) {
@@ -330,9 +432,8 @@ fn automatic_driver_checks_ack_before_releasing_its_answer_lease() {
                     && states()
                         .lock()
                         .unwrap()
-                        .values()
-                        .filter(|s| s.defect == defect)
-                        .any(|s| s.releases == 2)
+                        .get(&host)
+                        .is_some_and(|s| s.releases == 2)
             });
             assert_eq!(
                 plugin
@@ -355,9 +456,8 @@ fn automatic_driver_checks_ack_before_releasing_its_answer_lease() {
                 states()
                     .lock()
                     .unwrap()
-                    .values()
-                    .filter(|s| s.defect == defect)
-                    .any(|s| s.releases == 1)
+                    .get(&host)
+                    .is_some_and(|s| s.releases == 1)
             });
             assert_eq!(
                 dispatcher.services().held(),
@@ -368,5 +468,86 @@ fn automatic_driver_checks_ack_before_releasing_its_answer_lease() {
         }
         assert_eq!(provider.calls.load(SeqCst), 1);
         dispatcher.recycle(driver);
+        drop(plugin);
+        drop(dispatcher);
+        until(|| !states().lock().unwrap().contains_key(&host));
     }
+}
+
+#[test]
+fn canceling_an_actual_pending_crossing_cannot_ack_its_drivers_result() {
+    let _serial = TEST_LOCK.lock().unwrap();
+    use crate::dispatch::{in_head, out_head, Frame};
+    use busbar_contract::abi::mechanism::call::DeadlineClass;
+    use busbar_contract::abi::plane::{slot, FROM_CALLER};
+    NEXT.store(Defect::Cancel as u8, SeqCst);
+    let provider = Arc::<Provider>::default();
+    let dispatcher = Dispatcher::with_services(
+        DispatchConfig::default(),
+        Arc::new(crate::services_double::Double(provider.clone())),
+    );
+    let plugin = load_linked::<Plane>(
+        &LinkedRow::of(door).unwrap(),
+        Bind {
+            instance: "cancel-driver-ack".into(),
+            max_inflight_cap: 8,
+            sink: Arc::new(NoSink),
+            dispatcher: dispatcher.adopter(),
+            conns: ConnTable::NoNeeds,
+        },
+    )
+    .unwrap();
+    open_door(&plugin, b"{}", b"{}", None).unwrap();
+    let host = plugin.inner.ctx().handle;
+    let driver = dispatcher.driver(&plugin, 0).unwrap();
+    crate::dispatch::ticket::host_wake(plugin.inner.ctx(), driver);
+    until(|| {
+        plugin.inner.driven.answers() == 1
+            && states()
+                .lock()
+                .unwrap()
+                .get(&host)
+                .is_some_and(|s| s.releases == 1)
+    });
+    assert_eq!(dispatcher.services().held(), 1);
+    let session = dispatcher.mint(0).unwrap();
+    // SAFETY: the ABI input/output consist of zero-valid plain C frame fields.
+    let (mut input, mut output): (OnPieceIn, OnPieceOut) =
+        unsafe { (std::mem::zeroed(), std::mem::zeroed()) };
+    input.head = in_head();
+    input.from = FROM_CALLER;
+    input.stream = 5;
+    output.head = out_head();
+    let reply = dispatcher.submit(
+        &plugin,
+        session,
+        slot::ON_PIECE,
+        Frame::new(input, output),
+        DeadlineClass::Call,
+        0,
+    );
+    until(|| dispatcher.is_pending(session));
+    dispatcher.drop_client(session);
+    assert_eq!(
+        reply.wait(Duration::from_secs(5)).unwrap().outcome,
+        Outcome::Fault
+    );
+    until(|| {
+        states()
+            .lock()
+            .unwrap()
+            .get(&host)
+            .is_some_and(|s| s.releases == 2)
+    });
+    assert_eq!(
+        dispatcher.services().held(),
+        1,
+        "CANCEL has no authority over the driver's delivered result"
+    );
+    assert_eq!(provider.calls.load(SeqCst), 1);
+    dispatcher.recycle(session);
+    dispatcher.recycle(driver);
+    drop(plugin);
+    drop(dispatcher);
+    until(|| !states().lock().unwrap().contains_key(&host));
 }
