@@ -114,7 +114,10 @@ fn streaming_media_are_loaded_and_rendered_and_absent_from_legacy_tails() {
     st.kind_tail = &tail.head;
     // SAFETY: the full tail and its Statement spans remain live.
     let empty = rendering::read(&unsafe { rendering::render(&st) }.unwrap()).unwrap();
-    assert_eq!(legacy.kind_tail, empty.kind_tail);
+    assert_eq!(
+        legacy.kind_tail,
+        empty.kind_tail[..empty.kind_tail.len() - 4]
+    );
 }
 
 #[test]

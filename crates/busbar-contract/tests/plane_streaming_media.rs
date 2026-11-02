@@ -44,7 +44,14 @@ fn streaming_media_are_signed_and_old_tail_allocations_render_an_empty_list() {
     };
     st.kind_tail = old.as_ptr().cast();
     // SAFETY: old's allocation is exactly its declared size; no appended pointer exists.
-    let legacy = rendering::read(&unsafe { rendering::render(&st) }.unwrap()).unwrap();
+    let legacy_bytes = unsafe { rendering::render(&st) }.unwrap();
+    // This frozen BBSTMT03 statement predates the optional MIME-list extension. Admission
+    // compares precisely these signed bytes with the door's rendering, not decoded equality.
+    assert_eq!(
+        legacy_bytes,
+        include_bytes!("fixtures/plane-before-streaming.bbstmt")
+    );
+    let legacy = rendering::read(&legacy_bytes).unwrap();
     let empty = PlaneTail {
         ingress: INGRESS_RESPONSE_STREAM,
         ..PlaneTail::EMPTY
@@ -52,7 +59,14 @@ fn streaming_media_are_signed_and_old_tail_allocations_render_an_empty_list() {
     st.kind_tail = &empty.head;
     // SAFETY: the empty full tail remains live throughout rendering.
     let absent = rendering::read(&unsafe { rendering::render(&st) }.unwrap()).unwrap();
-    assert_eq!(legacy.kind_tail, absent.kind_tail);
+    assert_eq!(
+        legacy.kind_tail,
+        absent.kind_tail[..absent.kind_tail.len() - 4]
+    );
+    assert_eq!(
+        &absent.kind_tail[absent.kind_tail.len() - 4..],
+        &0_u32.to_le_bytes()
+    );
     assert_ne!(full.kind_tail, absent.kind_tail);
 }
 

@@ -40,7 +40,8 @@
 //!            caller_credential_refusal str,
 //!            admin_routes list of { verb str, target str, flags u32, audit_verb str },
 //!            admin_openapi blob, stream_ceiling_secs u64, metric_lanes list of str,
-//!            record_retentions list of { kind u32, rule u32 }, streaming_content_types list of str
+//!            record_retentions list of { kind u32, rule u32 },
+//!            streaming_content_types list of str (only when the original tail includes the list)
 //! transport  role u32, framing u32, facts u32, handshake_max_steps u32, composes_over list of str,
 //!            claim_rows list of { selector_forms str, egress_selector_forms str, facts list of str,
 //!                                 status_namespace str, session u8, session_bound u8,
@@ -317,6 +318,11 @@ unsafe fn export_tail(o: &mut Out, t: &export::Tail) -> Result<(), RenderError> 
 ///
 /// As [`render`]'s, for `t`'s lists and strings.
 unsafe fn plane_tail(o: &mut Out, t: &plane::PlaneTail) -> Result<(), RenderError> {
+    // Preserve a pre-extension plugin's signed BBSTMT03 bytes. Zero-extension permits reads,
+    // but must not invent an extra serialized list for a declaration built before that list.
+    let has_streaming_content_types = t.head.size as usize
+        >= core::mem::offset_of!(plane::PlaneTail, streaming_content_types_len)
+            + size_of::<usize>();
     let plane::PlaneTail {
         head: _,
         flags,
@@ -525,12 +531,14 @@ unsafe fn plane_tail(o: &mut Out, t: &plane::PlaneTail) -> Result<(), RenderErro
             o.u32(kind);
             o.u32(rule);
         }
-        texts(
-            o,
-            streaming_content_types,
-            streaming_content_types_len,
-            "plane.streaming_content_types",
-        )?;
+        if has_streaming_content_types {
+            texts(
+                o,
+                streaming_content_types,
+                streaming_content_types_len,
+                "plane.streaming_content_types",
+            )?;
+        }
         Ok(())
     }
 }
