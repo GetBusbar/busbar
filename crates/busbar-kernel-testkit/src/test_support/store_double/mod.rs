@@ -11,9 +11,10 @@
 //! in `[dependencies]`, not behind a feature, not under a second name. A test build has no
 //! composition root, so the kernel's own tests that boot an app need a linked `kind: store` row
 //! whose key is the store a migrated 1.5.x config names ([`KEY`]), and the tests
-//! that build a `GovState` need a store that keeps what it is told. A behaviour double the kernel's
-//! own tests need lives HERE, as a test-support module of the crate under test, LINKED only — not a
-//! workspace crate, not an example plugin, and not the shipped plugin taken under another name.
+//! that build a `GovState` need a store that keeps what it is told. This fixture lives in the
+//! external kernel testkit, LINKED only, and uses the contract without depending on kernel
+//! implementation types. Kernel unit tests may mount the same source under `cfg(test)`; no
+//! feature-enabled kernel library owns the backend.
 //!
 //! What it copies is the shipped RAM store, at whatever rev the root pins: the same record
 //! verbs and their preconditions, the same retention sweep, the same v3 slots (dedupe, count
@@ -1004,14 +1005,20 @@ pub const NAME: &str = "store-double";
 pub const SECRET_REF_PATHS: &[&str] = &["token"];
 
 /// THE STAND-IN LINKED ENTRY: `(key, ephemeral, door, canonical)`, the shape of the root's linked
-/// store rows ([`crate::preflight::LinkedStore`]). Its key is the store a migrated 1.5.x config names
+/// store rows. It spells the contract-only tuple so the fixture has no kernel type dependency.
+/// Its key is the store a migrated 1.5.x config names
 /// ([`KEY`]), so a fixture config's `store:` block resolves to it; it claims no default (Q-STORE =
 /// (B)).
-pub const STORE: crate::preflight::LinkedStore = (KEY, true, door, NAME);
+pub const STORE: (
+    &'static str,
+    bool,
+    busbar_contract::abi::mechanism::door::DoorFn,
+    &'static str,
+) = (KEY, true, door, NAME);
 
 /// The key the double answers to: the frozen-text fixture's `store_1_5_default` row
 /// (`tests/fixtures/frozen_customer_text.yaml`, the table a test build reads in place of the root's),
-/// which [`crate::config::migrated_store_module`] reads. A const because the stand-in store axis is a
+/// which the kernel's config migration reads. A const because the stand-in store axis is a
 /// const table; `store_required_tests::the_store_double_answers_to_the_migrated_store_module` holds the two
 /// equal.
 pub const KEY: &str = "memory";
