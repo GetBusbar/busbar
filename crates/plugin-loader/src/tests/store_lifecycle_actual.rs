@@ -52,7 +52,9 @@ extern "C" fn close(
     // SAFETY: the host owns this real instance and initialized CLOSE frames, with no live call.
     let result = unsafe { original().head.close.unwrap()(instance, input, output) };
     CLOSED.store(instance as usize, Ordering::SeqCst);
-    CLOSE_COUNT.fetch_add(1, Ordering::SeqCst);
+    if result.outcome() == Outcome::Ready {
+        CLOSE_COUNT.fetch_add(1, Ordering::SeqCst);
+    }
     result
 }
 
