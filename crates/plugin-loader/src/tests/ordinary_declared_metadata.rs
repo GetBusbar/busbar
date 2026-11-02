@@ -134,3 +134,51 @@ fn the_store_host_lends_nothing_and_hands_the_settings_as_resolved() {
     assert_eq!(*OPENED.lock().unwrap(), Some((settings, 0)));
     crate::dispatch::lifecycle::close(&plugin);
 }
+
+extern "C" fn referencing() -> &'static Door {
+    static SLOT: OnceLock<usize> = OnceLock::new();
+    const REFS: &[AbiStr] = &[abi_str("password")];
+    let address = *SLOT.get_or_init(|| {
+        use busbar_contract::abi::mechanism::call::{Blob, BLOB_OCTETS};
+        use busbar_contract::abi::mechanism::extensions::{encode, EXT_REFERENCE_FIELDS};
+        let actual = *actual_store::door();
+        // SAFETY: actual Store descriptor was validated and remains retained.
+        let mut statement = unsafe { *actual.statement() };
+        let mut extensions = if statement.extensions.len == 0 {
+            Vec::new()
+        } else {
+            // SAFETY: this valid immutable extension range belongs to the retained product.
+            unsafe {
+                std::slice::from_raw_parts(statement.extensions.ptr, statement.extensions.len)
+            }
+            .to_vec()
+        };
+        extensions.extend_from_slice(&encode(&[(EXT_REFERENCE_FIELDS, br#"["url"]"#)]));
+        let extensions = Box::leak(extensions.into_boxed_slice());
+        statement.extensions = Blob {
+            ptr: extensions.as_ptr(),
+            len: extensions.len(),
+            fmt: BLOB_OCTETS,
+            flags: 0,
+        };
+        statement.secret_refs = REFS.as_ptr();
+        statement.secret_refs_len = REFS.len();
+        let statement = Box::leak(Box::new(statement));
+        // SAFETY: genuine operations unchanged, only valid retained declaration metadata restated.
+        let door = unsafe {
+            Door::__from_parts(DoorParts {
+                statement,
+                ..actual.parts()
+            })
+        };
+        Box::into_raw(Box::new(door)) as usize
+    });
+    // SAFETY: immutable metadata descriptor is permanently retained.
+    unsafe { &*(address as *const Door) }
+}
+#[test]
+fn reference_capable_and_secret_fields_are_independently_read_from_the_actual_descriptor() {
+    let plugin = load(referencing);
+    assert_eq!(plugin.reference_fields(), ["url".to_string()]);
+    assert_eq!(plugin.secret_refs(), ["password".to_string()]);
+}
