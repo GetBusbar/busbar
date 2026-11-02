@@ -875,65 +875,28 @@ pub(crate) fn percent_decode(s: &str) -> String {
 
 #[tokio::test]
 async fn an_unencodable_login_redirect_fails_closed_rather_than_proceeding() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind");
-    let addr = listener.local_addr().expect("addr");
-    let real_origin = format!("http://{addr}");
-
-    let bad_issuer = "http://bad\rhost/defect2".to_string();
-    let cfg = OauthAsCfg {
-        issuer: bad_issuer,
-        signing_key: None,
-        key_id: None,
-        default_grant: vec![SCOPE.to_string()],
-        access_token_ttl_secs: None,
-        refresh_token_ttl_secs: None,
-        fapi2: false,
-        clients: Vec::new(),
+    use http_body_util::BodyExt as _;
+    let config = OauthAsCfg {
+        issuer: "http://bad\rhost/defect2".into(),
+        default_grant: vec![SCOPE.into()],
+        ..Default::default()
     };
-    let app = TestApp::new().oauth_as(&cfg).build();
-
-    let scopes = ScopeSet::from_tokens([SCOPE]).expect("scope");
-    oauth_as_plane(&app)
-        .expect("configured")
-        .server()
-        .register_client(Client {
-            client_id: ClientId::new(CLIENT_ID),
-            auth: ClientAuth::Public,
-            grant_types: vec![GrantType::AuthorizationCode, GrantType::RefreshToken],
-            redirect_uris: vec![REDIRECT_URI.to_string()],
-            allowed_scopes: scopes.clone(),
-            default_scopes: scopes,
-            name: Some("Defect 2".to_string()),
-            registration: None,
-        })
+    let identity = crate::config::AsIdentity::from_cfg(&config)
+        .expect("the owner identity retains the malformed host input");
+    let response = crate::consent::login_redirect(
+        &identity.consent_url(),
+        "/defect2/authorize?response_type=code&client_id=flow-test-client",
+    );
+    let status = response.status().as_u16();
+    let bytes = response
+        .into_body()
+        .collect()
         .await
-        .expect("register client");
-
-    let router = busbar_kernel::build_router(Arc::clone(&app));
-    tokio::spawn(async move {
-        axum::serve(listener, router).await.expect("serve");
-    });
-
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .expect("client");
-    let authorize = format!(
-        "{real_origin}/defect2/authorize?response_type=code&client_id={CLIENT_ID}\
-         &redirect_uri=http%3A%2F%2F127.0.0.1%3A9999%2Fcb&state=s1&scope={SCOPE}\
-         &code_challenge={CHALLENGE}&code_challenge_method=S256"
-    );
-    let resp = client.get(&authorize).send().await.expect("request");
-    let status = resp.status();
-    let body = resp.text().await.expect("body");
-
-    assert_eq!(
-        status, 502,
-        "an unencodable login redirect must fail closed with a 502, not proceed as though the \
-         resource owner had answered: got {status} {body}"
-    );
+        .expect("response body")
+        .to_bytes();
+    let body = String::from_utf8(bytes.to_vec()).expect("response text");
+    assert_eq!(status,502,
+        "an unencodable login redirect must fail closed with a 502, not proceed as though the resource owner had answered: got {status} {body}");
 }
 
 #[tokio::test]
