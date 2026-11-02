@@ -327,3 +327,97 @@ fn a_kept_build_raises_its_destinations_to_the_rules_it_was_judged_by() {
         "the kept build raises its configuration's destinations, once"
     );
 }
+
+#[test]
+fn a_configuration_the_root_rules_refuse_is_refused_by_the_build() {
+    const REFUSED: &str = "https://refused.root-rules.test";
+    struct Refusing;
+    impl busbar_kernel::appbuild::RootRules for Refusing {
+        fn check(&self, cfg: &busbar_kernel::config::RootCfg) -> Result<(), String> {
+            if cfg.public_url.as_deref() == Some(REFUSED) {
+                Err("`agent_push.ca` is not a usable trust anchor".to_string())
+            } else {
+                Ok(())
+            }
+        }
+    }
+    crate::dist_root_install::install();
+    let library_path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
+    );
+    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
+        .expect("the actual store statement reads")
+        .expect("the actual store exports its statement");
+    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid")
+        .name;
+    let mut manifest = plugins::manifest(
+        "store",
+        &module,
+        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+    );
+    manifest.statement = Some(hex::encode(statement));
+    let library = std::fs::read(library_path).expect("the actual store library reads");
+    let directory = plugins::scratch("root-rules-configuration");
+    let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
+    std::fs::write(directory.join("store.tar.gz"), archive)
+        .expect("stage the actual store archive");
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    assert!(
+        settings.is_object(),
+        "the actual store settings are an object"
+    );
+    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+        "providers": {},
+        "models": {},
+        "auth": { "chain": [], "admin_auth": [] },
+        "store": { "module": module, "settings": settings },
+        "advanced": { "allow_destinations": ["127.0.0.1"] },
+    }))
+    .expect("the product deployment parses");
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the product deployment resolves");
+    let plugin_config = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: directory.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let mut config = config;
+    let rules: Arc<dyn RootRules> = Arc::new(Refusing);
+    config.public_url = Some(REFUSED.to_string());
+    assert_eq!(
+        busbar_kernel::build_app_from_config(
+            config.clone(),
+            plugin_config.clone(),
+            None,
+            Default::default(),
+            Default::default(),
+            (None, None),
+            None,
+            &rules,
+        )
+        .map(|_| ()),
+        Err("`agent_push.ca` is not a usable trust anchor".to_string()),
+        "the rules' words, before anything is built"
+    );
+    config.public_url = None;
+    let (app, _, _) = busbar_kernel::build_app_from_config(
+        config.clone(),
+        plugin_config.clone(),
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+    )
+    .expect("a configuration they pass builds as before");
+    assert!(
+        std::sync::Arc::ptr_eq(&app.root_rules, &rules),
+        "the built App keeps the rules it was built under"
+    );
+}

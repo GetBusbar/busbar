@@ -2066,50 +2066,6 @@ fn auth_scope_caps_are_keyed_by_provider_name_not_module() {
 }
 
 #[test]
-fn a_configuration_the_root_rules_refuse_is_refused_by_the_build() {
-    crate::test_support::register_neutral_test_plane();
-    const REFUSED: &str = "https://refused.root-rules.test";
-    struct Refusing;
-    impl crate::appbuild::RootRules for Refusing {
-        fn check(&self, cfg: &crate::config::RootCfg) -> Result<(), String> {
-            if cfg.public_url.as_deref() == Some(REFUSED) {
-                Err("`agent_push.ca` is not a usable trust anchor".to_string())
-            } else {
-                Ok(())
-            }
-        }
-    }
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let rules: std::sync::Arc<dyn crate::appbuild::RootRules> = std::sync::Arc::new(Refusing);
-    let build = |public_url: Option<&str>| {
-        let mut cfg = cfg_with_provider_api_key(crate::config::SecretRef::env(
-            "BUSBAR_TEST_NO_SUCH_KEY_ROOT_RULES",
-        ));
-        cfg.public_url = public_url.map(str::to_string);
-        crate::build_app_from_config(
-            cfg,
-            crate::config::PluginsCfg::default(),
-            None,
-            std::collections::HashSet::new(),
-            std::collections::HashSet::new(),
-            (None, None),
-            None,
-            &rules,
-        )
-    };
-    assert_eq!(
-        build(Some(REFUSED)).map(|_| ()),
-        Err("`agent_push.ca` is not a usable trust anchor".to_string()),
-        "the rules' words, before anything is built"
-    );
-    let (app, _, _) = build(None).expect("a configuration they pass builds as before");
-    assert!(
-        std::sync::Arc::ptr_eq(&app.root_rules, &rules),
-        "the built App keeps the rules it was built under"
-    );
-}
-
-#[test]
 fn a_plane_the_boot_did_not_open_builds_no_slot_and_is_reported_awaiting_restart() {
     const SECTION: &str = "pending-red";
     static PENDING: crate::plane_driver::registry::PlaneDecl =
