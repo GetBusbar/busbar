@@ -161,7 +161,7 @@ pub fn read_ack(bytes: &[u8]) -> Result<Option<Acknowledgement>, Error> {
     }
     let mut handles = Vec::with_capacity(count);
     let mut seen = std::collections::HashSet::with_capacity(count);
-    for record in value[69..].chunks_exact(5) {
+    for record in value[69..].as_chunks::<5>().0 {
         let handle = Handle {
             domain: match record[0] {
                 0 => Domain::Host,

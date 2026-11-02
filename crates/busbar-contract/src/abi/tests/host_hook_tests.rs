@@ -324,7 +324,7 @@ fn a_native_reservation_excludes_safe_answers_and_readers_until_the_last_owner_r
         let _ = frame.rewrite(1);
     });
     // Immutable projection callbacks remain usable without claiming or exposing answer buffers.
-    let _ = frame.decoded(|decoded| {
+    frame.decoded(|decoded| {
         assert_eq!(decoded.request_id, 7);
         assert_eq!(
             frame.projection_json(crate::hook_wire::OP_DECIDE)["request"]["messages"][0]["text"],

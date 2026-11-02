@@ -98,7 +98,7 @@ impl Key {
             let half = bits.div_ceil(2);
             let mut exponent = 0;
             if !(MIN_MODULUS_BITS..=MAX_MODULUS_BITS).contains(&bits)
-                || half % PRIME_BITS_GRANULARITY != 0
+                || !half.is_multiple_of(PRIME_BITS_GRANULARITY)
                 || lc::BN_num_bits(p) != half
                 || lc::BN_num_bits(q) != half
                 || lc::BN_num_bits(d) <= half

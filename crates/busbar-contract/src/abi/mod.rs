@@ -512,6 +512,9 @@ macro_rules! read_sized_field {
         // real, correctly-sized, correctly-aligned allocation, and `addr_of!` only computes an
         // address — it never reads the uninitialized bytes. Const-folds to a literal.
         let probe = ::core::mem::MaybeUninit::<$struct>::uninit();
+        // The address projection needs its own unsafe context in the macro definition, even
+        // when the caller's required unsafe context also surrounds this expansion.
+        #[allow(unused_unsafe)]
         let end = ::core::mem::offset_of!($struct, $field)
             + $crate::abi::pointee_size(
                 // SAFETY: `probe` is a whole, aligned `$struct`; `addr_of!` performs no read.
