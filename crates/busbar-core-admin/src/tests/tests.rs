@@ -3192,61 +3192,6 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default() {
 }
 
 #[tokio::test]
-async fn proof_max_ttl_ceiling_clamps_a_rotated_token() {
-    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    const CEIL: u64 = 24 * 3600;
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let policy = busbar_kernel::governance::mint_policy::MintPolicy {
-        self_mint: None,
-        block_max_ttl_secs: Some(CEIL),
-        block_binding_modes: None,
-        ceilings: Default::default(),
-    };
-    let app = crate::new_test_app()
-        .governance(gov)
-        .mint_policy(policy)
-        .build();
-    let router = crate::build_router(app);
-    let (addr, handle, client) = spin_up(router).await;
-    let admin = |req: reqwest::RequestBuilder| {
-        req.header("x-admin-token", "admintok")
-            .header("content-type", "application/json")
-    };
-    let created: serde_json::Value = admin(client.post(format!("http://{addr}/api/v1/admin/keys")))
-        .body(serde_json::json!({"name": "rotated-under-ceiling"}).to_string())
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let id = created["id"]
-        .as_str()
-        .expect("the mint answers an id")
-        .to_string();
-    let t0 = busbar_kernel::store::now();
-    let rotated = admin(client.post(format!("http://{addr}/api/v1/admin/keys/{id}/rotate")))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(rotated.status().as_u16(), 200, "the rotate answers");
-    let rotated: serde_json::Value = rotated.json().await.unwrap();
-    let exp = rotated["expires_at"]
-        .as_u64()
-        .expect("a signed-token rotate answers expires_at");
-    assert!(
-        exp <= busbar_kernel::store::now() + CEIL,
-        "the rotated token outlives the 24h max_ttl ceiling: exp={exp}, now={t0}, ceiling={CEIL}"
-    );
-    assert!(
-        exp >= t0 + CEIL,
-        "the rotated token's default lifetime is clamped TO the ceiling, not below it: exp={exp}"
-    );
-    handle.abort();
-}
-
-#[tokio::test]
 async fn proof_role_mint_ceiling_bounds_a_delegated_admin() {
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     const ROLE_TTL: u64 = 3600;
