@@ -302,5 +302,64 @@ async fn actual_inbound_generation_keeps_only_original_request_authority() {
         old_app.upgrade().is_none(),
         "unit exit releases the last old application reference"
     );
+    // Admission snapshots the product listener's body policy; publishing a replacement
+    // cannot impose a different bound on bytes already admitted, including zero.
+    for (owner, limit) in [(9, 0), (10, 7)] {
+        let mut policy = listener(Arc::clone(&replacement));
+        policy.body_limit = limit;
+        inbound.install_at(owner, 71, 7, policy.clone()).unwrap();
+        inbound.framing_started(owner, 71, 1, 7).unwrap();
+        inbound.grant_stream(owner, 1, 1, 7).unwrap();
+        let auth = inbound.specs_at(owner, 71, 7).unwrap()[0].auth;
+        let (send, receive) = tokio::sync::oneshot::channel();
+        let admitted = inbound.auth_call(
+            Call {
+                owner,
+                generation: 7,
+                auth,
+                unit: UnitRef::NONE,
+                point: POINT_HEAD,
+                conn: 1,
+                stream: 1,
+                framing: 1,
+                head: original.clone(),
+                body: None,
+                deadline: None,
+            },
+            Box::new(move |result| {
+                let _ = send.send(result);
+            }),
+        );
+        let admitted = match admitted {
+            Some(answer) => answer,
+            None => receive.await.unwrap(),
+        }
+        .unwrap();
+        assert_eq!(admitted.flow, FLOW_CONTINUE);
+        let mut sanitized = original.clone();
+        sanitized.fields.clear();
+        assert_eq!(
+            inbound.hand_in(HandIn {
+                owner,
+                generation: 7,
+                auth,
+                unit: admitted.unit,
+                line: 0,
+                conn: 1,
+                stream: 1,
+                framing: Some(1),
+                head: sanitized.clone(),
+            }),
+            Ok((FLOW_CONTINUE, admitted.unit))
+        );
+        let receipt = inbound.claim_request(owner, 1, 1, &sanitized).unwrap();
+        policy.body_limit = 19;
+        inbound.install_at(owner, 71, 8, policy).unwrap();
+        assert_eq!(
+            receipt.body_limit(),
+            limit,
+            "live replacement cannot change the admitted body's original bound"
+        );
+    }
     println!("{WITNESS}");
 }
