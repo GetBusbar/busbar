@@ -839,7 +839,7 @@ pub struct AppHandle {
     /// What every [`swap`](Self::swap) tells of the generation it installed: the composition root's
     /// served door planes, each refreshed onto a new generation of its section (ARCHITECT
     /// Q-DEL-A2A-APPLY; THE DESIGN §11: plugin memory is "valid to its next refresh generation").
-    appliers: std::sync::Mutex<Vec<Applier>>,
+    appliers: std::sync::Mutex<Vec<SharedApplier>>,
     /// THE DOOR PLANES' RENDERING of a kernel-shaped refusal (ARCHITECT ruling 2026-10-16, 3b B),
     /// bound once by the composition root that built the doors; unbound, the kernel answers its own.
     door_refuser: std::sync::OnceLock<busbar_kernel::plane_routes::PlaneRefuseByPathFn>,
@@ -847,6 +847,7 @@ pub struct AppHandle {
 
 /// One thing told of every generation a [`AppHandle::swap`] installs.
 pub type Applier = Box<dyn Fn(&Arc<App>) + Send + Sync>;
+type SharedApplier = Arc<dyn Fn(&Arc<App>) + Send + Sync>;
 
 impl AppHandle {
     pub fn new(app: Arc<App>) -> Self {
@@ -882,7 +883,7 @@ impl AppHandle {
         self.appliers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(applier);
+            .push(Arc::from(applier));
     }
 
     /// Bind what every [`swap`](Self::swap) runs against the incoming generation's host before the
@@ -899,7 +900,12 @@ impl AppHandle {
     /// on: a later [`swap`](Self::swap) drops it, and every stale prober exits (its `Weak` fails to
     /// upgrade). Replacing an existing binding drops the prior host, retiring that generation's probers.
     pub fn set_snapshot_host(&self, host: Arc<dyn busbar_kernel::plane_driver::EngineHost>) {
-        *self.snapshot_host.lock().unwrap_or_else(|e| e.into_inner()) = Some(host);
+        let previous = self
+            .snapshot_host
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .replace(host);
+        drop(previous);
     }
 
     /// The current `App` snapshot as an OWNED `Arc` (one refcount bump). For a caller that only
@@ -935,6 +941,16 @@ impl AppHandle {
     /// keeps this method free of any one plane's types — the reconciliation lives beside the plane it
     /// belongs to.
     pub fn swap(&self, next: Arc<App>) {
+        self.swap_with_commit(next, || Ok(None), &mut false)
+            .expect("a swap with no price preparation cannot refuse publication");
+    }
+
+    fn swap_with_commit(
+        &self,
+        next: Arc<App>,
+        confirm: impl FnOnce() -> Result<Option<crate::appbuild::ConfirmedLimits>, String>,
+        published: &mut bool,
+    ) -> Result<(), String> {
         // WRITER SERIALIZATION IS A CONVENTION, NOT A TYPE GUARANTEE (audit F9): `ArcSwap` made
         // reads lock-free, but unlike the old `RwLock` write lock, nothing here mutually excludes
         // two concurrent swaps — the load-prior → on_swap-diff → store sequence below is only
@@ -962,10 +978,6 @@ impl AppHandle {
         // The snapshot being replaced, so a plane that must DIFF the two generations can; that plane's
         // hook reconciles only `next` (its pool is Arc-carried onto `next` already).
         let prior = self.load();
-        // THE GENERATION'S LIMITS GO LIVE WITH IT: published before `next` is stored, so its first
-        // reader (and every applier below) already reads them, and onto the process-lifetime plane
-        // breaker store, whose cells outlive the generation that set their limits.
-        next.publish_limits();
         for decl in crate::plane_driver::registry::plane_decls() {
             if let Some(on_swap) = decl.on_swap {
                 on_swap(
@@ -974,8 +986,22 @@ impl AppHandle {
                 );
             }
         }
-        crate::export::plugin::queue_refresh(&next.export_defs, next.config_version);
+        // All fallible preparation and pre-publication callbacks precede the final Store-free
+        // commit. Nothing external may run between this token and the pointer publication.
+        let confirmed = confirm()?;
+        let committed = match confirmed {
+            Some(confirmed) => Some(confirmed.keep()),
+            None => {
+                next.publish_limits();
+                None
+            }
+        };
         self.current.store(next.clone());
+        *published = true;
+        crate::export::plugin::queue_refresh(&next.export_defs, next.config_version);
+        if let Some(committed) = committed {
+            committed.notify();
+        }
         // RETIRE the OUTGOING generation's engine host (App-retype WEDGE 2f). The active health probers
         // hold a `Weak<dyn EngineHost>` to the composition-root-owned host of the snapshot they were
         // spawned against; dropping it here makes their `Weak::upgrade` fail, so they exit rather than
@@ -992,18 +1018,20 @@ impl AppHandle {
         self.set_snapshot_host(host);
         // EVERY APPLY IS A NEW GENERATION for the composition root's served door planes: each is
         // refreshed onto the installed generation's section (its plugin memory resets with it).
-        for applier in self
+        let appliers = self
             .appliers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .iter()
-        {
+            .clone();
+        for applier in appliers {
             applier(&next);
         }
+        Ok(())
     }
 
     /// Commit a live-config mutation as PERSIST-then-SWAP, FAIL-CLOSED — the ONE sanctioned way to
-    /// apply a mutation that must survive a restart. `persist` writes the DESIRED overlay to disk; only
+    /// apply a mutation that must survive a restart. Rebuilt price-bearing generations use
+    /// [`Self::commit_rates_and_swap`]. `persist` writes the desired overlay to its Store; only
     /// if it succeeds do we `swap` the live engine to `next`. On a persist error nothing swaps and the
     /// error is returned (the caller records `OUTCOME_REJECTED` and returns a 4xx/5xx) — the running
     /// engine is left exactly as it was.
@@ -1020,9 +1048,90 @@ impl AppHandle {
         next: Arc<App>,
         persist: impl FnOnce() -> Result<(), String>,
     ) -> Result<(), String> {
-        persist()?; // fail-closed: if disk didn't take it, do not swap.
-        self.swap(next); // only after the desired state is durable.
-        Ok(())
+        persist()?; // fail-closed: if the Store didn't confirm it, do not swap.
+        let mut publication = UnpublishedOverlay::new(self.load().overlay_path.clone());
+        self.swap_with_commit(next, || Ok(None), &mut publication.published)
+    }
+
+    /// Confirm prices only after config persistence, and consume their infallible publication
+    /// token at the actual App pointer publication. Refusal or unwind quarantines the old carrier;
+    /// a reload can recover durable config without pretending it was rolled back.
+    pub fn commit_rates_and_swap(
+        &self,
+        next: Arc<App>,
+        persist: impl FnOnce() -> Result<(), String>,
+        limits: crate::appbuild::InstalledLimits,
+        origin: &str,
+    ) -> Result<(), String> {
+        self.publish_rates_and_swap(next, persist, limits, origin, RatePreparation::Mutation)
+    }
+
+    /// Recover retained price confirmations while rebuilding authoritative config. Only the
+    /// explicit reload transaction may authorize superseding an unpublished candidate.
+    pub fn reload_rates_and_swap(
+        &self,
+        next: Arc<App>,
+        persist: impl FnOnce() -> Result<(), String>,
+        limits: crate::appbuild::InstalledLimits,
+        origin: &str,
+    ) -> Result<(), String> {
+        self.publish_rates_and_swap(next, persist, limits, origin, RatePreparation::Reload)
+    }
+
+    fn publish_rates_and_swap(
+        &self,
+        next: Arc<App>,
+        persist: impl FnOnce() -> Result<(), String>,
+        limits: crate::appbuild::InstalledLimits,
+        origin: &str,
+        preparation: RatePreparation,
+    ) -> Result<(), String> {
+        persist()?;
+        let mut publication = UnpublishedOverlay::new(self.load().overlay_path.clone());
+        self.swap_with_commit(
+            next,
+            || {
+                crate::rate_apply::with_origin(origin, || {
+                    let prepared = match preparation {
+                        RatePreparation::Mutation => limits.prepare_rates(),
+                        RatePreparation::Reload => limits.prepare_rates_for_reload(),
+                    }?;
+                    prepared.confirm_activation().map(Some)
+                })
+            },
+            &mut publication.published,
+        )
+    }
+}
+
+enum RatePreparation {
+    Mutation,
+    Reload,
+}
+
+/// A confirmed overlay and a live App can belong to different Stores. Failed publication cannot
+/// undo either Store's confirmed effects; keep the old carrier unwritable until explicit reload.
+struct UnpublishedOverlay {
+    overlay: Option<Arc<crate::config::overlay::OverlayStore>>,
+    published: bool,
+}
+
+impl UnpublishedOverlay {
+    fn new(overlay: Option<Arc<crate::config::overlay::OverlayStore>>) -> Self {
+        Self {
+            overlay,
+            published: false,
+        }
+    }
+}
+
+impl Drop for UnpublishedOverlay {
+    fn drop(&mut self) {
+        if !self.published {
+            if let Some(overlay) = &self.overlay {
+                overlay.require_reload();
+            }
+        }
     }
 }
 

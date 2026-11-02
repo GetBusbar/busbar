@@ -577,13 +577,13 @@ async fn apply(
                 busbar_kernel::state::planes_awaiting_restart_added(&installed, &snapshot),
             );
             // PERSIST-then-SWAP, fail-closed: the overlay takes the change FIRST; only if the Store
-            // accepts it does the engine swap. `commit_then` (not `commit`) so a governance
-            // credential rotation fires only once persist AND swap have both returned `Ok`.
+            // accepts it do prices get confirmed and the engine swap. Credential rotation follows
+            // publication of the App and its confirmed prices.
             // Retain unknown-write custody on the currently published generation's carrier.
             let persist_overlay = snapshot.overlay_path.clone();
             let persist_name = txn_name.clone();
             let persist_def = next_def.clone();
-            Ok(Outcome::commit_then(
+            Ok(Outcome::commit_rates_then(
                 installed.clone(),
                 move || {
                     busbar_kernel::config::overlay::persist_named_map(
@@ -600,9 +600,9 @@ async fn apply(
                         )
                     })
                 },
+                limits,
+                card_origin,
                 move || {
-                    // Past persist AND swap: keep the limits this build installed.
-                    busbar_kernel::rate_apply::with_origin(&card_origin, || limits.keep());
                     if let Some(rotate) = gov_rotate {
                         rotate();
                     }

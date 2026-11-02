@@ -343,7 +343,7 @@ pub(crate) async fn reload_plugins(
     // Serialize against config applies/reloads AND against plugin install/remove — they all touch
     // the same plugins directory and rebuild-and-swap the App snapshot (: one global mutation
     // domain). The whole rebuild is disk I/O, so it is queued onto `spawn_blocking`.
-    let out = config_transaction(&handle, |txn| {
+    let out = busbar_kernel::config::transaction::config_reload_transaction(&handle, |txn| {
         let snapshot = txn.app().clone();
         Ok(txn.read_store(move || {
             // EPHEMERAL mode (no disk config, e.g. tests/dev) has no disk truth to rebuild the
@@ -360,19 +360,14 @@ pub(crate) async fn reload_plugins(
             // Project the inventory of the snapshot about to go live (the reconciled, loaded set).
             // A projection hiccup is reported but never rolls the swap back, exactly as before.
             let projected = AdminService::new(installed.clone()).reload_store_plugins();
-            // LIVE-only (no-op persist): the swap itself is the commit. `commit_then` defers the
-            // rotation firing to AFTER `commit_and_swap` returns `Ok` — see
-            // `build_app_from_config`'s doc comment — even though today that's immediate (persist
-            // never fails here), routing every site through the SAME mechanism means a future
-            // persist step added to this handler can't silently reintroduce the bug.
-            Ok(Outcome::commit_then(
+            // Reload has no overlay write. Confirm its prices before publishing its App; rotate
+            // credentials only after that publication succeeds.
+            Ok(Outcome::commit_rates_then(
                 installed.clone(),
                 || Ok(()),
+                limits,
+                card_origin,
                 move || {
-                    // Past the swap: the process-wide limits this build installed are the LIVE
-                    // ones, so keep them. Dropped instead — on any path that never reaches here —
-                    // they roll back to the generation still serving.
-                    busbar_kernel::rate_apply::with_origin(&card_origin, || limits.keep());
                     if let Some(rotate) = gov_rotate {
                         rotate();
                     }
@@ -419,6 +414,24 @@ pub(crate) async fn reload_plugins(
 pub(crate) struct PluginRollbackReq {
     /// The plugin tarball FILENAME (in the plugins directory) carrying the prior version to pin to.
     file: String,
+}
+
+/// A plugin pin is durable before its semantic rebuild. Preserve that partial effect on unwind
+/// or abandoned plans; the AppHandle publication guard takes over when the commit starts.
+struct UnpublishedPluginPin(Option<Arc<busbar_kernel::config::overlay::OverlayStore>>);
+
+impl UnpublishedPluginPin {
+    fn release(mut self) {
+        drop(self.0.take());
+    }
+}
+
+impl Drop for UnpublishedPluginPin {
+    fn drop(&mut self) {
+        if let Some(overlay) = &self.0 {
+            overlay.require_reload();
+        }
+    }
 }
 
 /// `POST /api/v1/admin/plugins/rollback` — EXPLICIT, authenticated, audited rollback of a plugin to a
@@ -494,6 +507,7 @@ pub(crate) async fn rollback_plugin(
                      the running engine still serves the current plugin"
                 )));
             }
+            let pin_publication = UnpublishedPluginPin(Some(overlay_path.clone()));
             let (next, gov_rotate, limits) = match rebuild_app_from_disk(&snapshot) {
                 Ok(triple) => triple,
                 Err(e) => {
@@ -518,19 +532,18 @@ pub(crate) async fn rollback_plugin(
                         );
                         return Err(AdminError::Internal);
                     }
+                    // The compensation itself was confirmed; there is no unpublished pin left.
+                    pin_publication.release();
                     return Err(AdminError::Validation(e));
                 }
             };
             let installed = Arc::new(next);
-            // The pin is already durable (persisted above, before the rebuild), so the commit step
-            // carries a no-op persist — the swap is the only thing left. `commit_then` still defers
-            // the rotation to AFTER `commit_and_swap` returns `Ok` (see
-            // `build_app_from_config`'s doc comment) — the SAME mechanism every rotation-possible
-            // site uses, not a hand-rolled "already persisted so it's fine" special case.
-            Ok(Outcome::commit_then(installed.clone(), || Ok(()), move || {
-                // Past the swap: keep the limits this build installed (dropped unkept everywhere
-                // else, including the pin-revert path above).
-                busbar_kernel::rate_apply::with_origin(&card_origin, || limits.keep());
+            // The pin is already confirmed. Price refusal keeps the old App serving and
+            // quarantines its overlay carrier until reload recovers the durable pin.
+            Ok(Outcome::commit_rates_then(installed.clone(), move || {
+                pin_publication.release();
+                Ok(())
+            }, limits, card_origin, move || {
                 if let Some(rotate) = gov_rotate {
                     rotate();
                 }
@@ -1450,13 +1463,9 @@ pub(crate) async fn reset_overlay_section(
             // The candidate's fresh carrier reaches service only after a confirmed write.
             let persist_overlay = snapshot.overlay_path.clone();
             let version = installed.config_version;
-            // `commit_then` (not `commit`): the credential rotation (if any) must fire only once
-            // `commit_and_swap` has returned `Ok` — persist AND swap both done — not merely once the
-            // persist closure below has returned `Ok`. See `build_app_from_config`'s doc
-            // comment. Same mechanism every rotation-possible site uses (`reload_config`,
-            // `reload_plugins`, `plugin/rollback`, here, and `put_config_settings`), so a future
-            // change to any one site's persist step cannot silently reintroduce the bug.
-            Ok(Outcome::commit_then(
+            // Confirm prices after persistence and before publication; rotate credentials only
+            // after the App and its prices are live.
+            Ok(Outcome::commit_rates_then(
                 installed.clone(),
                 move || {
                     busbar_kernel::config::overlay::clear_section(persist_overlay.as_deref(), section).map_err(
@@ -1468,9 +1477,9 @@ pub(crate) async fn reset_overlay_section(
                         },
                     )
                 },
+                limits,
+                card_origin,
                 move || {
-                    // Past persist AND swap: keep the limits this build installed.
-                    busbar_kernel::rate_apply::with_origin(&card_origin, || limits.keep());
                     if let Some(rotate) = gov_rotate {
                         rotate();
                     }
@@ -2127,7 +2136,7 @@ pub(crate) fn rebuild_app_from_disk(
     // known to have SUCCEEDED — see its doc comment), and the process-wide LIMITS it installed still
     // UNKEPT, for exactly the same reason and with exactly the same rule. This wrapper does NOT fire
     // or keep either: it hands both straight through to ITS OWN caller, which is the ONE place —
-    // `config_transaction`'s `apply()` (`txn.rs`), via `Outcome::commit_then` — that knows the
+    // `config_transaction`'s `apply()`, via `Outcome::commit_rates_then` — that knows the
     // transaction actually committed (persist AND swap both done). A caller of
     // `rebuild_app_from_disk` must never fire/keep before that.
     busbar_kernel::build_app_from_config(
@@ -2152,22 +2161,21 @@ pub(crate) async fn reload_config(
     // builds. It is queued as a store read so it runs on `spawn_blocking`: before, this ran inline
     // on a Tokio worker with the async mutation lock held, so a slow/large config stalled the
     // reactor for every in-flight request, not just the other mutations.
-    let out = config_transaction(&handle, |txn| {
+    let out = busbar_kernel::config::transaction::config_reload_transaction(&handle, |txn| {
         let snapshot = txn.app().clone();
         Ok(txn.read_store(move || {
             let (next, gov_rotate, limits) =
                 rebuild_app_from_disk(&snapshot).map_err(AdminError::Validation)?;
             // LIVE-only, exactly as before: a reload IS disk truth, so there is nothing to persist.
             let installed = Arc::new(next);
-            // `commit_then` defers the rotation to AFTER `commit_and_swap` returns `Ok` — see
-            // `build_app_from_config`'s doc comment. Same mechanism as every other site with a
-            // possible rotation, not a hand-rolled "safe because persist is a no-op" special case.
-            Ok(Outcome::commit_then(
+            // Confirm the recovered generation's prices before publication. Credential
+            // rotation follows only once the App and prices are live.
+            Ok(Outcome::commit_rates_then(
                 installed.clone(),
                 || Ok(()),
+                limits,
+                card_origin,
                 move || {
-                    // Past the swap: keep the limits this build installed.
-                    busbar_kernel::rate_apply::with_origin(&card_origin, || limits.keep());
                     if let Some(rotate) = gov_rotate {
                         rotate();
                     }
@@ -2402,17 +2410,14 @@ pub(crate) async fn apply_config(
                 .map_err(AdminError::Validation)?;
             let (next, gov_rotate, limits) = next;
             let installed = Arc::new(next);
-            // LIVE-only (the response `note` says so): an applied config is not written to disk.
-            // `commit_then` still defers the rotation to AFTER `commit_and_swap` returns `Ok` —
-            // see `build_app_from_config`'s doc comment — the SAME mechanism every
-            // rotation-possible site uses, not a hand-rolled "safe because persist is a no-op"
-            // special case that a future added persist step could silently defeat.
-            Ok(Outcome::commit_then(
+            // LIVE-only (the response `note` says so): the config body is not written to disk.
+            // Its prices still require Store confirmation before the generation goes live.
+            Ok(Outcome::commit_rates_then(
                 installed.clone(),
                 || Ok(()),
+                limits,
+                card_origin,
                 move || {
-                    // Past the swap: keep the limits this build installed.
-                    busbar_kernel::rate_apply::with_origin(&card_origin, || limits.keep());
                     if let Some(rotate) = gov_rotate {
                         rotate();
                     }
@@ -2955,12 +2960,9 @@ pub(crate) async fn put_config_settings(
             // custody on the unpublished candidate's fresh carrier.
             let persist_overlay = snapshot.overlay_path.clone();
             let to_persist = merged.clone();
-            // `commit_then`, not `commit`: the rotation must fire only once `commit_and_swap` has
-            // fully returned `Ok` (persist AND swap), keeping the running engine unaffected on a
-            // persistence error, including its shared process-lifetime `GovState` — see
-            // `build_app_from_config`'s doc comment. Same mechanism as every other rotation-possible
-            // site.
-            Ok(Outcome::commit_then(
+            // Confirm the candidate prices after overlay persistence, then publish limits,
+            // prices and the App before rotating credentials.
+            Ok(Outcome::commit_rates_then(
                 installed.clone(),
                 move || {
                     busbar_kernel::config::overlay::persist_root(
@@ -2974,12 +2976,9 @@ pub(crate) async fn put_config_settings(
                         )
                     })
                 },
+                limits,
+                card_origin,
                 move || {
-                    // Past persist AND swap: keep the limits this build installed. `PUT
-                    // /config/settings` is the site where this matters most — the root section it
-                    // merges CARRIES `limits:`, so a rejected settings apply is precisely a
-                    // rejected set of process-wide caps.
-                    busbar_kernel::rate_apply::with_origin(&card_origin, || limits.keep());
                     if let Some(rotate) = gov_rotate {
                         rotate();
                     }

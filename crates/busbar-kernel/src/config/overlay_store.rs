@@ -80,6 +80,7 @@ pub struct OverlayStore {
     calls: Arc<dyn StoreCalls>,
     state: Mutex<State>,
     observed: Arc<Mutex<Option<Option<Vec<u8>>>>>,
+    unpublished: std::sync::atomic::AtomicBool,
 }
 
 impl std::fmt::Debug for OverlayStore {
@@ -97,7 +98,26 @@ impl OverlayStore {
             calls,
             state: Mutex::new(State::Idle),
             observed: Arc::new(Mutex::new(None)),
+            unpublished: std::sync::atomic::AtomicBool::new(false),
         }))
+    }
+
+    /// A confirmed overlay was not published with its App. Retain any exact unknown receipt,
+    /// but refuse further edits through this old generation until reload installs a fresh carrier.
+    pub fn require_reload(&self) {
+        self.unpublished
+            .store(true, std::sync::atomic::Ordering::Release);
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        if matches!(*state, State::Idle) {
+            *state = State::NeedsReload;
+        }
+    }
+
+    pub(crate) fn ensure_published(&self) -> Result<(), String> {
+        if self.unpublished.load(std::sync::atomic::Ordering::Acquire) {
+            return Err("config overlay has a confirmed unpublished generation; reload before further mutation".into());
+        }
+        Ok(())
     }
 
     /// Diagnostic identity retained for callers that previously displayed a resolved path.
@@ -193,7 +213,8 @@ impl OverlayStore {
             }
             std::mem::replace(&mut *state, State::Busy)
         };
-        let needs_reload = matches!(&previous, State::Pending(_) | State::NeedsReload);
+        let needs_reload = matches!(&previous, State::Pending(_) | State::NeedsReload)
+            || self.unpublished.load(std::sync::atomic::Ordering::Acquire);
         let mut operation = Operation {
             store: self,
             candidate: match previous {
@@ -228,12 +249,14 @@ impl OverlayStore {
                 calls: self.calls.clone(),
                 state: Mutex::new(State::Idle),
                 observed: baseline,
+                unpublished: std::sync::atomic::AtomicBool::new(false),
             }),
             doc,
         ))
     }
 
     pub(super) fn update(&self, edit: impl FnOnce(&mut OverlayDoc)) -> Result<(), String> {
+        self.ensure_published()?;
         // Move owned data out before any Store callback or secret-bearing destructor runs.
         let previous = {
             let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());

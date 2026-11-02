@@ -44,6 +44,9 @@
 //!    ([`Outcome`]), never a `Response`. The single application site is `config_transaction`, which
 //!    routes the plan through [`crate::state::AppHandle::commit_and_swap`] (persist first; swap only
 //!    if disk took it) while still holding the guard. A body that declares no plan swaps nothing.
+//!    Rebuilt generations also confirm their price candidate and activation before pointer
+//!    publication. If prices refuse after config persistence, durable desired config remains in
+//!    its Store and the old carrier requires explicit reload; there is no cross-Store rollback.
 //!
 //! **Lock order.** `CONFIG_MUTATION_LOCK` is private to this file and is acquired ONLY by
 //! `config_transaction`; it is always released last (it is the outermost lock). `EXISTENCE_GATE`
@@ -82,6 +85,12 @@ use crate::state::{App, AppHandle};
 /// [`config_transaction`] on why a borrowed guard made the critical section cancellation-unsafe.
 static CONFIG_MUTATION_LOCK: std::sync::LazyLock<Arc<tokio::sync::Mutex<()>>> =
     std::sync::LazyLock::new(|| Arc::new(tokio::sync::Mutex::new(())));
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TransactionMode {
+    Mutation,
+    Reload,
+}
 
 /// The two error shapes `config_transaction`'s OWN machinery can produce (never a call site's own
 /// domain error, which rides the generic `E` untouched): a durable-persist failure
@@ -137,6 +146,7 @@ pub enum Outcome<T, E> {
     Commit {
         next: Arc<App>,
         persist: Persist,
+        rates: Option<Box<(crate::appbuild::InstalledLimits, String)>>,
         then: Then<T, E>,
     },
     /// Blocking work to run on `spawn_blocking` (under the guard), yielding the next `Outcome`.
@@ -162,6 +172,7 @@ impl<T, E> Outcome<T, E> {
         Outcome::Commit {
             next,
             persist: Box::new(persist),
+            rates: None,
             then: Then::Value(value),
         }
     }
@@ -177,6 +188,28 @@ impl<T, E> Outcome<T, E> {
         Outcome::Commit {
             next,
             persist: Box::new(persist),
+            rates: None,
+            then: Then::Blocking(Box::new(then)),
+        }
+    }
+
+    /// Persist the overlay, confirm this build's prices, then publish the App and prices together.
+    /// The follow-on work runs only after publication and may perform external callbacks.
+    pub fn commit_rates_then<P, F>(
+        next: Arc<App>,
+        persist: P,
+        limits: crate::appbuild::InstalledLimits,
+        origin: String,
+        then: F,
+    ) -> Self
+    where
+        P: FnOnce() -> Result<(), String> + Send + 'static,
+        F: FnOnce() -> Result<Outcome<T, E>, E> + Send + 'static,
+    {
+        Outcome::Commit {
+            next,
+            persist: Box::new(persist),
+            rates: Some(Box::new((limits, origin))),
             then: Then::Blocking(Box::new(then)),
         }
     }
@@ -289,10 +322,34 @@ impl<'a> Txn<'a> {
 /// await between taking the lock and handing it over, so cancellation can only strike before any
 /// mutation has begun (harmless) or after the section is already self-driving.
 ///
-/// It also takes `commit_and_swap` off the reactor. Its persist step is real disk work — an overlay
-/// read-modify-write plus two fsyncs — which the previous shape ran inline on a Tokio worker while
-/// the lock was held, the same class of stall defers store reads to avoid.
+/// It also takes configuration persistence and price confirmations off the reactor. These are
+/// blocking Store calls, which the previous shape ran inline on a Tokio worker while the lock
+/// was held, the same class of stall defers store reads to avoid.
 pub async fn config_transaction<F, T, E>(handle: &Arc<AppHandle>, body: F) -> Result<T, E>
+where
+    F: FnOnce(&Txn<'_>) -> Result<Outcome<T, E>, E>,
+    T: Send + 'static,
+    E: From<TxnError> + Send + 'static,
+{
+    run_transaction(handle, body, TransactionMode::Mutation).await
+}
+
+/// Reload may recover a confirmed overlay whose price/App publication failed. All other mutations
+/// must wait for this path to install a coherent generation with a fresh writable carrier.
+pub async fn config_reload_transaction<F, T, E>(handle: &Arc<AppHandle>, body: F) -> Result<T, E>
+where
+    F: FnOnce(&Txn<'_>) -> Result<Outcome<T, E>, E>,
+    T: Send + 'static,
+    E: From<TxnError> + Send + 'static,
+{
+    run_transaction(handle, body, TransactionMode::Reload).await
+}
+
+async fn run_transaction<F, T, E>(
+    handle: &Arc<AppHandle>,
+    body: F,
+    mode: TransactionMode,
+) -> Result<T, E>
 where
     // NOTE: SYNC. The body cannot `.await`, so it cannot hold the lock across a network await and
     // cannot inline a blocking store call that would park a worker under the lock.
@@ -303,12 +360,19 @@ where
     // (1) the ONLY lock site in the tree. Owned, so the guard can outlive this future.
     let guard = Arc::clone(&CONFIG_MUTATION_LOCK).lock_owned().await;
     let snapshot = handle.load(); // (2) FRESH post-lock read — the body's only config
+    if mode == TransactionMode::Mutation {
+        if let Some(overlay) = &snapshot.overlay_path {
+            overlay
+                .ensure_published()
+                .map_err(|msg| E::from(TxnError::Validation(msg)))?;
+        }
+    }
     let outcome = body(&Txn { app: &snapshot })?; // (3) synchronous decision → a plan
     let handle = Arc::clone(handle);
     // (4) apply the plan — atomic mutate → persist → swap, then any deferred steps — on ONE blocking
     // thread that owns the guard. A panic in the section is a JoinError, mapped fail-closed.
     tokio::task::spawn_blocking(move || {
-        let result = apply(&handle, outcome);
+        let result = apply(&handle, outcome, mode);
         drop(guard);
         crate::export::plugin::refresh_pending();
         result
@@ -320,7 +384,11 @@ where
 /// Drive a plan to a value. Entirely synchronous: `commit_and_swap` and every deferred step are
 /// blocking calls, and this runs on the blocking thread `config_transaction` hands the guard to, so
 /// the whole section is one uninterruptible unit of work.
-fn apply<T, E>(handle: &Arc<AppHandle>, mut outcome: Outcome<T, E>) -> Result<T, E>
+fn apply<T, E>(
+    handle: &Arc<AppHandle>,
+    mut outcome: Outcome<T, E>,
+    mode: TransactionMode,
+) -> Result<T, E>
 where
     E: From<TxnError>,
 {
@@ -330,11 +398,24 @@ where
             Outcome::Commit {
                 next,
                 persist,
+                rates,
                 then,
             } => {
-                handle
-                    .commit_and_swap(next, persist)
-                    .map_err(|msg| E::from(TxnError::Validation(msg)))?;
+                match rates {
+                    Some(rates) => {
+                        let (limits, origin) = *rates;
+                        match mode {
+                            TransactionMode::Mutation => {
+                                handle.commit_rates_and_swap(next, persist, limits, &origin)
+                            }
+                            TransactionMode::Reload => {
+                                handle.reload_rates_and_swap(next, persist, limits, &origin)
+                            }
+                        }
+                    }
+                    None => handle.commit_and_swap(next, persist),
+                }
+                .map_err(|msg| E::from(TxnError::Validation(msg)))?;
                 match then {
                     Then::Value(value) => return Ok(value),
                     // Same guard, same thread: the follow-on store write cannot interleave with any
