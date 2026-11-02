@@ -3691,8 +3691,7 @@ pub(crate) mod tool_door {
         let error = (row
             .parse_section
             .expect("the door parses its owned section"))(row, &section(9))
-        .err()
-        .expect("pinned_pubkey does not authenticate a server in this build");
+        .expect_err("pinned_pubkey does not authenticate a server in this build");
         assert!(
             error.contains("pinned_pubkey") && error.contains("authenticates nothing"),
             "{error}"
@@ -4213,13 +4212,13 @@ pub(crate) mod tool_door {
         let instance = "door-verify-on-call";
         let mut server = TlsToolServer::new().await;
         let rig = server.rig(instance, tools(&server, "1h"), &|app| app);
-        let mut heard = &mut server.heard;
+        let heard = &mut server.heard;
         for _ in 0..2 {
             let (status, body) = send(&rig.router, Some(&rig.bound_token()), CALL).await;
             assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
         }
         assert_eq!(
-            drain(&mut heard),
+            drain(heard),
             vec!["list", "call", "call"],
             "one fetch, two calls"
         );
@@ -4229,7 +4228,7 @@ pub(crate) mod tool_door {
         let listed = Arc::new(std::sync::Mutex::new(tool_listing()));
         let mut server = TlsToolServer::listing(Arc::clone(&listed)).await;
         let rig = server.rig(instance, tools(&server, "0s"), &|app| app);
-        let mut heard = &mut server.heard;
+        let heard = &mut server.heard;
         let (status, _) = send(&rig.router, Some(&rig.bound_token()), CALL).await;
         assert_eq!(
             status,
@@ -4245,7 +4244,7 @@ pub(crate) mod tool_door {
         let body: serde_json::Value = serde_json::from_slice(&body).expect("JSON-RPC");
         assert_eq!(body["error"]["data"]["reason"], "quarantined", "{body}");
         assert_eq!(
-            drain(&mut heard),
+            drain(heard),
             vec!["list", "call", "list"],
             "the drifted call was refused before it was sent"
         );
@@ -8544,8 +8543,10 @@ fn the_configured_error_body_cap_reaches_both_egress_constructors() {
         (ordinary, models)
     };
 
-    let mut limits = LimitsResolved::default();
-    limits.upstream_error_body_max_bytes = 17;
+    let mut limits = LimitsResolved {
+        upstream_error_body_max_bytes: 17,
+        ..LimitsResolved::default()
+    };
     let _outer = BuildScope::enter(&limits);
     let first = build();
     {

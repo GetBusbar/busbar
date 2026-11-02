@@ -270,7 +270,7 @@ fn a_delayed_old_journal_writer_cannot_overwrite_the_successors_same_position() 
             Mutation::Put { schema, value, .. } if schema == JOURNAL_SCHEMA && value.as_slice() == old_part.as_slice()))
     });
     shipper_a
-        .ship(&[old.clone()])
+        .ship(std::slice::from_ref(&old))
         .expect("A hands off its accepted record");
     let held = crossing.recv_timeout(WAIT).expect("A reached its part CAS");
     assert_eq!(
@@ -292,7 +292,7 @@ fn a_delayed_old_journal_writer_cannot_overwrite_the_successors_same_position() 
     let mut shipper_b = lane_b.shipper();
     let replacement = record(node, 1, 37);
     shipper_b
-        .ship(&[replacement.clone()])
+        .ship(std::slice::from_ref(&replacement))
         .expect("B writes the same position");
     lane_b
         .wait_acked(node, 1, WAIT)
