@@ -153,7 +153,7 @@ struct State {
     /// why.
     refused: HashMap<u64, Failure>,
     /// The holders that found the connection out, woken when it is back.
-    missed: Vec<Waker>,
+    missed: Vec<Arc<Waker>>,
     /// Pieces read off the connection for a holder that has not taken them, by stream.
     parked: HashMap<u64, VecDeque<Got>>,
     /// The streams a holder still reads.
@@ -195,9 +195,9 @@ impl State {
     }
 
     /// `waker`'s holder found the connection out: it is woken when the connection is back.
-    fn miss(&mut self, waker: &Waker) {
+    fn miss(&mut self, waker: &Arc<Waker>) {
         if !self.missed.iter().any(|w| w.will_wake(waker)) {
-            self.missed.push(waker.clone());
+            self.missed.push(Arc::clone(waker));
         }
     }
 }
@@ -305,7 +305,7 @@ impl Line {
     fn turn<R>(
         &self,
         mut s: MutexGuard<'_, State>,
-        missed: Option<&Waker>,
+        missed: Option<&Arc<Waker>>,
         drive: impl FnOnce(&mut Connection) -> R,
         settle: impl FnOnce(&mut State, &mut R),
     ) -> Turn<R> {
@@ -518,7 +518,7 @@ impl Line {
     fn park_pieces(
         &self,
         s: MutexGuard<'_, State>,
-        missed: &Waker,
+        missed: &Arc<Waker>,
     ) -> Turn<Option<Result<(), Failure>>> {
         let every = !self.dialled;
         // A connection that does not multiplex has one holder at a time, who reads every piece (a
@@ -605,6 +605,7 @@ impl Line {
         cx: &mut Context<'_>,
     ) -> Poll<Result<Option<Got>, Failure>> {
         self.fan.wait(stream, cx.waker());
+        let missed = Arc::new(cx.waker().clone());
         let mut s = self.state();
         if let Some(f) = s.refused.remove(&stream) {
             return Poll::Ready(Err(f));
@@ -619,7 +620,7 @@ impl Line {
             }
             return Poll::Ready(Ok(Some(got)));
         }
-        let end = self.park_pieces(s, cx.waker());
+        let end = self.park_pieces(s, &missed);
         let mut s = self.state();
         let full = s.conn.is_none()
             || s.parked_bytes().saturating_add(s.seen.buffered_input) >= RECEIVE_BUFFER_BYTES;
@@ -644,8 +645,9 @@ impl Line {
     /// Whether a piece (or the end) is ready for `stream`, without taking it.
     pub(crate) fn poll_ready(&self, stream: u64, cx: &mut Context<'_>) -> Poll<()> {
         self.fan.wait(stream, cx.waker());
+        let missed = Arc::new(cx.waker().clone());
         let s = self.state();
-        let end = self.park_pieces(s, cx.waker());
+        let end = self.park_pieces(s, &missed);
         let s = self.state();
         if matches!(end, Turn::Ran(Some(_)) | Turn::Closed) || s.closing || s.waiting_for(stream) {
             Poll::Ready(())
@@ -663,10 +665,11 @@ impl Line {
     ) -> Poll<Result<(), Failure>> {
         self.fan.wait(stream, cx.waker());
         let waker = self.fan_waker();
+        let missed = Arc::new(cx.waker().clone());
         let s = self.state();
         match self.turn(
             s,
-            Some(cx.waker()),
+            Some(&missed),
             |conn| conn.poll_landed(&mut Context::from_waker(&waker)),
             |_, _| {},
         ) {
@@ -705,11 +708,12 @@ impl Line {
         if let Some(waker) = missed {
             self.fan.wait(stream, waker);
         }
+        let missed = missed.map(|waker| Arc::new(waker.clone()));
         let waker = self.fan_waker();
         let s = self.state();
         match self.turn(
             s,
-            missed,
+            missed.as_ref(),
             |conn| conn.emit(stream, bytes, end, text, &mut Context::from_waker(&waker)),
             |_, _| {},
         ) {
@@ -749,7 +753,7 @@ impl Line {
         unread_above: bool,
         cx: &mut Context<'_>,
     ) -> Poll<Result<(), Failure>> {
-        let missed = cx.waker().clone();
+        let missed = Arc::new(cx.waker().clone());
         let s = self.state();
         let parked = s.parked.values().any(|q| !q.is_empty());
         match self.turn(
@@ -826,9 +830,9 @@ impl Line {
 }
 
 /// Wake every holder in `missed`.
-fn wake(missed: Vec<Waker>) {
+fn wake(missed: Vec<Arc<Waker>>) {
     for w in missed {
-        w.wake();
+        w.wake_by_ref();
     }
 }
 
