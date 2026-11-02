@@ -701,6 +701,12 @@ fn an_embedding_host_guard_runs_before_any_native_staging() {
         return;
     }
     install_native_load_guard(|_, _| Err("host archive/floor policy refused".into())).unwrap();
+    assert!(
+        crate::dispatch::rendering_of_library(std::path::Path::new("never-opened"))
+            .unwrap_err()
+            .to_string()
+            .contains("retained admitted archive")
+    );
     let before = STAGED_HERE.with(|counter| counter.get());
     let error = match load_library_from_bytes(b"no native format is consulted", "guarded-image") {
         Ok(_) => panic!("the policy must refuse before mapping"),

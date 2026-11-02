@@ -472,6 +472,13 @@ pub fn install_native_load_guard(guard: NativeLoadGuard) -> Result<(), &'static 
         .map_err(|_| "a native load guard is already installed")
 }
 
+pub(crate) fn allow_standalone_path_load() -> Result<(), String> {
+    if NATIVE_LOAD_GUARD.get().is_some() {
+        return Err("this host requires a retained admitted archive before native loading; direct path loading is unavailable".into());
+    }
+    Ok(())
+}
+
 /// Load a dynamic library from EXACTLY the in-memory `bytes` supplied - the verified-bytes ==
 /// loaded-bytes entrypoint. On Linux this uses `memfd_create` + `/proc/self/fd/N` (zero disk
 /// files); elsewhere (or if memfd fails) the bytes are staged into the per-process private `0700`

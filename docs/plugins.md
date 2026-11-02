@@ -689,7 +689,9 @@ get code executed, and a compromised or replayed plugin must not load.
    The same pre-staging gate covers all seven kinds, including cold plugin checks invoked by
    `--validate` and native migrations invoked by `--migrate-config`. These commands open no
    application Store; any dropped native checker or migrator they execute must therefore carry
-   the immutable fetch pin from their operator input. A missing pin is an actionable refusal,
+   the immutable fetch pin from their operator input. This includes a native migrator downloaded
+   from the release index: the index's version/tag and a valid publisher signature do not replace
+   the matching operator archive hash. A missing pin is an actionable refusal,
    rather than permission to execute an unbounded older artifact. Once the Store is bound, each
    actual native opening rechecks its exact candidate against the Store floor, even if its
    registry was captured earlier. Standalone loader-library tools retain their own explicit
