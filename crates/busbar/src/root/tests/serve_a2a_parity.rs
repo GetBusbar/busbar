@@ -789,7 +789,8 @@ fn raw_relay_and_lifecycle(
     let released = plane.call(life::slot::RELEASE, &mut release);
     assert_eq!(released.lease, 0);
     assert!(
-        released.outcome == Outcome::Ready
+        (released.outcome == Outcome::Ready
+            && released.error.as_ref().is_none_or(|bytes| bytes.is_empty()))
             || (released.outcome == Outcome::Refused
                 && released.error.as_deref() == Some(b"release: no such lease"))
     );
