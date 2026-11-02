@@ -93,6 +93,11 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
         "advanced": {"allow_destinations": ["127.0.0.1"]},
         "store": {"module": store_module.expect("the actual store was staged"), "settings": settings},
         "hooks": {
+            "a": {"module": hook_module, "kind": "gate", "timeout_ms":5000, "on_error":"b", "settings":{"url":endpoint}},
+            "b": {"module": hook_module, "kind": "gate", "timeout_ms":5000, "on_error":"reject", "settings":{"url":endpoint}},
+            "n": {"module": hook_module, "kind": "gate", "timeout_ms":5000, "on_error":"nothing", "settings":{"url":endpoint}},
+            "c": {"module": hook_module, "kind": "gate", "timeout_ms":5000, "on_error":"first", "settings":{"url":endpoint}},
+            "g": {"module": hook_module, "kind": "gate", "timeout_ms":5000, "on_error":"cheapest", "settings":{"url":endpoint}},
             "rw": {"module": hook_module, "kind": "gate", "timeout_ms": 5000, "prompt": "rw",
                    "settings": {"url": endpoint}},
             "read": {"module": hook_module, "kind": "gate", "timeout_ms": 5000, "prompt": "ro",
@@ -101,6 +106,10 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
                       "settings": {"url": endpoint}}
         },
         "pools": {
+            "a": {"members":["local-model"], "hooks":["a"]},
+            "n": {"members":["local-model"], "hooks":["n"]},
+            "c": {"members":["local-model"], "hooks":["c"]},
+            "g": {"members":["local-model"], "hooks":["g"]},
             "read": {"members": ["local-model"], "hooks": ["read"]},
             "rewrite": {"members": ["local-model"], "hooks": ["rw"]},
             "decision": {"members": ["local-model"], "hooks": ["plain"]}
@@ -301,5 +310,159 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
         );
     }
     response.lock().unwrap().1 = 0;
+    response.lock().unwrap().0 = serde_json::json!({"order":[0]});
+    // Actual no-grant transport receives no messages and cannot screen withheld content.
+    let ResolvedPolicy::Policy {
+        policy: plain,
+        send_prompt,
+        ..
+    } = &app.pool_gates("decision")[0].1;
+    assert!(
+        !send_prompt,
+        "prompt:no grant → no content projected, regardless of manifest intent"
+    );
+    let mut withheld = request("please BLOCKME");
+    withheld.prompt = None;
+    assert_eq!(
+        plain
+            .decide(&withheld, &candidates[..1], &context, budget)
+            .await
+            .expect("decide"),
+        RoutingDecision::Prefer(vec![0]),
+        "no content reached the gate → it ranks, never rejects"
+    );
+    assert!(recorded.lock().unwrap().last().unwrap()["request"]
+        .get("messages")
+        .is_none());
+
+    // The resolved fallback graph carries actual live products, not synthetic policy objects.
+    use busbar_kernel::config::PolicyOnError;
+    let ResolvedPolicy::Policy {
+        on_error,
+        on_error_chain,
+        ..
+    } = &app.pool_gates("a")[0].1;
+    assert_eq!(on_error_chain.len(), 1, "one fallback link (gate b)");
+    assert_eq!(
+        on_error_chain[0].policy.name(),
+        "b",
+        "the fallback link is a live HookPolicy"
+    );
+    assert_eq!(
+        *on_error,
+        PolicyOnError::Reject,
+        "the chain bottoms out on b's reject terminal"
+    );
+    let answer = on_error_chain[0]
+        .policy
+        .decide(&request("x"), &candidates[..1], &context, budget)
+        .await
+        .expect("the fallback link decides");
+    assert!(matches!(
+        answer,
+        RoutingDecision::Abstain | RoutingDecision::Prefer(_)
+    ));
+    let ResolvedPolicy::Policy {
+        on_error,
+        on_error_chain,
+        ..
+    } = &app.pool_gates("n")[0].1;
+    assert!(on_error_chain.is_empty());
+    assert_eq!(
+        *on_error,
+        PolicyOnError::Weighted,
+        "nothing = the non-participating terminal"
+    );
+    let ResolvedPolicy::Policy {
+        on_error,
+        on_error_chain,
+        ..
+    } = &app.pool_gates("c")[0].1;
+    assert!(on_error_chain.is_empty(), "a terminal name has no chain");
+    assert_eq!(*on_error, PolicyOnError::First);
+    let ResolvedPolicy::Policy {
+        on_error,
+        on_error_chain,
+        ..
+    } = &app.pool_gates("g")[0].1;
+    assert_eq!(on_error_chain.len(), 1);
+    assert_eq!(on_error_chain[0].policy.name(), "cheapest");
+    assert_eq!(*on_error, PolicyOnError::Weighted);
+
+    // Re-resolving identical admitted row+instance+settings reuses the actual product transport.
+    let pool = busbar_kernel::config::PoolCfg {
+        gates: vec!["read".into()],
+        ..Default::default()
+    };
+    let first =
+        busbar_kernel::hooks::resolve_pool_gates(&pool, &app.hook_registry, &app.hook_env, 0);
+    let second =
+        busbar_kernel::hooks::resolve_pool_gates(&pool, &app.hook_registry, &app.hook_env, 0);
+    let ResolvedPolicy::Policy { policy: first, .. } = &first[0].1;
+    let ResolvedPolicy::Policy { policy: second, .. } = &second[0].1;
+    assert!(Arc::ptr_eq(first,second),
+        "a second resolution of the same hook+settings+registry must reuse the published load, not open a second image");
+    let mut changed = app.hook_registry.clone();
+    changed
+        .get_mut("read")
+        .unwrap()
+        .settings
+        .insert("timeout_ms".into(), serde_json::json!(2000));
+    let third = busbar_kernel::hooks::resolve_pool_gates(&pool, &changed, &app.hook_env, 0);
+    let ResolvedPolicy::Policy { policy: third, .. } = &third[0].1;
+    assert!(
+        !Arc::ptr_eq(first, third),
+        "a change of settings must resolve a NEW transport, never reuse the old one"
+    );
+
+    // The normal root has already published the product before the control-plane push.
+    assert!(
+        matches!(
+            busbar_kernel::hooks::transport_publication_for_test(
+                "read",
+                &app.hook_registry["read"],
+                &app.hook_env
+            ),
+            Some((true, _))
+        ),
+        "the loader must publish a transport for a loadable hook plugin"
+    );
+    let mut acknowledged = false;
+    let mut last = String::new();
+    for _ in 0..4 {
+        match busbar_kernel::hooks::push_configure(
+            &app.hook_registry["read"],
+            "read",
+            7,
+            &app.hook_env,
+        )
+        .await
+        {
+            Ok(()) => {
+                acknowledged = true;
+                break;
+            }
+            Err(error) if error.contains("deadline") || error.contains("unresolvable") => {
+                last = error
+            }
+            Err(error) => panic!("the plugin must ack the pushed version exactly: {error}"),
+        }
+    }
+    assert!(acknowledged,"push_configure hit its shipped 5s deadline 4 times in a row ({last}); that is a wedged plugin or a hang, not scheduling delay");
+    let before = policy.status(budget).await.expect("status").settings;
+    let invalid = serde_json::json!({"url":""}).as_object().unwrap().clone();
+    assert!(
+        policy.configure("read", &invalid, 8, budget).await.is_err(),
+        "a hook that refuses to ack must fail the configure push (no commit)"
+    );
+    assert_eq!(
+        policy
+            .status(budget)
+            .await
+            .expect("status after NACK")
+            .settings,
+        before,
+        "a rejected actual product push must not commit new settings"
+    );
     server.abort();
 }
