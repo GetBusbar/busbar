@@ -333,3 +333,69 @@ fn host_admission_keeps_credential_separate_from_the_principal_and_wire_answer()
     );
     assert!(!format!("{answer:?}").contains(secret));
 }
+
+#[test]
+fn verifier_projection_lends_the_original_candidate_and_unrewritten_request_values() {
+    let mut head = Head::default();
+    head.method = "POST".into();
+    head.target = "/v1/messages".into();
+    head.authority = "original.example".into();
+    head.query = Some("token=first&token=second".into());
+    head.fields = vec![
+        ("Authorization".into(), b"Bearer candidate".to_vec()),
+        ("X-Safe".into(), b"unchanged".to_vec()),
+    ];
+    let candidate = Secret::new("candidate".to_owned());
+    let projected = verify_request(
+        &head,
+        AuthPoint::HeadBody,
+        11,
+        13,
+        Some(b"exact body"),
+        Some(&candidate),
+    );
+    assert_eq!(
+        projected
+            .credential
+            .as_ref()
+            .unwrap()
+            .expose(&crate::seal::lend())
+            .as_slice(),
+        b"candidate"
+    );
+    assert_eq!(
+        projected
+            .lines
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        ["authorization", "x-safe"]
+    );
+    assert_eq!(
+        projected.lines[0].1.expose(&crate::seal::lend()).as_slice(),
+        b"Bearer candidate"
+    );
+    assert_eq!(
+        projected.lines[1].1.expose(&crate::seal::lend()).as_slice(),
+        b"unchanged"
+    );
+    assert_eq!(
+        (
+            projected.method,
+            projected.authority,
+            projected.path,
+            projected.query,
+            projected.body
+        ),
+        (
+            head.method.clone(),
+            head.authority.clone(),
+            head.target.clone(),
+            head.query.clone(),
+            Some(b"exact body".to_vec())
+        )
+    );
+    assert!(verify_request(&head, AuthPoint::Head, 11, 13, None, None)
+        .credential
+        .is_none());
+}
