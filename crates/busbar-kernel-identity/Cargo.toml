@@ -15,7 +15,3 @@ path = "src/lib.rs"
 busbar-contract = { path = "../busbar-contract" }
 hex = { workspace = true }
 ring = { workspace = true }
-
-[features]
-# Test builds only; a shipped build never enables it.
-stand-in = []
