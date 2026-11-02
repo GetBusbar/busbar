@@ -155,4 +155,7 @@ allow-git = [
     "https://github.com/MattJackson/h2",
     # tungstenite 1c190f7dda55dc7df4781b7ecea9faa671fc76fd (snapview/tungstenite-rs#574).
     "https://github.com/MattJackson/tungstenite-rs",
+    "https://github.com/MattJackson/jobserver-rs",
+    "https://github.com/MattJackson/rust-stringprep",
+    "https://github.com/MattJackson/dunce",
 ]

@@ -4,8 +4,20 @@
 [cargo-vet]
 version = "0.10"
 
+[policy.dunce]
+audit-as-crates-io = true
+notes = "Local full audits bind exact reviewed Git snapshots; published registry bases are not certified by those records."
+
 [policy.h2]
 audit-as-crates-io = true
+
+[policy.jobserver]
+audit-as-crates-io = true
+notes = "Local full audits bind exact reviewed Git snapshots; published registry bases are not certified by those records."
+
+[policy.stringprep]
+audit-as-crates-io = true
+notes = "Local full audits bind exact reviewed Git snapshots; published registry bases are not certified by those records."
 
 [policy.tungstenite]
 audit-as-crates-io = true
