@@ -296,7 +296,7 @@ fn a_plane_envelope_reaches_the_host_observer() {
 #[test]
 fn an_auth_envelope_reaches_the_host_observer() {
     observed_through_its_bind::<crate::dispatch::kinds::auth::Auth>(
-        crate::both_ways::door_fixture("auth-verify").1,
+        actual_auth_observer_door,
         busbar_contract::abi::mechanism::kind::AUTH,
     );
 }
@@ -320,7 +320,7 @@ fn a_hook_envelope_reaches_the_host_observer() {
 #[test]
 fn a_secret_envelope_reaches_the_host_observer() {
     observed_through_its_bind::<crate::dispatch::kinds::secret::Secret>(
-        crate::both_ways::secret_fixture::door::door,
+        actual_secret_observer_door,
         busbar_contract::abi::mechanism::kind::SECRET,
     );
 }
@@ -328,7 +328,7 @@ fn a_secret_envelope_reaches_the_host_observer() {
 #[test]
 fn a_transport_envelope_reaches_the_host_observer() {
     observed_through_its_bind::<crate::dispatch::kinds::transport::Transport>(
-        crate::both_ways::transport_fixture::linked::door,
+        actual_transport_observer_door,
         busbar_contract::abi::mechanism::kind::TRANSPORT,
     );
 }
@@ -336,7 +336,7 @@ fn a_transport_envelope_reaches_the_host_observer() {
 #[test]
 fn an_export_envelope_reaches_the_host_observer() {
     observed_through_its_bind::<crate::dispatch::kinds::export::Export>(
-        crate::both_ways::export_fixture::door,
+        actual_export_observer_door,
         busbar_contract::abi::mechanism::kind::EXPORT,
     );
 }
@@ -445,4 +445,91 @@ fn a_reader_counts_only_its_own_tests_folds() {
         ["scope-reader", "scope-reader"],
         "{got:?}"
     );
+}
+
+// These controls bind actual descriptors and test only the host envelope sink.
+// They neither open a product nor substitute its business protocol/settings.
+#[allow(unsafe_code)]
+fn actual_observer_door<K: crate::dispatch::Kind>(
+    variable: &str,
+    retained: &'static std::sync::OnceLock<(
+        libloading::Library,
+        busbar_contract::abi::sdk::door::RawDoorFn,
+    )>,
+) -> &'static busbar_contract::abi::mechanism::door::Door {
+    let image = retained.get_or_init(|| {
+        let path = std::path::PathBuf::from(
+            std::env::var_os(variable)
+                .unwrap_or_else(|| panic!("{variable} names the qualified actual product")),
+        );
+        assert!(
+            path.is_absolute() && path.is_file(),
+            "actual product image: {}",
+            path.display()
+        );
+        let library =
+            crate::dlopen_on_worker(path.as_os_str()).expect("actual product image loads");
+        // SAFETY: native custody supplies the actual typed product image; retained holds it
+        // through all descriptor loans and every host-envelope assertion.
+        let entry = unsafe {
+            *library
+                .get::<busbar_contract::abi::sdk::door::RawDoorFn>(
+                    busbar_contract::abi::mechanism::DOOR_SYMBOL,
+                )
+                .expect("actual product exports its door")
+        };
+        (library, entry)
+    });
+    let door = crate::dispatch::load::enter_door(image.1);
+    crate::dispatch::load::validate_door::<K>(door)
+        .expect("actual product descriptor kind validates");
+    // SAFETY: validation established a live immutable descriptor held by retained.
+    unsafe { &*door }
+}
+
+extern "C" fn actual_auth_observer_door() -> &'static busbar_contract::abi::mechanism::door::Door {
+    static IMAGE: std::sync::OnceLock<(
+        libloading::Library,
+        busbar_contract::abi::sdk::door::RawDoorFn,
+    )> = std::sync::OnceLock::new();
+    actual_observer_door::<crate::dispatch::kinds::auth::Auth>(
+        "BUSBAR_AUTH_TEST_OIDC_PLUGIN",
+        &IMAGE,
+    )
+}
+
+extern "C" fn actual_secret_observer_door() -> &'static busbar_contract::abi::mechanism::door::Door
+{
+    static IMAGE: std::sync::OnceLock<(
+        libloading::Library,
+        busbar_contract::abi::sdk::door::RawDoorFn,
+    )> = std::sync::OnceLock::new();
+    actual_observer_door::<crate::dispatch::kinds::secret::Secret>(
+        "BUSBAR_TEST_SECRET_ENV_CDYLIB",
+        &IMAGE,
+    )
+}
+
+extern "C" fn actual_transport_observer_door(
+) -> &'static busbar_contract::abi::mechanism::door::Door {
+    static IMAGE: std::sync::OnceLock<(
+        libloading::Library,
+        busbar_contract::abi::sdk::door::RawDoorFn,
+    )> = std::sync::OnceLock::new();
+    actual_observer_door::<crate::dispatch::kinds::transport::Transport>(
+        "BUSBAR_TEST_TCP_CDYLIB",
+        &IMAGE,
+    )
+}
+
+extern "C" fn actual_export_observer_door() -> &'static busbar_contract::abi::mechanism::door::Door
+{
+    static IMAGE: std::sync::OnceLock<(
+        libloading::Library,
+        busbar_contract::abi::sdk::door::RawDoorFn,
+    )> = std::sync::OnceLock::new();
+    actual_observer_door::<crate::dispatch::kinds::export::Export>(
+        "BUSBAR_TEST_EXPORT_FILE_CDYLIB",
+        &IMAGE,
+    )
 }
