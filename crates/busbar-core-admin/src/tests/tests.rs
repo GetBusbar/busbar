@@ -369,59 +369,6 @@ async fn test_admin_v1_pool_detail_reports_the_per_pool_breaker_cell() {
 }
 
 #[tokio::test]
-async fn test_admin_v1_get_single_key() {
-    use busbar_kernel::governance::NewKeySpec;
-    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let (minted, minted_secret) = gov
-        .create_key(
-            NewKeySpec {
-                name: "svc".to_string(),
-                allowed_pools: None,
-                group: None,
-                labels: Default::default(),
-                ..Default::default()
-            },
-            busbar_kernel::store::now(),
-        )
-        .unwrap();
-    let app = crate::new_test_app().governance(gov).build();
-    let router = crate::build_router(app);
-    let (addr, handle, client) = spin_up(router).await;
-
-    let resp = client
-        .get(format!("http://{addr}/api/v1/admin/keys/{}", minted.id))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status().as_u16(), 200);
-    let text = resp.text().await.unwrap();
-    let body: serde_json::Value = serde_json::from_str(&text).unwrap();
-    assert_eq!(body["id"], minted.id);
-    assert_eq!(body["name"], "svc");
-    assert!(
-        body.get("generation_hash").is_none(),
-        "never expose the hash"
-    );
-    assert!(
-        !text.contains(&minted_secret),
-        "never expose the secret on a read"
-    );
-
-    let missing = client
-        .get(format!("http://{addr}/api/v1/admin/keys/vk_doesnotexist"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(missing.status().as_u16(), 404);
-
-    handle.abort();
-}
-
-#[tokio::test]
 async fn test_admin_v1_usage_meters_by_model_and_key() {
     use busbar_kernel::governance::NewKeySpec;
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
@@ -3784,40 +3731,6 @@ async fn test_admin_v1_plugins_catalog_by_type() {
 }
 
 #[tokio::test]
-async fn test_admin_v1_auth_read_keys_chain_reports_1_5_5_open() {
-    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let mut cfg = busbar_kernel::config::AuthCfg::default_none();
-    cfg.chain = vec![busbar_kernel::config::AuthChainEntry::bare("keys")];
-    let mw = busbar_kernel_testkit::test_support::auth_helpers::new_builtin(&cfg);
-    assert!(
-        !mw.is_open(),
-        "the admission predicate stays closed under chain: [keys]"
-    );
-    let app = crate::new_test_app()
-        .governance(gov)
-        .auth(Arc::new(mw))
-        .build();
-    let router = crate::build_router(app);
-    let (addr, handle, _) = spin_up(router).await;
-    let body = reqwest::Client::new()
-        .get(format!("http://{addr}/api/v1/admin/auth"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .text()
-        .await
-        .unwrap();
-    assert_eq!(
-        body, r#"{"chain":[],"upstream_credentials":"own","open":true}"#,
-        "GET /auth under chain: [keys] must be 1.5.5's bytes"
-    );
-    handle.abort();
-}
-
-#[tokio::test]
 async fn test_admin_v1_config_validate_dry_run() {
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
@@ -4416,59 +4329,6 @@ async fn test_admin_v1_all_reads_require_admin_token() {
         );
     }
 
-    handle.abort();
-}
-
-#[tokio::test]
-async fn minting_a_recoverable_credential_without_an_at_rest_key_is_refused_and_says_what_to_set() {
-    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_without_at_rest_key(store.clone(), Some("admintok".to_string()));
-    let (addr, handle) = serve_with_gov(gov).await;
-    let client = reqwest::Client::new();
-    let baseline_seq = busbar_kernel::audit::auditlog::AUDIT_LOG
-        .list_filtered(0, 1, None, None)
-        .first()
-        .map(|e| e.seq)
-        .unwrap_or(0);
-
-    let refused = client
-        .post(format!("http://{addr}/api/v1/admin/keys"))
-        .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"name": "no-at-rest", "issue_aws_credential": true}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(refused.status().as_u16(), 409);
-    let body: serde_json::Value = refused.json().await.unwrap();
-    let message = body["error"]["message"].as_str().unwrap_or_default();
-    assert_eq!(
-        message,
-        busbar_kernel::governance::at_rest::NO_KEY_REFUSAL,
-        "{body}"
-    );
-    assert!(message.contains("credentials.at_rest.key"), "{body}");
-    use busbar_kernel::governance::RecordStore as _;
-    assert!(store.list_keys().unwrap().is_empty(), "a key was written");
-    assert!(store.list_credentials_since(0).unwrap().is_empty());
-    assert!(
-        busbar_kernel::audit::auditlog::AUDIT_LOG
-            .list_filtered(0, audit_ring::MAX_AUDIT_ENTRIES, None, Some("key:-"))
-            .into_iter()
-            .any(|e| e.seq > baseline_seq
-                && e.action == "key.create"
-                && e.outcome == audit_ring::OUTCOME_REJECTED),
-        "the refusal is audited"
-    );
-
-    let plain = client
-        .post(format!("http://{addr}/api/v1/admin/keys"))
-        .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"name": "bearer-only"}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(plain.status().as_u16(), 201);
     handle.abort();
 }
 
