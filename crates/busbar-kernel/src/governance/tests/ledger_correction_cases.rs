@@ -328,6 +328,11 @@ fn a_future_usage_epoch_refuses_both_signs_without_changing_recorded_facts() {
             result.is_err(),
             "a future epoch must be refused: {result:?}"
         );
+        assert!(matches!(
+            result,
+            Err(super::super::AdjustRefused::FutureEpoch { at, now })
+                if at == future && now < future
+        ));
         assert_eq!(facts(), before, "no ledger or metering fact may change");
     }
 }
