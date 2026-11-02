@@ -429,3 +429,8 @@ mod actual_exports;
 #[allow(unsafe_code)]
 #[path = "tests/store_memory_facts_actual.rs"]
 mod store_memory_facts_actual;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/ordinary_plane_ack_drive.rs"]
+mod ordinary_plane_ack_drive;

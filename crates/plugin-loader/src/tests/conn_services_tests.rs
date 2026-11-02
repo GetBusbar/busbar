@@ -3606,3 +3606,6 @@ mod refresh_driver_generation {
         assert!(d.retirement_barrier(driver, std::time::Duration::from_secs(10)));
     }
 }
+
+#[path = "ordinary_connector_bounds.rs"]
+mod ordinary_connector_bounds;
