@@ -706,9 +706,20 @@ fn lifecycle_slot_indices_are_the_exported_tables_actual_offsets() {
 
 #[test]
 fn sdk_slot_types_match_the_kinds_declared_input_and_output_frames() {
-    use crate::abi::sdk::door::{KindSlot, Lifecycle};
+    use crate::abi::sdk::door::{slot_count, KindSlot, Lifecycle};
     use crate::abi::{auth, export, hook, plane, secret, store, transport};
     use std::any::TypeId;
+    for count in [
+        slot_count::<store::Ops>(),
+        slot_count::<secret::Ops>(),
+        slot_count::<auth::Ops>(),
+        slot_count::<hook::Ops>(),
+        slot_count::<export::Ops>(),
+        slot_count::<plane::Ops>(),
+        slot_count::<transport::Ops>(),
+    ] {
+        assert!(count > slot::CLOSE);
+    }
     assert_eq!(
         TypeId::of::<<Lifecycle as KindSlot<{ slot::OPEN }>>::In>(),
         TypeId::of::<OpenIn>()
@@ -716,6 +727,10 @@ fn sdk_slot_types_match_the_kinds_declared_input_and_output_frames() {
     assert_eq!(
         TypeId::of::<<Lifecycle as KindSlot<{ slot::CLOSE }>>::In>(),
         TypeId::of::<InHead>()
+    );
+    assert_eq!(
+        TypeId::of::<<plane::PlaneLifecycle as KindSlot<{ slot::OPEN }>>::In>(),
+        TypeId::of::<plane::PlaneOpenIn>()
     );
     assert_eq!(
         TypeId::of::<<transport::Ops as KindSlot<{ transport::slot::LISTEN }>>::In>(),
