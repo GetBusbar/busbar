@@ -3081,18 +3081,6 @@ fn the_gate_strips_the_styles_lines_and_the_operator_credentials() {
     assert_eq!(kept, ["x-trace"]);
 }
 
-fn verbs_app(ops: crate::config::RoleBindingCfg, cap: &str) -> std::sync::Arc<crate::state::App> {
-    crate::test_support::install_admin_verb_table_double();
-    let mut app = crate::test_support::TestApp::new()
-        .admin_chain(vec!["test-scope-module".to_string()])
-        .role_bindings(bindings_for("test-scope-module", &[("ops", ops)]))
-        .build();
-    let a = std::sync::Arc::get_mut(&mut app).expect("unshared App Arc");
-    a.auth_scope_caps
-        .insert("test-scope-module".to_string(), cap.to_string());
-    app
-}
-
 fn verbs_binding(yaml: &str) -> crate::config::RoleBindingCfg {
     serde_yaml::from_str(yaml).expect("`verbs:` is a role-binding key")
 }
@@ -3100,13 +3088,30 @@ fn verbs_binding(yaml: &str) -> crate::config::RoleBindingCfg {
 #[test]
 fn a_role_granting_verbs_by_name_is_identified_with_its_allow_list() {
     use busbar_contract::authz::{Grants, Scope};
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let app = verbs_app(verbs_binding("verbs: [post_config_apply]"), "full");
-    let door = admin_door(
-        &app,
-        "POST",
-        "/api/v1/admin/config/apply",
-        &admin_headers(Some("grp:ops"), None),
+    // Internal projection over explicit binding/principal/rung DATA. The real root named-verb
+    // gate separately exercises the actual registered core-admin table and real OIDC verifier.
+    let operator = Operator::new("operator-provider");
+    let rungs = std::collections::BTreeMap::from([
+        ("post_config_apply", Scope::Full),
+        ("post_keys", Scope::Full),
+        ("get_keys", Scope::ReadOnly),
+    ]);
+    let identified = || ChainVerdict::Identified {
+        module: "test-scope-module".to_string(),
+        principal: grp_principal("test:ops", &["ops"]),
+        resolved: None,
+    };
+    let bindings = bindings_for(
+        "test-scope-module",
+        &[("ops", verbs_binding("verbs: [post_config_apply]"))],
+    );
+    let door = admin_door_from_bindings(
+        &bindings,
+        &operator,
+        "operator:local",
+        identified(),
+        Some(Scope::Full),
+        |name| rungs.get(name).copied(),
     );
     let AdminDoor::Listed(principal, grants, list) = door else {
         panic!("a role granting verbs by name is identified with its list, got {door:?}");
@@ -3138,19 +3143,51 @@ fn a_role_granting_verbs_by_name_is_identified_with_its_allow_list() {
 
 #[test]
 fn verbs_star_is_exactly_admin_scope_full() {
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let star = verbs_app(verbs_binding("verbs: \"*\""), "full");
-    let full = verbs_app(binding(None, None, Some("full")), "full");
-    let headers = admin_headers(Some("grp:ops"), None);
+    use busbar_contract::authz::Scope;
+    // Internal projection over explicit binding/principal/rung DATA. The real root named-verb
+    // gate separately exercises the actual registered core-admin table and real OIDC verifier.
+    let operator = Operator::new("operator-provider");
+    let rungs = std::collections::BTreeMap::from([
+        ("post_config_apply", Scope::Full),
+        ("post_keys", Scope::Full),
+        ("get_keys", Scope::ReadOnly),
+    ]);
+    let identified = || ChainVerdict::Identified {
+        module: "test-scope-module".to_string(),
+        principal: grp_principal("test:ops", &["ops"]),
+        resolved: None,
+    };
+    let star = bindings_for(
+        "test-scope-module",
+        &[("ops", verbs_binding("verbs: \"*\""))],
+    );
+    let full = bindings_for(
+        "test-scope-module",
+        &[("ops", binding(None, None, Some("full")))],
+    );
     for (method, path) in [
         ("POST", "/api/v1/admin/config/apply"),
         ("GET", "/api/v1/admin/keys"),
     ] {
-        let by_star = admin_door(&star, method, path, &headers);
+        let by_star = admin_door_from_bindings(
+            &star,
+            &operator,
+            "operator:local",
+            identified(),
+            Some(Scope::Full),
+            |name| rungs.get(name).copied(),
+        );
         assert!(matches!(by_star, AdminDoor::Identified(..)), "{by_star:?}");
         assert_eq!(
             by_star,
-            admin_door(&full, method, path, &headers),
+            admin_door_from_bindings(
+                &full,
+                &operator,
+                "operator:local",
+                identified(),
+                Some(Scope::Full),
+                |name| rungs.get(name).copied()
+            ),
             "{method} {path}: `verbs: \"*\"` must be exactly `admin_scope: full`"
         );
     }
@@ -3159,11 +3196,32 @@ fn verbs_star_is_exactly_admin_scope_full() {
 #[test]
 fn a_binding_without_verbs_is_judged_by_its_rung_alone() {
     use busbar_contract::authz::{Grants, Scope};
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let headers = admin_headers(Some("grp:ops"), None);
+    // Internal projection over explicit binding/principal/rung DATA. The real root named-verb
+    // gate separately exercises the actual registered core-admin table and real OIDC verifier.
+    let operator = Operator::new("operator-provider");
+    let rungs = std::collections::BTreeMap::from([
+        ("post_config_apply", Scope::Full),
+        ("post_keys", Scope::Full),
+        ("get_keys", Scope::ReadOnly),
+    ]);
+    let identified = || ChainVerdict::Identified {
+        module: "test-scope-module".to_string(),
+        principal: grp_principal("test:ops", &["ops"]),
+        resolved: None,
+    };
     for (scope, rung) in [("read-only", Scope::ReadOnly), ("full", Scope::Full)] {
-        let app = verbs_app(binding(None, None, Some(scope)), "full");
-        let door = admin_door(&app, "POST", "/api/v1/admin/config/apply", &headers);
+        let bindings = bindings_for(
+            "test-scope-module",
+            &[("ops", binding(None, None, Some(scope)))],
+        );
+        let door = admin_door_from_bindings(
+            &bindings,
+            &operator,
+            "operator:local",
+            identified(),
+            Some(Scope::Full),
+            |name| rungs.get(name).copied(),
+        );
         let AdminDoor::Identified(_, grants) = door else {
             panic!("{scope}: a binding with no `verbs` key is never listed, got {door:?}");
         };
@@ -3174,16 +3232,30 @@ fn a_binding_without_verbs_is_judged_by_its_rung_alone() {
 #[test]
 fn the_providers_ceiling_caps_a_named_verb() {
     use busbar_contract::authz::{Grants, Scope};
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let app = verbs_app(
-        verbs_binding("verbs: [get_keys, post_config_apply]"),
-        "read-only",
+    // Internal projection over explicit binding/principal/rung DATA. The real root named-verb
+    // gate separately exercises the actual registered core-admin table and real OIDC verifier.
+    let operator = Operator::new("operator-provider");
+    let rungs = std::collections::BTreeMap::from([
+        ("post_config_apply", Scope::Full),
+        ("post_keys", Scope::Full),
+        ("get_keys", Scope::ReadOnly),
+    ]);
+    let identified = || ChainVerdict::Identified {
+        module: "test-scope-module".to_string(),
+        principal: grp_principal("test:ops", &["ops"]),
+        resolved: None,
+    };
+    let bindings = bindings_for(
+        "test-scope-module",
+        &[("ops", verbs_binding("verbs: [get_keys, post_config_apply]"))],
     );
-    let door = admin_door(
-        &app,
-        "GET",
-        "/api/v1/admin/keys",
-        &admin_headers(Some("grp:ops"), None),
+    let door = admin_door_from_bindings(
+        &bindings,
+        &operator,
+        "operator:local",
+        identified(),
+        Some(Scope::ReadOnly),
+        |name| rungs.get(name).copied(),
     );
     let AdminDoor::Listed(_, grants, list) = door else {
         panic!("the named read survives the ceiling, got {door:?}");

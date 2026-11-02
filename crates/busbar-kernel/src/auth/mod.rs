@@ -1564,21 +1564,45 @@ fn admin_door_of(
     verdict: ChainVerdict,
     cap: Option<busbar_contract::authz::Scope>,
 ) -> AdminDoor {
+    admin_door_from_bindings(
+        &app.role_bindings,
+        &app.admin_modules.operator,
+        crate::config::operator_principal_id(),
+        verdict,
+        cap,
+        crate::admin::seam::admin_verb_rung,
+    )
+}
+
+fn admin_door_from_bindings(
+    bindings: &crate::config::RoleBindings,
+    operator: &Operator,
+    operator_principal: &str,
+    verdict: ChainVerdict,
+    cap: Option<busbar_contract::authz::Scope>,
+    rung_of: impl Fn(&str) -> Option<busbar_contract::authz::Scope>,
+) -> AdminDoor {
     match verdict {
         ChainVerdict::Open => AdminDoor::Open,
         ChainVerdict::Denied => AdminDoor::Denied,
         ChainVerdict::Identified {
             module, principal, ..
         } => {
-            let grants = admin_scope_for(app, Some(&module), Some(&principal));
+            let grants = admin_scope_from_bindings(
+                bindings,
+                operator,
+                operator_principal,
+                Some(&module),
+                Some(&principal),
+            );
             let rungs = cap_admin_scope(grants, cap);
-            let named = admin_verbs_named(app, &module, &principal, cap);
+            let named = admin_verbs_named(bindings, &module, &principal, cap, &rung_of);
             if named.is_empty() {
                 return AdminDoor::Identified(principal, rungs);
             }
 
             let reach = (named.iter())
-                .filter_map(|verb| crate::admin::seam::admin_verb_rung(verb.as_str()))
+                .filter_map(|verb| rung_of(verb.as_str()))
                 .fold(rungs, busbar_contract::authz::Grants::with);
             AdminDoor::Listed(principal, reach, VerbAllowList { rungs, named })
         }
@@ -1641,20 +1665,6 @@ fn probe_admin_verdict(
     admin_door_claim_of(app, verdict, cap, replay)
 }
 
-fn admin_scope_for(
-    app: &crate::state::App,
-    module: Option<&str>,
-    principal: Option<&Principal>,
-) -> busbar_contract::authz::Grants {
-    admin_scope_from_bindings(
-        &app.role_bindings,
-        &app.admin_modules.operator,
-        crate::config::operator_principal_id(),
-        module,
-        principal,
-    )
-}
-
 fn admin_scope_from_bindings(
     role_bindings: &crate::config::RoleBindings,
     operator: &Operator,
@@ -1715,8 +1725,9 @@ fn admin_verbs_named(
     module: &str,
     principal: &Principal,
     cap: Option<busbar_contract::authz::Scope>,
+    rung_of: &impl Fn(&str) -> Option<busbar_contract::authz::Scope>,
 ) -> std::collections::BTreeSet<String> {
-    let Some(table) = app.role_bindings.get(module) else {
+    let Some(table) = bindings.get(module) else {
         return std::collections::BTreeSet::new();
     };
     (principal.roles.iter())
@@ -1727,8 +1738,7 @@ fn admin_verbs_named(
         })
         .flatten()
         .filter(|verb| {
-            crate::admin::seam::admin_verb_rung(verb.as_str())
-                .is_some_and(|rung| cap.is_none_or(|c| c.allows(rung)))
+            rung_of(verb.as_str()).is_some_and(|rung| cap.is_none_or(|c| c.allows(rung)))
         })
         .collect()
 }
