@@ -40,9 +40,9 @@ pub(crate) struct GateSubject<'a> {
 
 pub(crate) type HookReads<'a> = dyn Fn(&str, Option<&str>, &str, bool) + Send + Sync + 'a;
 
-/// The gate's tenant of the session substrate: a per-`(session, hook)` set of the content-piece
-/// digests already screened clean, so a long session re-screens only NEW content instead of the whole
-/// growing context every turn.
+/// The gate's tenant of the session substrate: one bounded cache slot per content piece screened
+/// clean for a `(session, hook)`, so a long session re-screens only NEW or evicted content instead
+/// of the whole growing context every turn.
 ///
 /// The screening HOOK never learns about sessions — this bookkeeping is pure neutral core (a session
 /// id + [`ContentItem::screening_digest`]). Safe degradation: a cold/evicted slot just means more gets
@@ -50,7 +50,7 @@ pub(crate) type HookReads<'a> = dyn Fn(&str, Option<&str>, &str, bool) + Send + 
 /// is re-screened on retry. An OPAQUE piece is always re-surfaced (a presence signal, never cleared).
 #[derive(Clone, Copy)]
 pub(crate) struct IncrementalScan<'a> {
-    /// The neutral session substrate the cleared-set lives in.
+    /// The neutral session substrate the cleared pieces live in.
     pub(crate) store: &'a crate::session::SessionStore,
     /// This request's session identity (a stable hash of the session key already read at ingress).
     pub(crate) session: crate::session::SessionKey,
@@ -58,8 +58,11 @@ pub(crate) struct IncrementalScan<'a> {
     pub(crate) now_ms: u64,
 }
 
-type ClearedSets =
-    std::sync::Mutex<std::collections::HashMap<String, std::collections::HashSet<String>>>;
+struct ClearedPiece {
+    session: crate::session::SessionKey,
+    clearance: Box<str>,
+    digest: Box<str>,
+}
 
 impl IncrementalScan<'_> {
     const OWNER: crate::session::OwnerKey = "gate.screen";
@@ -82,42 +85,48 @@ impl IncrementalScan<'_> {
         crate::session::SessionKey(hash)
     }
 
-    fn sets(&self) -> std::sync::Arc<ClearedSets> {
-        if let Some(m) = self
-            .store
-            .get::<ClearedSets>(self.session, Self::OWNER, self.now_ms)
-        {
-            return m;
-        }
-        let m = std::sync::Arc::new(ClearedSets::default());
-        self.store.put(
-            self.session,
-            Self::OWNER,
-            m.clone(),
-            self.now_ms,
-            false,
-            None,
-        );
-        m
+    fn piece_key(&self, clearance: &str, digest: &str) -> crate::session::SessionKey {
+        use std::hash::{Hash, Hasher};
+        let mut index = std::collections::hash_map::DefaultHasher::new();
+        (self.session, clearance, digest).hash(&mut index);
+        crate::session::SessionKey(index.finish())
     }
 
     fn unscreened<'i>(&self, clearance: &str, items: &ScreenedContent<'i>) -> ScreenedContent<'i> {
-        let sets = self.sets();
-        let guard = sets.lock().unwrap_or_else(|e| e.into_inner());
-        let cleared = guard.get(clearance);
         items.select(|item, text| {
-            matches!(item, ContentItem::Opaque { .. })
-                || cleared.is_none_or(|set| !set.contains(&item.digest_of(text)))
+            if matches!(item, ContentItem::Opaque { .. }) {
+                return true;
+            }
+            let digest = item.digest_of(text);
+            let cleared = self.store.get::<ClearedPiece>(
+                self.piece_key(clearance, &digest),
+                Self::OWNER,
+                self.now_ms,
+            );
+            !cleared.is_some_and(|piece| {
+                piece.session == self.session
+                    && piece.clearance.as_ref() == clearance
+                    && piece.digest.as_ref() == digest
+            })
         })
     }
 
     fn mark_cleared(&self, clearance: &str, screened: &ScreenedContent<'_>) {
-        let sets = self.sets();
-        let mut guard = sets.lock().unwrap_or_else(|e| e.into_inner());
-        let set = guard.entry(clearance.to_string()).or_default();
         for (item, text) in screened.iter() {
             if !matches!(item, ContentItem::Opaque { .. }) {
-                set.insert(item.digest_of(text));
+                let digest = item.digest_of(text);
+                self.store.put(
+                    self.piece_key(clearance, &digest),
+                    Self::OWNER,
+                    std::sync::Arc::new(ClearedPiece {
+                        session: self.session,
+                        clearance: clearance.into(),
+                        digest: digest.into_boxed_str(),
+                    }),
+                    self.now_ms,
+                    false,
+                    None,
+                );
             }
         }
     }

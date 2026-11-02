@@ -508,6 +508,128 @@ fn derive_session_key(sid: &str, principal_id: &str, hook_generation: u64) -> Se
     IncrementalScan::derive_session_key_octets(sid.as_bytes(), principal_id, hook_generation)
 }
 
+async fn screens_cache_piece(store: &SessionStore, piece: u32, now_ms: u64) -> bool {
+    let facts = InvokeReq {
+        arguments: serde_json::json!({ "piece": piece }),
+        ..tool_call()
+    };
+    let spy = Arc::new(Spy {
+        reply: RoutingDecision::Abstain,
+        seen: Mutex::new(None),
+    });
+    let gates = gate(
+        spy.clone(),
+        crate::config::PolicyOnError::Reject,
+        true,
+        false,
+    );
+    let verdict = decide(
+        &gates,
+        &GateSubject {
+            incremental: Some(IncrementalScan {
+                store,
+                session: SessionKey(17),
+                now_ms,
+            }),
+            ..tool_subject(&facts)
+        },
+    )
+    .await;
+    assert!(matches!(verdict, GateVerdict::Proceed));
+    let screened = spy.seen.lock().unwrap().is_some();
+    screened
+}
+
+#[tokio::test]
+async fn incremental_scan_uses_the_shared_capacity_and_rescreens_evicted_pieces() {
+    let _lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
+    let store = SessionStore::new(2, None);
+    for (piece, screened) in [(1, true), (2, true), (1, false), (3, true), (1, false)] {
+        assert_eq!(screens_cache_piece(&store, piece, 0).await, screened);
+        assert!(store.len() <= 2);
+    }
+    assert!(
+        screens_cache_piece(&store, 2, 0).await,
+        "the older piece must be screened again after shared LRU eviction"
+    );
+    assert_eq!(store.len(), 2);
+}
+
+#[tokio::test]
+async fn incremental_scan_rescreens_when_pinned_tenants_occupy_the_capacity() {
+    let _lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
+    let store = SessionStore::new(1, None);
+    store.put(
+        SessionKey(9),
+        "held-session",
+        Arc::new(42_u32),
+        0,
+        true,
+        None,
+    );
+    assert!(screens_cache_piece(&store, 1, 0).await);
+    assert!(
+        screens_cache_piece(&store, 1, 0).await,
+        "a cache entry evicted by pinned pressure grants no clearance"
+    );
+    assert_eq!(store.len(), 1);
+    assert_eq!(
+        *store.get::<u32>(SessionKey(9), "held-session", 0).unwrap(),
+        42
+    );
+}
+
+#[tokio::test]
+async fn incremental_scan_expires_each_piece_without_extending_it_on_a_hit() {
+    let _lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
+    let store = SessionStore::new(2, Some(10));
+    assert!(screens_cache_piece(&store, 1, 0).await);
+    assert!(!screens_cache_piece(&store, 1, 9).await);
+    assert!(screens_cache_piece(&store, 1, 10).await);
+}
+
+#[test]
+fn incremental_scan_requires_the_full_tuple_when_a_cache_index_collides() {
+    use busbar_contract::ir::facts::IrFacts;
+
+    let store = SessionStore::new(1, None);
+    let scan = IncrementalScan {
+        store: &store,
+        session: SessionKey(17),
+        now_ms: 0,
+    };
+    let facts = tool_call();
+    let items = facts.content();
+    let screened = super::ScreenedContent::over(&items);
+    let digest = screened.digest(0).unwrap();
+    let clearance = "this-gate";
+    for (session, claimed_clearance, claimed_digest) in [
+        (SessionKey(18), clearance, digest.as_str()),
+        (scan.session, "another-gate", digest.as_str()),
+        (scan.session, clearance, "another-digest"),
+    ] {
+        store.put(
+            scan.piece_key(clearance, &digest),
+            IncrementalScan::OWNER,
+            Arc::new(super::ClearedPiece {
+                session,
+                clearance: claimed_clearance.into(),
+                digest: claimed_digest.into(),
+            }),
+            0,
+            false,
+            None,
+        );
+        assert_eq!(
+            scan.unscreened(clearance, &screened).len(),
+            1,
+            "a colliding entry cannot clear a different session, hook or content"
+        );
+    }
+    scan.mark_cleared(clearance, &screened);
+    assert!(scan.unscreened(clearance, &screened).is_empty());
+}
+
 #[tokio::test]
 async fn incremental_scan_skips_a_piece_already_cleared_this_session() {
     let _lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
