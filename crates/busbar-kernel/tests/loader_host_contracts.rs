@@ -27,8 +27,11 @@ mod door {
     pub use busbar_kernel::door::op_id;
 }
 fn admitted() -> Host {
+    admitted_over(real_store::store())
+}
+fn admitted_over(store: Arc<busbar_plugin_loader::store_v3::LoadedStore>) -> Host {
     let h = Host::new()
-        .with_records(Arc::new(StoreRows(real_store::store())))
+        .with_records(Arc::new(StoreRows(store)))
         .with_pool(Arc::new(Inline));
     h.admit(
         "plane",
@@ -244,5 +247,47 @@ fn records_read_the_instances_own_writes_and_claim_once() {
         (s.outcome, s.error),
         (Outcome::Refused, NOT_A_KIND),
         "{s:?}"
+    );
+}
+
+#[test]
+fn a_chained_kinds_writes_are_appended_to_their_chain_and_read_whole() {
+    let store = real_store::store();
+    let h = admitted_over(store.clone());
+    keep(&h, 1, b"task-a", b"first");
+    keep(&h, 1, b"task-b", b"other");
+    keep(&h, 1, b"task-a", b"second");
+
+    busbar_kernel::host_records::RecordRows::record_put(
+        &StoreRows(store),
+        RecordSchemaId::new("journal"),
+        &busbar_kernel::host_records::record_key("plane", &chain_key(b"task-c", 1)),
+        &RecordBytes::new(b"stray".to_vec()).unwrap(),
+    )
+    .expect("the unrelated raw row is written in the actual Store");
+    let s = get(&h, &caller("plane"), "journal", "task-a");
+    assert_eq!(
+        (s.outcome, s.error),
+        (Outcome::Refused, CHAIN_READ_WHOLE),
+        "{s:?}"
+    );
+    assert_eq!(
+        rows(&list(&h, "journal", "", None, 0)),
+        [
+            row(&chain_key(b"task-a", 1), "first"),
+            row(&chain_key(b"task-a", 2), "second"),
+            row(&chain_key(b"task-b", 1), "other"),
+        ]
+    );
+
+    keep(&h, 1, b"task-a", b"");
+    assert_eq!(
+        rows(&list(&h, "journal", "", None, 0)),
+        [row(&chain_key(b"task-b", 1), "other")]
+    );
+    keep(&h, 1, b"task-a", b"again");
+    assert_eq!(
+        rows(&list(&h, "journal", "task-a", None, 0)),
+        [row(&chain_key(b"task-a", 1), "again")]
     );
 }
