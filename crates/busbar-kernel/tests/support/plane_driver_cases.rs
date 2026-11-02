@@ -1775,7 +1775,11 @@ async fn cancel_on_the_cut() {
         );
         let s = r.stats();
         assert_eq!(s[stat::CANCELS], 1);
-        assert_eq!(s[stat::CANCELS_ON_WORKER], 0, "ticketless, on this task");
+        assert_eq!(
+            s[stat::CANCELS_ON_WORKER],
+            1,
+            "ordered on the unit's worker"
+        );
         assert!(
             units.take_rendered().is_none(),
             "the frame went in the stream"

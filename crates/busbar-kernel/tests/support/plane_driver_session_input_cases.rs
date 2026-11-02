@@ -450,3 +450,157 @@ async fn a_faulted_session_keeps_input_custody_after_the_near_side_returns() {
     release_borrowed(&r.plane);
     assert_eq!(*dropped.lock().unwrap(), vec![1]);
 }
+
+/// Both real session pumps share terminal ownership while every ticket keeps its own buffers.
+/// Cancellation is driven by reload after explicitly observing the requested Pending legs.
+#[tokio::test]
+async fn a_session_cancels_its_idle_near_far_and_two_pending_legs_once() {
+    for (near_pending, far_pending, caller_drop) in [
+        (false, false, false),
+        (true, false, false),
+        (false, true, false),
+        (true, true, false),
+        (true, true, true),
+    ] {
+        let mut r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
+        let rows = Arc::new(AuditRows::default());
+        r.driver = r.driver.with_audit(rows.clone());
+        r.plane.sessions.cancel_row.store(true, Ordering::SeqCst);
+        r.plane
+            .sessions
+            .far_pending
+            .store(far_pending, Ordering::SeqCst);
+        r.plane
+            .sessions
+            .server_first
+            .store(far_pending, Ordering::SeqCst);
+        if near_pending {
+            *r.plane.sessions.input_mode.lock().unwrap() = SessionInputMode::Cancellable;
+        }
+        let (send, receive) = tokio::sync::mpsc::unbounded_channel();
+        let caller = OwnedCaller(tokio::sync::Mutex::new(receive));
+        let dropped = Arc::new(Mutex::new(Vec::new()));
+        let (steps, far) = (
+            common::TestUnits::passing(),
+            cases::Far::held(&["fixture-lane"]),
+        );
+        let units = r
+            .driver
+            .unit(&steps, &far, &caller, cases::arrival("/session", b""), 0);
+        let mut running = Box::pin(drive(&units));
+        poll_pending(&mut running).await;
+        if near_pending {
+            assert!(send.send(input(1, &dropped)).is_ok());
+        }
+        let expected = usize::from(near_pending) + usize::from(far_pending);
+        for _ in 0..32 {
+            poll_pending(&mut running).await;
+            if r.plane.held.lock().unwrap().len() == expected {
+                break;
+            }
+        }
+        assert_eq!(r.plane.held.lock().unwrap().len(), expected);
+        assert!(dropped.lock().unwrap().is_empty());
+        if caller_drop {
+            drop(running);
+            drop(units);
+            for _ in 0..4 {
+                r.driver.sweep();
+            }
+        } else {
+            r.driver.reload();
+            assert!(matches!(
+                running.await,
+                busbar_contract::caps::Outcome::Failed(_, busbar_contract::caps::ReasonCode::Drain)
+            ));
+        }
+        assert_eq!(
+            r.stats()[stat::CANCELS],
+            1,
+            "near={near_pending}, far={far_pending}, drop={caller_drop}"
+        );
+        assert_eq!(r.plane.closes.lock().unwrap().get(&7), Some(&1));
+        assert!(r.plane.held.lock().unwrap().is_empty());
+        assert!(r.plane.held_lent.lock().unwrap().is_empty());
+        assert_eq!(r.book.bills().len(), 1);
+        assert_eq!(rows.0.lock().unwrap().len(), 1);
+        assert_eq!(rows.0.lock().unwrap()[0].0, "session.cancel");
+        assert_eq!(
+            *dropped.lock().unwrap(),
+            if near_pending { vec![1] } else { vec![] }
+        );
+        r.driver.sweep();
+        assert_eq!(r.stats()[stat::CANCELS], 1);
+        assert_eq!(rows.0.lock().unwrap().len(), 1);
+        assert_eq!(r.book.bills().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn a_dropped_session_retains_the_queued_cancel_reply_until_sweep() {
+    let mut r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
+    let rows = Arc::new(AuditRows::default());
+    r.driver = r.driver.with_audit(rows.clone());
+    r.plane.sessions.cancel_row.store(true, Ordering::SeqCst);
+    r.plane
+        .sessions
+        .delay_cancel_reply
+        .store(true, Ordering::SeqCst);
+    let (_send, receive) = tokio::sync::mpsc::unbounded_channel();
+    let caller = OwnedCaller(tokio::sync::Mutex::new(receive));
+    let (steps, far) = (common::TestUnits::passing(), cases::Far::new(&[], &[]));
+    let units = r
+        .driver
+        .unit(&steps, &far, &caller, cases::arrival("/session", b""), 0);
+    let mut running = Box::pin(drive(&units));
+    poll_pending(&mut running).await;
+    r.driver.reload();
+    poll_pending(&mut running).await;
+    assert_eq!(r.stats()[stat::CANCELS], 1, "control submission is eager");
+    assert!(r.book.bills().is_empty());
+    drop(running);
+    drop(units);
+    r.driver.sweep();
+    assert!(
+        r.book.bills().is_empty(),
+        "an idle sibling cannot bill before the result owner"
+    );
+    assert!(rows.0.lock().unwrap().is_empty());
+    r.plane.sessions.cancel_reply.notify_one();
+    for _ in 0..4 {
+        r.driver.sweep();
+    }
+    assert_eq!(r.driver.buried(), 0);
+    assert_eq!(r.book.bills().len(), 1);
+    assert_eq!(rows.0.lock().unwrap().len(), 1);
+    assert_eq!(r.stats()[stat::CANCELS], 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_idle_session_deadline_cancels_the_logical_unit_once() {
+    let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
+    let (_send, receive) = tokio::sync::mpsc::unbounded_channel();
+    let caller = OwnedCaller(tokio::sync::Mutex::new(receive));
+    let (steps, far) = (common::TestUnits::passing(), cases::Far::new(&[], &[]));
+    let deadline = now_ns().saturating_add(60_000_000_000);
+    let units = r.driver.unit(
+        &steps,
+        &far,
+        &caller,
+        cases::arrival("/session", b""),
+        deadline,
+    );
+    let mut running = Box::pin(drive(&units));
+    poll_pending(&mut running).await;
+    tokio::time::advance(Duration::from_secs(61)).await;
+    assert!(matches!(
+        running.await,
+        busbar_contract::caps::Outcome::Failed(
+            _,
+            busbar_contract::caps::ReasonCode::DeadlineExceeded
+        )
+    ));
+    assert_eq!(r.stats()[stat::CANCELS], 1);
+    assert_eq!(r.plane.closes.lock().unwrap().get(&7), Some(&1));
+    assert_eq!(r.book.bills().len(), 1);
+}
