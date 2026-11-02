@@ -2135,3 +2135,7 @@ mod secrets_tests;
 #[cfg(test)]
 #[path = "tests/store_v3_rewrap_tests.rs"]
 mod rewrap_tests;
+
+#[cfg(test)]
+#[path = "tests/store_actual_table_tests.rs"]
+mod actual_table;

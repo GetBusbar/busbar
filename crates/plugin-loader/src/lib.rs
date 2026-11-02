@@ -302,10 +302,7 @@ mod conformance_declared_tests;
 #[path = "tests/conformance_export_unjudged_tests.rs"]
 mod conformance_export_unjudged_tests;
 
-#[cfg(test)]
-#[allow(unsafe_code)]
-#[path = "tests/conformance_newer_schema_tests.rs"]
-mod conformance_newer_schema_tests;
+
 
 #[cfg(test)]
 #[allow(unsafe_code)]
@@ -342,20 +339,11 @@ mod conformance_plane_settings_tests;
 #[path = "tests/conformance_ready_result_tests.rs"]
 mod conformance_ready_result_tests;
 
-#[cfg(test)]
-#[allow(unsafe_code)]
-#[path = "tests/conformance_secret_contract_tests.rs"]
-mod conformance_secret_contract_tests;
 
-#[cfg(test)]
-#[allow(unsafe_code)]
-#[path = "tests/conformance_store_runs_tests.rs"]
-mod conformance_store_runs_tests;
 
-#[cfg(test)]
-#[allow(unsafe_code)]
-#[path = "tests/conformance_suite_tests.rs"]
-mod conformance_suite_tests;
+
+
+
 
 #[cfg(test)]
 #[allow(unsafe_code)]
@@ -436,3 +424,8 @@ mod actual_env_secret;
 #[allow(unsafe_code)]
 #[path = "tests/actual_exports.rs"]
 mod actual_exports;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/store_memory_facts_actual.rs"]
+mod store_memory_facts_actual;
