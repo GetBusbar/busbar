@@ -11,7 +11,6 @@ struct DoorLogin {
     kind: LoginKind,
     begin: LoginOutcome,
     complete: Box<dyn Fn(&LoginCallback) -> LoginOutcome + Send + Sync>,
-    faults: bool,
     seen: std::sync::Mutex<Vec<LoginCallback>>,
 }
 
@@ -23,7 +22,6 @@ impl DoorLogin {
             kind: LoginKind::Redirect,
             begin: LoginOutcome::Authorize("https://idp.example.com/authorize?x=1".into()),
             complete: Box::new(complete),
-            faults: false,
             seen: std::sync::Mutex::new(Vec::new()),
         }
     }
@@ -33,31 +31,7 @@ impl DoorLogin {
     }
 
     fn answer(&self, outcome: LoginOutcome) -> Box<dyn LoginCall> {
-        if self.faults {
-            return Box::new(Faulted);
-        }
         Box::new(LoginSettled(Some(outcome)))
-    }
-}
-
-struct Faulted;
-
-impl std::future::Future for Faulted {
-    type Output = LoginOutcome;
-    fn poll(
-        self: std::pin::Pin<&mut Self>,
-        _: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<LoginOutcome> {
-        std::task::Poll::Ready(LoginOutcome::Reject)
-    }
-}
-
-impl LoginCall for Faulted {
-    fn settled(&mut self) -> Option<LoginOutcome> {
-        Some(LoginOutcome::Reject)
-    }
-    fn faulted(&self) -> bool {
-        true
     }
 }
 
@@ -580,94 +554,26 @@ fn an_outage_sends_the_idps_retry_after_clamped() {
 }
 
 #[test]
-fn a_faulting_login_plugin_is_rejected_and_says_it_panicked_and_a_declining_one_says_nothing() {
-    use tracing_subscriber::layer::SubscriberExt as _;
-    let run = |faults: bool| {
-        let door = |kind: LoginKind| {
-            std::sync::Arc::new(DoorLogin {
-                kind,
-                faults,
-                ..DoorLogin::answering(|_| LoginOutcome::Reject)
-            })
-        };
-        let cap = busbar_kernel_testkit::test_support::warn_capture::WarnCapture::default();
-        let subscriber = tracing_subscriber::registry().with(cap.clone());
-        let statuses = tracing::subscriber::with_default(subscriber, || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("runtime");
-            rt.block_on(async {
-                let app = busbar_kernel_testkit::test_support::TestApp::new()
-                    .public_url("https://busbar.example.com")
-                    .login_method_door("idp", door(LoginKind::Redirect), LoginKind::Redirect, true)
-                    .login_method_door(
-                        "test-login-double",
-                        door(LoginKind::Credential),
-                        LoginKind::Credential,
-                        true,
-                    )
-                    .build();
-                let handle = cred_handle(&app);
-                let begun = begin(&app, "idp", false).await.status().as_u16();
-                let called = callback(
-                    &app,
-                    &handle,
-                    Some(door_cookie().encode()),
-                    "the-code".into(),
-                    Some("st".into()),
-                )
-                .await
-                .status()
-                .as_u16();
-                let form = vec![
-                    (FORM_STATE_FIELD.to_string(), "csrf-1".to_string()),
-                    ("password".to_string(), "pw".to_string()),
-                ];
-                let submitted =
-                    credential_submit(&app, &handle, cred_cookie("csrf-1", false), form)
-                        .await
-                        .status()
-                        .as_u16();
-                (begun, called, submitted)
-            })
-        });
-        (statuses, cap.messages())
-    };
-
-    let (faulted, said) = run(true);
+fn a_rejected_begin_callback_and_credential_keep_their_original_response_statuses() {
+    let begun = begin_outcome(
+        "idp",
+        "https://busbar.example.com",
+        "verifier".into(),
+        "state".into(),
+        "nonce".into(),
+        false,
+        LoginOutcome::Reject,
+    );
+    let called = callback_outcome("idp", LoginOutcome::Reject).unwrap_err();
+    let submitted = credential_outcome("test-login-double", LoginOutcome::Reject).unwrap_err();
     assert_eq!(
-        faulted,
+        (
+            begun.status().as_u16(),
+            called.status().as_u16(),
+            submitted.status().as_u16()
+        ),
         (502, 401, 401),
-        "a faulting step fails closed as a decline renders it (begin, callback, credential POST)"
-    );
-    let panicked: Vec<_> = said
-        .iter()
-        .filter(|m| m.contains("login plugin call panicked; rejecting (fail-closed)"))
-        .collect();
-    assert_eq!(panicked.len(), 3, "one 4003 per faulted step: {said:?}");
-    for op in ["op=\"begin_login\"", "op=\"complete_login\""] {
-        assert!(
-            panicked
-                .iter()
-                .any(|m| m.contains(op) || m.contains(&op.replace('"', ""))),
-            "4003 names the op {op}: {said:?}"
-        );
-    }
-    assert!(
-        panicked.iter().any(|m| m.contains("idp"))
-            && panicked.iter().any(|m| m.contains("test-login-double")),
-        "4003 names the method: {said:?}"
-    );
-
-    let (declined, said) = run(false);
-    assert_eq!(declined.1, faulted.1, "a decline renders as the fault does");
-    assert_eq!(declined.2, faulted.2, "a decline renders as the fault does");
-    assert!(
-        !said
-            .iter()
-            .any(|m| m.contains("login plugin call panicked")),
-        "a declining plugin emits no 4003: {said:?}"
+        "a faulted step finalized as Reject retains begin/callback/credential response statuses",
     );
 }
 

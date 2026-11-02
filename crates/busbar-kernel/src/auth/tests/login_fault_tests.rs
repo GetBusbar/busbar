@@ -33,7 +33,7 @@ impl<S: tracing::Subscriber> Layer<S> for Events {
 }
 
 #[test]
-fn a_faulted_login_rejects_and_names_each_existing_method_and_operation() {
+fn a_faulting_login_plugin_is_rejected_and_says_it_panicked_and_a_declining_one_says_nothing() {
     let events = Events::default();
     let subscriber = tracing_subscriber::registry().with(events.clone());
     let rows = [
