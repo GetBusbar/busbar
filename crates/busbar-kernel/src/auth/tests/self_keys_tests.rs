@@ -1316,9 +1316,18 @@ async fn issued_key_debug_never_leaks_the_live_token() {
     let rb = bindings("test-idp-double", "eng", Some("team"));
     let v = identified("test-idp-double", principal("sam", &["eng"]));
     let (p, _team, _pools) = resolve_exchange(&v, &rb, None).unwrap();
-    let issued = issue_key(&FakeKeys, p, Duration::from_secs(60), false)
-        .await
-        .unwrap();
+    let now = busbar_kernel::store::now();
+    let issued = mint_provisioned_self_key(
+        gov(),
+        crate::governance::SelfMintOp::Issue,
+        p,
+        "corp",
+        None,
+        now.saturating_add(60),
+        now,
+    )
+    .await
+    .expect("the actual Store mints the credential whose Debug is inspected");
     let token = issued.secret.expose(&crate::seal::lend()).clone();
     let dbg = format!("{issued:?}");
     assert!(
@@ -1330,7 +1339,10 @@ async fn issued_key_debug_never_leaks_the_live_token() {
         "the secret field must render redacted: {dbg}"
     );
 
-    assert!(dbg.contains("fake"), "key_id (safe id) still shows: {dbg}");
+    assert!(
+        dbg.contains(&issued.key_id),
+        "key_id (safe id) still shows: {dbg}"
+    );
 }
 
 struct ModeReplayIdentity;
