@@ -3,6 +3,10 @@
 
 //! The host services' validators (`abi/host/service.rs`): one test per arm, each answer built to
 //! break exactly one rule.
+//!
+//! SAFETY for the validator calls below: every non-NULL answer slot and every reported
+//! in-cap span read belongs to the test's live initialized locals or to the host call
+//! just completed. Deliberately malformed metadata is rejected before any such read.
 
 use super::*;
 use crate::abi::mechanism::check::SPAN_ABSENT;
@@ -103,11 +107,59 @@ fn rule(r: Result<Filled, Fault>) -> Rule {
 fn a_mirrored_outcome_that_differs_from_the_return_value_is_fault() {
     let i = judge_in(TICKET);
     let o = out(Outcome::Ready);
-    let r = check_dest_judge(&i, RawOutcome::of(Outcome::Failed), &o);
+    let r = unsafe { check_dest_judge(&i, RawOutcome::of(Outcome::Failed), &o) };
     assert_eq!(
         r.unwrap_err(),
         fault(Rule::Contradiction, "service.out.outcome")
     );
+}
+
+/// These two answer checks read no raw data. Even stale nested pointers do not become readable
+/// merely because their containing request is borrowed; keeping these calls safe proves that
+/// only the validators that actually read through such pointers require an unsafe boundary.
+#[test]
+fn metadata_only_validators_do_not_read_nested_pointers() {
+    let stale = core::ptr::dangling::<u8>();
+    let claim = RecordsClaimIn {
+        head: head(
+            op::RECORDS_CLAIM,
+            TICKET,
+            core::mem::size_of::<RecordsClaimIn>(),
+        ),
+        kind: AbiStr { ptr: stale, len: 1 },
+        key: AbiStr { ptr: stale, len: 1 },
+        ttl_ms: 1,
+    };
+    let mut claimed = out(Outcome::Ready);
+    claimed.value = CLAIM_WON;
+    assert_eq!(
+        check_records_claim(&claim, ready(&claimed), &claimed),
+        Ok(Filled::Written)
+    );
+
+    let snapshot = SnapshotReadIn {
+        head: head(
+            op::SNAPSHOT_READ,
+            Ticket::NONE,
+            core::mem::size_of::<SnapshotReadIn>(),
+        ),
+        scope: 0,
+        _reserved: 0,
+        into: ServiceBufs {
+            buf: stale.cast_mut(),
+            cap: 1,
+            spans: core::ptr::dangling_mut::<ItemSpan>(),
+            spans_cap: 1,
+        },
+    };
+    let mut snapshot_out = out(Outcome::Ready);
+    snapshot_out.len = 1;
+    assert_eq!(
+        check_snapshot_read(&snapshot, ready(&snapshot_out), &snapshot_out),
+        Ok(Filled::Written)
+    );
+    snapshot_out.items = 1;
+    assert!(check_snapshot_read(&snapshot, ready(&snapshot_out), &snapshot_out).is_err());
 }
 
 #[test]
@@ -115,7 +167,10 @@ fn an_out_of_a_foreign_size_is_fault() {
     let i = judge_in(TICKET);
     let mut o = out(Outcome::Ready);
     o.size -= 8;
-    assert_eq!(rule(check_dest_judge(&i, ready(&o), &o)), Rule::Foreign);
+    assert_eq!(
+        rule(unsafe { check_dest_judge(&i, ready(&o), &o) }),
+        Rule::Foreign
+    );
 }
 
 #[test]
@@ -132,7 +187,7 @@ fn pending_from_a_service_that_never_pends_is_fault() {
     };
     let o = out(Outcome::Pending);
     assert_eq!(
-        check_clock_now(&i, ready(&o), &o).unwrap_err(),
+        unsafe { check_clock_now(&i, ready(&o), &o) }.unwrap_err(),
         fault(Rule::Contradiction, "service.out.pending")
     );
 }
@@ -141,11 +196,11 @@ fn pending_from_a_service_that_never_pends_is_fault() {
 fn pending_without_a_ticket_is_fault_and_with_one_is_legal() {
     let o = out(Outcome::Pending);
     assert_eq!(
-        rule(check_dest_judge(&judge_in(Ticket::NONE), ready(&o), &o)),
+        rule(unsafe { check_dest_judge(&judge_in(Ticket::NONE), ready(&o), &o) }),
         Rule::Contradiction
     );
     assert_eq!(
-        check_dest_judge(&judge_in(TICKET), ready(&o), &o),
+        unsafe { check_dest_judge(&judge_in(TICKET), ready(&o), &o) },
         Ok(Filled::Written)
     );
 }
@@ -156,7 +211,10 @@ fn a_needed_size_above_the_maximum_is_fault() {
     let i = get_in(TICKET, bufs(&mut b, &mut s));
     let mut o = out(Outcome::Failed);
     o.needed_items = MAX_SPANS + 1;
-    assert_eq!(rule(check_records_get(&i, ready(&o), &o)), Rule::OverMax);
+    assert_eq!(
+        rule(unsafe { check_records_get(&i, ready(&o), &o) }),
+        Rule::OverMax
+    );
 }
 
 #[test]
@@ -166,7 +224,7 @@ fn refused_never_carries_a_needed_size() {
     let mut o = out(Outcome::Refused);
     o.needed_bytes = 64;
     assert_eq!(
-        rule(check_records_get(&i, ready(&o), &o)),
+        rule(unsafe { check_records_get(&i, ready(&o), &o) }),
         Rule::NeededNotFailed
     );
 }
@@ -179,7 +237,7 @@ fn a_short_answer_where_every_dimension_fits_is_fault() {
     o.needed_bytes = 4;
     o.needed_items = 1;
     assert_eq!(
-        rule(check_records_get(&i, ready(&o), &o)),
+        rule(unsafe { check_records_get(&i, ready(&o), &o) }),
         Rule::WastedRecall
     );
 }
@@ -191,7 +249,10 @@ fn one_dimension_short_with_the_other_fitting_is_a_legal_short_answer() {
     let mut o = out(Outcome::Failed);
     o.needed_bytes = 5;
     o.needed_items = 1;
-    assert_eq!(check_records_get(&i, ready(&o), &o), Ok(Filled::Short));
+    assert_eq!(
+        unsafe { check_records_get(&i, ready(&o), &o) },
+        Ok(Filled::Short)
+    );
 }
 
 #[test]
@@ -202,7 +263,7 @@ fn a_short_answer_that_wrote_something_is_fault() {
     o.needed_bytes = 5;
     o.len = 1;
     assert_eq!(
-        rule(check_records_get(&i, ready(&o), &o)),
+        rule(unsafe { check_records_get(&i, ready(&o), &o) }),
         Rule::WrittenOnShort
     );
 }
@@ -212,7 +273,10 @@ fn a_service_with_no_buffer_that_wrote_bytes_is_fault() {
     let i = judge_in(TICKET);
     let mut o = out(Outcome::Ready);
     o.len = 1;
-    assert_eq!(rule(check_dest_judge(&i, ready(&o), &o)), Rule::OverCap);
+    assert_eq!(
+        rule(unsafe { check_dest_judge(&i, ready(&o), &o) }),
+        Rule::OverCap
+    );
 }
 
 #[test]
@@ -231,7 +295,7 @@ fn a_span_outside_the_bytes_written_is_fault() {
     o.len = 4;
     o.items = 1;
     assert_eq!(
-        check_records_get(&i, ready(&o), &o).unwrap_err(),
+        unsafe { check_records_get(&i, ready(&o), &o) }.unwrap_err(),
         fault(Rule::SpanOutOfBounds, "service.out.span.value")
     );
 }
@@ -246,7 +310,7 @@ fn an_absent_span_with_a_length_is_fault() {
     o.len = 4;
     o.items = 1;
     assert_eq!(
-        rule(check_records_get(&i, ready(&o), &o)),
+        rule(unsafe { check_records_get(&i, ready(&o), &o) }),
         Rule::SpanNotAbsent
     );
 }
@@ -261,7 +325,10 @@ fn a_well_formed_found_record_is_legal() {
     o.value = FOUND;
     o.len = 4;
     o.items = 1;
-    assert_eq!(check_records_get(&i, ready(&o), &o), Ok(Filled::Written));
+    assert_eq!(
+        unsafe { check_records_get(&i, ready(&o), &o) },
+        Ok(Filled::Written)
+    );
 }
 
 #[test]
@@ -269,11 +336,11 @@ fn a_ready_value_outside_the_service_range_is_fault() {
     let mut o = out(Outcome::Ready);
     o.value = DEST_NO_ADDRESSES + 1;
     assert_eq!(
-        check_dest_judge(&judge_in(TICKET), ready(&o), &o).unwrap_err(),
+        unsafe { check_dest_judge(&judge_in(TICKET), ready(&o), &o) }.unwrap_err(),
         fault(Rule::UnknownCode, "service.out.value")
     );
     o.value = DEST_NO_ADDRESSES;
-    assert!(check_dest_judge(&judge_in(TICKET), ready(&o), &o).is_ok());
+    assert!(unsafe { check_dest_judge(&judge_in(TICKET), ready(&o), &o) }.is_ok());
 
     let claim = RecordsClaimIn {
         head: head(op::RECORDS_CLAIM, TICKET, 0),
@@ -322,7 +389,7 @@ fn a_ready_value_outside_the_service_range_is_fault() {
     };
     o.value = 0;
     assert_eq!(
-        rule(check_work_open(&open, ready(&o), &o)),
+        rule(unsafe { check_work_open(&open, ready(&o), &o) }),
         Rule::UnknownCode
     );
 }
@@ -355,7 +422,7 @@ fn a_clock_reading_must_be_there_and_of_this_layout() {
         reading: core::ptr::null_mut(),
     };
     assert_eq!(
-        rule(check_clock_now(&null, ready(&o), &o)),
+        rule(unsafe { check_clock_now(&null, ready(&o), &o) }),
         Rule::NullWithCount
     );
     let mut reading = ClockReading {
@@ -368,13 +435,19 @@ fn a_clock_reading_must_be_there_and_of_this_layout() {
         head: head(op::CLOCK_NOW, Ticket::NONE, 0),
         reading: &mut reading,
     };
-    assert_eq!(rule(check_clock_now(&i, ready(&o), &o)), Rule::Foreign);
+    assert_eq!(
+        rule(unsafe { check_clock_now(&i, ready(&o), &o) }),
+        Rule::Foreign
+    );
     reading.size = core::mem::size_of::<ClockReading>() as u32;
     let i = ClockNowIn {
         head: head(op::CLOCK_NOW, Ticket::NONE, 0),
         reading: &mut reading,
     };
-    assert_eq!(check_clock_now(&i, ready(&o), &o), Ok(Filled::Written));
+    assert_eq!(
+        unsafe { check_clock_now(&i, ready(&o), &o) },
+        Ok(Filled::Written)
+    );
 }
 
 #[test]
@@ -534,7 +607,7 @@ fn red_an_out_of_a_foreign_size_names_service_out_size() {
     let mut o = out(Outcome::Ready);
     o.size += 8;
     assert_eq!(
-        check_dest_judge(&i, ready(&o), &o).unwrap_err(),
+        unsafe { check_dest_judge(&i, ready(&o), &o) }.unwrap_err(),
         fault(Rule::Foreign, "service.out.size")
     );
 }
@@ -549,7 +622,7 @@ fn red_a_ready_clock_answer_with_no_reading_names_clock_now_reading() {
         reading: core::ptr::null_mut(),
     };
     assert_eq!(
-        check_clock_now(&i, ready(&o), &o).unwrap_err(),
+        unsafe { check_clock_now(&i, ready(&o), &o) }.unwrap_err(),
         fault(Rule::NullWithCount, "clock_now.reading")
     );
 }
@@ -570,7 +643,7 @@ fn red_a_ready_clock_answer_of_a_foreign_reading_names_clock_now_reading_size() 
         reading: &mut reading,
     };
     assert_eq!(
-        check_clock_now(&i, ready(&o), &o).unwrap_err(),
+        unsafe { check_clock_now(&i, ready(&o), &o) }.unwrap_err(),
         fault(Rule::Foreign, "clock_now.reading.size")
     );
 }
@@ -629,12 +702,15 @@ fn a_trust_verify_verdict_naming_its_refusal_carries_bytes() {
     for v in SIGNED_VERIFIED..=SIGNED_MALFORMED_ROOT {
         let mut o = out(Outcome::Ready);
         o.value = v;
-        assert!(check_trust_verify(&i, ready(&o), &o).is_ok(), "verdict {v}");
+        assert!(
+            unsafe { check_trust_verify(&i, ready(&o), &o) }.is_ok(),
+            "verdict {v}"
+        );
     }
     let mut o = out(Outcome::Ready);
     o.value = SIGNED_ALGORITHM;
     o.len = 4;
-    assert!(check_trust_verify(&i, ready(&o), &o).is_ok());
+    assert!(unsafe { check_trust_verify(&i, ready(&o), &o) }.is_ok());
 }
 
 /// RED ARM (`check_trust_verify`, the `trust_verify.out.len` arm): bytes with a verdict that names
@@ -648,7 +724,7 @@ fn red_trust_verify_bytes_with_a_verdict_that_names_nothing_name_trust_verify_ou
     o.value = SIGNED_VERIFIED;
     o.len = 4;
     assert_eq!(
-        check_trust_verify(&i, ready(&o), &o).unwrap_err(),
+        unsafe { check_trust_verify(&i, ready(&o), &o) }.unwrap_err(),
         fault(Rule::Contradiction, "trust_verify.out.len")
     );
     let mut o = out(Outcome::Ready);
@@ -658,7 +734,7 @@ fn red_trust_verify_bytes_with_a_verdict_that_names_nothing_name_trust_verify_ou
     spans[0].value = Span { offset: 0, len: 4 };
     let i = verify_in(bufs(&mut buf, &mut spans));
     assert_eq!(
-        check_trust_verify(&i, ready(&o), &o).unwrap_err(),
+        unsafe { check_trust_verify(&i, ready(&o), &o) }.unwrap_err(),
         fault(Rule::Contradiction, "trust_verify.out.len")
     );
 }
@@ -671,12 +747,12 @@ fn trust_verify_never_pends_and_its_verdicts_end_at_the_root_key() {
     i.head.handle.ticket = TICKET;
     let o = out(Outcome::Pending);
     assert_eq!(
-        rule(check_trust_verify(&i, ready(&o), &o)),
+        rule(unsafe { check_trust_verify(&i, ready(&o), &o) }),
         Rule::Contradiction
     );
     let mut o = out(Outcome::Ready);
     o.value = SIGNED_MALFORMED_ROOT + 1;
-    assert!(check_trust_verify(&i, ready(&o), &o).is_err());
+    assert!(unsafe { check_trust_verify(&i, ready(&o), &o) }.is_err());
 }
 
 /// `records.secret`: a live or not-live secret in span `0` is legal; a value outside
@@ -701,11 +777,14 @@ fn records_secret_answers_live_or_not_live() {
     o.items = 1;
     for value in [SECRET_NOT_LIVE, SECRET_LIVE] {
         o.value = value;
-        assert_eq!(check_records_secret(&i, ready(&o), &o), Ok(Filled::Written));
+        assert_eq!(
+            unsafe { check_records_secret(&i, ready(&o), &o) },
+            Ok(Filled::Written)
+        );
     }
     o.value = SECRET_LIVE + 1;
     assert_eq!(
-        rule(check_records_secret(&i, ready(&o), &o)),
+        rule(unsafe { check_records_secret(&i, ready(&o), &o) }),
         Rule::UnknownCode
     );
     assert!(may_pend(op::RECORDS_SECRET));
@@ -735,11 +814,11 @@ fn a_work_open_answers_its_reference_in_one_span() {
     o.len = WORK_REFERENCE_LEN as u64;
     // No span: the reference is missing.
     assert_eq!(
-        check_work_open(&open, RawOutcome::of(Outcome::Ready), &o).unwrap_err(),
+        unsafe { check_work_open(&open, RawOutcome::of(Outcome::Ready), &o) }.unwrap_err(),
         fault(Rule::Contradiction, "work_open.out.items")
     );
     o.items = 1;
-    assert!(check_work_open(&open, RawOutcome::of(Outcome::Ready), &o).is_ok());
+    assert!(unsafe { check_work_open(&open, RawOutcome::of(Outcome::Ready), &o) }.is_ok());
 }
 
 #[test]
@@ -820,7 +899,7 @@ fn a_hook_call_answer_outside_its_values_is_fault() {
         (&rewrite, 600, false),
     ] {
         o.value = value;
-        let r = check_hook_call(i, ready(&o), &o);
+        let r = unsafe { check_hook_call(i, ready(&o), &o) };
         assert_eq!(r.is_ok(), ok, "stage {} value {value}", i.stage);
         if !ok {
             assert_eq!(rule(r), Rule::UnknownCode);
@@ -914,7 +993,7 @@ fn a_disk_append_answer_lands_whole_or_names_its_failed_step() {
     let check = |w: DiskWritten, o: &ServiceOut, ticket: Ticket| {
         let mut slot = w;
         let i = disk_in(ticket, "path", bytes, &mut slot);
-        check_disk_append(&i, o.outcome, o)
+        unsafe { check_disk_append(&i, o.outcome, o) }
     };
     let ready = out(Outcome::Ready);
     assert_eq!(
@@ -1432,59 +1511,62 @@ fn red_auth_call_answer_refuses_each_break() {
     let mut o = out(Outcome::Ready);
     o.len = 7;
     o.items = 2;
-    assert_eq!(check_auth_call(&i, ready(&o), &o).unwrap(), Filled::Written);
+    assert_eq!(
+        unsafe { check_auth_call(&i, ready(&o), &o) }.unwrap(),
+        Filled::Written
+    );
 
     // SAFETY (each block below): the test's own answer slot and spans, live for the test.
     unsafe { (*i.answer).flow = 2 };
     assert_eq!(
-        check_auth_call(&i, ready(&o), &o).unwrap_err(),
+        unsafe { check_auth_call(&i, ready(&o), &o) }.unwrap_err(),
         fault(Rule::UnknownCode, "auth_call.answer.flow")
     );
     unsafe { (*i.answer).flow = FLOW_STOP };
     assert!(
-        check_auth_call(&i, ready(&o), &o).is_ok(),
+        unsafe { check_auth_call(&i, ready(&o), &o) }.is_ok(),
         "a stop names its strips too"
     );
     unsafe { (*i.answer).size -= 1 };
     assert_eq!(
-        check_auth_call(&i, ready(&o), &o).unwrap_err(),
+        unsafe { check_auth_call(&i, ready(&o), &o) }.unwrap_err(),
         fault(Rule::Foreign, "auth_call.answer")
     );
     unsafe { (*i.answer).size += 1 };
     unsafe { (*i.answer).unit = UnitRef::NONE };
     assert_eq!(
-        check_auth_call(&i, ready(&o), &o).unwrap_err(),
+        unsafe { check_auth_call(&i, ready(&o), &o) }.unwrap_err(),
         fault(Rule::Missing, "auth_call.answer.unit")
     );
     let mut presented = i;
     presented.unit = UnitRef { id: 12, mac: 1 };
     unsafe { (*i.answer).unit = A_UNIT };
     assert_eq!(
-        check_auth_call(&presented, ready(&o), &o).unwrap_err(),
+        unsafe { check_auth_call(&presented, ready(&o), &o) }.unwrap_err(),
         fault(Rule::Contradiction, "auth_call.answer.unit")
     );
     let mut peer = i;
     peer.point = POINT_PEER;
     assert_eq!(
-        check_auth_call(&peer, ready(&o), &o).unwrap_err(),
+        unsafe { check_auth_call(&peer, ready(&o), &o) }.unwrap_err(),
         fault(Rule::Contradiction, "auth_call.answer.unit")
     );
     let mut nowhere = i;
     nowhere.answer = core::ptr::null_mut();
     assert_eq!(
-        check_auth_call(&nowhere, ready(&o), &o).unwrap_err(),
+        unsafe { check_auth_call(&nowhere, ready(&o), &o) }.unwrap_err(),
         fault(Rule::Missing, "auth_call.answer")
     );
 
     unsafe { (*i.spans.add(1)).flags = 4 };
     assert_eq!(
-        check_auth_call(&i, ready(&o), &o).unwrap_err(),
+        unsafe { check_auth_call(&i, ready(&o), &o) }.unwrap_err(),
         fault(Rule::UnknownCode, "auth_call.span.flags")
     );
     unsafe { (*i.spans.add(1)).flags = FIELD_QUERY };
     unsafe { (*i.spans.add(1)).name.len = 4 };
     assert_eq!(
-        check_auth_call(&i, ready(&o), &o).unwrap_err(),
+        unsafe { check_auth_call(&i, ready(&o), &o) }.unwrap_err(),
         fault(Rule::SpanOutOfBounds, "auth_call.span.name")
     );
     unsafe {
@@ -1494,30 +1576,32 @@ fn red_auth_call_answer_refuses_each_break() {
         }
     };
     assert_eq!(
-        check_auth_call(&i, ready(&o), &o).unwrap_err(),
+        unsafe { check_auth_call(&i, ready(&o), &o) }.unwrap_err(),
         fault(Rule::Missing, "auth_call.span.name")
     );
     unsafe { (*i.spans.add(1)).name = Span { offset: 4, len: 3 } };
     let mut over = o;
     over.items = 3;
     assert_eq!(
-        check_auth_call(&i, ready(&over), &over).unwrap_err().rule,
+        unsafe { check_auth_call(&i, ready(&over), &over) }
+            .unwrap_err()
+            .rule,
         Rule::OverCap
     );
     let mut short = out(Outcome::Failed);
     short.needed_bytes = 64;
     assert_eq!(
-        check_auth_call(&i, ready(&short), &short).unwrap(),
+        unsafe { check_auth_call(&i, ready(&short), &short) }.unwrap(),
         Filled::Short
     );
     let mut unticketed = i;
     unticketed.head.handle.ticket = Ticket::NONE;
     let pending = out(Outcome::Pending);
     assert_eq!(
-        check_auth_call(&unticketed, ready(&pending), &pending).unwrap_err(),
+        unsafe { check_auth_call(&unticketed, ready(&pending), &pending) }.unwrap_err(),
         fault(Rule::Contradiction, "service.out.pending")
     );
-    assert!(check_auth_call(&i, ready(&pending), &pending).is_ok());
+    assert!(unsafe { check_auth_call(&i, ready(&pending), &pending) }.is_ok());
 }
 
 /// RED: at the peer point an `auth.call` answers ONLY continue or stop. An outbound binding's
@@ -1536,13 +1620,13 @@ fn red_a_peer_answer_that_carries_fields_or_bytes_is_refused() {
     let i = auth_call_in(POINT_PEER, &mut buf, &mut spans, &mut a);
     let bare = out(Outcome::Ready);
     assert_eq!(
-        check_auth_call(&i, ready(&bare), &bare).unwrap(),
+        unsafe { check_auth_call(&i, ready(&bare), &bare) }.unwrap(),
         Filled::Written
     );
     // SAFETY (each block below): the test's own answer slot and spans, live for the test.
     unsafe { (*i.answer).flow = FLOW_STOP };
     assert!(
-        check_auth_call(&i, ready(&bare), &bare).is_ok(),
+        unsafe { check_auth_call(&i, ready(&bare), &bare) }.is_ok(),
         "a bare stop"
     );
     unsafe { (*i.answer).flow = FLOW_CONTINUE };
@@ -1556,13 +1640,13 @@ fn red_a_peer_answer_that_carries_fields_or_bytes_is_refused() {
     keyed.len = 11;
     keyed.items = 1;
     assert_eq!(
-        check_auth_call(&i, ready(&keyed), &keyed).unwrap_err(),
+        unsafe { check_auth_call(&i, ready(&keyed), &keyed) }.unwrap_err(),
         fault(Rule::Contradiction, "auth_call.answer.peer_fields")
     );
     let mut bytes_only = out(Outcome::Ready);
     bytes_only.len = 4;
     assert_eq!(
-        check_auth_call(&i, ready(&bytes_only), &bytes_only).unwrap_err(),
+        unsafe { check_auth_call(&i, ready(&bytes_only), &bytes_only) }.unwrap_err(),
         fault(Rule::Contradiction, "auth_call.answer.peer_fields")
     );
 }
@@ -1577,22 +1661,22 @@ fn red_unit_hand_in_answer_refuses_each_break() {
     };
     let i = hand_in(&mut a);
     let o = out(Outcome::Ready);
-    assert!(check_unit_hand_in(&i, ready(&o), &o).is_ok());
+    assert!(unsafe { check_unit_hand_in(&i, ready(&o), &o) }.is_ok());
     // SAFETY (each block below): the test's own answer slot.
     unsafe { (*i.answer).flow = 9 };
     assert_eq!(
-        check_unit_hand_in(&i, ready(&o), &o).unwrap_err(),
+        unsafe { check_unit_hand_in(&i, ready(&o), &o) }.unwrap_err(),
         fault(Rule::UnknownCode, "unit_hand_in.answer.flow")
     );
     unsafe { (*i.answer).flow = FLOW_STOP };
     unsafe { (*i.answer).unit = UnitRef::NONE };
     assert_eq!(
-        check_unit_hand_in(&i, ready(&o), &o).unwrap_err(),
+        unsafe { check_unit_hand_in(&i, ready(&o), &o) }.unwrap_err(),
         fault(Rule::Missing, "unit_hand_in.answer.unit")
     );
     let pending = out(Outcome::Pending);
     assert_eq!(
-        check_unit_hand_in(&i, ready(&pending), &pending).unwrap_err(),
+        unsafe { check_unit_hand_in(&i, ready(&pending), &pending) }.unwrap_err(),
         fault(Rule::Contradiction, "service.out.pending")
     );
 }
@@ -1604,12 +1688,12 @@ fn red_unit_refuse_answer_refuses_each_break() {
     let mut a = refusal(404);
     let i = refuse_in(REFUSE_NO_ROUTE, LINE_NONE, &mut a);
     let o = out(Outcome::Ready);
-    assert!(check_unit_refuse(&i, ready(&o), &o).is_ok());
+    assert!(unsafe { check_unit_refuse(&i, ready(&o), &o) }.is_ok());
     // SAFETY (each block below): the test's own answer slot.
     for status in [0u16, 99, 600] {
         unsafe { (*i.answer).status = status };
         assert_eq!(
-            check_unit_refuse(&i, ready(&o), &o).unwrap_err(),
+            unsafe { check_unit_refuse(&i, ready(&o), &o) }.unwrap_err(),
             fault(Rule::UnknownCode, "unit_refuse.answer.status"),
             "{status}"
         );
@@ -1617,19 +1701,19 @@ fn red_unit_refuse_answer_refuses_each_break() {
     unsafe { (*i.answer).status = 413 };
     unsafe { (*i.answer).fields_len = 1 };
     assert_eq!(
-        check_unit_refuse(&i, ready(&o), &o).unwrap_err(),
+        unsafe { check_unit_refuse(&i, ready(&o), &o) }.unwrap_err(),
         fault(Rule::NullWithCount, "unit_refuse.answer.fields")
     );
     unsafe { (*i.answer).fields_len = 0 };
     unsafe { (*i.answer).body.len = 3 };
     assert_eq!(
-        check_unit_refuse(&i, ready(&o), &o).unwrap_err(),
+        unsafe { check_unit_refuse(&i, ready(&o), &o) }.unwrap_err(),
         fault(Rule::NullWithCount, "unit_refuse.answer.body")
     );
     unsafe { (*i.answer).body.len = 0 };
     unsafe { (*i.answer).size = 0 };
     assert_eq!(
-        check_unit_refuse(&i, ready(&o), &o).unwrap_err(),
+        unsafe { check_unit_refuse(&i, ready(&o), &o) }.unwrap_err(),
         fault(Rule::Foreign, "unit_refuse.answer")
     );
 }
@@ -1684,19 +1768,22 @@ fn a_minted_ticket_is_bytes_and_an_expiry() {
     let mut o = out(Outcome::Ready);
     o.len = 4;
     o.value = 1_700_000_600;
-    assert_eq!(check_ticket_mint(&i, ready(&o), &o), Ok(Filled::Written));
+    assert_eq!(
+        unsafe { check_ticket_mint(&i, ready(&o), &o) },
+        Ok(Filled::Written)
+    );
     // RED: nothing written.
     let mut empty = o;
     empty.len = 0;
     assert_eq!(
-        rule(check_ticket_mint(&i, ready(&empty), &empty)),
+        rule(unsafe { check_ticket_mint(&i, ready(&empty), &empty) }),
         Rule::Contradiction
     );
     // RED: no expiry.
     let mut never = o;
     never.value = 0;
     assert_eq!(
-        rule(check_ticket_mint(&i, ready(&never), &never)),
+        rule(unsafe { check_ticket_mint(&i, ready(&never), &never) }),
         Rule::UnknownCode
     );
 }
@@ -1717,23 +1804,23 @@ fn a_take_writes_a_record_only_when_a_ticket_admitted_the_unit() {
     taken.value = TICKET_TAKEN;
     taken.len = 3;
     assert_eq!(
-        check_ticket_take(&i, ready(&taken), &taken),
+        unsafe { check_ticket_take(&i, ready(&taken), &taken) },
         Ok(Filled::Written)
     );
     let none = out(Outcome::Ready);
-    assert!(check_ticket_take(&i, ready(&none), &none).is_ok());
+    assert!(unsafe { check_ticket_take(&i, ready(&none), &none) }.is_ok());
     // RED: NONE with bytes.
     let mut stray = none;
     stray.len = 3;
     assert_eq!(
-        rule(check_ticket_take(&i, ready(&stray), &stray)),
+        rule(unsafe { check_ticket_take(&i, ready(&stray), &stray) }),
         Rule::Contradiction
     );
     // RED: a value outside NONE..=TAKEN.
     let mut odd = taken;
     odd.value = TICKET_TAKEN + 1;
     assert_eq!(
-        rule(check_ticket_take(&i, ready(&odd), &odd)),
+        rule(unsafe { check_ticket_take(&i, ready(&odd), &odd) }),
         Rule::UnknownCode
     );
 }

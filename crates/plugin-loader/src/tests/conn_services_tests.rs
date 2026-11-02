@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+//! SAFETY for raw service calls below: the test supplies the selected slot's initialized
+//! frame, live nested loans, and an exclusive initialized output for the whole invocation.
+//! Malformed heads are rejected before any range they do not cover is accessed.
+
 //! THE CONNECTOR SLOTS, both ways: an instance whose Statement declares a need is handed the slots
 //! and its needs are declared on the host's one connection table (the whole need, under its
 //! Statement index) — a need whose `target_from` names a config path at `open` and every `refresh`,
@@ -348,7 +352,7 @@ fn establish_as(
     let mut out: ServiceOut = unsafe { std::mem::zeroed() };
     out.size = std::mem::size_of::<ServiceOut>() as u32;
     let slot = CONN_SLOTS.establish.expect("ESTABLISH is served");
-    let _: RawOutcome = slot(p.inner.ctx(), std::ptr::from_ref(&i).cast(), &mut out);
+    let _: RawOutcome = unsafe { slot(p.inner.ctx(), std::ptr::from_ref(&i).cast(), &mut out) };
     out
 }
 
@@ -1269,7 +1273,7 @@ fn call<I>(p: &Plugin<TestKind>, f: Option<ServiceFn>, input: &I) -> ServiceOut 
     let mut out: ServiceOut = unsafe { std::mem::zeroed() };
     out.size = std::mem::size_of::<ServiceOut>() as u32;
     let _: RawOutcome =
-        f.expect("served")(p.inner.ctx(), std::ptr::from_ref(input).cast(), &mut out);
+        unsafe { f.expect("served")(p.inner.ctx(), std::ptr::from_ref(input).cast(), &mut out) };
     out
 }
 
@@ -1706,7 +1710,7 @@ fn admit(p: &Plugin<TestKind>, need: u32) -> Outcome {
     let slot = crate::dispatch::services::HOST_SLOTS
         .need_admit
         .expect("need.admit is served");
-    let _: RawOutcome = slot(p.inner.ctx(), std::ptr::from_ref(&i).cast(), &mut out);
+    let _: RawOutcome = unsafe { slot(p.inner.ctx(), std::ptr::from_ref(&i).cast(), &mut out) };
     out.outcome.outcome()
 }
 

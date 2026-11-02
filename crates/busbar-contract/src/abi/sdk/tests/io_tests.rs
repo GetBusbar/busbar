@@ -87,6 +87,30 @@ c_abi! {
             _ => answer(out, Outcome::Ready, 8080, 3, ""),
         }
     }
+
+    fn spawn(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+        // SAFETY: `Io::spawn` builds the frame and both nested lists from its borrowed strings;
+        // their storage and the wrapper's ABI lists remain live until this slot returns.
+        let i = unsafe { input.cast::<SpawnIn>().read() };
+        assert_eq!(i.head.op, op::SPAWN);
+        assert_eq!(i.head.handle.ticket, TICKET);
+        // SAFETY: as above; these ranges are initialized by the wrapper and still borrowed.
+        unsafe {
+            let program = std::slice::from_raw_parts(i.program.ptr, i.program.len);
+            let args = std::slice::from_raw_parts(i.args, i.args_len);
+            let env = std::slice::from_raw_parts(i.env, i.env_len);
+            let args: Vec<&[u8]> = args.iter()
+                .map(|s| std::slice::from_raw_parts(s.ptr, s.len)).collect();
+            let env: Vec<(&[u8], &[u8])> = env.iter().map(|f| (
+                std::slice::from_raw_parts(f.name.ptr, f.name.len),
+                std::slice::from_raw_parts(f.value.ptr, f.value.len),
+            )).collect();
+            assert_eq!(program, b"/usr/bin/tool");
+            assert_eq!(args, [b"--flag".as_slice(), b"argument with spaces".as_slice(), b""]);
+            assert_eq!(env, [(b"NAME".as_slice(), b"value".as_slice()), (b"EMPTY", b"")]);
+        }
+        answer(out, Outcome::Ready, 11, 0, "")
+    }
 }
 
 static TABLE: IoSlots = IoSlots {
@@ -159,4 +183,31 @@ fn program_exit_reads_the_exited_byte_and_the_code() {
     assert_eq!(io(Ticket::NONE).program_exit(7), Ok(Some(3)));
     assert_eq!(io(Ticket::NONE).program_exit(8), Ok(None));
     assert_eq!(io(Ticket::NONE).program_exit(9), Ok(None));
+}
+
+/// The public safe entry receives only borrowed Rust strings, including nested arguments and
+/// environment values. The actual ABI slot reads them while the wrapper's temporary lists live.
+#[test]
+fn spawn_lends_owned_strings_and_nested_lists_until_the_slot_returns() {
+    let table = IoSlots {
+        spawn: Some(spawn),
+        ..TABLE
+    };
+    let mut io = Io::new(HostCtx::NONE, &table, TICKET);
+    let program = String::from("/usr/bin/tool");
+    let argument = String::from("argument with spaces");
+    let name = String::from("NAME");
+    let value = String::from("value");
+    assert_eq!(
+        io.spawn(
+            &program,
+            &["--flag", &argument, ""],
+            &[(&name, &value), ("EMPTY", "")]
+        ),
+        Ok(11)
+    );
+    assert_eq!(
+        (program.as_str(), argument.as_str(), value.as_str()),
+        ("/usr/bin/tool", "argument with spaces", "value")
+    );
 }

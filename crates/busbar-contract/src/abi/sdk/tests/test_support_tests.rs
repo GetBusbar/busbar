@@ -552,11 +552,14 @@ fn a_fake_refuses_an_in_of_another_op_a_short_in_and_a_stray_selector_with_fault
     let call = |host: &FakeHost, input: &RecordsGetIn| {
         let mut out: ServiceOut = zeroed();
         let f = host.slots_for_tests().0.records_get.expect("served");
-        f(
-            HostCtx::NONE,
-            ptr::from_ref(input).cast(),
-            ptr::from_mut(&mut out).cast(),
-        )
+        // SAFETY: `input` is the selected slot's live frame and every loan stays live; `out` is exclusive.
+        unsafe {
+            f(
+                HostCtx::NONE,
+                ptr::from_ref(input).cast(),
+                ptr::from_mut(&mut out).cast(),
+            )
+        }
         .outcome()
     };
     // An `in` whose head names another op: the double never runs.
@@ -1074,7 +1077,8 @@ fn io_in(op: u32, buf: &mut [u8]) -> IoIn {
 
 fn served_by(f: crate::abi::host::service::ServiceFn, input: *const c_void) -> Outcome {
     let mut out: ServiceOut = zeroed();
-    f(HostCtx::NONE, input, ptr::from_mut(&mut out).cast()).outcome()
+    // SAFETY: each test passes the frame matching `f`, with live nested loans; `out` is exclusive.
+    unsafe { f(HostCtx::NONE, input, ptr::from_mut(&mut out).cast()) }.outcome()
 }
 
 #[test]

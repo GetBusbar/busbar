@@ -28,6 +28,48 @@
 //! ANSWER VALIDATORS. Each shape has its `check_<op>` beside it: the caller's check of the host's
 //! answer, built from the shared helpers in `abi/mechanism/check.rs`. [`check_head`] and
 //! [`check_bufs`] are the host's checks of the caller's `in`.
+//!
+//! A size, capacity, or non-NULL pointer does not establish that an allocation is live. Validators
+//! that read through an input's raw output pointers require the caller to establish that fact:
+//!
+//! ```compile_fail,E0133
+//! use busbar_contract::abi::host::service::*;
+//! fn read(i: &ClockNowIn, o: &ServiceOut) { let _ = check_clock_now(i, o.outcome, o); }
+//! ```
+//!
+//! ```compile_fail,E0133
+//! use busbar_contract::abi::host::service::*;
+//! fn read(i: &RecordsGetIn, o: &ServiceOut) { let _ = check_records_get(i, o.outcome, o); }
+//! ```
+//!
+//! ```compile_fail,E0133
+//! use busbar_contract::abi::host::service::*;
+//! fn read(i: &DiskAppendIn, o: &ServiceOut) { let _ = check_disk_append(i, o.outcome, o); }
+//! ```
+//!
+//! ```compile_fail,E0133
+//! use busbar_contract::abi::host::service::*;
+//! fn read(i: &AuthCallIn, o: &ServiceOut) { let _ = check_auth_call(i, o.outcome, o); }
+//! ```
+//!
+//! ```compile_fail,E0133
+//! use busbar_contract::abi::host::service::*;
+//! fn read(i: &UnitHandInIn, o: &ServiceOut) { let _ = check_unit_hand_in(i, o.outcome, o); }
+//! ```
+//!
+//! ```compile_fail,E0133
+//! use busbar_contract::abi::host::service::*;
+//! fn read(i: &UnitRefuseIn, o: &ServiceOut) { let _ = check_unit_refuse(i, o.outcome, o); }
+//! ```
+//!
+//! Validators that inspect only metadata remain callable from safe Rust:
+//!
+//! ```
+//! #![forbid(unsafe_code)]
+//! use busbar_contract::abi::host::service::*;
+//! fn check(i: &RecordsClaimIn, o: &ServiceOut) { let _ = check_records_claim(i, o.outcome, o); }
+//! fn snapshot(i: &SnapshotReadIn, o: &ServiceOut) { let _ = check_snapshot_read(i, o.outcome, o); }
+//! ```
 
 use std::os::raw::c_void;
 
@@ -37,8 +79,24 @@ use crate::abi::mechanism::check::{self, fault, Dim, Fault, Filled, Rule, MAX_BY
 use crate::abi::mechanism::ticket::{CompletionHandle, HostCtx};
 
 /// A host service: `svc(ctx, in, out)`. `extern "C"`: a panic escaping it aborts.
+///
+/// # Safety
+///
+/// The selected slot determines the input layout. Every input range it reads must be live and
+/// initialized, and every output range it writes exclusively writable for its stated capacity,
+/// including nested pointers. The frame and `out` must cover the prefixes their size fields
+/// advertise (capped at the slot's current layout). Keep those ranges valid for the invocation
+/// and follow the slot's pending protocol. NULL or short prefixes are allowed only where the slot
+/// explicitly rejects them before access. Use the SDK's borrowed wrappers for safe calls.
+///
+/// ```compile_fail,E0133
+/// use busbar_contract::abi::{host::service::*, mechanism::ticket::HostCtx};
+/// fn call(f: ServiceFn, ctx: HostCtx, input: *const core::ffi::c_void, out: *mut ServiceOut) {
+///     let _ = f(ctx, input, out);
+/// }
+/// ```
 pub type ServiceFn =
-    extern "C" fn(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome;
+    unsafe extern "C" fn(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome;
 
 /// The head of every service `in`, in either table.
 #[repr(C)]
@@ -1849,7 +1907,12 @@ struct Shape {
 /// `outcome` agrees with it; `size` is this `out`'s; PENDING only from a service that may pend and on
 /// a real ticket; the short-buffer rule over the two dimensions; REFUSED carries no `needed_*`; a
 /// READY `value` in the service's range; every span written inside the bytes written.
-fn answer(
+///
+/// # Safety
+///
+/// If READY reports a nonzero in-cap span count, `shape.into` must name that many aligned,
+/// initialized `ItemSpan`s, readable without concurrent writes. NULL is rejected before reading.
+unsafe fn answer(
     ret: RawOutcome,
     head: &ServiceHead,
     out: &ServiceOut,
@@ -1964,13 +2027,25 @@ const ANY: (u64, u64) = (0, u64::MAX);
 /// # Errors
 ///
 /// The rule the answer breaks.
-pub fn check_clock_now(i: &ClockNowIn, ret: RawOutcome, out: &ServiceOut) -> Result<Filled, Fault> {
-    let filled = answer(ret, &i.head, out, bare(op::CLOCK_NOW, (0, 0)))?;
+///
+/// # Safety
+///
+/// On READY, a non-NULL `i.reading` must point to a live initialized `ClockReading`,
+/// readable without concurrent writes for this call. NULL is rejected before reading.
+pub unsafe fn check_clock_now(
+    i: &ClockNowIn,
+    ret: RawOutcome,
+    out: &ServiceOut,
+) -> Result<Filled, Fault> {
+    let filled = unsafe {
+        // SAFETY: `bare` has no buffers or raw memory to read.
+        answer(ret, &i.head, out, bare(op::CLOCK_NOW, (0, 0)))
+    }?;
     if ret.outcome() == Outcome::Ready {
         if i.reading.is_null() {
             return Err(fault(Rule::NullWithCount, "clock_now.reading"));
         }
-        // SAFETY: the caller's own reading slot, checked non-NULL.
+        // SAFETY: the caller guarantees a live initialized reading; NULL was rejected.
         let size = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*i.reading).size)) };
         if size as usize != core::mem::size_of::<ClockReading>() {
             return Err(fault(Rule::Foreign, "clock_now.reading.size"));
@@ -1984,17 +2059,26 @@ pub fn check_clock_now(i: &ClockNowIn, ret: RawOutcome, out: &ServiceOut) -> Res
 /// # Errors
 ///
 /// The rule the answer breaks.
-pub fn check_records_get(
+///
+/// # Safety
+///
+/// On READY, if the reported span count is nonzero and within `i.into.spans_cap`,
+/// a non-NULL `i.into.spans` must point to that many aligned, initialized `ItemSpan`s,
+/// readable without concurrent writes for this call. Counts and NULL are checked first.
+pub unsafe fn check_records_get(
     i: &RecordsGetIn,
     ret: RawOutcome,
     out: &ServiceOut,
 ) -> Result<Filled, Fault> {
-    answer(
-        ret,
-        &i.head,
-        out,
-        into(op::RECORDS_GET, i.into, (ABSENT, FOUND)),
-    )
+    unsafe {
+        // SAFETY: the caller guarantees the live initialized spans in `i.into`.
+        answer(
+            ret,
+            &i.head,
+            out,
+            into(op::RECORDS_GET, i.into, (ABSENT, FOUND)),
+        )
+    }
 }
 
 /// `records.secret`'s answer.
@@ -2002,17 +2086,26 @@ pub fn check_records_get(
 /// # Errors
 ///
 /// The rule the answer breaks.
-pub fn check_records_secret(
+///
+/// # Safety
+///
+/// On READY, if the reported span count is nonzero and within `i.into.spans_cap`,
+/// a non-NULL `i.into.spans` must point to that many aligned, initialized `ItemSpan`s,
+/// readable without concurrent writes for this call. Counts and NULL are checked first.
+pub unsafe fn check_records_secret(
     i: &RecordsSecretIn,
     ret: RawOutcome,
     out: &ServiceOut,
 ) -> Result<Filled, Fault> {
-    answer(
-        ret,
-        &i.head,
-        out,
-        into(op::RECORDS_SECRET, i.into, (SECRET_NOT_LIVE, SECRET_LIVE)),
-    )
+    unsafe {
+        // SAFETY: the caller guarantees the live initialized spans in `i.into`.
+        answer(
+            ret,
+            &i.head,
+            out,
+            into(op::RECORDS_SECRET, i.into, (SECRET_NOT_LIVE, SECRET_LIVE)),
+        )
+    }
 }
 
 /// `snapshot.read`'s answer: the common rules; READY writes no spans.
@@ -2030,7 +2123,10 @@ pub fn check_snapshot_read(
         spans_cap: 0,
         ..i.into
     };
-    answer(ret, &i.head, out, into(op::SNAPSHOT_READ, bytes_only, ANY))
+    unsafe {
+        // SAFETY: `bytes_only` removes every span, so no raw memory is read.
+        answer(ret, &i.head, out, into(op::SNAPSHOT_READ, bytes_only, ANY))
+    }
 }
 
 /// A `snapshot.read` `in`: a known scope, and a buffer of the scrape layout's alignment.
@@ -2053,12 +2149,21 @@ pub fn check_snapshot_read_in(i: &SnapshotReadIn) -> Result<(), Fault> {
 /// # Errors
 ///
 /// The rule the answer breaks.
-pub fn check_records_list(
+///
+/// # Safety
+///
+/// On READY, if the reported span count is nonzero and within `i.into.spans_cap`,
+/// a non-NULL `i.into.spans` must point to that many aligned, initialized `ItemSpan`s,
+/// readable without concurrent writes for this call. Counts and NULL are checked first.
+pub unsafe fn check_records_list(
     i: &RecordsListIn,
     ret: RawOutcome,
     out: &ServiceOut,
 ) -> Result<Filled, Fault> {
-    answer(ret, &i.head, out, into(op::RECORDS_LIST, i.into, (0, 0)))
+    unsafe {
+        // SAFETY: the caller guarantees the live initialized spans in `i.into`.
+        answer(ret, &i.head, out, into(op::RECORDS_LIST, i.into, (0, 0)))
+    }
 }
 
 /// `records.claim`'s answer.
@@ -2071,12 +2176,15 @@ pub fn check_records_claim(
     ret: RawOutcome,
     out: &ServiceOut,
 ) -> Result<Filled, Fault> {
-    answer(
-        ret,
-        &i.head,
-        out,
-        bare(op::RECORDS_CLAIM, (CLAIM_WON, CLAIM_TAKEN)),
-    )
+    unsafe {
+        // SAFETY: `bare` has no buffers or raw memory to read.
+        answer(
+            ret,
+            &i.head,
+            out,
+            bare(op::RECORDS_CLAIM, (CLAIM_WON, CLAIM_TAKEN)),
+        )
+    }
 }
 
 /// `dest.judge`'s answer.
@@ -2084,17 +2192,26 @@ pub fn check_records_claim(
 /// # Errors
 ///
 /// The rule the answer breaks.
-pub fn check_dest_judge(
+///
+/// # Safety
+///
+/// On READY, if the reported span count is nonzero and within `i.into.spans_cap`,
+/// a non-NULL `i.into.spans` must point to that many aligned, initialized `ItemSpan`s,
+/// readable without concurrent writes for this call. Counts and NULL are checked first.
+pub unsafe fn check_dest_judge(
     i: &DestJudgeIn,
     ret: RawOutcome,
     out: &ServiceOut,
 ) -> Result<Filled, Fault> {
-    answer(
-        ret,
-        &i.head,
-        out,
-        into(op::DEST_JUDGE, i.into, (DEST_ALLOWED, DEST_NO_ADDRESSES)),
-    )
+    unsafe {
+        // SAFETY: the caller guarantees the live initialized spans in `i.into`.
+        answer(
+            ret,
+            &i.head,
+            out,
+            into(op::DEST_JUDGE, i.into, (DEST_ALLOWED, DEST_NO_ADDRESSES)),
+        )
+    }
 }
 
 /// `sign`'s answer.
@@ -2102,8 +2219,17 @@ pub fn check_dest_judge(
 /// # Errors
 ///
 /// The rule the answer breaks.
-pub fn check_sign(i: &SignIn, ret: RawOutcome, out: &ServiceOut) -> Result<Filled, Fault> {
-    answer(ret, &i.head, out, into(op::SIGN, i.into, (0, 0)))
+///
+/// # Safety
+///
+/// On READY, if the reported span count is nonzero and within `i.into.spans_cap`,
+/// a non-NULL `i.into.spans` must point to that many aligned, initialized `ItemSpan`s,
+/// readable without concurrent writes for this call. Counts and NULL are checked first.
+pub unsafe fn check_sign(i: &SignIn, ret: RawOutcome, out: &ServiceOut) -> Result<Filled, Fault> {
+    unsafe {
+        // SAFETY: the caller guarantees the live initialized spans in `i.into`.
+        answer(ret, &i.head, out, into(op::SIGN, i.into, (0, 0)))
+    }
 }
 
 /// `unit.nest`'s answer.
@@ -2111,8 +2237,21 @@ pub fn check_sign(i: &SignIn, ret: RawOutcome, out: &ServiceOut) -> Result<Fille
 /// # Errors
 ///
 /// The rule the answer breaks.
-pub fn check_unit_nest(i: &UnitNestIn, ret: RawOutcome, out: &ServiceOut) -> Result<Filled, Fault> {
-    answer(ret, &i.head, out, into(op::UNIT_NEST, i.into, ANY))
+///
+/// # Safety
+///
+/// On READY, if the reported span count is nonzero and within `i.into.spans_cap`,
+/// a non-NULL `i.into.spans` must point to that many aligned, initialized `ItemSpan`s,
+/// readable without concurrent writes for this call. Counts and NULL are checked first.
+pub unsafe fn check_unit_nest(
+    i: &UnitNestIn,
+    ret: RawOutcome,
+    out: &ServiceOut,
+) -> Result<Filled, Fault> {
+    unsafe {
+        // SAFETY: the caller guarantees the live initialized spans in `i.into`.
+        answer(ret, &i.head, out, into(op::UNIT_NEST, i.into, ANY))
+    }
 }
 
 /// `work.open`'s answer.
@@ -2120,13 +2259,26 @@ pub fn check_unit_nest(i: &UnitNestIn, ret: RawOutcome, out: &ServiceOut) -> Res
 /// # Errors
 ///
 /// The rule the answer breaks.
-pub fn check_work_open(i: &WorkOpenIn, ret: RawOutcome, out: &ServiceOut) -> Result<Filled, Fault> {
-    let filled = answer(
-        ret,
-        &i.head,
-        out,
-        into(op::WORK_OPEN, i.into, (1, u64::MAX)),
-    )?;
+///
+/// # Safety
+///
+/// On READY, if the reported span count is nonzero and within `i.into.spans_cap`,
+/// a non-NULL `i.into.spans` must point to that many aligned, initialized `ItemSpan`s,
+/// readable without concurrent writes for this call. Counts and NULL are checked first.
+pub unsafe fn check_work_open(
+    i: &WorkOpenIn,
+    ret: RawOutcome,
+    out: &ServiceOut,
+) -> Result<Filled, Fault> {
+    let filled = unsafe {
+        // SAFETY: the caller guarantees the live initialized spans in `i.into`.
+        answer(
+            ret,
+            &i.head,
+            out,
+            into(op::WORK_OPEN, i.into, (1, u64::MAX)),
+        )
+    }?;
     if ret.outcome() == Outcome::Ready && out.items != 1 {
         return Err(fault(Rule::Contradiction, "work_open.out.items"));
     }
@@ -2151,8 +2303,21 @@ pub const fn check_work_record(record: &Blob) -> Result<(), Fault> {
 /// # Errors
 ///
 /// The rule the answer breaks.
-pub fn check_work_find(i: &WorkFindIn, ret: RawOutcome, out: &ServiceOut) -> Result<Filled, Fault> {
-    answer(ret, &i.head, out, into(op::WORK_FIND, i.into, ANY))
+///
+/// # Safety
+///
+/// On READY, if the reported span count is nonzero and within `i.into.spans_cap`,
+/// a non-NULL `i.into.spans` must point to that many aligned, initialized `ItemSpan`s,
+/// readable without concurrent writes for this call. Counts and NULL are checked first.
+pub unsafe fn check_work_find(
+    i: &WorkFindIn,
+    ret: RawOutcome,
+    out: &ServiceOut,
+) -> Result<Filled, Fault> {
+    unsafe {
+        // SAFETY: the caller guarantees the live initialized spans in `i.into`.
+        answer(ret, &i.head, out, into(op::WORK_FIND, i.into, ANY))
+    }
 }
 
 /// `work.settle`'s answer.
@@ -2165,7 +2330,10 @@ pub fn check_work_settle(
     ret: RawOutcome,
     out: &ServiceOut,
 ) -> Result<Filled, Fault> {
-    answer(ret, &i.head, out, bare(op::WORK_SETTLE, (0, 0)))
+    unsafe {
+        // SAFETY: `bare` has no buffers or raw memory to read.
+        answer(ret, &i.head, out, bare(op::WORK_SETTLE, (0, 0)))
+    }
 }
 
 /// `work.resume`'s answer.
@@ -2173,12 +2341,21 @@ pub fn check_work_settle(
 /// # Errors
 ///
 /// The rule the answer breaks.
-pub fn check_work_resume(
+///
+/// # Safety
+///
+/// On READY, if the reported span count is nonzero and within `i.into.spans_cap`,
+/// a non-NULL `i.into.spans` must point to that many aligned, initialized `ItemSpan`s,
+/// readable without concurrent writes for this call. Counts and NULL are checked first.
+pub unsafe fn check_work_resume(
     i: &WorkResumeIn,
     ret: RawOutcome,
     out: &ServiceOut,
 ) -> Result<Filled, Fault> {
-    answer(ret, &i.head, out, into(op::WORK_RESUME, i.into, (0, 0)))
+    unsafe {
+        // SAFETY: the caller guarantees the live initialized spans in `i.into`.
+        answer(ret, &i.head, out, into(op::WORK_RESUME, i.into, (0, 0)))
+    }
 }
 
 /// `trust.sight`'s answer.
@@ -2191,12 +2368,15 @@ pub fn check_trust_sight(
     ret: RawOutcome,
     out: &ServiceOut,
 ) -> Result<Filled, Fault> {
-    answer(
-        ret,
-        &i.head,
-        out,
-        bare(op::TRUST_SIGHT, (TRUST_NEW, TRUST_QUARANTINED)),
-    )
+    unsafe {
+        // SAFETY: `bare` has no buffers or raw memory to read.
+        answer(
+            ret,
+            &i.head,
+            out,
+            bare(op::TRUST_SIGHT, (TRUST_NEW, TRUST_QUARANTINED)),
+        )
+    }
 }
 
 /// `trust.sight_item`'s answer: a sighting verdict.
@@ -2209,12 +2389,15 @@ pub fn check_trust_sight_item(
     ret: RawOutcome,
     out: &ServiceOut,
 ) -> Result<Filled, Fault> {
-    answer(
-        ret,
-        &i.head,
-        out,
-        bare(op::TRUST_SIGHT_ITEM, (TRUST_NEW, TRUST_QUARANTINED)),
-    )
+    unsafe {
+        // SAFETY: `bare` has no buffers or raw memory to read.
+        answer(
+            ret,
+            &i.head,
+            out,
+            bare(op::TRUST_SIGHT_ITEM, (TRUST_NEW, TRUST_QUARANTINED)),
+        )
+    }
 }
 
 /// `trust.serves`'s answer: [`DISTRUST_NONE`] or a `DISTRUST_*`.
@@ -2227,12 +2410,15 @@ pub fn check_trust_serves(
     ret: RawOutcome,
     out: &ServiceOut,
 ) -> Result<Filled, Fault> {
-    answer(
-        ret,
-        &i.head,
-        out,
-        bare(op::TRUST_SERVES, (DISTRUST_NONE, DISTRUST_UNKNOWN_ITEM)),
-    )
+    unsafe {
+        // SAFETY: `bare` has no buffers or raw memory to read.
+        answer(
+            ret,
+            &i.head,
+            out,
+            bare(op::TRUST_SERVES, (DISTRUST_NONE, DISTRUST_UNKNOWN_ITEM)),
+        )
+    }
 }
 
 /// `trust.decide`'s answer: a `TRUST_DECIDED_*` verdict or an `UNDECIDED_*`.
@@ -2245,15 +2431,18 @@ pub fn check_trust_decide(
     ret: RawOutcome,
     out: &ServiceOut,
 ) -> Result<Filled, Fault> {
-    answer(
-        ret,
-        &i.head,
-        out,
-        bare(
-            op::TRUST_DECIDE,
-            (TRUST_DECIDED_SERVING, UNDECIDED_ROOTLESS),
-        ),
-    )
+    unsafe {
+        // SAFETY: `bare` has no buffers or raw memory to read.
+        answer(
+            ret,
+            &i.head,
+            out,
+            bare(
+                op::TRUST_DECIDE,
+                (TRUST_DECIDED_SERVING, UNDECIDED_ROOTLESS),
+            ),
+        )
+    }
 }
 
 /// `trust.state`'s answer: a `KEY_*` state, and the items into the caller's buffers.
@@ -2261,17 +2450,26 @@ pub fn check_trust_decide(
 /// # Errors
 ///
 /// The rule the answer breaks.
-pub fn check_trust_state(
+///
+/// # Safety
+///
+/// On READY, if the reported span count is nonzero and within `i.into.spans_cap`,
+/// a non-NULL `i.into.spans` must point to that many aligned, initialized `ItemSpan`s,
+/// readable without concurrent writes for this call. Counts and NULL are checked first.
+pub unsafe fn check_trust_state(
     i: &TrustStateIn,
     ret: RawOutcome,
     out: &ServiceOut,
 ) -> Result<Filled, Fault> {
-    answer(
-        ret,
-        &i.head,
-        out,
-        into(op::TRUST_STATE, i.into, (KEY_NEW, KEY_APPROVED)),
-    )
+    unsafe {
+        // SAFETY: the caller guarantees the live initialized spans in `i.into`.
+        answer(
+            ret,
+            &i.head,
+            out,
+            into(op::TRUST_STATE, i.into, (KEY_NEW, KEY_APPROVED)),
+        )
+    }
 }
 
 /// `trust.due`'s answer.
@@ -2279,8 +2477,21 @@ pub fn check_trust_state(
 /// # Errors
 ///
 /// The rule the answer breaks.
-pub fn check_trust_due(i: &TrustDueIn, ret: RawOutcome, out: &ServiceOut) -> Result<Filled, Fault> {
-    answer(ret, &i.head, out, into(op::TRUST_DUE, i.into, (0, 0)))
+///
+/// # Safety
+///
+/// On READY, if the reported span count is nonzero and within `i.into.spans_cap`,
+/// a non-NULL `i.into.spans` must point to that many aligned, initialized `ItemSpan`s,
+/// readable without concurrent writes for this call. Counts and NULL are checked first.
+pub unsafe fn check_trust_due(
+    i: &TrustDueIn,
+    ret: RawOutcome,
+    out: &ServiceOut,
+) -> Result<Filled, Fault> {
+    unsafe {
+        // SAFETY: the caller guarantees the live initialized spans in `i.into`.
+        answer(ret, &i.head, out, into(op::TRUST_DUE, i.into, (0, 0)))
+    }
 }
 
 /// `verify.lookup`'s answer.
@@ -2288,17 +2499,26 @@ pub fn check_trust_due(i: &TrustDueIn, ret: RawOutcome, out: &ServiceOut) -> Res
 /// # Errors
 ///
 /// The rule the answer breaks.
-pub fn check_verify_lookup(
+///
+/// # Safety
+///
+/// On READY, if the reported span count is nonzero and within `i.into.spans_cap`,
+/// a non-NULL `i.into.spans` must point to that many aligned, initialized `ItemSpan`s,
+/// readable without concurrent writes for this call. Counts and NULL are checked first.
+pub unsafe fn check_verify_lookup(
     i: &VerifyLookupIn,
     ret: RawOutcome,
     out: &ServiceOut,
 ) -> Result<Filled, Fault> {
-    answer(
-        ret,
-        &i.head,
-        out,
-        into(op::VERIFY_LOOKUP, i.into, (VERIFY_HIT, VERIFY_FOLLOW)),
-    )
+    unsafe {
+        // SAFETY: the caller guarantees the live initialized spans in `i.into`.
+        answer(
+            ret,
+            &i.head,
+            out,
+            into(op::VERIFY_LOOKUP, i.into, (VERIFY_HIT, VERIFY_FOLLOW)),
+        )
+    }
 }
 
 /// `verify.store`'s answer.
@@ -2311,7 +2531,10 @@ pub fn check_verify_store(
     ret: RawOutcome,
     out: &ServiceOut,
 ) -> Result<Filled, Fault> {
-    answer(ret, &i.head, out, bare(op::VERIFY_STORE, (0, 0)))
+    unsafe {
+        // SAFETY: `bare` has no buffers or raw memory to read.
+        answer(ret, &i.head, out, bare(op::VERIFY_STORE, (0, 0)))
+    }
 }
 
 /// `entitlement.check`'s answer.
@@ -2324,12 +2547,15 @@ pub fn check_entitlement_check(
     ret: RawOutcome,
     out: &ServiceOut,
 ) -> Result<Filled, Fault> {
-    answer(
-        ret,
-        &i.head,
-        out,
-        bare(op::ENTITLEMENT_CHECK, (NOT_ENTITLED, ENTITLED)),
-    )
+    unsafe {
+        // SAFETY: `bare` has no buffers or raw memory to read.
+        answer(
+            ret,
+            &i.head,
+            out,
+            bare(op::ENTITLEMENT_CHECK, (NOT_ENTITLED, ENTITLED)),
+        )
+    }
 }
 
 /// `random.fill`'s answer: the common rules, and on READY exactly the `len` bytes asked, no span.
@@ -2337,12 +2563,21 @@ pub fn check_entitlement_check(
 /// # Errors
 ///
 /// The rule the answer breaks.
-pub fn check_random_fill(
+///
+/// # Safety
+///
+/// On READY, if the reported span count is nonzero and within `i.into.spans_cap`,
+/// a non-NULL `i.into.spans` must point to that many aligned, initialized `ItemSpan`s,
+/// readable without concurrent writes for this call. Counts and NULL are checked first.
+pub unsafe fn check_random_fill(
     i: &RandomFillIn,
     ret: RawOutcome,
     out: &ServiceOut,
 ) -> Result<Filled, Fault> {
-    let filled = answer(ret, &i.head, out, into(op::RANDOM_FILL, i.into, (0, 0)))?;
+    let filled = unsafe {
+        // SAFETY: the caller guarantees the live initialized spans in `i.into`.
+        answer(ret, &i.head, out, into(op::RANDOM_FILL, i.into, (0, 0)))
+    }?;
     if ret.outcome() == Outcome::Ready && (out.len != i.len || out.items != 0) {
         return Err(fault(Rule::Contradiction, "random_fill.out.len"));
     }
@@ -2354,17 +2589,26 @@ pub fn check_random_fill(
 /// # Errors
 ///
 /// The rule the answer breaks.
-pub fn check_content_scan(
+///
+/// # Safety
+///
+/// On READY, if the reported span count is nonzero and within `i.into.spans_cap`,
+/// a non-NULL `i.into.spans` must point to that many aligned, initialized `ItemSpan`s,
+/// readable without concurrent writes for this call. Counts and NULL are checked first.
+pub unsafe fn check_content_scan(
     i: &ContentScanIn,
     ret: RawOutcome,
     out: &ServiceOut,
 ) -> Result<Filled, Fault> {
-    answer(
-        ret,
-        &i.head,
-        out,
-        into(op::CONTENT_SCAN, i.into, (CONTENT_PASS, CONTENT_BLOCK)),
-    )
+    unsafe {
+        // SAFETY: the caller guarantees the live initialized spans in `i.into`.
+        answer(
+            ret,
+            &i.head,
+            out,
+            into(op::CONTENT_SCAN, i.into, (CONTENT_PASS, CONTENT_BLOCK)),
+        )
+    }
 }
 
 /// `hook.call`'s answer: the common rules, and on READY `0`, a stopping status
@@ -2374,13 +2618,26 @@ pub fn check_content_scan(
 /// # Errors
 ///
 /// The rule the answer breaks.
-pub fn check_hook_call(i: &HookCallIn, ret: RawOutcome, out: &ServiceOut) -> Result<Filled, Fault> {
-    let filled = answer(
-        ret,
-        &i.head,
-        out,
-        into(op::HOOK_CALL, i.into, (0, HOOK_STOP_MAX)),
-    )?;
+///
+/// # Safety
+///
+/// On READY, if the reported span count is nonzero and within `i.into.spans_cap`,
+/// a non-NULL `i.into.spans` must point to that many aligned, initialized `ItemSpan`s,
+/// readable without concurrent writes for this call. Counts and NULL are checked first.
+pub unsafe fn check_hook_call(
+    i: &HookCallIn,
+    ret: RawOutcome,
+    out: &ServiceOut,
+) -> Result<Filled, Fault> {
+    let filled = unsafe {
+        // SAFETY: the caller guarantees the live initialized spans in `i.into`.
+        answer(
+            ret,
+            &i.head,
+            out,
+            into(op::HOOK_CALL, i.into, (0, HOOK_STOP_MAX)),
+        )
+    }?;
     // READY answers `0`, a stopping status, or (a rewrite chain only) `1 + i` within the cap.
     if ret.outcome() == Outcome::Ready && out.value != 0 && out.value < HOOK_STOP_MIN {
         let resumable = i.stage == HOOK_REWRITE && out.value <= u64::from(HOOK_FROM_MAX);
@@ -2402,7 +2659,10 @@ pub fn check_need_admit(
     ret: RawOutcome,
     out: &ServiceOut,
 ) -> Result<Filled, Fault> {
-    answer(ret, &i.head, out, bare(op::NEED_ADMIT, (0, 0)))
+    unsafe {
+        // SAFETY: `bare` has no buffers or raw memory to read.
+        answer(ret, &i.head, out, bare(op::NEED_ADMIT, (0, 0)))
+    }
 }
 
 /// `session.emit`'s answer: the common rules, nothing written back.
@@ -2415,7 +2675,10 @@ pub fn check_session_emit(
     ret: RawOutcome,
     out: &ServiceOut,
 ) -> Result<Filled, Fault> {
-    answer(ret, &i.head, out, bare(op::SESSION_EMIT, (0, 0)))
+    unsafe {
+        // SAFETY: `bare` has no buffers or raw memory to read.
+        answer(ret, &i.head, out, bare(op::SESSION_EMIT, (0, 0)))
+    }
 }
 
 /// `ticket.mint`'s answer: the common rules, and on READY a ticket written (at least one byte, no
@@ -2424,17 +2687,26 @@ pub fn check_session_emit(
 /// # Errors
 ///
 /// The rule the answer breaks.
-pub fn check_ticket_mint(
+///
+/// # Safety
+///
+/// On READY, if the reported span count is nonzero and within `i.into.spans_cap`,
+/// a non-NULL `i.into.spans` must point to that many aligned, initialized `ItemSpan`s,
+/// readable without concurrent writes for this call. Counts and NULL are checked first.
+pub unsafe fn check_ticket_mint(
     i: &TicketMintIn,
     ret: RawOutcome,
     out: &ServiceOut,
 ) -> Result<Filled, Fault> {
-    let filled = answer(
-        ret,
-        &i.head,
-        out,
-        into(op::TICKET_MINT, i.into, (1, u64::MAX)),
-    )?;
+    let filled = unsafe {
+        // SAFETY: the caller guarantees the live initialized spans in `i.into`.
+        answer(
+            ret,
+            &i.head,
+            out,
+            into(op::TICKET_MINT, i.into, (1, u64::MAX)),
+        )
+    }?;
     if ret.outcome() == Outcome::Ready && (out.len == 0 || out.items != 0) {
         return Err(fault(Rule::Contradiction, "ticket_mint.out.len"));
     }
@@ -2447,17 +2719,26 @@ pub fn check_ticket_mint(
 /// # Errors
 ///
 /// The rule the answer breaks.
-pub fn check_ticket_take(
+///
+/// # Safety
+///
+/// On READY, if the reported span count is nonzero and within `i.into.spans_cap`,
+/// a non-NULL `i.into.spans` must point to that many aligned, initialized `ItemSpan`s,
+/// readable without concurrent writes for this call. Counts and NULL are checked first.
+pub unsafe fn check_ticket_take(
     i: &TicketTakeIn,
     ret: RawOutcome,
     out: &ServiceOut,
 ) -> Result<Filled, Fault> {
-    let filled = answer(
-        ret,
-        &i.head,
-        out,
-        into(op::TICKET_TAKE, i.into, (TICKET_NONE, TICKET_TAKEN)),
-    )?;
+    let filled = unsafe {
+        // SAFETY: the caller guarantees the live initialized spans in `i.into`.
+        answer(
+            ret,
+            &i.head,
+            out,
+            into(op::TICKET_TAKE, i.into, (TICKET_NONE, TICKET_TAKEN)),
+        )
+    }?;
     if ret.outcome() == Outcome::Ready
         && (out.items != 0 || (out.value == TICKET_NONE && out.len != 0))
     {
@@ -2472,21 +2753,30 @@ pub fn check_ticket_take(
 /// # Errors
 ///
 /// The rule the answer breaks.
-pub fn check_trust_verify(
+///
+/// # Safety
+///
+/// On READY, if the reported span count is nonzero and within `i.into.spans_cap`,
+/// a non-NULL `i.into.spans` must point to that many aligned, initialized `ItemSpan`s,
+/// readable without concurrent writes for this call. Counts and NULL are checked first.
+pub unsafe fn check_trust_verify(
     i: &TrustVerifyIn,
     ret: RawOutcome,
     out: &ServiceOut,
 ) -> Result<Filled, Fault> {
-    let filled = answer(
-        ret,
-        &i.head,
-        out,
-        into(
-            op::TRUST_VERIFY,
-            i.into,
-            (SIGNED_VERIFIED, SIGNED_MALFORMED_ROOT),
-        ),
-    )?;
+    let filled = unsafe {
+        // SAFETY: the caller guarantees the live initialized spans in `i.into`.
+        answer(
+            ret,
+            &i.head,
+            out,
+            into(
+                op::TRUST_VERIFY,
+                i.into,
+                (SIGNED_VERIFIED, SIGNED_MALFORMED_ROOT),
+            ),
+        )
+    }?;
     let names = matches!(out.value, SIGNED_ALGORITHM | SIGNED_CRITICAL);
     if ret.outcome() == Outcome::Ready && (out.items != 0 || (out.len != 0 && !names)) {
         return Err(fault(Rule::Contradiction, "trust_verify.out.len"));
@@ -2502,12 +2792,20 @@ pub fn check_trust_verify(
 /// # Errors
 ///
 /// The rule the answer breaks.
-pub fn check_disk_append(
+///
+/// # Safety
+///
+/// On READY or FAILED, a non-NULL `i.result` must point to a live initialized
+/// `DiskWritten`, readable without concurrent writes for this call. NULL is rejected.
+pub unsafe fn check_disk_append(
     i: &DiskAppendIn,
     ret: RawOutcome,
     out: &ServiceOut,
 ) -> Result<Filled, Fault> {
-    let filled = answer(ret, &i.head, out, bare(op::DISK_APPEND, (0, 0)))?;
+    let filled = unsafe {
+        // SAFETY: `bare` has no buffers or raw memory to read.
+        answer(ret, &i.head, out, bare(op::DISK_APPEND, (0, 0)))
+    }?;
     let outcome = ret.outcome();
     if !matches!(outcome, Outcome::Ready | Outcome::Failed) {
         return Ok(filled);
@@ -2523,7 +2821,7 @@ pub fn check_disk_append(
     if i.result.is_null() {
         return Err(fault(Rule::NullWithCount, "disk_append.result"));
     }
-    // SAFETY: the caller's own result slot, checked non-NULL.
+    // SAFETY: the caller guarantees a live initialized result; NULL was rejected.
     let w = unsafe { core::ptr::read_unaligned(i.result) };
     if w.size as usize != core::mem::size_of::<DiskWritten>() {
         return Err(fault(Rule::Foreign, "disk_append.result.size"));
@@ -2600,7 +2898,18 @@ fn check_answer_unit(
 /// # Errors
 ///
 /// The rule the answer breaks.
-pub fn check_auth_call(i: &AuthCallIn, ret: RawOutcome, out: &ServiceOut) -> Result<Filled, Fault> {
+///
+/// # Safety
+///
+/// On READY, a non-NULL `i.answer` must point to a live initialized `AuthAnswer`,
+/// readable without concurrent writes for this call. NULL is rejected before reading.
+/// If the span checks are reached with a nonzero in-cap count, `i.spans` must point to
+/// that many aligned, initialized `FieldSpan`s, readable without concurrent writes.
+pub unsafe fn check_auth_call(
+    i: &AuthCallIn,
+    ret: RawOutcome,
+    out: &ServiceOut,
+) -> Result<Filled, Fault> {
     use crate::abi::auth::{FIELD_QUERY, FIELD_SENSITIVE, POINT_PEER};
     let filled = common(
         ret,
@@ -2665,12 +2974,20 @@ pub fn check_auth_call(i: &AuthCallIn, ret: RawOutcome, out: &ServiceOut) -> Res
 /// # Errors
 ///
 /// The rule the answer breaks.
-pub fn check_unit_hand_in(
+///
+/// # Safety
+///
+/// On READY, a non-NULL `i.answer` must point to a live initialized `AuthAnswer`,
+/// readable without concurrent writes for this call. NULL is rejected before reading.
+pub unsafe fn check_unit_hand_in(
     i: &UnitHandInIn,
     ret: RawOutcome,
     out: &ServiceOut,
 ) -> Result<Filled, Fault> {
-    let filled = answer(ret, &i.head, out, bare(op::UNIT_HAND_IN, (0, 0)))?;
+    let filled = unsafe {
+        // SAFETY: `bare` has no buffers or raw memory to read.
+        answer(ret, &i.head, out, bare(op::UNIT_HAND_IN, (0, 0)))
+    }?;
     if ret.outcome() != Outcome::Ready {
         return Ok(filled);
     }
@@ -2693,12 +3010,20 @@ pub fn check_unit_hand_in(
 /// # Errors
 ///
 /// The rule the answer breaks.
-pub fn check_unit_refuse(
+///
+/// # Safety
+///
+/// On READY, a non-NULL `i.answer` must point to a live initialized `RefusalAnswer`,
+/// readable without concurrent writes for this call. NULL is rejected before reading.
+pub unsafe fn check_unit_refuse(
     i: &UnitRefuseIn,
     ret: RawOutcome,
     out: &ServiceOut,
 ) -> Result<Filled, Fault> {
-    let filled = answer(ret, &i.head, out, bare(op::UNIT_REFUSE, (0, 0)))?;
+    let filled = unsafe {
+        // SAFETY: `bare` has no buffers or raw memory to read.
+        answer(ret, &i.head, out, bare(op::UNIT_REFUSE, (0, 0)))
+    }?;
     if ret.outcome() != Outcome::Ready {
         return Ok(filled);
     }

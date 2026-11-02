@@ -45,12 +45,18 @@ fn preamble_layout_is_frozen() {
 fn sized_field_guard_hides_truncated_tail() {
     let g = Pod::whole();
     // A full-size struct reveals a tail field.
-    assert_eq!(read_sized_field!(&g, g.size, Pod, flags), Some(0));
+    // SAFETY: `g` is a live initialized whole `Pod` and its scalar field is `Copy`.
+    assert_eq!(
+        unsafe { read_sized_field!(&g, g.size, Pod, flags) },
+        Some(0)
+    );
     // A sender that advertised only the preamble reveals nothing past it.
     let mut truncated = g;
-    truncated.size = 6; // size(u32)=4 + version(u16)=2 — preamble only
+    // size(u32)=4 + version(u16)=2 — preamble only.
+    truncated.size = 6;
+    // SAFETY: the whole initialized `Pod` also covers the shorter advertised prefix.
     assert_eq!(
-        read_sized_field!(&truncated, truncated.size, Pod, flags),
+        unsafe { read_sized_field!(&truncated, truncated.size, Pod, flags) },
         None
     );
 }
@@ -86,11 +92,21 @@ fn sized_field_guard_reads_a_buffer_shorter_than_the_struct() {
     let p = buf.as_ptr().cast::<Pod>();
 
     // `p` addresses `PREFIX` live bytes whose leading `size` says exactly that; the guard reads
-    // nothing beyond it.
-    assert_eq!(read_sized_field!(p, PREFIX as u32, Pod, tail_ptr), None);
-    assert_eq!(read_sized_field!(p, PREFIX as u32, Pod, tail_len), None);
+    // nothing beyond it. SAFETY for the three calls below: the allocation covers the advertised
+    // prefix; every included field read is an initialized `Copy` scalar with a valid zero value.
+    assert_eq!(
+        unsafe { read_sized_field!(p, PREFIX as u32, Pod, tail_ptr) },
+        None
+    );
+    assert_eq!(
+        unsafe { read_sized_field!(p, PREFIX as u32, Pod, tail_len) },
+        None
+    );
     // A field inside the prefix still reads.
-    assert_eq!(read_sized_field!(p, PREFIX as u32, Pod, tokens), Some(0));
+    assert_eq!(
+        unsafe { read_sized_field!(p, PREFIX as u32, Pod, tokens) },
+        Some(0)
+    );
 }
 
 /// THE AUTH TAIL'S FACT BITS are distinct single bits, the default inbound style among them (row
