@@ -49,11 +49,17 @@ impl Provider {
 }
 
 impl HostServices for Provider {
-    fn trust_sight(&self, caller: &Caller, counterparty: &str, hash: &str, later: Later) -> Ran {
+    fn trust_sight(
+        &self,
+        _caller: &Caller,
+        _counterparty: &str,
+        _hash: &str,
+        _later: Later,
+    ) -> Ran {
         panic!("unexpected HostServices operation in raw ABI boundary control")
     }
 
-    fn session_emit(&self, caller: &Caller, session: u64, bytes: &[u8]) -> Stored {
+    fn session_emit(&self, _caller: &Caller, _session: u64, _bytes: &[u8]) -> Stored {
         panic!("unexpected HostServices operation in raw ABI boundary control")
     }
 
