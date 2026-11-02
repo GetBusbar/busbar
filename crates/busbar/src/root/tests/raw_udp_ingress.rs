@@ -129,6 +129,21 @@ async fn busy_raw_ingress_drops_before_acceptance_and_other_real_associations_pr
     let mut a = Pair::on(door.clone(), &[]).await;
     let b = Pair::on(door.clone(), &[]).await;
     assert_eq!(b.caller.read().await, Some(Vec::new()));
+    assert_eq!(a.caller.read().await, Some(Vec::new()));
+    // Pause autonomous ICE/timer work only after the real channels exist. An
+    // explicit real message behind all prior peer sends is observed by the
+    // root before the exact injected-drop window begins.
+    a.pause().await;
+    b.pause().await;
+    for pair in [&a, &b] {
+        pair.send(b"pause barrier").await;
+        assert_eq!(
+            tokio::time::timeout(WAIT, pair.caller.read())
+                .await
+                .unwrap(),
+            Some(b"pause barrier".to_vec())
+        );
+    }
     let (parked, inside) = Parked::start(&a);
     inside.recv_timeout(WAIT).expect("host crossing paused");
     let wake = Waker::noop();
@@ -155,6 +170,12 @@ async fn busy_raw_ingress_drops_before_acceptance_and_other_real_associations_pr
     })
     .await
     .expect("busy raw inputs are counted before acceptance");
+    assert_eq!(
+        door.assocs.raw_busy_dropped(),
+        before + 3,
+        "only the three injected raw packets entered this paused-peer window"
+    );
+    b.resume().await;
     b.send(b"healthy").await;
     assert_eq!(
         tokio::time::timeout(WAIT, b.caller.read()).await.unwrap(),
@@ -166,6 +187,7 @@ async fn busy_raw_ingress_drops_before_acceptance_and_other_real_associations_pr
     );
     assert!(parked.finish());
     assert!(tokio::time::timeout(WAIT, pending).await.unwrap());
+    a.resume().await;
     assert_eq!(a.received().await, b"occupied");
     assert_eq!(a.received().await, b"accepted once");
     assert_eq!(
@@ -175,9 +197,9 @@ async fn busy_raw_ingress_drops_before_acceptance_and_other_real_associations_pr
     );
     assert!(a.pairing.published().await.failure.is_none());
     assert!(b.pairing.published().await.failure.is_none());
-    assert_eq!(door.assocs.raw_busy_dropped(), before + 3);
+    // Live ICE resumes outside the exact injected window and may itself
+    // encounter receive-not-ready. Its traffic is not one of our three inputs.
     a.send(b"after release").await;
-    assert_eq!(a.caller.read().await, Some(Vec::new()));
     assert_eq!(
         tokio::time::timeout(WAIT, a.caller.read()).await.unwrap(),
         Some(b"after release".to_vec())
@@ -284,18 +306,32 @@ async fn admitted_real_srtp_line_reaches_the_real_upstream_framer_once() {
         0,
     )
     .unwrap();
-    let offer = offer
+    let description = offer
         .pieces
         .iter()
         .find(|p| p.stream == 0 && !p.fields)
         .unwrap()
         .bytes
         .clone();
+    // A dialling product yields its audio LINE head at Begin, before the
+    // exchange answer. This direct host composition must publish that genuine
+    // batch; keeping only the SDP loses the upstream half of the bridge.
+    assert!(offer
+        .pieces
+        .iter()
+        .any(|piece| piece.stream == MEDIA_BASE && piece.fields));
+    let opening = pair.pairing.publish(
+        busbar_core_connector::datagram::Leg::Upstream,
+        offer,
+        Instant::now(),
+    );
+    assert!(opening.pieces.iter().all(|piece| piece.stream == 0));
+    drop(opening);
     let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let (mut peer, _) =
         DatagramFraming::accept_minted(super::tests::real::loaded(), socket.local_addr().unwrap())
             .unwrap();
-    let answer = peer.rendezvous(&offer, Instant::now()).unwrap();
+    let answer = peer.rendezvous(&description, Instant::now()).unwrap();
     let answer = answer
         .pieces
         .iter()

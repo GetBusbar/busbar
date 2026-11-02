@@ -268,6 +268,8 @@ pub(crate) mod real {
         Message(Vec<u8>),
         Raw(Vec<u8>),
         Audio(Vec<u8>),
+        Pause(tokio::sync::oneshot::Sender<()>),
+        Resume,
     }
     pub(crate) struct Pair {
         pub(crate) door: Arc<ClaimDoor>,
@@ -390,22 +392,35 @@ pub(crate) mod real {
             let peer = tokio::spawn(async move {
                 collect(first, &output);
                 let mut bytes = vec![0; 65536];
+                let mut paused = false;
                 loop {
-                    while let Some((to, bytes)) = peer.poll_send() {
-                        socket.send_to(&bytes, to).await.unwrap();
+                    if !paused {
+                        while let Some((to, bytes)) = peer.poll_send() {
+                            socket.send_to(&bytes, to).await.unwrap();
+                        }
                     }
                     let yielded = tokio::select! {
                         input = commands.recv() => match input {
-                            Some(Input::Message(bytes)) => peer.emit(1, &bytes, true, false, Instant::now()).unwrap(),
+                            Some(Input::Message(bytes)) => {
+                                let yielded = peer.emit(1, &bytes, true, false, Instant::now()).unwrap();
+                                // Explicit messages remain available as real wire barriers
+                                // while autonomous peer work is held by a test.
+                                while let Some((to, bytes)) = peer.poll_send() {
+                                    socket.send_to(&bytes, to).await.unwrap();
+                                }
+                                yielded
+                            },
                             Some(Input::Audio(bytes)) => peer.emit(busbar_transport_webrtc::framing::MEDIA_BASE, &bytes, true, false, Instant::now()).unwrap(),
+                            Some(Input::Pause(ack)) => { paused = true; let _ = ack.send(()); continue; },
+                            Some(Input::Resume) => { paused = false; continue; },
                             Some(Input::Raw(bytes)) => { socket.send_to(&bytes, target).await.unwrap(); continue; }
                             None => break,
                         },
-                        got = socket.recv_from(&mut bytes) => {
+                        got = socket.recv_from(&mut bytes), if !paused => {
                             let (n, from) = got.unwrap();
                             peer.datagram(from, &bytes[..n], Instant::now()).unwrap()
                         },
-                        () = tokio::time::sleep(Duration::from_millis(10)) => peer.timeout(Instant::now()).unwrap(),
+                        () = tokio::time::sleep(Duration::from_millis(10)), if !paused => peer.timeout(Instant::now()).unwrap(),
                     };
                     collect(yielded, &output);
                 }
@@ -427,6 +442,14 @@ pub(crate) mod real {
                 connector,
                 peer,
             }
+        }
+        pub(crate) async fn pause(&self) {
+            let (ack, paused) = tokio::sync::oneshot::channel();
+            self.input.send(Input::Pause(ack)).await.unwrap();
+            tokio::time::timeout(WAIT, paused).await.unwrap().unwrap();
+        }
+        pub(crate) async fn resume(&self) {
+            self.input.send(Input::Resume).await.unwrap();
         }
         pub(crate) async fn received(&mut self) -> Vec<u8> {
             tokio::time::timeout(WAIT, self.received.recv())
