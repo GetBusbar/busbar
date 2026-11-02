@@ -561,6 +561,10 @@ fn a_store_door_without_needs_states_none() {
     // qualified product image. Its borrowed UTF-8 transport is validated metadata.
     let transport = unsafe {
         let need = &*statement.needs;
+        assert!(
+            !need.transport.ptr.is_null(),
+            "actual TCP need names a transport"
+        );
         std::slice::from_raw_parts(need.transport.ptr, need.transport.len)
     };
     assert_eq!(
