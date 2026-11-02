@@ -193,6 +193,8 @@ fn ordinary_product_flush_quarantines_old_unknown_and_continues_fresh_positive_u
         body_fingerprint: intent.body_fingerprint,
         expected_revision: selected.revision,
         verdict: RecoveryVerdict::Landed,
+        sender_quiesced: true,
+        backend_quiesced: true,
         actor: "operator".into(),
         reason: "original backend receipt confirmed after sender retirement".into(),
     };

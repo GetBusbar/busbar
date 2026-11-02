@@ -51,6 +51,8 @@ struct MeteringCustody {
 pub(super) struct RawVerdict {
     landed: bool,
     expected_revision: u64,
+    sender_quiesced: bool,
+    backend_quiesced: bool,
     actor: String,
     reason: String,
 }
@@ -479,6 +481,7 @@ impl GovState {
         &self,
         resolution: &RecoveryResolution,
     ) -> Result<(), RecoveryError> {
+        resolution.validate_quiescence()?;
         let driver = self
             .recovery_driver(resolution.operation_id)
             .map_err(|error| RecoveryError::Unavailable(error.to_string()))?;
@@ -495,6 +498,8 @@ impl GovState {
         let verdict = RawVerdict {
             landed: resolution.verdict == RecoveryVerdict::Landed,
             expected_revision: resolution.expected_revision,
+            sender_quiesced: resolution.sender_quiesced,
+            backend_quiesced: resolution.backend_quiesced,
             actor: resolution.actor.clone(),
             reason: resolution.reason.clone(),
         };

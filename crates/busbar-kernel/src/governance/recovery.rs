@@ -57,6 +57,10 @@ pub struct RecoveryResolution {
     pub body_fingerprint: [u8; 32],
     pub expected_revision: u64,
     pub verdict: RecoveryVerdict,
+    /// The operator attests that every sender of this operation is retired or disarmed.
+    pub sender_quiesced: bool,
+    /// The operator attests that every outstanding backend mutation for this operation settled.
+    pub backend_quiesced: bool,
     pub actor: String,
     pub reason: String,
 }
@@ -90,6 +94,18 @@ impl std::fmt::Display for RecoveryError {
 }
 
 impl std::error::Error for RecoveryError {}
+
+impl RecoveryResolution {
+    pub(super) fn validate_quiescence(&self) -> Result<(), RecoveryError> {
+        if !self.sender_quiesced || !self.backend_quiesced {
+            return Err(RecoveryError::Invalid(
+                "recovery verdict requires explicit sender and backend quiescence attestations"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+}
 
 impl RecoveryEvent {
     pub fn fingerprint(&self) -> Result<[u8; 32], RecoveryError> {
@@ -327,6 +343,7 @@ impl RecoveryAdmin<'_> {
         cost: &crate::cost::CostModel,
         resolution: RecoveryResolution,
     ) -> Result<RecoveryItem, RecoveryError> {
+        resolution.validate_quiescence()?;
         if resolution.actor.trim().is_empty()
             || resolution.actor.len() > 256
             || resolution.reason.trim().is_empty()
@@ -830,6 +847,8 @@ mod tests {
             body_fingerprint: intent.body_fingerprint,
             expected_revision: unknown.revision,
             verdict: RecoveryVerdict::NotLanded,
+            sender_quiesced: true,
+            backend_quiesced: true,
             actor: "operator".into(),
             reason: "backend outcome independently checked".into(),
         })
@@ -929,6 +948,8 @@ mod tests {
                 body_fingerprint: intent.body_fingerprint,
                 expected_revision: selected.revision,
                 verdict: RecoveryVerdict::NotLanded,
+                sender_quiesced: true,
+                backend_quiesced: true,
                 actor: "operator".into(),
                 reason: "neither original operation reached backend".into(),
             })
