@@ -1121,3 +1121,7 @@ mod plugin_refusal_tests;
 #[cfg(test)]
 #[path = "tests/central2_secret_claim_tests.rs"]
 mod central2_secret_claim_tests;
+
+#[cfg(test)]
+#[path = "tests/central2_boot_log_tests.rs"]
+mod central2_boot_log_tests;
