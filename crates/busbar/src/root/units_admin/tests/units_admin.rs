@@ -2787,18 +2787,36 @@ fn a_correction_on_row_boundaries_applies() {
         assert_eq!((history.len(), records), (2, 1), "[{from}, {until:?})");
     }
 
-    let era = DAY_MS + 12 * HOUR_MS;
+    let era = DAY_MS;
     let history = a_seeded_history();
     history.apply(a_card_at(4.0, 0), era);
-    let (result, _) = amend_at(
+    let (result, records) = amend_at(
         &history,
         &a_window_correction(era, Some(2 * DAY_MS)),
         arrival,
     );
     assert!(
         result.is_ok(),
-        "a correction from the instant a config apply opened an era cuts no row: {result:?}"
+        "a config apply at a Store bucket boundary permits the complete bucket: {result:?}"
     );
+    assert_eq!((history.len(), records), (3, 1));
+}
+
+#[test]
+fn a_config_apply_inside_a_bucket_does_not_permit_a_partial_bucket_correction() {
+    let era = DAY_MS + 12 * HOUR_MS;
+    let history = a_seeded_history();
+    history.apply(a_card_at(4.0, 0), era);
+    let (result, records) = amend_at(
+        &history,
+        &a_window_correction(era, Some(2 * DAY_MS)),
+        2 * DAY_MS + 10 * HOUR_MS,
+    );
+    assert!(matches!(
+        result,
+        Err(busbar_core_admin::GovernanceError::Validation)
+    ));
+    assert_eq!((history.len(), records), (2, 0));
 }
 
 #[test]

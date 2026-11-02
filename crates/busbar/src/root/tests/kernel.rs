@@ -1506,21 +1506,23 @@ fn holds_a_correction(holder: &RootHistory) -> bool {
 #[cfg(feature = "root-admin")]
 #[test]
 fn a_restore_whose_prefix_lacks_the_corrections_base_refuses_it() {
-    const CORRECTED: (u64, u64) = (APPLIED_B, 86_400_000);
-    const SIGNED_AT: u64 = 36_000;
+    const DAY: u64 = 86_400_000;
+    const CARD_B: u64 = DAY;
+    const CORRECTED: (u64, u64) = (DAY, 2 * DAY);
+    const SIGNED_AT: u64 = 3 * DAY;
     let store = crate::root::store_double::RecordSlots::new();
     {
         let holder = process_holder();
         apply_at(holder, 3.0, BOOT_A);
         let book = boot_book(holder, &store);
-        publish_unjournalled_at(holder, 5.0, APPLIED_B);
+        publish_unjournalled_at(holder, 5.0, CARD_B);
         assert_eq!(holder.len(), 2, "card B is entry 1 on the live history");
         let seq = seal_correction(holder, &book, CORRECTED, SIGNED_AT, 4_000, |base| base);
         assert_eq!(seq, busbar_kernel_ledger::cost::HistorySeq(2));
     }
 
     let holder = process_holder();
-    apply_at(holder, 5.0, REBOOT);
+    apply_at(holder, 5.0, 4 * DAY);
     let book = boot_book(holder, &store);
     assert_eq!(
         refused_corrections(&book),

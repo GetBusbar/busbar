@@ -33,6 +33,7 @@ pub(crate) struct RecordSlots {
     put_probe: PutProbe,
     /// Keep every put and answer it FAILED: a store that committed and lost the ack.
     lost_acks: Arc<AtomicBool>,
+    transaction_acks_lost: Arc<AtomicBool>,
     /// Calls remain genuinely Pending until the test releases them.
     paused: Arc<AtomicBool>,
     parked: Arc<Mutex<Vec<Waker>>>,
@@ -130,6 +131,10 @@ impl RecordSlots {
         self.lost_acks.store(losing, Ordering::Release);
     }
 
+    pub(crate) fn lose_transaction_acks(&self, losing: bool) {
+        self.transaction_acks_lost.store(losing, Ordering::Release);
+    }
+
     pub(crate) fn puts(&self) -> usize {
         self.puts.load(Ordering::Acquire)
     }
@@ -204,7 +209,13 @@ impl StoreCalls for RecordSlots {
             let mut receipts = self.receipts.lock().unwrap_or_else(|p| p.into_inner());
             if let Some(kept) = receipts.get(&request.op_id.0) {
                 return if kept == request {
-                    Ok(Decision::Applied)
+                    if self.transaction_acks_lost.load(Ordering::Acquire) {
+                        Err(StoreFailure::Failed(
+                            "the test store lost the transaction ack".into(),
+                        ))
+                    } else {
+                        Ok(Decision::Applied)
+                    }
                 } else {
                     Err(StoreFailure::Conflict)
                 };
@@ -249,7 +260,9 @@ impl StoreCalls for RecordSlots {
                 }
             }
             receipts.insert(request.op_id.0, request.clone());
-            if self.lost_acks.load(Ordering::Acquire) {
+            if self.lost_acks.load(Ordering::Acquire)
+                || self.transaction_acks_lost.load(Ordering::Acquire)
+            {
                 Err(StoreFailure::Failed(
                     "the test store lost the transaction ack".into(),
                 ))

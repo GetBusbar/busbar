@@ -124,12 +124,14 @@ fn audit_inputs(unit: u64) -> busbar_kernel_audit::AuditInputs {
 fn the_verify_walk_scans_the_store_without_the_book_lock() {
     let slots = RecordSlots::new();
     let (book, scans) = node_over(&slots, |durability| seal(durability, 1));
+    let lane = book
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .lane()
+        .expect("a journal over the store")
+        .clone();
     assert!(
-        book.lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .lane()
-            .expect("a journal over the store")
-            .drain(std::time::Duration::from_secs(5)),
+        lane.drain(std::time::Duration::from_secs(5)),
         "the store takes the record"
     );
     let findings = NodeAudit::new(Arc::clone(&book)).stored_chain_findings();

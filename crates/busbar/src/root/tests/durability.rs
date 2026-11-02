@@ -1875,7 +1875,7 @@ fn pending_store_puts_keep_lane_and_journal_custody_and_fail_closed_at_the_bound
 fn an_unknown_store_commit_stays_queued_and_restart_resumes_the_committed_chain() {
     let slots = crate::root::store_double::RecordSlots::new();
     let mut first = store_book_bounded(&slots, 74, 1);
-    slots.lose_acks(true);
+    slots.lose_transaction_acks(true);
     seal(&mut first, 1);
     let lane = first.lane().unwrap().clone();
     assert!(lane
@@ -1892,7 +1892,7 @@ fn an_unknown_store_commit_stays_queued_and_restart_resumes_the_committed_chain(
     let restarted = store_book(&slots, 74);
     assert_eq!(restarted.journal.head(), head);
     assert_eq!(restarted.audit_records.len(), 1);
-    slots.lose_acks(false);
+    slots.lose_transaction_acks(false);
     drained(&first);
     assert!(first.refuses_money().is_none());
     assert_eq!(
