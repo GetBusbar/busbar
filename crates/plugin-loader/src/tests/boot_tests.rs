@@ -364,7 +364,7 @@ fn red_an_instance_that_will_not_bind_is_named() {
         opening: None,
     })
     .unwrap_err();
-    assert!(err.starts_with("door: ") && err.contains("repack"), "{err}");
+    assert!(err.starts_with("tools: ") && err.contains("repack"), "{err}");
 }
 
 #[test]
