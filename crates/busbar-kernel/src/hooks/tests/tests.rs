@@ -2114,15 +2114,18 @@ fn offload_bounded_returns_none_when_the_work_outlives_the_deadline() {
 
 #[test]
 fn offload_bounded_logs_when_the_blocking_task_panics() {
-    use crate::test_support::warn_capture::WarnCapture;
-    use tracing_subscriber::layer::SubscriberExt as _;
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
-    let cap = WarnCapture::default();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let output = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_max_level(tracing::Level::WARN)
+        .with_writer(output.clone())
+        .finish();
 
     let out: Option<()> = tracing::subscriber::with_default(subscriber, || {
         rt.block_on(offload_bounded("panicky-hook", || {
@@ -2134,11 +2137,12 @@ fn offload_bounded_logs_when_the_blocking_task_panics() {
         out.is_none(),
         "a panicking resolve must still resolve to None, not propagate the panic to the caller"
     );
+    let captured = String::from_utf8(output.lock().unwrap().clone()).expect("UTF-8 diagnostics");
     assert!(
-        cap.contains("panicky-hook") && cap.contains("panicked"),
+        captured.contains("panicky-hook") && captured.contains("panicked"),
         "the panic must be logged, naming the hook and distinct from the ordinary unresolvable \
          case: {:?}",
-        cap.messages()
+        captured
     );
 }
 
