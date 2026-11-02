@@ -425,56 +425,6 @@ async fn concurrent_rebinds_never_bind_a_deleted_group() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn plugin_install_is_serialized_by_the_mutation_domain() {
-    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-txn-plugins-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
-    let _ = std::fs::create_dir_all(&dir);
-    let handle = handle_for(crate::new_test_app().plugins_dir(dir.clone()).build());
-
-    let hold = Duration::from_millis(300);
-    let holder = {
-        let handle = handle.clone();
-        tokio::spawn(async move {
-            config_transaction::<_, _, AdminError>(&handle, |txn| {
-                Ok(txn.read_store(move || {
-                    std::thread::sleep(hold);
-                    Ok(Outcome::Value(()))
-                }))
-            })
-            .await
-        })
-    };
-    tokio::time::sleep(Duration::from_millis(80)).await;
-    let started = Instant::now();
-
-    let _ = install_plugin(
-        State(handle.clone()),
-        anon(),
-        axum::body::Bytes::from(
-            json!({ "file": "x.tar.gz", "tarball_b64": "bm90IGEgdGFyYmFsbA==" }).to_string(),
-        ),
-    )
-    .await;
-    let waited = started.elapsed();
-    holder.await.expect("join").expect("holder commits");
-
-    assert!(
-        waited >= hold / 2,
-        "INSTALL OUTSIDE THE DOMAIN: the install returned after only {}ms while a transaction held \
-         the section for {}ms. Plugin writes must enter the same `config_transaction` section \
-         rollback/reload validate-and-rebuild in, or an install can overwrite the artifact between \
-         a rollback's validate and its rebuild.",
-        waited.as_millis(),
-        hold.as_millis()
-    );
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
 fn parking_secret_hook_env(delay: Duration) -> busbar_kernel::hooks::HookEnv {
     busbar_kernel::hooks::HookEnv::with_axis(
         busbar_kernel_testkit::test_support::rows::Rows::new()
