@@ -43,6 +43,197 @@ fn env(
     }
 }
 
+/// The boot path's ingestion and resolution, with only the OS environment lookup replaced.
+fn process_env_config(values: &[(&str, OsString)]) -> Result<Option<Arc<ProxyChoice>>, String> {
+    let values = ProxyEnvValues::from_lookup(|key| {
+        values
+            .iter()
+            .find_map(|(name, value)| (*name == key).then(|| value.clone()))
+    })?;
+    resolve_config(&values)
+}
+
+#[test]
+fn process_proxy_environment_absence_and_empty_values_allow_direct() {
+    assert!(process_env_config(&[]).unwrap().is_none());
+    let empty: Vec<_> = [
+        HTTPS_PROXY_KEYS,
+        HTTP_PROXY_KEYS,
+        ALL_PROXY_KEYS,
+        NO_PROXY_KEYS,
+    ]
+    .into_iter()
+    .flatten()
+    .map(|key| (key, OsString::new()))
+    .collect();
+    assert!(process_env_config(&empty).unwrap().is_none());
+    assert!(
+        process_env_config(&[(NO_PROXY_KEYS[0], "internal.corp".into())])
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn process_proxy_environment_preserves_scheme_and_case_precedence() {
+    let config = process_env_config(&[
+        (HTTPS_PROXY_KEYS[0], "secure.corp:3128".into()),
+        (HTTPS_PROXY_KEYS[1], "http://".into()),
+        (HTTP_PROXY_KEYS[0], OsString::new()),
+        (HTTP_PROXY_KEYS[1], "plain.corp:8080".into()),
+        (ALL_PROXY_KEYS[0], "fallback.corp:8888".into()),
+        (ALL_PROXY_KEYS[1], "http://".into()),
+        (NO_PROXY_KEYS[0], OsString::new()),
+        (NO_PROXY_KEYS[1], "internal.corp".into()),
+    ])
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        selected(&config, true, "upstream.test").as_deref(),
+        Some("secure.corp:3128")
+    );
+    assert_eq!(
+        selected(&config, false, "upstream.test").as_deref(),
+        Some("plain.corp:8080")
+    );
+    for secured in [true, false] {
+        assert!(selected(&config, secured, "db.internal.corp").is_none());
+    }
+
+    let fallback = process_env_config(&[
+        (HTTPS_PROXY_KEYS[1], "secure.corp:3128".into()),
+        (ALL_PROXY_KEYS[0], OsString::new()),
+        (ALL_PROXY_KEYS[1], "fallback.corp:8888".into()),
+        (NO_PROXY_KEYS[0], "internal.corp".into()),
+        (NO_PROXY_KEYS[1], "*".into()),
+    ])
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        selected(&fallback, true, "upstream.test").as_deref(),
+        Some("secure.corp:3128")
+    );
+    assert_eq!(
+        selected(&fallback, false, "upstream.test").as_deref(),
+        Some("fallback.corp:8888")
+    );
+    assert!(selected(&fallback, false, "internal.corp").is_none());
+}
+
+#[test]
+fn process_proxy_environment_still_refuses_invalid_urls_without_credentials() {
+    const PASSWORD: &str = "env-proxy-password";
+    for keys in [HTTPS_PROXY_KEYS, HTTP_PROXY_KEYS, ALL_PROXY_KEYS] {
+        let err = process_env_config(&[
+            (
+                keys[0],
+                format!("https://env-user:{PASSWORD}@proxy.corp:3128").into(),
+            ),
+            (keys[1], "valid.corp:8080".into()),
+        ])
+        .expect_err("a selected invalid URL must reach the boot refusal");
+        assert!(
+            !err.contains(PASSWORD) && !err.contains("env-user"),
+            "{err}"
+        );
+        assert!(err.contains("proxy.corp"), "{err}");
+    }
+}
+
+#[cfg(unix)]
+mod non_unicode_environment {
+    use std::os::unix::ffi::OsStringExt;
+
+    use super::*;
+
+    fn invalid_value() -> OsString {
+        OsString::from_vec(b"http://env-user:env-proxy-password@private-proxy.corp:\xff".to_vec())
+    }
+
+    fn assert_variable_only_refusal(values: &[(&str, OsString)], key: &str) {
+        let err = process_env_config(values)
+            .expect_err("selected non-Unicode values must refuse before proxy/direct choice");
+        assert_eq!(
+            err,
+            format!("proxy environment variable {key} is not valid Unicode"),
+            "the refusal must contain no value, including credentials or host"
+        );
+    }
+
+    #[test]
+    fn non_unicode_uppercase_refuses_instead_of_using_valid_lowercase() {
+        for keys in [
+            HTTPS_PROXY_KEYS,
+            HTTP_PROXY_KEYS,
+            ALL_PROXY_KEYS,
+            NO_PROXY_KEYS,
+        ] {
+            assert_variable_only_refusal(
+                &[
+                    (keys[0], invalid_value()),
+                    (keys[1], "valid.corp:8080".into()),
+                ],
+                keys[0],
+            );
+        }
+    }
+
+    #[test]
+    fn non_unicode_lowercase_refuses_when_uppercase_is_absent_or_empty() {
+        for keys in [
+            HTTPS_PROXY_KEYS,
+            HTTP_PROXY_KEYS,
+            ALL_PROXY_KEYS,
+            NO_PROXY_KEYS,
+        ] {
+            assert_variable_only_refusal(&[(keys[1], invalid_value())], keys[1]);
+            assert_variable_only_refusal(
+                &[(keys[0], OsString::new()), (keys[1], invalid_value())],
+                keys[1],
+            );
+        }
+    }
+
+    #[test]
+    fn non_unicode_lowercase_is_ignored_after_selected_uppercase() {
+        let config = process_env_config(&[
+            (HTTPS_PROXY_KEYS[0], "secure.corp:3128".into()),
+            (HTTPS_PROXY_KEYS[1], invalid_value()),
+            (HTTP_PROXY_KEYS[0], "plain.corp:8080".into()),
+            (HTTP_PROXY_KEYS[1], invalid_value()),
+            (ALL_PROXY_KEYS[0], "fallback.corp:8888".into()),
+            (ALL_PROXY_KEYS[1], invalid_value()),
+            (NO_PROXY_KEYS[0], "internal.corp".into()),
+            (NO_PROXY_KEYS[1], invalid_value()),
+        ])
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            selected(&config, true, "upstream.test").as_deref(),
+            Some("secure.corp:3128")
+        );
+        assert_eq!(
+            selected(&config, false, "upstream.test").as_deref(),
+            Some("plain.corp:8080")
+        );
+        assert!(selected(&config, true, "db.internal.corp").is_none());
+    }
+
+    #[test]
+    fn non_unicode_all_proxy_and_no_proxy_refuse_even_with_explicit_scheme_slots() {
+        for keys in [ALL_PROXY_KEYS, NO_PROXY_KEYS] {
+            assert_variable_only_refusal(
+                &[
+                    (HTTPS_PROXY_KEYS[0], "secure.corp:3128".into()),
+                    (HTTP_PROXY_KEYS[0], "plain.corp:8080".into()),
+                    (keys[0], invalid_value()),
+                ],
+                keys[0],
+            );
+        }
+    }
+}
+
 #[test]
 fn proxy_url_parse_extracts_auth_and_refuses_https_proxies() {
     let err = parse_proxy("https://proxy.corp:3128").unwrap_err();
