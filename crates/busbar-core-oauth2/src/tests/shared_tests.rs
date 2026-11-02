@@ -813,10 +813,13 @@ async fn a_late_refresh_take_conflicts_after_another_node_took_it() {
         .put_client(client("atomic-client"))
         .await
         .expect("registers");
-    node_b
-        .put_refresh_token(refresh("take-refresh"))
-        .await
-        .expect("issues");
+    assert_eq!(
+        node_b
+            .put_refresh_token(refresh("take-refresh"))
+            .await
+            .expect("issues"),
+        oauth_as::store::WriteOutcome::Applied
+    );
 
     let (release, accepted, decided) = store.delay_decision("bucket", false);
     let node_a = SharedStorage::new(Arc::new(Shared::new(store.calls())));
@@ -1713,9 +1716,12 @@ async fn retirement_has_no_aba_across_recreation() {
     let store = OneStore::default();
     let a = Arc::new(SharedStorage::new(Arc::new(Shared::new(store.calls()))));
     let b = SharedStorage::new(Arc::new(Shared::new(store.calls())));
-    b.put_refresh_token(refresh("initial-refresh"))
-        .await
-        .unwrap();
+    assert_eq!(
+        b.put_refresh_token(refresh("initial-refresh"))
+            .await
+            .unwrap(),
+        oauth_as::store::WriteOutcome::Applied
+    );
     b.take_refresh_token("initial-refresh").await.unwrap();
     store.age(3600);
     b.sweep_expired(std::time::SystemTime::now()).await.unwrap();
@@ -1735,7 +1741,10 @@ async fn retirement_has_no_aba_across_recreation() {
     writer.abort();
     assert!(writer.await.unwrap_err().is_cancelled());
     drop(a);
-    b.put_refresh_token(refresh("new-refresh")).await.unwrap();
+    assert_eq!(
+        b.put_refresh_token(refresh("new-refresh")).await.unwrap(),
+        oauth_as::store::WriteOutcome::Applied
+    );
     b.take_refresh_token("new-refresh").await.unwrap();
     store.age(3600);
     b.sweep_expired(std::time::SystemTime::now()).await.unwrap();
@@ -1800,9 +1809,12 @@ async fn a_cancelled_family_revocation_commits_its_barrier_and_cascade_together(
     let store = OneStore::default();
     let a = Arc::new(SharedStorage::new(Arc::new(Shared::new(store.calls()))));
     let b = SharedStorage::new(Arc::new(Shared::new(store.calls())));
-    a.put_refresh_token(refresh("existing-family-refresh"))
-        .await
-        .unwrap();
+    assert_eq!(
+        a.put_refresh_token(refresh("existing-family-refresh"))
+            .await
+            .unwrap(),
+        oauth_as::store::WriteOutcome::Applied
+    );
     let (release, accepted, decided) = store.delay_decision("family", false);
     let revoker = {
         let a = a.clone();
