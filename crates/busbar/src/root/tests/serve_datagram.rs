@@ -846,3 +846,102 @@ async fn configured_exhaustion_reports_one_clear_operator_error_and_takes_no_pre
     assert_eq!(pairing.publication_outcome().original_bytes, 0);
     assert!(pairing.closed());
 }
+
+#[cfg(feature = "transport-webrtc")]
+#[tokio::test]
+async fn a_reentrant_write_cannot_overtake_the_early_messages_being_released() {
+    use busbar_kernel::plane_driver::CallerEnd;
+    let mut control = ControlledDoor::new(true);
+    let weak = Arc::downgrade(&control.pair.caller.leg);
+    let (written, third) = tokio::sync::oneshot::channel();
+    let written = std::sync::Mutex::new(Some(written));
+    *control.pair.framer.observer.lock().unwrap() = Some(Arc::new(move |len| {
+        if len == 5 {
+            if let Some(written) = written.lock().unwrap().take() {
+                let leg = weak.upgrade().unwrap();
+                tokio::spawn(async move {
+                    let _ = written.send(leg.write(b"third", false).await);
+                });
+            }
+        }
+    }));
+    assert!(control.pair.caller.write(b"first").await);
+    assert!(control.pair.caller.write(b"second").await);
+    control.publish_channel();
+    assert!(tokio::time::timeout(real::WAIT, third)
+        .await
+        .unwrap()
+        .unwrap());
+    for bytes in [b"first".as_slice(), b"second", b"third"] {
+        assert_eq!(control.pair.received().await, bytes);
+    }
+    assert!(!control.pair.pairing.closed());
+}
+
+#[cfg(feature = "transport-webrtc")]
+#[tokio::test]
+async fn early_drain_wakes_the_next_writer_after_cancel_without_overtaking_accepted_messages() {
+    use busbar_kernel::plane_driver::CallerEnd;
+    use std::future::Future;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::task::{Context, Poll, Wake, Waker};
+    #[derive(Default)]
+    struct WriteWake(AtomicUsize);
+    impl Wake for WriteWake {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    let mut control = ControlledDoor::new(true);
+    assert!(control.pair.caller.write(b"first").await);
+    assert!(control.pair.caller.write(b"second").await);
+    let leg = control.pair.caller.leg.clone();
+    let (queued, pending) = tokio::sync::oneshot::channel();
+    let queued = std::sync::Mutex::new(Some(queued));
+    *control.pair.framer.observer.lock().unwrap() = Some(Arc::new(move |len| {
+        if len != 5 {
+            return;
+        }
+        let wake = Arc::new(WriteWake::default());
+        let waker = Waker::from(wake.clone());
+        let mut cx = Context::from_waker(&waker);
+        let mut cancelled = Box::pin(leg.write(b"cancelled during drain", false));
+        let cancelled_poll = cancelled.as_mut().poll(&mut cx);
+        let later = leg.clone();
+        let mut later = Box::pin(async move { later.write(b"last", false).await });
+        let later_poll = later.as_mut().poll(&mut cx);
+        drop(cancelled);
+        let later_retry = later.as_mut().poll(&mut cx);
+        let _ = queued.lock().unwrap().take().unwrap().send((
+            cancelled_poll,
+            later_poll,
+            later_retry,
+            later,
+            wake,
+        ));
+    }));
+    control.publish_channel();
+    let (cancelled_poll, later_poll, later_retry, later, wake) =
+        tokio::time::timeout(real::WAIT, pending)
+            .await
+            .unwrap()
+            .unwrap();
+    let notified = wake.0.load(Ordering::SeqCst);
+    let accepted = match later_retry {
+        Poll::Ready(ok) => ok,
+        Poll::Pending => tokio::time::timeout(real::WAIT, later).await.unwrap(),
+    };
+    assert!(cancelled_poll.is_pending() && later_poll.is_pending() && later_retry.is_pending());
+    assert!(
+        notified > 0,
+        "draining accepted early input wakes the surviving writer"
+    );
+    assert!(accepted);
+    for bytes in [b"first".as_slice(), b"second", b"last"] {
+        assert_eq!(control.pair.received().await, bytes);
+    }
+    assert_eq!(*control.pair.framer.emitted.lock().unwrap(), vec![5, 6, 4]);
+}
