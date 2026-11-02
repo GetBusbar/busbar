@@ -266,7 +266,7 @@ pub const LAYOUT_SHAPES: &[&[u64]] = &[
         record_chains, record_chains_len, trust_keys, trust_keys_len, refusal_statuses,
         refusal_statuses_len, caller_credential_refusal, admin_routes, admin_routes_len,
         admin_openapi, stream_ceiling_secs, metric_lanes, metric_lanes_len, record_retentions,
-        record_retentions_len
+        record_retentions_len, streaming_content_types, streaming_content_types_len
     ),
     crate::layout_shape!(Claim => verb, target, carrier, flags, refusal_dialect, _pad),
     crate::layout_shape!(AdminRoute => verb, target, flags, _reserved, audit_verb),
@@ -1713,6 +1713,11 @@ pub struct PlaneTail {
     pub record_retentions: *const RecordRetention,
     /// How many.
     pub record_retentions_len: usize,
+    /// Response media types whose bodies must be delivered as streams. NULL/0 = none.
+    /// Append-only: a tail ending before this list declares no streaming media types.
+    pub streaming_content_types: *const AbiStr,
+    /// How many streaming response media types.
+    pub streaming_content_types_len: usize,
 }
 
 impl PlaneTail {
@@ -1766,6 +1771,8 @@ impl PlaneTail {
         metric_lanes_len: 0,
         record_retentions: std::ptr::null(),
         record_retentions_len: 0,
+        streaming_content_types: std::ptr::null(),
+        streaming_content_types_len: 0,
     };
 }
 
@@ -1824,6 +1831,8 @@ impl PlaneTail {
         metric_lanes_len: 0,
         record_retentions: std::ptr::null(),
         record_retentions_len: 0,
+        streaming_content_types: std::ptr::null(),
+        streaming_content_types_len: 0,
     };
 
     abi_lists! {
@@ -1850,6 +1859,8 @@ impl PlaneTail {
             => refusal_statuses_ptr, with_refusal_statuses, with_raw_refusal_statuses;
         admin_routes, admin_routes_len: AdminRoute
             => admin_routes_ptr, with_admin_routes, with_raw_admin_routes;
+        streaming_content_types, streaming_content_types_len: AbiStr
+            => streaming_content_types_ptr, with_streaming_content_types, with_raw_streaming_content_types;
         metric_lanes, metric_lanes_len: AbiStr
             => metric_lanes_ptr, with_metric_lanes, with_raw_metric_lanes;
     }

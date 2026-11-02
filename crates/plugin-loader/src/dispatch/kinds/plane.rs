@@ -151,6 +151,8 @@ pub struct ServedFacts {
     /// The tail's counter lane words (`PlaneTail::metric_lanes`): the words beside the operator's
     /// entry names a stated attempt `lane` label may carry.
     pub metric_lanes: Vec<&'static str>,
+    /// Declared response media types requiring streamed delivery.
+    pub streaming_content_types: Vec<&'static str>,
     /// Each need's response-head rule, in Statement need order (`Need::keep_mode`, its kept and
     /// denied names): what of a far end's head the host hands the plane on that need.
     pub keeps: Vec<NeedKeep>,
@@ -279,6 +281,14 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
         tail.billable_classes_len as u64,
     )
     .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
+    let streaming_content_types = listed(
+        tail.streaming_content_types,
+        tail.streaming_content_types_len,
+    );
+    for media in &streaming_content_types {
+        check_tail_text(*media, "tail.streaming_content_types")
+            .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
+    }
     let metric_lanes = listed(tail.metric_lanes, tail.metric_lanes_len);
     for lane in &metric_lanes {
         check_tail_text(*lane, "tail.metric_lanes")
@@ -395,6 +405,7 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
                 .into_iter()
                 .map(kept)
                 .collect(),
+            streaming_content_types: streaming_content_types.into_iter().map(kept).collect(),
             metric_lanes: listed(tail.metric_lanes, tail.metric_lanes_len)
                 .into_iter()
                 .map(kept)
@@ -903,6 +914,7 @@ fn registered(
         secret_refs: served.secret_refs.clone(),
         admin_routes: served.admin_routes.clone(),
         admin_openapi: served.admin_openapi,
+        streaming_content_types: served.streaming_content_types.clone(),
         label,
         subject_noun,
         admin_noun,

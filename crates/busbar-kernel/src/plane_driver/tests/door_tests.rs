@@ -46,6 +46,7 @@ fn registration(key: &'static str, section: &'static str) -> PlaneRegistration {
         requires: Vec::new(),
         admin_routes: Vec::new(),
         admin_openapi: None,
+        streaming_content_types: vec!["text/event-stream"],
         secret_refs: vec!["settings.*.token.secret", "settings.*.env.*"],
         label: "Fleet",
         subject_noun: "fleet member",
@@ -144,6 +145,7 @@ fn a_door_registration_folds_into_a_row_every_word_of_which_is_the_doors() {
     assert_eq!(decl.billable_classes[0].family, "byte");
     assert_eq!(decl.fee_units, &["request"]);
     assert_eq!(decl.record_kinds, &["member_row"]);
+    assert_eq!(streaming_content_types(decl), ["text/event-stream"]);
     assert_eq!(decl.trust_keys.len(), 2);
     assert_eq!(
         decl.caller_credential_refusal,

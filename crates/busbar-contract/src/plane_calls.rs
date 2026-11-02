@@ -251,6 +251,8 @@ pub struct PlaneRegistration {
     pub admin_routes: Vec<StatedAdminRoute>,
     /// Their OpenAPI path fragment, each path relative to the admin mount (JSON); `None` = none.
     pub admin_openapi: Option<&'static [u8]>,
+    /// Declared response media types requiring streamed delivery.
+    pub streaming_content_types: Vec<&'static str>,
     /// The tail's label (`PlaneTail::label`).
     pub label: &'static str,
     /// The tail's subject noun.

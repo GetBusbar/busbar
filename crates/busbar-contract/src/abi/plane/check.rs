@@ -1470,6 +1470,11 @@ pub fn check_tail(t: &PlaneTail) -> Result<(), Fault> {
     listed(t.admin_routes, t.admin_routes_len, "tail.admin_routes")?;
     listed(t.metric_lanes, t.metric_lanes_len, "tail.metric_lanes")?;
     listed(
+        t.streaming_content_types,
+        t.streaming_content_types_len,
+        "tail.streaming_content_types",
+    )?;
+    listed(
         t.record_retentions,
         t.record_retentions_len,
         "tail.record_retentions",

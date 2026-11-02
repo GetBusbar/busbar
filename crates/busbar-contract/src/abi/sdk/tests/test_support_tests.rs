@@ -302,6 +302,7 @@ const PLANE_TAIL: crate::abi::plane::PlaneTail = crate::abi::plane::PlaneTail {
     metric_lanes_len: 0,
     record_retentions: ptr::null(),
     record_retentions_len: 0,
+    ..crate::abi::plane::PlaneTail::ZERO
 };
 
 /// A plane door, laid out as `plugin_door!` lays one (its Statement stamped, every slot absent):
