@@ -409,9 +409,41 @@ def row_binary_format(ctx) -> str:
     return "format=%s arch=%s linkage=%s" % got
 
 
+# Keep aligned with parse_release_keys and scripts/release-key-guard.sh. Validation is deliberately
+# before the byte search: an empty or ambiguous list is never evidence of embedded release trust.
+def _key_list_ok(spec) -> bool:
+    if not isinstance(spec, str):
+        return False
+    retired = "b18395a332803151b9cd40a71489a86a96d8bea3ee6a37a45f59dec197bacba7"
+    ids, keys = set(), set()
+    for entry in spec.split(","):
+        parts = entry.split(":")
+        key_id, algorithm = None, "ed25519"
+        if len(parts) == 1:
+            key = parts[0]
+        elif len(parts) == 2:
+            key_id, key = parts
+        elif len(parts) == 3:
+            key_id, algorithm, key = parts
+        else:
+            return False
+        if key_id is not None:
+            if not re.fullmatch(r"[a-z0-9-]+", key_id) or key_id in ids:
+                return False
+            ids.add(key_id)
+        pattern = {"ed25519": r"[0-9a-fA-F]{64}", "p256": r"04[0-9a-fA-F]{128}"}.get(algorithm)
+        if pattern is None or not re.fullmatch(pattern, key):
+            return False
+        material = (algorithm, key.lower())
+        if material in keys or (algorithm == "ed25519" and key.lower() == retired):
+            return False
+        keys.add(material)
+    return True
+
+
 def row_release_pubkey(ctx) -> str:
     key = ctx.pubkey
-    if not re.fullmatch(r"[0-9a-fA-F]{64}", key or ""):
+    if not _key_list_ok(key):
         raise RowFailure(
             "no usable BUSBAR_RELEASE_PUBKEY was supplied to the verifier (got %r). The verifier "
             "refuses to search for nothing and call it a pass: an empty needle is found in every "
@@ -421,7 +453,7 @@ def row_release_pubkey(ctx) -> str:
         blob = fh.read()
     if key.lower().encode() not in blob.lower():
         raise RowFailure(
-            "the 64-hex release public key is NOT present in the shipped binary. "
+            "the complete release public key list is NOT present in the shipped binary. "
             "`option_env!(\"BUSBAR_RELEASE_PUBKEY\")` is read at COMPILE time and fails silently to "
             "`None`, so the build was green and the comment claimed the key was baked in while this "
             "artifact carried none. This is exactly the busbar-aarch64-unknown-linux-gnu defect that "
@@ -1001,7 +1033,7 @@ def row_image_release_pubkey(ctx) -> str:
     signature for. The row therefore passed on a keyless image exactly as it passed on a good one,
     which is the #52 defect walking straight through the check written to catch it in the other
     artifact class. The tarball twin (`row_release_pubkey`) does not have this hole: it opens the
-    binary and searches for the key's 64 hex bytes, a POSITIVE assertion that a missing key cannot
+    binary and searches for the complete root list's bytes, a POSITIVE assertion a missing key cannot
     satisfy. Its own comment even says why — "an empty needle is found in every binary" — and the
     same reasoning applies to an absent error message: the absence of a complaint is not evidence,
     when nothing asked for one.
@@ -1010,7 +1042,7 @@ def row_image_release_pubkey(ctx) -> str:
     ship inside the image, and keeps the runtime probe as a second, subordinate signal.
     """
     ref = _image_ref(ctx)
-    if not re.fullmatch(r"[0-9a-fA-F]{64}", ctx.pubkey or ""):
+    if not _key_list_ok(ctx.pubkey):
         raise AssertionError(
             "no usable BUSBAR_RELEASE_PUBKEY was supplied to the verifier (got %r), so this row "
             "could not run. Unknown is not green, and an empty needle is found in every binary."
@@ -1021,7 +1053,7 @@ def row_image_release_pubkey(ctx) -> str:
         blob_bytes = fh.read()
     if ctx.pubkey.lower().encode() not in blob_bytes.lower():
         raise AssertionError(
-            "the binary INSIDE the image does not contain the 64-hex release public key, so it "
+            "the binary INSIDE the image does not contain the complete release public key list, so it "
             "refuses every correctly-signed first-party plugin. "
             "`option_env!(\"BUSBAR_RELEASE_PUBKEY\")` is read at COMPILE time and fails silently to "
             "None: the image build must carry the variable. This is the aarch64 defect (#52), in "
@@ -1326,8 +1358,8 @@ def selftest(contract_path: str = DEFAULT_CONTRACT, targets_path: str = DEFAULT_
     that a SPECIFIC malformation is refused; a case that stops failing means the guard it covers has
     silently stopped guarding.
 
-    The row implementations themselves are not exercised here — they need a real artifact, and the
-    honest proof for those is running the verifier against one. That has been done against real
+    Embedded-root rows also run against local byte fixtures below. Other artifact behavior needs
+    a real artifact, and the honest proof for that is running the verifier against one. This ran on
     released bytes: busbar 1.5.3's aarch64-unknown-linux-gnu artifact FAILS `release_pubkey` and its
     x86_64-unknown-linux-gnu artifact PASSES it, which is this file catching the exact defect that
     motivated it, on production artifacts rather than fixtures.
@@ -1418,10 +1450,93 @@ def selftest(contract_path: str = DEFAULT_CONTRACT, targets_path: str = DEFAULT_
             print("  [FAILED] %-38s -> %s" % (label, why))
             failures += 1
 
-    # Exercise the row's actual config writer, stopping before any listener or artifact runs.
-    # A legacy providers/models-only config must fail this control even if boot is mocked.
     from unittest.mock import patch
 
+    # Validate every supported root form and adversarial lists through both actual embedded-key
+    # rows. The image extraction/runtime are local fixtures; no Docker or artifact execution runs.
+    ed = "a" * 63 + "b"
+    other_ed = "a" * 63 + "c"
+    p256 = ("046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296"
+            "4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5")
+    retired = "b18395a332803151b9cd40a71489a86a96d8bea3ee6a37a45f59dec197bacba7"
+    mixed = "root:p256:%s,old:%s,new:ed25519:%s" % (p256, ed, other_ed)
+    accepted = [ed, "old:" + ed, "new:ed25519:" + ed, "root:p256:" + p256, mixed,
+                "-root-:ed25519:" + ed, ed.upper()]
+    rejected = {
+        "empty": "", "short": "abc", "nonhex": ed[:-2] + "zz", "padding": " " + ed,
+        "newline": ed + "\n", "trailing entry": mixed + ",", "leading entry": "," + mixed,
+        "middle entry": ed + ",," + other_ed, "empty ID": ":" + ed,
+        "uppercase ID": "Root:" + ed, "invalid ID": "root_1:" + ed,
+        "unknown algorithm": "r:rsa:" + ed, "extra field": "r:ed25519:" + ed + ":x",
+        "short P-256": "r:p256:" + p256[:-2], "compressed P-256": "r:p256:02" + p256[2:66],
+        "unnamed P-256": "p256:" + p256, "nonhex P-256": "r:p256:" + p256[:-2] + "zz",
+        "duplicate ID": "r:%s,r:%s" % (ed, other_ed),
+        "duplicate key": "r:%s,s:ed25519:%s" % (ed, ed),
+        "duplicate case": "r:%s,s:%s" % (ed, ed.upper()),
+        "duplicate bare": "%s,r:%s" % (ed, ed),
+        "duplicate P-256": "r:p256:%s,s:p256:%s" % (p256, p256),
+        "retired bare": retired, "retired legacy": "r:" + retired,
+        "retired explicit": "r:ed25519:" + retired,
+        "retired in list": mixed + ",r:ed25519:" + retired.upper(),
+    }
+    with tempfile.TemporaryDirectory(prefix="busbar-release-root-") as fixture:
+        ctx = Ctx()
+        ctx.exe, ctx.image = os.path.join(fixture, "busbar"), "example.invalid/busbar@sha256:" + "a" * 64
+        runtime = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        with patch.dict(row_image_release_pubkey.__globals__,
+                        _image_ref=lambda _ctx: ctx.image,
+                        _binary_out_of_image=lambda *_args: ctx.exe,
+                        _docker=lambda *_args: runtime):
+            for index, spec in enumerate(accepted):
+                ctx.pubkey = spec
+                with open(ctx.exe, "wb") as fh:
+                    fh.write(b"padding " + spec.encode() + b" padding")
+                for row in (row_release_pubkey, row_image_release_pubkey):
+                    try:
+                        row(ctx)
+                        passed = True
+                    except (RowFailure, AssertionError):
+                        passed = False
+                    check("%s valid form %d" % (row.__name__, index), passed,
+                          "the entire valid root list is present")
+            for label, spec in rejected.items():
+                ctx.pubkey = spec
+                with open(ctx.exe, "wb") as fh:
+                    fh.write(b"padding " + spec.encode() + b" padding")
+                for row in (row_release_pubkey, row_image_release_pubkey):
+                    try:
+                        row(ctx)
+                        refused = False
+                    except (RowFailure, AssertionError):
+                        refused = True
+                    check("%s %s" % (row.__name__, label), refused,
+                          "malformed or retired roots fail even when embedded")
+            ctx.pubkey = mixed
+            for label, embedded in (("keyless", "padding"), ("partial list", ed),
+                                    ("different list", mixed.replace("root:", "other:"))):
+                with open(ctx.exe, "wb") as fh:
+                    fh.write(embedded.encode())
+                for row in (row_release_pubkey, row_image_release_pubkey):
+                    try:
+                        row(ctx)
+                        refused = False
+                    except (RowFailure, AssertionError):
+                        refused = True
+                    check("%s %s" % (row.__name__, label), refused,
+                          "only the complete expected root list satisfies the row")
+            with open(ctx.exe, "wb") as fh:
+                fh.write(mixed.encode())
+            runtime.stderr = "this build embeds no busbar release key"
+            try:
+                row_image_release_pubkey(ctx)
+                refused = False
+            except AssertionError:
+                refused = True
+            check("image runtime refusal remains enforced", refused,
+                  "embedded bytes do not override the running program's refusal")
+
+    # Exercise the row's actual config writer, stopping before any listener or artifact runs.
+    # A legacy providers/models-only config must fail this control even if boot is mocked.
     class ConfigWritten(Exception):
         pass
 

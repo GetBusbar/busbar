@@ -34,28 +34,56 @@
 #   scripts/release-key-guard.sh --selftest      # prove both halves discriminate, offline
 #
 # Reads BUSBAR_RELEASE_PUBKEY from the environment. In CI that is the org variable
-# BUSBAR_RELEASE_PUBKEY (visibility: all) -- the PUBLIC half; the private half is the
-# BUSBAR_SIGN_KEY secret each plugin repo signs with.
+# BUSBAR_RELEASE_PUBKEY (visibility: all) -- a comma-separated list of PUBLIC roots.
 set -euo pipefail
 
 MODE="${1:-}"
 
 # ── THE KEY ITSELF ──────────────────────────────────────────────────────────────────────────────
-# 64 hex characters, an ed25519 public key. Asserting the SHAPE and not merely non-emptiness is
+# Asserting the list's shape and uniqueness, rather than merely non-emptiness, is
 # deliberate: `BUSBAR_RELEASE_PUBKEY: ${{ vars.MISSPELLED }}` expands to the empty string, and a
 # truncated or whitespace-padded value would embed and then fail every verification at runtime,
 # which is the same user-visible outcome as embedding nothing.
 key_is_valid() {
-  [[ "${BUSBAR_RELEASE_PUBKEY:-}" =~ ^[0-9a-fA-F]{64}$ ]]
+  local py=python3
+  command -v python3 >/dev/null 2>&1 || py=python
+  "$py" - <<'PYEOF'
+import os, re, sys
+
+# Keep aligned with parse_release_keys and verify-artifact.py's _key_list_ok.
+retired = "b18395a332803151b9cd40a71489a86a96d8bea3ee6a37a45f59dec197bacba7"
+ids, keys = set(), set()
+for entry in os.environ.get("BUSBAR_RELEASE_PUBKEY", "").split(","):
+    parts = entry.split(":")
+    key_id, algorithm = None, "ed25519"
+    if len(parts) == 1:
+        key = parts[0]
+    elif len(parts) == 2:
+        key_id, key = parts
+    elif len(parts) == 3:
+        key_id, algorithm, key = parts
+    else:
+        sys.exit(1)
+    if key_id is not None:
+        if not re.fullmatch(r"[a-z0-9-]+", key_id) or key_id in ids:
+            sys.exit(1)
+        ids.add(key_id)
+    pattern = {"ed25519": r"[0-9a-fA-F]{64}", "p256": r"04[0-9a-fA-F]{128}"}.get(algorithm)
+    if pattern is None or not re.fullmatch(pattern, key):
+        sys.exit(1)
+    material = (algorithm, key.lower())
+    if material in keys or (algorithm == "ed25519" and key.lower() == retired):
+        sys.exit(1)
+    keys.add(material)
+PYEOF
 }
 
 # ── --selftest ──────────────────────────────────────────────────────────────────────────────────
 #
 # THIS GUARD IS RELIED ON BY TWO OTHER CHECKS AND WAS ITSELF UNEXERCISED.
 #
-# platform-checks' `pubkey:<target>` row runs `assert-embedded` against every published archive and
-# reports the verdict as its own — deliberately, so the build-time and publish-time halves are one
-# assertion and not two copies of it. the removed release-stage.yml calls `require` before a compiler starts.
+# release-build.sh and pgo-build.sh call `require` before a compiler starts. `assert-embedded`
+# checks the entire list in a packaged archive; verify-artifact.py also checks the shipped binary.
 # So a guard that had quietly stopped discriminating would take BOTH of those green with it, and
 # the failure it exists to catch is invisible by construction: a missing key produces a binary that
 # compiles, links, tests and ships.
@@ -90,8 +118,28 @@ if [ "${MODE}" = "--selftest" ]; then
   else
     nope "require REJECTED a well-formed key — the guard would stop every release"
   fi
-  for bad_label in "unset:" "empty:" "short:abc123" "long:${GOOD_KEY}ff" "padded: ${GOOD_KEY} " "nonhex:${GOOD_KEY%??}zz"; do
-    label="${bad_label%%:*}"; val="${bad_label#*:}"
+  P256_POINT="046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"
+  GOOD_LIST="plugins-root:p256:${P256_POINT},plugins-old:${GOOD_KEY},plugins-new:ed25519:${GOOD_KEY%b}c"
+  for good in "root:${GOOD_KEY}" "root:ed25519:${GOOD_KEY}" "root:p256:${P256_POINT}" "$GOOD_LIST"; do
+    if BUSBAR_RELEASE_PUBKEY="$good" "$self" require >/dev/null 2>&1; then
+      ok "require accepts the named root form ${good%%:*}"
+    else
+      nope "require rejected a well-formed root list"
+    fi
+  done
+  RETIRED_KEY="b18395a332803151b9cd40a71489a86a96d8bea3ee6a37a45f59dec197bacba7"
+  for bad_label in "unset|" "empty|" "short|abc123" "long|${GOOD_KEY}ff" "padded| ${GOOD_KEY} " "nonhex|${GOOD_KEY%??}zz" \
+      "empty-entry|${GOOD_LIST}," "leading-empty|,${GOOD_LIST}" "middle-empty|${GOOD_KEY},,${GOOD_KEY%b}c" \
+      "uppercase-id|Root:${GOOD_KEY}" "empty-id|:${GOOD_KEY}" "unknown-alg|r:rsa:${GOOD_KEY}" \
+      "p256-short|r:p256:${P256_POINT%??}" "p256-compressed|r:p256:02${P256_POINT:2:64}" \
+      "p256-unnamed|p256:${P256_POINT}" "p256-nonhex|r:p256:${P256_POINT%??}zz" \
+      "duplicate-id|r:${GOOD_KEY},r:${GOOD_KEY%b}c" "duplicate-key|r:${GOOD_KEY},s:ed25519:${GOOD_KEY}" \
+      "duplicate-case|r:${GOOD_KEY},s:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB" \
+      "duplicate-bare|${GOOD_KEY},r:${GOOD_KEY}" "duplicate-p256|r:p256:${P256_POINT},s:p256:${P256_POINT}" \
+      "retired-bare|${RETIRED_KEY}" "retired-legacy|r:${RETIRED_KEY}" "retired-explicit|r:ed25519:${RETIRED_KEY}" \
+      "retired-in-list|${GOOD_LIST},r:ed25519:B18395A332803151B9CD40A71489A86A96D8BEA3EE6A37A45F59DEC197BACBA7" \
+      "newline|${GOOD_KEY}"$'\n'; do
+    label="${bad_label%%|*}"; val="${bad_label#*|}"
     if [ "$label" = "unset" ]; then
       if (unset BUSBAR_RELEASE_PUBKEY; "$self" require >/dev/null 2>&1); then
         nope "require accepted an UNSET key"
@@ -114,6 +162,24 @@ if [ "${MODE}" = "--selftest" ]; then
   printf 'ELF-ish padding and no key at all here\n'       > "$st_tmp/without/busbar"
   (cd "$st_tmp/with"    && tar -czf "$st_tmp/with.tar.gz" busbar)
   (cd "$st_tmp/without" && tar -czf "$st_tmp/without.tar.gz" busbar)
+
+  printf 'ELF-ish padding %s more padding\n' "$GOOD_LIST" > "$st_tmp/with/busbar-list"
+  (cd "$st_tmp/with" && tar -czf "$st_tmp/with-list.tar.gz" busbar-list)
+  if BUSBAR_RELEASE_PUBKEY="$GOOD_LIST" "$self" assert-embedded "$st_tmp/with-list.tar.gz" >/dev/null 2>&1; then
+    ok "assert-embedded passes an archive carrying the complete mixed root list"
+  else
+    nope "assert-embedded rejected an archive carrying the complete root list"
+  fi
+  if BUSBAR_RELEASE_PUBKEY="$GOOD_LIST" "$self" assert-embedded "$st_tmp/with.tar.gz" >/dev/null 2>&1; then
+    nope "assert-embedded accepted an archive carrying only one root of the list"
+  else
+    ok "an archive carrying only one root does not satisfy the list"
+  fi
+  if BUSBAR_RELEASE_PUBKEY="r:${GOOD_KEY},s:${GOOD_KEY}" "$self" assert-embedded "$st_tmp/with-list.tar.gz" >/dev/null 2>&1; then
+    nope "assert-embedded accepted a malformed root list"
+  else
+    ok "assert-embedded refuses malformed input before searching"
+  fi
 
   if BUSBAR_RELEASE_PUBKEY="$GOOD_KEY" "$self" assert-embedded "$st_tmp/with.tar.gz" >/dev/null 2>&1; then
     ok "assert-embedded passes an archive that really carries the key"
@@ -166,7 +232,9 @@ case "$MODE" in
 [release-key-guard] ##########################################################################
 [release-key-guard] # REFUSING TO BUILD A RELEASE BINARY WITHOUT BUSBAR_RELEASE_PUBKEY.
 [release-key-guard] #
-[release-key-guard] # It must be 64 hex characters (the ed25519 PUBLIC half). Got:
+[release-key-guard] # Expected comma-separated PUBLIC roots with unique IDs and key material:
+[release-key-guard] # <id>:p256:04<128 hex>, <id>:ed25519:<64 hex>, <id>:<64 hex>, or bare <64 hex>.
+[release-key-guard] # IDs use lowercase [a-z0-9-]+; retired release roots are refused. Got:
 [release-key-guard] #   '${BUSBAR_RELEASE_PUBKEY:-<unset>}'
 [release-key-guard] #
 [release-key-guard] # Without it this artifact would compile, link, pass its tests and ship, and
@@ -192,7 +260,7 @@ EOF
     }
     [ -f "$ARCHIVE" ] || { echo "[release-key-guard] no such archive: $ARCHIVE" >&2; exit 1; }
 
-    # `option_env!` yields a `&'static str`, so the 64-char hex key is present in the binary's
+    # `option_env!` yields a `&'static str`, so the entire root list is present in the binary's
     # read-only data VERBATIM. Grepping the shipped archive for it is therefore an exact,
     # byte-level assertion about the artifact a user downloads -- not a proxy for it. This is the
     # form the #52 defect was confirmed in: zero occurrences in the ARM tarball, present in the
