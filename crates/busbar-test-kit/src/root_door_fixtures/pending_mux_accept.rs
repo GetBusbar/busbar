@@ -316,8 +316,6 @@ fn wire(bytes: &[u8], sink: &FramerSink, out: &mut FramerOut) {
     out.yielded.wire_len = bytes.len() as u64;
 }
 
-/// Adoption reports either typed session acceptance or its complete refused wire response.
-/// Accepted bytes remain provisional until the actor commits the plane's result.
 fn stage_head(sink: &FramerSink, out: &mut FramerOut, refused: bool) -> bool {
     let bytes = if refused {
         SESSION_REFUSE_WIRE

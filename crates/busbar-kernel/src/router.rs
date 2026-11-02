@@ -1272,8 +1272,6 @@ mod router_door_tests;
 #[path = "tests/router_session_tests.rs"]
 mod router_session_tests;
 
-// The real socket adapter is a dev-only kit implementation. A private source mount keeps this
-// unit-test binary's kernel types identical to the ones its router under test uses.
 #[cfg(test)]
 #[path = "../../busbar-kernel-testkit/src/websocket.rs"]
 mod session_socket_test_adapter;

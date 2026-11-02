@@ -16,5 +16,4 @@ pub mod ingress;
 pub mod test_support;
 pub mod testkit;
 
-/// Real socket upgrade adaptation for tests of the kernel's neutral session handoff.
 pub mod websocket;

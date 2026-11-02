@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A real WebSocket socket adapter for tests of the kernel's transport-neutral session route.
-//! This implementation is dev-only; the kernel's normal dependency graph carries no WS engine.
-
 use axum::extract::ws::{Message, WebSocketUpgrade};
 use axum::extract::{FromRequestParts, Request};
 use axum::middleware::Next;
@@ -11,7 +8,6 @@ use axum::response::Response;
 use busbar_kernel::plane_routes::{FramedSession, SessionAdmission, SessionPipe};
 use futures::{SinkExt, StreamExt};
 
-/// Adapt real socket upgrades around a kernel router while leaving refused responses intact.
 pub fn adapt(router: axum::Router) -> axum::Router {
     router.layer(axum::middleware::from_fn(adapt_request))
 }
@@ -26,8 +22,7 @@ async fn adapt_request(request: Request, next: Next) -> Response {
     parts.extensions.insert(slot.clone());
     let routed = next.run(Request::from_parts(parts, body));
     tokio::pin!(routed);
-    // Admission is answered only after the actual wire upgrade extractor accepted this request.
-    // Drive the request and its admission exchange together; no per-request task is needed.
+
     let response = loop {
         tokio::select! {
             request = admissions.recv() => match request {

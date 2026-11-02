@@ -1904,7 +1904,7 @@ async fn a_pending_session_commit_holds_wire_and_application_calls_until_ready()
     use busbar_test_kit::root_door_fixtures::pending_mux_accept::{Mux, SESSION_ACCEPT_WIRE};
     let _publishing = anonymous_policy().await;
     let door = Arc::new(Mux::with_pending_commit());
-    door.release(); // application-message delivery itself does not pend in this control.
+    door.release();
     let (router, admitted, outgoing) = accepted_session_route();
     outgoing
         .send(SessionOut {
@@ -2152,7 +2152,7 @@ async fn a_plain_request_that_declines_detach_keeps_http_400_and_runs_no_plane_e
         Duration::from_secs(30),
         stopped,
     ));
-    client.write_all(b"1").await.unwrap(); // the fixture emits GET /first with no Upgrade fields.
+    client.write_all(b"1").await.unwrap();
     let mut wire = vec![0; SESSION_REFUSE_WIRE.len()];
     tokio::time::timeout(Duration::from_secs(10), client.read_exact(&mut wire))
         .await

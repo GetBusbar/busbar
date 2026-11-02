@@ -2429,7 +2429,6 @@ impl Framing {
     }
 
     /// Attempt a handover without dropping an unchanged framing when its first crossing refuses.
-    /// Once any prefix was handed over, an error is a fault and cannot resume the old framing.
     pub fn try_detach(&mut self) -> Result<Detached, Refused> {
         self.quiet()?;
         let mut crossed = false;

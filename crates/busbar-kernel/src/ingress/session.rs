@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The neutral session route handoff. The owning transport decides whether its request can
-//! become a session; the kernel neither recognizes nor answers a wire upgrade protocol.
-
 use crate::plane_routes::{FramedSession, SessionPipe};
 use axum::response::Response;
 
@@ -28,8 +25,6 @@ impl<S: Send + Sync> axum::extract::FromRequestParts<S> for SessionUpgrade {
     }
 }
 
-/// Publish the admitted handler's pipe for the owning transport. The transport, rather than
-/// this neutral route response, commits and renders the wire upgrade.
 pub fn bridge(upgrade: SessionUpgrade, pipe: SessionPipe) -> Response {
     upgrade.0.put(pipe);
     let mut response = Response::new(axum::body::Body::empty());

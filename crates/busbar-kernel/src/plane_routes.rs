@@ -220,7 +220,6 @@ pub struct FramedSession {
 }
 
 impl FramedSession {
-    /// Give this request a single admission exchange with its connection's transport actor.
     #[must_use]
     pub fn with_admission(
         sender: tokio::sync::mpsc::UnboundedSender<SessionAdmission>,
@@ -235,8 +234,6 @@ impl FramedSession {
         }
     }
 
-    /// Ask the owning transport to admit this request before a session handler runs. A missing,
-    /// reused or disconnected admission exchange refuses; no mutex is held while awaiting it.
     pub async fn admit(&self) -> bool {
         let pending = self
             .admission

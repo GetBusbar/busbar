@@ -759,7 +759,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                         .push(zeroize::Zeroizing::new(buffer.filled().to_vec()));
                     stage.incoming_len += buffer.filled().len();
                 }
-                // Return progress so buffered input reaches a non-parked admission next poll.
+
                 true
             }
             Poll::Ready(Err(_)) => {
@@ -773,7 +773,6 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
     fn abandon_stage(&mut self) {
         self.staged.take();
         if let Some(framing) = self.framing.take() {
-            // No handshake was published, so none of the provisional finish bytes may escape.
             let _ = framing.finish(CLOSE_NORMAL);
         }
         self.ended = true;
@@ -1103,7 +1102,6 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
             return Step::Done;
         }
         if matches!(op, Op::Head { .. } | Op::Refuse { .. }) {
-            // A plane response replaces the withheld transport handshake.
             self.staged.take();
         }
         let Some(framing) = self.framing.as_mut() else {
@@ -1185,7 +1183,6 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 if e.outcome == busbar_contract::abi::mechanism::call::Outcome::Refused
                     && framing.token() != 0 =>
             {
-                // No protocol handover occurred. The original transport renders the refusal.
                 if let Some(inflow) = self.inflows.get_mut(&stream) {
                     inflow.refused = true;
                 }
@@ -1233,10 +1230,9 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 tokio::time::Instant::from_std(framer::instant_of(deadline)),
             )));
         }
-        // Keep each crossing's payload, zeroizing wire, container and producer custody together.
+
         stage.yielded.push(yielded);
         if self.framing.as_ref().is_some_and(Framing::parked) {
-            // PENDING may already carry bytes. Neither those nor a receipt authorize publication.
             return;
         }
         let accepted = stage
@@ -1262,7 +1258,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 if let UpgradePhase::Adopting(reply) = stage.phase {
                     let _ = reply.send(false);
                 }
-                // This is the transport's refusal, before any plane entry or handshake commit.
+
                 for batch in stage.yielded {
                     self.absorb(batch);
                 }
