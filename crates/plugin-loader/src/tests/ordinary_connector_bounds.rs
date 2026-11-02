@@ -142,7 +142,7 @@ fn the_real_host_reaches_an_immediate_reply_with_independent_declared_and_caller
         let opened = table.opened.lock().unwrap();
         assert_eq!(opened.len(), 1);
         assert_eq!(opened[0].0, NeedId(0));
-        assert_eq!(opened[0].1, "https://far.example/reply");
+        assert_eq!(opened[0].1, "https://far.example/base");
         assert_eq!(opened[0].2, b"GET");
         assert_eq!(opened[0].3, b"/reply");
         assert_eq!(opened[0].5, b"body");
