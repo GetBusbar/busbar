@@ -493,7 +493,7 @@ impl MoneySeam for Book {
 }
 
 impl Book {
-    fn bills(&self) -> Vec<CancelBill> {
+    pub(crate) fn bills(&self) -> Vec<CancelBill> {
         self.bills.lock().unwrap().clone()
     }
 

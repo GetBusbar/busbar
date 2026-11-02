@@ -158,12 +158,28 @@ impl Drop for Open<'_> {
 
 /// What the caller side waits for next.
 enum Next {
+    /// The admitted session opens before any caller piece is read.
+    Open,
     /// The other side ended the session.
     Halt(Halt),
     /// `drive` named the session: collect its output.
     Collect,
     /// The caller's piece; `None` once its side ended.
     Caller(Option<SessionInput>),
+}
+
+/// Collect ownership under the table lock; waking a task may run arbitrary waker code.
+fn wake_ready(sessions: &Mutex<std::collections::HashMap<u64, Arc<Notify>>>, ready: &[u64]) {
+    let told: Vec<_> = {
+        let open = sessions.lock().unwrap_or_else(PoisonError::into_inner);
+        ready
+            .iter()
+            .filter_map(|stream| open.get(stream).cloned())
+            .collect()
+    };
+    for told in told {
+        told.notify_one();
+    }
 }
 
 impl PlaneDriver {
@@ -184,13 +200,14 @@ impl PlaneDriver {
             if ready.is_empty() {
                 return;
             }
-            let open = self.lock_sessions();
-            for told in ready.iter().filter_map(|stream| open.get(stream)) {
-                told.notify_one();
-            }
+            wake_ready(&self.sessions, &ready);
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tests/session_wake_tests.rs"]
+mod session_wake_tests;
 
 /// Why `end` ended a side; `None` for a side that simply finished.
 fn cause(end: &End) -> Option<ReasonCode> {
@@ -234,6 +251,7 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
         priced: bool,
     ) -> Result<(), ReasonCode> {
         let d = self.driver;
+        self.open_hooks(token, ctx).await?;
         if priced {
             d.money.session_opened(ctx)?;
         }
@@ -307,8 +325,15 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
         mut ended: watch::Receiver<Option<Halt>>,
         turns: mpsc::Sender<OutboundRequest>,
     ) -> End {
+        let mut opening = true;
         loop {
-            let next = guarded_run(run, async {
+            let next = if std::mem::take(&mut opening) {
+                // The plane may have an opening request or server-first output even when the
+                // caller has sent no frame. It uses the same crossing, writes and backpressure
+                // as every later piece; it never marks the caller's side ended.
+                Ok(Next::Open)
+            } else {
+                guarded_run(run, async {
                 tokio::select! {
                     biased;
                     halt = ended.wait_for(Option::is_some) => {
@@ -317,8 +342,9 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
                     () = told.notified() => Next::Collect,
                     read = self.caller.read_owned() => Next::Caller(read),
                 }
-            })
-            .await;
+                })
+                .await
+            };
             let quiet = Piece {
                 from: FROM_CALLER,
                 flags: 0,
@@ -329,6 +355,7 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
                 reason: 0,
             };
             let piece = match next {
+                Ok(Next::Open) => quiet,
                 Err(cause) | Ok(Next::Halt(Halt::Cause(cause))) => return End::Cancel(cause, None),
                 Ok(Next::Halt(Halt::Over) | Next::Caller(None)) => Piece {
                     flags: PIECE_LAST,

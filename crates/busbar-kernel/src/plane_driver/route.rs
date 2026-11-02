@@ -988,10 +988,14 @@ impl Drop for Pumping<'_> {
         let (flight, done) = match self.flight.take() {
             Some(mut flight) => match flight.settled() {
                 // The op ended on its own: its answer may have closed the unit.
-                Some(settled) => (
-                    None,
-                    answered_done(&settled, &*flight, self.piece_flags, self.final_answer),
-                ),
+                Some(settled) => {
+                    let done =
+                        answered_done(&settled, &*flight, self.piece_flags, self.final_answer);
+                    // The worker may have completed a cancel before this task was polled again.
+                    // The sweep still needs that answer's disposition and record writes, including
+                    // a FAULT which must not cause another terminal cancel.
+                    (Some(flight), done)
+                }
                 None => {
                     self.driver.calls.drop_client(self.ticket);
                     (Some(flight), false)
