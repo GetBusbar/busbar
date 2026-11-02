@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use super::*;
-
 fn constructor_output(command: &mut std::process::Command) -> std::process::Output {
     use std::process::Stdio;
     use std::time::{Duration, Instant};
