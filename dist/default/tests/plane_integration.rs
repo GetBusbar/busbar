@@ -705,11 +705,6 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
     // door is mounted: `root::door_steps::tests::door_boundary::
     // an_audience_bound_token_is_confined_to_its_door_plane_through_the_composition`, over every
     // guarded route of the door's data router. Here, the kernel's half: it mounts neither.
-    assert!(
-        !busbar_kernel::ingress::arrival::any_body_ingress(),
-        "a kernel body-model arrival is installed again: the convenience routes would be the \
-         kernel's, and this walk would owe them the confinement assertions"
-    );
     for pattern in BODY_INGRESS_ROUTES {
         assert!(
             !core_routes.iter().any(|(path, _, _)| path == pattern),

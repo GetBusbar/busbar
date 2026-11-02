@@ -120,6 +120,24 @@ unit-b = "beta"
     }
 }
 
+/// An arrival must cross the plane's admitted memory-ABI door, never an installed Rust callback.
+#[test]
+fn the_generator_refuses_the_retired_body_arrival_axis() {
+    let manifest = r#"
+[features]
+plane = []
+[package.metadata.busbar.linked]
+plane = "busbar-example"
+[package.metadata.busbar.linked-axes]
+plane = "plane-door body-ingress"
+"#;
+    let refused = std::panic::catch_unwind(|| linked_source(manifest, &|_| true));
+    assert!(
+        refused.is_err(),
+        "a body-arrival callback bypasses the plane door"
+    );
+}
+
 /// THE TRANSPORT AND CLAIMS AXES, and the rows no feature can drop. A row whose crate is a required
 /// dependency is linked in every build and its key only names the row; two rows may share a crate,
 /// each naming its own entry; a `transport` row fills `transports` with the row its bare `door`

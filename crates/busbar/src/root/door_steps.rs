@@ -2179,8 +2179,8 @@ fn style_word(auth: &busbar_kernel::config::ProviderAuth) -> &str {
 /// (`root::boot::dropped_registry`), read off its signed Statement rendering, in the host's one
 /// listing order (`busbar_contract::auth_calls::listed_styles`), each with its declared flags.
 /// Nothing is bound or opened (Law 7); a row whose Statement a bind refuses declares none here (its
-/// load refuses it where it is used). The kernel reads it before the configuration is parsed
-/// (`busbar_kernel::preflight::install_declared_styles`).
+/// load refuses it where it is used). Boot captures these declarations as kernel metadata before
+/// configuration is parsed (`busbar_kernel::preflight::install_declared_styles`).
 #[must_use]
 pub fn declared_styles() -> Vec<busbar_contract::auth_calls::DeclaredStyle> {
     use crate::root::loader::dispatch::kinds::auth::{rendered_facts, stated_facts};

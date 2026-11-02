@@ -43,7 +43,6 @@ pub(crate) const NODE_UNIT: &str = "node";
 /// that registers on it exports. Plane doors register through [`PLANE_DOOR_AXIS`].
 pub(crate) const AXES: &[(&str, &str, &str)] = &[
     ("protocols", "protocols", "PROTOCOLS"),
-    ("body-ingress", "body_ingress", "BODY_INGRESS"),
     ("protocol-seams", "protocol_seams", "install_protocol_seams"),
     ("diagnostics", "diagnostics", "DIAGNOSTICS"),
     ("on-host", "on_host", "on_host"),

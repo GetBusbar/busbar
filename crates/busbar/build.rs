@@ -171,6 +171,9 @@ fn main() {
     for cfg in linked_axis_cfgs(&manifest, &enabled).1 {
         println!("cargo::rustc-check-cfg=cfg({cfg})");
     }
+    // Retired fixture cfg, recognized but never enabled or accepted as a registration axis.
+    // Historical arrival tests remain disabled; shipping requests cross the plane door.
+    println!("cargo::rustc-check-cfg=cfg(linked_axis_body_ingress)");
     // `BUSBAR_LINKED_AXES`: the same set as data, space-separated, so a black-box case's `requires`
     // reads it at run time rather than a test spelling a `cfg` per axis.
     println!(

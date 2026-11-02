@@ -1,36 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE NEUTRAL ARRIVAL SEAM — the ABI a dialect's ingress calls to reach the core request pipeline
-//! WITHOUT naming a `busbar-core` type, and the protocol-name-keyed body-model side-table the
-//! composition root registers those arrivals through. The URL-model (path-model) side-table is
-//! deleted (ARCHITECT 2026-10-16 ruling 3 item 1): recognising a model in the URL is the plane's own
-//! logic, and the plane's door claims and serves those paths itself.
+//! Neutral arrival values retained for historical in-process fixtures.
 //!
-//! ## Why this lives in the neutral substrate
-//!
-//! A path-model dialect (Gemini keeps the model in `/v1beta/models/{model}:generateContent`, Bedrock
-//! in `/model/{id}/converse`) parses its OWN model out of the URL and then runs the SAME resolution +
-//! forward every other dialect runs. That parsing is the dialect's statement about its own URL space,
-//! so it belongs in the dialect's crate (the retired engine crate), not in core. But the resolution + forward it
-//! then calls (`ingress_path_model`, `operation_ingress`, the `finish_rejected`/`ingress_error`
-//! error-shaping, the mount-aware `envelope_dialect`) is deeply `App`/`GovCtx`/`CallerToken`-bound and
-//! stays in core. [`ArrivalHost`] is the seam between the two: core implements it over its live `App`;
-//! the dialect crate holds an `Arc<dyn ArrivalHost>` (carried on the [`Arrival`]) and calls typed, safe
-//! methods on it, crossing the core-only `App`/`GovCtx`/`CallerToken` as an OPAQUE [`ArrivalCtx`] and
-//! the neutral `Operation`/`Response`/`HeaderMap`/`Bytes` directly. So the dialect names no
-//! `busbar_kernel::` item and core names no dialect — exactly the plane ABI, mirroring `EngineHost`.
+//! Shipping arrivals are served exclusively through the owning plane's memory-ABI door; the
+//! former path- and body-model callback registries are removed. These values keep the request
+//! bytes and routing facts beside an opaque fixture context and typed host operations.
 
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
 
 use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::Response;
-
-use crate::plane_driver::PlaneAnswer;
 
 /// THE OPAQUE CORE CONTEXT of one arrival — core's `Arc<App>` + `GovCtx` + `CallerToken`, type-erased
 /// so the dialect crate carries it back into the host methods without naming a core type. Core boxes
@@ -73,13 +55,10 @@ pub struct ArrivalPayload {
     pub caller_token: Option<crate::auth::CallerCredential>,
 }
 
-/// THE CORE REQUEST PIPELINE, as a path-model dialect's ingress reaches it. Every method that produces
-/// a response future returns a BOXED, `'static` future: the core impl clones the cheap
-/// `Arc<App>`/`GovCtx`/`CallerToken` out of the [`ArrivalCtx`] and owns the moved `HeaderMap`/`Bytes`,
-/// so the future borrows nothing and is safe to hand back across the `fn`-pointer arrival boundary.
+/// Core request helpers retained for historical in-process arrival fixtures.
 ///
-/// The `kind_*`/`err_type_*` accessors hand the dialect the core-owned neutral error-category vocabulary
-/// (`KIND_NOT_FOUND`, …) by value, so the dialect names none of core's `proxy`/`admin` const modules.
+/// The error-category accessors return core's neutral vocabulary, and the opaque context carries
+/// the fixture's core-bound state without exposing it to its dialect handler.
 pub trait ArrivalHost: Send + Sync {
     /// The NOT-CHARGED observability finish (`crate::ingress::finish_rejected`) a pre-routing rejection
     /// (malformed path, unsupported action, no handler) must flow through so it is counted + logged.
@@ -127,7 +106,7 @@ pub trait ArrivalHost: Send + Sync {
 
 /// ONE ARRIVAL, as a PATH-MODEL DIALECT RECEIVES IT — everything the catch-all already extracted, plus
 /// the [`ArrivalHost`] it calls back through and the opaque [`ArrivalCtx`] it threads into every host
-/// method. A struct because it crosses a `fn` pointer ([`BodyIngress`]); the neutral fields
+/// method. The neutral fields
 /// (`path`/`uri`/`headers`/`body`) the dialect reads directly, the core-bound state only through `ctx`.
 pub struct Arrival {
     /// The core pipeline the dialect calls back through.
@@ -147,61 +126,4 @@ pub struct Arrival {
     pub uri: Uri,
     pub headers: HeaderMap,
     pub body: Bytes,
-}
-
-// ============================================================================
-// THE NEUTRAL BODY-MODEL ARRIVAL SEAM — the ABI a body-model dialect's universal ingress (the LLM
-// plane's relocated `operation_ingress`) is registered through. (Its path-model twin is deleted: a
-// dialect whose model rides the URL is the plane's own arrival, served through its door; ARCHITECT
-// 2026-10-16 ruling 3 item 1.)
-// A body-model protocol keeps the model IN THE BODY, so its arrival does no URL parsing; but the
-// resolution + forward tail (`operation_ingress` → the one engine) reads the LLM routing tables and
-// so RELOCATED into the retired engine crate. Core's `protocol_dispatch` resolves the body-arrival by protocol
-// name and calls it, naming no LLM type — exactly the plane ABI, reusing `Arrival`/`ArrivalHost`/
-// `ArrivalCtx`.
-// ============================================================================
-
-/// A body-model dialect's own universal ingress: one arrival in, one boxed [`PlaneAnswer`] future
-/// out: it takes an [`Arrival`] and returns a boxed answer future.
-pub type BodyIngress = fn(Arrival) -> Pin<Box<dyn Future<Output = PlaneAnswer> + Send>>;
-
-/// One protocol-name → body-arrival pairing, the element of an installed / test body-arrival table.
-pub type BodyIngressEntry = (&'static str, BodyIngress);
-
-/// The body-arrivals the COMPOSITION ROOT installed, protocol-name-keyed. Set once by
-/// [`install_body_ingress`]; consulted by [`body_ingress_for`]. A `Vec`, not a `&'static [_]`,
-/// because the composition root ASSEMBLES it from whichever protocol crates are linked.
-static INSTALLED_BODY_INGRESS: std::sync::OnceLock<Vec<(&'static str, BodyIngress)>> =
-    std::sync::OnceLock::new();
-
-/// INSTALL THE BODY-MODEL ARRIVALS — the composition root's one write. Set-once.
-///
-/// # Panics
-/// - if called twice: two composition roots is a wiring bug, not a merge to attempt.
-pub fn install_body_ingress(arrivals: Vec<(&'static str, BodyIngress)>) {
-    assert!(
-        INSTALLED_BODY_INGRESS.set(arrivals).is_ok(),
-        "install_body_ingress called twice: there is one composition root, and it registers once"
-    );
-}
-
-/// Whether any body-model arrival is installed (a plane registered its arrivals on the body axis):
-/// the convenience surfaces that hand their unit to one (`/{name}/v1/messages`,
-/// `/{provider}/{model}/v1/messages`) are mounted only then; a plane served through its door
-/// claims those paths itself.
-#[must_use]
-pub fn any_body_ingress() -> bool {
-    INSTALLED_BODY_INGRESS.get().is_some_and(|a| !a.is_empty())
-}
-
-/// RESOLVE A BODY-MODEL DIALECT'S UNIVERSAL ARRIVAL BY NAME — the lookup `protocol_dispatch` performs
-/// for a body-model protocol. Consults the installed table. `None` when no
-/// LLM plane is linked (core booted plane-agnostic): the caller then answers the honest no-handler
-/// 404.
-pub fn body_ingress_for(name: &str) -> Option<BodyIngress> {
-    INSTALLED_BODY_INGRESS
-        .get()?
-        .iter()
-        .find(|(n, _)| *n == name)
-        .map(|(_, f)| *f)
 }

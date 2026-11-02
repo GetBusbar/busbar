@@ -391,29 +391,28 @@ pub(crate) fn linked_auth_axis() -> Option<Arc<dyn busbar_contract::auth_calls::
     auth_axis(linked().ok()?)
 }
 
-/// The root's reader of the outbound styles this build's auth plugins declare, linked and dropped
-/// in ([`install_declared_styles`]).
-pub type DeclaredStyles = fn() -> Vec<busbar_contract::auth_calls::DeclaredStyle>;
+// Boot's admitted plugin inventory is immutable for the process. Keep its declared metadata
+// as data, rather than retaining an executable root callback in the kernel (spec §11.11 R6).
+static DECLARED_STYLES: std::sync::OnceLock<Vec<busbar_contract::auth_calls::DeclaredStyle>> =
+    std::sync::OnceLock::new();
 
-static DECLARED_STYLES: std::sync::OnceLock<DeclaredStyles> = std::sync::OnceLock::new();
-
-/// THE ROOT'S DOOR onto the declared outbound styles (the first install stands). Installed once
-/// the plugins directory is scanned and before the configuration is first parsed, so a provider's
-/// `auth:` is read against every auth plugin this process loads, a dropped-in one as a linked one
-/// (BUSBAR-1.6.0.md Part 2 #2), and nothing is opened to read them.
-pub fn install_declared_styles(read: DeclaredStyles) {
-    let _ = DECLARED_STYLES.set(read);
+/// Install the outbound styles the admitted linked and dropped-in auth plugins declare.
+///
+/// The first install stands. Boot captures this data after scanning the immutable process plugin
+/// inventory and before parsing configuration; reloads see the same inventory and declarations.
+/// No plugin is opened to read this metadata.
+pub fn install_declared_styles(styles: Vec<busbar_contract::auth_calls::DeclaredStyle>) {
+    let _ = DECLARED_STYLES.set(styles);
 }
 
-/// THE OUTBOUND STYLES a provider's `auth:` may name (BUSBAR-1.6.0.md #50; arch-audit u29 F1): the
-/// ones this build's auth plugins declare, in the host's one listing order
-/// (`busbar_contract::auth_calls::listed_styles`), each with its declared flags (its endpoint bits
-/// among them): the root's reader ([`install_declared_styles`]), else the auth axis over this
-/// build's linked rows (a build with no root: a test binary's stand-in). The kernel names none.
+/// The outbound styles a provider's `auth:` may name, with their exact declared order and flags.
+///
+/// Reads boot's immutable metadata snapshot, or the linked auth axis in a build without a root
+/// (a test binary's stand-in). The kernel supplies no style words of its own.
 #[must_use]
 pub fn declared_styles() -> Vec<busbar_contract::auth_calls::DeclaredStyle> {
-    if let Some(read) = DECLARED_STYLES.get() {
-        return read();
+    if let Some(styles) = DECLARED_STYLES.get() {
+        return styles.clone();
     }
     linked_auth_axis()
         .map(|axis| axis.outbound_styles())

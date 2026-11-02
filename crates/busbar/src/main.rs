@@ -269,7 +269,7 @@ include!(concat!(env!("OUT_DIR"), "/linked.rs"));
 // admin crate names no hook plugin.
 include!(concat!(env!("OUT_DIR"), "/linked_hook_names.rs"));
 
-/// Register the remaining arrival and root-unit seams. Protocol implementation declarations are
+/// Register the remaining protocol and root-unit seams. Protocol implementation declarations are
 /// test fixtures only; shipping planes communicate through their memory-ABI doors.
 fn register_protocols() {
     root::linked::register_protocols(&LINKED, ROOT_UNITS);
@@ -298,7 +298,7 @@ fn register_planes() {
     let dropped = root::boot::dropped_from_config(&LINKED);
     // The outbound styles a provider's `auth:` may name: every linked and dropped-in auth row's,
     // read off their Statements before the configuration is first parsed (arch-audit u29 F1).
-    busbar_kernel::preflight::install_declared_styles(root::door_steps::declared_styles);
+    busbar_kernel::preflight::install_declared_styles(root::door_steps::declared_styles());
     root::boot::discover_planes(&LINKED, dropped);
     root::linked::register_planes();
     root::linked::register_exports(dropped);

@@ -26,7 +26,6 @@
 
 use std::sync::Arc;
 
-use busbar_kernel::ingress::arrival::BodyIngressEntry;
 use busbar_kernel::plane_driver::registry::PlaneDecl;
 use busbar_kernel::plane_driver::registry::PlaneDeclaration;
 use busbar_kernel::plane_driver::EngineHost;
@@ -69,8 +68,6 @@ pub struct Linked {
     #[cfg(test)]
     pub protocols:
         &'static [&'static [&'static busbar_kernel::ingress::protocols::ProtocolDecl]],
-    /// Body-model arrivals, by protocol name.
-    pub body_ingress: &'static [&'static [BodyIngressEntry]],
     /// Installers of the protocol-axis seams an entry provides beside its declarations (a completion
     /// synthesizer, a stream-translator factory), each set once.
     pub protocol_seams: &'static [fn()],
@@ -362,12 +359,9 @@ pub struct BookCtx<'a> {
     pub app: &'a busbar_kernel::state::App,
 }
 
-/// Legacy arrival seams and root-unit drivers. Executable protocol declarations are installed
-/// only in the test binary; shipping planes supply routes and refusals through their doors.
-/// A dialect whose model rides the URL has no arrival here: its plane's door
-/// claims and serves those paths (ARCHITECT 2026-10-16 ruling 3 item 1). Then the node axis, which
-/// those arrivals hand their units to: every entry on it is handed the node a root unit drives it
-/// through.
+/// Legacy protocol fixtures and root-unit drivers. Executable protocol declarations are installed
+/// only in the test binary; shipping planes supply routes and refusals through their memory-ABI
+/// doors. Each root unit hands its driver to the entries on the node axis.
 pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
     #[cfg(test)]
     {
@@ -378,12 +372,6 @@ pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
             .collect();
         busbar_kernel::ingress::protocols::install_protocols(installed);
     }
-    let body_ingress: Vec<BodyIngressEntry> = linked
-        .body_ingress
-        .iter()
-        .flat_map(|arrivals| arrivals.iter().copied())
-        .collect();
-    busbar_kernel::ingress::arrival::install_body_ingress(body_ingress);
     for install in linked.protocol_seams {
         install();
     }
