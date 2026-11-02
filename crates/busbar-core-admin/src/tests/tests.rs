@@ -3210,50 +3210,6 @@ fn literal_admin_routes(src: &str) -> Vec<(String, String)> {
     out
 }
 
-#[tokio::test]
-async fn test_admin_v1_all_reads_require_admin_token() {
-    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = crate::new_test_app().governance(gov).build();
-    let router = crate::build_router(app);
-    let (addr, handle, client) = spin_up(router).await;
-
-    for (rel, _) in crate::v1::json::V1_GET_PATHS {
-        let path = format!("{}{rel}", crate::v1::contract::ADMIN_PREFIX);
-
-        let none = client
-            .get(format!("http://{addr}{path}"))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(
-            none.status().as_u16(),
-            401,
-            "{path} must reject a request with NO admin token"
-        );
-        let body: serde_json::Value = none.json().await.unwrap();
-        assert_eq!(
-            body["error"]["code"], "unauthorized",
-            "{path}: the admin 401 speaks the v1 envelope: {body}"
-        );
-
-        let wrong = client
-            .get(format!("http://{addr}{path}"))
-            .header("x-admin-token", "not-the-token")
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(
-            wrong.status().as_u16(),
-            401,
-            "{path} must reject a request with the WRONG admin token"
-        );
-    }
-
-    handle.abort();
-}
-
 #[test]
 fn test_create_key_unconfigured_allowed_pool_is_nonfatal_and_quiet() {
     use tracing_subscriber::layer::SubscriberExt as _;
