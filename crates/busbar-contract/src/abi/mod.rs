@@ -51,7 +51,8 @@ macro_rules! slot_table {
             $(#[$sdoc])*
             ///
             /// # Safety
-            /// The context names a live host and every handle belongs to that host. Input
+            /// The context is this table's live host-minted context. Numeric handles are checked
+            /// by the host as the slot specifies; they do not authorize pointer dereferences. Input
             /// pointers name initialized, live, immutable ranges of their stated lengths;
             /// output pointers name live, exclusive writable ranges of their stated capacities.
             /// Nested ranges and returned borrows obey this slot's documented lifetime. The
