@@ -30,7 +30,6 @@ use busbar_contract::services::{DiskDest, DiskReport, DiskRotate, Later, Ran};
 use busbar_contract::transport::ConnFacts;
 
 use super::*;
-use crate::both_ways;
 use crate::dispatch::kinds::export::Export;
 use crate::dispatch::{
     load_dropped_bytes, load_linked, rendering_of, Bind, Diagnostic, DispatchConfig, Dispatcher,
@@ -43,29 +42,87 @@ use crate::sign::{Declares, Manifest};
 #[path = "export_refresh_tests.rs"]
 mod refresh_tests;
 
-const FILE_DOOR: DoorFn = both_ways::export_fixture::door;
+const FILE_DOOR: DoorFn = file_door;
+const WEBHOOK_DOOR: DoorFn = webhook_door;
+const TRACE_DOOR: DoorFn = trace_door;
 
 fn file_cdylib() -> &'static str {
-    both_ways::fixture("export").1
+    "BUSBAR_TEST_EXPORT_FILE_CDYLIB"
 }
-
-const WEBHOOK_DOOR: DoorFn = both_ways::export_carried_fixture::door;
-
 fn webhook_cdylib() -> &'static str {
-    both_ways::fixture("export-carried").1
+    "BUSBAR_TEST_EXPORT_WEBHOOK_CDYLIB"
+}
+fn trace_cdylib() -> &'static str {
+    "BUSBAR_TEST_EXPORT_OTLP_CDYLIB"
 }
 
-const TRACE_DOOR: DoorFn = both_ways::export_trace_fixture::door::door;
+fn required_file(variable: &str) -> PathBuf {
+    let path = std::env::var_os(variable)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| panic!("{variable} must name the fresh actual product input"));
+    assert!(
+        path.is_absolute() && path.is_file(),
+        "{variable} must be an absolute file: {}",
+        path.display()
+    );
+    path
+}
 
-fn trace_cdylib() -> &'static str {
-    both_ways::fixture("export-trace").1
+fn actual_door(
+    variable: &str,
+    image: &'static OnceLock<(
+        libloading::Library,
+        busbar_contract::abi::sdk::door::RawDoorFn,
+    )>,
+) -> &'static Door {
+    let image = image.get_or_init(|| {
+        let library = crate::dlopen_on_worker(required_file(variable).as_os_str())
+            .expect("the actual exporter image loads on the plugin thread");
+        // SAFETY: the required actual product image exports the typed mechanism symbol;
+        // image retains its library throughout every test crossing.
+        let entry = unsafe {
+            *library
+                .get::<busbar_contract::abi::sdk::door::RawDoorFn>(DOOR_SYMBOL)
+                .expect("the actual exporter door")
+        };
+        (library, entry)
+    });
+    let door = crate::dispatch::load::enter_door(image.1);
+    crate::dispatch::load::validate_door::<Export>(door).expect("the actual exporter validates");
+    // SAFETY: the validated immutable descriptor belongs to the process-held image.
+    unsafe { &*door }
+}
+
+extern "C" fn file_door() -> &'static Door {
+    static IMAGE: OnceLock<(
+        libloading::Library,
+        busbar_contract::abi::sdk::door::RawDoorFn,
+    )> = OnceLock::new();
+    actual_door(file_cdylib(), &IMAGE)
+}
+extern "C" fn webhook_door() -> &'static Door {
+    static IMAGE: OnceLock<(
+        libloading::Library,
+        busbar_contract::abi::sdk::door::RawDoorFn,
+    )> = OnceLock::new();
+    actual_door(webhook_cdylib(), &IMAGE)
+}
+extern "C" fn trace_door() -> &'static Door {
+    static IMAGE: OnceLock<(
+        libloading::Library,
+        busbar_contract::abi::sdk::door::RawDoorFn,
+    )> = OnceLock::new();
+    actual_door(trace_cdylib(), &IMAGE)
 }
 
 const FILE_CARRIES: &[u8] = &[ExportStream::Logs as u8, ExportStream::Events as u8];
 
 fn file_declaration() -> Declares {
-    Declares::from_declares_json(both_ways::export_fixture::DECLARES.as_bytes())
-        .expect("the file sink's declaration parses")
+    Declares::from_declares_json(
+        &std::fs::read(required_file("BUSBAR_TEST_EXPORT_FILE_DECLARES"))
+            .expect("read the actual file declaration"),
+    )
+    .expect("the actual file sink's declaration parses")
 }
 
 fn file_declares() -> Declares {
@@ -81,9 +138,11 @@ fn renaming(mut declared: Declares) -> Declares {
 }
 
 fn webhook_declares() -> Declares {
-    let declared =
-        Declares::from_declares_json(both_ways::export_carried_fixture::DECLARES.as_bytes())
-            .expect("the webhook sink's declaration parses");
+    let declared = Declares::from_declares_json(
+        &std::fs::read(required_file("BUSBAR_TEST_EXPORT_WEBHOOK_DECLARES"))
+            .expect("read the actual webhook declaration"),
+    )
+    .expect("the actual webhook sink's declaration parses");
     Declares {
         metrics: Vec::new(),
         ..declared
@@ -91,34 +150,77 @@ fn webhook_declares() -> Declares {
 }
 
 fn manifest(name: &str, declares: Declares) -> Manifest {
-    let mut m = both_ways::statement(
-        "export",
-        name,
-        name,
-        busbar_contract::abi::export::ABI_VERSION,
-    );
+    let mut m: Manifest = serde_json::from_slice(
+        &std::fs::read(required_file("BUSBAR_TEST_EXPORT_FILE_MANIFEST"))
+            .expect("read the actual file manifest"),
+    )
+    .expect("the actual file manifest parses");
+    m.name = name.into();
+    m.alias = name.into();
     m.declares = declares;
     m
 }
 
-fn stating(mut m: Manifest, door: DoorFn) -> Manifest {
-    m.statement = Some(hex::encode(
-        rendering_of(door).expect("the door renders its Statement"),
+fn stating(m: Manifest, door: DoorFn) -> Manifest {
+    let variable = if std::ptr::fn_addr_eq(door, FILE_DOOR) {
+        "BUSBAR_TEST_EXPORT_FILE_MANIFEST"
+    } else if std::ptr::fn_addr_eq(door, WEBHOOK_DOOR) {
+        "BUSBAR_TEST_EXPORT_WEBHOOK_MANIFEST"
+    } else if std::ptr::fn_addr_eq(door, TRACE_DOOR) {
+        "BUSBAR_TEST_EXPORT_OTLP_MANIFEST"
+    } else {
+        panic!("only an actual exporter supplies a package manifest")
+    };
+    let mut stated: Manifest = serde_json::from_slice(
+        &std::fs::read(required_file(variable)).expect("read the actual exporter manifest"),
+    )
+    .expect("the actual exporter manifest parses");
+    stated.name = m.name;
+    stated.alias = m.alias;
+    stated.publisher = m.publisher;
+    stated.declares = m.declares;
+    stated.statement = Some(hex::encode(
+        rendering_of(door).expect("the actual door renders its Statement"),
     ));
-    m
+    stated
 }
 
-fn cdylib_bytes(crate_snake: &str) -> Vec<u8> {
-    std::fs::read(both_ways::cdylib(crate_snake)).expect("read the cdylib")
+fn cdylib_bytes(variable: &str) -> Vec<u8> {
+    std::fs::read(required_file(variable)).expect("read the actual exporter image")
 }
 
-fn both(m: Manifest, door: DoorFn, crate_snake: &str) -> [PluginRegistry; 2] {
-    let lib = cdylib_bytes(crate_snake);
+fn both(m: Manifest, door: DoorFn, variable: &str) -> [PluginRegistry; 2] {
+    let lib = cdylib_bytes(variable);
     let m = stating(m, door);
     let linked = PluginRegistry::empty()
         .link(vec![LinkedPlugin::door(m.clone(), door)])
-        .expect("the linked door admits the sink");
-    let dropped = both_ways::dropped(crate_snake, m, &lib);
+        .expect("the actual descriptor admits the sink");
+    let release = crate::sign::SigningKey::from_bytes(&[11; 32]);
+    let signer = if m.publisher == crate::sign::FIRST_PARTY_PUBLISHER {
+        release.clone()
+    } else {
+        crate::sign::SigningKey::from_bytes(&[22; 32])
+    };
+    let publisher = (m.publisher.clone(), signer.verifying_key());
+    let package = crate::sign::sign(&signer, m, &lib);
+    let dir = scratch(&format!("package-{}", package.name));
+    std::fs::write(
+        dir.join("exporter.tar.gz"),
+        crate::tarball::package(&package, "exporter", &lib).expect("package actual image"),
+    )
+    .expect("write the actual exporter package");
+    let policy = crate::sign::TrustPolicy {
+        first_party_key: Some(release.verifying_key()),
+        first_party_keys: vec![crate::sign::FirstPartyKey::unnamed(release.verifying_key())],
+        publishers: std::iter::once(publisher)
+            .filter(|(_, key)| *key != release.verifying_key())
+            .collect(),
+        binary_version: package.version.clone(),
+        ..Default::default()
+    };
+    let dropped =
+        crate::scan_and_validate(&dir, &policy).expect("the actual signed exporter package admits");
+    std::fs::remove_dir_all(dir).expect("remove the staged package");
     [linked, dropped]
 }
 
@@ -669,7 +771,7 @@ fn run_dropped_in(path: &Path) -> Vec<String> {
 fn rotated_record(path: &Path) -> String {
     format!(
         "log 0 {target}: request-log file rotated by rename path={p} archive={p}.1",
-        target = both_ways::fixture("export").0,
+        target = "busbar_export_file",
         p = path.display()
     )
 }
@@ -773,7 +875,9 @@ fn a_linked_and_a_dropped_in_export_sink_register_one_row_and_fold_the_same() {
             "folds": tape.seen(),
         })
         .to_string();
-        (both_ways::row(&registry, name), transcript)
+        ({ let row = registry.resolve(name).expect("the actual exporter row resolves");
+ serde_json::json!({"manifest": Manifest { sha256: String::new(), signature: String::new(), ..row.manifest.clone() },
+ "alias_resolves_to": registry.resolve(&row.manifest.alias).map(|alias| alias.manifest.name.clone()) }).to_string() }, transcript)
     });
     let _ = std::fs::remove_dir_all(&dir);
     assert!(
@@ -1078,7 +1182,9 @@ fn a_first_party_series_is_granted_through_either_door_and_to_nobody_else() {
         );
         let transcript =
             serde_json::json!({ "granted": granted, "folds": tape.seen() }).to_string();
-        (both_ways::row(&registry, name), transcript)
+        ({ let row = registry.resolve(name).expect("the actual exporter row resolves");
+ serde_json::json!({"manifest": Manifest { sha256: String::new(), signature: String::new(), ..row.manifest.clone() },
+ "alias_resolves_to": registry.resolve(&row.manifest.alias).map(|alias| alias.manifest.name.clone()) }).to_string() }, transcript)
     });
     let every_granted = format!(
         r#""granted":{}"#,
@@ -1092,10 +1198,9 @@ fn a_first_party_series_is_granted_through_either_door_and_to_nobody_else() {
     );
     assert_eq!(linked, dropped, "both doors grant and fold the same");
 
-    let lib = cdylib_bytes(file_cdylib());
     let mut third = stating(manifest("s1-third-party", declared.clone()), FILE_DOOR);
     third.publisher = "acme".into();
-    let registry = both_ways::dropped_third_party(file_cdylib(), third, &lib);
+    let [_, registry] = both(third, FILE_DOOR, file_cdylib());
     let sink = ExportRows::new(&registry, Arc::clone(&d))
         .open("s1-third-party", "export.tail", &file_settings(&path))
         .expect("a third party opens; its declaration is simply not granted");
@@ -1140,7 +1245,9 @@ fn a_sink_validates_its_settings_the_same_through_either_door() {
             "not_export": rows.probe("no-such-module", "tail", &refused),
         })
         .to_string();
-        (both_ways::row(&registry, name), transcript)
+        ({ let row = registry.resolve(name).expect("the actual exporter row resolves");
+ serde_json::json!({"manifest": Manifest { sha256: String::new(), signature: String::new(), ..row.manifest.clone() },
+ "alias_resolves_to": registry.resolve(&row.manifest.alias).map(|alias| alias.manifest.name.clone()) }).to_string() }, transcript)
     });
     let line = "export.tail.settings: invalid type: integer `7`, expected a string";
     let streams = [ExportStream::Logs as u8, ExportStream::Events as u8];
@@ -1190,7 +1297,9 @@ fn a_declared_diagnostic_is_stated_and_raised_the_same_through_either_door() {
             "carried": far.carried(),
         })
         .to_string();
-        (both_ways::row(&registry, name), transcript)
+        ({ let row = registry.resolve(name).expect("the actual exporter row resolves");
+ serde_json::json!({"manifest": Manifest { sha256: String::new(), signature: String::new(), ..row.manifest.clone() },
+ "alias_resolves_to": registry.resolve(&row.manifest.alias).map(|alias| alias.manifest.name.clone()) }).to_string() }, transcript)
     });
     assert!(
         linked.0.contains("webhook-delivery-transport-error"),
@@ -1206,10 +1315,9 @@ fn a_declared_diagnostic_is_stated_and_raised_the_same_through_either_door() {
     );
     assert_eq!(linked, dropped, "both doors state and raise the same");
 
-    let lib = cdylib_bytes(webhook_cdylib());
     let mut third = stating(manifest("s3-third-party", decl.clone()), WEBHOOK_DOOR);
     third.publisher = "acme".into();
-    let registry = both_ways::dropped_third_party(webhook_cdylib(), third, &lib);
+    let [_, registry] = both(third, WEBHOOK_DOOR, webhook_cdylib());
     let row = registry.resolve("s3-third-party").expect("admitted");
     assert_eq!(row.manifest.declares.diagnostics, decl.diagnostics);
     assert!(!row.first_party());
@@ -1251,7 +1359,9 @@ fn a_sink_writes_its_declared_destination_through_the_host_the_same_through_eith
     let [linked, dropped] = doors.map(|registry| {
         let on_disk = |_: &Tape| ns(&path) == Some(vec![3, 4]) && !archive(&path, 1).exists();
         (
-            both_ways::row(&registry, "s4-fixture"),
+            { let row = registry.resolve("s4-fixture").expect("the actual exporter row resolves");
+ serde_json::json!({"manifest": Manifest { sha256: String::new(), signature: String::new(), ..row.manifest.clone() },
+ "alias_resolves_to": registry.resolve(&row.manifest.alias).map(|alias| alias.manifest.name.clone()) }).to_string() },
             run(&registry, "s4-fixture", &on_disk),
         )
     });
@@ -1272,14 +1382,12 @@ fn a_sink_writes_its_declared_destination_through_the_host_the_same_through_eith
         )])
         .expect("the linked door admits the sink");
     let refused = run(&registry, "s4-undeclared", &|tape| {
-        tape.count(both_ways::export_fixture::OPEN_FAILED) == 4
+        tape.count("BUSBAR-7074") == 4
     });
     let _ = std::fs::remove_dir_all(&dir);
     assert!(refused.contains(r#""live":null"#), "{refused}");
     assert_eq!(
-        refused
-            .matches(both_ways::export_fixture::OPEN_FAILED)
-            .count(),
+        refused.matches("BUSBAR-7074").count(),
         4,
         "one refusal line per delivery: {refused}"
     );
@@ -1320,7 +1428,9 @@ fn a_sinks_outbound_request_is_carried_by_the_host_the_same_through_either_door(
     let doors = both(m.clone(), WEBHOOK_DOOR, webhook_cdylib());
     let [linked, dropped] = doors.map(|registry| {
         (
-            both_ways::row(&registry, name),
+            { let row = registry.resolve(name).expect("the actual exporter row resolves");
+ serde_json::json!({"manifest": Manifest { sha256: String::new(), signature: String::new(), ..row.manifest.clone() },
+ "alias_resolves_to": registry.resolve(&row.manifest.alias).map(|alias| alias.manifest.name.clone()) }).to_string() },
             run(&registry, "https://collector.example/v1", false),
         )
     });
@@ -1613,10 +1723,9 @@ fn a_loopback_collector_the_operator_trusted_loads_first_party_or_not() {
     );
     assert_eq!(opened[0], opened[1], "both doors declare the same need");
 
-    let lib = cdylib_bytes(trace_cdylib());
     let mut third = stating(manifest("k9e2-third-otlp", Declares::default()), collector);
     third.publisher = "acme".into();
-    let registry = both_ways::dropped_third_party(trace_cdylib(), third, &lib);
+    let [_, registry] = both(third, TRACE_DOOR, trace_cdylib());
     let row = registry.resolve("k9e2-third-otlp").expect("admitted");
     assert!(!row.first_party());
     ExportRows::new(&registry, dispatcher())
@@ -1624,13 +1733,12 @@ fn a_loopback_collector_the_operator_trusted_loads_first_party_or_not() {
         .open("k9e2-third-otlp", "export.trace", &settings)
         .expect("an operator-trusted collector opens");
 
-    let lib = cdylib_bytes(webhook_cdylib());
     let mut third = stating(
         manifest("k9e2-third-hook", webhook_declares()),
         WEBHOOK_DOOR,
     );
     third.publisher = "acme".into();
-    let registry = both_ways::dropped_third_party(webhook_cdylib(), third, &lib);
+    let [_, registry] = both(third, WEBHOOK_DOOR, webhook_cdylib());
     let row = registry.resolve("k9e2-third-hook").expect("admitted");
     assert!(!row.first_party());
 }
