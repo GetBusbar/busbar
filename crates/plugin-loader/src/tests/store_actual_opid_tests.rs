@@ -206,3 +206,101 @@ fn provided_metering_id_replays_across_handles_and_refuses_changed_counts() {
     assert_eq!(rows[0].pricing_version, "historical-version");
     assert_eq!(rows[0].key_group_at_use, "historical-group");
 }
+
+// The original unknown-commit adversary wraps only the actual SQLite batch slot:
+// the real database commits first, one host ticket resumes, and its first settled
+// reply is lost. No record or usage business implementation is supplied here.
+mod pending_lost {
+    use super::*;
+    use busbar_contract::abi::mechanism::call::{
+        AbiStr, InHead, OutHead, Outcome, RawOutcome, FLAG_RESUME,
+    };
+    use busbar_contract::abi::mechanism::door::{Door, DoorParts};
+    use busbar_contract::abi::store::Ops;
+    use std::ffi::c_void;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        OnceLock,
+    };
+    static LOST: AtomicBool = AtomicBool::new(false);
+    static PENDED: AtomicBool = AtomicBool::new(false);
+
+    extern "C" fn batch(
+        instance: *mut c_void,
+        input: *const c_void,
+        out: *mut c_void,
+    ) -> RawOutcome {
+        // SAFETY: this is the unchanged real Store ADD_USAGE_BATCH frame. The
+        // dispatcher retains its request and output through the resumed ticket.
+        unsafe {
+            let head = &*input.cast::<InHead>();
+            if head.flags & FLAG_RESUME != 0 {
+                let output = &mut *out.cast::<OutHead>();
+                *output = crate::dispatch::out_head();
+                let answer = if !LOST.swap(true, Ordering::AcqRel) {
+                    output.error = AbiStr::over(b"lost batch commit reply");
+                    Outcome::Failed
+                } else {
+                    Outcome::Ready
+                };
+                output.outcome = RawOutcome::of(answer);
+                return RawOutcome::of(answer);
+            }
+            let ops = &*actual_store::door().ops().cast::<Ops>();
+            let answer = (ops.add_usage_batch.expect("SQLite batch slot"))(instance, input, out);
+            if answer != RawOutcome::of(Outcome::Ready) {
+                return answer;
+            }
+            PENDED.store(true, Ordering::Release);
+            let output = &mut *out.cast::<OutHead>();
+            output.outcome = RawOutcome::of(Outcome::Pending);
+            output.wake_at_ns = crate::dispatch::now_ns().saturating_add(1);
+            RawOutcome::of(Outcome::Pending)
+        }
+    }
+
+    pub(super) extern "C" fn door() -> &'static Door {
+        static HELD: OnceLock<usize> = OnceLock::new();
+        let ptr = *HELD.get_or_init(|| {
+            let real = *actual_store::door();
+            // SAFETY: the validated real SQLite mapping is retained by actual_store.
+            let mut ops = unsafe { real.ops().cast::<Ops>().read_unaligned() };
+            ops.add_usage_batch = Some(batch);
+            let ops = Box::leak(Box::new(ops));
+            // SAFETY: only the existing adversarial result/ticket boundary above
+            // differs; all actual Store lifecycle and remaining operations are retained.
+            Box::into_raw(Box::new(unsafe {
+                Door::__from_parts(DoorParts {
+                    ops: std::ptr::from_ref(ops).cast(),
+                    ..real.parts()
+                })
+            })) as usize
+        });
+        // SAFETY: HELD names a permanent immutable descriptor allocation.
+        unsafe { &*(ptr as *const Door) }
+    }
+
+    pub(super) fn pended() -> bool {
+        PENDED.load(Ordering::Acquire)
+    }
+}
+
+#[test]
+fn provided_id_batch_retains_exact_identity_after_pending_and_unknown_commit() {
+    const PROVIDED_ID: OpId = OpId([0x72; 16]);
+    let store = open_door("provided-id-unknown", must_not_mint, pending_lost::door);
+    let cells = [("k", 60, one())];
+    let error = RecordStore::add_usage_batch_deduped(&store, PROVIDED_ID, &cells).unwrap_err();
+    assert!(error.0.contains("lost batch commit reply"));
+    assert!(
+        pending_lost::pended(),
+        "the actual committed batch resumed a pending ticket"
+    );
+    assert_eq!(requests(&store), 1, "the failed answer followed a commit");
+    RecordStore::add_usage_batch_deduped(&store, PROVIDED_ID, &cells).unwrap();
+    assert_eq!(
+        requests(&store),
+        1,
+        "the caller retained the committed operation identity"
+    );
+}
