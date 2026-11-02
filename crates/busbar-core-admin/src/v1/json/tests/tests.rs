@@ -560,9 +560,7 @@ async fn worker_was_free_during<Fut: std::future::Future<Output = Response>>(
 
 #[tokio::test(flavor = "current_thread")]
 async fn openapi_builds_the_served_document_off_the_async_worker() {
-    let handle = Arc::new(AppHandle::new(crate::new_test_app().build()));
-    let (free, resp) =
-        worker_was_free_during(super::handlers::openapi(State(Arc::clone(&handle)))).await;
+    let (free, resp) = worker_was_free_during(super::handlers::render_openapi(|_| false)).await;
     assert_eq!(resp.status(), StatusCode::OK);
     assert!(
         free,
@@ -577,8 +575,7 @@ async fn openapi_still_serves_the_document_filtered_to_the_configured_planes() {
             .expect("the committed document marks plane operations");
     let doc: serde_json::Value = serde_json::from_str(&expected).unwrap();
     assert!(doc["paths"].get("/api/v1/admin/keys").is_some());
-    let handle = Arc::new(AppHandle::new(crate::new_test_app().build()));
-    let resp = super::handlers::openapi(State(Arc::clone(&handle))).await;
+    let resp = super::handlers::render_openapi(|_| false).await;
     assert_eq!(resp.status(), StatusCode::OK);
     use http_body_util::BodyExt;
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();

@@ -4239,11 +4239,15 @@ pub(crate) fn openapi_json() -> String {
 pub(crate) async fn openapi(State(handle): State<Arc<AppHandle>>) -> Response {
     let app = handle.load();
 
+    render_openapi(move |section: &str| {
+        busbar_kernel::plane_driver::registry::plane_decl_for_config_section(section)
+            .is_some_and(|decl| app.plane_configured(decl))
+    })
+    .await
+}
+
+pub(super) async fn render_openapi(configured: impl Fn(&str) -> bool + Send + 'static) -> Response {
     let served = tokio::task::spawn_blocking(move || {
-        let configured = |section: &str| {
-            busbar_kernel::plane_driver::registry::plane_decl_for_config_section(section)
-                .is_some_and(|decl| app.plane_configured(decl))
-        };
         let committed = openapi_json();
         openapi_for_configured_planes(&committed, configured).unwrap_or(committed)
     })
