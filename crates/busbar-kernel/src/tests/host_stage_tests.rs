@@ -62,11 +62,14 @@ async fn verify_is_the_callers_own_cache_hit_lead_or_follow() {
     );
     let followed = follower.await.unwrap();
     assert_eq!(
-        (followed.value, followed.bytes),
+        (followed.value, followed.bytes.as_slice()),
         (svc::VERIFY_FOLLOW, b"ok".to_vec())
     );
     let hit = now(s.verify_lookup(&me, b"card", answered().0));
-    assert_eq!((hit.value, hit.bytes), (svc::VERIFY_HIT, b"ok".to_vec()));
+    assert_eq!(
+        (hit.value, hit.bytes.as_slice()),
+        (svc::VERIFY_HIT, b"ok".to_vec())
+    );
     // Another instance never reads it.
     assert_eq!(
         now(s.verify_lookup(&caller("other"), b"card", answered().0)).value,
@@ -384,7 +387,7 @@ async fn a_gate_that_cannot_answer_decides_by_its_on_error() {
     );
     let stop = call(&s, Some(1), ask(svc::HOOK_GATE, 0, "x")).await;
     assert_eq!(
-        (stop.value, stop.bytes),
+        (stop.value, stop.bytes.as_slice()),
         (
             u64::from(crate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS),
             crate::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE
@@ -470,7 +473,7 @@ async fn a_load_bearing_rewrite_that_cannot_answer_stops_with_the_shared_503() {
     );
     let stop = call(&s, Some(1), ask(svc::HOOK_REWRITE, 0, "x")).await;
     assert_eq!(
-        (stop.value, stop.bytes),
+        (stop.value, stop.bytes.as_slice()),
         (
             u64::from(crate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS),
             crate::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE
