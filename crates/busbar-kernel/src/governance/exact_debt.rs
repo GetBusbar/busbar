@@ -8,12 +8,15 @@ use std::collections::BTreeMap;
 #[serde(deny_unknown_fields)]
 pub(super) struct ExactModelDelta {
     pub(super) model: String,
+    #[serde(with = "decimal_units")]
     pub(super) usage_units: BTreeMap<String, i128>,
 }
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ExactUsageDelta {
+    #[serde(with = "decimal_count")]
     pub(super) requests: i128,
+    #[serde(with = "decimal_count")]
     pub(super) billable_requests: i128,
     pub(super) models: Vec<ExactModelDelta>,
 }
@@ -62,7 +65,7 @@ impl ExactUsageDelta {
                 .iter()
                 .all(|model| model.usage_units.values().all(|count| *count == 0))
     }
-    fn unit(&mut self, model: &str, unit: &str, change: i128) {
+    pub(super) fn unit(&mut self, model: &str, unit: &str, change: i128) {
         if change == 0 {
             return;
         }
@@ -183,6 +186,224 @@ impl ExactUsageDelta {
             }
         }
         debt
+    }
+}
+
+mod decimal_count {
+    use serde::{Deserialize, Deserializer, Serializer};
+    pub fn serialize<S: Serializer>(count: &i128, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&count.to_string())
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<i128, D::Error> {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(serde::de::Error::custom)
+    }
+}
+mod decimal_units {
+    use super::BTreeMap;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    pub fn serialize<S: Serializer>(
+        units: &BTreeMap<String, i128>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        units
+            .iter()
+            .map(|(unit, count)| (unit, count.to_string()))
+            .collect::<BTreeMap<_, _>>()
+            .serialize(serializer)
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<BTreeMap<String, i128>, D::Error> {
+        BTreeMap::<String, String>::deserialize(deserializer)?
+            .into_iter()
+            .map(|(unit, count)| {
+                count
+                    .parse()
+                    .map(|count| (unit, count))
+                    .map_err(serde::de::Error::custom)
+            })
+            .collect()
+    }
+}
+
+/// The aggregate row and its dated siblings are two views of the same facts.
+/// Allocation and chunking operate on these signed era segments, including the
+/// exact undated remainder, then rebuild both views together.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum UsageSegment {
+    Requests,
+    Fee(Option<String>),
+    Unit {
+        model: String,
+        unit: String,
+        era: Option<String>,
+    },
+}
+
+#[derive(Clone, Default)]
+pub(super) struct SegmentedUsage(BTreeMap<UsageSegment, i128>);
+impl SegmentedUsage {
+    pub(super) fn of(plain: &ExactUsageDelta, dated: &ExactUsageDelta) -> RecordStoreResult<Self> {
+        let invalid = || RecordStoreError("invalid aggregate/dated raw usage segments".into());
+        if dated.requests != 0 || dated.billable_requests != 0 {
+            return Err(invalid());
+        }
+        let mut legacy = plain.clone();
+        let mut result = Self::default();
+        let mut names = std::collections::BTreeSet::new();
+        for model in &dated.models {
+            if !names.insert(&model.model) {
+                return Err(invalid());
+            }
+            if let Some((era, name)) = model.model.split_once(ERA_MODEL_SEP) {
+                if name.is_empty() || parse_era_tag(era)?.is_none() {
+                    return Err(invalid());
+                }
+                for (unit, count) in &model.usage_units {
+                    result.0.insert(
+                        UsageSegment::Unit {
+                            model: name.into(),
+                            unit: unit.clone(),
+                            era: Some(era.into()),
+                        },
+                        *count,
+                    );
+                    legacy.unit(name, unit, -*count);
+                }
+            } else {
+                if parse_era_tag(&model.model)?.is_none() {
+                    return Err(invalid());
+                }
+                for (unit, count) in &model.usage_units {
+                    if unit != ERA_FEE_UNIT {
+                        return Err(invalid());
+                    }
+                    result
+                        .0
+                        .insert(UsageSegment::Fee(Some(model.model.clone())), *count);
+                    legacy.billable_requests -= *count;
+                }
+            }
+        }
+        result.0.insert(UsageSegment::Requests, legacy.requests);
+        result
+            .0
+            .insert(UsageSegment::Fee(None), legacy.billable_requests);
+        names.clear();
+        for model in &legacy.models {
+            if !names.insert(&model.model) {
+                return Err(invalid());
+            }
+            for (unit, count) in &model.usage_units {
+                result.0.insert(
+                    UsageSegment::Unit {
+                        model: model.model.clone(),
+                        unit: unit.clone(),
+                        era: None,
+                    },
+                    *count,
+                );
+            }
+        }
+        Ok(result)
+    }
+
+    pub(super) fn deltas(&self) -> (ExactUsageDelta, ExactUsageDelta) {
+        let mut plain = ExactUsageDelta::default();
+        let mut dated = ExactUsageDelta::default();
+        for (segment, count) in &self.0 {
+            Self::add(&mut plain, &mut dated, segment, *count);
+        }
+        (plain, dated)
+    }
+    fn add(
+        plain: &mut ExactUsageDelta,
+        dated: &mut ExactUsageDelta,
+        segment: &UsageSegment,
+        count: i128,
+    ) {
+        match segment {
+            UsageSegment::Requests => plain.requests += count,
+            UsageSegment::Fee(era) => {
+                plain.billable_requests += count;
+                if let Some(era) = era {
+                    dated.unit(era, ERA_FEE_UNIT, count);
+                }
+            }
+            UsageSegment::Unit { model, unit, era } => {
+                plain.unit(model, unit, count);
+                if let Some(era) = era {
+                    dated.unit(&format!("{era}{ERA_MODEL_SEP}{model}"), unit, count);
+                }
+            }
+        }
+    }
+    pub(super) fn positive(&self) -> Self {
+        Self(
+            self.0
+                .iter()
+                .filter(|(_, count)| **count > 0)
+                .map(|(segment, count)| (segment.clone(), *count))
+                .collect(),
+        )
+    }
+    pub(super) fn merge(&mut self, other: &Self) {
+        for (segment, count) in &other.0 {
+            *self.0.entry(segment.clone()).or_default() += *count;
+        }
+    }
+    pub(super) fn take_negatives(&mut self, capacity: Option<&Self>) -> Self {
+        let mut taken = Self::default();
+        for (segment, count) in &mut self.0 {
+            if *count >= 0 {
+                continue;
+            }
+            let bound = capacity.map_or(i128::MAX, |capacity| {
+                capacity.0.get(segment).copied().unwrap_or(0).max(0)
+            });
+            let amount = count.saturating_neg().min(bound);
+            *count += amount;
+            if amount != 0 {
+                taken.0.insert(segment.clone(), -amount);
+            }
+        }
+        taken
+    }
+    pub(super) fn is_zero(&self) -> bool {
+        self.0.values().all(|count| *count == 0)
+    }
+
+    pub(super) fn chunk(&self) -> (UsageDelta, UsageDelta) {
+        let mut plain = ExactUsageDelta::default();
+        let mut dated = ExactUsageDelta::default();
+        for (segment, count) in &self.0 {
+            let current = match segment {
+                UsageSegment::Requests => plain.requests,
+                UsageSegment::Fee(_) => plain.billable_requests,
+                UsageSegment::Unit { model, unit, .. } => plain
+                    .models
+                    .iter()
+                    .find(|row| row.model == *model)
+                    .and_then(|row| row.usage_units.get(unit))
+                    .copied()
+                    .unwrap_or(0),
+            };
+            let count = (*count)
+                .clamp(i128::from(i64::MIN), i128::from(i64::MAX))
+                .clamp(
+                    i128::from(i64::MIN) - current,
+                    i128::from(i64::MAX) - current,
+                );
+            Self::add(&mut plain, &mut dated, segment, count);
+        }
+        (
+            plain.signed().expect("chunk aggregate bounded per field"),
+            dated
+                .signed()
+                .expect("chunk dated segments bounded per field"),
+        )
     }
 }
 
@@ -503,10 +724,14 @@ impl GovState {
                     return (confirmed, None);
                 }
                 if debt.chunk.is_none() {
+                    let (plain, dated) = match SegmentedUsage::of(&debt.plain, &debt.dated) {
+                        Ok(segments) => segments.chunk(),
+                        Err(error) => return (confirmed, Some(error)),
+                    };
                     debt.chunk = Some(Chunk {
                         op: crate::door::op_id(),
-                        plain: debt.plain.chunk(),
-                        dated: debt.dated.chunk(),
+                        plain,
+                        dated,
                         started: std::time::Instant::now(),
                     });
                 }

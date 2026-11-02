@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use super::exact_debt::SegmentedUsage;
 use super::recovery::{
     RecoveryChild, RecoveryError, RecoveryEvent, RecoveryKind, RecoveryOrigin, RecoveryResolution,
     RecoveryState, RecoveryVerdict,
@@ -96,11 +97,12 @@ impl GovState {
         if plain.is_zero() && dated.is_zero() {
             return Ok(None);
         }
+        let (chunk_plain, chunk_dated) = SegmentedUsage::of(&plain, &dated)?.chunk();
         let custody = UsageCustody {
             bucket: bucket.into(),
             window,
-            chunk_plain: plain.chunk(),
-            chunk_dated: dated.chunk(),
+            chunk_plain,
+            chunk_dated,
             plain,
             dated,
             absorbed_plain: ExactUsageDelta::default(),
@@ -410,6 +412,13 @@ impl GovState {
         let mut unsent_dated = custody.dated.clone();
         unsent_plain.subtract(&custody.chunk_plain);
         unsent_dated.subtract(&custody.chunk_dated);
+        let mut unsent = SegmentedUsage::of(&unsent_plain, &unsent_dated)?;
+        let mut absorbed = SegmentedUsage::of(&custody.absorbed_plain, &custody.absorbed_dated)?;
+        // Refunds first net against never-sent positive segments. Only the
+        // remainder can depend on the chunk whose backend outcome is unknown.
+        let netted = absorbed.take_negatives(Some(&unsent.positive()));
+        unsent.merge(&netted);
+        let (unsent_plain, unsent_dated) = unsent.deltas();
         custody.handoffs.extend(Self::usage_recovery_child(
             &custody.bucket,
             custody.window,
@@ -418,6 +427,7 @@ impl GovState {
         )?);
         custody.plain = ExactUsageDelta::from_signed(&custody.chunk_plain);
         custody.dated = ExactUsageDelta::from_signed(&custody.chunk_dated);
+        (custody.absorbed_plain, custody.absorbed_dated) = absorbed.deltas();
         encode(&custody)
     }
 
@@ -574,61 +584,6 @@ pub(super) struct DurableUsageFlight {
     pub(super) deferred_dated: ExactUsageDelta,
 }
 
-impl ExactUsageDelta {
-    fn positive_capacity(chunk: &UsageDelta, absorbed: &Self) -> Self {
-        let mut capacity = Self::from_signed(chunk);
-        capacity.requests = capacity.requests.max(0);
-        capacity.billable_requests = capacity.billable_requests.max(0);
-        for model in &mut capacity.models {
-            for count in model.usage_units.values_mut() {
-                *count = (*count).max(0);
-            }
-        }
-        capacity.merge(absorbed);
-        capacity.requests = capacity.requests.max(0);
-        capacity.billable_requests = capacity.billable_requests.max(0);
-        for model in &mut capacity.models {
-            for count in model.usage_units.values_mut() {
-                *count = (*count).max(0);
-            }
-        }
-        capacity
-    }
-
-    /// Remove only negatives whose matching positive may still be absent. Each
-    /// unresolved operation owns at most its original positive, per raw field.
-    fn take_capped_negatives(&mut self, capacity: &Self) -> Self {
-        let take = |count: &mut i128, capacity: i128| {
-            let amount = count.saturating_neg().max(0).min(capacity.max(0));
-            *count += amount;
-            -amount
-        };
-        let mut negative = Self {
-            requests: take(&mut self.requests, capacity.requests),
-            billable_requests: take(&mut self.billable_requests, capacity.billable_requests),
-            models: Vec::new(),
-        };
-        for model in &mut self.models {
-            let Some(capacity) = capacity.models.iter().find(|row| row.model == model.model) else {
-                continue;
-            };
-            let units = model
-                .usage_units
-                .iter_mut()
-                .filter_map(|(unit, count)| {
-                    let amount = take(count, capacity.usage_units.get(unit).copied().unwrap_or(0));
-                    (amount != 0).then(|| (unit.clone(), amount))
-                })
-                .collect();
-            negative.models.push(super::exact_debt::ExactModelDelta {
-                model: model.model.clone(),
-                usage_units: units,
-            });
-        }
-        negative
-    }
-}
-
 impl GovState {
     /// Retire dependent negatives into a selected unresolved owner before any
     /// independent positive work is sent. The owner remains off the request path.
@@ -639,11 +594,14 @@ impl GovState {
         mut plain: ExactUsageDelta,
         mut dated: ExactUsageDelta,
     ) -> RecordStoreResult<DurableUsageFlight> {
+        let mut prerequisite =
+            self.stage_quarantined_correction_negatives(bucket, window, &mut plain, &mut dated)?;
+        let quarantine = self.quarantined_correction_owns_target(bucket, window);
+        let mut remaining = SegmentedUsage::of(&plain, &dated)?;
         let mut owners = Vec::new();
-        let mut capacity_plain = ExactUsageDelta::default();
-        let mut capacity_dated = ExactUsageDelta::default();
-        // A selected parent may own an exact child template at the crash cut
-        // before child Intent. Its positive also gates dependent negatives.
+        let mut capacity = SegmentedUsage::default();
+        // A selected parent can own an exact child template before child Intent.
+        // Those positive segments gate negatives without guessing Store rows.
         for event in self.selected_recovery_events() {
             let links: Links = decode(&event.payload)?;
             for child in links.handoffs {
@@ -654,14 +612,12 @@ impl GovState {
                 }
                 let custody: UsageCustody = decode(&child.payload)?;
                 if custody.bucket == bucket && custody.window == window {
-                    capacity_plain.merge(&ExactUsageDelta::positive_capacity(
-                        &custody.chunk_plain,
+                    let mut available = SegmentedUsage::of(&custody.plain, &custody.dated)?;
+                    available.merge(&SegmentedUsage::of(
                         &custody.absorbed_plain,
-                    ));
-                    capacity_dated.merge(&ExactUsageDelta::positive_capacity(
-                        &custody.chunk_dated,
                         &custody.absorbed_dated,
-                    ));
+                    )?);
+                    capacity.merge(&available.positive());
                 }
             }
             if event.kind != RecoveryKind::Usage
@@ -676,53 +632,51 @@ impl GovState {
             if custody.bucket != bucket || custody.window != window {
                 continue;
             }
-            let own_plain =
-                ExactUsageDelta::positive_capacity(&custody.chunk_plain, &custody.absorbed_plain);
-            let own_dated =
-                ExactUsageDelta::positive_capacity(&custody.chunk_dated, &custody.absorbed_dated);
-            capacity_plain.merge(&own_plain);
-            capacity_dated.merge(&own_dated);
-            owners.push((event, custody, own_plain, own_dated));
+            let mut available = SegmentedUsage::of(&custody.plain, &custody.dated)?;
+            available.merge(&SegmentedUsage::of(
+                &custody.absorbed_plain,
+                &custody.absorbed_dated,
+            )?);
+            let own_capacity = available.positive();
+            capacity.merge(&own_capacity);
+            owners.push((event, custody, own_capacity));
         }
-        let mut prerequisite = None;
-        // Exactly one immutable owner checkpoint is staged per capture. A later
-        // capture handles any remaining dependent fields under another owner.
-        for (event, mut custody, own_plain, own_dated) in owners {
-            let mut remaining_plain = plain.clone();
-            let mut remaining_dated = dated.clone();
-            let negative_plain = remaining_plain.take_capped_negatives(&own_plain);
-            let negative_dated = remaining_dated.take_capped_negatives(&own_dated);
-            if negative_plain.is_zero() && negative_dated.is_zero() {
-                continue;
+        // Exactly one immutable checkpoint is staged per capture. Any remaining
+        // negative segments keep their ordinary pending ownership for next tick.
+        if prerequisite.is_none() {
+            for (event, mut custody, own_capacity) in owners {
+                let mut after = remaining.clone();
+                let negative = after.take_negatives(Some(&own_capacity));
+                if negative.is_zero() {
+                    continue;
+                }
+                let runner = self.recovery_driver(event.operation_id)?;
+                let _running = runner.enter(false).map_err(invalid)?;
+                if self.recovery_event(event.operation_id).as_ref() != Some(&event) {
+                    return Err(invalid("raw negative owner changed during capture"));
+                }
+                let (negative_plain, negative_dated) = negative.deltas();
+                custody.absorbed_plain.merge(&negative_plain);
+                custody.absorbed_dated.merge(&negative_dated);
+                let candidate = self
+                    .new_recovery_event(
+                        event.operation_id,
+                        event.kind,
+                        event.body_fingerprint,
+                        event.state,
+                        event.first_sent_at_ms,
+                        encode(&custody)?,
+                    )
+                    .map_err(invalid)?;
+                capacity.merge(&negative);
+                remaining = after;
+                prerequisite = Some(candidate);
+                break;
             }
-            let runner = self.recovery_driver(event.operation_id)?;
-            let _running = runner.enter(false).map_err(invalid)?;
-            // A concurrent definitive decision or pending immutable candidate
-            // must finish before these fields can be assigned a new owner.
-            if self.recovery_event(event.operation_id).as_ref() != Some(&event) {
-                return Err(invalid("raw negative owner changed during capture"));
-            }
-            custody.absorbed_plain.merge(&negative_plain);
-            custody.absorbed_dated.merge(&negative_dated);
-            let candidate = self
-                .new_recovery_event(
-                    event.operation_id,
-                    event.kind,
-                    event.body_fingerprint,
-                    event.state,
-                    event.first_sent_at_ms,
-                    encode(&custody)?,
-                )
-                .map_err(invalid)?;
-            capacity_plain.merge(&negative_plain);
-            capacity_dated.merge(&negative_dated);
-            plain = remaining_plain;
-            dated = remaining_dated;
-            prerequisite = Some(candidate);
-            break;
         }
-        let deferred_plain = plain.take_capped_negatives(&capacity_plain);
-        let deferred_dated = dated.take_capped_negatives(&capacity_dated);
+        let deferred = remaining.take_negatives(if quarantine { None } else { Some(&capacity) });
+        let (deferred_plain, deferred_dated) = deferred.deltas();
+        let (plain, dated) = remaining.deltas();
         Ok(DurableUsageFlight {
             child: Self::usage_recovery_child(bucket, window, plain, dated)?,
             prerequisite,
