@@ -12,6 +12,7 @@ name = "busbar_kernel"
 path = "src/lib.rs"
 
 [dependencies]
+sha2 = { workspace = true }
 bumpalo = { workspace = true }
 busbar-contract = { path = "../busbar-contract" }
 busbar-kernel-seams = { path = "../busbar-kernel-seams" }
