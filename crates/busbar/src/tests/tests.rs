@@ -4,29 +4,6 @@ use crate::root::cli::{
     signing_key_command_output, value_flag,
 };
 
-struct EnvVarGuard {
-    name: &'static str,
-    previous: Option<std::ffi::OsString>,
-}
-
-impl EnvVarGuard {
-    fn capture(name: &'static str) -> Self {
-        Self {
-            name,
-            previous: std::env::var_os(name),
-        }
-    }
-}
-
-impl Drop for EnvVarGuard {
-    fn drop(&mut self) {
-        match self.previous.take() {
-            Some(value) => std::env::set_var(self.name, value),
-            None => std::env::remove_var(self.name),
-        }
-    }
-}
-
 #[test]
 fn worker_threads_from_env_parses_valid_rejects_invalid() {
     let unset_name = "BUSBAR_TEST_WORKER_THREADS_UNSET_MARKER_1";
@@ -70,7 +47,20 @@ fn validate_worker_threads_config_diagnoses_zero() {
 
 #[test]
 fn worker_threads_from_config_reads_a_real_file() {
-    let _guard = EnvVarGuard::capture(ENV_CONFIG);
+    const CHILD: &str = "BUSBAR_WORKER_CONFIG_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let name = concat!(
+            module_path!(),
+            "::worker_threads_from_config_reads_a_real_file"
+        );
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name.split_once("::").unwrap().1])
+            .env(CHILD, "1")
+            .status()
+            .expect("run the config environment case in a fresh process");
+        assert!(status.success(), "the config environment case passes");
+        return;
+    }
     let dir = std::env::temp_dir().join(format!(
         "busbar-wtcfg-{}-{}",
         std::process::id(),
@@ -412,19 +402,6 @@ fn a_flag_value_is_the_last_one_passed_under_its_exact_name() {
     );
 }
 
-#[cfg(linked_axis_body_ingress)]
-static DATA_DIR_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-#[cfg(linked_axis_body_ingress)]
-fn data_dir_env(dir: &std::path::Path) -> (EnvVarGuard, std::sync::MutexGuard<'static, ()>) {
-    let held = DATA_DIR_ENV
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let guard = EnvVarGuard::capture("BUSBAR_DATA_DIR");
-    std::env::set_var("BUSBAR_DATA_DIR", dir);
-    (guard, held)
-}
-
 struct BookDir(std::path::PathBuf);
 
 impl BookDir {
@@ -469,6 +446,20 @@ impl Drop for BookDir {
 #[cfg(linked_axis_body_ingress)]
 #[test]
 fn the_boot_path_keeps_its_journal_in_the_store_with_a_configured_directory() {
+    const CHILD: &str = "BUSBAR_JOURNAL_DIRECTORY_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let name = concat!(
+            module_path!(),
+            "::the_boot_path_keeps_its_journal_in_the_store_with_a_configured_directory"
+        );
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name.split_once("::").unwrap().1])
+            .env(CHILD, "1")
+            .status()
+            .expect("run the journal directory case in a fresh process");
+        assert!(status.success(), "the journal directory case passes");
+        return;
+    }
     busbar_kernel_testkit::test_support::register_neutral_test_plane();
     use busbar_kernel_wal::RecordClass;
 
@@ -482,7 +473,7 @@ fn the_boot_path_keeps_its_journal_in_the_store_with_a_configured_directory() {
         "the fixture directory starts empty, or nothing below is evidence of anything"
     );
 
-    let _env = data_dir_env(&dir.0);
+    std::env::set_var("BUSBAR_DATA_DIR", &dir.0);
 
     let app = busbar_kernel_testkit::app::build_once(
         busbar_kernel_testkit::test_support::cfg_with_provider_api_key(
@@ -708,6 +699,17 @@ fn the_boot_book_binds_the_store_keyset_and_refuses_a_mismatched_store_key() {
 #[cfg(linked_axis_body_ingress)]
 #[test]
 fn one_seal_after_two_reloads() {
+    const CHILD: &str = "BUSBAR_JOURNAL_RELOAD_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let name = concat!(module_path!(), "::one_seal_after_two_reloads");
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name.split_once("::").unwrap().1])
+            .env(CHILD, "1")
+            .status()
+            .expect("run the journal reload case in a fresh process");
+        assert!(status.success(), "the journal reload case passes");
+        return;
+    }
     busbar_kernel_testkit::test_support::register_neutral_test_plane();
     use busbar_kernel_wal::RecordClass;
 
@@ -716,7 +718,7 @@ fn one_seal_after_two_reloads() {
     }
     busbar_kernel_testkit::test_support::metrics::init();
     let dir = BookDir::new("two-reloads");
-    let _env = data_dir_env(&dir.0);
+    std::env::set_var("BUSBAR_DATA_DIR", &dir.0);
     let cfg = || {
         busbar_kernel_testkit::test_support::cfg_with_provider_api_key(
             busbar_kernel::config::SecretRef::env("BUSBAR_TEST_NO_SUCH_KEY_ONE_SEAL"),
