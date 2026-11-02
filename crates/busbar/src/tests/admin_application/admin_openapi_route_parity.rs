@@ -111,11 +111,18 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
         "module": operator, "token": { "file": operator_token },
     });
     for declaration in busbar_kernel::plane_driver::registry::plane_decls() {
-        document
-            .as_object_mut()
-            .unwrap()
-            .entry(declaration.config_section.to_string())
-            .or_insert_with(|| serde_json::json!({}));
+        if declaration.fallback {
+            continue;
+        }
+        let section = declaration.config_section;
+        let value = match section {
+            // A genuine present section can contain only the kernel-owned attach list;
+            // it need not invent a remote tool/agent registration for a route census.
+            "tools" | "agents" => serde_json::json!({"hooks": []}),
+            "streams" => serde_json::json!({"context_window_tokens": 32768}),
+            _ => panic!("provide an actual valid config for linked plane section {section}"),
+        };
+        document[section] = value;
     }
     let deploy = busbar_kernel::config::deploy_from_deserializer(document)
         .expect("the actual admin deployment parses");
@@ -157,6 +164,17 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
     limits.keep().expect("the actual limits commit");
     if let Some(rotate) = rotate {
         rotate();
+    }
+    for declaration in busbar_kernel::plane_driver::registry::plane_decls() {
+        assert!(
+            declaration.fallback
+                || app
+                    .plane_sections
+                    .as_ref()
+                    .is_some_and(|sections| sections.contains(declaration.config_section)),
+            "the actual root must configure every plane for the full route/document census: {}",
+            declaration.config_section
+        );
     }
     let app = Arc::new(app);
     let spawn = || {
