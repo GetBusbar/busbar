@@ -445,6 +445,7 @@ dependencies = [
  "busbar-kernel-seams",
  "busbar-kernel-testkit",
  "busbar-kernel-wal",
+ "busbar-plugin-loader",
  "bytes",
  "crc32fast",
  "criterion",

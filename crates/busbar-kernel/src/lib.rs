@@ -295,3 +295,7 @@ pub fn base_data_core_lines(
 pub fn boot_route_paths_of(app: &state::App) -> Vec<String> {
     app.boot_route_paths.iter().cloned().collect()
 }
+
+#[cfg(test)]
+#[path = "tests/real_store.rs"]
+pub(crate) mod real_store;

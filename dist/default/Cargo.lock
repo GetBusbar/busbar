@@ -659,6 +659,7 @@ dependencies = [
  "busbar-kernel-ledger",
  "busbar-kernel-seams",
  "busbar-kernel-wal",
+ "busbar-plugin-loader",
  "bytes",
  "crc32fast",
  "ed25519-dalek",
