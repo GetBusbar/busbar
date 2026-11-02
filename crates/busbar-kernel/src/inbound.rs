@@ -2515,10 +2515,11 @@ impl Inbound {
             .map(|h| h.target.clone())
             .or_else(|| line.map(|l| l.route.path.clone()))
             .unwrap_or_else(|| "/".to_string());
-        let target = head
-            .as_ref()
-            .map(Head::path_and_query)
-            .unwrap_or_else(|| path.clone());
+        let target = zeroize::Zeroizing::new(
+            head.as_ref()
+                .map(Head::path_and_query)
+                .unwrap_or_else(|| path.clone()),
+        );
         let app = &table.listener.app;
         let respond = || {
             Ok(match r.cause {

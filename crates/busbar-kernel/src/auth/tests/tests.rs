@@ -599,6 +599,32 @@ fn collect_strings(v: &serde_json::Value, out: &mut Vec<String>) {
 }
 
 #[test]
+fn a_door_refusal_retains_its_exact_query_in_a_wiping_target() {
+    use std::sync::Arc;
+
+    fn wiped_when_dropped<T: zeroize::ZeroizeOnDrop>(_: &T) {}
+
+    let seen = Arc::new(std::sync::Mutex::new(None));
+    let observed = Arc::clone(&seen);
+    let target = "/v1/responses?token=query-canary";
+    let door: RefusalDoor = (
+        Arc::new(move |reason, target| {
+            assert_eq!(reason, busbar_contract::caps::ReasonCode::Unauthenticated);
+            *observed.lock().unwrap() = Some(target.to_owned());
+            Response::builder()
+                .status(StatusCode::UNAUTHORIZED)
+                .body(Body::empty())
+                .unwrap()
+        }),
+        zeroize::Zeroizing::new(target.to_owned()),
+    );
+    wiped_when_dropped(&door.1);
+    let response = unauthorized_response(&residual_app(), "/v1/responses", Some(&door));
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(seen.lock().unwrap().as_deref(), Some(target));
+}
+
+#[test]
 fn test_unauthorized_body_carries_no_busbar_vocabulary() {
     const FORBIDDEN: &[&str] = &[
         "virtual key",

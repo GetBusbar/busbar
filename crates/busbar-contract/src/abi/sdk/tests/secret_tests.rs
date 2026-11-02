@@ -8,9 +8,7 @@ use crate::abi::mechanism::call::{Outcome, BLOB_JSON};
 use crate::abi::mechanism::lifecycle::{slot, OpenIn, OpenOut};
 use crate::abi::sdk::door::statement;
 use crate::abi::sdk::life::{Held, Life, Refreshed};
-use crate::abi::sdk::test_support::reply;
-use crate::abi::sdk::test_support::test_in::TestIn;
-use crate::abi::sdk::test_support::{zeroed, DoorView};
+use crate::abi::sdk::test_support::zeroed;
 use crate::abi::sdk::{Instance, Lent, Safe, SafeSlot};
 use crate::abi::secret::{Ops, ResolveIn, ERROR_KIND_UNSET};
 
@@ -133,56 +131,121 @@ fn a_source_that_takes_no_settings_refuses_one_naming_it() {
 /// Through the door: instance settings refused FAILED in the words above; a resolve that fails is
 #[test]
 fn a_failed_resolve_answers_its_code_and_text_through_the_door() {
-    let view = DoorView::of(plugin::MACRO_DOOR);
-    let open = view.op::<Ops>(|t| &t.head.open).expect("open");
-    let resolve = view.op::<Ops>(|t| &t.resolve).expect("resolve");
-    let open_with = |settings: &'static [u8]| {
-        reply::call_in(
-            open,
-            None,
-            &TestIn::<OpenIn>::new()
-                .set(|i| &i.head.op, slot::OPEN)
-                .settings(settings),
-            zeroed::<OpenOut>(),
-        )
+    // SAFETY: the actual SDK-generated secret door declares this full Ops table.
+    let table = unsafe { &*plugin::door().ops().cast::<Ops>() };
+    let open_with = |settings: &[u8]| {
+        let mut input: OpenIn = zeroed();
+        input.head.size = std::mem::size_of::<OpenIn>() as u32;
+        input.head.op = slot::OPEN;
+        input.settings = crate::abi::mechanism::call::Blob {
+            ptr: settings.as_ptr(),
+            len: settings.len(),
+            fmt: BLOB_JSON,
+            flags: 0,
+        };
+        let mut output: OpenOut = zeroed();
+        output.head.size = std::mem::size_of::<OpenOut>() as u32;
+        // SAFETY: exact initialized frames and settings owned by this synchronous call.
+        let outcome = unsafe {
+            table.head.open.unwrap()(
+                std::ptr::null_mut(),
+                std::ptr::from_ref(&input).cast(),
+                std::ptr::from_mut(&mut output).cast(),
+            )
+        }
+        .outcome();
+        (outcome, output)
     };
-
-    let c = open_with(br#"{"key":"X"}"#);
-    assert_eq!(c.outcome, Outcome::Failed);
-    let mut c = open_with(b"");
-    assert_eq!(c.outcome, Outcome::Ready);
-    let instance = c.take_instance().expect("an instance");
+    let (outcome, _) = open_with(br#"{"key":"X"}"#);
+    assert_eq!(outcome, Outcome::Failed);
+    let (outcome, opened) = open_with(b"");
+    assert_eq!(outcome, Outcome::Ready);
+    let instance = opened.instance;
+    assert!(!instance.is_null(), "an instance");
 
     struct Resolved {
         outcome: Outcome,
         out: ResolveOut,
         error: Option<String>,
-        owned: reply::SecretCopy,
+        owned: zeroize::Zeroizing<Vec<u8>>,
     }
     let resolve_with = |settings: &[u8]| {
         let mut secret = [0u8; 64];
-        let answer = reply::call_in(
-            resolve,
-            Some(&instance),
-            &TestIn::<ResolveIn>::new()
-                .set(|i| &i.head.op, crate::abi::secret::slot::RESOLVE)
-                .blob(|i| &i.settings, settings, BLOB_JSON)
-                .buffer(|i| &i.secret_buf, |i| &i.secret_cap, &mut secret),
-            zeroed::<ResolveOut>(),
-        );
-
+        let mut input: ResolveIn = zeroed();
+        input.head.size = std::mem::size_of::<ResolveIn>() as u32;
+        input.head.op = crate::abi::secret::slot::RESOLVE;
+        input.settings = crate::abi::mechanism::call::Blob {
+            ptr: settings.as_ptr(),
+            len: settings.len(),
+            fmt: BLOB_JSON,
+            flags: 0,
+        };
+        input.secret_buf = secret.as_mut_ptr();
+        input.secret_cap = secret.len();
+        let mut output: ResolveOut = zeroed();
+        output.head.size = std::mem::size_of::<ResolveOut>() as u32;
+        // SAFETY: this door's live instance and exact initialized frames, with exclusive host
+        // output storage held here until its answer has been checked and copied.
+        let outcome = unsafe {
+            table.resolve.unwrap()(
+                instance,
+                std::ptr::from_ref(&input).cast(),
+                std::ptr::from_mut(&mut output).cast(),
+            )
+        }
+        .outcome();
+        crate::abi::secret::validate::check_resolve(
+            &output,
+            secret.as_ptr() as usize,
+            secret.len() as u64,
+        )
+        .expect("the actual SDK answer obeys the secret buffer contract");
+        let error = if output.head.error.len == 0 {
+            None
+        } else {
+            // SAFETY: the SDK's live answer lends exactly these initialized error bytes until release.
+            Some(
+                std::str::from_utf8(unsafe {
+                    std::slice::from_raw_parts(output.head.error.ptr, output.head.error.len)
+                })
+                .unwrap()
+                .to_owned(),
+            )
+        };
+        let owned = zeroize::Zeroizing::new(secret[..output.secret.len].to_vec());
+        zeroize::Zeroize::zeroize(&mut secret);
+        if output.head.lease != 0 {
+            let mut release: crate::abi::mechanism::lifecycle::ReleaseIn = zeroed();
+            release.head.size = std::mem::size_of_val(&release) as u32;
+            release.head.op = slot::RELEASE;
+            release.lease = output.head.lease;
+            let mut released: crate::abi::mechanism::call::OutHead = zeroed();
+            released.size = std::mem::size_of_val(&released) as u32;
+            // SAFETY: return only this answer's actual lease to its original live instance.
+            assert_eq!(
+                unsafe {
+                    table.head.release.unwrap()(
+                        instance,
+                        std::ptr::from_ref(&release).cast(),
+                        std::ptr::from_mut(&mut released).cast(),
+                    )
+                }
+                .outcome(),
+                Outcome::Ready
+            );
+        }
         Resolved {
-            outcome: answer.outcome,
-            out: answer.out,
-            error: answer.error,
-            owned: answer.owned,
+            outcome,
+            out: output,
+            error,
+            owned,
         }
     };
     let c = resolve_with(b"{}");
     assert_eq!(c.outcome, Outcome::Failed);
     assert_eq!(c.out.error_kind, ERROR_KIND_NOT_FOUND);
     assert_eq!(c.error.as_deref(), Some("probe: no key"));
-    assert!(c.owned.material().is_empty());
+    assert!(c.owned.as_slice().is_empty());
 
     let c = resolve_with(b"[1]");
     assert_eq!(c.outcome, Outcome::Failed);
@@ -191,13 +254,13 @@ fn a_failed_resolve_answers_its_code_and_text_through_the_door() {
     let c = resolve_with(br#"{"key":"value"}"#);
     assert_eq!(c.outcome, Outcome::Ready);
     assert_eq!(c.out.error_kind, ERROR_KIND_UNSET);
-    assert_eq!(c.owned.material(), b"value");
+    assert_eq!(c.owned.as_slice(), b"value");
 
     let c = resolve_with(br#"{"key":""}"#);
     assert_eq!(c.outcome, Outcome::Failed);
     assert_eq!(c.out.error_kind, ERROR_KIND_INVALID);
     assert_eq!(c.error.as_deref(), Some(crate::abi::sdk::cred::EMPTY_VALUE));
-    assert!(c.owned.material().is_empty());
+    assert!(c.owned.as_slice().is_empty());
 
     let big = format!(
         r#"{{"key":"{}"}}"#,
@@ -208,4 +271,21 @@ fn a_failed_resolve_answers_its_code_and_text_through_the_door() {
     assert_eq!(c.out.error_kind, ERROR_KIND_INVALID);
     assert_eq!(c.out.needed, 0);
     assert!(c.error.as_deref().is_some_and(|e| e.contains("over the")));
+    let mut close: crate::abi::mechanism::call::InHead = zeroed();
+    close.size = std::mem::size_of_val(&close) as u32;
+    close.op = slot::CLOSE;
+    let mut closed: crate::abi::mechanism::call::OutHead = zeroed();
+    closed.size = std::mem::size_of_val(&closed) as u32;
+    // SAFETY: consume the one instance created by this test's successful OPEN, once.
+    assert_eq!(
+        unsafe {
+            table.head.close.unwrap()(
+                instance,
+                std::ptr::from_ref(&close).cast(),
+                std::ptr::from_mut(&mut closed).cast(),
+            )
+        }
+        .outcome(),
+        Outcome::Ready
+    );
 }

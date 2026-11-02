@@ -1604,12 +1604,133 @@ fn red_a_request_the_builder_refuses_answers_the_builders_text() {
 /// A scripted far end drives a pending decide to its answer.
 #[test]
 fn a_scripted_far_end_drives_a_pending_decide_to_its_answer() {
-    use crate::abi::sdk::test_support::fake::FakeHost;
-    use crate::abi::sdk::test_support::far::Far;
-    let far = Far::answering(2, b"{}");
-    let host = FakeHost::new().far();
+    use crate::abi::host::conn::connector::{
+        ReplyIn, ReplyPiece, RequestIn, REPLY_BODY, REPLY_END, REPLY_HEAD, REQUEST_END,
+        REQUEST_HEAD,
+    };
+    use crate::abi::mechanism::ticket::CompletionHandle;
+    #[derive(Default)]
+    struct Exchange {
+        issued: std::collections::HashSet<CompletionHandle>,
+        reads: HashMap<CompletionHandle, usize>,
+        posts: usize,
+        held: usize,
+        method: Vec<u8>,
+        ended: bool,
+    }
+    thread_local! { static EXCHANGE: RefCell<Exchange> = RefCell::new(Exchange::default()); }
+    extern "C" fn establish(_: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+        // SAFETY: this concrete slot receives the actual SDK's live ServiceHead and writable output.
+        let head = unsafe { &*input.cast::<ServiceHead>() };
+        let first = EXCHANGE.with(|state| {
+            let mut state = state.borrow_mut();
+            let first = state.issued.insert(head.handle);
+            if first {
+                state.held += 1;
+            }
+            first
+        });
+        unsafe {
+            (*out).value = 1;
+        }
+        RawOutcome::of(if first {
+            Outcome::Pending
+        } else {
+            Outcome::Ready
+        })
+    }
+    extern "C" fn write(_: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+        // SAFETY: the SDK owns the complete RequestIn, descriptor and initialized byte prefix.
+        let input = unsafe { &*input.cast::<RequestIn>() };
+        let piece = unsafe { &*input.piece };
+        let bytes = if input.len == 0 {
+            &[][..]
+        } else {
+            unsafe { std::slice::from_raw_parts(input.buf, input.len) }
+        };
+        let first = EXCHANGE.with(|state| {
+            let mut state = state.borrow_mut();
+            let first = state.issued.insert(input.head.handle);
+            if first && piece.kind == REQUEST_HEAD {
+                let at = piece.method.offset as usize;
+                state.method = bytes[at..at + piece.method.len as usize].to_vec();
+            }
+            if first && piece.kind == REQUEST_END {
+                state.posts += 1;
+                state.ended = true;
+            }
+            first
+        });
+        unsafe {
+            (*out).len = input.len as u64;
+        }
+        RawOutcome::of(if first {
+            Outcome::Pending
+        } else {
+            Outcome::Ready
+        })
+    }
+    extern "C" fn read(_: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+        // SAFETY: the actual SDK owns this ReplyIn, its writable buffer and one ReplyPiece.
+        let input = unsafe { &*input.cast::<ReplyIn>() };
+        let (first, index) = EXCHANGE.with(|state| {
+            let mut state = state.borrow_mut();
+            let first = state.issued.insert(input.head.handle);
+            let next = state.reads.len();
+            (first, *state.reads.entry(input.head.handle).or_insert(next))
+        });
+        let mut piece = ReplyPiece::default();
+        piece.kind = [REPLY_HEAD, REPLY_BODY, REPLY_END][index.min(2)];
+        piece.code = 2;
+        let bytes: &[u8] = if index == 1 { b"{}" } else { b"" };
+        assert!(bytes.len() <= input.len);
+        unsafe {
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), input.buf, bytes.len());
+            input.piece.write(piece);
+            (*out).len = bytes.len() as u64;
+        }
+        RawOutcome::of(if first {
+            Outcome::Pending
+        } else {
+            Outcome::Ready
+        })
+    }
+    extern "C" fn close(_: HostCtx, input: *const c_void, _: *mut ServiceOut) -> RawOutcome {
+        // SAFETY: the actual connector CLOSE input leads with this initialized ServiceHead.
+        let head = unsafe { &*input.cast::<ServiceHead>() };
+        let first = EXCHANGE.with(|state| {
+            let mut state = state.borrow_mut();
+            let first = state.issued.insert(head.handle);
+            if first {
+                state.held -= 1;
+            }
+            first
+        });
+        RawOutcome::of(if first {
+            Outcome::Pending
+        } else {
+            Outcome::Ready
+        })
+    }
+    EXCHANGE.with(|state| *state.borrow_mut() = Exchange::default());
+    let conns = ConnectorSlots {
+        establish: Some(establish),
+        write_request: Some(write),
+        read_reply: Some(read),
+        close: Some(close),
+        ..PENDING_SLOTS
+    };
+    let tables = HostTables {
+        size: std::mem::size_of::<HostTables>() as u32,
+        _reserved: 0,
+        ctx: HostCtx::NONE,
+        wake: None,
+        conns: &conns,
+        services: std::ptr::null(),
+        io: std::ptr::null(),
+    };
     let mut open: OpenIn = zeroed();
-    open.host = host.tables_for_tests();
+    open.host = &tables;
     let p = opened_with::<OpenForward>(&open);
     let frame = frame_with(caps(4, 64));
     let mut input = frame.input();
@@ -1628,10 +1749,13 @@ fn a_scripted_far_end_drives_a_pending_decide_to_its_answer() {
     assert_eq!(outcome, Outcome::Ready);
     assert!(entries > 1, "the far end pends: the decide was resumed");
     assert_eq!(frame.order(out.order_written), vec![2]);
-    assert_eq!(far.posts(), 1, "one POST per decide");
-    assert_eq!(far.sent()[0].method, b"POST");
-    assert!(far.sent()[0].ended);
-    assert_eq!(far.held(), 0, "the exchange closed its stream");
+    EXCHANGE.with(|state| {
+        let state = state.borrow();
+        assert_eq!(state.posts, 1, "one POST per decide");
+        assert_eq!(state.method, b"POST");
+        assert!(state.ended);
+        assert_eq!(state.held, 0, "the exchange closed its stream");
+    });
     closed::<OpenForward>(p);
 }
 #[test]
@@ -2126,9 +2250,9 @@ fn bounded_op_failures_keep_the_earlier_head_and_head_only_ops_never_read_a_body
     use crate::abi::host::conn::connector::{
         ReplyIn, ReplyPiece, REPLY_BODY, REPLY_END, REPLY_HEAD,
     };
+    use crate::abi::host::conn::connector::{RequestIn, REQUEST_END};
+    use crate::abi::mechanism::ticket::CompletionHandle;
     use crate::abi::sdk::exchange::{ExchangeFailure, ExchangeResponse, REPLY_OVER_BOUND};
-    use crate::abi::sdk::test_support::fake::{self, FakeHost, FakeService, ServiceCall};
-    use crate::abi::sdk::test_support::far::Far;
     use crate::abi::transport::FrameSpan;
 
     struct Probe {
@@ -2139,6 +2263,9 @@ fn bounded_op_failures_keep_the_earlier_head_and_head_only_ops_never_read_a_body
         fail_body: bool,
         reads: HashMap<u32, usize>,
         built: u32,
+        issued: std::collections::HashSet<CompletionHandle>,
+        posts: usize,
+        held: usize,
         answer: Option<Result<ExchangeResponse, ExchangeFailure>>,
     }
     thread_local! {
@@ -2146,57 +2273,128 @@ fn bounded_op_failures_keep_the_earlier_head_and_head_only_ops_never_read_a_body
     }
     const REASON: &[u8] = b"nonstandard secret-reason";
     const FIELDS: &[u8] = b"x-proof: sensitive-head\r\n";
-    struct ReadReply;
-    impl FakeService for ReadReply {
-        type In = ReplyIn;
-        fn serve(call: &mut ServiceCall<ReplyIn>) -> Outcome {
-            PROBE.with(|probe| {
-                let mut probe = probe.borrow_mut();
-                let probe = probe.as_mut().unwrap();
-                let next = probe.reads.len();
-                let index = *probe
-                    .reads
-                    .entry(call.input().head.handle.seq)
-                    .or_insert(next);
-                if (probe.fail_before_head && index == 0) || (probe.fail_body && index == 1) {
-                    call.set_error("the scripted reply read failed");
-                    return Outcome::Failed;
+    extern "C" fn read_reply(_: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+        // SAFETY: the actual SDK lends this exact ReplyIn with its exclusive reply buffer and piece.
+        let input = unsafe { &*input.cast::<ReplyIn>() };
+        let outcome = PROBE.with(|probe| {
+            let mut probe = probe.borrow_mut();
+            let probe = probe.as_mut().unwrap();
+            let next = probe.reads.len();
+            let index = *probe.reads.entry(input.head.handle.seq).or_insert(next);
+            if (probe.fail_before_head && index == 0) || (probe.fail_body && index == 1) {
+                const ERROR: &str = "the scripted reply read failed";
+                unsafe {
+                    (*out).error = AbiStr {
+                        ptr: ERROR.as_ptr(),
+                        len: ERROR.len(),
+                    };
                 }
-                let mut piece = ReplyPiece::default();
-                let head;
-                let bytes: &[u8] = match index {
-                    0 => {
-                        piece.kind = REPLY_HEAD;
-                        piece.code = u32::from(probe.status);
-                        piece.reason = FrameSpan {
-                            offset: 0,
-                            len: REASON.len() as u64,
-                        };
-                        piece.fields = FrameSpan {
-                            offset: REASON.len() as u64,
-                            len: FIELDS.len() as u64,
-                        };
-                        head = [REASON, FIELDS].concat();
-                        &head
-                    }
-                    1 => {
-                        piece.kind = REPLY_BODY;
-                        &[b'a'; 60]
-                    }
-                    2 => {
-                        piece.kind = REPLY_BODY;
-                        &[b'b'; 41]
-                    }
-                    _ => {
-                        piece.kind = REPLY_END;
-                        &[]
-                    }
-                };
-                assert!(call.fill_lent(|i| &i.buf, bytes));
-                call.put(|i| &i.piece, piece);
-                Outcome::Ready
-            })
+                return Outcome::Failed;
+            }
+            let mut piece = ReplyPiece::default();
+            let head;
+            let bytes: &[u8] = match index {
+                0 => {
+                    piece.kind = REPLY_HEAD;
+                    piece.code = u32::from(probe.status);
+                    piece.reason = FrameSpan {
+                        offset: 0,
+                        len: REASON.len() as u64,
+                    };
+                    piece.fields = FrameSpan {
+                        offset: REASON.len() as u64,
+                        len: FIELDS.len() as u64,
+                    };
+                    head = [REASON, FIELDS].concat();
+                    &head
+                }
+                1 => {
+                    piece.kind = REPLY_BODY;
+                    &[b'a'; 60]
+                }
+                2 => {
+                    piece.kind = REPLY_BODY;
+                    &[b'b'; 41]
+                }
+                _ => {
+                    piece.kind = REPLY_END;
+                    &[]
+                }
+            };
+            assert!(bytes.len() <= input.len);
+            unsafe {
+                std::ptr::copy_nonoverlapping(bytes.as_ptr(), input.buf, bytes.len());
+                input.piece.write(piece);
+                (*out).len = bytes.len() as u64;
+            }
+            Outcome::Ready
+        });
+        RawOutcome::of(outcome)
+    }
+    extern "C" fn establish(_: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+        // SAFETY: every actual connector input leads with this initialized ServiceHead.
+        let head = unsafe { &*input.cast::<ServiceHead>() };
+        let first = PROBE.with(|state| {
+            let mut state = state.borrow_mut();
+            let state = state.as_mut().unwrap();
+            let first = state.issued.insert(head.handle);
+            if first {
+                state.held += 1;
+            }
+            first
+        });
+        unsafe {
+            (*out).value = 1;
         }
+        RawOutcome::of(if first {
+            Outcome::Pending
+        } else {
+            Outcome::Ready
+        })
+    }
+    extern "C" fn write_request(
+        _: HostCtx,
+        input: *const c_void,
+        out: *mut ServiceOut,
+    ) -> RawOutcome {
+        // SAFETY: the SDK owns this initialized RequestIn and its live request descriptor.
+        let input = unsafe { &*input.cast::<RequestIn>() };
+        let piece = unsafe { &*input.piece };
+        let first = PROBE.with(|state| {
+            let mut state = state.borrow_mut();
+            let state = state.as_mut().unwrap();
+            let first = state.issued.insert(input.head.handle);
+            if first && piece.kind == REQUEST_END {
+                state.posts += 1;
+            }
+            first
+        });
+        unsafe {
+            (*out).len = input.len as u64;
+        }
+        RawOutcome::of(if first {
+            Outcome::Pending
+        } else {
+            Outcome::Ready
+        })
+    }
+    extern "C" fn close(_: HostCtx, input: *const c_void, _: *mut ServiceOut) -> RawOutcome {
+        // SAFETY: the actual CLOSE input leads with an initialized ServiceHead.
+        let head = unsafe { &*input.cast::<ServiceHead>() };
+        let first = PROBE.with(|state| {
+            let mut state = state.borrow_mut();
+            let state = state.as_mut().unwrap();
+            let first = state.issued.insert(head.handle);
+            if first {
+                state.held -= 1;
+            }
+            first
+        });
+        RawOutcome::of(if first {
+            Outcome::Pending
+        } else {
+            Outcome::Ready
+        })
     }
     struct Bounded;
     impl Hook for Bounded {
@@ -2248,10 +2446,22 @@ fn bounded_op_failures_keep_the_earlier_head_and_head_only_ops_never_read_a_body
         (503, 100, false, false, true),
         (200, 101, false, false, false),
     ] {
-        let far = Far::answering(status, b"unused by the scripted read override");
-        let host = FakeHost::new()
-            .far()
-            .serve(fake::conn::READ_REPLY, ReadReply);
+        let conns = ConnectorSlots {
+            establish: Some(establish),
+            write_request: Some(write_request),
+            read_reply: Some(read_reply),
+            close: Some(close),
+            ..PENDING_SLOTS
+        };
+        let tables = HostTables {
+            size: std::mem::size_of::<HostTables>() as u32,
+            _reserved: 0,
+            ctx: HostCtx::NONE,
+            wake: None,
+            conns: &conns,
+            services: std::ptr::null(),
+            io: std::ptr::null(),
+        };
         PROBE.with(|probe| {
             *probe.borrow_mut() = Some(Probe {
                 status,
@@ -2261,11 +2471,14 @@ fn bounded_op_failures_keep_the_earlier_head_and_head_only_ops_never_read_a_body
                 fail_body,
                 reads: HashMap::new(),
                 built: 0,
+                issued: std::collections::HashSet::new(),
+                posts: 0,
+                held: 0,
                 answer: None,
             })
         });
         let mut open: OpenIn = zeroed();
-        open.host = host.tables_for_tests();
+        open.host = &tables;
         let instance = opened_with::<OpenBounded>(&open);
         let frame = frame_with(caps(4, 64));
         let mut input = frame.input();
@@ -2341,10 +2554,9 @@ fn bounded_op_failures_keep_the_earlier_head_and_head_only_ops_never_read_a_body
                 OpFailure::Conn(ConnFailure::Failed(expected.to_owned()))
             );
         }
-        assert_eq!(far.posts(), 1);
+        assert_eq!(probe.posts, 1);
         assert_eq!(
-            far.held(),
-            0,
+            probe.held, 0,
             "failure and head-only paths close the stream"
         );
         closed::<OpenBounded>(instance);
@@ -2353,3 +2565,104 @@ fn bounded_op_failures_keep_the_earlier_head_and_head_only_ops_never_read_a_body
 
 #[path = "hook_deadline_tests.rs"]
 mod whole_timeout;
+
+#[cfg(target_os = "linux")]
+#[test]
+fn status_wipes_its_owned_json_tree_and_returned_bytes_on_release_or_close() {
+    use crate::alloc_counter::{watch_initialized_payload, InitializedPayloadProbe};
+
+    const KEY: &str = "status-key-custody-canary";
+    const NESTED_KEY: &str = "nested-status-key-custody-canary";
+    const VALUE: &str =
+        "https://status-user:status-password@status.example.invalid/probe?credential=canary";
+    const WIRE: &[u8] = br#"{"status-key-custody-canary":[{"nested-status-key-custody-canary":"https://status-user:status-password@status.example.invalid/probe?credential=canary"}]}"#;
+
+    struct Canary;
+    impl Hook for Canary {
+        fn status(&self) -> serde_json::Value {
+            let key = KEY.to_owned();
+            let nested_key = NESTED_KEY.to_owned();
+            let value = VALUE.to_owned();
+            // SAFETY: these are initialized allocation bases, moved without copying into the
+            // returned tree. The actual STATUS call destroys them on this observing thread.
+            unsafe {
+                watch_initialized_payload(key.as_bytes());
+                watch_initialized_payload(nested_key.as_bytes());
+                watch_initialized_payload(value.as_bytes());
+            }
+            let mut nested = serde_json::Map::new();
+            nested.insert(nested_key, serde_json::Value::String(value));
+            let mut status = serde_json::Map::new();
+            status.insert(
+                key,
+                serde_json::Value::Array(vec![serde_json::Value::Object(nested)]),
+            );
+            serde_json::Value::Object(status)
+        }
+    }
+    struct OpenCanary;
+    impl HookOpen for OpenCanary {
+        fn open(_: &str) -> Result<Box<dyn Hook>, String> {
+            Ok(Box::new(Canary))
+        }
+    }
+
+    for release_first in [true, false] {
+        let instance = opened_with::<OpenCanary>(&zeroed());
+        // SAFETY: every registered owner remains exclusive and is destroyed on this thread
+        // before finish. The observer reads initialized prefixes at actual deallocation only.
+        let probe = unsafe { InitializedPayloadProbe::start().expect("open payload observer") };
+        let mut input: InHead = zeroed();
+        input.op = slot::STATUS;
+        let mut output: StatusOut = zeroed();
+        assert_eq!(
+            call::<Status<OpenCanary>>(instance, slot::STATUS, &input, &mut output),
+            Outcome::Ready
+        );
+        assert_ne!(output.head.lease, 0);
+        assert_eq!(output.status.fmt, BLOB_JSON);
+        assert!(!output.status.ptr.is_null());
+        assert_eq!(output.status.len, WIRE.len());
+        // SAFETY: this exact STATUS answer leases a live initialized allocation base until the
+        // same instance's RELEASE or CLOSE below. The bytes are only borrowed, never copied.
+        let bytes = unsafe { std::slice::from_raw_parts(output.status.ptr, output.status.len) };
+        assert_eq!(bytes, WIRE);
+        // SAFETY: the same lease owns this complete initialized allocation until retirement below.
+        unsafe { watch_initialized_payload(bytes) };
+        if release_first {
+            let mut release: crate::abi::mechanism::lifecycle::ReleaseIn = zeroed();
+            release.head.op = crate::abi::mechanism::lifecycle::slot::RELEASE;
+            release.lease = output.head.lease;
+            assert_eq!(
+                call::<life::Release<HookLife<OpenCanary>>>(
+                    instance,
+                    crate::abi::mechanism::lifecycle::slot::RELEASE,
+                    &release,
+                    &mut zeroed(),
+                ),
+                Outcome::Ready
+            );
+        }
+        closed::<OpenCanary>(instance);
+        let observed = probe.finish();
+        assert!(!observed.reentered);
+        assert!(
+            observed.payloads.len() >= 4,
+            "JSON keys, value and returned allocation were observed"
+        );
+        for len in [KEY.len(), NESTED_KEY.len(), VALUE.len(), WIRE.len()] {
+            assert!(observed.payloads.iter().any(|p| p.len == len));
+        }
+        for payload in observed.payloads {
+            assert!(payload.freed);
+            assert!(!payload.reallocated);
+            assert_eq!(payload.read_error, None);
+            assert!(payload.complete_read);
+            assert_eq!(payload.bytes_read, payload.len);
+            assert!(
+                payload.wiped,
+                "STATUS owner was freed without wiping its initialized bytes"
+            );
+        }
+    }
+}

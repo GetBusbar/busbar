@@ -143,10 +143,27 @@ pub fn fetch_plugins(
             }
         }
 
+        // An HTTP success (even with a matching pin) is not necessarily a plugin archive.
+        // Refuse unreadable downloads before replacing any installed artifact; admission still
+        // judges the manifest's signature, publisher, ABI and version floors at load time.
+        let manifest = match crate::tarball::unpack(&bytes) {
+            Ok(unpacked) => unpacked.manifest,
+            Err(error) => {
+                record_problem(
+                    &mut errors,
+                    &mut outcomes,
+                    format!(
+                        "plugin archive refused: {error} (not written; any installed copy is kept)"
+                    ),
+                );
+                continue;
+            }
+        };
+
         let unchanged = std::fs::read(&target)
             .is_ok_and(|installed| sha256_hex(&installed) == sha256_hex(&bytes));
         if !unchanged {
-            if let Err(refusal) = fresh(&bytes) {
+            if let Err(refusal) = fresh(&manifest) {
                 record_problem(&mut errors, &mut outcomes, format!(
                     "release seal refused ({}): {refusal} (not written; a NEW download is judged at install time, and any installed copy is kept)", refusal.code()));
                 continue;
@@ -168,14 +185,11 @@ pub fn fetch_plugins(
     }
 }
 
-fn fresh(bytes: &[u8]) -> Result<(), crate::release_trust::SealRefusal> {
-    let Ok(unpacked) = crate::tarball::unpack(bytes) else {
-        return Ok(());
-    };
-    if unpacked.manifest.publisher != crate::sign::FIRST_PARTY_PUBLISHER {
+fn fresh(manifest: &crate::sign::Manifest) -> Result<(), crate::release_trust::SealRefusal> {
+    if manifest.publisher != crate::sign::FIRST_PARTY_PUBLISHER {
         return Ok(());
     }
-    match crate::release_trust::wire::read_seal(&unpacked.manifest.signature) {
+    match crate::release_trust::wire::read_seal(&manifest.signature) {
         None => Ok(()),
         Some(Err(why)) => Err(crate::release_trust::SealRefusal::Malformed {
             doc: "release seal",
