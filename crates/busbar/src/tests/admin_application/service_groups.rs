@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_core_admin::v1::contract::AdminError;
-use busbar_core_admin::v1::service::AdminService;
 use busbar_kernel::config::groups::{ChildDefault, LimitMetric, LimitWindow};
 use busbar_kernel::config::{GroupCfg, LimitCfg};
 use busbar_kernel::governance::group_provision::{build_with_group, MAX_GROUP_NAME_LEN};
@@ -10,6 +8,26 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 #[path = "../../root/tests/test_plugins.rs"]
 mod plugins;
+
+#[derive(Debug, serde::Deserialize)]
+struct PageRead {
+    items: Vec<GroupRead>,
+    next_cursor: Option<String>,
+}
+#[derive(Debug, serde::Deserialize)]
+struct GroupRead {
+    name: String,
+    parent: Option<String>,
+    enabled: bool,
+    limits: Vec<LimitRead>,
+    child_default: Option<Vec<LimitRead>>,
+}
+#[derive(Debug, serde::Deserialize)]
+struct LimitRead {
+    metric: String,
+    amount: u64,
+    per: Option<String>,
+}
 
 fn budget(cents: u64, per: LimitWindow) -> LimitCfg {
     LimitCfg {
@@ -69,15 +87,24 @@ async fn list_groups_projects_the_limit_tree() {
         settings.is_object(),
         "the actual store settings are an object"
     );
-    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+    let operator_token = directory.join("operator-token");
+    let signing_key = directory.join("signing-key");
+    std::fs::write(&operator_token, "admintok").unwrap();
+    std::fs::write(&signing_key, hex::encode([9u8; 32])).unwrap();
+    let operator = busbar_kernel::config::operator_provider();
+    let mut document = serde_json::json!({
         "providers": {},
         "models": {},
         "groups": groups,
-        "auth": { "chain": [], "admin_auth": [] },
+        "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
+        "identity-providers": {},
         "store": { "module": module, "settings": settings },
         "advanced": { "allow_destinations": ["127.0.0.1"] },
-    }))
-    .expect("the product deployment parses");
+    });
+    document["identity-providers"][operator] =
+        serde_json::json!({"module": operator, "token": {"file": operator_token}});
+    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
+        .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = busbar_kernel::config::PluginsCfg {
@@ -103,12 +130,20 @@ async fn list_groups_projects_the_limit_tree() {
         rotate();
     }
     let app = Arc::new(app);
-    let svc = AdminService::new(app);
+    let router = busbar_kernel::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
 
-    let page = svc
-        .list_groups(0, busbar_core_admin::v1::contract::LIST_LIMIT_DEFAULT)
+    let response = client
+        .get(format!("http://{addr}/api/v1/admin/groups"))
+        .header("x-admin-token", "admintok")
+        .send()
         .await
-        .expect("list ok");
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let page: PageRead = response.json().await.expect("list ok");
 
     assert_eq!(page.items.len(), 2);
     let team = &page.items[0];
@@ -118,7 +153,7 @@ async fn list_groups_projects_the_limit_tree() {
     assert_eq!(team.limits.len(), 1);
     assert_eq!(team.limits[0].metric, "budget");
     assert_eq!(team.limits[0].amount, 20_000);
-    assert_eq!(team.limits[0].per, Some("month"));
+    assert_eq!(team.limits[0].per.as_deref(), Some("month"));
 
     let cd = team.child_default.as_ref().expect("child_default present");
     assert_eq!(cd.len(), 1);
@@ -128,6 +163,7 @@ async fn list_groups_projects_the_limit_tree() {
     assert_eq!(bob.name, "user:bob");
     assert_eq!(bob.parent.as_deref(), Some("team"));
     assert!(bob.child_default.is_none());
+    server.abort();
 }
 
 #[tokio::test]
@@ -173,15 +209,24 @@ async fn list_groups_is_cursor_paginated() {
         settings.is_object(),
         "the actual store settings are an object"
     );
-    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+    let operator_token = directory.join("operator-token");
+    let signing_key = directory.join("signing-key");
+    std::fs::write(&operator_token, "admintok").unwrap();
+    std::fs::write(&signing_key, hex::encode([9u8; 32])).unwrap();
+    let operator = busbar_kernel::config::operator_provider();
+    let mut document = serde_json::json!({
         "providers": {},
         "models": {},
         "groups": groups,
-        "auth": { "chain": [], "admin_auth": [] },
+        "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
+        "identity-providers": {},
         "store": { "module": module, "settings": settings },
         "advanced": { "allow_destinations": ["127.0.0.1"] },
-    }))
-    .expect("the product deployment parses");
+    });
+    document["identity-providers"][operator] =
+        serde_json::json!({"module": operator, "token": {"file": operator_token}});
+    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
+        .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = busbar_kernel::config::PluginsCfg {
@@ -207,9 +252,21 @@ async fn list_groups_is_cursor_paginated() {
         rotate();
     }
     let app = Arc::new(app);
-    let svc = AdminService::new(app);
+    let router = busbar_kernel::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
 
-    let p1 = svc.list_groups(0, 2).await.expect("list ok");
+    let response = client
+        .get(format!("http://{addr}/api/v1/admin/groups"))
+        .header("x-admin-token", "admintok")
+        .query(&[("limit", "2")])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let p1: PageRead = response.json().await.expect("list ok");
     assert_eq!(
         p1.items.len(),
         2,
@@ -221,16 +278,34 @@ async fn list_groups_is_cursor_paginated() {
         .next_cursor
         .as_deref()
         .expect("more rows remain -> a next_cursor is present");
-    let start2 = busbar_core_admin::v1::contract::decode_offset_cursor(c1).expect("valid cursor");
+    let _start2 = busbar_core_admin::v1::contract::decode_offset_cursor(c1).expect("valid cursor");
 
-    let p2 = svc.list_groups(start2, 2).await.expect("list ok");
+    let response = client
+        .get(format!("http://{addr}/api/v1/admin/groups"))
+        .header("x-admin-token", "admintok")
+        .query(&[("limit", "2")])
+        .query(&[("cursor", c1)])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let p2: PageRead = response.json().await.expect("list ok");
     assert_eq!(p2.items.len(), 2);
     let names: Vec<&str> = p2.items.iter().map(|g| g.name.as_str()).collect();
     assert_eq!(names, vec!["g2", "g3"]);
     let c2 = p2.next_cursor.as_deref().expect("one row remains");
-    let start3 = busbar_core_admin::v1::contract::decode_offset_cursor(c2).expect("valid cursor");
+    let _start3 = busbar_core_admin::v1::contract::decode_offset_cursor(c2).expect("valid cursor");
 
-    let p3 = svc.list_groups(start3, 2).await.expect("list ok");
+    let response = client
+        .get(format!("http://{addr}/api/v1/admin/groups"))
+        .header("x-admin-token", "admintok")
+        .query(&[("limit", "2")])
+        .query(&[("cursor", c2)])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let p3: PageRead = response.json().await.expect("list ok");
     assert_eq!(p3.items.len(), 1, "final page holds the remainder");
     let names: Vec<&str> = p3.items.iter().map(|g| g.name.as_str()).collect();
     assert_eq!(names, vec!["g4"]);
@@ -238,6 +313,7 @@ async fn list_groups_is_cursor_paginated() {
         p3.next_cursor.is_none(),
         "last page has no next_cursor: {p3:?}"
     );
+    server.abort();
 }
 
 #[tokio::test]
@@ -279,15 +355,24 @@ async fn get_group_by_name_and_not_found() {
         settings.is_object(),
         "the actual store settings are an object"
     );
-    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+    let operator_token = directory.join("operator-token");
+    let signing_key = directory.join("signing-key");
+    std::fs::write(&operator_token, "admintok").unwrap();
+    std::fs::write(&signing_key, hex::encode([9u8; 32])).unwrap();
+    let operator = busbar_kernel::config::operator_provider();
+    let mut document = serde_json::json!({
         "providers": {},
         "models": {},
         "groups": groups,
-        "auth": { "chain": [], "admin_auth": [] },
+        "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
+        "identity-providers": {},
         "store": { "module": module, "settings": settings },
         "advanced": { "allow_destinations": ["127.0.0.1"] },
-    }))
-    .expect("the product deployment parses");
+    });
+    document["identity-providers"][operator] =
+        serde_json::json!({"module": operator, "token": {"file": operator_token}});
+    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
+        .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = busbar_kernel::config::PluginsCfg {
@@ -313,17 +398,37 @@ async fn get_group_by_name_and_not_found() {
         rotate();
     }
     let app = Arc::new(app);
-    let svc = AdminService::new(app);
+    let router = busbar_kernel::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
 
-    let g = svc.get_group("acme").await.expect("found");
+    let response = client
+        .get(format!("http://{addr}/api/v1/admin/groups/acme"))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let g: GroupRead = response.json().await.expect("found");
     assert_eq!(g.name, "acme");
     assert_eq!(g.limits[0].amount, 5_000_000);
 
-    let err = svc.get_group("ghost").await.unwrap_err();
+    let response = client
+        .get(format!("http://{addr}/api/v1/admin/groups/ghost"))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 404);
+    let err: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(err["error"]["code"], "not_found");
     assert!(
-        matches!(&err, AdminError::NotFound { what: msg, .. } if msg.contains("ghost")),
+        err["error"]["message"].as_str().unwrap().contains("ghost"),
         "unknown group is not_found: {err:?}"
     );
+    server.abort();
 }
 
 #[test]
