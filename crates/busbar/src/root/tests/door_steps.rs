@@ -48,6 +48,8 @@ async fn routing_recipe_preserves_configured_float_prices_before_ranking() {
         },
     )]);
     let mut app = {
+        #[cfg(distribution_root)]
+        crate::dist_root_install::install();
         let library_path = std::path::PathBuf::from(
             std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
                 .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
@@ -176,6 +178,8 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
         };
         let card = BTreeMap::from([(super::plane_lane("p", "a"), entry)]);
         let mut generation = {
+            #[cfg(distribution_root)]
+            crate::dist_root_install::install();
             let library_path = std::path::PathBuf::from(
                 std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
                     .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
@@ -303,6 +307,8 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
         }
     }
     let no_card = steps(Arc::new({
+        #[cfg(distribution_root)]
+        crate::dist_root_install::install();
         let library_path = std::path::PathBuf::from(
             std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
                 .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
@@ -862,6 +868,8 @@ fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() {
             &pools,
             std::sync::Arc::new(|_: &str| None),
             std::sync::Arc::new({
+                #[cfg(distribution_root)]
+                crate::dist_root_install::install();
                 let library_path = std::path::PathBuf::from(
                     std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
                         .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
@@ -1019,6 +1027,8 @@ fn downgrade_book(
         )
         .expect("a key");
     let mut app = {
+        #[cfg(distribution_root)]
+        crate::dist_root_install::install();
         let library_path = std::path::PathBuf::from(
             std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
                 .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
@@ -3287,6 +3297,8 @@ pub(crate) mod tool_door {
 
             let tables = busbar_kernel::plane_driver::serve::ServeTables::default();
             let mut app = {
+                #[cfg(distribution_root)]
+                crate::dist_root_install::install();
                 let library_path = std::path::PathBuf::from(
                     std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
                         .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
@@ -9175,6 +9187,8 @@ fn the_configured_error_body_cap_reaches_both_egress_constructors() {
         pools: ModelPools::default(),
         lanes: Default::default(),
         app: LiveApp::fixed(std::sync::Arc::new({
+            #[cfg(distribution_root)]
+            crate::dist_root_install::install();
             let library_path = std::path::PathBuf::from(
                 std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
                     .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
@@ -9405,6 +9419,8 @@ fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowher
             &p,
             std::sync::Arc::new(|_: &str| None),
             std::sync::Arc::new({
+                #[cfg(distribution_root)]
+                crate::dist_root_install::install();
                 let library_path = std::path::PathBuf::from(
                     std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
                         .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
@@ -9774,6 +9790,8 @@ fn the_doors_admission_check_reads_the_arrival_window_and_not_the_clock() {
         )
         .expect("a key");
     let mut app = {
+        #[cfg(distribution_root)]
+        crate::dist_root_install::install();
         let library_path = std::path::PathBuf::from(
             std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
                 .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
@@ -9918,6 +9936,8 @@ fn asking_whether_a_name_is_configured_allocates_nothing() {
     }
     let p = pools(&yaml);
     let app = std::sync::Arc::new({
+        #[cfg(distribution_root)]
+        crate::dist_root_install::install();
         let library_path = std::path::PathBuf::from(
             std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
                 .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
