@@ -125,7 +125,59 @@ pub const ENTRY_ID_LEN: usize = 12;
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct EntryId(pub [u8; ENTRY_ID_LEN]);
 
+/// The raw provenance of counts: the era's date and, when recorded, its exact entry identity.
+///
+/// Historical rows without an identity retain their original dating semantics. In particular,
+/// legacy zero is undated; it cannot establish that the opening entry served those counts.
+#[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct RawRateEra {
+    /// The original entry's inclusive start, in wall-clock milliseconds.
+    pub effective_from: u64,
+    /// The entry actually serving the counts, absent in legacy records.
+    pub entry_id: Option<EntryId>,
+}
+
+impl RawRateEra {
+    /// A historical timestamp without an entry identity.
+    pub const fn legacy(effective_from: u64) -> Self {
+        Self {
+            effective_from,
+            entry_id: None,
+        }
+    }
+
+    /// An entry known to have served the counts, including an opening entry dated zero.
+    pub const fn entry(effective_from: u64, entry_id: EntryId) -> Self {
+        Self {
+            effective_from,
+            entry_id: Some(entry_id),
+        }
+    }
+}
+
+impl From<u64> for RawRateEra {
+    fn from(effective_from: u64) -> Self {
+        Self::legacy(effective_from)
+    }
+}
+
 impl EntryId {
+    /// The versioned metering provenance prefix. Other historical version names remain legacy.
+    pub const METERING_VERSION_PREFIX: &'static str = "busbar.card.entry.v1:";
+
+    /// The exact entry identity as a metering row's existing `pricing_version` field.
+    pub fn metering_version(&self) -> String {
+        format!("{}{self}", Self::METERING_VERSION_PREFIX)
+    }
+
+    /// Parse an exact metering identity. `None` denotes a legacy name; `Some(None)` denotes a
+    /// malformed versioned identity, which a pricing caller must refuse.
+    pub fn parse_metering_version(version: &str) -> Option<Option<Self>> {
+        version
+            .strip_prefix(Self::METERING_VERSION_PREFIX)
+            .map(Self::parse_hex)
+    }
+
     /// The separator between an id and the model name in a pseudo-model key.
     pub const SEPARATOR: char = '\u{1f}';
 
@@ -523,6 +575,71 @@ pub struct HistoryView<'a> {
 }
 
 impl HistoryView<'_> {
+    /// Resolve counts served by one exact entry, then apply deliberate later amendments at their
+    /// own wall instant. Ordinary configuration changes never replace the recorded entry.
+    ///
+    /// A void leaves the original card known for counts already served under it. Voided
+    /// amendments do not reprice counts. A snapshot missing the original identity refuses.
+    pub fn card_for_entry_era(&self, id: EntryId, wall_at: u64) -> Option<(HistorySeq, &RateCard)> {
+        let original = self.entries.iter().find(|entry| entry.id() == id)?;
+        Some(self.card_after_amendments(original, wall_at))
+    }
+
+    /// Resolve a historical timestamp era. Zero retains its undated wall lookup; a nonzero era
+    /// must name exactly one entry's start. An absent or ambiguous start refuses rather than
+    /// choosing a different configuration by wall time.
+    pub fn card_for_config_era(&self, era: u64, wall_at: u64) -> Option<(HistorySeq, &RateCard)> {
+        if era == 0 {
+            return self.card_at(wall_at);
+        }
+        let mut matching = self
+            .entries
+            .iter()
+            .filter(|entry| entry.effective_from == era);
+        let original = matching.next()?;
+        if matching.next().is_some() {
+            return None;
+        }
+        Some(self.card_after_amendments(original, wall_at))
+    }
+
+    /// Resolve raw provenance without losing the distinction between a known opening and legacy
+    /// undated counts. `wall_at` is the segment's first wall instant, used for amendments.
+    pub fn card_for_raw_era(
+        &self,
+        era: RawRateEra,
+        wall_at: u64,
+    ) -> Option<(HistorySeq, &RateCard)> {
+        match era.entry_id {
+            Some(id) => {
+                let original = self.entries.iter().find(|entry| entry.id() == id)?;
+                if original.effective_from != era.effective_from {
+                    return None;
+                }
+                Some(self.card_after_amendments(original, wall_at))
+            }
+            None => self.card_for_config_era(era.effective_from, wall_at),
+        }
+    }
+
+    fn card_after_amendments<'v>(
+        &'v self,
+        original: &'v CardEntry,
+        wall_at: u64,
+    ) -> (HistorySeq, &'v RateCard) {
+        let entry = self
+            .entries
+            .iter()
+            .rev()
+            .find(|entry| {
+                entry.seq > original.seq
+                    && matches!(entry.author, Author::Amend { .. })
+                    && entry.prices(wall_at)
+            })
+            .unwrap_or(original);
+        (entry.seq, &entry.card)
+    }
+
     /// **THE RESOLUTION RULE.** Among the entries this snapshot can see whose interval covers `t`,
     /// the one with the HIGHEST `seq` wins.
     ///
@@ -577,42 +694,27 @@ impl HistoryView<'_> {
     /// `effective_from` of the entry in force when it accrued. A correction boundary strictly inside
     /// a row's span moves the whole row or none of it: a `from` past the row's first instant leaves
     /// the in-window part at the old card (the correction is a silent no-op), and an `until` past it
-    /// reprices the row's out-of-window part. So a boundary `b` cuts when:
+    /// reprices the row's out-of-window part.
     ///
-    /// - `b` is before `stored_before` (rows holding instants at or after `b` may already be stored)
-    ///   and the row in force at `b` starts before it — `b` is neither a bucket start nor the
-    ///   `effective_from` of the entry in force at `b`, appended no later than `b` (so every unit
-    ///   from `b` on accrued under it);
-    /// - or `b` is the window's `until` and the row the units after the window will accrue into
-    ///   starts inside the window: it would price at the correction although every unit in it is
-    ///   outside.
-    ///
-    /// A `from` at or after `stored_before` cuts nothing: every unit from it on accrues under the
-    /// correction's own era, which starts at `from`.
+    /// Only bucket boundaries prove a split of every possible row. A configuration's nominal start
+    /// does not: its Store activation may still have been pending, or an in-flight request may
+    /// retain its older entry. A future correction start likewise cannot split an older request's
+    /// eventual counts. No raw row spans or request-custody proof accompany this API, so a finer
+    /// boundary refuses. `stored_before` is retained for existing callers; its timestamp alone
+    /// supplies no such proof, regardless of whether a boundary is before or after it.
     pub fn correction_cut(
         &self,
         from: u64,
         until: Option<u64>,
-        stored_before: u64,
+        _stored_before: u64,
         bucket_ms: u64,
     ) -> Option<u64> {
-        let row_start = |b: u64| {
-            let entry = self.entry_at(b);
-            let era = entry.map_or(0, CardEntry::effective_from);
-            let bucket_start = b - b % bucket_ms.max(1);
-            let on_time = entry.is_none_or(|e| e.appended_at <= b || b == bucket_start);
-            (bucket_start.max(era), on_time)
-        };
-        let stored_cut = |b: u64| {
-            let (start, on_time) = row_start(b);
-            b < stored_before && (start < b || !on_time)
-        };
-        if stored_cut(from) {
+        let cuts = |boundary: u64| boundary % bucket_ms.max(1) != 0;
+        if cuts(from) {
             return Some(from);
         }
         let until = until?;
-        let (after, _) = row_start(until);
-        (stored_cut(until) || (from <= after && after < until)).then_some(until)
+        cuts(until).then_some(until)
     }
 
     /// The snapshot this view is: the seq it was taken at, or `None` for the current view of a

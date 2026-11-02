@@ -216,9 +216,10 @@ fn correction_cut_names_a_boundary_inside_a_row() {
     });
     let view = history.current();
     let cut = |from, until| view.correction_cut(from, until, 5_000, 1_000);
-    // Bucket starts and an era opened on time split every stored row.
+    // Only bucket starts guarantee a split in every stored row. An old serving entry may remain
+    // active across an on-time nominal configuration boundary while activation is unconfirmed.
     assert_eq!(cut(1_000, Some(2_000)), None);
-    assert_eq!(cut(2_500, Some(3_000)), None);
+    assert_eq!(cut(2_500, Some(3_000)), Some(2_500));
     assert_eq!(cut(0, None), None);
     // Inside a stored row.
     assert_eq!(cut(1_500, Some(2_000)), Some(1_500));
@@ -226,11 +227,10 @@ fn correction_cut_names_a_boundary_inside_a_row() {
     assert_eq!(cut(2_700, None), Some(2_700));
     // An era back-dated after its units were stored splits nothing.
     assert_eq!(cut(3_200, Some(4_000)), Some(3_200));
-    // A future window: its start cuts nothing; its end must not leave the units after it in a row
-    // that starts inside the window.
-    assert_eq!(cut(5_200, Some(5_800)), None);
-    assert_eq!(cut(5_200, Some(6_300)), Some(6_300));
-    assert_eq!(cut(5_200, Some(6_000)), None);
+    // A future wall timestamp supplies no proof that an old request cannot finish across it.
+    assert_eq!(cut(5_200, Some(5_800)), Some(5_200));
+    assert_eq!(cut(5_000, Some(6_300)), Some(6_300));
+    assert_eq!(cut(5_000, Some(6_000)), None);
 }
 
 /// **AN ENTRY IS NAMED BY ITS KEY'S ID.** The id is the first 12 bytes of SHA-256 of the key, spelled
@@ -268,4 +268,132 @@ fn entries_are_named_by_the_id_of_their_key() {
         Some(&card_at(1.0))
     );
     assert_eq!(history.card_of(&EntryKey::new(1, [0; 8], 0).id()), None);
+}
+
+#[test]
+fn serving_entry_survives_later_config_but_accepts_a_wall_scoped_amendment() {
+    use crate::cost::RawRateEra;
+
+    let mut history = overlapping_history();
+    let opening = history.entries()[0].id();
+    let config = history.entries()[1].id();
+    let amendment = history.entries()[2].key();
+    let view = history.current();
+    let seq = |id, wall_at| view.card_for_entry_era(id, wall_at).map(|(seq, _)| seq);
+
+    // These opening-era counts were served after the ordinary edit's nominal cutover.
+    assert_eq!(seq(opening, 150), Some(HistorySeq::OPENING));
+    assert_eq!(seq(config, 150), Some(HistorySeq(1)));
+    assert_eq!(seq(opening, 49), Some(HistorySeq::OPENING));
+    assert_eq!(seq(opening, 50), Some(HistorySeq(2)));
+    assert_eq!(seq(opening, 149), Some(HistorySeq(2)));
+    assert_eq!(seq(config, 120), Some(HistorySeq(2)));
+
+    assert_eq!(
+        view.card_for_raw_era(RawRateEra::legacy(0), 150)
+            .map(|(seq, _)| seq),
+        Some(HistorySeq(1)),
+        "an undated legacy zero proves no opening identity"
+    );
+    assert_eq!(
+        view.card_for_raw_era(RawRateEra::entry(0, opening), 150)
+            .map(|(seq, _)| seq),
+        Some(HistorySeq::OPENING)
+    );
+    assert!(view
+        .card_for_raw_era(RawRateEra::entry(100, opening), 150)
+        .is_none());
+    assert_eq!(
+        history
+            .snapshot(HistorySeq(1))
+            .card_for_entry_era(opening, 120)
+            .map(|(seq, _)| seq),
+        Some(HistorySeq::OPENING),
+        "a prior snapshot cannot see the later amendment"
+    );
+    assert!(history
+        .snapshot(HistorySeq::OPENING)
+        .card_for_entry_era(config, 150)
+        .is_none());
+
+    history.void(&amendment);
+    assert_eq!(
+        history
+            .current()
+            .card_for_entry_era(opening, 120)
+            .map(|(seq, _)| seq),
+        Some(HistorySeq::OPENING),
+        "a voided amendment no longer corrects counts"
+    );
+    let config_key = history.entries()[1].key();
+    history.void(&config_key);
+    assert_eq!(
+        history
+            .current()
+            .card_for_entry_era(config, 150)
+            .map(|(seq, _)| seq),
+        Some(HistorySeq(1)),
+        "voiding a configuration keeps the card already-served counts name"
+    );
+}
+
+#[test]
+fn timestamp_eras_refuse_missing_or_ambiguous_original_entries() {
+    use crate::cost::{EntryKey, RawRateEra};
+
+    let mut history = overlapping_history();
+    let original = history.entries()[1].id();
+    assert!(history.current().card_for_config_era(99, 1_000).is_none());
+    assert!(history
+        .current()
+        .card_for_entry_era(EntryKey::new(42, [1; 8], 0).id(), 1_000)
+        .is_none());
+    history.append(CardEntryDraft {
+        effective_from: 100,
+        effective_until: None,
+        card: card_at(4.0),
+        appended_at: 1_000,
+        author: Author::Config { policy_epoch: 2 },
+    });
+    let view = history.current();
+    assert!(view.card_for_config_era(100, 1_000).is_none());
+    assert_eq!(
+        view.card_for_entry_era(original, 120).map(|(seq, _)| seq),
+        Some(HistorySeq(2)),
+        "a later configuration does not erase an amendment of old-entry counts"
+    );
+    let later = history.entries()[3].id();
+    assert_eq!(
+        view.card_for_entry_era(later, 120).map(|(seq, _)| seq),
+        Some(HistorySeq(3)),
+        "an earlier amendment does not replace a later serving configuration"
+    );
+    assert_eq!(
+        view.card_for_raw_era(RawRateEra::entry(100, original), 1_000)
+            .map(|(seq, _)| seq),
+        Some(HistorySeq(1)),
+        "the recorded identity disambiguates equal configuration timestamps"
+    );
+}
+
+#[test]
+fn metering_identity_codec_preserves_legacy_names_and_refuses_malformed_new_names() {
+    use crate::cost::{EntryId, EntryKey};
+
+    let id = EntryKey::new(42, [1; 8], 0).id();
+    assert_eq!(
+        EntryId::parse_metering_version(&id.metering_version()),
+        Some(Some(id))
+    );
+    for legacy in ["", "v1", "historical-card", "historical-version"] {
+        assert_eq!(EntryId::parse_metering_version(legacy), None);
+    }
+    assert_eq!(
+        EntryId::parse_metering_version(EntryId::METERING_VERSION_PREFIX),
+        Some(None)
+    );
+    assert_eq!(
+        EntryId::parse_metering_version(&format!("{}bad", EntryId::METERING_VERSION_PREFIX)),
+        Some(None)
+    );
 }
