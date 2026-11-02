@@ -444,7 +444,7 @@ fn automatic_driver_checks_ack_before_releasing_its_answer_lease() {
                 max_inflight_cap: 8,
                 sink: Arc::new(NoSink),
                 dispatcher: dispatcher.adopter(),
-                conns: ConnTable::NoNeeds,
+                conns: ConnTable::Probe,
             },
         )
         .unwrap();
@@ -519,7 +519,7 @@ fn canceling_an_actual_pending_crossing_cannot_ack_its_drivers_result() {
             max_inflight_cap: 8,
             sink: Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
-            conns: ConnTable::NoNeeds,
+            conns: ConnTable::Probe,
         },
     )
     .unwrap();
