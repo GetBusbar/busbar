@@ -25,3 +25,9 @@ mod decisions_hooks;
 
 #[path = "kernel_application/hooks_pool_admission.rs"]
 mod hooks_pool_admission;
+
+#[path = "admin_application/usage_reads_the_process_rate_history.rs"]
+mod admin_usage_history;
+
+#[path = "kernel_application/central_root_rules.rs"]
+mod central_root_rules;
