@@ -304,3 +304,60 @@ mod misc_router_door;
 
 #[path = "kernel_application/misc_router_session.rs"]
 mod misc_router_session;
+
+#[path = "kernel_application/auth_admin_tests.rs"]
+mod kernel_application_auth_admin_tests;
+
+#[path = "kernel_application/exports_projection.rs"]
+mod kernel_application_exports_projection;
+
+#[path = "kernel_application/hooks_runtime_replies.rs"]
+mod kernel_application_hooks_runtime_replies;
+
+#[path = "admin_application/admin_config_history_and_overlay.rs"]
+mod admin_application_admin_config_history_and_overlay;
+
+#[path = "admin_application/admin_corrupt_overlay_refusals.rs"]
+mod admin_application_admin_corrupt_overlay_refusals;
+
+#[path = "admin_application/admin_hook_crud_contracts.rs"]
+mod admin_application_admin_hook_crud_contracts;
+
+#[path = "admin_application/admin_hook_overlay_reset.rs"]
+mod admin_application_admin_hook_overlay_reset;
+
+#[path = "admin_application/admin_hook_read_metadata.rs"]
+mod admin_application_admin_hook_read_metadata;
+
+#[path = "admin_application/admin_key_mutation_gates.rs"]
+mod admin_application_admin_key_mutation_gates;
+
+#[path = "admin_application/admin_key_store_selection.rs"]
+mod admin_application_admin_key_store_selection;
+
+#[path = "admin_application/admin_named_map_scope.rs"]
+mod admin_application_admin_named_map_scope;
+
+#[path = "admin_application/admin_operation_namespaces.rs"]
+mod admin_application_admin_operation_namespaces;
+
+#[path = "admin_application/admin_overlay_boundaries.rs"]
+mod admin_application_admin_overlay_boundaries;
+
+#[path = "admin_application/admin_overlay_persist_failures.rs"]
+mod admin_application_admin_overlay_persist_failures;
+
+#[path = "admin_application/admin_restart_idempotency.rs"]
+mod admin_application_admin_restart_idempotency;
+
+#[path = "admin_application/admin_rotate_pool_ceilings.rs"]
+mod admin_application_admin_rotate_pool_ceilings;
+
+#[path = "admin_application/admin_scope_ladder.rs"]
+mod admin_application_admin_scope_ladder;
+
+#[path = "admin_application/admin_usage_model_key.rs"]
+mod admin_application_admin_usage_model_key;
+
+#[path = "../root/tests/serve_a2a_parity.rs"]
+mod a2a_actual_parity;
