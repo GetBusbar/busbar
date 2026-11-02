@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+#[path = "../common/mod.rs"]
 mod common;
 
 use busbar_contract::secret_ref::SECRET_MODULE_ENV;
@@ -59,7 +60,7 @@ fn auth_manifest(name: &str, alias: &str, publisher: &str) -> busbar_plugin_load
 
 fn first_party_tarball(mut m: busbar_plugin_loader::sign::Manifest, lib: &[u8]) -> Vec<u8> {
     m.publisher = busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER.into();
-    common::plugins::signed(&common::root_install::release_key(), m, lib)
+    common::plugins::signed(&crate::dist_root_install::release_key(), m, lib)
 }
 
 fn write_auth_plugin(dir: &Path, file: &str, name: &str, alias: &str) {
@@ -118,7 +119,7 @@ fn chain_with(module: &str, settings: serde_json::Map<String, serde_json::Value>
 
 #[test]
 fn auth_plugin_undeclared_setting_is_delivered_as_written_and_a_reference_there_is_refused() {
-    common::root_install::install();
+    crate::dist_root_install::install();
     let dir = tmp_plugin_dir("auth-plugin-secret-ref");
     write_auth_plugin(&dir, "idp.tar.gz", "acme-idp", "ref-auth");
     let plugins = plugins_cfg_allow_unsigned(&dir);
@@ -184,7 +185,7 @@ fn auth_plugin_undeclared_setting_is_delivered_as_written_and_a_reference_there_
 
 #[test]
 fn auth_plugin_schema_marked_setting_is_not_declared_so_a_reference_there_is_refused() {
-    common::root_install::install();
+    crate::dist_root_install::install();
     let dir = tmp_plugin_dir("auth-plugin-root-secret-contract");
     write_auth_plugin_with_root_secret_schema(&dir, "idp.tar.gz", "acme-idp", "sec-auth");
     let plugins = plugins_cfg_allow_unsigned(&dir);
@@ -248,7 +249,7 @@ fn auth_plugin_schema_marked_setting_is_not_declared_so_a_reference_there_is_ref
 
 #[test]
 fn auth_plugin_loads_and_identifies_through_middleware() {
-    common::root_install::install();
+    crate::dist_root_install::install();
     let dir = tmp_plugin_dir("auth-plugin-e2e");
 
     write_auth_plugin(&dir, "idp.tar.gz", "acme-idp", "my-auth");
@@ -315,7 +316,7 @@ fn auth_plugin_loads_and_identifies_through_middleware() {
 
 #[test]
 fn admin_modules_rebuilt_on_reload() {
-    common::root_install::install();
+    crate::dist_root_install::install();
     let dir = tmp_plugin_dir("admin-modules-reload");
     write_auth_plugin(&dir, "idp.tar.gz", "acme-idp", "admin-oidc");
     let config = dir.join("config.yaml");
@@ -395,7 +396,7 @@ fn admin_modules_rebuilt_on_reload() {
 
 #[test]
 fn a_v1_auth_plugin_is_refused_at_boot_and_the_current_one_builds_browser_login() {
-    common::root_install::install();
+    crate::dist_root_install::install();
     let dir = tmp_plugin_dir("auth-login-v1-gate");
     let lib = std::fs::read(auth_cdylib()).expect("read the auth module's cdylib");
     let mut manifest = auth_manifest("acme-idp", "cap-idp", "acme");
@@ -404,7 +405,7 @@ fn a_v1_auth_plugin_is_refused_at_boot_and_the_current_one_builds_browser_login(
     let plugins = plugins_cfg_allow_unsigned(&dir);
     let errs = busbar_plugin_loader::scan_and_validate(
         Path::new(&plugins.dir),
-        &common::root_install::trust_policy(&plugins).unwrap(),
+        &crate::dist_root_install::trust_policy(&plugins).unwrap(),
     )
     .expect_err("a v1 auth plugin is refused at boot");
     assert!(

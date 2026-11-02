@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+#[path = "../common/mod.rs"]
 mod common;
 
 use std::path::{Path, PathBuf};
@@ -45,7 +46,7 @@ fn preflight(
     store: Option<&StoreCfg>,
     plugins: &PluginsCfg,
 ) -> Result<Arc<dyn PluginRows>, String> {
-    common::root_install::install();
+    crate::dist_root_install::install();
     busbar_kernel::plugins_preflight(
         store,
         None,
@@ -70,7 +71,7 @@ fn disabled_plugins_are_inert_even_when_present() {
 
 #[test]
 fn the_built_in_stores_dropped_in_copy_is_admitted_once_and_a_rival_is_refused() {
-    common::root_install::install();
+    crate::dist_root_install::install();
     let (name, _, _, canonical) = busbar_kernel::preflight::root_rows()
         .stores
         .first()

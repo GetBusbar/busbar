@@ -17,8 +17,6 @@ pub fn trust_policy(cfg: &PluginsCfg) -> Result<TrustPolicy, String> {
     crate::root::boot::trust_policy(cfg, env!("CARGO_PKG_VERSION"))
 }
 
-// These cases are mounted in the distribution binary's unit-test target, so the
-// same generated LINKED rows and boot functions that main uses own every axis.
 pub fn install() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {

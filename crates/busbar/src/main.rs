@@ -1606,3 +1606,11 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/catalogue_tests.rs"]
 mod catalogue_tests;
+
+#[cfg(all(test, distribution_root))]
+#[path = "../../../dist/default/tests/common/root_install.rs"]
+mod dist_root_install;
+
+#[cfg(all(test, distribution_root))]
+#[path = "tests/distribution.rs"]
+mod distribution;

@@ -161,7 +161,7 @@ fn chain(
 }
 
 pub fn run(c: &AbiCanaries) -> (Vec<Sink>, Vec<String>) {
-    common::root_install::install();
+    crate::dist_root_install::install();
     let tracing = tracing_capture();
     let traced_from = tracing.lock().unwrap_or_else(|p| p.into_inner()).len();
     let d = doors();

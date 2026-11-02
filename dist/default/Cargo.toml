@@ -703,18 +703,6 @@ crate-type = ["cdylib"]
 # The linked door this binary proves is the export axis's optional edge; without the feature there is
 # no linked row to prove, so the target is not built.
 [[test]]
-name = "admin_cross_plane"
-path = "tests/admin_cross_plane/main.rs"
-required-features = ["auth-admin-tokens"]
-
-# THE CREDENTIAL CANARY HARNESS (measurement only): it plants canaries
-# through the linked auth rows and the request-log exports, so it needs them linked.
-[[test]]
-name = "canary"
-path = "tests/canary/main.rs"
-required-features = ["auth-admin-tokens", "auth-header", "auth-webhook-signature", "export-file", "export-webhook"]
-
-[[test]]
 name = "traces_stream_both_doors"
 path = "tests/traces_stream_both_doors.rs"
 required-features = ["export-otlp"]

@@ -4,8 +4,7 @@
 #[path = "../linked/mod.rs"]
 mod linked;
 
-#[path = "../common/root_install.rs"]
-mod root_install;
+use crate::dist_root_install as root_install;
 
 mod keys;
 #[cfg(feature = "openapi-schema")]

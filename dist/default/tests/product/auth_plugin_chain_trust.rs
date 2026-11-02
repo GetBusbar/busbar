@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+#[path = "../common/mod.rs"]
 mod common;
 
 use std::path::{Path, PathBuf};
@@ -36,7 +37,7 @@ fn chain_with(module: &str) -> AuthCfg {
 
 #[test]
 fn untrusted_auth_plugin_fails_closed_not_open() {
-    common::root_install::install();
+    crate::dist_root_install::install();
     let dir = tmp_plugin_dir("auth-plugin-untrusted");
     let tarball = unsigned_tarball(
         auth_row_manifest("acme-idp", "test-idp-double", "acme"),
@@ -71,7 +72,7 @@ fn untrusted_auth_plugin_fails_closed_not_open() {
 
     let registry = busbar_plugin_loader::scan_and_validate(
         Path::new(&strict.dir),
-        &common::root_install::trust_policy(&strict).unwrap(),
+        &crate::dist_root_install::trust_policy(&strict).unwrap(),
     )
     .expect("scan succeeds; the untrusted plugin is merely skipped");
     let registry: std::sync::Arc<dyn PluginRows> = std::sync::Arc::new(registry);
