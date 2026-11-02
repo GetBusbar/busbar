@@ -61,9 +61,8 @@ fn request_handler(proto: &str) -> Option<&'static dyn RequestHandler> {
 
 #[test]
 fn the_derived_protocol_list_is_byte_identical_to_the_const_it_replaced() {
-    registered();
     assert_eq!(
-        busbar_kernel_testkit::ingress::protocols::known_protocols(),
+        builtins().codec_protocols(),
         strs(&FIXTURE["protocol_order"]).as_slice(),
         "the protocol name set AND ITS ORDER are operator-visible: the order indexes telemetry's \
          metric families and the set is what the config validator accepts"
@@ -277,16 +276,28 @@ fn test_residual_dialect_colon_model_id_is_openai_not_gemini() {
 
 #[test]
 fn test_residual_dialect_names_none_rather_than_defaulting_to_openai() {
-    registered();
+    let registry = builtins();
+    let residual = |path: &str| {
+        registry
+            .decls()
+            .iter()
+            .filter_map(|decl| {
+                decl.residual_claims
+                    .and_then(|claim| claim(path))
+                    .map(|strength| (strength, decl.name))
+            })
+            .min_by_key(|(strength, _)| *strength)
+            .map(|(_, name)| name)
+    };
     let live = &FIXTURE["residual_live"];
     assert_eq!(
-        residual_dialect_for_path(live[0].as_str().expect("path")),
+        residual(live[0].as_str().expect("path")),
         live[1].as_str(),
         "the residual fold must be live, or the `None` assertions below prove nothing"
     );
     for path in strs(&FIXTURE["residual_none"]) {
         assert_eq!(
-            residual_dialect_for_path(path),
+            residual(path),
             None,
             "`{path}` names no dialect — the classifier must say so, not name a default"
         );
