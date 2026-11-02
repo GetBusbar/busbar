@@ -247,29 +247,38 @@ impl HookEnv {
         &self,
         hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
     ) -> Result<(), String> {
-        for (name, hook) in hooks {
-            if hook.kind != crate::config::HookKind::Gate {
-                continue;
-            }
-
-            if !self.knows(&hook.plugin) {
-                continue;
-            }
-
-            let resolved = self
-                .resolve_hook_settings(&hook.plugin, &hook.settings)
-                .map_err(|e| format!("hook '{name}' settings: {e}"))?;
-            self.open(&hook.plugin, &resolved, name, hook.timeout_ms)
-                .map_err(|e| {
-                    format!(
-                        "gate hook '{name}' (plugin '{}') failed to open; refusing to boot/reload \
-                         with a silently-absent admission gate (fail-closed): {e}",
-                        hook.plugin
-                    )
-                })?;
-        }
-        Ok(())
+        preopen_definitions(
+            hooks,
+            |module| self.knows(module),
+            |_, hook| self.resolve_hook_settings(&hook.plugin, &hook.settings),
+            |name, hook, resolved| {
+                self.open(&hook.plugin, &resolved, name, hook.timeout_ms)
+                    .map(|_| ())
+            },
+        )
     }
+}
+
+fn preopen_definitions<T>(
+    hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
+    mut knows: impl FnMut(&str) -> bool,
+    mut resolve: impl FnMut(&str, &crate::config::HookCfg) -> Result<T, String>,
+    mut open: impl FnMut(&str, &crate::config::HookCfg, T) -> Result<(), String>,
+) -> Result<(), String> {
+    for (name, hook) in hooks {
+        if hook.kind != crate::config::HookKind::Gate || !knows(&hook.plugin) {
+            continue;
+        }
+        let resolved = resolve(name, hook).map_err(|e| format!("hook '{name}' settings: {e}"))?;
+        open(name, hook, resolved).map_err(|e| {
+            format!(
+                "gate hook '{name}' (plugin '{}') failed to open; refusing to boot/reload \
+             with a silently-absent admission gate (fail-closed): {e}",
+                hook.plugin
+            )
+        })?;
+    }
+    Ok(())
 }
 
 struct RouteCalls {

@@ -409,7 +409,18 @@ fn preresolve_hook_secrets_fails_closed_on_unresolvable_secret() {
 
 #[test]
 fn preopen_gate_hooks_aborts_on_a_broken_gate_but_never_a_broken_tap() {
-    let env = test_env();
+    let resolver = crate::config::secret::SecretResolver::builtins_only();
+    let open = |_: &str, hook: &HookCfg| {
+        crate::config::secret::resolve_settings(
+            &hook.settings,
+            &[],
+            &[],
+            &hook.plugin,
+            &resolver,
+            &busbar_contract::config_time::ConfigScope::config_time(),
+        )
+        .map(|_| ())
+    };
 
     let mut settings = serde_json::Map::new();
     settings.insert(
@@ -422,15 +433,14 @@ fn preopen_gate_hooks_aborts_on_a_broken_gate_but_never_a_broken_tap() {
     broken_tap.settings = settings.clone();
     let tap_hooks = registry("broken-tap", broken_tap);
     assert!(
-        env.preopen_gate_hooks(&tap_hooks).is_ok(),
+        preopen_definitions(&tap_hooks, |_| true, open, |_, _, ()| Ok(())).is_ok(),
         "a broken TAP must never abort boot/reload (taps fail-open)"
     );
 
     let mut broken_gate = base_gate();
     broken_gate.settings = settings;
     let gate_hooks = registry("broken-gate", broken_gate);
-    let err = env
-        .preopen_gate_hooks(&gate_hooks)
+    let err = preopen_definitions(&gate_hooks, |_| true, open, |_, _, ()| Ok(()))
         .expect_err("a gate whose settings/open() fails must abort boot/reload CLOSED");
     assert!(
         err.contains("broken-gate"),
@@ -439,7 +449,7 @@ fn preopen_gate_hooks_aborts_on_a_broken_gate_but_never_a_broken_tap() {
 
     let ok_hooks = registry("ok-gate", base_gate());
     assert!(
-        env.preopen_gate_hooks(&ok_hooks).is_ok(),
+        preopen_definitions(&ok_hooks, |_| true, open, |_, _, ()| Ok(())).is_ok(),
         "a gate with valid settings must pre-open without error"
     );
 }
