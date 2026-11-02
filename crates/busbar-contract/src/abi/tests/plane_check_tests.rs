@@ -369,7 +369,10 @@ fn the_refusal_causes_are_distinct_and_zero_status_is_accepted() {
         "the cause numbering is the ABI's"
     );
     let o: RefusalOut = z();
-    assert_eq!(check_refusal(Ready, &o, &[], &caps()), Ok(()));
+    assert_eq!(
+        check_refusal(Ready, &o, &[], &[], &caps(), &bounds()),
+        Ok(())
+    );
 }
 
 #[test]
@@ -762,6 +765,46 @@ fn a_ledger_lane_rides_the_arena() {
     assert_eq!(piece(&o, &[], &[], &[]), Ok(()));
 }
 
+fn refusal_records(
+    outcome: Outcome,
+    out: &RefusalOut,
+    records: &[RecordWrite],
+    cap: u64,
+    b: &Bounds,
+) -> Result<(), Fault> {
+    check_refusal(
+        outcome,
+        out,
+        &[],
+        records,
+        &Caps {
+            records: cap,
+            ..caps()
+        },
+        b,
+    )
+}
+
+fn serve_records(
+    outcome: Outcome,
+    out: &ServeOut,
+    records: &[RecordWrite],
+    cap: u64,
+    b: &Bounds,
+) -> Result<(), Fault> {
+    check_serve(
+        outcome,
+        out,
+        &[],
+        records,
+        &Caps {
+            records: cap,
+            ..caps()
+        },
+        b,
+    )
+}
+
 /// SEAM-L(o), A REFUSAL'S RECORD WRITES: judged as an `on_piece` answer's, under the short-buffer
 /// rule over the host's `records_buf`: an audit row inside the arena passes; a write past the cap,
 /// an unknown op or a span outside the arena is FAULT. RED: a refusal had no record slot.
@@ -775,28 +818,25 @@ fn a_refusals_record_writes_are_judged_as_an_answers() {
     r.kind = AUDIT_REJECTED;
     r.key = sp(0, 4);
     r.value = sp(4, 4);
-    assert_eq!(check_refusal_records(Ready, &o, &[r], 1, &bounds()), Ok(()));
+    assert_eq!(refusal_records(Ready, &o, &[r], 1, &bounds()), Ok(()));
     assert_eq!(
-        check_refusal_records(Ready, &o, &[r], 0, &bounds()),
+        refusal_records(Ready, &o, &[r], 0, &bounds()),
         f(Rule::OverCap, "refusal.records")
     );
     let mut bad = r;
     bad.op = 4;
     assert_eq!(
-        check_refusal_records(Ready, &o, &[bad], 1, &bounds()),
+        refusal_records(Ready, &o, &[bad], 1, &bounds()),
         f(Rule::UnknownCode, "record.op")
     );
     let mut bad = r;
     bad.value = sp(6, 4);
     assert_eq!(
-        check_refusal_records(Ready, &o, &[bad], 1, &bounds()),
+        refusal_records(Ready, &o, &[bad], 1, &bounds()),
         f(Rule::SpanOutOfBounds, "record.value")
     );
     let none: RefusalOut = z();
-    assert_eq!(
-        check_refusal_records(Ready, &none, &[], 0, &bounds()),
-        Ok(())
-    );
+    assert_eq!(refusal_records(Ready, &none, &[], 0, &bounds()), Ok(()));
 }
 
 /// SEAM-L(t), A SERVED REQUEST'S RECORD WRITES: judged as an answer's: a put of a declared kind
@@ -811,21 +851,18 @@ fn a_served_requests_record_writes_are_judged_as_an_answers() {
     r.op = RECORD_PUT;
     r.key = sp(0, 4);
     r.value = sp(4, 4);
-    assert_eq!(check_serve_records(Ready, &o, &[r], 1, &bounds()), Ok(()));
+    assert_eq!(serve_records(Ready, &o, &[r], 1, &bounds()), Ok(()));
     let mut bad = r;
     bad.kind = 1;
     assert_eq!(
-        check_serve_records(Ready, &o, &[bad], 1, &bounds()),
+        serve_records(Ready, &o, &[bad], 1, &bounds()),
         f(Rule::IndexOutOfRange, "record.kind")
     );
     let mut short: ServeOut = z();
     short.records_needed = 2;
+    assert_eq!(serve_records(Failed, &short, &[], 1, &bounds()), Ok(()));
     assert_eq!(
-        check_serve_records(Failed, &short, &[], 1, &bounds()),
-        Ok(())
-    );
-    assert_eq!(
-        check_serve_records(Ready, &short, &[], 1, &bounds()),
+        serve_records(Ready, &short, &[], 1, &bounds()),
         f(Rule::NeededNotFailed, "serve.records")
     );
 }
@@ -874,32 +911,35 @@ fn a_refusal_marker_is_known_and_its_reply_follows_m_sb() {
     let mut o: RefusalOut = z();
     o.marker = 2;
     assert_eq!(
-        check_refusal(Ready, &o, &[], &caps()),
+        check_refusal(Ready, &o, &[], &[], &caps(), &bounds()),
         f(Rule::UnknownCode, "refusal.marker")
     );
     // The gate-rejected marker is the kernel's to set, never a plane's.
     o.marker = MARK_GATE_REJECTED;
     assert_eq!(
-        check_refusal(Ready, &o, &[], &caps()),
+        check_refusal(Ready, &o, &[], &[], &caps(), &bounds()),
         f(Rule::UnknownCode, "refusal.marker")
     );
     let mut o: RefusalOut = z();
     o.reply_needed = 17;
     assert_eq!(
-        check_refusal(Ready, &o, &[], &caps()),
+        check_refusal(Ready, &o, &[], &[], &caps(), &bounds()),
         f(Rule::NeededNotFailed, "refusal.reply")
     );
-    assert_eq!(check_refusal(Failed, &o, &[], &caps()), Ok(()));
+    assert_eq!(
+        check_refusal(Failed, &o, &[], &[], &caps(), &bounds()),
+        Ok(())
+    );
     o.reply_needed = 16;
     assert_eq!(
-        check_refusal(Failed, &o, &[], &caps()),
+        check_refusal(Failed, &o, &[], &[], &caps(), &bounds()),
         f(Rule::WastedRecall, "refusal")
     );
     let mut o: RefusalOut = z();
     o.fields_needed = 5;
     o.arena_written = 1;
     assert_eq!(
-        check_refusal(Failed, &o, &[], &caps()),
+        check_refusal(Failed, &o, &[], &[], &caps(), &bounds()),
         f(Rule::WrittenOnShort, "refusal")
     );
 }
@@ -909,7 +949,7 @@ fn a_serve_reply_follows_m_sb_and_its_fields_stay_in_the_arena() {
     let mut o: ServeOut = z();
     o.arena_needed = 17;
     assert_eq!(
-        check_serve(Ready, &o, &[], &caps()),
+        check_serve(Ready, &o, &[], &[], &caps(), &bounds()),
         f(Rule::NeededNotFailed, "serve.arena")
     );
     let mut o: ServeOut = z();
@@ -918,7 +958,7 @@ fn a_serve_reply_follows_m_sb_and_its_fields_stay_in_the_arena() {
     let mut fl: OutField = z();
     fl.value = sp(0, 2);
     assert_eq!(
-        check_serve(Ready, &o, &[fl], &caps()),
+        check_serve(Ready, &o, &[fl], &[], &caps(), &bounds()),
         f(Rule::SpanOutOfBounds, "field.value")
     );
 }
@@ -928,11 +968,11 @@ fn a_serve_audit_is_one_of_the_three() {
     let mut o: ServeOut = z();
     for a in [AUDIT_NONE, AUDIT_APPLIED, AUDIT_REJECTED] {
         o.audit = a;
-        assert_eq!(check_serve(Ready, &o, &[], &caps()), Ok(()));
+        assert_eq!(check_serve(Ready, &o, &[], &[], &caps(), &bounds()), Ok(()));
     }
     o.audit = AUDIT_REJECTED + 1;
     assert_eq!(
-        check_serve(Ready, &o, &[], &caps()),
+        check_serve(Ready, &o, &[], &[], &caps(), &bounds()),
         f(Rule::UnknownCode, "serve.audit")
     );
 }
@@ -1564,14 +1604,32 @@ fn fee_units_are_billable_classes() {
         class: s("per_request"),
         family: s("request"),
     };
-    assert_eq!(check_fee_units(&[s("per_request")], &[c]), Ok(()));
-    assert_eq!(check_fee_units(&[], &[]), Ok(()));
     assert_eq!(
-        check_fee_units(&[s("per_session")], &[c]),
+        {
+            // SAFETY: every non-NULL string in this fixture borrows a live string literal; nulls are rejected before reading.
+            unsafe { check_fee_units(&[s("per_request")], &[c]) }
+        },
+        Ok(())
+    );
+    assert_eq!(
+        {
+            // SAFETY: every non-NULL string in this fixture borrows a live string literal; nulls are rejected before reading.
+            unsafe { check_fee_units(&[], &[]) }
+        },
+        Ok(())
+    );
+    assert_eq!(
+        {
+            // SAFETY: every non-NULL string in this fixture borrows a live string literal; nulls are rejected before reading.
+            unsafe { check_fee_units(&[s("per_session")], &[c]) }
+        },
         f(Rule::Contradiction, "tail.fee_units")
     );
     assert_eq!(
-        check_fee_units(&[z()], &[c]),
+        {
+            // SAFETY: every non-NULL string in this fixture borrows a live string literal; nulls are rejected before reading.
+            unsafe { check_fee_units(&[z()], &[c]) }
+        },
         f(Rule::Missing, "tail.fee_units")
     );
 }
@@ -1910,11 +1968,14 @@ fn a_multi_buffer_short_answer_needs_one_buffer_over_its_cap() {
     r.reply_needed = 10;
     r.fields_needed = 2;
     assert_eq!(
-        check_serve(Failed, &r, &[], &caps()),
+        check_serve(Failed, &r, &[], &[], &caps(), &bounds()),
         f(Rule::WastedRecall, "serve")
     );
     r.reply_needed = 40;
-    assert_eq!(check_serve(Failed, &r, &[], &caps()), Ok(()));
+    assert_eq!(
+        check_serve(Failed, &r, &[], &[], &caps(), &bounds()),
+        Ok(())
+    );
 }
 
 // ── the plane driver's additions: the ATTEMPT answer, the verdict, probes, public routes, chained
@@ -2812,18 +2873,23 @@ fn project(outcome: Outcome, h: &Host, o: &ProjectOut) -> Result<(), Fault> {
 
 /// [`project`], for a call that carried a rewrite (`rewrite`) or not.
 fn project_as(outcome: Outcome, h: &Host, o: &ProjectOut, rewrite: bool) -> Result<(), Fault> {
-    check_project(
-        outcome,
-        o,
-        &ProjectHost {
-            signals: &h.signals,
-            signals_cap: 2,
-            messages: &h.messages,
-            messages_cap: 2,
-            arena: (h.arena.as_ptr(), 16),
-            rewrite,
-        },
-    )
+    {
+        // SAFETY: fixtures initialize all bytes to zero or assign the member matching each recognized tag.
+        unsafe {
+            check_project(
+                outcome,
+                o,
+                &ProjectHost {
+                    signals: &h.signals,
+                    signals_cap: 2,
+                    messages: &h.messages,
+                    messages_cap: 2,
+                    arena: (h.arena.as_ptr(), 16),
+                    rewrite,
+                },
+            )
+        }
+    }
 }
 
 /// A view whose prompt holds `turns` turns at the host's `messages_buf`, each naming arena bytes.
@@ -3686,21 +3752,39 @@ fn an_attempts_stated_counter_labels_sit_inside_the_arena() {
 /// tail's own fault.
 #[test]
 fn a_tails_counter_lane_words_are_a_small_closed_vocabulary() {
-    assert_eq!(check_metric_lanes(&[]), Ok(()));
     assert_eq!(
-        check_metric_lanes(&[s("jsonrpc"), s("beta+json"), s("gamma")]),
+        {
+            // SAFETY: every non-NULL string in this fixture borrows a live string literal; nulls are rejected before reading.
+            unsafe { check_metric_lanes(&[]) }
+        },
         Ok(())
     );
     assert_eq!(
-        check_metric_lanes(&[s("jsonrpc"), s("jsonrpc")]),
+        {
+            // SAFETY: every non-NULL string in this fixture borrows a live string literal; nulls are rejected before reading.
+            unsafe { check_metric_lanes(&[s("jsonrpc"), s("beta+json"), s("gamma")]) }
+        },
+        Ok(())
+    );
+    assert_eq!(
+        {
+            // SAFETY: every non-NULL string in this fixture borrows a live string literal; nulls are rejected before reading.
+            unsafe { check_metric_lanes(&[s("jsonrpc"), s("jsonrpc")]) }
+        },
         f(Rule::Contradiction, "tail.metric_lanes")
     );
     assert_eq!(
-        check_metric_lanes(&[s("")]),
+        {
+            // SAFETY: every non-NULL string in this fixture borrows a live string literal; nulls are rejected before reading.
+            unsafe { check_metric_lanes(&[s("")]) }
+        },
         f(Rule::Missing, "tail.metric_lanes")
     );
     assert_eq!(
-        check_metric_lanes(&[s("a\nb")]),
+        {
+            // SAFETY: every non-NULL string in this fixture borrows a live string literal; nulls are rejected before reading.
+            unsafe { check_metric_lanes(&[s("a\nb")]) }
+        },
         f(Rule::UnknownCode, "tail.metric_lanes")
     );
     const WORDS: [&str; 17] = [
@@ -3709,7 +3793,10 @@ fn a_tails_counter_lane_words_are_a_small_closed_vocabulary() {
     ];
     let over: Vec<AbiStr> = WORDS.iter().copied().map(s).collect();
     assert_eq!(
-        check_metric_lanes(&over),
+        {
+            // SAFETY: every non-NULL string in this fixture borrows a live string literal; nulls are rejected before reading.
+            unsafe { check_metric_lanes(&over) }
+        },
         f(Rule::OverMax, "tail.metric_lanes")
     );
     let mut t = tail();
@@ -3937,4 +4024,68 @@ fn a_signed_claim_is_a_raw_affix_and_a_raw_affix_is_no_catalog() {
         check_claim_target("/door/*/sign", CLAIM_RAW_AFFIX | CLAIM_CATALOG),
         f(Rule::Contradiction, "claim.flags")
     );
+}
+
+/// Every shortage participates in ONE reply/fields/arena/records answer. Fitting dimensions
+/// still report their full nonzero needs, and none of the four dimensions may write on a shortage.
+#[test]
+fn serve_and_refusal_recall_all_four_buffers_atomically() {
+    let cap = caps();
+    let full = [cap.reply, cap.fields, cap.arena, cap.records];
+    for short in 0..4 {
+        let mut needed = full;
+        needed[short] += 1;
+        let mut served: ServeOut = z();
+        served.reply_needed = needed[0];
+        served.fields_needed = needed[1] as u32;
+        served.arena_needed = needed[2];
+        served.records_needed = needed[3] as u32;
+        let mut refused: RefusalOut = z();
+        refused.reply_needed = needed[0];
+        refused.fields_needed = needed[1] as u32;
+        refused.arena_needed = needed[2];
+        refused.records_needed = needed[3] as u32;
+        assert_eq!(
+            check_serve(Failed, &served, &[], &[], &cap, &bounds()),
+            Ok(()),
+            "short dimension {short}"
+        );
+        assert_eq!(
+            check_refusal(Failed, &refused, &[], &[], &cap, &bounds()),
+            Ok(()),
+            "short dimension {short}"
+        );
+        for written in 0..4 {
+            let mut bad_serve = served;
+            let mut bad_refusal = refused;
+            match written {
+                0 => {
+                    bad_serve.reply_written = 1;
+                    bad_refusal.reply_written = 1;
+                }
+                1 => {
+                    bad_serve.fields_written = 1;
+                    bad_refusal.fields_written = 1;
+                }
+                2 => {
+                    bad_serve.arena_written = 1;
+                    bad_refusal.arena_written = 1;
+                }
+                _ => {
+                    bad_serve.records_written = 1;
+                    bad_refusal.records_written = 1;
+                }
+            }
+            assert_eq!(
+                check_serve(Failed, &bad_serve, &[], &[], &cap, &bounds()),
+                f(Rule::WrittenOnShort, "serve"),
+                "short {short}, write {written}"
+            );
+            assert_eq!(
+                check_refusal(Failed, &bad_refusal, &[], &[], &cap, &bounds()),
+                f(Rule::WrittenOnShort, "refusal"),
+                "short {short}, write {written}"
+            );
+        }
+    }
 }

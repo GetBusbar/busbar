@@ -1511,3 +1511,57 @@ fn a_tail_states_its_stream_ceiling_and_a_tail_ending_before_it_states_none() {
         "a tail ending before the field loads and states no ceiling"
     );
 }
+
+/// Exercise the actual loader adapter and its recall classification with all four owned buffers.
+#[test]
+fn reply_recall_includes_record_only_and_cross_dimension_shortages() {
+    macro_rules! check_reply {
+        ($input:ty, $output:ty, $slot:expr, $op:literal) => {{
+            let mut body = [0_u8; 16];
+            let mut arena = [0_u8; 16];
+            let mut fields: [OutField; 4] = z();
+            let mut records: [RecordWrite; 1] = z();
+            let mut input: $input = z();
+            input.reply_buf = body.as_mut_ptr();
+            input.reply_cap = body.len();
+            input.fields_buf = fields.as_mut_ptr();
+            input.fields_cap = fields.len();
+            input.arena_buf = arena.as_mut_ptr();
+            input.arena_cap = arena.len();
+            input.records_buf = records.as_mut_ptr();
+            input.records_cap = records.len();
+            for needed in [
+                [0, 0, 0, 2],
+                [0, 0, 8, 2],
+                [17, 0, 8, 1],
+                [16, 5, 8, 1],
+                [16, 4, 17, 1],
+            ] {
+                let mut out: $output = z();
+                out.reply_needed = needed[0];
+                out.fields_needed = needed[1] as u32;
+                out.arena_needed = needed[2];
+                out.records_needed = needed[3] as u32;
+                let a = answer($slot, Outcome::Failed, &input, &out);
+                assert_eq!(Plane::check(&a), Ok(()), "{}: {needed:?}", $op);
+                assert!(Plane::short(&a), "{} must recall {needed:?}", $op);
+                for written in 0..4 {
+                    let mut bad = out;
+                    match written {
+                        0 => bad.reply_written = 1,
+                        1 => bad.fields_written = 1,
+                        2 => bad.arena_written = 1,
+                        _ => bad.records_written = 1,
+                    }
+                    assert_eq!(
+                        Plane::check(&answer($slot, Outcome::Failed, &input, &bad)),
+                        f(Rule::WrittenOnShort, $op),
+                        "{needed:?}, written dimension {written}"
+                    );
+                }
+            }
+        }};
+    }
+    check_reply!(ServeIn, ServeOut, slot::SERVE, "serve");
+    check_reply!(RefusalIn, RefusalOut, slot::REFUSAL, "refusal");
+}
