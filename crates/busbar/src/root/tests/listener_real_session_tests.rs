@@ -114,7 +114,7 @@ async fn exchange(framer: DataFramer, router: Router, request: &[u8], body: &[u8
         Duration::from_secs(5),
         stopped,
     ));
-    let wire = tokio::time::timeout(Duration::from_secs(10), async {
+    let mut wire = tokio::time::timeout(Duration::from_secs(10), async {
         client.write_all(request).await.unwrap();
         let mut wire = Vec::new();
         loop {
@@ -136,7 +136,17 @@ async fn exchange(framer: DataFramer, router: Router, request: &[u8], body: &[u8
     .await
     .expect("real transport answers without hanging");
     let _ = stop.send(true);
-    drop(client);
+    // Keep the peer readable until transport retirement, so a duplicate handshake or late
+    // Finish output cannot escape the wire assertions below. Bound both time and allocation.
+    let remaining = (16 * 1024 - wire.len() + 1) as u64;
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        (&mut client).take(remaining).read_to_end(&mut wire),
+    )
+    .await
+    .expect("real transport reaches EOF after stop")
+    .unwrap();
+    assert!(wire.len() <= 16 * 1024, "bounded complete wire response");
     tokio::time::timeout(Duration::from_secs(10), served)
         .await
         .expect("real transport actor terminates")
