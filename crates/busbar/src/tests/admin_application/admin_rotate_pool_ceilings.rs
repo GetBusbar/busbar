@@ -117,6 +117,7 @@ async fn proof_role_pool_ceiling_refuses_an_over_ceiling_rotate() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -277,6 +278,7 @@ async fn proof_role_pool_ceiling_rotates_an_in_ceiling_key() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -428,6 +430,7 @@ async fn a_past_ceiling_rotate_releases_its_idempotency_claim() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");

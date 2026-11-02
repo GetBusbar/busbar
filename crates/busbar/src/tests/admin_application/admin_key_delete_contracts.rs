@@ -92,6 +92,7 @@ async fn test_delete_existing_key_returns_200() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -215,6 +216,7 @@ async fn test_delete_missing_key_returns_404() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -325,6 +327,7 @@ async fn test_delete_key_is_not_idempotent_204() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -452,6 +455,7 @@ async fn test_concurrent_delete_returns_exactly_one_204() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -598,6 +602,7 @@ async fn test_patch_after_delete_404s_and_does_not_recreate_key() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");

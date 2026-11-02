@@ -90,6 +90,7 @@ async fn test_signed_mint_verify_then_delete_denies() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -225,6 +226,7 @@ async fn test_signed_revoke_denylists_without_deleting() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -376,6 +378,7 @@ async fn test_key_state_distinguishes_disable_revoke_and_tombstone() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -567,6 +570,7 @@ async fn test_list_keys_include_tombstoned() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -731,6 +735,7 @@ async fn test_signed_mint_group_none_and_pool_acl_matrix() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -871,6 +876,7 @@ async fn a_repeated_key_post_keys_replays_the_first_response_byte_for_byte() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -993,6 +999,7 @@ async fn test_create_key_with_aws_credential_returns_secret_once_and_hides_on_re
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");

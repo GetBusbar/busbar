@@ -92,6 +92,7 @@ async fn test_admin_v1_list_keys_filters() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -233,6 +234,7 @@ async fn test_admin_v1_list_keys_group_filter() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -404,6 +406,7 @@ async fn test_admin_v1_key_rotate_and_pagination() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -605,6 +608,7 @@ async fn test_admin_v1_hook_mutation_404_is_audited() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");

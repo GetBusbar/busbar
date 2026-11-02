@@ -110,6 +110,7 @@ async fn split_admin_listener_no_double_exposure() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");

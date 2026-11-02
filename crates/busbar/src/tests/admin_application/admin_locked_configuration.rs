@@ -94,6 +94,7 @@ async fn test_admin_v1_put_auth_refused_on_locked_config() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -238,6 +239,7 @@ async fn test_admin_v1_config_apply_refused_on_locked_config() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -375,6 +377,7 @@ async fn test_admin_v1_config_settings_put_on_locked_config_is_refused() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -499,6 +502,7 @@ async fn test_admin_v1_config_settings_put_refuses_when_persistence_is_explicitl
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -628,6 +632,7 @@ async fn test_admin_v1_config_settings_put_rejects_a_non_boolean_persist() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -750,6 +755,7 @@ async fn test_admin_v1_config_settings_put_still_rejects_an_unknown_field_includ
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");

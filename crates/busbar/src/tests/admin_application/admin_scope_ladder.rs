@@ -164,6 +164,7 @@ async fn test_admin_v1_scope_ladder_e2e_with_group_mapped_principals() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");

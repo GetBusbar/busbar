@@ -90,6 +90,7 @@ async fn test_admin_v1_mutation_rate_limit_config_class() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -215,6 +216,7 @@ async fn test_admin_v1_put_auth_applies_an_empty_chain_as_1_5_5_did() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -335,6 +337,7 @@ async fn test_admin_v1_config_validate_dry_run() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -508,6 +511,7 @@ async fn test_admin_v1_config_validate_accepts_1_6_0_additive_top_level_keys() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -636,6 +640,7 @@ async fn test_admin_v1_config_apply_accepts_the_boot_shape_and_refuses_an_unknow
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -768,6 +773,7 @@ async fn test_admin_v1_overlay_reset_unknown_section_400() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");

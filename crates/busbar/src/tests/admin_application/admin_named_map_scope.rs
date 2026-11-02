@@ -117,6 +117,7 @@ async fn test_admin_v1_named_map_rejects_an_under_scoped_caller() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");

@@ -91,6 +91,7 @@ async fn test_create_list_usage_roundtrip_through_spawn_blocking() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -237,6 +238,7 @@ async fn test_create_key_rejects_removed_budget_period_field() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -370,6 +372,7 @@ async fn test_create_key_rejects_unsafe_labels() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -547,6 +550,7 @@ async fn test_create_key_name_length_boundary_is_exact() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -685,6 +689,7 @@ async fn test_create_key_rejects_removed_max_budget_cents_field() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -819,6 +824,7 @@ async fn test_patch_key_enables_disables_and_validates_at_create_parity() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -974,6 +980,7 @@ async fn test_create_key_rejects_removed_rate_limit_fields() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");

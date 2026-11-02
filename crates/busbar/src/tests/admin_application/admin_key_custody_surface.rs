@@ -93,6 +93,7 @@ async fn test_admin_v1_auth_read_keys_chain_reports_1_5_5_open() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -206,6 +207,7 @@ async fn test_admin_v1_get_single_key() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -350,6 +352,7 @@ async fn minting_a_recoverable_credential_without_an_at_rest_key_is_refused_and_
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");

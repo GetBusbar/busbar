@@ -216,6 +216,7 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -506,6 +507,7 @@ async fn test_admin_v1_config_settings_process_level_flagged_reload_to_apply() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -757,6 +759,7 @@ async fn test_admin_v1_config_settings_partial_update_preserves_prior() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -976,6 +979,7 @@ async fn test_admin_v1_config_settings_put_with_persist_true_still_persists_when
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -1179,6 +1183,7 @@ async fn test_admin_v1_config_settings_read_redacts_every_settings_bag() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");

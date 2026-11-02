@@ -117,6 +117,7 @@ async fn test_admin_v1_topology_reads_pools_models_providers() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -273,6 +274,7 @@ async fn test_admin_v1_pool_detail_live_status() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -461,6 +463,7 @@ async fn test_admin_v1_pool_detail_reports_the_per_pool_breaker_cell() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");

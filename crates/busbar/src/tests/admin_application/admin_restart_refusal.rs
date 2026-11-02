@@ -118,6 +118,7 @@ async fn test_admin_v1_restart_refuses_when_it_cannot_restart() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");

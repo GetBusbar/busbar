@@ -91,6 +91,7 @@ async fn test_api_root_unmatched_paths_speak_the_admin_envelope() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -215,6 +216,7 @@ async fn an_unmatched_admin_path_reads_no_body() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -322,6 +324,7 @@ async fn test_admin_v1_admin_auth_read() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");

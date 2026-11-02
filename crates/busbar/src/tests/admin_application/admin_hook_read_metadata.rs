@@ -114,6 +114,7 @@ async fn test_admin_v1_hooks_read_surface() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -281,6 +282,7 @@ async fn test_admin_v1_plugins_catalog_by_type() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -485,6 +487,7 @@ async fn test_admin_v1_config_effective_snapshot_no_secrets() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");

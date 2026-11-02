@@ -94,6 +94,7 @@ async fn revoke_on_an_already_tombstoned_key_answers_200_and_audits_applied() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");

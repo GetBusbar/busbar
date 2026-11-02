@@ -100,6 +100,7 @@ async fn an_idempotent_mint_retried_after_a_restart_is_refused_not_minted_twice(
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -149,6 +150,7 @@ async fn an_idempotent_mint_retried_after_a_restart_is_refused_not_minted_twice(
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root cold-composes a new App and governance over the same actual Store");
     assert_eq!(
@@ -278,6 +280,7 @@ async fn an_idempotent_rotate_retried_after_a_restart_is_refused_not_rotated_twi
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -335,6 +338,7 @@ async fn an_idempotent_rotate_retried_after_a_restart_is_refused_not_rotated_twi
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root cold-composes a new App and governance over the same actual Store");
     assert_eq!(

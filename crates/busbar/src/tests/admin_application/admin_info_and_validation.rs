@@ -91,6 +91,7 @@ async fn test_admin_v1_info_reports_version_features_and_topology() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -239,6 +240,7 @@ async fn test_admin_v1_auth_read() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -352,6 +354,7 @@ async fn test_admin_malformed_body_returns_generic_400_no_input_fragment() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");

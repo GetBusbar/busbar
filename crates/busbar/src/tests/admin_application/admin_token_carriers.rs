@@ -93,6 +93,7 @@ async fn test_admin_blank_header_token_rejected() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -228,6 +229,7 @@ async fn test_admin_token_both_carriers_or_fold_no_short_circuit() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -369,6 +371,7 @@ async fn test_admin_token_not_acceptable_via_vendor_carriers() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");

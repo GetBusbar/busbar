@@ -117,6 +117,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -320,6 +321,7 @@ async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");

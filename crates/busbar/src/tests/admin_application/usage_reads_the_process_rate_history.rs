@@ -162,6 +162,7 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");

@@ -143,6 +143,7 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin() {
             None,
             &rules,
             Some(anchor),
+            false,
         )
         .expect("the real root composes the configured Store and admin application");
         limits.keep().expect("the actual limits commit");
@@ -279,6 +280,7 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default() {
             None,
             &rules,
             Some(anchor),
+            false,
         )
         .expect("the real root composes the configured Store and admin application");
         limits.keep().expect("the actual limits commit");
@@ -472,6 +474,7 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin() {
             None,
             &rules,
             Some(anchor),
+            false,
         )
         .expect("the real root composes the configured Store and admin application");
         limits.keep().expect("the actual limits commit");

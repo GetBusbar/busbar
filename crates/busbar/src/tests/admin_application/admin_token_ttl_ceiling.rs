@@ -92,6 +92,7 @@ async fn proof_max_ttl_ceiling_clamps_a_rotated_token() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");

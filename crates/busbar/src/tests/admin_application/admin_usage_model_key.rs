@@ -158,6 +158,7 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");

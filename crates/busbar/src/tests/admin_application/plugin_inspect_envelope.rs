@@ -90,6 +90,7 @@ async fn inspect_plugin_still_refuses_a_bad_candidate_in_the_envelope() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");

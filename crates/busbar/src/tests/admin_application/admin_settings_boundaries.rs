@@ -151,6 +151,7 @@ async fn test_admin_v1_config_settings_boot_scoped_limits_flagged_reload_to_appl
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -337,6 +338,7 @@ async fn test_admin_v1_config_settings_max_inbound_concurrent_flagged_reload_to_
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -522,6 +524,7 @@ async fn test_admin_v1_config_settings_boot_scoped_observability_flagged_reload_
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -721,6 +724,7 @@ async fn test_admin_v1_config_settings_stale_if_match_conflicts() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -901,6 +905,7 @@ async fn test_admin_v1_config_settings_unknown_field_400() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");

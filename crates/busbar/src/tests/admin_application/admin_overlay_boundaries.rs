@@ -170,6 +170,7 @@ async fn test_admin_v1_overlay_reset_groups_reverts_to_base() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -451,6 +452,7 @@ async fn test_admin_v1_overlay_reset_stale_if_match_conflicts() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -643,6 +645,7 @@ async fn test_admin_v1_overlay_reset_empty_section_is_idempotent_noop() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -835,6 +838,7 @@ async fn test_admin_v1_overlay_reset_requires_full_scope() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -1009,6 +1013,7 @@ async fn test_admin_v1_config_settings_survives_a_real_store_reload() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -1200,6 +1205,7 @@ async fn test_admin_v1_config_settings_unresolvable_store_secret_warns_not_rejec
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -1388,6 +1394,7 @@ async fn test_admin_v1_config_settings_reset_reverts_to_base() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");

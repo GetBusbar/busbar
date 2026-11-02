@@ -124,6 +124,7 @@ async fn test_patch_key_three_state_group_and_enabled() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -334,6 +335,7 @@ async fn test_mint_auto_provisions_leaf_from_child_default() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -539,6 +541,7 @@ async fn test_mint_parent_mismatch_is_409() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -683,6 +686,7 @@ async fn test_max_keys_per_principal_cap_trips() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -821,6 +825,7 @@ async fn test_admin_v1_idempotency_reservation_frees_on_at_cap_refusal() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -981,6 +986,7 @@ async fn test_max_keys_per_principal_atomic_under_concurrent_mint() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");

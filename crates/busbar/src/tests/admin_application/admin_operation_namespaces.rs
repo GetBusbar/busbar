@@ -97,6 +97,7 @@ async fn create_and_rotate_operation_namespaces_survive_cache_loss() {
                 None,
                 &rules,
                 Some(anchor),
+                false,
             )
             .expect("the real root composes the configured Store and admin application");
             limits.keep().expect("the actual limits commit");

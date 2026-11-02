@@ -127,6 +127,7 @@ async fn test_create_key_budget_group_and_labels_roundtrip_and_missing_group_400
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -289,6 +290,7 @@ async fn test_admin_v1_patch_no_op_on_an_already_counted_key_is_not_an_admission
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");

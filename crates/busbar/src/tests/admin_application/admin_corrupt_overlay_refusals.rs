@@ -159,6 +159,7 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_corrupt() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -380,6 +381,7 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_too_new() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");

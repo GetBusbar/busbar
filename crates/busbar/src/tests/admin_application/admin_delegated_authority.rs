@@ -114,6 +114,7 @@ async fn test_admin_v1_idempotency_key_is_principal_scoped() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -256,6 +257,7 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -459,6 +461,7 @@ async fn test_admin_v1_put_auth_accepts_a_renamed_operator_provider() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");

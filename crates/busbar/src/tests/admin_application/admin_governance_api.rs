@@ -93,6 +93,7 @@ async fn test_1_5_2_admin_path_bypasses_governance_and_mints() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -231,6 +232,7 @@ async fn test_governance_admin_api() {
         None,
         &rules,
         Some(anchor),
+        false,
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
