@@ -305,6 +305,7 @@ fn key() -> busbar_contract::records::VirtualKey {
 /// pass a payload it never saw.
 #[tokio::test]
 async fn an_invocation_is_projected_whole() {
+    let _lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
     let spy = Arc::new(Spy {
         reply: RoutingDecision::Abstain,
         seen: Mutex::new(None),
@@ -576,6 +577,7 @@ fn derive_session_key(sid: &str, principal_id: &str, hook_generation: u64) -> Se
 /// again on the next turn of the same session, and the gate proceeds without a sidecar call.
 #[tokio::test]
 async fn incremental_scan_skips_a_piece_already_cleared_this_session() {
+    let _lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
     let store = SessionStore::new(64, None);
     let session = SessionKey(999);
     let facts = tool_call();
@@ -755,6 +757,7 @@ fn derive_session_key_partitions_by_principal_and_generation() {
 /// after a generation bump — the two invalidations the old `fnv1a(sid)`-only key silently skipped.
 #[tokio::test]
 async fn incremental_scan_reclears_across_principal_and_generation() {
+    let _lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
     let store = SessionStore::new(64, None);
     let facts = tool_call();
     let sid = "shared-session";
@@ -922,6 +925,7 @@ const PROJECTED: &[u8] = br#"{"tool":"lookup","arguments":{"query":{"parts":[{"t
 /// did not opt in each screen it again.
 #[tokio::test]
 async fn the_door_paths_incremental_scan_keys_on_the_views_session() {
+    let _lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
     let store = SessionStore::new(64, None);
     let spy = Arc::new(SessionSpy::default());
     let gates = gate(
@@ -1104,6 +1108,231 @@ async fn the_door_gate_projection_is_under_the_hook_content_ceiling() {
     );
 }
 
+/// Change the ceiling while a real hook call is in flight: clearance must describe the projection
+/// handed to this call, even when the next call will use a different ceiling.
+struct CeilingChangingSpy {
+    spy: Arc<Spy>,
+    next_ceiling: usize,
+}
+
+#[async_trait::async_trait]
+impl RoutingPolicy for CeilingChangingSpy {
+    async fn decide(
+        &self,
+        req: &RoutingRequest<'_>,
+        candidates: &[Candidate<'_>],
+        ctx: &RoutingContext<'_>,
+        budget: std::time::Duration,
+    ) -> PolicyResult {
+        crate::hooks::set_hook_content_max_bytes(self.next_ceiling);
+        self.spy.decide(req, candidates, ctx, budget).await
+    }
+
+    fn name(&self) -> &'static str {
+        self.spy.name()
+    }
+}
+
+/// An omitted prompt still proceeds on abstain, but never clears the unseen piece. A delivered
+/// prompt still clears it if the ceiling changes before the hook answers. Exercise both advisory
+/// and load-bearing gates through the door's actual session substrate and compare entire payloads.
+#[tokio::test]
+async fn incremental_door_clearance_tracks_the_delivered_prompt_across_ceiling_changes() {
+    let _lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
+    struct Restore(usize);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            crate::hooks::set_hook_content_max_bytes(self.0);
+        }
+    }
+    let _restore = Restore(crate::hooks::hook_content_max_bytes());
+    const OMIT_CONTENT_CEILING_BYTES: usize = 1;
+    const RETAIN_CONTENT_CEILING_BYTES: usize = PROJECTED.len();
+    const SESSION_CAPACITY: usize = 1;
+    const HOOK_GENERATION: u64 = 1;
+    const SESSION: &[u8] = b"ceiling-session";
+
+    for on_error in [
+        crate::config::PolicyOnError::Weighted,
+        crate::config::PolicyOnError::First,
+        crate::config::PolicyOnError::Reject,
+    ] {
+        for (ceiling, next_ceiling, delivered) in [
+            (
+                OMIT_CONTENT_CEILING_BYTES,
+                crate::hooks::DEFAULT_HOOK_CONTENT_MAX_BYTES,
+                false,
+            ),
+            (
+                RETAIN_CONTENT_CEILING_BYTES,
+                OMIT_CONTENT_CEILING_BYTES,
+                true,
+            ),
+        ] {
+            let store = SessionStore::new(SESSION_CAPACITY, None);
+            let spy = abstaining();
+            let gates = gate(spy.clone(), on_error.clone(), true, false);
+            let mut door = door_on(Some(PROJECTED), DoorShape::default());
+            door.session = Some(SESSION);
+
+            // Capture the full uncapped payload before enabling this session's cleared set.
+            crate::hooks::set_hook_content_max_bytes(crate::hooks::DEFAULT_HOOK_CONTENT_MAX_BYTES);
+            assert!(matches!(
+                decide_door(&gates, &door, &mut Vec::new()).await,
+                GateVerdict::Proceed
+            ));
+            let baseline = spy.seen.lock().unwrap().take().expect("baseline was sent");
+            door.scan = Some(ScanSubstrate {
+                store: &store,
+                generation: HOOK_GENERATION,
+                now_ms: 0,
+            });
+            let changing = gate(
+                Arc::new(CeilingChangingSpy {
+                    spy: spy.clone(),
+                    next_ceiling,
+                }),
+                on_error.clone(),
+                true,
+                false,
+            );
+            crate::hooks::set_hook_content_max_bytes(ceiling);
+            assert!(matches!(
+                decide_door(&changing, &door, &mut Vec::new()).await,
+                GateVerdict::Proceed
+            ));
+            let seen = spy.seen.lock().unwrap().take().expect("new piece was sent");
+            let mut expected = baseline.clone();
+            if !delivered {
+                expected["request"]["messages"] = serde_json::json!([]);
+            }
+            assert_eq!(
+                seen, expected,
+                "ceiling omission preserves the payload and grant"
+            );
+
+            crate::hooks::set_hook_content_max_bytes(crate::hooks::DEFAULT_HOOK_CONTENT_MAX_BYTES);
+            assert!(matches!(
+                decide_door(&gates, &door, &mut Vec::new()).await,
+                GateVerdict::Proceed
+            ));
+            let seen = spy.seen.lock().unwrap().take();
+            if delivered {
+                assert!(seen.is_none(), "delivered clean content remains cleared");
+            } else {
+                assert_eq!(
+                    seen,
+                    Some(baseline),
+                    "omitted content must be screened later"
+                );
+            }
+            assert!(matches!(
+                decide_door(&gates, &door, &mut Vec::new()).await,
+                GateVerdict::Proceed
+            ));
+            assert!(
+                spy.seen.lock().unwrap().is_none(),
+                "the clean delivered piece is skipped"
+            );
+        }
+    }
+}
+
+/// An originally empty system projection may still be cleared; the same empty wire produced by
+/// omitting nonempty system content must leave that content eligible for a later screening.
+#[tokio::test]
+async fn incremental_system_clearance_distinguishes_empty_content_from_ceiling_omission() {
+    use busbar_contract::ir::facts::{ContentItem, IrFacts, Shape, Slot};
+    struct SystemOnly(&'static str);
+    impl IrFacts for SystemOnly {
+        fn verb(&self) -> crate::operation::OpVerb {
+            crate::operation::OpVerb::INVOKE
+        }
+        fn wants_stream(&self) -> bool {
+            false
+        }
+        fn end_user(&self) -> Option<&str> {
+            None
+        }
+        fn shape(&self) -> Shape {
+            Shape {
+                text_chars: self.0.chars().count(),
+                system_chars: self.0.chars().count(),
+                ..Shape::EMPTY
+            }
+        }
+        fn content(&self) -> Vec<ContentItem<'_>> {
+            vec![ContentItem::Text {
+                author: "system",
+                slot: Slot::System,
+                text: self.0.into(),
+            }]
+        }
+    }
+
+    let _lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
+    struct Restore(usize);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            crate::hooks::set_hook_content_max_bytes(self.0);
+        }
+    }
+    let _restore = Restore(crate::hooks::hook_content_max_bytes());
+    const OMIT_SYSTEM_CEILING_BYTES: usize = 1;
+    const SESSION_CAPACITY: usize = 1;
+    const HOOK_GENERATION: u64 = 1;
+    let invoke = tool_call();
+    for text in ["", "system content"] {
+        let facts = SystemOnly(text);
+        let store = SessionStore::new(SESSION_CAPACITY, None);
+        let spy = abstaining();
+        let gates = gate(
+            spy.clone(),
+            crate::config::PolicyOnError::Reject,
+            true,
+            false,
+        );
+        let subject = GateSubject {
+            facts: &facts,
+            incremental: Some(IncrementalScan {
+                store: &store,
+                session: derive_session_key("system-session", "", HOOK_GENERATION),
+                now_ms: 0,
+            }),
+            ..tool_subject(&invoke)
+        };
+        crate::hooks::set_hook_content_max_bytes(OMIT_SYSTEM_CEILING_BYTES);
+        assert!(matches!(
+            decide(&gates, &subject).await,
+            GateVerdict::Proceed
+        ));
+        let seen = spy
+            .seen
+            .lock()
+            .unwrap()
+            .take()
+            .expect("system piece was sent");
+        assert!(seen["request"].get("system").is_none());
+        assert_eq!(seen["request"]["messages"], serde_json::json!([]));
+
+        crate::hooks::set_hook_content_max_bytes(crate::hooks::DEFAULT_HOOK_CONTENT_MAX_BYTES);
+        assert!(matches!(
+            decide(&gates, &subject).await,
+            GateVerdict::Proceed
+        ));
+        let seen = spy.seen.lock().unwrap().take();
+        if text.is_empty() {
+            assert!(
+                seen.is_none(),
+                "an originally empty system piece remains cleared"
+            );
+        } else {
+            let seen = seen.expect("omitted system content must be screened later");
+            assert_eq!(seen["request"]["system"], text);
+        }
+    }
+}
+
 // ── The on_error chain, the container-bound clearance and the plane's projection (audit Q128 p15) ──
 
 /// A spy answering `reply`.
@@ -1262,6 +1491,7 @@ async fn the_first_link_that_answers_decides_before_the_terminal() {
 /// the cleared set was keyed by the hook alone, so B's call was skipped unscreened.
 #[tokio::test]
 async fn a_piece_cleared_on_one_container_is_screened_again_on_another() {
+    let _lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
     let store = SessionStore::new(64, None);
     let session = SessionKey(4242);
     let facts = tool_call();
@@ -1376,6 +1606,7 @@ async fn an_unreadable_door_body_applies_a_content_gates_on_error() {
 /// dropped for the kernel's own reading.
 #[tokio::test]
 async fn a_door_gate_sees_the_planes_document_and_the_planes_own_fields() {
+    let _lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
     let spy = abstaining();
     let gates = gate(
         spy.clone(),
