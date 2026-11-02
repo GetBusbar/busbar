@@ -1438,13 +1438,10 @@ impl KernelServices {
         let drivers = {
             let mut registered = self.plane_cleanup.lock().unwrap_or_else(|e| e.into_inner());
             registered.retain(|driver| driver.strong_count() != 0);
-            registered
-                .iter()
-                .filter_map(std::sync::Weak::upgrade)
-                .collect::<Vec<_>>()
+            registered.clone()
         };
         let mut idle = true;
-        for driver in drivers {
+        for driver in drivers.into_iter().filter_map(|driver| driver.upgrade()) {
             idle &= driver.sweep_with_context(cx);
         }
         idle
