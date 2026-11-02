@@ -604,15 +604,6 @@ pub struct AdminModule {
     pub calls: std::sync::Arc<dyn AuthCalls>,
 }
 
-impl AdminModule {
-    #[cfg(test)]
-    pub fn in_process(module: Box<dyn AuthModule>) -> Self {
-        Self {
-            calls: std::sync::Arc::new(stand_in::InProcessAuth::new(module)),
-        }
-    }
-}
-
 pub use busbar_kernel_identity::{
     caller_ref::CallerRefKey,
     operator::{Operator, OperatorCredential},
@@ -657,14 +648,6 @@ impl fmt::Debug for AdminAuthChain {
 }
 
 impl AdminAuthChain {
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn empty() -> Self {
-        Self {
-            modules: std::collections::HashMap::new(),
-            operator: Operator::new(crate::config::operator_provider()),
-        }
-    }
-
     pub fn build(
         cfg: &AuthCfg,
         registry: &std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>,
