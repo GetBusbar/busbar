@@ -3,12 +3,9 @@
 
 use super::*;
 use crate::governance::{GovState, RecordStore, VirtualKey};
-use crate::test_support::{LaneSpec, TestApp};
 use std::sync::Arc;
 
 use std::time::Duration;
-
-const LANE_PROTOCOL: &str = "unregistered-lane-protocol";
 
 #[test]
 fn test_render_exposes_emitted_counter() {
@@ -127,14 +124,12 @@ fn test_scrape_gauges_key_spend_and_remaining() {
         )
         .unwrap();
 
-    let app = TestApp::new()
-        .lane(LaneSpec::new("m", LANE_PROTOCOL, "http://m"))
-        .pool("pool-a", &[(0, 1)])
-        .governance(gov)
-        .build();
+    let cost = crate::cost::CostModel::flat(1);
 
     let (recorder, handle) = local_source(GAUGE_IDLE_TIMEOUT);
-    metrics::with_local_recorder(&recorder, || refresh_scrape_gauges(&app));
+    metrics::with_local_recorder(&recorder, || {
+        money::refresh_governance_gauges(&gov, &cost, crate::store::now())
+    });
 
     let out = handle();
 
@@ -186,14 +181,9 @@ fn test_scrape_gauges_uncapped_group_bucket_no_remaining() {
                 ..Default::default()
             },
         )]);
-    let app = TestApp::new()
-        .lane(LaneSpec::new("m", LANE_PROTOCOL, "http://m"))
-        .pool("pool-b", &[(0, 1)])
-        .governance(gov)
-        .cost(crate::cost::CostModel::resolve_parts(None, 0, &groups))
-        .build();
+    let cost = crate::cost::CostModel::resolve_parts(None, 0, &groups);
 
-    refresh_scrape_gauges(&app);
+    money::refresh_governance_gauges(&gov, &cost, crate::store::now());
 
     let out = render();
 
@@ -260,13 +250,8 @@ fn test_scrape_gauges_bucket_model_tier_and_key_labels() {
         1_700_000_000,
     );
 
-    let app = TestApp::new()
-        .lane(LaneSpec::new("m", LANE_PROTOCOL, "http://m"))
-        .pool("pool-b", &[(0, 1)])
-        .governance(gov)
-        .cost(crate::cost::CostModel::resolve_parts(None, 1, &groups))
-        .build();
-    refresh_scrape_gauges(&app);
+    let cost = crate::cost::CostModel::resolve_parts(None, 1, &groups);
+    money::refresh_governance_gauges(&gov, &cost, crate::store::now());
     let out = render();
 
     let key_line = out
@@ -363,13 +348,9 @@ fn test_key_gauge_limit_truncation() {
     }
 
     let gov = Arc::new(GovState::new(store, None).unwrap());
-    let app = TestApp::new()
-        .lane(LaneSpec::new("m", LANE_PROTOCOL, "http://m"))
-        .pool("pool-limit", &[(0, 1)])
-        .governance(gov)
-        .build();
+    let cost = crate::cost::CostModel::flat(1);
 
-    refresh_scrape_gauges(&app);
+    money::refresh_governance_gauges(&gov, &cost, crate::store::now());
 
     let out = render();
 
@@ -388,7 +369,7 @@ fn test_key_gauge_limit_truncation() {
     );
 }
 
-fn app_with_n_keys(n: usize) -> Arc<App> {
+fn gov_with_n_keys(n: usize) -> Arc<GovState> {
     let store = crate::real_store::store();
     for i in 0..n {
         let id = format!("vk_bound_{i:04x}");
@@ -425,49 +406,72 @@ fn app_with_n_keys(n: usize) -> Arc<App> {
             )
             .unwrap();
     }
-    let gov = Arc::new(GovState::new(store, None).unwrap());
-    TestApp::new()
-        .lane(LaneSpec::new("m", LANE_PROTOCOL, "http://m"))
-        .pool("pool-bound", &[(0, 1)])
-        .governance(gov)
-        .build()
+    Arc::new(GovState::new(store, None).unwrap())
 }
 
 #[test]
 fn test_key_gauge_limit_warning_fires_exactly_past_the_boundary() {
-    use crate::test_support::warn_capture::WarnCapture;
-    use tracing_subscriber::layer::SubscriberExt as _;
+    use std::io::Write;
+    #[derive(Clone, Default)]
+    struct GaugeLog(Arc<std::sync::Mutex<Vec<u8>>>);
+    impl Write for GaugeLog {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
     let _latch = key_gauge_latch();
     crate::snapshot::init_for_test(Duration::from_secs(3600));
     const LIMIT: usize = crate::config::DEFAULT_KEY_GAUGE_LIMIT;
 
-    let app_at_limit = app_with_n_keys(LIMIT);
-    let cap = WarnCapture::default();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let app_at_limit = gov_with_n_keys(LIMIT);
+    let cap = GaugeLog::default();
+    let writer = cap.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::WARN)
+        .with_writer(move || writer.clone())
+        .with_ansi(false)
+        .without_time()
+        .finish();
     tracing::subscriber::with_default(subscriber, || {
-        refresh_scrape_gauges(&app_at_limit);
+        money::refresh_governance_gauges(
+            &app_at_limit,
+            &crate::cost::CostModel::flat(1),
+            crate::store::now(),
+        );
     });
+    let lines = String::from_utf8(cap.0.lock().unwrap().clone()).unwrap();
     assert!(
-        !cap.messages()
-            .iter()
-            .any(|m| m.contains("per-key gauge limit")),
+        !lines.lines().any(|m| m.contains("per-key gauge limit")),
         "exactly key_gauge_limit ({LIMIT}) keys must NOT trigger the truncation warning; got: {:?}",
-        cap.messages()
+        lines
     );
 
-    let app_over_limit = app_with_n_keys(LIMIT + 1);
-    let cap2 = WarnCapture::default();
-    let subscriber2 = tracing_subscriber::registry().with(cap2.clone());
+    let app_over_limit = gov_with_n_keys(LIMIT + 1);
+    let cap2 = GaugeLog::default();
+    let writer = cap2.clone();
+    let subscriber2 = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::WARN)
+        .with_writer(move || writer.clone())
+        .with_ansi(false)
+        .without_time()
+        .finish();
     tracing::subscriber::with_default(subscriber2, || {
-        refresh_scrape_gauges(&app_over_limit);
+        money::refresh_governance_gauges(
+            &app_over_limit,
+            &crate::cost::CostModel::flat(1),
+            crate::store::now(),
+        );
     });
+    let lines = String::from_utf8(cap2.0.lock().unwrap().clone()).unwrap();
     assert!(
-        cap2.messages()
-            .iter()
-            .any(|m| m.contains("per-key gauge limit")),
+        lines.lines().any(|m| m.contains("per-key gauge limit")),
         "key_gauge_limit + 1 ({}) keys MUST trigger the truncation warning; got: {:?}",
         LIMIT + 1,
-        cap2.messages()
+        lines
     );
 }
 
@@ -478,13 +482,9 @@ fn test_cardinality_invariant_no_raw_secret_in_labels() {
     let key = sample_vkey("vk_carinv_test01");
     let gov = gov_with_key(key);
 
-    let app = TestApp::new()
-        .lane(LaneSpec::new("m", LANE_PROTOCOL, "http://m"))
-        .pool("pool-ci", &[(0, 1)])
-        .governance(gov)
-        .build();
+    let cost = crate::cost::CostModel::flat(1);
 
-    refresh_scrape_gauges(&app);
+    money::refresh_governance_gauges(&gov, &cost, crate::store::now());
 
     let out = render();
     assert!(
@@ -687,14 +687,9 @@ fn a_scrape_reprices_only_the_buckets_whose_facts_moved() {
         .iter()
         .map(|id| seed_viewed_key(store.as_ref(), id, 10_000))
         .collect();
-    let app = TestApp::new()
-        .lane(LaneSpec::new("m", LANE_PROTOCOL, "http://m"))
-        .pool("pool-view", &[(0, 1)])
-        .cost(priced_at(100.0, 0))
-        .governance(gov.clone())
-        .build();
+    let cost = priced_at(100.0, 0);
 
-    refresh_scrape_gauges(&app);
+    money::refresh_governance_gauges(&gov, &cost, crate::store::now());
     let first = gov.money_view_pricings();
     assert_eq!(
         first,
@@ -702,7 +697,7 @@ fn a_scrape_reprices_only_the_buckets_whose_facts_moved() {
         "the first scrape prices each bucket once"
     );
     for _ in 0..5 {
-        refresh_scrape_gauges(&app);
+        money::refresh_governance_gauges(&gov, &cost, crate::store::now());
     }
     assert_eq!(
         gov.money_view_pricings(),
@@ -711,20 +706,20 @@ fn a_scrape_reprices_only_the_buckets_whose_facts_moved() {
     );
 
     let now = 1_700_000_000;
-    gov.try_admit(&app.cost, &keys[0], "", now)
+    gov.try_admit(&cost, &keys[0], "", now)
         .expect("an uncapped key admits");
     let units = std::collections::BTreeMap::from([(
         busbar_contract::records::UNIT_INPUT.to_string(),
         5_000u64,
     )]);
-    gov.record_usage(&app.cost, &keys[0], "", "m", &units, now);
+    gov.record_usage(&cost, &keys[0], "", "m", &units, now);
     assert_eq!(
         gov.money_view_pricings(),
         first,
         "the serving path prices nothing through the money view"
     );
 
-    refresh_scrape_gauges(&app);
+    money::refresh_governance_gauges(&gov, &cost, crate::store::now());
     assert_eq!(
         gov.money_view_pricings(),
         first + 1,
@@ -732,20 +727,15 @@ fn a_scrape_reprices_only_the_buckets_whose_facts_moved() {
     );
 
     let old = spend_of(&render(), "vk_view_b");
-    let swapped = TestApp::new()
-        .lane(LaneSpec::new("m", LANE_PROTOCOL, "http://m"))
-        .pool("pool-view", &[(0, 1)])
-        .cost(priced_at(300.0, 0))
-        .governance(gov.clone())
-        .build();
-    refresh_scrape_gauges(&swapped);
+    let swapped_cost = priced_at(300.0, 0);
+    money::refresh_governance_gauges(&gov, &swapped_cost, crate::store::now());
     assert_eq!(
         gov.money_view_pricings(),
         first + 1 + ids.len() as u64,
         "a card swap reprices every bucket once"
     );
     let want = (gov.derived_bucket_usage(
-        &swapped.cost,
+        &swapped_cost,
         "vk_view_b",
         crate::governance::WINDOW_TOTAL,
         true,
@@ -870,10 +860,27 @@ fn lines_of(out: &str, family: &str, needle: &str) -> Vec<String> {
 #[test]
 fn bucket_token_and_spend_gauges_are_the_1_5_5_lines() {
     crate::snapshot::init_for_test(Duration::from_secs(3600));
-    let _iso = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[
-        &GAUGE_FALLBACK_PLANE,
-        &GAUGE_AUDIO_PLANE,
-    ]);
+    const CHILD: &str = "BUSBAR_OWNER_REGISTRY_BUCKET_TOKEN_AND_SPEND_GAUGES_ARE_THE_1_5_5_LINES";
+    if std::env::var_os(CHILD).is_none() {
+        let full = concat!(
+            module_path!(),
+            "::bucket_token_and_spend_gauges_are_the_1_5_5_lines"
+        );
+        let (_, name) = full.split_once("::").expect("the crate prefix");
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args(["--exact", name, "--nocapture"])
+            .env(CHILD, "1")
+            .output()
+            .expect("run the owner registry case in a fresh process");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    crate::plane_driver::registry::publish_planes(&[&GAUGE_FALLBACK_PLANE, &GAUGE_AUDIO_PLANE]);
     let key = sample_vkey("vk_gauge_bytes");
     let gov = gov_with_key(key.clone());
     let card = std::collections::BTreeMap::from([(
@@ -900,13 +907,7 @@ fn bucket_token_and_spend_gauges_are_the_1_5_5_lines() {
         ]),
         1_700_000_000,
     );
-    let app = TestApp::new()
-        .lane(LaneSpec::new("m", LANE_PROTOCOL, "http://m"))
-        .pool("pool-gauge-bytes", &[(0, 1)])
-        .cost(cost)
-        .governance(gov)
-        .build();
-    refresh_scrape_gauges(&app);
+    money::refresh_governance_gauges(&gov, &cost, crate::store::now());
     let out = render();
     let needle = "=\"vk_gauge_bytes\"";
     assert_eq!(
@@ -934,10 +935,28 @@ fn bucket_token_and_spend_gauges_are_the_1_5_5_lines() {
 #[test]
 fn bucket_token_gauges_follow_the_lane_planes_declared_token_classes() {
     crate::snapshot::init_for_test(Duration::from_secs(3600));
-    let _iso = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[
-        &GAUGE_FALLBACK_PLANE,
-        &GAUGE_AUDIO_PLANE,
-    ]);
+    const CHILD: &str =
+        "BUSBAR_OWNER_REGISTRY_BUCKET_TOKEN_GAUGES_FOLLOW_THE_LANE_PLANES_DECLARED_TOKEN_CLASSES";
+    if std::env::var_os(CHILD).is_none() {
+        let full = concat!(
+            module_path!(),
+            "::bucket_token_gauges_follow_the_lane_planes_declared_token_classes"
+        );
+        let (_, name) = full.split_once("::").expect("the crate prefix");
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args(["--exact", name, "--nocapture"])
+            .env(CHILD, "1")
+            .output()
+            .expect("run the owner registry case in a fresh process");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    crate::plane_driver::registry::publish_planes(&[&GAUGE_FALLBACK_PLANE, &GAUGE_AUDIO_PLANE]);
     let key = sample_vkey("vk_gauge_audio");
     let gov = gov_with_key(key.clone());
     let cost = crate::cost::CostModel::resolve_parts(None, 0, &Default::default());
@@ -952,13 +971,7 @@ fn bucket_token_gauges_follow_the_lane_planes_declared_token_classes() {
         ]),
         1_700_000_000,
     );
-    let app = TestApp::new()
-        .lane(LaneSpec::new("m", LANE_PROTOCOL, "http://m"))
-        .pool("pool-gauge-audio", &[(0, 1)])
-        .cost(cost)
-        .governance(gov)
-        .build();
-    refresh_scrape_gauges(&app);
+    money::refresh_governance_gauges(&gov, &cost, crate::store::now());
     let out = render();
     let tiers: Vec<(String, String)> = lines_of(&out, BUCKET_TOKENS, "=\"vk_gauge_audio\"")
         .iter()
