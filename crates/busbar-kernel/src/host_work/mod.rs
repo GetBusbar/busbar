@@ -484,9 +484,10 @@ impl WorkBook {
     /// that resumed the live handle while the Store call ran keeps its binding.
     pub fn commit_settle(&self, handle: u64, settled: Work) {
         let mut book = self.lock();
-        if book.settling.remove(&handle)
-            && let Some(w) = book.handles.get_mut(&handle)
-        {
+        if !book.settling.remove(&handle) {
+            return;
+        }
+        if let Some(w) = book.handles.get_mut(&handle) {
             w.live = settled.live;
             w.settled_ms = settled.settled_ms;
             w.record = settled.record;
