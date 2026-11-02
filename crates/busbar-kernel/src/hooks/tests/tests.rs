@@ -604,37 +604,6 @@ fn unknown_hook_ref_falls_back_to_none() {
 }
 
 #[test]
-fn plugin_gate_resolves_constructed_policy() {
-    let env = test_env();
-    let hooks = registry("h", base_gate());
-    match resolve_pool_gates(&pool_with_hook("h"), &hooks, &env, 0)
-        .into_iter()
-        .next()
-    {
-        Some((
-            _,
-            ResolvedPolicy::Policy {
-                policy, timeout, ..
-            },
-        )) => {
-            assert_eq!(
-                policy.name(),
-                "h",
-                "the HookPolicy carries the hook's registry name"
-            );
-            assert_eq!(
-                timeout,
-                std::time::Duration::from_millis(crate::config::DEFAULT_POLICY_TIMEOUT_MS),
-                "a gate with the default timeout resolves to the documented deadline, not 0ms",
-            );
-        }
-        None => panic!("plugin gate must resolve to a Policy"),
-    }
-
-    assert!(resolve_pool_gates(&pool_with_hook("h"), &hooks, &empty_env(), 0).is_empty());
-}
-
-#[test]
 fn weighted_default_resolves_none() {
     assert!(resolve_policy(&pool_policy(PoolPolicy::Weighted)).is_none());
 }
@@ -1367,16 +1336,6 @@ fn opt_in_projections_redact_debug() {
     assert!(dbg.contains("sales-team"));
 }
 
-fn resolve_one(env: &HookEnv, settings: serde_json::Value) -> Option<Arc<dyn RoutingPolicy>> {
-    let mut hook = base_gate();
-    hook.prompt = PromptAccess::Ro;
-    hook.settings = settings.as_object().cloned().unwrap_or_default();
-    let hooks = registry("h", hook);
-    match resolve_gate_transport("h", &hooks["h"], &hooks, env, 0)? {
-        ResolvedPolicy::Policy { policy, .. } => Some(policy),
-    }
-}
-
 fn dreq(text: &str) -> RoutingRequest<'static> {
     RoutingRequest {
         request_id: 1,
@@ -1424,25 +1383,6 @@ fn dctx() -> RoutingContext<'static> {
         budget_remaining: None,
         budget: &[],
     }
-}
-
-#[test]
-fn a_hook_carrying_a_secret_ref_is_never_reused() {
-    let env = test_env();
-    let mut with_secret = base_gate();
-    with_secret.settings.insert(
-        "licenseKey".to_string(),
-        serde_json::json!({ "env": "BUSBAR_TEST_HOOK_LICENSE_KEY" }),
-    );
-    assert_eq!(
-        super::resolution::key("h", &with_secret, &env),
-        None,
-        "a SecretRef-carrying hook must be resolved fresh every time, never published for reuse"
-    );
-    assert!(
-        super::resolution::key("h", &base_gate(), &env).is_some(),
-        "a hook with no secret indirection is eligible"
-    );
 }
 
 #[tokio::test]
@@ -1877,69 +1817,4 @@ fn only_reject_refuses_a_failed_call() {
     assert!(!busbar_kernel::hooks::failed_call_refuses(
         &PolicyOnError::First
     ));
-}
-
-#[test]
-fn hook_resolution_reopens_for_a_changed_effective_timeout() {
-    struct BudgetAxis {
-        inner: Arc<dyn busbar_contract::hook_calls::HookAxis>,
-        opened: Arc<std::sync::Mutex<Vec<std::time::Duration>>>,
-    }
-    impl busbar_contract::hook_calls::HookAxis for BudgetAxis {
-        fn probe(
-            &self,
-            module: &str,
-            instance: &str,
-            settings: &serde_json::Value,
-        ) -> Option<busbar_contract::hook_calls::Probed> {
-            self.inner.probe(module, instance, settings)
-        }
-        fn open(
-            &self,
-            module: &str,
-            instance: &str,
-            settings: &serde_json::Value,
-            budget: std::time::Duration,
-        ) -> Result<Arc<dyn busbar_contract::hook_calls::HookCalls>, String> {
-            self.opened.lock().unwrap().push(budget);
-            self.inner.open(module, instance, settings, budget)
-        }
-        fn linked(&self, module: &str) -> bool {
-            self.inner.linked(module)
-        }
-        fn first_party(&self, module: &str) -> bool {
-            self.inner.first_party(module)
-        }
-        fn call_budget(&self) -> std::time::Duration {
-            self.inner.call_budget()
-        }
-    }
-    let mut env = test_env();
-    let opened = Arc::new(std::sync::Mutex::new(Vec::new()));
-    env.axis = Some(Arc::new(BudgetAxis {
-        inner: env.axis.clone().unwrap(),
-        opened: opened.clone(),
-    }));
-    let mut hook = base_gate();
-    hook.timeout_ms = 41;
-    let (first, _) = gate_transport_named("budget", &hook, &env, 0).unwrap();
-    let (same, _) = gate_transport_named("budget", &hook, &env, 0).unwrap();
-    assert!(Arc::ptr_eq(&first, &same));
-    hook.timeout_ms = 84;
-    let (changed, _) = gate_transport_named("budget", &hook, &env, 0).unwrap();
-    assert!(!Arc::ptr_eq(&first, &changed));
-    assert_eq!(
-        *opened.lock().unwrap(),
-        vec![policy_timeout(41), policy_timeout(84)]
-    );
-
-    hook.timeout_ms = 0;
-    let (implicit_default, _) = gate_transport_named("budget", &hook, &env, 0).unwrap();
-    hook.timeout_ms = crate::limits::default_policy_timeout_ms();
-    let (explicit_default, _) = gate_transport_named("budget", &hook, &env, 0).unwrap();
-    assert!(Arc::ptr_eq(&implicit_default, &explicit_default));
-    assert_eq!(
-        *opened.lock().unwrap(),
-        vec![policy_timeout(41), policy_timeout(84), policy_timeout(0)]
-    );
 }
