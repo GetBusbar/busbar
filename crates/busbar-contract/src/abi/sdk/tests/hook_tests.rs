@@ -2430,3 +2430,6 @@ fn bounded_op_failures_keep_the_earlier_head_and_head_only_ops_never_read_a_body
         closed::<OpenBounded>(instance);
     }
 }
+
+#[path = "hook_deadline_tests.rs"]
+mod whole_timeout;

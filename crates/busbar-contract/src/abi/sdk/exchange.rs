@@ -22,7 +22,7 @@
 //! unchanged.
 
 use std::any::Any;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 use std::task::Poll;
 
@@ -264,6 +264,12 @@ pub struct Exchange {
     /// exchange answers PENDING ([`exchange`], [`send_and_ack`], [`Op::exchange`]), so a pending
     /// exchange its op gives up does not leave its host connection open.
     closer: Option<Closer>,
+    /// Opt-in wall-clock bound for the complete exchange, including collection. The absolute
+    /// expiry is anchored once with the host clock before establishing, never on a resumed read.
+    timeout_ms: Option<u64>,
+    deadline_ns: Option<u64>,
+    expires_at_ns: Option<u64>,
+    begun: bool,
 }
 
 impl Drop for Exchange {
@@ -315,7 +321,101 @@ impl Exchange {
             secure_required: false,
             insecure: false,
             closer: None,
+            timeout_ms: None,
+            deadline_ns: None,
+            expires_at_ns: None,
+            begun: false,
         }
+    }
+
+    /// Bound this complete exchange, from before establishment through its final reply piece.
+    /// Zero leaves it unbounded here. The host's monotonic clock anchors the budget once on its
+    /// first drive; pending re-entries retain that absolute expiry. Missing clock support or an
+    /// unrepresentable expiry fails closed. This does not change the connector's streaming bound.
+    ///
+    /// A direct caller must publish [`Exchange::wake_at_ns`] with `Out::wake_at` whenever this
+    /// exchange returns Pending, so a silent peer cannot outwait the bound without another wake.
+    /// Calling this builder after the exchange has begun cannot renew or replace its bound.
+    #[must_use]
+    pub fn with_timeout_ms(mut self, timeout_ms: u64) -> Self {
+        if !self.begun {
+            self.timeout_ms = (timeout_ms != 0).then_some(timeout_ms);
+        }
+        self
+    }
+
+    /// Clamp the complete exchange to a known absolute caller deadline on the host clock.
+    /// Zero means no known cap. When both are configured, the earlier of this deadline and
+    /// [`Exchange::with_timeout_ms`] wins. An overflowing relative span may use this known cap;
+    /// without one it fails closed. A drive already begun retains its original expiry.
+    #[must_use]
+    pub fn with_deadline_ns(mut self, deadline_ns: u64) -> Self {
+        if !self.begun {
+            self.deadline_ns = (deadline_ns != 0).then_some(deadline_ns);
+        }
+        self
+    }
+
+    /// The original absolute expiry for a pending exchange. Propagate the earliest nonzero wake
+    /// to the operation's `Out::wake_at`, then retain this exchange until resume or cancellation.
+    #[must_use]
+    pub const fn wake_at_ns(&self) -> Option<u64> {
+        self.expires_at_ns
+    }
+
+    fn within_timeout(&mut self, c: &mut Connector<'_>) -> Result<(), ConnFailure> {
+        if self.timeout_ms.is_none() && self.deadline_ns.is_none() {
+            return Ok(());
+        }
+        let now = match c.clock_now() {
+            Poll::Ready(Ok(now)) => now.mono_ns,
+            Poll::Ready(Err(error)) => return self.timeout_failed(c, error),
+            Poll::Pending => return self.timeout_failed(c, ConnFailure::Fault),
+        };
+        let expiry = match self.expires_at_ns {
+            Some(expiry) => expiry,
+            None => {
+                // A connector's explicit remaining budget and the operation's absolute deadline
+                // are caps, never sources of a renewed timeout on a later entry.
+                let relative = self.timeout_ms.and_then(|ms| {
+                    let ms = c.budget_ms().map_or(ms, |budget| ms.min(budget));
+                    ms.checked_mul(1_000_000)
+                        .and_then(|span| now.checked_add(span))
+                });
+                let expiry = match (relative, self.deadline_ns) {
+                    (Some(relative), Some(cap)) => relative.min(cap),
+                    (Some(relative), None) => relative,
+                    (None, Some(cap)) => cap,
+                    (None, None) => {
+                        return self.timeout_failed(
+                            c,
+                            ConnFailure::Failed(
+                                "whole exchange timeout exceeds the host clock range".into(),
+                            ),
+                        )
+                    }
+                };
+                self.expires_at_ns = Some(expiry);
+                expiry
+            }
+        };
+        if now >= expiry {
+            return self.timeout_failed(
+                c,
+                ConnFailure::Failed(crate::conn::ConnError::Timeout.text().to_owned()),
+            );
+        }
+        Ok(())
+    }
+
+    fn timeout_failed(&mut self, c: &Connector<'_>, error: ConnFailure) -> Result<(), ConnFailure> {
+        // Expiry can skip an entry's replayed services. Close without a replay handle rather than
+        // issuing CLOSE where that ticket previously issued ESTABLISH or READ. Take ownership
+        // before calling the host: a reentrant cancellation/drop cannot close this stream twice.
+        if let Some(stream) = self.stream.take() {
+            c.closer().close(stream);
+        }
+        Err(error)
     }
 
     /// Lower the most this exchange's reply body may reach to `bytes`. A value above [`REPLY_MAX`]
@@ -620,11 +720,45 @@ fn extend_wiping(body: &mut Vec<u8>, bytes: &[u8]) {
     body.extend_from_slice(bytes);
 }
 
+/// Check an already anchored absolute bound around one service step. Clock reads never draw a
+/// replay handle. In particular a Pending service that reaches the bound answers timeout now.
+fn bounded_step<T>(
+    c: &mut Connector<'_>,
+    expires_at_ns: Option<u64>,
+    step: impl FnOnce(&mut Connector<'_>) -> Answer<T>,
+) -> Answer<T> {
+    fn check(c: &mut Connector<'_>, expiry: Option<u64>) -> Result<(), ConnFailure> {
+        let Some(expiry) = expiry else {
+            return Ok(());
+        };
+        match c.clock_now() {
+            Poll::Ready(Ok(now)) if now.mono_ns < expiry => Ok(()),
+            Poll::Ready(Ok(_)) => Err(ConnFailure::Failed(
+                crate::conn::ConnError::Timeout.text().to_owned(),
+            )),
+            Poll::Ready(Err(error)) => Err(error),
+            Poll::Pending => Err(ConnFailure::Fault),
+        }
+    }
+    if let Err(error) = check(c, expires_at_ns) {
+        return Poll::Ready(Err(error));
+    }
+    let answer = step(c);
+    if let Err(error) = check(c, expires_at_ns) {
+        return Poll::Ready(Err(error));
+    }
+    answer
+}
+
 /// Send what `state` holds on `stream`.
 fn send(c: &mut Connector<'_>, state: &mut Exchange, stream: u64) -> Answer<()> {
     let budget = c.budget_ms();
+    let expiry = state.expires_at_ns;
     match &mut state.sending {
-        Sending::Raw(bytes) => write_all(|b| c.write(stream, b), &bytes[..]),
+        Sending::Raw(bytes) => write_all(
+            |b| bounded_step(c, expiry, |c| c.write(stream, b)),
+            &bytes[..],
+        ),
         Sending::Framed {
             head,
             head_piece,
@@ -640,16 +774,24 @@ fn send(c: &mut Connector<'_>, state: &mut Exchange, stream: u64) -> Answer<()> 
                 (t, None) => t,
             };
             let head_piece: &RequestPiece = head_piece;
-            let taken = ready!(c.write_request(stream, head_piece, &head[..]));
+            let taken = ready!(bounded_step(c, expiry, |c| c.write_request(
+                stream,
+                head_piece,
+                &head[..]
+            )));
             if taken != head.len() {
                 return failed("the framer took part of the request head");
             }
             let body_piece: &RequestPiece = body_piece;
             ready!(write_all(
-                |b| c.write_request(stream, body_piece, b),
+                |b| bounded_step(c, expiry, |c| c.write_request(stream, body_piece, b)),
                 &body[..]
             ));
-            ready!(c.write_request(stream, end_piece, &[]));
+            ready!(bounded_step(c, expiry, |c| c.write_request(
+                stream,
+                end_piece,
+                &[]
+            )));
             Poll::Ready(Ok(()))
         }
     }
@@ -698,6 +840,10 @@ fn exchange_once(
     need: u32,
     target: Option<&str>,
 ) -> Answer<()> {
+    state.begun = true;
+    if let Err(error) = state.within_timeout(c) {
+        return Poll::Ready(Err(error));
+    }
     // A framed request is made whole when its stream opens, so its security is its target's: a
     // sealed value that must go out secured is refused before the open when the target names a
     // scheme that is not secure. A need's own target (`None`) is the operator's, as written.
@@ -715,6 +861,23 @@ fn exchange_once(
         Poll::Ready(ended) => ended,
         Poll::Pending => return Poll::Pending,
     };
+    // Observation can finish (or decline facts) after the original expiry. Check before CLOSE
+    // so a skipped pending FACTS replay never lends its handle to a different service.
+    if let Err(error) = state.within_timeout(c) {
+        return Poll::Ready(Err(error));
+    }
+    if state.expires_at_ns.is_some() && ended.is_err() {
+        // A bounded service can stop between replay handles. All terminal failures on this
+        // opted-in path close without claiming a handle formerly used by a pending write/read.
+        if let Some(stream) = state.stream.take() {
+            c.closer().close(stream);
+        }
+        return Poll::Ready(ended);
+    }
+    if state.stream.is_none() {
+        // A complete-exchange timeout already took and closed this stream without replay.
+        return Poll::Ready(ended);
+    }
     match c.close(stream) {
         Poll::Pending => Poll::Pending,
         Poll::Ready(_) => {
@@ -730,8 +893,13 @@ fn exchange_once(
 fn read_to_end(c: &mut Connector<'_>, state: &mut Exchange, stream: u64) -> Answer<()> {
     ready!(send(c, state, stream));
     loop {
+        if let Err(error) = state.within_timeout(c) {
+            return Poll::Ready(Err(error));
+        }
         let this = c.issued();
-        let got = match c.read_reply(stream, &mut state.buf[..], &mut state.slot) {
+        let got = match bounded_step(c, state.expires_at_ns, |c| {
+            c.read_reply(stream, &mut state.buf[..], &mut state.slot)
+        }) {
             Poll::Ready(Ok(got)) => got,
             Poll::Ready(Err(e)) => {
                 // A failed reply: what the stream observed says why, where the caller asks.
@@ -742,6 +910,9 @@ fn read_to_end(c: &mut Connector<'_>, state: &mut Exchange, stream: u64) -> Answ
             }
             Poll::Pending => return Poll::Pending,
         };
+        if let Err(error) = state.within_timeout(c) {
+            return Poll::Ready(Err(error));
+        }
         // A replayed read answers its stored result (its piece and bytes written again); it was
         // applied on the entry that first saw it, unless this exchange is that op's fresh re-call.
         let fresh = this >= state.applied;
@@ -834,7 +1005,7 @@ fn observe(c: &mut Connector<'_>, state: &mut Exchange, stream: u64) -> Poll<()>
     if !state.observe {
         return Poll::Ready(());
     }
-    match c.facts(stream) {
+    match bounded_step(c, state.expires_at_ns, |c| c.facts(stream)) {
         Poll::Pending => Poll::Pending,
         Poll::Ready(Ok(Some(observed))) => {
             state.observed = Some(observed);
@@ -856,6 +1027,9 @@ pub fn exchange(
     target: Option<&str>,
 ) -> Answer<ExchangeResponse> {
     ready!(send_and_read(c, state, need, target));
+    if let Err(error) = state.within_timeout(c) {
+        return Poll::Ready(Err(error));
+    }
     let mut reply = std::mem::take(&mut *state.reply);
     reply.status = u16::try_from(state.code).unwrap_or(0);
     Poll::Ready(Ok(reply))
@@ -872,6 +1046,9 @@ pub fn send_and_ack(
     target: Option<&str>,
 ) -> Answer<Ack> {
     ready!(send_and_read(c, state, need, target));
+    if let Err(error) = state.within_timeout(c) {
+        return Poll::Ready(Err(error));
+    }
     Poll::Ready(Ok(Ack {
         code: state.code,
         reason: state.reply.reason.take().unwrap_or_default(),
@@ -1003,6 +1180,9 @@ impl std::error::Error for ExchangeFailure {
 pub struct Op<'a> {
     on: &'a dyn Parks,
     host: Option<&'a Host>,
+    timeout_ms: Cell<Option<u64>>,
+    deadline_ns: Cell<Option<u64>>,
+    wake_at_ns: Cell<Option<u64>>,
 }
 
 impl std::fmt::Debug for Op<'_> {
@@ -1022,12 +1202,54 @@ impl<'a> Op<'a> {
         instance: &'a Instance<'b, T>,
         host: Option<&'a Host>,
     ) -> Self {
-        Self { on: instance, host }
+        Self::over(instance, host)
     }
 
     /// A kind SDK's composite continuation, still owned and cleaned up by its safe instance.
     pub(crate) fn over(on: &'a dyn Parks, host: Option<&'a Host>) -> Self {
-        Self { on, host }
+        Self {
+            on,
+            host,
+            timeout_ms: Cell::new(None),
+            deadline_ns: Cell::new(None),
+            wake_at_ns: Cell::new(None),
+        }
+    }
+
+    /// Opt newly built exchanges into a complete wall-clock bound. A resumed exchange keeps its
+    /// original bound. After a Pending answer propagate [`Op::wake_at_ns`] to `Out::wake_at`;
+    /// the hook SDK does this for hook operations.
+    #[must_use]
+    pub fn with_timeout_ms(self, timeout_ms: u64) -> Self {
+        self.set_timeout_ms(timeout_ms);
+        self
+    }
+
+    /// [`Op::with_timeout_ms`] for a hook handed a borrowed operation.
+    pub fn set_timeout_ms(&self, timeout_ms: u64) {
+        self.timeout_ms.set((timeout_ms != 0).then_some(timeout_ms));
+    }
+
+    /// Clamp new explicitly timed exchanges to the operation's known absolute deadline on the
+    /// host clock. The hook SDK carries its input deadline here. Zero means no known cap;
+    /// this cap alone leaves an operation's existing untimed exchange behavior unchanged.
+    #[must_use]
+    pub fn with_deadline_ns(self, deadline_ns: u64) -> Self {
+        self.set_deadline_ns(deadline_ns);
+        self
+    }
+
+    /// [`Op::with_deadline_ns`] for a borrowed operation. Resumed exchanges retain their expiry.
+    pub fn set_deadline_ns(&self, deadline_ns: u64) {
+        self.deadline_ns
+            .set((deadline_ns != 0).then_some(deadline_ns));
+    }
+
+    /// The earliest absolute timer requested by this entry's pending exchange. A kind's caller
+    /// must publish it with `Out::wake_at`; losing the timer would lose a silent peer's timeout.
+    #[must_use]
+    pub fn wake_at_ns(&self) -> Option<u64> {
+        self.wake_at_ns.get()
     }
 
     /// The host tables the op runs over (`None`: the instance was handed none): what an op that
@@ -1267,6 +1489,18 @@ impl<'a> Op<'a> {
                 }
                 Ok((r, sealed)) => match Exchange::request_sealed(r, sealed) {
                     Ok(s) => {
+                        let s = match self.timeout_ms.get() {
+                            Some(ms) => {
+                                let s = s.with_timeout_ms(ms);
+                                match self.deadline_ns.get() {
+                                    Some(deadline) => s.with_deadline_ns(deadline),
+                                    None => s,
+                                }
+                            }
+                            // A caller cap alone does not opt an existing Op into the new clock
+                            // service requirement. The dispatcher already enforces that cap.
+                            None => s,
+                        };
                         let s = s.reply_limit(reply_limit);
                         if head_only {
                             s.head_only()
@@ -1283,6 +1517,11 @@ impl<'a> Op<'a> {
             Poll::Pending => {
                 // The same continuation, including any earlier reply head, owns pending buffers
                 // and its closer until the next entry or cancellation.
+                if let Some(expiry) = state.wake_at_ns() {
+                    self.wake_at_ns.set(Some(
+                        self.wake_at_ns.get().map_or(expiry, |old| old.min(expiry)),
+                    ));
+                }
                 self.on.park(state);
                 Poll::Pending
             }
