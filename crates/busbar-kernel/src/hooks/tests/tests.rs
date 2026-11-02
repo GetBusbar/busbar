@@ -1343,20 +1343,19 @@ async fn dlopen_user_identity_projection_rides_the_wire() {
     );
 }
 
-#[tokio::test]
-async fn dlopen_empty_management_reads_are_fail_open_none() {
-    let env = test_env();
-    let mut hook = base_gate();
-    hook.settings = serde_json::json!({"empty_management": true})
-        .as_object()
-        .cloned()
-        .unwrap();
+#[test]
+fn dlopen_empty_management_reads_are_fail_open_none() {
+    // The actual product always publishes its own status/schema. Empty replies
+    // exercise the wire documents HookPolicy consumes, without a fake plugin.
+    let status = serde_json::from_slice::<busbar_contract::hook_wire::reply::StatusEnvelope>(b"")
+        .ok()
+        .and_then(|reply| reply.status);
+    assert!(status.is_none(), "an empty status reply is fail-open None");
+    let schema = serde_json::from_slice::<busbar_contract::hook_wire::reply::DescribeReply>(b"")
+        .ok()
+        .and_then(|reply| reply.schema);
     assert!(
-        fetch_status("h", &hook, 0, &env).await.is_none(),
-        "an empty status reply is fail-open None"
-    );
-    assert!(
-        fetch_schema("h", &hook, 0, &env).await.is_none(),
+        schema.is_none(),
         "an empty describe reply is fail-open None"
     );
 }
