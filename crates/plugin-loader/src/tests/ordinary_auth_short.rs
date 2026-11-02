@@ -323,3 +323,87 @@ fn actual_submitted_short_fences_release_and_rejects_same_worker_wait() {
         (2, 1, 1)
     );
 }
+
+#[test]
+fn an_actual_held_short_lease_is_released_exactly_once_when_its_token_drops() {
+    use crate::dispatch::kinds::auth::Auth;
+    use crate::dispatch::{load_linked, Bind, ConnTable, Frame, LinkedRow, NoSink};
+    use busbar_contract::abi::auth::{slot, POINT_HEAD};
+    use busbar_contract::abi::mechanism::call::{Blob, BLOB_OCTETS};
+    use busbar_contract::abi::sdk::door::blank_in;
+    let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+    VERIFIES.store(0, Ordering::SeqCst);
+    RELEASES.store(0, Ordering::SeqCst);
+    JUDGMENTS.store(0, Ordering::SeqCst);
+    let dispatcher = Dispatcher::new(DispatchConfig::default());
+    let row = LinkedRow::of(retained_door).unwrap();
+    let plugin = load_linked::<Auth>(
+        &row,
+        Bind {
+            instance: Arc::from("held-short"),
+            max_inflight_cap: 16,
+            sink: Arc::new(NoSink),
+            dispatcher: dispatcher.adopter(),
+            conns: ConnTable::NoNeeds,
+        },
+    )
+    .unwrap();
+    let mut opened = crate::dispatch::lifecycle::open_frame(crate::dispatch::lifecycle::blob(
+        b"{}",
+        busbar_contract::abi::mechanism::call::BLOB_JSON,
+        0,
+    ));
+    assert_eq!(
+        plugin
+            .call(
+                busbar_contract::abi::mechanism::lifecycle::slot::OPEN,
+                &mut opened
+            )
+            .outcome,
+        Outcome::Ready
+    );
+    let mut input: VerifyIn = blank_in();
+    input.point = POINT_HEAD;
+    let mut frame = Frame::new(input, blank_out::<IdentifyOut>());
+    let mut first = plugin.call(slot::VERIFY, &mut frame);
+    let token = first
+        .recall
+        .take()
+        .expect("actual short reply owns a recall token");
+    assert_ne!(frame.out.head.lease, 0);
+    let reference = short_reply::encode(frame.out.head.lease);
+    let mut bytes = vec![0; SUBJECT.len()];
+    frame.input.head.extensions = Blob {
+        ptr: reference.as_ptr(),
+        len: reference.len(),
+        fmt: BLOB_OCTETS,
+        flags: 0,
+    };
+    frame.input.out_buf.buf = bytes.as_mut_ptr();
+    frame.input.out_buf.buf_cap = bytes.len();
+    let copied = plugin.call(slot::VERIFY, &mut frame);
+    assert_eq!(copied.outcome, Outcome::Ready);
+    assert_eq!(frame.out.verdict, VERDICT_IDENTITY);
+    let subject = frame.out.identity.subject;
+    assert_eq!(
+        &bytes[subject.offset as usize..subject.offset as usize + subject.len as usize],
+        SUBJECT.as_bytes()
+    );
+    assert_eq!(
+        (
+            VERIFIES.load(Ordering::SeqCst),
+            RELEASES.load(Ordering::SeqCst),
+            JUDGMENTS.load(Ordering::SeqCst)
+        ),
+        (2, 0, 1)
+    );
+    drop(token);
+    assert_eq!(
+        (
+            VERIFIES.load(Ordering::SeqCst),
+            RELEASES.load(Ordering::SeqCst),
+            JUDGMENTS.load(Ordering::SeqCst)
+        ),
+        (2, 1, 1)
+    );
+}
