@@ -12,6 +12,7 @@ use super::super::self_keys::{
     DeterministicEd25519Keys, ExchangeError, IssuedKey, SelfServeKeys,
 };
 use super::super::{ChainVerdict, Principal};
+use crate::config::groups::GroupCfg;
 use crate::config::{RoleBindingCfg, RoleBindings};
 use crate::governance::{GovState, RecordStore as _};
 
