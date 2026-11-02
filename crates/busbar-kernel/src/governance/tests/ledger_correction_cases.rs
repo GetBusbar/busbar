@@ -922,6 +922,31 @@ fn a_known_correction_receipt_survives_a_lost_recovery_ack_without_backend_repla
         CORRECTED_INPUT
     );
     assert_eq!(store.correction_calls.lock().unwrap().len(), 1);
+    let selected = gov
+        .selected_recovery_events()
+        .into_iter()
+        .find(|event| event.kind == RecoveryKind::Correction)
+        .unwrap();
+    let hold = gov
+        .hold_foreign_correction_recovery(selected.operation_id)
+        .unwrap();
+    let count = journal.selected.lock().unwrap().len();
+    assert!(
+        gov.validate_foreign_correction_verdict(&RecoveryResolution {
+            operation_id: selected.operation_id,
+            body_fingerprint: selected.body_fingerprint,
+            expected_revision: selected.revision,
+            verdict: RecoveryVerdict::NotLanded,
+            sender_quiesced: true,
+            backend_quiesced: true,
+            actor: "adopter".into(),
+            reason: "incorrect not-landed choice".into(),
+        })
+        .is_err(),
+        "a definitive host receipt cannot be replaced by an operator's opposite verdict"
+    );
+    assert_eq!(journal.selected.lock().unwrap().len(), count);
+    drop(hold);
     store.set_down(true);
     journal
         .fail_after_write

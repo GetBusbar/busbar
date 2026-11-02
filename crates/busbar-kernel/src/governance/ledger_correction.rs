@@ -120,7 +120,9 @@ impl GovState {
         } else {
             Decision::ConditionConflict
         };
-        if receipt.or(selected).is_some_and(|known| known != expected) {
+        if receipt.is_some_and(|known| known != expected)
+            || selected.is_some_and(|known| known != expected)
+        {
             return Err(RecoveryError::Conflict(
                 "requested verdict contradicts a definitive backend correction receipt".into(),
             ));
