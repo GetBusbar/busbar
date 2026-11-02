@@ -190,8 +190,13 @@ fn texts(v: &serde_json::Value, what: &str) -> Vec<Vec<u8>> {
         .collect()
 }
 
+/// Injective transcript bytes. Ordinary text keeps its existing spelling. Invalid UTF-8 and
+/// text starting with the reserved marker use that marker followed by the exact hex bytes.
 pub(super) fn lossy(b: &[u8]) -> String {
-    String::from_utf8_lossy(b).into_owned()
+    match std::str::from_utf8(b) {
+        Ok(text) if !text.starts_with('\u{e000}') => text.to_owned(),
+        _ => format!("\u{e000}{}", hex::encode(b)),
+    }
 }
 
 /// `ceil(len / cap)`, at least 1: the crossings a re-driven op makes to carry `len` bytes.
@@ -281,11 +286,7 @@ struct Yielded {
 
 impl Yielded {
     fn take(&mut self, c: &Called, o: &FramerOut, sink: &Sink) {
-        let text = c
-            .error
-            .as_deref()
-            .map(String::from_utf8_lossy)
-            .unwrap_or_default();
+        let text = c.error.as_deref().map(lossy).unwrap_or_default();
         self.last = format!("{:?} lease={} err={text:?}", c.outcome, c.lease != 0);
         self.outcome = Some(c.outcome);
         self.flags = o.yielded.flags;
@@ -574,7 +575,7 @@ fn locate_on(
         Some(token) => p.recall(token, slot::LOCATE, &mut f),
         None => p.call(slot::LOCATE, &mut f),
     };
-    let (o, text) = (&f.out, c.error.as_deref().map(String::from_utf8_lossy));
+    let (o, text) = (&f.out, c.error.as_deref().map(lossy));
     let written = (o.authority_written as usize).min(authority.len());
     let authority = if c.outcome == Outcome::Ready {
         lossy(&authority[..written])
@@ -1105,3 +1106,83 @@ mod opening_tests;
 #[cfg(all(test, loader_self_tests))]
 #[path = "../tests/conformance_transport_role_tests.rs"]
 mod role_tests;
+
+#[cfg(all(test, loader_self_tests))]
+mod byte_transcript_tests {
+    use super::*;
+
+    fn actual(wire: &[u8], frames: &[Vec<u8>], raw: &[u8]) -> String {
+        Yielded {
+            last: "Ready lease=false err=\"\"".into(),
+            outcome: Some(Outcome::Ready),
+            wire: wire.to_vec(),
+            frames: frames.to_vec(),
+            raw: raw.to_vec(),
+            framing: 1,
+            ..Yielded::default()
+        }
+        .line()
+    }
+
+    #[test]
+    fn ascii_transcripts_keep_their_existing_spelling() {
+        assert_eq!(lossy(b"GET / HTTP/1.1\r\n"), "GET / HTTP/1.1\r\n");
+        assert_eq!(
+            actual(b"wire", &[b"frame".to_vec()], b"raw"),
+            "Ready lease=false err=\"\" wire=\"wire\" frames=[\"frame\"] partial=\"\" raw=\"raw\" flags=0 framing=true"
+        );
+    }
+
+    #[test]
+    fn binary_green_and_each_wrong_byte_use_the_actual_and_expected_oracles() {
+        let frames = vec![vec![0xff]];
+        let expected = yielded_line(&[0xff], &frames, &[0xff], 0, true);
+        assert_eq!(actual(&[0xff], &frames, &[0xff]), expected);
+        assert_ne!(actual(&[0xfe], &frames, &[0xff]), expected);
+        assert_ne!(actual(&[0xff], &[vec![0xfe]], &[0xff]), expected);
+        assert_ne!(actual(&[0xff], &frames, &[0xfe]), expected);
+        let partial = Yielded {
+            partial: vec![0xff],
+            ..Yielded::default()
+        }
+        .line();
+        let wrong = Yielded {
+            partial: vec![0xfe],
+            ..Yielded::default()
+        }
+        .line();
+        assert_ne!(partial, wrong);
+    }
+
+    #[test]
+    fn marker_text_cannot_impersonate_binary_and_valid_replacement_text_is_distinct() {
+        assert_ne!(lossy(&[0xff]), lossy("\u{fffd}".as_bytes()));
+        let binary = lossy(&[0xff]);
+        assert_ne!(lossy(binary.as_bytes()), binary);
+        assert_ne!(
+            ready_locate(&[0xff], false, false),
+            ready_locate(&[0xfe], false, false)
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "binary wire")]
+    fn judged_binary_wire_refuses_the_previously_colliding_wrong_byte() {
+        let inputs = serde_json::json!({ "hex": "ff" });
+        let expected = text(&inputs, "test wire");
+        let step = super::super::Step {
+            label: "binary wire".into(),
+            answer: actual(&[0xfe], &[], &[]),
+            crossed: 1,
+            pinned: 1,
+            resumes: 0,
+        };
+        super::super::judge(
+            &[step],
+            &[(
+                "binary wire".into(),
+                Want::Is(yielded_line(&expected, &[], &[], 0, true)),
+            )],
+        );
+    }
+}

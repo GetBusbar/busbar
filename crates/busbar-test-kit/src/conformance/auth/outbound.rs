@@ -291,18 +291,89 @@ fn pairs(v: &serde_json::Value, what: &str) -> Vec<(String, String)> {
     }
 }
 
-/// The transcript's spelling of written fields: `name: value (flags=N)`, in order.
+/// The transcript's ordered fields, with quoted byte strings preserving every boundary.
 fn listing<'a>(fields: impl Iterator<Item = (&'a [u8], &'a [u8], u32)>) -> String {
     fields
         .map(|(n, v, f)| {
             format!(
-                "{}: {} (flags={f})",
-                String::from_utf8_lossy(n),
-                String::from_utf8_lossy(v)
+                "{:?}",
+                (
+                    super::super::transport::lossy(n),
+                    super::super::transport::lossy(v),
+                    f
+                )
             )
         })
         .collect::<Vec<_>>()
-        .join("; ")
+        .join(", ")
+}
+
+#[cfg(all(test, loader_self_tests))]
+mod field_transcript_tests {
+    use super::*;
+
+    fn answer(fields: &[(&[u8], &[u8], u32)]) -> String {
+        let mut lend = Lend {
+            buf: Vec::new(),
+            spans: Vec::new(),
+            names: Vec::new(),
+            values: Vec::new(),
+            lines: Vec::new(),
+            request: std::array::from_fn(|_| Vec::new()),
+            body: Vec::new(),
+            ext: Vec::new(),
+        };
+        for &(name, value, flags) in fields {
+            let name_span = Span {
+                offset: lend.buf.len() as u32,
+                len: name.len() as u32,
+            };
+            lend.buf.extend_from_slice(name);
+            let value_span = Span {
+                offset: lend.buf.len() as u32,
+                len: value.len() as u32,
+            };
+            lend.buf.extend_from_slice(value);
+            lend.spans.push(FieldSpan {
+                name: name_span,
+                value: value_span,
+                flags,
+                _reserved: 0,
+            });
+        }
+        let mut out: FieldsOut = output();
+        out.fields_len = fields.len() as u32;
+        lend.answer(Outcome::Ready, None, false, &out)
+    }
+
+    #[test]
+    fn a_delimiter_in_one_value_cannot_impersonate_two_fields() {
+        let want = expected(
+            &serde_json::json!([["a", "b (flags=0); c: d"]]),
+            "test fields",
+        );
+        assert_eq!(answer(&[(b"a", b"b (flags=0); c: d", 0)]), want);
+        assert_ne!(answer(&[(b"a", b"b", 0), (b"c", b"d", 0)]), want);
+    }
+
+    #[test]
+    fn byte_identity_order_and_flags_survive_the_field_transcript() {
+        assert_ne!(
+            answer(&[(b"a", &[0xff], 0)]),
+            answer(&[(b"a", &[0xfe], 0)])
+        );
+        assert_ne!(
+            answer(&[(&[0xff], b"v", 0)]),
+            answer(&[(&[0xfe], b"v", 0)])
+        );
+        let want = expected(
+            &serde_json::json!([["a", "b", 1], ["c", "d", 0]]),
+            "test fields",
+        );
+        assert_eq!(answer(&[(b"a", b"b", 1), (b"c", b"d", 0)]), want);
+        assert_ne!(answer(&[(b"c", b"d", 0), (b"a", b"b", 1)]), want);
+        assert_ne!(answer(&[(b"a", b"b", 0), (b"c", b"d", 0)]), want);
+    }
 }
 
 /// The answer a `fields` call writing exactly `v`'s fields reads as.
