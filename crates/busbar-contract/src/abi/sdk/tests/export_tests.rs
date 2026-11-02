@@ -332,12 +332,14 @@ fn a_held_op_with_no_instance_answers_in_the_sdks_words() {
     input.phase = CHECK_PHASE_LIMITS;
     // Deliberately malformed ABI entry: call_in protects ordinary fixtures from missing instances.
     // Enter the raw slot so this checks the SDK's refusal rather than that fixture guard.
-    let c = unsafe { reply::call(
-        check.parts().0,
-        core::ptr::null_mut(),
-        &input,
-        zeroed::<CheckOut>(),
-    ) };
+    let c = unsafe {
+        reply::call(
+            check.parts().0,
+            core::ptr::null_mut(),
+            &input,
+            zeroed::<CheckOut>(),
+        )
+    };
     assert_eq!(c.outcome, Outcome::Refused);
     assert_eq!(c.error.as_deref(), Some(NO_INSTANCE));
 }

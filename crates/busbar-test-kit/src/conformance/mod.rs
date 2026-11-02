@@ -1550,7 +1550,10 @@ pub fn ready_step<K: Kind>(rec: &mut Recorder<'_>, _s: &Subject, p: &Plugin<K>, 
     let pinned = u64::from(p.has_ready());
     rec.line("ready", pinned, || {
         let answer = p.ready(d, READY_DEADLINE);
-        assert!(answer.is_ok(), "the honest door must become ready: {answer:?}");
+        assert!(
+            answer.is_ok(),
+            "the honest door must become ready: {answer:?}"
+        );
         format!("has_ready={} {answer:?}", p.has_ready())
     });
 }

@@ -187,12 +187,14 @@ fn a_real_doors_slots_run_over_zeroed_ins_and_outs() {
     assert_eq!(opened.outcome, Outcome::Ready);
     assert!(!opened.out.instance.is_null(), "open answered an instance");
 
-    let closed = unsafe { call(
-        close,
-        opened.out.instance,
-        &in_head::<InHead>(slot::CLOSE),
-        out_head::<OutHead>(),
-    ) };
+    let closed = unsafe {
+        call(
+            close,
+            opened.out.instance,
+            &in_head::<InHead>(slot::CLOSE),
+            out_head::<OutHead>(),
+        )
+    };
     assert_eq!(closed.outcome, Outcome::Ready);
 }
 
@@ -605,12 +607,14 @@ extern "C" fn answer<O: Reply>(
 
 /// `answer::<O>` called over `template`.
 fn answered<O: Reply>(template: &mut O) -> super::reply::Called<'static, O> {
-    unsafe { call(
-        answer::<O>,
-        ptr::from_mut(template).cast(),
-        &in_head::<InHead>(0),
-        *template,
-    ) }
+    unsafe {
+        call(
+            answer::<O>,
+            ptr::from_mut(template).cast(),
+            &in_head::<InHead>(0),
+            *template,
+        )
+    }
 }
 
 fn bytes_of(b: &[u8]) -> Blob {
@@ -654,12 +658,14 @@ fn answered_resolve(
     let mut input: crate::abi::secret::ResolveIn = zeroed();
     input.secret_buf = material.as_mut_ptr();
     input.secret_cap = material.len();
-    unsafe { call(
-        answer::<ResolveOut>,
-        ptr::from_mut(template).cast(),
-        &input,
-        *template,
-    ) }
+    unsafe {
+        call(
+            answer::<ResolveOut>,
+            ptr::from_mut(template).cast(),
+            &input,
+            *template,
+        )
+    }
 }
 
 #[test]
@@ -723,12 +729,14 @@ fn a_resolve_cannot_claim_more_than_the_lent_buffer() {
     let mut input: crate::abi::secret::ResolveIn = zeroed();
     input.secret_buf = material.as_mut_ptr();
     input.secret_cap = 2;
-    let _ = unsafe { call(
-        answer::<ResolveOut>,
-        ptr::from_mut(&mut t).cast(),
-        &input,
-        t,
-    ) };
+    let _ = unsafe {
+        call(
+            answer::<ResolveOut>,
+            ptr::from_mut(&mut t).cast(),
+            &input,
+            t,
+        )
+    };
 }
 
 fn answered_scrape(
@@ -742,12 +750,14 @@ fn answered_scrape(
     let mut out: crate::abi::export::ScrapeOut = zeroed();
     out.head = ready_head(0);
     out.written = written;
-    unsafe { call(
-        answer::<crate::abi::export::ScrapeOut>,
-        ptr::from_mut(&mut out).cast(),
-        &input,
-        out,
-    ) }
+    unsafe {
+        call(
+            answer::<crate::abi::export::ScrapeOut>,
+            ptr::from_mut(&mut out).cast(),
+            &input,
+            out,
+        )
+    }
 }
 
 #[test]
@@ -1013,12 +1023,14 @@ fn the_heads_a_slot_reads_state_the_structs_call_passed() {
     // Heads that claim the larger `open` structs, over a bare `InHead` and `OutHead`.
     let lying_in = in_head::<OpenIn>(slot::OPEN);
     let lying_out = out_head::<OpenOut>();
-    let got = unsafe { call(
-        heads_seen,
-        ptr::from_mut(&mut seen).cast(),
-        &lying_in,
-        lying_out,
-    ) };
+    let got = unsafe {
+        call(
+            heads_seen,
+            ptr::from_mut(&mut seen).cast(),
+            &lying_in,
+            lying_out,
+        )
+    };
     assert_eq!(got.outcome, Outcome::Ready);
     assert_eq!(
         seen,
@@ -1254,7 +1266,12 @@ fn a_door_opens_over_the_tables_a_fake_host_lent_while_the_host_lives() {
     let close = table.head.close.expect("the door states close");
     // SAFETY: this instance was opened by the same door above and its host is still alive.
     let closed = unsafe {
-        call(close, opened.out.instance, &in_head::<InHead>(slot::CLOSE), out_head::<OutHead>())
+        call(
+            close,
+            opened.out.instance,
+            &in_head::<InHead>(slot::CLOSE),
+            out_head::<OutHead>(),
+        )
     };
     assert_eq!(closed.outcome, Outcome::Ready);
     drop(opened);
@@ -1322,12 +1339,14 @@ fn call_in_opens_and_close_in_closes_as_call_does_over_the_raw_slot() {
     );
     assert_eq!(closed.outcome, Outcome::Ready);
     // The raw path's instance is closed the raw way.
-    let _ = unsafe { call(
-        close.parts().0,
-        by_raw.out.instance,
-        &in_head::<InHead>(slot::CLOSE),
-        out_head::<OutHead>(),
-    ) };
+    let _ = unsafe {
+        call(
+            close.parts().0,
+            by_raw.out.instance,
+            &in_head::<InHead>(slot::CLOSE),
+            out_head::<OutHead>(),
+        )
+    };
 }
 
 #[test]
@@ -1366,7 +1385,9 @@ fn call_hosted_in_opens_over_the_fake_hosts_tables_as_call_hosted_does() {
     input.head = in_head::<OpenIn>(slot::OPEN);
     let by_raw = {
         let lent = host.lend_to(input);
-        unsafe { super::reply::call_hosted(open.parts().0, ptr::null_mut(), &lent, zeroed::<OpenOut>()) }
+        unsafe {
+            super::reply::call_hosted(open.parts().0, ptr::null_mut(), &lent, zeroed::<OpenOut>())
+        }
     };
     let mut by_view = {
         let lent =

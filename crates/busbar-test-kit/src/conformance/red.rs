@@ -421,7 +421,11 @@ fn establish<K: Kind>(p: &Plugin<K>, need: u32, target: &str) -> (Outcome, u64, 
     let f = CONN_SLOTS.establish.expect("the host offers ESTABLISH");
     // SAFETY: the local input, exclusive output, nested buffers and strings live through this crossing.
     let raw = unsafe {
-        f(p.inner.ctx(), std::ptr::from_ref(&i).cast::<c_void>(), &mut o)
+        f(
+            p.inner.ctx(),
+            std::ptr::from_ref(&i).cast::<c_void>(),
+            &mut o,
+        )
     };
     answered(raw, &o)
 }
