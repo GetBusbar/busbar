@@ -942,6 +942,21 @@ pub(crate) fn valid_identity_provider_modules(registry: &dyn PluginRows) -> Stri
     names.join(" | ")
 }
 
+fn check_secret_module_claim(
+    claimed_by: &std::collections::BTreeMap<String, String>,
+    canonical: &str,
+    module: &str,
+) -> Result<(), String> {
+    if let Some(previous) = claimed_by.get(canonical) {
+        return Err(format!(
+            "secrets: the module '{canonical}' is configured TWICE — once as '{previous}' and \
+                 once as '{module}' (an alias and its canonical name resolve to the same plugin). \
+                 One of the two blocks would be silently dropped; keep exactly one."
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn build_secret_resolver(
     registry: Arc<dyn PluginRows>,
     secret_modules: &std::collections::BTreeMap<String, config::SecretModuleCfg>,
@@ -956,13 +971,7 @@ pub(crate) fn build_secret_resolver(
     for (module, mcfg) in secret_modules {
         let canonical = config_validate::secret_module(registry.as_ref(), module)?;
 
-        if let Some(previous) = claimed_by.get(&canonical) {
-            return Err(format!(
-                "secrets: the module '{canonical}' is configured TWICE — once as '{previous}' and \
-                 once as '{module}' (an alias and its canonical name resolve to the same plugin). \
-                 One of the two blocks would be silently dropped; keep exactly one."
-            ));
-        }
+        check_secret_module_claim(&claimed_by, &canonical, module)?;
         config::secret::resolve_settings(
             &mcfg.settings,
             &registry.secret_slots(module),
@@ -1108,3 +1117,7 @@ mod store_row_tests;
 #[cfg(test)]
 #[path = "tests/plugin_refusal_tests.rs"]
 mod plugin_refusal_tests;
+
+#[cfg(test)]
+#[path = "tests/central2_secret_claim_tests.rs"]
+mod central2_secret_claim_tests;
