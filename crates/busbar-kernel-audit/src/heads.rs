@@ -115,6 +115,39 @@ impl HeadHistory {
         }
     }
 
+    /// Restore independently retained hourly samples and their current tip.
+    ///
+    /// # Errors
+    /// The samples are unordered, omit genesis, disagree with the tip, or violate the hourly rule.
+    pub fn from_retained(
+        series: Vec<SignedHead>,
+        tip: Option<SignedHead>,
+    ) -> Result<Self, &'static str> {
+        let Some(tip) = tip else {
+            return if series.is_empty() {
+                Ok(Self::new())
+            } else {
+                Err("audit samples have no tip")
+            };
+        };
+        if series.first().is_none_or(|head| head.seq != 1)
+            || series.windows(2).any(|pair| {
+                pair[0].seq >= pair[1].seq
+                    || pair[1].wall.saturating_sub(pair[0].wall) < HEAD_SAMPLE_SECONDS
+            })
+            || series
+                .last()
+                .is_none_or(|head| head.seq > tip.seq || head.seq == tip.seq && head != &tip)
+        {
+            return Err("invalid retained audit head history");
+        }
+        Ok(Self {
+            sample_seconds: HEAD_SAMPLE_SECONDS,
+            series,
+            tip: Some(tip),
+        })
+    }
+
     /// Take the head as it stands after one sealed record.
     ///
     /// The FIRST head always joins the series, whatever the clock says: the genesis anchor is the

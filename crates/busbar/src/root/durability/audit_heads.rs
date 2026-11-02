@@ -1,0 +1,476 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! Independent permanent audit anchors in the configured Store (Decision 82).
+//! Samples never share the journal's schema or a plane's retention table. The final part of an
+//! audit record and its new checkpoint cross in one conditional transaction on the existing lane.
+
+use busbar_contract::abi::sdk::store::conditional::{Decision, Expected, Mutation, Predicate};
+use busbar_contract::store_calls::StoreCalls;
+use busbar_kernel_audit::{heads::HEAD_SAMPLE_SECONDS, HeadHistory, SignedHead};
+use busbar_kernel_wal::{JournalRecord, Record};
+use serde::{Deserialize, Serialize};
+
+use super::store_chain::{wait_for, JOURNAL_SCHEMA};
+use super::store_identity::HeldLease;
+
+pub(super) const SCHEMA: &str = "busbar.audit.heads.v1";
+const PAGE: u32 = 256;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Head {
+    seq: u64,
+    hash: String,
+    signature: Option<String>,
+    key_id: Option<String>,
+    wall: u64,
+}
+
+impl From<SignedHead> for Head {
+    fn from(h: SignedHead) -> Self {
+        Self {
+            seq: h.seq,
+            hash: h.hash,
+            signature: h.signature,
+            key_id: h.key_id,
+            wall: h.wall,
+        }
+    }
+}
+
+impl Head {
+    fn signed(&self) -> SignedHead {
+        SignedHead {
+            seq: self.seq,
+            hash: self.hash.clone(),
+            signature: self.signature.clone(),
+            key_id: self.key_id.clone(),
+            wall: self.wall,
+        }
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        let hex = |s: &str, n| {
+            s.len() == n
+                && s.bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        };
+        if self.seq == 0
+            || !hex(&self.hash, 64)
+            || self.signature.is_some() != self.key_id.is_some()
+            || self.signature.as_ref().is_some_and(|s| !hex(s, 128))
+            || self.key_id.as_ref().is_some_and(|s| s.is_empty())
+        {
+            return Err("invalid persisted audit head".into());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Checkpoint {
+    version: u8,
+    tip: Head,
+    last_sample: Head,
+    samples: u64,
+}
+
+fn tip_key(node: u64) -> Vec<u8> {
+    [node.to_be_bytes().as_slice(), &[1]].concat()
+}
+
+fn sample_prefix(node: u64) -> Vec<u8> {
+    [node.to_be_bytes().as_slice(), &[0]].concat()
+}
+
+fn sample_key(node: u64, seq: u64) -> Vec<u8> {
+    [sample_prefix(node), seq.to_be_bytes().to_vec()].concat()
+}
+
+fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>, String> {
+    serde_json::to_vec(value).map_err(|e| format!("audit head cannot be encoded: {e}"))
+}
+
+fn checkpoint(calls: &dyn StoreCalls, node: u64) -> Result<Option<(Checkpoint, Vec<u8>)>, String> {
+    let Some(raw) =
+        wait_for(calls.record_get(SCHEMA, &tip_key(node))).map_err(|e| e.to_string())?
+    else {
+        return Ok(None);
+    };
+    let checkpoint: Checkpoint = serde_json::from_slice(raw.as_slice())
+        .map_err(|_| "the persisted audit checkpoint cannot be decoded")?;
+    checkpoint.tip.validate()?;
+    checkpoint.last_sample.validate()?;
+    if checkpoint.version != 1
+        || checkpoint.samples == 0
+        || checkpoint.last_sample.seq > checkpoint.tip.seq
+        || checkpoint.last_sample.seq == checkpoint.tip.seq
+            && checkpoint.last_sample != checkpoint.tip
+    {
+        return Err("invalid persisted audit checkpoint".into());
+    }
+    Ok(Some((checkpoint, raw.as_slice().to_vec())))
+}
+
+/// Prefix subdivision reads every sample without a lifetime-size ceiling or an unbounded answer.
+fn samples(calls: &dyn StoreCalls, node: u64) -> Result<Vec<Head>, String> {
+    let mut pending = vec![sample_prefix(node)];
+    let mut rows = Vec::new();
+    while let Some(prefix) = pending.pop() {
+        let page = wait_for(calls.record_scan(SCHEMA, &prefix, PAGE)).map_err(|e| e.to_string())?;
+        if page.len() > PAGE as usize
+            || page
+                .iter()
+                .any(|(k, _)| k.len() != 17 || !k.starts_with(&prefix))
+            || page.windows(2).any(|p| p[0].0 >= p[1].0)
+        {
+            return Err("invalid persisted audit sample page".into());
+        }
+        if page.len() < PAGE as usize {
+            rows.extend(page);
+        } else {
+            if prefix.len() >= 17 {
+                return Err("oversized persisted audit sample page".into());
+            }
+            for byte in (0..=u8::MAX).rev() {
+                let mut child = prefix.clone();
+                child.push(byte);
+                pending.push(child);
+            }
+        }
+    }
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    rows.into_iter()
+        .map(|(key, raw)| {
+            let head: Head = serde_json::from_slice(raw.as_slice())
+                .map_err(|_| "an audit sample cannot be decoded")?;
+            head.validate()?;
+            if sample_key(node, head.seq) != key {
+                return Err("an audit sample disagrees with its key".into());
+            }
+            Ok(head)
+        })
+        .collect()
+}
+
+pub(super) fn load(calls: &dyn StoreCalls, node: u64) -> Result<Option<HeadHistory>, String> {
+    let Some((checkpoint, _)) = checkpoint(calls, node)? else {
+        return Ok(None);
+    };
+    let samples = samples(calls, node)?;
+    if samples.len() as u64 != checkpoint.samples || samples.last() != Some(&checkpoint.last_sample)
+    {
+        return Err("persisted audit checkpoint is missing a sample".into());
+    }
+    HeadHistory::from_retained(
+        samples.iter().map(Head::signed).collect(),
+        Some(checkpoint.tip.signed()),
+    )
+    .map(Some)
+    .map_err(str::to_string)
+}
+
+/// Backfill completes before the book can enqueue writes. Samples without a tip are an interrupted
+/// backfill: they must be an exact prefix of the journal-derived samples, never silently replaced.
+#[cfg(test)]
+pub(super) fn initialize(
+    calls: &dyn StoreCalls,
+    node: u64,
+    records: &[JournalRecord],
+) -> Result<HeadHistory, String> {
+    initialize_fenced(calls, node, records, &HeldLease::default())
+}
+
+pub(super) fn initialize_fenced(
+    calls: &dyn StoreCalls,
+    node: u64,
+    records: &[JournalRecord],
+    lease: &HeldLease,
+) -> Result<HeadHistory, String> {
+    let sealed = records
+        .iter()
+        .map(super::decode_audit)
+        .filter_map(Result::transpose)
+        .collect::<Result<Vec<_>, _>>()?;
+    let chain = busbar_kernel_audit::AuditChain::resume(&sealed);
+    if let Some(history) = load(calls, node)? {
+        busbar_kernel_audit::AuditChain::verify_window(&sealed).map_err(|e| e.to_string())?;
+        let anchors = history.anchors();
+        let by_seq: std::collections::BTreeMap<_, _> =
+            anchors.iter().map(|head| (head.seq, head)).collect();
+        for record in &sealed {
+            if let Some(&head) = by_seq.get(&record.seq) {
+                if head != &SignedHead::of(record) {
+                    return Err("retained audit sample contradicts its journal record".into());
+                }
+            }
+        }
+        chain
+            .retaining_heads(history.clone())
+            .map_err(str::to_string)?;
+        return Ok(history);
+    }
+    // An old deployment can only be backfilled from its complete, verified source chain.
+    busbar_kernel_audit::AuditChain::verify_chain(&sealed).map_err(|e| e.to_string())?;
+    let expected: Vec<Head> = chain
+        .heads()
+        .series()
+        .iter()
+        .cloned()
+        .map(Head::from)
+        .collect();
+    let present = samples(calls, node)?;
+    if !expected.starts_with(&present) {
+        return Err("an incomplete audit backfill contradicts its journal".into());
+    }
+    for head in expected.iter().skip(present.len()) {
+        backfill_put(
+            calls,
+            node,
+            lease,
+            sample_key(node, head.seq),
+            encode(head)?,
+        )?;
+    }
+    if let Some(tip) = chain.heads().tip() {
+        let checkpoint = Checkpoint {
+            version: 1,
+            tip: tip.clone().into(),
+            last_sample: expected
+                .last()
+                .expect("a nonempty history has a sample")
+                .clone(),
+            samples: expected.len() as u64,
+        };
+        backfill_put(calls, node, lease, tip_key(node), encode(&checkpoint)?)?;
+    }
+    Ok(chain.heads().clone())
+}
+
+fn backfill_put(
+    calls: &dyn StoreCalls,
+    node: u64,
+    lease: &HeldLease,
+    key: Vec<u8>,
+    value: Vec<u8>,
+) -> Result<(), String> {
+    loop {
+        let mut predicates = vec![Predicate {
+            schema: SCHEMA.into(),
+            key: tip_key(node),
+            expected: Expected::Absent,
+        }];
+        if key != tip_key(node) {
+            predicates.push(Predicate {
+                schema: SCHEMA.into(),
+                key: key.clone(),
+                expected: Expected::Absent,
+            });
+        }
+        if let Some(fence) = lease.predicate(calls)? {
+            predicates.push(fence);
+        }
+        let request = super::conditional::candidate(
+            predicates,
+            vec![Mutation::Put {
+                schema: SCHEMA.into(),
+                key: key.clone(),
+                value: value.clone(),
+            }],
+        );
+        match super::conditional::decide(calls, &request)? {
+            Decision::Applied => return Ok(()),
+            Decision::ConditionConflict => {
+                let current =
+                    wait_for(calls.record_get(SCHEMA, &key)).map_err(|e| e.to_string())?;
+                if current.as_ref().is_some_and(|raw| raw.as_slice() == value) {
+                    return Ok(());
+                }
+                if current.is_some()
+                    || wait_for(calls.record_get(SCHEMA, &tip_key(node)))
+                        .map_err(|e| e.to_string())?
+                        .is_some()
+                {
+                    return Err("audit checkpoint changed during backfill".into());
+                }
+                // A definitive miss with unchanged audit state can only be a refreshed lease.
+            }
+        }
+    }
+}
+
+pub(super) enum Write {
+    Ordinary,
+    Recorded,
+    New(Advance),
+}
+
+pub(super) struct Advance {
+    node: u64,
+    previous: Option<Vec<u8>>,
+    next: Checkpoint,
+    sample: bool,
+    sample_previous: Option<Vec<u8>>,
+}
+
+pub(super) fn prepare(calls: &dyn StoreCalls, record: &Record) -> Result<Write, String> {
+    let Ok(decoded) = JournalRecord::decode(&record.body) else {
+        return Ok(Write::Ordinary);
+    };
+    let Some(audit) = super::decode_audit(&decoded)? else {
+        return Ok(Write::Ordinary);
+    };
+    if decoded.node != record.node
+        || decoded.node_seq != record.node_seq
+        || audit.node != record.node
+    {
+        return Err("audit and journal node identities disagree".into());
+    }
+    let head = Head::from(SignedHead::of(&audit));
+    head.validate()?;
+    if busbar_kernel_audit::AuditChain::digest_of(&audit) != audit.hash {
+        return Err("the audit record digest does not verify".into());
+    }
+    let (previous, last_sample, count) = match checkpoint(calls, record.node)? {
+        Some((old, raw)) => {
+            if old.tip == head {
+                return Ok(Write::Recorded);
+            }
+            if old.tip.seq.checked_add(1) != Some(head.seq) || old.tip.hash != audit.prev_hash {
+                return Err("audit checkpoint predecessor changed".into());
+            }
+            (Some(raw), Some(old.last_sample), old.samples)
+        }
+        None if head.seq == 1 && audit.prev_hash.is_empty() => {
+            if !wait_for(calls.record_scan(SCHEMA, &sample_prefix(record.node), 1))
+                .map_err(|e| e.to_string())?
+                .is_empty()
+            {
+                return Err("audit head backfill has not completed".into());
+            }
+            (None, None, 0)
+        }
+        None => return Err("audit checkpoint is absent before a non-genesis record".into()),
+    };
+    let sample = last_sample
+        .as_ref()
+        .is_none_or(|last| head.wall.saturating_sub(last.wall) >= HEAD_SAMPLE_SECONDS);
+    let next = Checkpoint {
+        version: 1,
+        tip: head.clone(),
+        last_sample: if sample {
+            head
+        } else {
+            last_sample.expect("an existing sample")
+        },
+        samples: count
+            .checked_add(u64::from(sample))
+            .ok_or("audit sample count exhausted")?,
+    };
+    let sample_previous = if sample {
+        let raw =
+            wait_for(calls.record_get(SCHEMA, &sample_key(record.node, next.last_sample.seq)))
+                .map_err(|e| e.to_string())?;
+        let raw = raw.map(|v| v.as_slice().to_vec());
+        let expected = encode(&next.last_sample)?;
+        if raw.as_ref().is_some_and(|value| value != &expected) {
+            return Err("an immutable audit sample already has different bytes".into());
+        }
+        raw
+    } else {
+        None
+    };
+    Ok(Write::New(Advance {
+        node: record.node,
+        previous,
+        next,
+        sample,
+        sample_previous,
+    }))
+}
+
+impl Advance {
+    pub(super) fn commit(
+        self,
+        calls: &dyn StoreCalls,
+        lease: &HeldLease,
+        final_key: Vec<u8>,
+        final_value: Vec<u8>,
+    ) -> Result<(), String> {
+        let encoded = encode(&self.next)?;
+        loop {
+            let mut predicates = vec![Predicate {
+                schema: SCHEMA.into(),
+                key: tip_key(self.node),
+                expected: self
+                    .previous
+                    .clone()
+                    .map_or(Expected::Absent, Expected::Bytes),
+            }];
+            if let Some(fence) = lease.predicate(calls)? {
+                predicates.push(fence);
+            }
+            let mut mutations = vec![
+                Mutation::Put {
+                    schema: JOURNAL_SCHEMA.into(),
+                    key: final_key.clone(),
+                    value: final_value.clone(),
+                },
+                Mutation::Put {
+                    schema: SCHEMA.into(),
+                    key: tip_key(self.node),
+                    value: encoded.clone(),
+                },
+            ];
+            if self.sample {
+                predicates.push(Predicate {
+                    schema: SCHEMA.into(),
+                    key: sample_key(self.node, self.next.last_sample.seq),
+                    expected: self
+                        .sample_previous
+                        .clone()
+                        .map_or(Expected::Absent, Expected::Bytes),
+                });
+                mutations.push(Mutation::Put {
+                    schema: SCHEMA.into(),
+                    key: sample_key(self.node, self.next.last_sample.seq),
+                    value: encode(&self.next.last_sample)?,
+                });
+            }
+            let request = super::conditional::candidate(predicates, mutations);
+            match super::conditional::decide(calls, &request)? {
+                Decision::Applied => return Ok(()),
+                Decision::ConditionConflict => {
+                    let current = wait_for(calls.record_get(SCHEMA, &tip_key(self.node)))
+                        .map_err(|e| e.to_string())?;
+                    let current = current.map(|v| v.as_slice().to_vec());
+                    if current.as_ref() == Some(&encoded) {
+                        return Ok(());
+                    }
+                    if current != self.previous {
+                        return Err("audit checkpoint predecessor changed".into());
+                    }
+                    if self.sample {
+                        let sample =
+                            wait_for(calls.record_get(
+                                SCHEMA,
+                                &sample_key(self.node, self.next.last_sample.seq),
+                            ))
+                            .map_err(|e| e.to_string())?
+                            .map(|v| v.as_slice().to_vec());
+                        if sample != self.sample_previous {
+                            return Err("an immutable audit sample changed".into());
+                        }
+                    }
+                    // Only the lease predicate changed. Refresh that predicate, not the audit head.
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "../tests/audit_heads.rs"]
+mod tests;

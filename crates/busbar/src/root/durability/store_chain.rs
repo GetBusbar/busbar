@@ -156,6 +156,13 @@ fn fenced_mutation(
 }
 
 fn put_record(calls: &dyn StoreCalls, lease: &HeldLease, record: &Record) -> Result<(), String> {
+    let mut audit = match super::audit_heads::prepare(calls, record)? {
+        super::audit_heads::Write::Ordinary => None,
+        // Its final part and checkpoint committed together. Never clear an acknowledged record.
+        super::audit_heads::Write::Recorded => return Ok(()),
+        super::audit_heads::Write::New(advance) => Some(advance),
+    };
+    let parts = parts_of(record)?;
     let fenced = lease.predicate(calls)?.is_some();
     if fenced {
         // A predecessor may have left an unacknowledged multipart tail at this position.
@@ -170,9 +177,15 @@ fn put_record(calls: &dyn StoreCalls, lease: &HeldLease, record: &Record) -> Res
             },
         )?;
     }
-    for (part, value) in parts_of(record)?.iter().enumerate() {
+    for (part, value) in parts.iter().enumerate() {
         let part = u16::try_from(part).map_err(|_| "too many parts".to_string())?;
         let key = part_key(record.node, record.node_seq, part);
+        if usize::from(part) + 1 == parts.len() {
+            if let Some(advance) = audit.take() {
+                advance.commit(calls, lease, key.to_vec(), value.as_slice().to_vec())?;
+                continue;
+            }
+        }
         if fenced {
             fenced_mutation(
                 calls,
@@ -614,6 +627,19 @@ impl JournalLane {
     #[must_use]
     pub fn calls(&self) -> Arc<dyn StoreCalls> {
         Arc::clone(&self.lane.calls)
+    }
+
+    pub(super) fn initialize_heads(
+        &self,
+        node: u64,
+        records: &[busbar_kernel_wal::JournalRecord],
+    ) -> Result<busbar_kernel_audit::HeadHistory, String> {
+        super::audit_heads::initialize_fenced(
+            self.lane.calls.as_ref(),
+            node,
+            records,
+            &self.lane.lease,
+        )
     }
 
     /// Keep `lease`, the boot's lease on its host name in this lane's store: what

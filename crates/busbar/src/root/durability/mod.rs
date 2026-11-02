@@ -92,6 +92,7 @@ pub(crate) use amend::verify_held;
 /// a window read back off the journal, and the walk `GET /admin/verify` reports. A private child
 /// module, as `replay` is; its methods are `Durability`'s own.
 mod audit;
+mod audit_heads;
 // Its one caller is the admin unit's audit range read (`units_admin`), compiled with `root-admin`.
 #[cfg(feature = "root-admin")]
 pub use audit::AuditWindowAt;
@@ -676,8 +677,19 @@ pub fn build_on_store(
             lane.store()
         )))
     })?;
+    // Establish the independent-head migration barrier before build_inner can enqueue a record.
+    let decoded = busbar_kernel_wal::decode_run(&resume)
+        .and_then(|records| busbar_kernel_wal::verify_journal(&records).map(|()| records))
+        .map_err(|broken| {
+            OpenError::Io(std::io::Error::other(format!(
+                "the journal does not verify: {broken}"
+            )))
+        })?;
+    let heads = lane
+        .initialize_heads(node, &decoded)
+        .map_err(|why| OpenError::Io(std::io::Error::other(why)))?;
     let shipper = lane.shipper();
-    build_inner(cfg, node, shipper, Some((lane, resume)), cards)
+    build_inner(cfg, node, shipper, Some((lane, resume, heads)), cards)
 }
 
 /// The one construction every builder above shares. `over_store` is `Some` on a journal over the
@@ -686,13 +698,19 @@ fn build_inner(
     _cfg: &DurabilityConfig,
     node: u64,
     shipper: Box<dyn Shipper<busbar_kernel_wal::Record>>,
-    over_store: Option<(JournalLane, Vec<busbar_kernel_wal::Record>)>,
+    over_store: Option<(
+        JournalLane,
+        Vec<busbar_kernel_wal::Record>,
+        busbar_kernel_audit::HeadHistory,
+    )>,
     cards: Option<&'static crate::root::kernel::RootHistory>,
 ) -> Result<Durability, OpenError> {
     // The journal is handed the root's wall clock: the log unit reads none of its own.
     let clock = busbar_kernel::store::now_ms;
-    let (lane, resume) =
-        over_store.map_or((None, None), |(lane, records)| (Some(lane), Some(records)));
+    let (lane, resume, retained_heads) = over_store
+        .map_or((None, None, None), |(lane, records, heads)| {
+            (Some(lane), Some(records), Some(heads))
+        });
     let resumed = resume.is_some();
     let journal = match &resume {
         Some(records) => {
@@ -779,6 +797,12 @@ fn build_inner(
         findings.extend(refused.into_iter().map(|refused| refused.to_string()));
     }
     durability.resume_audit(&records);
+    if let Some(heads) = retained_heads {
+        durability.record = durability
+            .record
+            .retaining_heads(heads)
+            .map_err(|why| OpenError::Io(std::io::Error::other(why)))?;
+    }
     findings.extend(
         durability
             .audit_findings

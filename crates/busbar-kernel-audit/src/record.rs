@@ -419,6 +419,34 @@ impl AuditChain {
         chain
     }
 
+    /// Restore the independently retained anchors after reading the journal's remaining records.
+    /// A retained tip remains the numbering authority even when its source record is absent.
+    ///
+    /// # Errors
+    /// The retained history is behind or contradicts the journal's latest retained audit record.
+    pub fn retaining_heads(
+        mut self,
+        heads: crate::heads::HeadHistory,
+    ) -> Result<Self, &'static str> {
+        if let Some(observed) = self.heads.tip() {
+            let retained = heads
+                .tip()
+                .ok_or("retained audit history has no journal tip")?;
+            if observed.seq > retained.seq || observed.seq == retained.seq && observed != retained {
+                return Err("retained audit head disagrees with the journal");
+            }
+        }
+        if let Some(tip) = heads.tip() {
+            self.tail_hash = tip.hash.clone();
+            self.next_seq = tip
+                .seq
+                .checked_add(1)
+                .ok_or("audit head sequence is exhausted")?;
+        }
+        self.heads = heads;
+        Ok(self)
+    }
+
     /// SIGN FROM HERE ON, with this key.
     ///
     /// A builder rather than a constructor argument, so that a node that was given no key keeps the
