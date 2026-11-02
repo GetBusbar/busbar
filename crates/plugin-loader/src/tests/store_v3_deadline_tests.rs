@@ -33,69 +33,67 @@ impl RawSlot for HangsCall {
     }
 }
 
+#[path = "actual_store.rs"]
+mod actual_store;
+
 mod hung {
-    use super::{HangsCall, HangsWriteBehind};
-    use crate::both_ways::store_fixture::MemoryStore as M;
-    use busbar_contract::abi::sdk::life as l;
-    use busbar_contract::abi::sdk::store::door as d;
-    use busbar_contract::abi::sdk::Safe as S;
-
-    const TAIL: busbar_contract::abi::store::StoreTail = d::tail::<M>();
-    const DIAGS: [busbar_contract::abi::mechanism::call::AbiStr; 1] = d::DIAG_IDS;
-
-    busbar_contract::plugin_door! {
-        ops: busbar_contract::abi::store::Ops,
-        statement: busbar_contract::abi::mechanism::door::Statement {
-            diag_ids: DIAGS.as_ptr(),
-            diag_ids_len: 1,
-            kind_tail: ::core::ptr::from_ref(&TAIL)
-                .cast::<busbar_contract::abi::mechanism::door::KindTailHead>(),
-            ..busbar_contract::abi::sdk::door::statement("hung", "0", 64)
-        },
-                lifecycle: {
-                    validate: S<l::Validate<d::Served<M>>>,
-                    open: S<l::Open<d::Served<M>>>,
-                    refresh: S<l::Refresh<d::Served<M>>>,
-                    retire: S<l::Retire<d::Served<M>>>,
-                    tick: S<l::Tick<d::Served<M>>>,
-                    drive: S<l::Drive<d::Served<M>>>,
-                    cancel: S<l::Cancel<d::Served<M>>>,
-                    release: S<l::Release<d::Served<M>>>,
-                    close: S<l::Close<d::Served<M>>>,
-                },
-                kind_ops: {
-                    put_key: S<d::PutKey<M>>,
-                    get_key: S<d::GetKey<M>>,
-                    list_keys: S<d::ListKeys<M>>,
-                    delete_key: S<d::DeleteKey<M>>,
-                    list_keys_since: S<d::ListKeysSince<M>>,
-                    get_usage: S<d::GetUsage<M>>,
-                    put_usage: S<d::PutUsage<M>>,
-                    list_metering: S<d::ListMetering<M>>,
-                    put_credential: S<d::PutCredential<M>>,
-                    put_key_with_credential: S<d::PutKeyWithCredential<M>>,
-                    list_credentials: S<d::ListCredentials<M>>,
-                    revoke_credential: S<d::RevokeCredential<M>>,
-                    list_credentials_since: S<d::ListCredentialsSince<M>>,
-                    list_audit: S<d::ListAudit<M>>,
-                    add_denylist: S<d::AddDenylist<M>>,
-                    list_denylist: S<d::ListDenylist<M>>,
-                    list_audit_tail: S<d::ListAuditTail<M>>,
-                    upsert_plane_record: S<d::UpsertPlaneRecord<M>>,
-                    get_plane_record: S<d::GetPlaneRecord<M>>,
-                    append_plane_record: S<d::AppendPlaneRecord<M>>,
-                    list_plane_records: S<d::ListPlaneRecords<M>>,
-                    list_plane_record_parents: S<d::ListPlaneRecordParents<M>>,
-                    purge_plane_records_before: S<d::PurgePlaneRecordsBefore<M>>,
-                    delete_plane_record: S<d::DeletePlaneRecord<M>>,
-                    redeem_plane_token: S<d::RedeemPlaneToken<M>>,
-                    plane_token_live: S<d::PlaneTokenLive<M>>,
-                    record_put: S<d::RecordPut<M>>,
-                    record_get: HangsCall,
-                    record_scan: S<d::RecordScan<M>>,
-                    add_usage_batch: HangsWriteBehind,
-                    add_metering_batch: S<d::AddMeteringBatch<M>>,
-                },
+    use super::*;
+    use busbar_contract::abi::mechanism::call::RawOutcome;
+    use busbar_contract::abi::mechanism::door::{Door, DoorParts};
+    use busbar_contract::abi::store::Ops;
+    use std::sync::OnceLock;
+    extern "C" fn record_get(
+        instance: *mut c_void,
+        input: *const c_void,
+        out: *mut c_void,
+    ) -> RawOutcome {
+        // SAFETY: this existing adversarial slot receives the production dispatcher’s
+        // correctly typed live frame; no business Store behavior is substituted.
+        unsafe {
+            let output = &mut *out.cast::<HostBytesOut>();
+            let answer = HangsCall::call(instance, &*input.cast::<RecordGetIn>(), output);
+            (*out.cast::<busbar_contract::abi::mechanism::call::OutHead>()).outcome =
+                RawOutcome::of(answer);
+            RawOutcome::of(answer)
+        }
+    }
+    extern "C" fn add_usage_batch(
+        instance: *mut c_void,
+        input: *const c_void,
+        out: *mut c_void,
+    ) -> RawOutcome {
+        // SAFETY: this existing adversarial slot receives the production dispatcher’s
+        // correctly typed live frame; no business Store behavior is substituted.
+        unsafe {
+            let output = &mut *out.cast::<OutHead>();
+            let answer =
+                HangsWriteBehind::call(instance, &*input.cast::<AddUsageBatchIn>(), output);
+            (*out.cast::<busbar_contract::abi::mechanism::call::OutHead>()).outcome =
+                RawOutcome::of(answer);
+            RawOutcome::of(answer)
+        }
+    }
+    pub(super) extern "C" fn door() -> &'static Door {
+        static HELD: OnceLock<usize> = OnceLock::new();
+        let ptr = *HELD.get_or_init(|| {
+            let real = *actual_store::door();
+            // SAFETY: actual_store retains the validated real SQLite descriptor/table.
+            let mut ops = unsafe { real.ops().cast::<Ops>().read_unaligned() };
+            ops.record_get = Some(record_get);
+            ops.add_usage_batch = Some(add_usage_batch);
+            let ops = Box::leak(Box::new(ops));
+            // SAFETY: retain every genuine lifecycle/kind operation except the narrowly
+            // overridden adversarial slots above, and retain the copied table forever.
+            let door = unsafe {
+                Door::__from_parts(DoorParts {
+                    ops: std::ptr::from_ref(ops).cast(),
+                    ..real.parts()
+                })
+            };
+            Box::into_raw(Box::new(door)) as usize
+        });
+        // SAFETY: HELD contains a permanent immutable descriptor allocation.
+        unsafe { &*(ptr as *const Door) }
     }
 }
 
@@ -114,7 +112,7 @@ fn open() -> (LoadedStore, Arc<Dispatcher>) {
     )
     .expect("the hung door loads");
     (
-        LoadedStore::open(p, d.clone(), b"{}", mint).expect("it opens"),
+        LoadedStore::open(p, d.clone(), &actual_store::settings(), mint).expect("it opens"),
         d,
     )
 }
