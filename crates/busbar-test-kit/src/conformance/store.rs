@@ -366,10 +366,13 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     });
     r.line("refused as another kind", 0, || {
         let refused = load::<Hook>(s, leg, s.bind(&d, "wrong-kind")).err();
-        let right = match leg {
-            Leg::Linked => matches!(refused, Some(LoadError::WrongKind { .. })),
-            Leg::Dropped => matches!(refused, Some(LoadError::ManifestKind { .. })),
-        };
+        let right = matches!(
+            refused,
+            Some(LoadError::ManifestKind {
+                stated: busbar_contract::abi::mechanism::KindCode::Store,
+                want: busbar_contract::abi::mechanism::KindCode::Hook,
+            })
+        );
         format!("refused={right}")
     });
     // ONE first invocation for `open`, and one for the `ready` the kernel awaits inside it; their

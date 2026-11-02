@@ -199,18 +199,35 @@ fn only_a_complete_correlated_leased_ready_result_is_a_decision_both_ways() {
     }
 }
 
+// A valid RECORD_GET SHORT must ask for at most MAX_RECORD_BYTES, above the lent capacity.
+// The normal runner starts at 16 KiB, so use its same typed request and submit path with an
+// intentionally empty host value buffer to exercise the one permitted bounded recall.
+async fn transaction_with_short_buffer(
+    store: &LoadedStore,
+    candidate: &Request,
+) -> Result<Decision, StoreFailure> {
+    let mut request = super::ConditionalReq::new(candidate)?;
+    request.read.buf = Vec::new();
+    let (ran, request) = store.submit(request).await;
+    store.transaction_result(ran, &request.get().candidate)
+}
+
 #[test]
 fn short_and_pending_preserve_intent_and_release_each_answer_once_both_ways() {
     for dropped in [false, true] {
         for mode in ["short", "pending"] {
             let (store, _) = open(dropped, false, mode);
             runtime().block_on(async {
-                assert_eq!(
-                    store.record_transaction(&request()).await.unwrap(),
-                    Decision::Applied
-                );
+                let decision = if mode == "short" {
+                    transaction_with_short_buffer(&store, &request()).await
+                } else {
+                    store.record_transaction(&request()).await
+                };
+                assert_eq!(decision.unwrap(), Decision::Applied);
                 let state = stats(&store).await;
                 assert_eq!(state["tx_calls"], 2, "{mode}");
+                assert_eq!(state["writes"], 1, "{mode}");
+                assert_eq!(state["receipts"], 1, "{mode}");
                 assert_eq!(state["same"], true, "{mode}");
                 assert_eq!(state["class"], DeadlineClass::WriteBehind as u8);
                 assert_eq!(state["deadline"], 0);
@@ -296,11 +313,13 @@ fn invalid_candidate_is_refused_before_dispatch_and_second_short_never_applies_b
         let (store, _) = open(dropped, false, "short-twice");
         runtime().block_on(async {
             assert!(matches!(
-                store.record_transaction(&request()).await,
+                transaction_with_short_buffer(&store, &request()).await,
                 Err(StoreFailure::Fault(_))
             ));
             let state = stats(&store).await;
             assert_eq!(state["tx_calls"], 2);
+            assert_eq!(state["writes"], 0);
+            assert_eq!(state["receipts"], 0);
             assert_eq!(state["released"], 2);
             assert_eq!(state["held"], 0);
         });
