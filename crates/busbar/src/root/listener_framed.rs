@@ -1280,7 +1280,9 @@ fn head_block(status: u16, headers: &HeaderMap, exact: Option<u64>) -> Vec<u8> {
     let bodyless = status < 200 || status == 204 || status == 304;
     let stated = headers.contains_key(axum::http::header::CONTENT_LENGTH)
         || headers.contains_key(axum::http::header::TRANSFER_ENCODING);
-    if let Some(len) = exact.filter(|_| !bodyless && !stated) {
+    if let Some(len) =
+        exact.filter(|_| !bodyless && !stated && !headers.contains_key(axum::http::header::TRAILER))
+    {
         block.extend_from_slice(b"content-length");
         block.extend_from_slice(fields::SEPARATOR);
         block.extend_from_slice(len.to_string().as_bytes());

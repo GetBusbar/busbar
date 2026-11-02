@@ -518,7 +518,12 @@ pub const SIDE_DIAL: u32 = 1;
 /// `side`: the accepting end of ONE STREAM whose connection and head the host's own framer carries
 /// (ARCHITECT 4l, 2026-10-05: one listener port carries every claim's streams, so a claim's framer
 /// frames the stream, not the connection). Its one stream is stream `1`. `begin` takes the stream's
-/// target and its head fields ([`BeginIn::fields`]); `ingest` takes the stream's body bytes and
+/// target and its head fields ([`BeginIn::fields`]) and yields its initial response field block in
+/// `wire` (ordinary valid field names and values, [`fields`] rendering). The host retains that
+/// block and adds it to the unit's response head. The stream framer declares every possible
+/// closing field there when its carrier requires an early declaration; the host invents no
+/// protocol names. A pending Begin owns this block until its empty resumes/drains complete.
+/// `ingest` takes the stream's body bytes and
 /// yields each message as a piece that ends its frame (no piece ends the stream: the host's framer
 /// knows where its body ended); `emit` takes one message's bytes (`end_of_frame` = it ends) and yields the
 /// stream's body bytes in `wire`; `refuse` and `finish` yield the stream's CLOSING FIELD BLOCK in

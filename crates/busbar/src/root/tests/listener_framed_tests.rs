@@ -410,6 +410,24 @@ async fn final_fields_follow_data_and_are_acknowledged_before_the_producer_retur
     }
 }
 
+#[test]
+fn an_early_closing_field_declaration_keeps_an_exact_body_from_becoming_sized() {
+    let mut head = axum::http::HeaderMap::new();
+    head.insert(
+        "trailer",
+        axum::http::HeaderValue::from_static("final-status"),
+    );
+    assert_eq!(
+        super::head_block(200, &head, Some(5)),
+        b"trailer: final-status\r\n"
+    );
+    head.remove("trailer");
+    assert_eq!(
+        super::head_block(200, &head, Some(5)),
+        b"content-length: 5\r\n"
+    );
+}
+
 #[tokio::test]
 async fn a_full_session_pipe_stops_socket_reads_until_its_reader_takes_a_message() {
     let _publishing = anonymous_policy().await;

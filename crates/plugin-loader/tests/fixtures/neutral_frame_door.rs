@@ -298,12 +298,22 @@ impl RawSlot for Locate {
     }
 }
 
-/// `begin`: either side; nothing is owed to the far side first.
+/// `begin`: a stream declares its own closing fields in the initial response block.
 pub struct Begin;
 impl RawSlot for Begin {
     type In = BeginIn;
     type Out = FramerOut;
     unsafe fn call(p: *mut c_void, i: &BeginIn, o: &mut FramerOut) -> Outcome {
+        const OPENING: &[u8] =
+            b"trailer: frame-status, frame-reason, frame-message, frame-details\r\n";
+        if i.side == SIDE_ACCEPT_STREAM {
+            if OPENING.len() > i.sink.wire_cap {
+                return Outcome::Refused;
+            }
+            // SAFETY: this call lends wire_cap initialized output bytes and the bound was checked.
+            unsafe { std::ptr::copy_nonoverlapping(OPENING.as_ptr(), i.sink.wire, OPENING.len()) };
+            o.yielded.wire_len = OPENING.len() as u64;
+        }
         let inst = instance(p);
         let token = inst.next.fetch_add(1, Ordering::Relaxed);
         inst.framings.lock().expect("framings").insert(
