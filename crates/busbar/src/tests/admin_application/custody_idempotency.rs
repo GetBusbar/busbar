@@ -27,7 +27,7 @@ fn durable_store() -> Arc<LoadedStore> {
         &path,
         &stated,
         Bind {
-            instance: format!("governance-test-{}", crate::door::op_id().counter()).into(),
+            instance: format!("governance-test-{}", busbar_kernel::door::op_id().counter()).into(),
             max_inflight_cap: 1024,
             sink: Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
@@ -40,8 +40,13 @@ fn durable_store() -> Arc<LoadedStore> {
     let _: serde_json::Value =
         serde_json::from_str(&settings).expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
     Arc::new(
-        LoadedStore::open(plugin, dispatcher, settings.as_bytes(), crate::door::op_id)
-            .expect("the product store opens with its supplied settings"),
+        LoadedStore::open(
+            plugin,
+            dispatcher,
+            settings.as_bytes(),
+            busbar_kernel::door::op_id,
+        )
+        .expect("the product store opens with its supplied settings"),
     )
 }
 
@@ -51,9 +56,10 @@ fn key(actor: &str, header: &str) -> (String, String) {
 
 #[test]
 fn create_and_rotate_claims_are_disjoint_after_cache_loss() {
-    use busbar_core_admin::idempotency::{create_replay_key, rotate_replay_key};
-    let rotate = key("alice", &rotate_replay_key("x", "h"));
-    let create = key("alice", &create_replay_key("rotate:1:x:1:h"));
+    // Framing belongs to core-admin's private factory tests. Here the public durable API
+    // receives distinct original header inputs as data, without recreating that framing.
+    let rotate = key("alice", "h");
+    let create = key("alice", "rotate:1:x:1:h");
     for (first, second) in [(&create, &rotate), (&rotate, &create)] {
         let store = durable_store();
         let claim = durable::claim(store.as_ref(), first, 1_000).expect("first operation claims");
