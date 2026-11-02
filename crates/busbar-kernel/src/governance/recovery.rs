@@ -858,6 +858,7 @@ pub(in crate::governance) mod tests {
         let sink = Arc::new(Journal::default());
         let first = GovState::new(store.clone(), None).unwrap();
         first.attach_recovery_sink(sink.clone()).unwrap();
+        first.resume_raw_recovery().unwrap();
         let intent = raw_intent(&first, 7);
         assert_eq!(
             first.recovery_retention_expired(intent.operation_id),
@@ -866,6 +867,7 @@ pub(in crate::governance) mod tests {
         drop(first);
         let restarted = GovState::new(store.clone(), None).unwrap();
         restarted.attach_recovery_sink(sink).unwrap();
+        restarted.resume_raw_recovery().unwrap();
         assert_eq!(
             restarted.recovery_event(intent.operation_id).unwrap().state,
             RecoveryState::LandedUnknown
@@ -892,10 +894,12 @@ pub(in crate::governance) mod tests {
         let sink = Arc::new(Journal::default());
         let original = GovState::new(store.clone(), None).unwrap();
         original.attach_recovery_sink(sink.clone()).unwrap();
+        original.resume_raw_recovery().unwrap();
         let intent = raw_intent(&original, 7);
         drop(original);
         let gov = GovState::new(store.clone(), None).unwrap();
         gov.attach_recovery_sink(sink).unwrap();
+        gov.resume_raw_recovery().unwrap();
         let negative = super::super::ExactUsageDelta {
             requests: -3,
             ..Default::default()
@@ -937,6 +941,7 @@ pub(in crate::governance) mod tests {
         let sink = Arc::new(Journal::default());
         let first = GovState::new(store.clone(), None).unwrap();
         first.attach_recovery_sink(sink.clone()).unwrap();
+        first.resume_raw_recovery().unwrap();
         let intent = raw_intent(&first, 1);
         let child = GovState::usage_recovery_child(
             "child-bucket",
@@ -968,6 +973,7 @@ pub(in crate::governance) mod tests {
         drop(first);
         let restarted = GovState::new(store.clone(), None).unwrap();
         restarted.attach_recovery_sink(sink).unwrap();
+        restarted.resume_raw_recovery().unwrap();
         let restored = restarted.recovery_event(child.operation_id).unwrap();
         assert_eq!(restored.body_fingerprint, child.body_fingerprint);
         assert_eq!(store.get_usage("child-bucket", 0).unwrap().requests, 7);
@@ -981,11 +987,13 @@ pub(in crate::governance) mod tests {
         let sink = Arc::new(Journal::default());
         let original = GovState::new(store.clone(), None).unwrap();
         original.attach_recovery_sink(sink.clone()).unwrap();
+        original.resume_raw_recovery().unwrap();
         let first = raw_intent(&original, 7);
         let second = raw_intent(&original, 11);
         drop(original);
         let gov = GovState::new(store.clone(), None).unwrap();
         gov.attach_recovery_sink(sink).unwrap();
+        gov.resume_raw_recovery().unwrap();
         let captured = gov
             .capture_usage_recovery(
                 "recovery-bucket",
@@ -1035,10 +1043,12 @@ pub(in crate::governance) mod tests {
         let sink = Arc::new(Journal::default());
         let original = GovState::new(store.clone(), None).unwrap();
         original.attach_recovery_sink(sink.clone()).unwrap();
+        original.resume_raw_recovery().unwrap();
         let intent = raw_intent(&original, i128::from(u64::MAX));
         drop(original);
         let gov = GovState::new(store.clone(), None).unwrap();
         gov.attach_recovery_sink(sink).unwrap();
+        gov.resume_raw_recovery().unwrap();
         assert_eq!(
             gov.recovery_event(intent.operation_id).unwrap().state,
             RecoveryState::LandedUnknown
@@ -1056,10 +1066,12 @@ pub(in crate::governance) mod tests {
         let sink = Arc::new(Journal::default());
         let original = GovState::new(store.clone(), None).unwrap();
         original.attach_recovery_sink(sink.clone()).unwrap();
+        original.resume_raw_recovery().unwrap();
         let intent = raw_intent(&original, 7);
         drop(original);
         let gov = GovState::new(store.clone(), None).unwrap();
         gov.attach_recovery_sink(sink.clone()).unwrap();
+        gov.resume_raw_recovery().unwrap();
         let selected = gov.recovery_event(intent.operation_id).unwrap();
         let count = sink.selected.lock().unwrap().len();
         let cost = crate::cost::CostModel::flat(0);
@@ -1097,10 +1109,12 @@ pub(in crate::governance) mod tests {
         let sink = Arc::new(Journal::default());
         let original = GovState::new(Arc::new(MemoryStore::new()), None).unwrap();
         original.attach_recovery_sink(sink.clone()).unwrap();
+        original.resume_raw_recovery().unwrap();
         let intent = raw_intent(&original, 7);
         drop(original);
         let gov = GovState::new(Arc::new(MemoryStore::new()), None).unwrap();
         gov.attach_recovery_sink(sink.clone()).unwrap();
+        gov.resume_raw_recovery().unwrap();
         let selected = gov.recovery_event(intent.operation_id).unwrap();
         let count = sink.selected.lock().unwrap().len();
         let driver = gov.recovery_driver(intent.operation_id).unwrap();
@@ -1130,6 +1144,7 @@ pub(in crate::governance) mod tests {
         let sink = Arc::new(Journal::default());
         let gov = GovState::new(store.clone(), None).unwrap();
         gov.attach_recovery_sink(sink.clone()).unwrap();
+        gov.resume_raw_recovery().unwrap();
         let intent = raw_intent(&gov, 7);
         gov.drive_raw_recovery(intent.operation_id).unwrap();
         let journal_len = sink.selected.lock().unwrap().len();
@@ -1140,6 +1155,7 @@ pub(in crate::governance) mod tests {
         drop(gov);
         let restarted = GovState::new(store.clone(), None).unwrap();
         restarted.attach_recovery_sink(sink.clone()).unwrap();
+        restarted.resume_raw_recovery().unwrap();
         assert!(restarted.recovery_event(intent.operation_id).is_none());
         assert_eq!(store.get_usage("recovery-bucket", 0).unwrap().requests, 7);
         assert_eq!(sink.selected.lock().unwrap().len(), journal_len);
@@ -1151,6 +1167,7 @@ pub(in crate::governance) mod tests {
         let sink = Arc::new(Journal::default());
         let original = GovState::new(Arc::new(MemoryStore::new()), None).unwrap();
         original.attach_recovery_sink(sink.clone()).unwrap();
+        original.resume_raw_recovery().unwrap();
         let intent = raw_intent(&original, 7);
         original.forget_confirmed_recovery(intent.operation_id);
         assert_eq!(
@@ -1160,6 +1177,7 @@ pub(in crate::governance) mod tests {
         drop(original);
         let gov = GovState::new(Arc::new(MemoryStore::new()), None).unwrap();
         gov.attach_recovery_sink(sink).unwrap();
+        gov.resume_raw_recovery().unwrap();
         gov.forget_confirmed_recovery(intent.operation_id);
         assert_eq!(
             gov.recovery_event(intent.operation_id).unwrap().state,

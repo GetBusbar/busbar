@@ -786,3 +786,42 @@ impl GovState {
         Ok(true)
     }
 }
+
+impl GovState {
+    /// Resume this parent's raw descendants only. Correction Intents retain
+    /// their own CostModel validation and are never sent by the raw driver.
+    pub(super) fn resume_recovery_children(&self, parent: &RecoveryEvent) -> RecordStoreResult<()> {
+        let mut queue = std::collections::VecDeque::from([parent.operation_id]);
+        let mut seen = std::collections::BTreeSet::new();
+        while let Some(operation_id) = queue.pop_front() {
+            let event = self
+                .recovery_event(operation_id)
+                .ok_or_else(|| invalid("selected recovery parent disappeared"))?;
+            if !seen.insert((event.operation_id, event.revision)) {
+                continue;
+            }
+            self.drive_recovery_children(&event)?;
+            let current = self
+                .recovery_event(operation_id)
+                .ok_or_else(|| invalid("selected recovery parent disappeared"))?;
+            let links: Links = decode(&current.payload)?;
+            for descriptor in links.handoffs {
+                let child = self
+                    .recovery_event(descriptor.operation_id)
+                    .ok_or_else(|| invalid("authorized recovery child is not selected"))?;
+                self.validate_recovery_origin(&child)?;
+                match child.kind {
+                    RecoveryKind::Usage | RecoveryKind::Metering => {
+                        self.drive_raw_recovery(child.operation_id)?;
+                        queue.push_back(child.operation_id);
+                    }
+                    RecoveryKind::Correction if child.state == RecoveryState::Settled => {
+                        queue.push_back(child.operation_id);
+                    }
+                    RecoveryKind::Correction => {}
+                }
+            }
+        }
+        Ok(())
+    }
+}

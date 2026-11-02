@@ -158,6 +158,7 @@ fn ordinary_product_flush_quarantines_old_unknown_and_continues_fresh_positive_u
     gov.attach_recovery_sink(journal).unwrap();
     let cost = flat_cost(0);
     gov.hydrate_budgets(&cost, crate::store::now()).unwrap();
+    gov.resume_raw_recovery().unwrap();
     let unknown = gov.recovery_event(intent.operation_id).unwrap();
     assert_eq!(unknown.state, RecoveryState::LandedUnknown);
     accrue_plain(&gov, &key.id, LATER_INPUT);
