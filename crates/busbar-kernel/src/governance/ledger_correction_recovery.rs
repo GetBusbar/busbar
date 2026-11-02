@@ -25,14 +25,11 @@ fn absorb_with_capacity(
     dated: &mut ExactUsageDelta,
     plain_capacity: &ExactUsageDelta,
     dated_capacity: &ExactUsageDelta,
-    held_plain: &ExactUsageDelta,
-    held_dated: &ExactUsageDelta,
 ) -> RecordStoreResult<(ExactUsageDelta, ExactUsageDelta)> {
     use crate::governance::exact_debt::SegmentedUsage;
-    let mut capacity = SegmentedUsage::of(plain_capacity, dated_capacity)?.positive();
-    capacity.merge(&SegmentedUsage::of(held_plain, held_dated)?);
+    let capacity = SegmentedUsage::of(plain_capacity, dated_capacity)?.positive();
     let mut remaining = SegmentedUsage::of(plain, dated)?;
-    let taken = remaining.take_negatives(Some(&capacity.positive()));
+    let taken = remaining.take_negatives(Some(&capacity));
     (*plain, *dated) = remaining.deltas();
     Ok(taken.deltas())
 }
@@ -997,13 +994,15 @@ impl Custody {
         Ok(())
     }
 
-    pub(super) fn absorb_negatives(
-        &mut self,
+    pub(super) fn negative_capacity(
+        &self,
         bucket: &str,
         window: u64,
-        plain: &ExactUsageDelta,
-        dated: &ExactUsageDelta,
-    ) -> RecordStoreResult<Option<(ExactUsageDelta, ExactUsageDelta)>> {
+    ) -> RecordStoreResult<(ExactUsageDelta, ExactUsageDelta)> {
+        use crate::governance::exact_debt::SegmentedUsage;
+        if self.terminal || !self.owns_quarantined_target(bucket, window) {
+            return Ok((ExactUsageDelta::default(), ExactUsageDelta::default()));
+        }
         let capacity = |bucket: &str| -> RecordStoreResult<ExactUsageDelta> {
             let row = self
                 .request
@@ -1054,6 +1053,47 @@ impl Custody {
         let dated_capacity = capacity(&era_bucket(bucket))?;
         let target = self
             .targets
+            .iter()
+            .find(|target| target.bucket == bucket && target.window == window)
+            .ok_or_else(|| unresolved("negative capacity is outside correction targets"))?;
+        let mut remaining = SegmentedUsage::of(&plain_capacity, &dated_capacity)?.positive();
+        let held_plain = target
+            .absorbed_plain
+            .clone()
+            .map(RawDebt::restore)
+            .transpose()?
+            .unwrap_or_default();
+        let held_dated = target
+            .absorbed_dated
+            .clone()
+            .map(RawDebt::restore)
+            .transpose()?
+            .unwrap_or_default();
+        remaining.merge(&SegmentedUsage::of(&held_plain, &held_dated)?);
+        // The applied branch's still-owned negative deltas already depend on the sealed
+        // positive body, even when they predate the separately absorbed quarantine folds.
+        let accepted = target.accepted.clone_raw()?;
+        let mut dependent_plain = window_debt(&accepted, window, false);
+        let mut dependent_dated = window_debt(&accepted, window, true);
+        if accepted.window_start == window {
+            dependent_plain.merge(&ExactUsageDelta::of(&accepted, false));
+            dependent_dated.merge(&ExactUsageDelta::of(&accepted, true));
+        }
+        let mut dependent = SegmentedUsage::of(&dependent_plain, &dependent_dated)?;
+        remaining.merge(&dependent.take_negatives(None));
+        Ok(remaining.positive().deltas())
+    }
+
+    pub(super) fn absorb_negatives(
+        &mut self,
+        bucket: &str,
+        window: u64,
+        plain: &ExactUsageDelta,
+        dated: &ExactUsageDelta,
+    ) -> RecordStoreResult<Option<(ExactUsageDelta, ExactUsageDelta)>> {
+        let (plain_capacity, dated_capacity) = self.negative_capacity(bucket, window)?;
+        let target = self
+            .targets
             .iter_mut()
             .find(|target| target.bucket == bucket && target.window == window)
             .ok_or_else(|| unresolved("quarantined negative is outside correction targets"))?;
@@ -1076,8 +1116,6 @@ impl Custody {
             &mut remaining_dated,
             &plain_capacity,
             &dated_capacity,
-            &held_plain,
-            &held_dated,
         )?;
         if absorbed_plain.is_zero() && absorbed_dated.is_zero() {
             return Ok(None);

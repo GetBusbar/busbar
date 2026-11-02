@@ -269,16 +269,30 @@ impl GovState {
             .collect()
     }
 
-    pub(in crate::governance) fn quarantined_correction_owns_target(
+    /// Remaining unknown positive exposure from selected correction owners only. No pending
+    /// candidate or aggregate Store read grants capacity; callers account for their staged take.
+    pub(in crate::governance) fn quarantined_correction_negative_capacity(
         &self,
         bucket: &str,
         window: u64,
-    ) -> bool {
-        self.correction_quarantine_events().iter().any(|event| {
-            recovery::Custody::decode(&event.payload).map_or(true, |custody| {
-                custody.owns_quarantined_target(bucket, window)
+    ) -> RecordStoreResult<(ExactUsageDelta, ExactUsageDelta)> {
+        use crate::governance::exact_debt::SegmentedUsage;
+        let mut capacity = SegmentedUsage::default();
+        for event in self
+            .correction_quarantine_events()
+            .into_iter()
+            .filter(|event| {
+                matches!(
+                    event.state,
+                    RecoveryState::Intent | RecoveryState::LandedUnknown
+                )
             })
-        })
+        {
+            let custody = recovery::Custody::decode(&event.payload)?;
+            let (plain, dated) = custody.negative_capacity(bucket, window)?;
+            capacity.merge(&SegmentedUsage::of(&plain, &dated)?);
+        }
+        Ok(capacity.positive().deltas())
     }
 
     pub(in crate::governance) fn stage_quarantined_correction_negatives(
@@ -288,11 +302,25 @@ impl GovState {
         plain: &mut ExactUsageDelta,
         dated: &mut ExactUsageDelta,
     ) -> RecordStoreResult<Option<RecoveryEvent>> {
-        for selected in self.correction_quarantine_events() {
+        for selected in self
+            .correction_quarantine_events()
+            .into_iter()
+            .filter(|event| {
+                matches!(
+                    event.state,
+                    RecoveryState::Intent | RecoveryState::LandedUnknown
+                )
+            })
+        {
             let mut custody = recovery::Custody::decode(&selected.payload)?;
             if !custody.owns_quarantined_target(bucket, window) {
                 continue;
             }
+            let Some((remaining_plain, remaining_dated)) =
+                custody.absorb_negatives(bucket, window, plain, dated)?
+            else {
+                continue;
+            };
             let pending = self
                 .corrections
                 .lock()
@@ -312,11 +340,6 @@ impl GovState {
                     ));
                 }
             }
-            let Some((remaining_plain, remaining_dated)) =
-                custody.absorb_negatives(bucket, window, plain, dated)?
-            else {
-                continue;
-            };
             let state = if selected.state == RecoveryState::Intent {
                 custody.mark_age_unknown();
                 RecoveryState::LandedUnknown
