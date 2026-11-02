@@ -55,7 +55,10 @@ async fn register_client_with_scope(origin: &str, scope: &str) -> String {
         .to_owned()
 }
 
-async fn verified_claims(app: &busbar_kernel::state::App, access: &str) -> serde_json::Value {
+pub(super) async fn verified_claims(
+    app: &busbar_kernel::state::App,
+    access: &str,
+) -> serde_json::Value {
     let calls = app
         .auth
         .position_calls("oauth-resource")

@@ -14,9 +14,6 @@ use oauth_as::grant::GrantType;
 use oauth_as::scope::ScopeSet;
 
 use crate::config::OauthAsCfg;
-use busbar_kernel_testkit::test_support::TestApp;
-
-use crate::testkit::{oauth_as_plane, TestAppOauthExt};
 
 const REDIRECT_URI: &str = "http://127.0.0.1:9999/cb";
 
@@ -129,117 +126,6 @@ fn path_matches(request_path: &str, cookie_path: &str) -> bool {
         return false;
     }
     cookie_path.ends_with('/') || request_path[cookie_path.len()..].starts_with('/')
-}
-
-pub(crate) async fn send(
-    client: &reqwest::Client,
-    jar: &mut Jar,
-    method: reqwest::Method,
-    url: &str,
-    form: Option<&[(&str, &str)]>,
-) -> (reqwest::StatusCode, reqwest::header::HeaderMap, String) {
-    let path = path_of(url);
-    let mut req = client.request(method, url);
-    if let Some(cookie) = jar.header_for(&path) {
-        req = req.header(reqwest::header::COOKIE, cookie);
-    }
-    if let Some(form) = form {
-        req = req.form(form);
-    }
-    let resp = req.send().await.expect("request");
-    let status = resp.status();
-    let headers = resp.headers().clone();
-    for value in headers.get_all(reqwest::header::SET_COOKIE) {
-        jar.store(value.to_str().expect("ASCII Set-Cookie"), &path);
-    }
-    let body = resp.text().await.expect("body");
-    (status, headers, body)
-}
-
-pub(crate) fn path_of(url: &str) -> String {
-    let rest = url
-        .strip_prefix("http://")
-        .or_else(|| url.strip_prefix("https://"));
-    let with_query = match rest {
-        Some(rest) => match rest.find('/') {
-            Some(i) => &rest[i..],
-            None => "/",
-        },
-        None => url,
-    };
-    with_query
-        .split_once('?')
-        .map_or(with_query, |(p, _)| p)
-        .to_string()
-}
-
-pub(crate) async fn serve_with_admin_chain(
-    admin_chain: Vec<String>,
-) -> (String, Arc<busbar_kernel::state::App>) {
-    serve_with_store(admin_chain, None).await
-}
-
-async fn serve_with_store(
-    admin_chain: Vec<String>,
-    store: Option<Arc<dyn StoreCalls>>,
-) -> (String, Arc<busbar_kernel::state::App>) {
-    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind");
-    let addr = listener.local_addr().expect("addr");
-    let origin = format!("http://{addr}");
-
-    let cfg = OauthAsCfg {
-        issuer: origin.clone(),
-        signing_key: None,
-        key_id: None,
-        default_grant: vec![SCOPE.to_string()],
-        access_token_ttl_secs: None,
-        refresh_token_ttl_secs: None,
-        fapi2: false,
-        clients: Vec::new(),
-    };
-    let builder = TestApp::new().admin_chain(admin_chain);
-    let app = match store {
-        None => builder.oauth_as(&cfg).build(),
-        Some(store) => {
-            crate::testkit::install_test_seam();
-            let identity = crate::config::AsIdentity::from_cfg(&cfg).expect("valid config");
-            let plane = crate::plane::AsPlane::build_carrying(
-                identity,
-                None,
-                Vec::new(),
-                crate::cimd::unconnected(),
-                Arc::new(crate::plane::Carried::over(Some(store))),
-            )
-            .expect("shared-store plane");
-            builder.oauth_as_plane(Arc::new(plane)).build()
-        }
-    };
-
-    let scopes = ScopeSet::from_tokens([SCOPE]).expect("scope");
-    oauth_as_plane(&app)
-        .expect("configured")
-        .server()
-        .register_client(Client {
-            client_id: ClientId::new(CLIENT_ID),
-            auth: ClientAuth::Public,
-            grant_types: vec![GrantType::AuthorizationCode, GrantType::RefreshToken],
-            redirect_uris: vec![REDIRECT_URI.to_string()],
-            allowed_scopes: scopes.clone(),
-            default_scopes: scopes,
-            name: Some("Flow Test".to_string()),
-            registration: None,
-        })
-        .await
-        .expect("register client");
-
-    let router = busbar_kernel::build_router(Arc::clone(&app));
-    tokio::spawn(async move {
-        axum::serve(listener, router).await.expect("serve");
-    });
-    (origin, app)
 }
 
 #[test]
