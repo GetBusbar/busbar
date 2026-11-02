@@ -24,6 +24,13 @@ pub fn install() {
             "BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY",
             hex::encode(release_key().verifying_key().as_bytes()),
         );
+        let late = crate::root::serve::LateServices::new();
+        let dispatcher = crate::root::dispatch::boot(1, &late);
+        crate::root::doors::install_dispatcher(dispatcher);
+        crate::register_protocols();
+        crate::register_planes();
+        crate::root::doors::install_plugin_logs(crate::root::boot::plugin_logs());
+        crate::register_diagnostics();
         let deploy = busbar_kernel::config::deploy_from_yaml_str(
             "providers: {}\nmodels: {}\nadvanced:\n  allow_destinations: [127.0.0.1]\n",
         )
@@ -31,15 +38,8 @@ pub fn install() {
         let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the loopback IdP deployment resolves");
         let judge = crate::root::connector::dest_judge(&cfg);
-        let late = crate::root::serve::LateServices::new();
-        let dispatcher = crate::root::dispatch::boot(1, &late);
-        crate::root::doors::install_dispatcher(dispatcher);
         let (credentials, _handle) = crate::root::credentials::AppCredentials::late();
         crate::root::serve::compose(judge.clone(), &late, credentials);
-        crate::register_protocols();
-        crate::register_planes();
-        crate::register_diagnostics();
-        crate::root::doors::install_plugin_logs(crate::root::boot::plugin_logs());
         crate::root::connector::boot(
             crate::LINKED_TRANSPORT_DOORS,
             &crate::root::policy::client_settings(&cfg.limits),
