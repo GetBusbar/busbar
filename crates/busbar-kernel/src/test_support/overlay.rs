@@ -17,6 +17,7 @@ struct Rows {
     receipts: HashMap<[u8; 16], [u8; 32]>,
     fail_reads: bool,
     fail_writes: bool,
+    fail_transactions: bool,
     lose_reply: bool,
     block_read: Option<Arc<Barrier>>,
     candidates: Vec<Request>,
@@ -24,6 +25,69 @@ struct Rows {
     after_transaction: Option<Box<dyn FnOnce() + Send>>,
     before_transaction: Option<Box<dyn FnOnce() + Send>>,
     after_read: Option<Box<dyn FnOnce() + Send>>,
+    pause_reply: Option<Arc<Mutex<ReplyPause>>>,
+}
+
+#[derive(Default)]
+struct ReplyPause {
+    entered: bool,
+    released: bool,
+    waker: Option<std::task::Waker>,
+}
+
+/// A real Pending Store reply. Dropping the controlling handle releases its waiter as well, so
+/// an assertion failure cannot strand a transaction's blocking task or its mutation guard.
+pub struct TestOverlayPause(Arc<Mutex<ReplyPause>>);
+
+impl TestOverlayPause {
+    pub fn entered(&self) -> bool {
+        self.0.lock().unwrap().entered
+    }
+
+    pub fn release(&self) {
+        let waker = {
+            let mut state = self.0.lock().unwrap();
+            state.released = true;
+            state.waker.take()
+        };
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
+}
+
+impl Drop for TestOverlayPause {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+struct ReplyWait(Arc<Mutex<ReplyPause>>);
+
+impl std::future::Future for ReplyWait {
+    type Output = ();
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<()> {
+        let incoming = cx.waker().clone();
+        let (released, outgoing) = {
+            let mut state = self.0.lock().unwrap();
+            state.entered = true;
+            if state.released {
+                (true, Some(incoming))
+            } else {
+                (false, state.waker.replace(incoming))
+            }
+        };
+        drop(outgoing);
+        if released {
+            std::task::Poll::Ready(())
+        } else {
+            std::task::Poll::Pending
+        }
+    }
 }
 
 #[derive(Default)]
@@ -55,8 +119,16 @@ impl TestOverlayStore {
     pub fn fail_writes(&self, value: bool) {
         self.calls.0.lock().unwrap().fail_writes = value;
     }
+    pub fn fail_transactions(&self, value: bool) {
+        self.calls.0.lock().unwrap().fail_transactions = value;
+    }
     pub fn lose_next_commit_reply(&self) {
         self.calls.0.lock().unwrap().lose_reply = true;
+    }
+    pub fn pause_next_commit_reply(&self) -> TestOverlayPause {
+        let pause = Arc::new(Mutex::new(ReplyPause::default()));
+        self.calls.0.lock().unwrap().pause_reply = Some(pause.clone());
+        TestOverlayPause(pause)
     }
     pub fn block_reads(&self, barrier: Arc<Barrier>) {
         self.calls.0.lock().unwrap().block_read = Some(barrier);
@@ -135,7 +207,7 @@ impl StoreCalls for Calls {
                 .map_err(|e| StoreFailure::Refused(e.into()))?;
             let mut rows = self.0.lock().unwrap();
             rows.candidates.push(request.clone());
-            if rows.fail_writes {
+            if rows.fail_writes || rows.fail_transactions {
                 return Err(StoreFailure::Refused("planted write refusal".into()));
             }
             let fingerprint = request.fingerprint();
@@ -193,7 +265,13 @@ impl StoreCalls for Calls {
         if let Some(callback) = callback {
             callback();
         }
-        ready(result)
+        let pause = { self.0.lock().unwrap().pause_reply.take() };
+        Box::pin(async move {
+            if let Some(pause) = pause {
+                ReplyWait(pause).await;
+            }
+            result
+        })
     }
     fn record_put<'a>(
         &'a self,

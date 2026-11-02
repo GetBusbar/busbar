@@ -33,7 +33,7 @@ use axum::{
 use serde_json::Value;
 use tokio::task::JoinHandle;
 mod overlay;
-pub use overlay::{new_test_overlay, TestOverlayStore};
+pub use overlay::{new_test_overlay, TestOverlayPause, TestOverlayStore};
 
 /// Run boot's existing route preparation for a dependent crate's real hook-axis fixture.
 pub fn hook_route_declarations(
