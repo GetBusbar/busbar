@@ -367,27 +367,30 @@ async fn credential_submit(
         login: cl,
     };
     let outcome = login_step(app, &cookie.method, LoginStep::Complete(request)).await;
-    let principal = match outcome {
-        LoginOutcome::Identify(p) => p,
-        LoginOutcome::Outage { retry_after_secs } => {
-            return clear_and(provider_unavailable(&cookie.method, retry_after_secs))
-        }
-        LoginOutcome::Reject => {
-            return clear_and(error_page(
-                StatusCode::UNAUTHORIZED,
-                "Sign-in was declined",
-                "Those credentials weren't accepted. Please check them and try again.",
-            ))
-        }
-        _ => {
-            return clear_and(error_page(
-                StatusCode::BAD_GATEWAY,
-                "Sign-in didn't finish",
-                "This sign-in didn't complete. Please head back and try again.",
-            ))
-        }
+    let principal = match credential_outcome(&cookie.method, outcome) {
+        Ok(principal) => principal,
+        Err(response) => return response,
     };
     clear_and(issue_and_render(app, handle, &cookie.method, principal, cookie.refresh).await)
+}
+
+fn credential_outcome(method: &str, outcome: LoginOutcome) -> Result<Principal, Response> {
+    match outcome {
+        LoginOutcome::Identify(principal) => Ok(principal),
+        LoginOutcome::Outage { retry_after_secs } => {
+            Err(clear_and(provider_unavailable(method, retry_after_secs)))
+        }
+        LoginOutcome::Reject => Err(clear_and(error_page(
+            StatusCode::UNAUTHORIZED,
+            "Sign-in was declined",
+            "Those credentials weren't accepted. Please check them and try again.",
+        ))),
+        _ => Err(clear_and(error_page(
+            StatusCode::BAD_GATEWAY,
+            "Sign-in didn't finish",
+            "This sign-in didn't complete. Please head back and try again.",
+        ))),
+    }
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]

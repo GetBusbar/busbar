@@ -306,60 +306,6 @@ fn cred_login() -> std::sync::Arc<DoorLogin> {
     })
 }
 
-fn cred_gov() -> std::sync::Arc<busbar_kernel::governance::GovState> {
-    std::sync::Arc::new(
-        busbar_kernel::governance::GovState::new_with_signer(
-            crate::testkit::loaded_store(),
-            None,
-            Some(
-                busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
-                    &[7u8; 32],
-                    busbar_kernel::governance::signing::DEFAULT_KID,
-                ),
-            ),
-        )
-        .unwrap(),
-    )
-}
-
-fn cred_bindings() -> busbar_kernel::config::RoleBindings {
-    use std::collections::BTreeMap;
-    let mut role = BTreeMap::new();
-    role.insert(
-        "members".to_string(),
-        busbar_kernel::config::RoleBindingCfg {
-            allowed_pools: None,
-            group: Some("team".into()),
-            admin_scope: None,
-            verbs: None,
-            plane_grants: Default::default(),
-        },
-    );
-    let mut outer: busbar_kernel::config::RoleBindings = BTreeMap::new();
-    outer.insert("test-login-double".to_string(), role);
-    outer
-}
-
-fn cred_app() -> std::sync::Arc<busbar_kernel::state::App> {
-    let team: busbar_kernel::config::GroupCfg =
-        serde_yaml::from_str("child_default:\n  limits:\n    - { budget: 500, per: month }\n")
-            .expect("team group parses");
-    let mut groups = std::collections::BTreeMap::new();
-    groups.insert("team".to_string(), team);
-    busbar_kernel_testkit::test_support::TestApp::new()
-        .public_url("https://busbar.example.com")
-        .governance(cred_gov())
-        .role_bindings(cred_bindings())
-        .groups_tree(groups)
-        .login_method_door(
-            "test-login-double",
-            cred_login(),
-            LoginKind::Credential,
-            true,
-        )
-        .build()
-}
-
 fn cred_handle(
     app: &std::sync::Arc<busbar_kernel::state::App>,
 ) -> std::sync::Arc<busbar_kernel::state::AppHandle> {
@@ -375,14 +321,6 @@ fn cred_cookie(state: &str, refresh: bool) -> String {
         refresh,
     }
     .encode()
-}
-
-fn extract_key(body: &str) -> String {
-    let start = body.find("bbk_").expect("a bbk_ key in the issued page");
-    body[start..]
-        .chars()
-        .take_while(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.'))
-        .collect()
 }
 
 #[tokio::test]
@@ -516,17 +454,6 @@ fn pkce_code_challenge_is_s256_of_verifier() {
     assert_eq!(challenge, expected);
 
     assert!(!challenge.contains('+') && !challenge.contains('/') && !challenge.contains('='));
-}
-
-async fn serve(
-    app: std::sync::Arc<busbar_kernel::state::App>,
-) -> (String, tokio::task::JoinHandle<()>) {
-    busbar_kernel::auth::login::seam::install(SEAM);
-    let router = busbar_kernel::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    (format!("http://{addr}"), handle)
 }
 
 fn body_of(resp: Response) -> String {
@@ -785,8 +712,8 @@ fn a_door_callback_renders_each_answer_on_its_page() {
     assert_eq!(body_of(unreachable), body_of(page));
 }
 
-#[tokio::test]
-async fn an_outage_sends_the_idps_retry_after_clamped() {
+#[test]
+fn an_outage_sends_the_idps_retry_after_clamped() {
     for (stated, sent) in [
         (Some(120), 120),
         (Some(999_999), 3600),
@@ -809,27 +736,7 @@ async fn an_outage_sends_the_idps_retry_after_clamped() {
         assert_eq!(retry_after(&redirect), Some(sent.to_string()), "{stated:?}");
         assert_branded_error_page(&body_of(redirect), "Couldn't reach your provider");
 
-        let door = std::sync::Arc::new(DoorLogin {
-            kind: LoginKind::Credential,
-            ..DoorLogin::answering(move |_| outcome.clone())
-        });
-        let app = busbar_kernel_testkit::test_support::TestApp::new()
-            .public_url("https://busbar.example.com")
-            .login_method_door("idp", door, LoginKind::Credential, true)
-            .build();
-        let cookie = LoginCookie {
-            method: "idp".into(),
-            code_verifier: String::new(),
-            state: "csrf-1".into(),
-            nonce: String::new(),
-            refresh: false,
-        };
-        let form = vec![
-            ("__state".to_string(), "csrf-1".to_string()),
-            ("username".to_string(), "alice".to_string()),
-            ("password".to_string(), "pw".to_string()),
-        ];
-        let posted = credential_submit(&app, &cred_handle(&app), cookie.encode(), form).await;
+        let posted = credential_outcome("idp", outcome).unwrap_err();
         assert_eq!(posted.status().as_u16(), 503, "{stated:?}");
         assert_eq!(retry_after(&posted), Some(sent.to_string()), "{stated:?}");
         assert_branded_error_page(&body_of(posted), "Couldn't reach your provider");
