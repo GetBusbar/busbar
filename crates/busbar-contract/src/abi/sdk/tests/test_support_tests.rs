@@ -1723,3 +1723,368 @@ fn safe_host_handles_own_tables_after_the_fake_host_is_dropped() {
     );
     assert!(host.io(Ticket::NONE).armed());
 }
+
+mod pending_open_custody {
+    use super::*;
+    use crate::abi::mechanism::call::BLOB_OCTETS;
+    use crate::abi::mechanism::lifecycle::{CancelIn, CancelOut};
+    use crate::abi::sdk::conn::Host;
+    use crate::abi::sdk::life::Opening;
+    use std::any::Any;
+    use std::cell::RefCell;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    use super::super::reply::{self, OpenStep, PendingOpen};
+
+    const TICKET: Ticket = Ticket {
+        slot: 19,
+        generation: 1,
+    };
+    const SECRET_REFS: &[AbiStr] = &[abi_str("fixture-secret")];
+
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    struct Counts {
+        opens: usize,
+        steps: usize,
+        resumes: usize,
+        cancels: usize,
+        closes: usize,
+        drops: usize,
+        parked_drops: usize,
+    }
+
+    thread_local! {
+        static COUNTS: RefCell<Counts> = RefCell::new(Counts::default());
+    }
+
+    fn counts() -> Counts {
+        COUNTS.with(|state| *state.borrow())
+    }
+
+    fn reset() {
+        COUNTS.with(|state| *state.borrow_mut() = Counts::default());
+    }
+
+    struct Parked;
+
+    impl Drop for Parked {
+        fn drop(&mut self) {
+            COUNTS.with(|state| state.borrow_mut().parked_drops += 1);
+        }
+    }
+
+    struct PendingLife {
+        fail: bool,
+    }
+
+    impl Drop for PendingLife {
+        fn drop(&mut self) {
+            COUNTS.with(|state| state.borrow_mut().drops += 1);
+        }
+    }
+
+    fn check_host(host: Option<&Host>) {
+        let host = host.expect("the original host loan remains installed");
+        let reading = host
+            .services()
+            .expect("the fake host has services")
+            .clock_now(CompletionHandle {
+                ticket: TICKET,
+                seq: 0,
+                _reserved: 0,
+            })
+            .expect("the original host remains callable");
+        assert_eq!((reading.wall_ns, reading.mono_ns), (7, 9));
+    }
+
+    impl Life for PendingLife {
+        const CANCEL: u32 = 17;
+
+        fn open(settings: &[u8], secrets: &[&[u8]], generation: u64) -> Result<Self, Refusal> {
+            assert_eq!(secrets, [b"nested-secret".as_slice()]);
+            assert_eq!(generation, 41);
+            COUNTS.with(|state| state.borrow_mut().opens += 1);
+            Ok(Self {
+                fail: settings == br#"{"fail":true}"#,
+            })
+        }
+
+        fn opening(
+            &self,
+            host: Option<&Host>,
+            ticket: Ticket,
+            parked: Option<Box<dyn Any + Send + Sync>>,
+        ) -> Opening {
+            assert_eq!(ticket, TICKET, "every resume keeps the original ticket");
+            check_host(host);
+            COUNTS.with(|state| state.borrow_mut().steps += 1);
+            let Some(parked) = parked else {
+                return Opening::Pending {
+                    wake_at_ns: 0,
+                    parked: Box::new(Parked),
+                };
+            };
+            match parked.downcast::<Parked>() {
+                Ok(parked) => drop(parked),
+                Err(_) => panic!("resume must recover its original parked continuation"),
+            }
+            COUNTS.with(|state| state.borrow_mut().resumes += 1);
+            if self.fail {
+                Opening::Failed(Refusal::failed("scripted pending OPEN failure"))
+            } else {
+                Opening::Ready
+            }
+        }
+
+        fn cancel(&self, ticket: Ticket) -> u32 {
+            assert_eq!(ticket, TICKET);
+            COUNTS.with(|state| state.borrow_mut().cancels += 1);
+            Self::CANCEL
+        }
+
+        fn close(&self, host: Option<&Host>) {
+            check_host(host);
+            COUNTS.with(|state| state.borrow_mut().closes += 1);
+        }
+    }
+
+    mod first {
+        crate::plugin_door! {
+            ops: crate::abi::secret::Ops,
+            statement: crate::abi::sdk::door::statement("pending-open-first", "0", 1)
+                .with_secret_refs(super::SECRET_REFS),
+            lifecycle: life(super::PendingLife),
+        }
+    }
+
+    mod other {
+        crate::plugin_door! {
+            ops: crate::abi::secret::Ops,
+            statement: crate::abi::sdk::door::statement("pending-open-other", "0", 1)
+                .with_secret_refs(super::SECRET_REFS),
+            lifecycle: life(super::PendingLife),
+        }
+    }
+
+    fn first_view() -> DoorView {
+        DoorView::of(first::MACRO_DOOR)
+    }
+
+    fn start<'h>(
+        host: &'h FakeHost,
+        secret: &'h [u8],
+        fail: bool,
+    ) -> OpenStep<'h, OpenIn, OpenOut> {
+        let secrets = [secret];
+        let settings: &'static [u8] = if fail {
+            br#"{"fail":true}"#
+        } else {
+            br#"{"fail":false}"#
+        };
+        let input = host.lend_in(
+            TestIn::<OpenIn>::new()
+                .settings(settings)
+                .blobs(|i| &i.secrets, |i| &i.secrets_len, &secrets, BLOB_OCTETS)
+                .set(|i| &i.generation, 41)
+                .set(|i| &i.head.op, slot::OPEN)
+                .set(|i| &i.head.ticket, TICKET),
+        );
+        let view = first_view();
+        reply::open_hosted_in(
+            view.op::<crate::abi::secret::Ops>(|ops| &ops.head.open)
+                .unwrap(),
+            view.op::<crate::abi::secret::Ops>(|ops| &ops.head.close)
+                .unwrap(),
+            input,
+            zeroed::<OpenOut>(),
+        )
+    }
+
+    fn pending<'h>(step: OpenStep<'h, OpenIn, OpenOut>) -> PendingOpen<'h, OpenIn, OpenOut> {
+        assert_eq!(step.answer().outcome, Outcome::Pending);
+        match step {
+            OpenStep::Pending(pending) => pending,
+            OpenStep::Complete(_) => panic!("the first OPEN must retain its unfinished instance"),
+        }
+    }
+
+    fn cancel_input(ticket: Ticket) -> TestIn<'static, CancelIn> {
+        TestIn::<CancelIn>::new()
+            .set(|i| &i.head.op, slot::CANCEL)
+            .set(|i| &i.ticket, ticket)
+    }
+
+    #[test]
+    fn a_pending_open_resumes_once_over_its_original_host_and_nested_secret_loan() {
+        reset();
+        let host = FakeHost::new().serve(fake::host::CLOCK_NOW, Clock);
+        let secret = String::from("nested-secret");
+        let opening = pending(start(&host, secret.as_bytes(), false));
+        assert_eq!(counts().opens, 1);
+        let mut completed = match opening.resume() {
+            OpenStep::Complete(answer) => answer,
+            OpenStep::Pending(_) => panic!("the resumed OPEN must complete"),
+        };
+        assert_eq!(completed.outcome, Outcome::Ready);
+        let instance = completed.take_instance().expect("the completed OPEN proof");
+        assert!(completed.take_instance().is_none());
+        let close = first_view()
+            .op::<crate::abi::secret::Ops>(|ops| &ops.head.close)
+            .unwrap();
+        assert_eq!(
+            reply::close_in(
+                close,
+                instance,
+                &TestIn::<InHead>::new().set(|i| &i.op, slot::CLOSE),
+                zeroed::<OutHead>(),
+            )
+            .outcome,
+            Outcome::Ready
+        );
+        assert_eq!(
+            counts(),
+            Counts {
+                opens: 1,
+                steps: 2,
+                resumes: 1,
+                closes: 1,
+                drops: 1,
+                parked_drops: 1,
+                ..Counts::default()
+            }
+        );
+    }
+
+    #[test]
+    fn a_failed_pending_open_retires_its_partial_instance_without_close() {
+        reset();
+        let host = FakeHost::new().serve(fake::host::CLOCK_NOW, Clock);
+        let secret = String::from("nested-secret");
+        let opening = pending(start(&host, secret.as_bytes(), true));
+        let mut completed = match opening.resume() {
+            OpenStep::Complete(answer) => answer,
+            OpenStep::Pending(_) => panic!("the scripted resume must fail"),
+        };
+        assert_eq!(completed.outcome, Outcome::Failed);
+        assert!(completed.take_instance().is_none());
+        assert_eq!(
+            counts(),
+            Counts {
+                opens: 1,
+                steps: 2,
+                resumes: 1,
+                drops: 1,
+                parked_drops: 1,
+                ..Counts::default()
+            }
+        );
+    }
+
+    #[test]
+    fn cancelling_then_closing_a_pending_open_keeps_the_actual_disposition_and_drops_once() {
+        reset();
+        let host = FakeHost::new().serve(fake::host::CLOCK_NOW, Clock);
+        let secret = String::from("nested-secret");
+        let mut opening = pending(start(&host, secret.as_bytes(), false));
+        let cancelled = opening.cancel(
+            first_view()
+                .op::<crate::abi::secret::Ops>(|ops| &ops.head.cancel)
+                .unwrap(),
+            &cancel_input(TICKET),
+            zeroed::<CancelOut>(),
+        );
+        assert_eq!(cancelled.outcome, Outcome::Ready);
+        assert_eq!(cancelled.out.disposition, PendingLife::CANCEL);
+        assert_eq!(opening.close().outcome, Outcome::Ready);
+        assert_eq!(
+            counts(),
+            Counts {
+                opens: 1,
+                steps: 1,
+                cancels: 1,
+                closes: 1,
+                drops: 1,
+                parked_drops: 1,
+                ..Counts::default()
+            }
+        );
+    }
+
+    #[test]
+    fn dropping_an_unfinished_open_closes_while_its_original_host_is_live() {
+        reset();
+        let host = FakeHost::new().serve(fake::host::CLOCK_NOW, Clock);
+        let secret = String::from("nested-secret");
+        drop(pending(start(&host, secret.as_bytes(), false)));
+        assert_eq!(
+            counts(),
+            Counts {
+                opens: 1,
+                steps: 1,
+                closes: 1,
+                drops: 1,
+                parked_drops: 1,
+                ..Counts::default()
+            }
+        );
+    }
+
+    #[test]
+    fn another_doors_cancel_and_another_ticket_never_enter_the_pending_instance() {
+        reset();
+        let host = FakeHost::new().serve(fake::host::CLOCK_NOW, Clock);
+        let secret = String::from("nested-secret");
+        let mut opening = pending(start(&host, secret.as_bytes(), false));
+        let foreign = DoorView::of(other::MACRO_DOOR)
+            .op::<crate::abi::secret::Ops>(|ops| &ops.head.cancel)
+            .unwrap();
+        assert!(catch_unwind(AssertUnwindSafe(|| {
+            let _ = opening.cancel(foreign, &cancel_input(TICKET), zeroed::<CancelOut>());
+        }))
+        .is_err());
+        let cancel = first_view()
+            .op::<crate::abi::secret::Ops>(|ops| &ops.head.cancel)
+            .unwrap();
+        let wrong_ticket = Ticket {
+            generation: TICKET.generation + 1,
+            ..TICKET
+        };
+        assert!(catch_unwind(AssertUnwindSafe(|| {
+            let _ = opening.cancel(cancel, &cancel_input(wrong_ticket), zeroed::<CancelOut>());
+        }))
+        .is_err());
+        assert_eq!(counts().cancels, 0, "neither rejected call reached the SDK");
+        assert_eq!(opening.close().outcome, Outcome::Ready);
+        assert_eq!(counts().closes, 1);
+        assert_eq!(counts().drops, 1);
+    }
+
+    #[test]
+    fn a_cancelled_pending_open_cannot_resume_and_still_retires_once() {
+        reset();
+        let host = FakeHost::new().serve(fake::host::CLOCK_NOW, Clock);
+        let secret = String::from("nested-secret");
+        let mut opening = pending(start(&host, secret.as_bytes(), false));
+        let _ = opening.cancel(
+            first_view()
+                .op::<crate::abi::secret::Ops>(|ops| &ops.head.cancel)
+                .unwrap(),
+            &cancel_input(TICKET),
+            zeroed::<CancelOut>(),
+        );
+        assert!(catch_unwind(AssertUnwindSafe(|| {
+            let _ = opening.resume();
+        }))
+        .is_err());
+        assert_eq!(
+            counts().steps,
+            1,
+            "a cancelled operation was never re-entered"
+        );
+        assert_eq!(counts().resumes, 0);
+        assert_eq!(counts().cancels, 1);
+        assert_eq!(counts().closes, 1);
+        assert_eq!(counts().drops, 1);
+        assert_eq!(counts().parked_drops, 1);
+    }
+}
