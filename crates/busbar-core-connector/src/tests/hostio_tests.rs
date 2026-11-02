@@ -586,15 +586,20 @@ fn reap_releases_every_handle_of_its_owner_and_no_other() {
     worker().block_on(async {
         let io = HostIo::new();
         io.admit(ticket(30), Admission::Bind("127.0.0.1:0".into()));
-        let (_, at) = io.listen(OWNER, ticket(30), "127.0.0.1:0").unwrap();
+        let (listener, at) = io.listen(OWNER, ticket(30), "127.0.0.1:0").unwrap();
+        let original = std::sync::Arc::downgrade(&io.handles.get(listener).unwrap());
         io.admit(ticket(31), Admission::Bind("127.0.0.1:0".into()));
-        let (other, _) = io.listen(OWNER + 1, ticket(31), "127.0.0.1:0").unwrap();
+        let (other, other_at) = io.listen(OWNER + 1, ticket(31), "127.0.0.1:0").unwrap();
         assert_eq!(io.held(), 2);
         io.reap(OWNER);
         assert_eq!(io.held(), 1, "the owner's listener is released");
         assert!(
+            original.upgrade().is_none(),
+            "reaped entry remains alive at {at}, other {other_at}"
+        );
+        assert!(
             tokio::net::TcpStream::connect(&at).await.is_err(),
-            "the reaped listener still accepts at {at}"
+            "the reaped listener still accepts at {at}, other {other_at}"
         );
         assert!(matches!(io.close(OWNER, other), Err(IoRefusal::Refused(_))));
         io.close(OWNER + 1, other)
