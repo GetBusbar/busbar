@@ -107,6 +107,22 @@ fn chain_verdict_of(answer: VerifyAnswer) -> Judgement {
     Judgement::answered(answer)
 }
 
+fn chain_position_verdict(module: &str, verdict: AuthVerdict) -> Option<ChainVerdict> {
+    match verdict {
+        AuthVerdict::Identify(principal) => Some(ChainVerdict::Identified {
+            module: module.to_string(),
+            principal,
+            resolved: None,
+        }),
+        AuthVerdict::Reject => Some(ChainVerdict::Denied),
+        AuthVerdict::Pass => None,
+    }
+}
+
+fn deny_unavailable_chain(verdict: Result<ChainVerdict, VerifierUnavailable>) -> ChainVerdict {
+    verdict.unwrap_or(ChainVerdict::Denied)
+}
+
 fn refused_keeping_strips(answer: VerifyAnswer) -> Judgement {
     Judgement {
         strips: answer.strips,
@@ -964,18 +980,11 @@ impl AuthMiddleware {
         for entry in &self.chain {
             let judged = judge(entry, head.request(candidate, now), reach).await?;
             strips.extend(judged.strips);
-            match judged.verdict {
-                AuthVerdict::Identify(principal) => {
+            if let Some(verdict) = chain_position_verdict(&entry.provider, judged.verdict) {
+                if matches!(verdict, ChainVerdict::Identified { .. }) {
                     *claim = ReplayClaim::of(&entry.provider, judged.replay, now);
-
-                    return Ok(ChainVerdict::Identified {
-                        module: entry.provider.clone(),
-                        principal,
-                        resolved: None,
-                    });
                 }
-                AuthVerdict::Reject => return Ok(ChainVerdict::Denied),
-                AuthVerdict::Pass => {}
+                return Ok(verdict);
             }
         }
 
@@ -1010,9 +1019,9 @@ impl AuthMiddleware {
         gov: Option<std::sync::Arc<crate::governance::GovState>>,
         expected_aud: Option<String>,
     ) -> ChainVerdict {
-        Self::judge_chain_on_request_path(auth, candidate, head, gov, expected_aud)
-            .await
-            .unwrap_or(ChainVerdict::Denied)
+        deny_unavailable_chain(
+            Self::judge_chain_on_request_path(auth, candidate, head, gov, expected_aud).await,
+        )
     }
 
     pub async fn judge_chain_on_request_path(
@@ -1095,6 +1104,31 @@ impl AuthMiddleware {
     }
 }
 
+async fn auth_admission_permit() -> Result<tokio::sync::SemaphorePermit<'static>, Judgement> {
+    match tokio::time::timeout(AUTH_ADMISSION_WAIT, AUTH_ADMISSION_PERMITS.acquire()).await {
+        Ok(Ok(permit)) => Ok(permit),
+        _ => {
+            auth_saturated();
+            Err(Judgement::of(AuthVerdict::Reject))
+        }
+    }
+}
+
+async fn admin_admission_permit() -> Result<tokio::sync::SemaphorePermit<'static>, Judgement> {
+    match tokio::time::timeout(ADMIN_ADMISSION_WAIT, ADMIN_ADMISSION_PERMITS.acquire()).await {
+        Ok(Ok(permit)) => Ok(permit),
+        _ => {
+            admin_saturated();
+            Err(Judgement::of(AuthVerdict::Reject))
+        }
+    }
+}
+
+fn admin_verification_timed_out(_: tokio::time::error::Elapsed) -> Judgement {
+    admin_stalled();
+    Judgement::without_verdict(Vec::new())
+}
+
 async fn judge(
     entry: &ChainEntry,
     request: VerifyRequest,
@@ -1111,11 +1145,9 @@ async fn judge(
         },
 
         Reach::RequestPath => {
-            let Ok(Ok(permit)) =
-                tokio::time::timeout(AUTH_ADMISSION_WAIT, AUTH_ADMISSION_PERMITS.acquire()).await
-            else {
-                auth_saturated();
-                return Ok(Judgement::of(AuthVerdict::Reject));
+            let permit = match auth_admission_permit().await {
+                Ok(permit) => permit,
+                Err(refusal) => return Ok(refusal),
             };
             let mut call = entry.calls.verify(request);
             let answer = (&mut call).await;
@@ -1305,22 +1337,13 @@ async fn run_admin_chain(
             verify_without_verdict("admin", name, "no verdict");
             carried.no_verdict = true;
         }
-        match outcome.verdict {
-            AuthVerdict::Identify(principal) => {
+        if let Some(verdict) = chain_position_verdict(name, outcome.verdict) {
+            if matches!(verdict, ChainVerdict::Identified { .. }) {
                 carried.replay = outcome.replay.map(|r| (name.clone(), r));
-
                 let cap = module_admin_scope_cap(app, name);
-                return (
-                    ChainVerdict::Identified {
-                        module: name.clone(),
-                        principal,
-                        resolved: None,
-                    },
-                    cap,
-                );
+                return (verdict, cap);
             }
-            AuthVerdict::Reject => return (ChainVerdict::Denied, None),
-            AuthVerdict::Pass => {}
+            return (verdict, None);
         }
     }
     (ChainVerdict::Denied, None)
@@ -1340,21 +1363,16 @@ async fn external_admin_module(
         ));
     }
 
-    let Ok(Ok(permit)) =
-        tokio::time::timeout(ADMIN_ADMISSION_WAIT, ADMIN_ADMISSION_PERMITS.acquire()).await
-    else {
-        admin_saturated();
-        return Some(Judgement::of(AuthVerdict::Reject));
+    let permit = match admin_admission_permit().await {
+        Ok(permit) => permit,
+        Err(refusal) => return Some(refusal),
     };
     let mut call = module.calls.verify(request);
     let answered = tokio::time::timeout(ADMIN_ADMISSION_WAIT, &mut call).await;
     drop(permit);
     Some(match answered {
         Ok(answer) => admin_verdict_of(answer, call.faulted()),
-        Err(_) => {
-            admin_stalled();
-            Judgement::without_verdict(Vec::new())
-        }
+        Err(elapsed) => admin_verification_timed_out(elapsed),
     })
 }
 
