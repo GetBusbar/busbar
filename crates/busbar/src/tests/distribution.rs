@@ -46,3 +46,27 @@ mod auth_carrier_tests;
 
 #[path = "kernel_application/config_validation_models.rs"]
 mod config_validation_models;
+
+#[path = "kernel_application/config_validation_application.rs"]
+mod config_validation_application;
+
+#[path = "kernel_application/config_validation_store.rs"]
+mod config_validation_store;
+
+#[path = "kernel_application/config_validation_secrets.rs"]
+mod config_validation_secrets;
+
+#[path = "kernel_application/auth_admit_tests.rs"]
+mod auth_admit_tests;
+
+#[path = "kernel_application/auth_chain_tests.rs"]
+mod auth_chain_tests;
+
+#[path = "kernel_application/auth_keys_tests.rs"]
+mod auth_keys_tests;
+
+#[path = "kernel_application/auth_scope_tests.rs"]
+mod auth_scope_tests;
+
+#[path = "kernel_application/central_config_recovery_boot.rs"]
+mod central_config_recovery_boot;
