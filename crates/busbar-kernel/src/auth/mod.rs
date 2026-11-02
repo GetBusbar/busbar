@@ -1179,10 +1179,15 @@ pub fn auth_failure_status_and_kind(proto: &str) -> (StatusCode, &'static str) {
         ))
 }
 
+pub(crate) type RefusalDoor = (
+    busbar_kernel::plane_routes::PlaneRefuseFn,
+    zeroize::Zeroizing<String>,
+);
+
 fn unauthorized_response(
     app: &crate::state::App,
     path: &str,
-    door: Option<&(busbar_kernel::plane_routes::PlaneRefuseFn, String)>,
+    door: Option<&RefusalDoor>,
 ) -> Response {
     if let Some((refuse, target)) = door {
         return refuse(busbar_contract::caps::ReasonCode::Unauthenticated, target);
@@ -1744,7 +1749,7 @@ fn rate_limited_response() -> Response {
 pub(crate) fn unauthorized_with_completion_taps(
     app: &std::sync::Arc<crate::state::App>,
     path: &str,
-    door: Option<&(busbar_kernel::plane_routes::PlaneRefuseFn, String)>,
+    door: Option<&RefusalDoor>,
 ) -> Response {
     let proto = crate::ingress::native::envelope_dialect(ingress_for_path(app, path));
     if !app.tap_hooks_response.is_empty() {
@@ -1830,14 +1835,13 @@ pub(crate) async fn auth_middleware(
         crate::inbound::RequestAdmission::plane_admission,
     );
 
-    let door: Option<(busbar_kernel::plane_routes::PlaneRefuseFn, String)> =
-        core_routes.door_refusal(&path, req.method()).map(|refuse| {
-            let target = req
-                .uri()
-                .path_and_query()
-                .map_or_else(|| path.clone(), |t| t.as_str().to_owned());
-            (refuse.clone(), target)
-        });
+    let door: Option<RefusalDoor> = core_routes.door_refusal(&path, req.method()).map(|refuse| {
+        let target = req
+            .uri()
+            .path_and_query()
+            .map_or_else(|| path.clone(), |t| t.as_str().to_owned());
+        (refuse.clone(), zeroize::Zeroizing::new(target))
+    });
 
     let mut declared_admin = false;
 
