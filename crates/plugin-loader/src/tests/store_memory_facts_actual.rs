@@ -75,6 +75,33 @@ fn the_memory_store_states_its_facts_in_its_tail() {
         }
     );
     assert!(!s.name().is_empty(), "the store states its name");
+    // Independently retain the old absence-metadata policy without inventing a Store:
+    // context() is the production DATA projection over a valid immutable Statement.
+    // SAFETY: the real product's validated Statement and all retained pointers are live.
+    let mut absent = unsafe { *door().statement() };
+    absent.extensions = busbar_contract::abi::mechanism::call::Blob {
+        ptr: std::ptr::null(),
+        len: 0,
+        fmt: busbar_contract::abi::mechanism::call::BLOB_OCTETS,
+        flags: 0,
+    };
+    absent.secret_refs = std::ptr::null();
+    absent.secret_refs_len = 0;
+    let context = <Store as crate::dispatch::Kind>::context(&absent)
+        .expect("absence metadata parses")
+        .expect("Store facts context");
+    assert_eq!(
+        context.downcast_ref::<StoreFacts>().expect("Store facts"),
+        &StoreFacts {
+            ephemeral: true,
+            durable_plane: false,
+            fork_refusal: true,
+            record_transaction: false,
+            usage_correction: false,
+            secret_refs: Vec::new(),
+            credential_rewrap: false,
+        }
+    );
 }
 
 #[test]
