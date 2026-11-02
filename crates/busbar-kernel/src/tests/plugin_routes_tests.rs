@@ -304,50 +304,9 @@ fn head_is_looked_up_as_the_declared_get_route() {
     assert_eq!(route_method_of(&axum::http::Method::TRACE), None);
 }
 
-#[tokio::test]
-async fn head_dispatches_to_the_declared_get_route() {
-    const P: &str = "/exports/prometheus/scrape";
-    let table = Arc::new(
-        build_route_table(vec![decl(
-            "prometheus",
-            RouteKind::Export,
-            P,
-            RouteMethod::Get,
-            RouteAuth::None,
-            "prom",
-        )])
-        .unwrap(),
-    );
-    let (data_router, _admin_router, _handle) = crate::build_split_routers_with_limits(
-        app_with_table(table),
-        busbar_kernel_egress::upstream::max_translate_body_bytes(),
-        crate::config::DEFAULT_MAX_INBOUND_CONCURRENT,
-        crate::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
-    );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move { axum::serve(listener, data_router).await.unwrap() });
-    let resp = reqwest::Client::new()
-        .head(format!("http://{addr}{P}"))
-        .send()
-        .await
-        .unwrap();
-    let code = resp.status().as_u16();
-    let served_by = resp
-        .headers()
-        .get("x-served-by")
-        .map(|v| v.to_str().unwrap().to_string());
-    server.abort();
-    assert_eq!(
-        code, 200,
-        "HEAD on a declared GET plugin route is served, not 405'd"
-    );
-    assert_eq!(
-        served_by.as_deref(),
-        Some("prom"),
-        "the owning plugin served the HEAD"
-    );
-}
+// HEAD's actual owner crossing is retained beside GET in plugin_routes_actual.rs.
+// Its withdrawn-owner 404 control proves the response came from the current owner,
+// replacing the fixture's self-authored x-served-by label assertion.
 
 #[test]
 fn over_cap_request_headers_are_marked_not_silently_cut() {
