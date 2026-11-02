@@ -421,3 +421,8 @@ mod ordinary_auth_short;
 #[allow(unsafe_code)]
 #[path = "tests/ordinary_suite_hook_ticket_tests.rs"]
 mod ordinary_suite_hook_ticket_tests;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/actual_store.rs"]
+mod actual_store;
