@@ -2202,3 +2202,7 @@ async fn a_plain_request_that_declines_detach_keeps_http_400_and_runs_no_plane_e
     assert_eq!(door.session_finishes(), 0);
     assert_eq!(door.cancellations(), 0);
 }
+
+#[cfg(feature = "transport-ws")]
+#[path = "listener_real_session_tests.rs"]
+mod real_session_tests;
