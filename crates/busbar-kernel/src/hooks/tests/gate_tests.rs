@@ -509,10 +509,8 @@ fn derive_session_key(sid: &str, principal_id: &str, hook_generation: u64) -> Se
 }
 
 async fn screens_cache_piece(store: &SessionStore, piece: u32, now_ms: u64) -> bool {
-    let facts = InvokeReq {
-        arguments: serde_json::json!({ "piece": piece }),
-        ..tool_call()
-    };
+    let mut facts = tool_call();
+    facts.arguments = serde_json::json!({ "piece": piece });
     let spy = Arc::new(Spy {
         reply: RoutingDecision::Abstain,
         seen: Mutex::new(None),
