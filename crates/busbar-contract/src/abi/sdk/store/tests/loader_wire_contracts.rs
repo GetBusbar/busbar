@@ -25,6 +25,7 @@ const REFUSAL: &[u8] = b"the connection was refused";
 #[derive(Default)]
 struct Crossings {
     refuse: bool,
+    wait: bool,
     opened: Vec<(u32, String)>,
     closed: usize,
     written: Vec<u8>,
@@ -49,10 +50,13 @@ extern "C" fn establish(_: HostCtx, input: *const c_void, out: *mut ServiceOut) 
             )
             .expect("target UTF-8")
         };
-        let refuse = state(|s| {
+        let (refuse, wait) = state(|s| {
             s.opened.push((input.need, target));
-            s.refuse
+            (s.refuse, s.wait)
         });
+        if wait {
+            return RawOutcome::of(Outcome::Pending);
+        }
         if refuse {
             (*out).error = AbiStr::over(REFUSAL);
             RawOutcome::of(Outcome::Refused)
@@ -254,4 +258,70 @@ fn a_wire_body_pends_on_its_reads_and_answers_the_backends_reply() {
         2,
         "each completed wire body releases its stream"
     );
+}
+
+#[test]
+fn pending_on_the_connector_with_no_service_in_flight_is_fault() {
+    use crate::abi::sdk::store::door::pending_parked;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    struct DropProbe(Arc<AtomicUsize>);
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    let host = host(false);
+    let drops = Arc::new(AtomicUsize::new(0));
+    let mut idle = Op::enter(TICKET, Some(&host), None, None);
+    idle.park(DropProbe(drops.clone()));
+    assert!(
+        matches!(pending_parked(idle, 0), Err(Outcome::Fault)),
+        "the production Store pending guard returns Fault when no service or timed wake arms it"
+    );
+    assert_eq!(
+        drops.load(Ordering::SeqCst),
+        1,
+        "the actual rejected pending context drops its owned state before Fault leaves the guard"
+    );
+    assert!(
+        state(|s| s.opened.is_empty()),
+        "the Fault did not make up a connector attempt"
+    );
+
+    let drops = Arc::new(AtomicUsize::new(0));
+    let mut timed = Op::enter(TICKET, Some(&host), None, None);
+    timed.park(DropProbe(drops.clone()));
+    let parked = pending_parked(timed, 1).expect("a timed wake arms this real ticket");
+    assert_eq!(
+        drops.load(Ordering::SeqCst),
+        0,
+        "accepted wait retains its state"
+    );
+    drop(parked);
+    assert_eq!(
+        drops.load(Ordering::SeqCst),
+        1,
+        "cancelling the retained wait drops once"
+    );
+    assert!(
+        matches!(pending_parked(Op::detached(), 1), Err(Outcome::Fault)),
+        "a wake cannot give a no-ticket call pending authority"
+    );
+
+    state(|s| s.wait = true);
+    let drops = Arc::new(AtomicUsize::new(0));
+    let mut waiting = Op::enter(TICKET, Some(&host), None, None);
+    waiting.park(DropProbe(drops.clone()));
+    assert_eq!(waiting.checkout(0, Some("db.internal:5432")), Poll::Pending);
+    let parked = pending_parked(waiting, 0)
+        .expect("the actual pending HostTables service arms a zero-wake wait");
+    assert_eq!(
+        drops.load(Ordering::SeqCst),
+        0,
+        "pending service retains the owned context"
+    );
+    drop(parked);
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
 }

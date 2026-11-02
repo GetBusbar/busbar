@@ -286,16 +286,13 @@ impl<B: StoreSlots> Life for Served<B> {
                     Err(e) => Opening::Failed(Refusal::failed(e)),
                 }
             }
-            Step::Pending { wake_at_ns } => {
-                if !cx.can_pend() || (wake_at_ns == 0 && !cx.made_a_service()) {
-                    drop(cx.into_parked());
-                    return Opening::Fault;
-                }
-                Opening::Pending {
+            Step::Pending { wake_at_ns } => match pending_parked(cx, wake_at_ns) {
+                Ok(parked) => Opening::Pending {
                     wake_at_ns,
-                    parked: Box::new(cx.into_parked()),
-                }
-            }
+                    parked: Box::new(parked),
+                },
+                Err(_) => Opening::Fault,
+            },
         }
     }
 
@@ -406,6 +403,17 @@ fn op_enter<'a, B: StoreSlots>(
     ))
 }
 
+// Both OPEN's continuation and ordinary Store operations obey the same pending
+// ownership rule: an unarmed wait is a Fault and drops the parked context now.
+pub(super) fn pending_parked(cx: Op<'_>, wake_at_ns: u64) -> Result<Parked, Outcome> {
+    if !cx.can_pend() || (wake_at_ns == 0 && !cx.made_a_service()) {
+        drop(cx.into_parked());
+        Err(Outcome::Fault)
+    } else {
+        Ok(cx.into_parked())
+    }
+}
+
 /// The op's answer, settled: PENDING parks its context (FAULT when it pends on no ticket, or on the
 fn op_finish<B: StoreSlots>(
     instance: &Instance<'_, Held<Served<B>>>,
@@ -414,12 +422,13 @@ fn op_finish<B: StoreSlots>(
     head: &mut OutHead,
 ) -> Outcome {
     if answer == Outcome::Pending {
-        if !cx.can_pend() || (head.wake_at_ns == 0 && !cx.made_a_service()) {
-            drop(cx.into_parked());
-            return Outcome::Fault;
-        }
-        instance.park(cx.into_parked());
-        return Outcome::Pending;
+        return match pending_parked(cx, head.wake_at_ns) {
+            Ok(parked) => {
+                instance.park(parked);
+                Outcome::Pending
+            }
+            Err(outcome) => outcome,
+        };
     }
 
     drop(cx.into_parked());
