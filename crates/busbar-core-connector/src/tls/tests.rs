@@ -29,7 +29,6 @@ fn temp_pem(tag: &str, contents: &str) -> std::path::PathBuf {
     p
 }
 
-// Each resolver admits only this test's explicit PEM references; production file resolution stays absent.
 fn fixture_resolver(tls: &TlsCfg) -> SecretResolver {
     let bindings: Vec<_> = [&tls.cert, &tls.key]
         .into_iter()
