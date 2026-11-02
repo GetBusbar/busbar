@@ -3,21 +3,22 @@
 
 #![allow(unsafe_code, clippy::missing_safety_doc)]
 
+#[path = "../common/mod.rs"]
 mod common;
 
-#[path = "support/plane_driver_cases.rs"]
+#[path = "plane_driver_cases.rs"]
 mod cases;
 
-#[path = "support/plane_driver_hook_cases.rs"]
+#[path = "plane_driver_hook_cases.rs"]
 mod hook_cases;
 
-#[path = "support/plane_driver_close_cases.rs"]
+#[path = "plane_driver_close_cases.rs"]
 mod close_cases;
 
-#[path = "support/plane_driver_session_input_cases.rs"]
+#[path = "plane_driver_session_input_cases.rs"]
 mod session_input_cases;
 
-#[path = "support/plane_driver_retirement_cases.rs"]
+#[path = "plane_driver_retirement_cases.rs"]
 mod retirement_cases;
 
 use std::collections::HashMap;
@@ -2263,7 +2264,7 @@ fn a_misstated_work_section_refuses_the_instance() {
     }
 }
 
-#[path = "support/plane_driver_write_behind.rs"]
+#[path = "plane_driver_write_behind.rs"]
 mod write_behind;
 
 #[tokio::test]
@@ -3745,7 +3746,7 @@ async fn an_ungoverned_unit_runs_lent_the_empty_reference() {
     );
 }
 
-#[path = "../../busbar/src/root/tests/test_plugins.rs"]
+#[path = "../../../busbar/src/root/tests/test_plugins.rs"]
 mod actual_plugins;
 
 // Only the real distribution mounts this suite. This is a component HookEnv proof;
