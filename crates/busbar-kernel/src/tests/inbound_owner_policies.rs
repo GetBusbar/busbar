@@ -132,13 +132,18 @@ async fn a_deadline_cancels_the_owned_pending_verification_and_leaves_the_reacto
         dropped: Arc<AtomicUsize>,
     }
     impl std::future::Future for PendingVerification {
-        type Output = ();
+        type Output = VerifyAnswer;
         fn poll(
             self: std::pin::Pin<&mut Self>,
             _: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<()> {
+        ) -> std::task::Poll<VerifyAnswer> {
             self.polled.fetch_add(1, Ordering::SeqCst);
             std::task::Poll::Pending
+        }
+    }
+    impl busbar_contract::auth_calls::Verifying for PendingVerification {
+        fn settled(&mut self) -> Option<VerifyAnswer> {
+            None
         }
     }
     impl Drop for PendingVerification {
@@ -152,20 +157,39 @@ async fn a_deadline_cancels_the_owned_pending_verification_and_leaves_the_reacto
         tokio::task::yield_now().await;
         17
     });
-    let result = until_deadline(
-        Some(std::time::Instant::now() + std::time::Duration::from_millis(10)),
-        PendingVerification {
+    let mut verifying: Box<dyn busbar_contract::auth_calls::Verifying> =
+        Box::new(PendingVerification {
             polled: polled.clone(),
             dropped: dropped.clone(),
-        },
+        });
+    let result = until_deadline(
+        Some(std::time::Instant::now() + std::time::Duration::from_millis(10)),
+        &mut verifying,
     )
     .await;
     assert!(result.is_none());
     assert!(polled.load(Ordering::SeqCst) > 0);
     assert_eq!(
         dropped.load(Ordering::SeqCst),
+        0,
+        "the production-shaped borrowed verifier remains owned by its caller"
+    );
+    assert!(!verifying.faulted());
+    assert!(matches!(
+        signed_reader_step(result, false),
+        SignedReaderStep::Final(None)
+    ));
+    // The signed caller records Final(None) as Judging::Nothing, i.e. Denied,
+    // then answers STOP before releasing the owned verifier at scope exit.
+    assert_eq!(
+        inbound_answer(Some(Fixed::Denied), UnitRef { id: 1, mac: 2 }, false, &[]).flow,
+        FLOW_STOP
+    );
+    drop(verifying);
+    assert_eq!(
+        dropped.load(Ordering::SeqCst),
         1,
-        "the owned pending verification is released exactly once"
+        "the cancelled owned verifier is released exactly once"
     );
     assert_eq!(
         reactor.await.unwrap(),
