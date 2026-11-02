@@ -5,10 +5,9 @@
 //! `busbar-core::admin::mod` (`IDEMPOTENCY_TTL_SECS`, `IdemState`, `IdemReservation`, and the
 //! create/rotate call sites' cache logic). Same TTL (600 s) and the same semantics: no body hash,
 //! so a retry with the same key but a DIFFERENT body still replays the first response (parity
-//! clause — 1.5.5 never hashed the body either). The key is `(actor, header)` for a mint and
-//! `(actor, <framed id and header>)` for a rotate; the caller builds it, and see
-//! [`rotate_replay_key`] for why the rotate's two halves are length-prefixed rather than
-//! joined on a separator.
+//! clause — 1.5.5 never hashed the body either). The key is `(actor, operation-key)`, with
+//! disjoint create/rotate tags and length-prefixed caller text. The same operation-key goes to
+//! both the replay cache and the durable claim.
 //!
 //! The sweep is NOT the same as 1.5.5's: it steps over the in-flight sentinel. See
 //! [`IdempotencyCache::probe`].
@@ -27,6 +26,27 @@ use std::sync::Mutex;
 // cache age their slots against one number. Re-exported here so the doc links and the existing
 // `crate::idempotency::IDEMPOTENCY_TTL_SECS` call sites keep resolving.
 pub use busbar_kernel_seams::verb_store::IDEMPOTENCY_TTL_SECS;
+
+/// The operation is part of the replay identity, including for a create whose header is arbitrary.
+enum KeyOperation<'a> {
+    Create,
+    Rotate(&'a str),
+}
+
+fn key_replay_key(operation: KeyOperation<'_>, header: &str) -> String {
+    match operation {
+        KeyOperation::Create => format!("create:{}:{}", header.len(), header),
+        KeyOperation::Rotate(id) => {
+            format!("rotate:{}:{}:{}:{}", id.len(), id, header.len(), header)
+        }
+    }
+}
+
+/// A create's header never occupies a rotate's operation namespace, even if the header itself
+/// spells a complete framed rotate key.
+pub(crate) fn create_replay_key(header: &str) -> String {
+    key_replay_key(KeyOperation::Create, header)
+}
 
 /// THE REPLAY KEY FOR A ROTATE, FRAMED SO THAT NO TWO `(id, header)` PAIRS JOIN TO ONE KEY.
 ///
@@ -47,7 +67,7 @@ pub use busbar_kernel_seams::verb_store::IDEMPOTENCY_TTL_SECS;
 /// The lengths are BYTE lengths, not character counts: the key is compared as bytes, and a count of
 /// characters would put the boundary somewhere other than where the reader would find it.
 pub(crate) fn rotate_replay_key(id: &str, header: &str) -> String {
-    format!("rotate:{}:{}:{}:{}", id.len(), id, header.len(), header)
+    key_replay_key(KeyOperation::Rotate(id), header)
 }
 
 /// One cache slot: `(inserted_at, value)`. `value: None` is the in-flight reservation sentinel
@@ -55,8 +75,8 @@ pub(crate) fn rotate_replay_key(id: &str, header: &str) -> String {
 /// requiring a JSON value type).
 type Slot<V> = (u64, Option<V>);
 
-/// The cache itself. `(String, String)` is `(actor, header)` for a mint or `(actor, <framed id and
-/// header>)` for a rotate — the caller builds the key, this type only stores it.
+/// The cache itself. `(String, String)` is `(actor, operation-key)` — the key handlers build the
+/// disjoint framed create/rotate keys, and this type only stores them.
 ///
 /// It is this process's view only. What outlives the process — that a key was claimed, and what
 /// the claim settled to — is the configured store's, through [`durable`].

@@ -2774,6 +2774,90 @@ async fn test_admin_v1_rotate_idempotency_in_flight_is_not_replayed_as_complete(
     handle.abort();
 }
 
+/// An arbitrary create header cannot enter the rotate namespace, in either operation order.
+/// Rebuilding the router drops its replay cache while preserving the Store, so the same witness
+/// also exercises durable claims independently of a same-process cached response.
+#[tokio::test]
+async fn create_and_rotate_operation_namespaces_survive_cache_loss() {
+    busbar_kernel::snapshot::init();
+    for create_first in [true, false] {
+        for lose_cache in [false, true] {
+            let store = Arc::new(MemoryStore::new());
+            let gov = gov_with_signer(store, Some("admintok".to_string()));
+            let (mut addr, mut server) = serve_with_gov(gov.clone()).await;
+            let client = reqwest::Client::new();
+            let created: serde_json::Value = client
+                .post(format!("http://{addr}/api/v1/admin/keys"))
+                .header("x-admin-token", "admintok")
+                .json(&serde_json::json!({"name": "rotate-target"}))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            let target = created["id"]
+                .as_str()
+                .expect("the target was minted")
+                .to_string();
+            let original_token = created["token"]
+                .as_str()
+                .expect("mint returned a token")
+                .to_string();
+            let rotate_header = "operation-collision";
+            let create_header = crate::idempotency::rotate_replay_key(&target, rotate_header);
+            for first in [true, false] {
+                if !first && lose_cache {
+                    server.abort();
+                    let _ = server.await;
+                    (addr, server) = serve_with_gov(gov.clone()).await;
+                }
+                let create = first == create_first;
+                let request = if create {
+                    client
+                        .post(format!("http://{addr}/api/v1/admin/keys"))
+                        .header("idempotency-key", &create_header)
+                        .json(&serde_json::json!({"name": "independent-create"}))
+                } else {
+                    client
+                        .post(format!("http://{addr}/api/v1/admin/keys/{target}/rotate"))
+                        .header("idempotency-key", rotate_header)
+                };
+                let response = request
+                    .header("x-admin-token", "admintok")
+                    .send()
+                    .await
+                    .unwrap();
+                assert_eq!(response.status().as_u16(), if create { 201 } else { 200 });
+                let body: serde_json::Value = response.json().await.unwrap();
+                let id = body["id"].as_str().expect("the operation returns a key id");
+                let token = body["token"]
+                    .as_str()
+                    .filter(|t| !t.is_empty())
+                    .expect("a real token");
+                if create {
+                    assert!(
+                        id != target,
+                        "create must mint its own key, never replay the rotation"
+                    );
+                } else {
+                    assert!(id == target, "rotate must answer for its actual target");
+                    assert!(
+                        token != original_token,
+                        "rotate must retire the original token"
+                    );
+                }
+            }
+            assert_eq!(
+                gov.all_keys().unwrap().len(),
+                2,
+                "one target and one independent create"
+            );
+            server.abort();
+        }
+    }
+}
+
 /// SECURITY REGRESSION: rotate's idempotency cache key used to be built by an UNESCAPED colon
 /// join of two caller-controlled strings — the `{id}` path segment and the `Idempotency-Key`
 /// header, `format!("rotate:{id}:{k}")`. Two DIFFERENT `(id, header)` pairs can join to the
@@ -11016,7 +11100,10 @@ async fn a_stuck_mint_or_rotate_is_refused_in_flight_however_old_its_sentinel() 
     };
     let before = generation();
     for key in [
-        ("admin".to_string(), "stuck-mint".to_string()),
+        (
+            "admin".to_string(),
+            crate::idempotency::create_replay_key("stuck-mint"),
+        ),
         (
             "admin".to_string(),
             crate::idempotency::rotate_replay_key(&id, "stuck-rotate"),

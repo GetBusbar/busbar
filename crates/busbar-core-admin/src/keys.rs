@@ -721,9 +721,11 @@ async fn create_key_owned(
         .and_then(|v| v.to_str().ok())
         .filter(|v| !v.is_empty())
         .map(str::to_string);
-    // The idempotency key is scoped to the PRINCIPAL: (actor, header). A different admin's identical
-    // Idempotency-Key value must never replay this principal's response (which carries a secret).
-    let idem_ckey: Option<(String, String)> = idem_key.as_ref().map(|k| (actor.clone(), k.clone()));
+    // Scope both the cache and Store claim to principal AND operation. The header is arbitrary:
+    // storing it raw would let a create header spell a rotate's framed key and replay its secret.
+    let idem_ckey: Option<(String, String)> = idem_key
+        .as_ref()
+        .map(|k| (actor.clone(), crate::idempotency::create_replay_key(k)));
     let mut idem_reservation: Option<crate::idempotency::Reservation<'_, Value>> = None;
     if let Some(ref ck) = idem_ckey {
         match replays.probe(ck.clone(), busbar_kernel::store::now()) {
