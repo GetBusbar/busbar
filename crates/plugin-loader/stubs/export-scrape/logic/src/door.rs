@@ -175,7 +175,8 @@ impl Life for Prometheus {
         })
     }
 
-    fn refresh(&self, _: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
+    fn refresh(&self, settings: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
+        crate::validate(settings).map_err(Refusal::failed)?;
         Ok(Refreshed::default())
     }
 }

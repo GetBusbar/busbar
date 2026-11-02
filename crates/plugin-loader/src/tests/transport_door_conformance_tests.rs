@@ -67,8 +67,8 @@ fn a_miscount_is_seen() {
     conformance::red_count(&subject());
 }
 
-/// THE RED ARM, KEPT: the row's door is a transport. Asked for as a hook it is refused, linked (by the
-/// door's own kind) and dropped in (by the stated kind, before the library is opened).
+/// THE RED ARM, KEPT: the row's door is a transport. Asked for as a hook it is refused by
+/// the stated kind, linked and dropped in, before either door is opened.
 #[test]
 fn the_door_asked_for_as_another_kind_is_refused_both_ways() {
     let door = shipped::door;
@@ -76,7 +76,10 @@ fn the_door_asked_for_as_another_kind_is_refused_both_ways() {
     let row = LinkedRow::of(door).expect("the door states itself");
     let linked = both::linked::<Transport>(door);
     match load_linked::<Hook>(&row, both::bind(&linked.dispatcher)) {
-        Err(LoadError::WrongKind { door, want: asked }) => assert_eq!((door, asked), want),
+        Err(LoadError::ManifestKind {
+            stated,
+            want: asked,
+        }) => assert_eq!((stated, asked), want),
         other => panic!("the linked door loaded as a hook: {:?}", other.err()),
     }
     let path = fixture_cdylib("transport");

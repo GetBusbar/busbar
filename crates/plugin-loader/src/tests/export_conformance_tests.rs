@@ -1366,7 +1366,7 @@ fn a_sink_validates_its_settings_the_same_through_either_door() {
         (both_ways::row(&registry, name), transcript)
     });
     let line = "export.tail.settings: invalid type: integer `7`, expected a string";
-    let streams = [ExportStream::Logs as u8];
+    let streams = [ExportStream::Logs as u8, ExportStream::Events as u8];
     assert_eq!(
         linked.1,
         serde_json::json!({

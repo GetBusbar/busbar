@@ -355,8 +355,14 @@ fn red_an_instance_that_will_not_bind_is_named() {
         file: "plane-door.tar.gz".into(),
         bytes: Arc::new(std::fs::read(path).unwrap()),
     };
-    let last = c.stated.len() - 1;
-    c.stated[last] ^= 1;
+    // State a different, well-formed version so admission reaches the byte-for-byte door
+    // comparison rather than refusing a malformed rendering before opening the library.
+    // SAFETY: the fixture door publishes an immutable Statement for the process's lifetime.
+    let mut stated = unsafe { *plug::door().statement() };
+    stated.version = abi_str("0.0.0-mismatched-fixture");
+    // SAFETY: the copy retains the fixture's live lists and replaces only one static string.
+    c.stated = unsafe { render(&stated) }.expect("the changed Statement renders");
+    assert!(busbar_contract::abi::mechanism::rendering::read(&c.stated).is_ok());
     let logs = PluginLogConfig::from_words(None, None, &Default::default(), None, None).unwrap();
     let err = load(&LoadRequest {
         candidates: &[c],

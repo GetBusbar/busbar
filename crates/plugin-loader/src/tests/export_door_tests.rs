@@ -175,7 +175,14 @@ fn refresh_refusal_and_success_leave_the_opened_export_usable() {
     let (plugin, dispatcher) = linked();
     let sink = ExportInstance::open(plugin, dispatcher, br#"{"buffer_seconds":60}"#)
         .expect("the sink opens");
-    assert!(sink.refresh(&serde_json::json!({"bogus": 1}), 2).is_err());
+    for settings in [
+        serde_json::json!({"bogus": 1}),
+        serde_json::json!({"buffer_seconds": 0}),
+        serde_json::json!({"buffer_seconds": "thirty"}),
+    ] {
+        assert!(sink.refresh(&settings, 2).is_err(), "{settings}");
+        assert!(sink.plugin().is_open());
+    }
     sink.refresh(&serde_json::json!({"buffer_seconds": 30}), 3)
         .expect("valid settings refresh the existing export");
     let text = "# TYPE private_counter counter\nprivate_counter{pool=\"private\"} 1\n\n";
