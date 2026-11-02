@@ -14,6 +14,7 @@ use std::sync::OnceLock;
 
 const WAIT: Duration = Duration::from_secs(10);
 type Probe = Arc<dyn Fn() + Send + Sync>;
+type CloseProbe = Arc<dyn Fn(Ticket) + Send + Sync>;
 type Identity = (u64, u64, u64, u64);
 #[derive(Default)]
 struct State {
@@ -25,6 +26,8 @@ struct State {
     cancels: AtomicU64,
     release_scopes: Mutex<Vec<Option<Identity>>>,
     probe: Mutex<Option<Probe>>,
+    close_probe: Mutex<Option<CloseProbe>>,
+    services: Option<busbar_contract::abi::sdk::services::Services>,
     extensions: Mutex<std::collections::HashMap<u64, Box<[u8]>>>,
     entered: AtomicBool,
     unblock: AtomicBool,
@@ -44,14 +47,25 @@ fn issued(state: &State, head: &mut OutHead) {
     head.lease = lease;
 }
 crate::dispatch_tests::c_abi! {
-    fn open(_: *mut std::ffi::c_void, _: *const std::ffi::c_void, out: *mut std::ffi::c_void) -> RawOutcome {
-        let out = unsafe { &mut *out.cast::<OpenOut>() };
-        out.instance = Box::into_raw(Box::<State>::default()).cast();
+    fn open(_: *mut std::ffi::c_void, input: *const std::ffi::c_void, out: *mut std::ffi::c_void) -> RawOutcome {
+        let (input, out) = unsafe { (&*input.cast::<OpenIn>(), &mut *out.cast::<OpenOut>()) };
+        // SAFETY: the loader lends its complete host tables for OPEN; the copied service
+        // callbacks validate their context and remain callable until this instance closes.
+        let services = unsafe { input.host.as_ref().and_then(|host| busbar_contract::abi::sdk::services::Services::from_raw(host)) };
+        out.instance = Box::into_raw(Box::new(State { services, ..State::default() })).cast();
         out.head.outcome = RawOutcome::of(Outcome::Ready);
         RawOutcome::of(Outcome::Ready)
     }
-    fn close(instance: *mut std::ffi::c_void, _: *const std::ffi::c_void, out: *mut std::ffi::c_void) -> RawOutcome {
-        unsafe { drop(Box::from_raw(instance.cast::<State>())); (*out.cast::<OutHead>()).outcome = RawOutcome::of(Outcome::Ready); }
+    fn close(instance: *mut std::ffi::c_void, input: *const std::ffi::c_void, out: *mut std::ffi::c_void) -> RawOutcome {
+        let state = unsafe { Box::from_raw(instance.cast::<State>()) };
+        let probe = state.close_probe.lock().unwrap().take();
+        if let Some(probe) = probe {
+            // SAFETY: CLOSE's actual initialized input starts with InHead and stays live
+            // through this synchronous callback; no service output escapes the crossing.
+            probe(unsafe { (*input.cast::<InHead>()).ticket });
+        }
+        drop(state);
+        unsafe { (*out.cast::<OutHead>()).outcome = RawOutcome::of(Outcome::Ready); }
         RawOutcome::of(Outcome::Ready)
     }
     fn release(instance: *mut std::ffi::c_void, input: *const std::ffi::c_void, out: *mut std::ffi::c_void) -> RawOutcome {
@@ -228,6 +242,173 @@ fn settled_unpolled_reply_releases_under_its_captured_scope_outside_both_locks()
     assert!(state.leases.lock().unwrap().is_empty());
     *state.probe.lock().unwrap() = None;
     d.recycle(ticket);
+}
+
+/// CLOSE crosses to a permanent FFI worker before its synchronous host callback. This raw
+/// lifecycle input pins the scope at that callback; a product need not naturally call a service
+/// while closing, and RELEASE custody alone does not exercise the CLOSE path.
+#[test]
+fn close_host_callback_keeps_the_submitted_framing_scope_outside_both_locks() {
+    use crate::dispatch::auth_handle::{
+        AuthCallAsk, AuthDone, AuthHandleHost, AuthRan, HandInAsk, RefusalBytes, RefuseAsk,
+        UnitSecret,
+    };
+    use busbar_contract::abi::host::service::{UnitRef, LINE_NONE, REFUSE_NO_ROUTE, SCHEME_PLAIN};
+    use busbar_contract::abi::mechanism::ticket::CompletionHandle;
+    use busbar_contract::abi::sdk::services::HeadViewArgs;
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct Seen {
+        scope: Option<Identity>,
+        framing: Option<u64>,
+        owner: u64,
+        conn: u64,
+        worker: Option<(usize, u32)>,
+        permanent: bool,
+        thread: std::thread::ThreadId,
+    }
+    #[derive(Default)]
+    struct Host {
+        seen: Mutex<Vec<Seen>>,
+        probe: Mutex<Option<Probe>>,
+    }
+    impl AuthHandleHost for Host {
+        fn unit_secret(&self, _: u64, _: u64) -> Option<UnitSecret> {
+            None
+        }
+        fn auth_call(&self, _: AuthCallAsk, _: AuthDone) -> AuthRan {
+            AuthRan::Now(Err("no auth call in this lifecycle input"))
+        }
+        fn hand_in(&self, _: HandInAsk) -> Result<(u32, UnitRef), &'static str> {
+            Err("no hand-in in this lifecycle input")
+        }
+        fn refuse(&self, ask: RefuseAsk) -> Result<RefusalBytes, &'static str> {
+            self.seen.lock().unwrap().push(Seen {
+                scope: super::super::framing_context::current()
+                    .map(|s| (s.owner(), s.leg(), s.listener(), s.connection())),
+                framing: ask.framing,
+                owner: ask.owner,
+                conn: ask.conn,
+                worker: worker_mark(),
+                permanent: crate::ffi_thread::on_permanent_worker(),
+                thread: std::thread::current().id(),
+            });
+            let probe = self.probe.lock().unwrap().clone();
+            if let Some(probe) = probe {
+                probe();
+            }
+            Ok(RefusalBytes {
+                status: 404,
+                fields: Vec::new(),
+                body: Vec::new(),
+            })
+        }
+        fn framing_ended(&self, _: u64) {}
+    }
+
+    let (d, p, ptr) = rig();
+    let host = Arc::new(Host::default());
+    assert!(d.install_auth_handle(host.clone()));
+    let scope = d.framing_context(p.instance().0, 73, 0).unwrap();
+    scope.confirm(21).unwrap();
+    let expected = (p.instance().0, scope.leg(), 73, scope.connection());
+    let expected_worker = (Arc::as_ptr(&d.pool.env) as usize, 0);
+    let caller = std::thread::current().id();
+    let (entered_tx, entered) = std::sync::mpsc::channel();
+    let (release, held) = std::sync::mpsc::channel();
+    let held = Mutex::new(held);
+    let service_ready = Arc::new(AtomicBool::new(false));
+    let service_called = service_ready.clone();
+    // SAFETY: rig's OPEN owns this State, and CLOSE has not been submitted yet. Only the
+    // copied service snapshot and the callback escape this borrow; State is never read later.
+    let state = unsafe { &*ptr };
+    let services = state
+        .services
+        .expect("OPEN lent the actual host service table");
+    *state.close_probe.lock().unwrap() = Some(Arc::new(move |ticket| {
+        if entered_tx.send(()).is_err() || held.lock().unwrap().recv_timeout(WAIT).is_err() {
+            return;
+        }
+        let refusal = services.unit_refuse(
+            CompletionHandle {
+                ticket,
+                seq: 1,
+                _reserved: 0,
+            },
+            UnitRef::NONE,
+            REFUSE_NO_ROUTE,
+            LINE_NONE,
+            21,
+            1,
+            &HeadViewArgs {
+                method: "GET",
+                target: "/",
+                scheme: SCHEME_PLAIN,
+                ..HeadViewArgs::default()
+            },
+        );
+        service_called.store(refusal.is_ok_and(|r| r.status == 404), Ordering::SeqCst);
+    }));
+    let ticket = d.mint(0).unwrap();
+    let reply = super::super::framing_context::with_context(Some(scope.clone()), || {
+        d.submit(
+            &p,
+            ticket,
+            slot::CLOSE,
+            Frame::new(in_head(), out_head()),
+            DeadlineClass::Call,
+            0,
+        )
+    });
+    let caller_scope_restored = super::super::framing_context::current().is_none();
+    entered
+        .recv_timeout(WAIT)
+        .expect("the actual CLOSE entered its FFI callback");
+    let slot = Arc::clone(&reply.slot);
+    let worker = d.worker(0).unwrap();
+    let locks_available = Arc::new(AtomicBool::new(false));
+    let unlocked = locks_available.clone();
+    *host.probe.lock().unwrap() = Some(Arc::new(move || {
+        if let (Ok(reply), Ok(worker)) = (slot.v.try_lock(), worker.state.try_lock()) {
+            drop((reply, worker));
+            unlocked.store(true, Ordering::SeqCst);
+        }
+    }));
+    release.send(()).unwrap();
+    let done = reply.wait(WAIT).expect("the lifecycle CLOSE finishes");
+    *host.probe.lock().unwrap() = None;
+    drop(reply);
+    d.recycle(ticket);
+    scope.end();
+
+    assert!(caller_scope_restored);
+    assert_eq!(done.outcome, Outcome::Ready);
+    assert!(
+        service_ready.load(Ordering::SeqCst),
+        "unit_refuse answered inside CLOSE"
+    );
+    assert!(
+        locks_available.load(Ordering::SeqCst),
+        "the host callback held neither reply nor worker lock"
+    );
+    let seen = host.seen.lock().unwrap();
+    assert_eq!(
+        seen.len(),
+        1,
+        "exactly one service callback ran inside CLOSE"
+    );
+    assert_eq!(
+        seen.iter()
+            .map(|s| (s.scope.map(|s| s.1), s.framing))
+            .collect::<Vec<_>>(),
+        vec![(Some(scope.leg()), Some(scope.leg()))]
+    );
+    assert_eq!(seen[0].scope, Some(expected));
+    assert_eq!((seen[0].owner, seen[0].conn), (expected.0, 21));
+    assert_eq!(seen[0].worker, Some(expected_worker));
+    assert!(seen[0].permanent);
+    assert_ne!(seen[0].thread, caller);
+    assert!(!p.is_open());
 }
 
 #[test]
