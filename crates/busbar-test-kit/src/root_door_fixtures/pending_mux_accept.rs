@@ -382,7 +382,7 @@ impl FramerDoor for Mux {
                     "cancel retains its parked operation ticket"
                 );
                 self.cancellations.fetch_add(1, Ordering::SeqCst);
-                out.disposition = busbar_contract::abi::mechanism::lifecycle::cancel::ABORTED;
+                out.disposition = busbar_contract::abi::transport::CANCEL_NOTHING_MOVED;
                 Crossed {
                     outcome: Outcome::Ready,
                     error: None,
