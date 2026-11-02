@@ -1602,3 +1602,30 @@ fn an_unreadable_service_account_key_file_refuses_in_1_5_5s_words_without_the_pa
     );
     assert!(!refused.contains("secret-name"), "{refused}");
 }
+
+#[test]
+fn test_reserved_admin_name_boundaries() {
+    for name in ["apix", "api-pool", "api_portal", "adminx"] {
+        assert!(
+            !reserved_admin_name(name),
+            "'{name}' is a boundary-safe name and must not be treated as reserved"
+        );
+        assert!(
+            !reserved_legacy_admin_name(name),
+            "'{name}' is a boundary-safe name and must not be treated as the legacy reserved name"
+        );
+    }
+    assert!(reserved_admin_name("api"), "'api' must be reserved");
+    assert!(
+        reserved_legacy_admin_name("admin"),
+        "'admin' must stay reserved"
+    );
+    assert!(
+        reserved_legacy_admin_name("admin/x"),
+        "'admin/x' puts admin in the first path segment and must stay reserved"
+    );
+    assert!(
+        !reserved_admin_name("admin"),
+        "'admin' is not the native-API root; it is refused by the legacy rule, not this one"
+    );
+}

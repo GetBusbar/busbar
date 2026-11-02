@@ -644,30 +644,6 @@ fn test_validate_rejects_model_named_admin_with_legacy_message() {
 
 #[test]
 fn test_validate_allows_api_prefixed_but_boundary_safe_names() {
-    for name in ["apix", "api-pool", "api_portal", "adminx"] {
-        assert!(
-            !reserved_admin_name(name),
-            "'{name}' is a boundary-safe name and must not be treated as reserved"
-        );
-        assert!(
-            !reserved_legacy_admin_name(name),
-            "'{name}' is a boundary-safe name and must not be treated as the legacy reserved name"
-        );
-    }
-    assert!(reserved_admin_name("api"), "'api' must be reserved");
-    assert!(
-        reserved_legacy_admin_name("admin"),
-        "'admin' must stay reserved"
-    );
-    assert!(
-        reserved_legacy_admin_name("admin/x"),
-        "'admin/x' puts admin in the first path segment and must stay reserved"
-    );
-    assert!(
-        !reserved_admin_name("admin"),
-        "'admin' is not the native-API root; it is refused by the legacy rule, not this one"
-    );
-
     let (providers, models, _) = valid_maps();
     let mut pools = HashMap::new();
     pools.insert("apix".to_string(), make_pool(vec![make_member("mymodel")]));
