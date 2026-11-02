@@ -2180,16 +2180,6 @@ async fn a_session_waits_for_its_parked_message_before_emitting_the_next() {
         .unwrap();
 }
 
-fn staged_mux_framer(
-    door: Arc<busbar_test_kit::root_door_fixtures::pending_mux_accept::Mux>,
-) -> DataFramer {
-    let entry: Arc<dyn FramerDoor> = door;
-    data_framer(Arc::new(move |scheme: &str| {
-        matches!(scheme, DATA_SCHEME | "ws").then(|| Arc::clone(&entry))
-    }))
-    .expect("the staged accepting and session claims are found")
-}
-
 fn held_session_refusal_route() -> (
     Router,
     tokio::sync::oneshot::Receiver<()>,
@@ -2492,60 +2482,93 @@ fn accepted_session_route() -> (
 }
 
 #[tokio::test]
+#[cfg(feature = "transport-ws")]
 async fn a_pending_session_adoption_admits_only_after_its_original_ticket_is_ready() {
-    use busbar_test_kit::root_door_fixtures::pending_mux_accept::{Mux, SESSION_ACCEPT_WIRE};
-    let _publishing = anonymous_policy().await;
-    let door = Arc::new(Mux::with_pending_adoption(false));
-    let (router, mut admitted, _outgoing) = accepted_session_route();
+    use busbar_kernel::plane_routes::{FramedSession, SessionPipe};
+    use std::future::Future as _;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let (_publishing, framer, _http, ws) = actual_session_framer().await;
+    let effects = Arc::new(AtomicUsize::new(0));
+    let (entered, pending) = tokio::sync::oneshot::channel();
+    let entered = Arc::new(std::sync::Mutex::new(Some(entered)));
+    let (release, held) = tokio::sync::oneshot::channel();
+    let held = Arc::new(std::sync::Mutex::new(Some(held)));
+    let route_effects = effects.clone();
+    let router = Router::new().route(
+        "/first",
+        axum::routing::get(
+            move |axum::Extension(session): axum::Extension<FramedSession>| {
+                let entered = entered.lock().unwrap().take().unwrap();
+                let held = held.lock().unwrap().take().unwrap();
+                let effects = route_effects.clone();
+                async move {
+                    let mut admission = Box::pin(session.admit());
+                    std::future::poll_fn(|cx| {
+                        assert!(
+                            admission.as_mut().poll(cx).is_pending(),
+                            "the native admission awaits its actor"
+                        );
+                        Poll::Ready(())
+                    })
+                    .await;
+                    entered.send(()).unwrap();
+                    held.await.unwrap();
+                    assert!(
+                        admission.await,
+                        "the original native admission command acknowledges readiness"
+                    );
+                    effects.fetch_add(1, Ordering::SeqCst);
+                    let (from_caller, _incoming) = tokio::sync::mpsc::channel(1);
+                    let (_outgoing, to_caller) = tokio::sync::mpsc::channel(1);
+                    session.put(SessionPipe {
+                        from_caller,
+                        to_caller,
+                    });
+                    axum::http::StatusCode::SWITCHING_PROTOCOLS
+                }
+            },
+        ),
+    );
     let (mut client, server) = tokio::io::duplex(4096);
     let (stop, stopped) = tokio::sync::watch::channel(false);
     let served = tokio::spawn(super::serve(
         server,
-        staged_mux_framer(door.clone()),
+        framer,
         router,
         false,
         Duration::from_secs(30),
         stopped,
     ));
-    client.write_all(b"1").await.unwrap();
-    tokio::time::timeout(Duration::from_secs(10), door.wait_for_adoption_pending())
+    client.write_all(SESSION_REQUEST).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), pending)
         .await
-        .expect("adoption actually pends");
+        .unwrap()
+        .unwrap();
     let mut byte = [0; 1];
     assert!(
         tokio::time::timeout(Duration::from_millis(20), client.read(&mut byte))
             .await
             .is_err(),
-        "pending adoption neither closes nor publishes handshake wire"
+        "the uncommitted admission publishes no handshake wire"
     );
-    assert!(
-        matches!(
-            admitted.try_recv(),
-            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
-        ),
-        "no route effect runs before the adoption ticket completes"
+    assert_eq!(
+        effects.load(Ordering::SeqCst),
+        0,
+        "no route effect precedes native readiness"
     );
-    assert_eq!(door.commit_attempts(), 0);
-    door.release_adoption();
-    tokio::time::timeout(Duration::from_secs(10), admitted)
-        .await
-        .expect("ready adoption admits the route")
-        .unwrap();
-    tokio::time::timeout(Duration::from_secs(10), door.wait_for_commit())
-        .await
-        .expect("the accepted route commits once");
-    let mut wire = vec![0; SESSION_ACCEPT_WIRE.len()];
-    tokio::time::timeout(Duration::from_secs(10), client.read_exact(&mut wire))
-        .await
-        .expect("the committed handshake is published")
-        .unwrap();
-    assert_eq!(wire, SESSION_ACCEPT_WIRE);
-    assert!(door.adopted_resumes() >= 1);
-    assert_eq!(door.commit_attempts(), 1);
-    assert_eq!(door.committed_heads(), 1);
-    assert_eq!(door.cancellations(), 0);
-    drop(client);
-    stop.send(true).unwrap();
+    assert_eq!(
+        ws.count(|call| matches!(call, ObservedCall::Emit { status: 101, .. })),
+        0
+    );
+    release.send(()).unwrap();
+    let head = read_reply(&mut client, b"").await;
+    assert!(head.starts_with(b"HTTP/1.1 101"), "{head:?}");
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        ws.count(|call| matches!(call, ObservedCall::Emit { status: 101, .. })),
+        1
+    );
+    let _ = stop.send(true);
     tokio::time::timeout(Duration::from_secs(10), served)
         .await
         .unwrap()
@@ -2553,18 +2576,18 @@ async fn a_pending_session_adoption_admits_only_after_its_original_ticket_is_rea
 }
 
 #[tokio::test]
+#[cfg(feature = "transport-ws")]
 async fn a_pending_session_adoption_that_refuses_never_admits_the_route() {
     use busbar_kernel::plane_routes::FramedSession;
-    use busbar_test_kit::root_door_fixtures::pending_mux_accept::Mux;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    let _publishing = anonymous_policy().await;
+    let (_publishing, framer, http, ws) = actual_session_framer().await;
     let effects = Arc::new(AtomicUsize::new(0));
-    let observed = effects.clone();
+    let route_effects = effects.clone();
     let router = Router::new().route(
         "/first",
         axum::routing::get(
             move |axum::Extension(session): axum::Extension<FramedSession>| {
-                let effects = observed.clone();
+                let effects = route_effects.clone();
                 async move {
                     if session.admit().await {
                         effects.fetch_add(1, Ordering::SeqCst);
@@ -2574,21 +2597,18 @@ async fn a_pending_session_adoption_that_refuses_never_admits_the_route() {
             },
         ),
     );
-    let door = Arc::new(Mux::with_pending_adoption(true));
     let (mut client, server) = tokio::io::duplex(4096);
-    let (_stop, stopped) = tokio::sync::watch::channel(false);
+    let (stop, stopped) = tokio::sync::watch::channel(false);
     let served = tokio::spawn(super::serve(
         server,
-        staged_mux_framer(door.clone()),
+        framer,
         router,
         false,
         Duration::from_secs(30),
         stopped,
     ));
-    client.write_all(b"1").await.unwrap();
-    tokio::time::timeout(Duration::from_secs(10), door.wait_for_adoption_pending())
-        .await
-        .expect("the eventual refusal first pends");
+    // Withhold the final head delimiter: the actual HTTP decoder needs more peer input.
+    client.write_all(b"GET /first HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\n").await.unwrap();
     let mut byte = [0; 1];
     assert!(
         tokio::time::timeout(Duration::from_millis(20), client.read(&mut byte))
@@ -2596,91 +2616,141 @@ async fn a_pending_session_adoption_that_refuses_never_admits_the_route() {
             .is_err()
     );
     assert_eq!(effects.load(Ordering::SeqCst), 0);
-    door.release_adoption();
+    client.write_all(b"\r\n").await.unwrap();
+    let mut wire = read_reply(&mut client, b"").await;
+    let _ = stop.send(true);
     tokio::time::timeout(Duration::from_secs(10), served)
         .await
-        .expect("the refused adoption closes")
+        .unwrap()
         .unwrap();
-    let mut wire = Vec::new();
-    client.read_to_end(&mut wire).await.unwrap();
+    drain_reply(&mut client, &mut wire).await;
     assert!(
-        wire.is_empty(),
-        "no provisional acceptance or extractor fallback is sent"
+        wire.starts_with(b"HTTP/1.1 400") || wire.starts_with(b"HTTP/1.1 426"),
+        "{wire:?}"
     );
-    assert!(door.adopted_resumes() >= 1);
-    assert_eq!(effects.load(Ordering::SeqCst), 0);
-    assert_eq!(door.commit_attempts(), 0);
-    assert_eq!(door.committed_heads(), 0);
-    assert!(door.responses().is_empty());
+    assert_eq!(
+        String::from_utf8_lossy(&wire).matches("HTTP/1.1 ").count(),
+        1,
+        "the real missing-key refusal is published once"
+    );
+    assert_eq!(
+        effects.load(Ordering::SeqCst),
+        0,
+        "refused adoption admits no route effect"
+    );
+    assert_eq!(
+        http.count(|call| matches!(call, ObservedCall::Emit { status: 101, .. })),
+        0
+    );
+    assert_eq!(
+        ws.count(|call| matches!(call, ObservedCall::Emit { status: 101, .. })),
+        0
+    );
 }
 
 #[tokio::test]
+#[cfg(feature = "transport-ws")]
 async fn a_pending_session_commit_holds_wire_and_application_calls_until_ready() {
-    use busbar_kernel::plane_routes::SessionOut;
-    use busbar_test_kit::root_door_fixtures::pending_mux_accept::{Mux, SESSION_ACCEPT_WIRE};
-    let _publishing = anonymous_policy().await;
-    let door = Arc::new(Mux::with_pending_commit());
-    door.release();
-    let (router, admitted, outgoing) = accepted_session_route();
-    outgoing
-        .send(SessionOut {
-            bytes: b"after-commit".to_vec(),
-            text: true,
-        })
-        .await
-        .unwrap();
+    use busbar_kernel::plane_routes::{FramedSession, SessionOut, SessionPipe};
+    let (_publishing, framer, _http, ws) = actual_session_framer().await;
+    let (entered, admitted) = tokio::sync::oneshot::channel();
+    let entered = Arc::new(std::sync::Mutex::new(Some(entered)));
+    let (release, held) = tokio::sync::oneshot::channel();
+    let held = Arc::new(std::sync::Mutex::new(Some(held)));
+    let router = Router::new().route(
+        "/first",
+        axum::routing::get(
+            move |axum::Extension(session): axum::Extension<FramedSession>| {
+                let entered = entered.lock().unwrap().take().unwrap();
+                let held = held.lock().unwrap().take().unwrap();
+                async move {
+                    assert!(session.admit().await);
+                    let (from_caller, _incoming) = tokio::sync::mpsc::channel(1);
+                    let (outgoing, to_caller) = tokio::sync::mpsc::channel(1);
+                    outgoing
+                        .send(SessionOut {
+                            bytes: b"after-commit".to_vec(),
+                            text: false,
+                        })
+                        .await
+                        .unwrap();
+                    session.put(SessionPipe {
+                        from_caller,
+                        to_caller,
+                    });
+                    entered.send(()).unwrap();
+                    held.await.unwrap();
+                    drop(outgoing);
+                    axum::http::StatusCode::SWITCHING_PROTOCOLS
+                }
+            },
+        ),
+    );
     let (mut client, server) = tokio::io::duplex(4096);
     let (stop, stopped) = tokio::sync::watch::channel(false);
     let served = tokio::spawn(super::serve(
         server,
-        staged_mux_framer(door.clone()),
+        framer,
         router,
         false,
         Duration::from_secs(30),
         stopped,
     ));
-    client.write_all(b"1").await.unwrap();
+    client.write_all(SESSION_REQUEST).await.unwrap();
     tokio::time::timeout(Duration::from_secs(10), admitted)
         .await
         .unwrap()
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(10), door.wait_for_commit_pending())
-        .await
-        .expect("the explicit acceptance commit actually pends");
     let mut byte = [0; 1];
     assert!(
         tokio::time::timeout(Duration::from_millis(20), client.read(&mut byte))
             .await
             .is_err(),
-        "the held handshake cannot publish while its commit ticket is pending"
+        "the actual stage holds handshake and queued message while its route decision is pending"
     );
-    assert_eq!(door.commit_attempts(), 1);
-    assert_eq!(door.committed_heads(), 0);
     assert_eq!(
-        door.message_attempts(),
-        0,
-        "application frames cannot cross a pending commit"
+        ws.count(|call| matches!(call, ObservedCall::Emit { status: 101, .. })),
+        0
     );
-    door.release_commit();
-    tokio::time::timeout(Duration::from_secs(10), door.wait_for_commit())
-        .await
-        .unwrap();
-    let mut wire = vec![0; SESSION_ACCEPT_WIRE.len()];
-    tokio::time::timeout(Duration::from_secs(10), client.read_exact(&mut wire))
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(wire, SESSION_ACCEPT_WIRE);
-    tokio::time::timeout(Duration::from_secs(10), door.wait_for_message())
-        .await
-        .expect("application delivery follows ready commit");
-    assert_eq!(door.committed_heads(), 1);
-    assert_eq!(door.commit_attempts(), 1);
-    assert_eq!(door.message_attempts(), 1);
-    assert_eq!(door.emitted()[0].bytes, b"after-commit");
-    assert_eq!(door.cancellations(), 0);
-    drop(client);
-    stop.send(true).unwrap();
+    assert_eq!(
+        ws.count(|call| matches!(call, ObservedCall::Emit { status: 0, .. })),
+        0
+    );
+    release.send(()).unwrap();
+    let mut head = Vec::new();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !head.ends_with(b"\r\n\r\n") {
+            let mut byte = [0; 1];
+            client.read_exact(&mut byte).await.unwrap();
+            head.push(byte[0]);
+            assert!(head.len() < 16 * 1024);
+        }
+        let mut frame = [0; 2];
+        client.read_exact(&mut frame).await.unwrap();
+        assert_eq!(frame, [0x82, 12]);
+        let mut body = [0; 12];
+        client.read_exact(&mut body).await.unwrap();
+        assert_eq!(&body, b"after-commit");
+    })
+    .await
+    .expect("commit publishes one real handshake followed by the queued message");
+    assert!(head.starts_with(b"HTTP/1.1 101"), "{head:?}");
+    assert_eq!(
+        ws.count(|call| matches!(call, ObservedCall::Emit { status: 101, .. })),
+        1
+    );
+    assert_eq!(
+        ws.count(|call| matches!(
+            call,
+            ObservedCall::Emit {
+                status: 0,
+                len: 12,
+                ..
+            }
+        )),
+        1
+    );
+    let _ = stop.send(true);
     tokio::time::timeout(Duration::from_secs(10), served)
         .await
         .unwrap()
@@ -2688,38 +2758,61 @@ async fn a_pending_session_commit_holds_wire_and_application_calls_until_ready()
 }
 
 #[tokio::test]
+#[cfg(feature = "transport-ws")]
 async fn cancelled_pending_adoption_and_commit_ignore_their_late_wakes() {
-    use busbar_test_kit::root_door_fixtures::pending_mux_accept::Mux;
-    let _publishing = anonymous_policy().await;
+    use busbar_kernel::plane_routes::{FramedSession, SessionPipe};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     for adopting in [true, false] {
-        let door = Arc::new(if adopting {
-            Mux::with_pending_adoption(false)
-        } else {
-            Mux::with_pending_commit()
-        });
-        let (router, mut admitted, _outgoing) = accepted_session_route();
+        let (_publishing, framer, http, ws) = actual_session_framer().await;
+        let effects = Arc::new(AtomicUsize::new(0));
+        let route_effects = effects.clone();
+        let (entered, mut admitted) = tokio::sync::oneshot::channel();
+        let entered = Arc::new(std::sync::Mutex::new(Some(entered)));
+        let (release, held) = tokio::sync::oneshot::channel();
+        let held = Arc::new(std::sync::Mutex::new(Some(held)));
+        let router = Router::new().route(
+            "/first",
+            axum::routing::get(
+                move |axum::Extension(session): axum::Extension<FramedSession>| {
+                    let entered = entered.lock().unwrap().take().unwrap();
+                    let held = held.lock().unwrap().take().unwrap();
+                    let effects = route_effects.clone();
+                    async move {
+                        assert!(session.admit().await);
+                        entered.send(()).unwrap();
+                        held.await.unwrap();
+                        effects.fetch_add(1, Ordering::SeqCst);
+                        let (from_caller, _incoming) = tokio::sync::mpsc::channel(1);
+                        let (_outgoing, to_caller) = tokio::sync::mpsc::channel(1);
+                        session.put(SessionPipe {
+                            from_caller,
+                            to_caller,
+                        });
+                        axum::http::StatusCode::SWITCHING_PROTOCOLS
+                    }
+                },
+            ),
+        );
         let (mut client, server) = tokio::io::duplex(4096);
         let (stop, stopped) = tokio::sync::watch::channel(false);
         let served = tokio::spawn(super::serve(
             server,
-            staged_mux_framer(door.clone()),
+            framer,
             router,
             false,
             Duration::from_secs(30),
             stopped,
         ));
-        client.write_all(b"1").await.unwrap();
         if adopting {
-            tokio::time::timeout(Duration::from_secs(10), door.wait_for_adoption_pending())
+            client
+                .write_all(&SESSION_REQUEST[..SESSION_REQUEST.len() - 2])
                 .await
                 .unwrap();
         } else {
+            client.write_all(SESSION_REQUEST).await.unwrap();
             tokio::time::timeout(Duration::from_secs(10), &mut admitted)
                 .await
                 .unwrap()
-                .unwrap();
-            tokio::time::timeout(Duration::from_secs(10), door.wait_for_commit_pending())
-                .await
                 .unwrap();
         }
         let mut byte = [0; 1];
@@ -2728,39 +2821,38 @@ async fn cancelled_pending_adoption_and_commit_ignore_their_late_wakes() {
                 .await
                 .is_err()
         );
-        assert_eq!(door.committed_heads(), 0);
+        assert_eq!(
+            ws.count(|call| matches!(call, ObservedCall::Emit { status: 101, .. })),
+            0
+        );
         stop.send(true).unwrap();
         tokio::time::timeout(Duration::from_secs(10), served)
             .await
-            .expect("cancellation closes the staged actor")
+            .expect("cancellation closes the actual staged actor")
             .unwrap();
-        assert_eq!(
-            door.cancellations(),
-            1,
-            "only the original parked ticket is cancelled"
-        );
-        assert_eq!(
-            door.session_finishes(),
-            u32::from(!adopting),
-            "only a ready framing token finishes"
-        );
-        let resumes = door.adopted_resumes();
-        door.release_adoption();
-        door.release_commit();
+        let before = ws.count(|call| matches!(call, ObservedCall::Emit { .. }));
+        let _ = release.send(());
+        if adopting {
+            let _ = client.write_all(b"\r\n").await;
+        }
         tokio::task::yield_now().await;
         let mut wire = Vec::new();
         client.read_to_end(&mut wire).await.unwrap();
         assert!(
             wire.is_empty(),
-            "a stale ticket wake cannot publish held handshake or finish wire"
+            "late peer bytes or route readiness cannot publish canceled handshake wire"
         );
-        assert_eq!(door.committed_heads(), 0);
-        assert_eq!(door.adopted_resumes(), resumes);
-        assert_eq!(door.message_attempts(), 0);
+        assert_eq!(effects.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            ws.count(|call| matches!(call, ObservedCall::Emit { .. })),
+            before,
+            "late readiness cannot emit a message or repeat a commit"
+        );
+        assert_eq!(http.count(|call| matches!(call, ObservedCall::Finish)), 1);
         if adopting {
             assert!(
                 admitted.await.is_err(),
-                "a cancelled admission never acknowledges the route"
+                "a canceled unparsed head never admits its route"
             );
         }
     }
