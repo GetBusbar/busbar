@@ -13,7 +13,10 @@ const OFFSITE_REDIRECT_URI: &str = "https://client.example/cb";
 const SCOPE: &str = "read";
 const CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
 
-async fn serve(scopes: &[&str], guarded: bool) -> (String, Arc<busbar_kernel::state::App>) {
+pub(super) async fn serve(
+    scopes: &[&str],
+    guarded: bool,
+) -> (String, Arc<busbar_kernel::state::App>) {
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await

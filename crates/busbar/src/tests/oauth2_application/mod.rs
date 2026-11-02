@@ -16,6 +16,7 @@ mod plugins;
 mod browser;
 mod code_flow_tests;
 mod consent_tests;
+mod device_tests;
 mod directory;
 mod fapi2_tests;
 mod hosted_credential_tests;

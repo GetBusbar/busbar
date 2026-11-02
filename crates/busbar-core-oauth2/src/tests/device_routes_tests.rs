@@ -319,51 +319,8 @@ async fn device_forms_refuse_missing_forged_replayed_and_cross_origin_csrf_and_a
 }
 
 #[tokio::test]
-async fn the_browser_device_routes_require_admin_and_public_registration_keeps_its_grant_policy() {
-    let (origin, _app) = serve_with_admin_chain(vec!["test-scope-module".to_string()]).await;
-    let client = reqwest::Client::new();
-    for method in [reqwest::Method::GET, reqwest::Method::POST] {
-        let response = client
-            .request(method, format!("{origin}/device"))
-            .form(&[("user_code", "ABCD-EFGH"), ("action", "approve")])
-            .send()
-            .await
-            .unwrap();
-        assert!(matches!(response.status().as_u16(), 401 | 403));
-        let page = response.text().await.unwrap();
-        assert!(!page.contains("csrf_token") && !page.contains("ABCD-EFGH"));
-    }
-    let response = client
-        .post(format!("{origin}/register"))
-        .json(&serde_json::json!({
-            "redirect_uris": ["https://client.example/cb"],
-            "grant_types": [DEVICE_GRANT],
-            "token_endpoint_auth_method": "none",
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert!(
-        response.status().is_client_error(),
-        "public registration cannot enable device grants"
-    );
-    let response = client
-        .post(format!("{origin}/device_authorization"))
-        .form(&[("client_id", "flow-test-client"), ("scope", "read")])
-        .send()
-        .await
-        .unwrap();
-    assert!(response.status().is_client_error());
-    let error: Value = response.json().await.unwrap();
-    assert_eq!(
-        error["error"], "unauthorized_client",
-        "a pre-existing code-only registration does not gain device permission"
-    );
-}
-
-#[tokio::test]
 async fn device_csrf_is_shared_and_spent_once_across_fresh_nodes() {
-    let store = crate::shared::test_store_calls();
+    let store = crate::testkit::store_calls();
     let build = || {
         let identity = crate::config::AsIdentity::from_cfg(&crate::config::OauthAsCfg {
             issuer: "https://as.example".to_string(),
@@ -434,9 +391,7 @@ async fn only_explicit_operator_device_clients_can_omit_redirects_and_use_device
     );
     assert_eq!(identity.verification_path(), "/tenant/device");
     assert_eq!(identity.revocation_path(), "/tenant/revoke");
-    let plane =
-        crate::plane::AsPlane::build(identity, None, Vec::new(), crate::cimd::unconnected())
-            .unwrap();
+    let plane = build_owner(identity).unwrap();
     let client = plane
         .server()
         .store()
@@ -450,13 +405,7 @@ async fn only_explicit_operator_device_clients_can_omit_redirects_and_use_device
 
     cfg.clients[0].device_authorization = false;
     cfg.clients[0].redirect_uris = vec!["https://client.example/cb".to_string()];
-    let plane = crate::plane::AsPlane::build(
-        crate::config::AsIdentity::from_cfg(&cfg).unwrap(),
-        None,
-        Vec::new(),
-        crate::cimd::unconnected(),
-    )
-    .unwrap();
+    let plane = build_owner(crate::config::AsIdentity::from_cfg(&cfg).unwrap()).unwrap();
     let client = plane
         .server()
         .store()
@@ -466,4 +415,16 @@ async fn only_explicit_operator_device_clients_can_omit_redirects_and_use_device
         .unwrap();
     assert!(client.grant_types.contains(&GrantType::AuthorizationCode));
     assert!(!client.grant_types.contains(&GrantType::DeviceCode));
+}
+
+fn build_owner(identity: crate::config::AsIdentity) -> Result<crate::plane::AsPlane, String> {
+    crate::plane::AsPlane::build_carrying(
+        identity,
+        None,
+        Vec::new(),
+        crate::cimd::unconnected(),
+        Arc::new(crate::plane::Carried::over(Some(
+            crate::testkit::store_calls(),
+        ))),
+    )
 }
