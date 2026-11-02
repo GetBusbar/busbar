@@ -160,6 +160,16 @@ impl<'de> Visitor<'de> for Fields<'_> {
                 )));
             }
         }
+        // Optional declared nulls serialize like an unset Option. Required nullable
+        // fields and unknown open-table extensions remain explicit values.
+        values.retain(|name, value| {
+            !value.is_null()
+                || !self
+                    .0
+                    .keys
+                    .iter()
+                    .any(|key| key.name == *name && !key.required)
+        });
         Ok(Value::Object(values))
     }
 }
@@ -246,7 +256,7 @@ mod tests {
         let key = field("rules", rule(), false);
         assert_eq!(
             read(&key, "[{globs: [], enabled: null}]").unwrap(),
-            json!([{"globs":[],"enabled":null}])
+            json!([{"globs":[]}])
         );
         let error = read(&key, "[{globs: null}]").unwrap_err().to_string();
         assert!(error.contains("expected a sequence"), "{error}");
@@ -254,6 +264,24 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("duplicate field `enabled`"), "{error}");
+    }
+    #[test]
+    fn open_tables_preserve_unknown_and_required_nullable_values() {
+        let mut required = field("required", Shape::Bool, true);
+        required.nullable = Some(true);
+        let key = field(
+            "settings",
+            Shape::Table(Table {
+                name: None,
+                deny_unknown: false,
+                keys: vec![required, field("optional", Shape::Bool, false)],
+            }),
+            true,
+        );
+        assert_eq!(
+            read(&key, "{required: null, optional: null, extension: null}").unwrap(),
+            json!({"required":null,"extension":null})
+        );
     }
 }
 

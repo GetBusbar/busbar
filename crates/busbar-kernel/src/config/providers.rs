@@ -464,7 +464,7 @@ fn with_options<T: Serialize>(entry: &T, options: &ProviderTable) -> ProviderTab
         let declared = descriptor.is_some_and(|d| {
             [&d.catalog, &d.deployment, &d.entry]
                 .iter()
-                .any(|t| t.keys.iter().any(|k| k.name == *name))
+                .any(|t| t.keys.iter().any(|k| k.name == *name && !k.required))
         });
         if !(declared && value.is_null()) {
             table.insert(name.clone(), value.clone());
@@ -663,24 +663,10 @@ impl<'de, A: serde::de::MapAccess<'de>> serde::de::MapAccess<'de> for OptionsAsi
             );
             let field =
                 descriptor.and_then(|d| self.form.table(d).keys.iter().find(|k| k.name == key));
-            let mut value = match field {
+            let value = match field {
                 Some(field) => self.inner.next_value_seed(ValueSeed::field(field))?,
                 None => self.inner.next_value::<Value>()?,
             };
-            // Only descriptor-owned values had optional members normalized by their
-            // former typed serialization. An unknown wire option, including null,
-            // must still reach the plane's option judge unchanged.
-            if field.is_some() {
-                if let Value::Object(inner) = &mut value {
-                    drop_unset(inner);
-                } else if let Value::Array(items) = &mut value {
-                    for item in items {
-                        if let Value::Object(inner) = item {
-                            drop_unset(inner);
-                        }
-                    }
-                }
-            }
             if self.options.insert(key.clone(), value).is_some() {
                 return Err(<A::Error as Error>::custom(format!(
                     "duplicate field `{key}`"
