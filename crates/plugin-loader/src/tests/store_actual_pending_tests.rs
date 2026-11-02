@@ -353,3 +353,79 @@ fn a_resume_with_nothing_parked_is_fault_and_never_a_fresh_run() {
         Outcome::Failed
     );
 }
+
+mod remote_denylist {
+    use super::*;
+    use std::ffi::c_void;
+    extern "C" fn list_denylist(
+        instance: *mut c_void,
+        input: *const c_void,
+        out: *mut c_void,
+    ) -> RawOutcome {
+        static ACTIVE: OnceLock<Mutex<HashMap<(u64, Ticket), bool>>> = OnceLock::new();
+        // SAFETY: the dispatcher supplies this exact slot's ABI input and output. Every
+        // nested pointer remains lent by its production frame across the injected wait.
+        unsafe {
+            let original = &*input.cast::<InHead>();
+            let head = &*input.cast::<InHead>();
+            let key = (head.host.handle, head.ticket);
+            let active = ACTIVE.get_or_init(Default::default);
+            if head.flags & FLAG_RESUME == 0 {
+                active.lock().unwrap().insert(key, false);
+                let output = &mut *out.cast::<OutHead>();
+                output.outcome = RawOutcome::of(Outcome::Pending);
+                output.wake_at_ns = crate::dispatch::now_ns().saturating_add(1_000_000);
+                return RawOutcome::of(Outcome::Pending);
+            }
+            let first_resume = {
+                let mut held = active.lock().unwrap();
+                let was = held.entry(key).or_insert(true);
+                let first = !*was;
+                *was = true;
+                first
+            };
+            let mut forwarded = std::ptr::read(original);
+            if first_resume {
+                (&mut *std::ptr::from_mut(&mut forwarded).cast::<InHead>()).flags &= !FLAG_RESUME;
+            }
+            let ops = &*actual_store::door().ops().cast::<Ops>();
+            let answer = (ops.list_denylist.expect("actual SQLite slot"))(
+                instance,
+                std::ptr::from_ref(&forwarded).cast(),
+                out,
+            );
+            if answer != RawOutcome::of(Outcome::Pending) {
+                active.lock().unwrap().remove(&key);
+            }
+            answer
+        }
+    }
+    pub(super) extern "C" fn door() -> &'static Door {
+        static HELD: OnceLock<usize> = OnceLock::new();
+        let ptr = *HELD.get_or_init(|| {
+            let real = *actual_store::door();
+            // SAFETY: actual_store retains the genuine validated descriptor and image.
+            let mut ops = unsafe { real.ops().cast::<Ops>().read_unaligned() };
+            ops.list_denylist = Some(list_denylist);
+            let ops = Box::leak(Box::new(ops));
+            // SAFETY: preserve actual lifecycle and all business slots except one hostile scheduling boundary.
+            Box::into_raw(Box::new(unsafe {
+                Door::__from_parts(DoorParts {
+                    ops: std::ptr::from_ref(ops).cast(),
+                    ..real.parts()
+                })
+            })) as usize
+        });
+        // SAFETY: immutable descriptor/table retained permanently above.
+        unsafe { &*(ptr as *const Door) }
+    }
+}
+#[test]
+fn a_store_that_pends_then_answers_completes_a_governance_op_on_the_bridge() {
+    let s = open(remote_denylist::door);
+    RecordStore::add_denylist(&s, "alice", "test").expect("the denylist write");
+    assert_eq!(
+        RecordStore::list_denylist(&s).expect("the pended read completes"),
+        vec!["alice".to_string()]
+    );
+}
