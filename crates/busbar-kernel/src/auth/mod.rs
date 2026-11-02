@@ -1625,19 +1625,34 @@ fn admin_scope_for(
     module: Option<&str>,
     principal: Option<&Principal>,
 ) -> busbar_contract::authz::Grants {
+    admin_scope_from_bindings(
+        &app.role_bindings,
+        &app.admin_modules.operator,
+        crate::config::operator_principal_id(),
+        module,
+        principal,
+    )
+}
+
+fn admin_scope_from_bindings(
+    role_bindings: &crate::config::RoleBindings,
+    operator: &Operator,
+    operator_principal: &str,
+    module: Option<&str>,
+    principal: Option<&Principal>,
+) -> busbar_contract::authz::Grants {
     use busbar_contract::authz::{Grants, Scope};
     let Some(p) = principal else {
         return Grants::of(Scope::Full);
     };
 
     if p.roles.is_empty() {
-        let op = &app.admin_modules.operator;
-        if op.mints(module, &p.id, crate::config::operator_principal_id()) {
+        if operator.mints(module, &p.id, operator_principal) {
             return Grants::of(Scope::Full);
         }
         return Grants::default();
     }
-    let Some(table) = module.and_then(|m| app.role_bindings.get(m)) else {
+    let Some(table) = module.and_then(|m| role_bindings.get(m)) else {
         return Grants::default();
     };
 
@@ -2249,6 +2264,13 @@ pub fn resolve_data_plane_identity(
     app: &crate::state::App,
     verdict: ChainVerdict,
 ) -> Result<(AuthPrincipal, crate::governance::GovCtx), IdentityRefusal> {
+    resolve_identity_from_bindings(&app.role_bindings, verdict)
+}
+
+fn resolve_identity_from_bindings(
+    role_bindings: &crate::config::RoleBindings,
+    verdict: ChainVerdict,
+) -> Result<(AuthPrincipal, crate::governance::GovCtx), IdentityRefusal> {
     match verdict {
         ChainVerdict::Open => Ok((AuthPrincipal(None), crate::governance::GovCtx::default())),
         ChainVerdict::Denied => Err(IdentityRefusal::Denied),
@@ -2258,10 +2280,10 @@ pub fn resolve_data_plane_identity(
             resolved,
         } => {
             let gov_key = resolved.or_else(|| {
-                crate::governance::synthesize_bound_key(&module, &principal, &app.role_bindings)
+                crate::governance::synthesize_bound_key(&module, &principal, role_bindings)
             });
             let Some(key) = gov_key else {
-                if admits_ungoverned(&module, &principal, &app.role_bindings) {
+                if admits_ungoverned(&module, &principal, role_bindings) {
                     return Ok((
                         AuthPrincipal(Some(principal)),
                         crate::governance::GovCtx { key: None },

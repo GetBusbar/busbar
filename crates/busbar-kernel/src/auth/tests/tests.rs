@@ -57,47 +57,62 @@ fn admin_scope_resolution() {
         ],
     );
     let module = Some("test-groups-module");
-    let app = crate::test_support::TestApp::new()
-        .role_bindings(rb)
-        .build();
-
-    assert_eq!(admin_scope_for(&app, None, None), Grants::of(Scope::Full));
+    let operator = Operator::new("operator-provider");
+    let operator_id = "operator:local";
 
     assert_eq!(
-        admin_scope_for(
-            &app,
-            Some(crate::config::operator_provider()),
-            Some(&Principal::from_id(crate::config::operator_principal_id()))
+        admin_scope_from_bindings(&rb, &operator, operator_id, None, None),
+        Grants::of(Scope::Full)
+    );
+
+    assert_eq!(
+        admin_scope_from_bindings(
+            &rb,
+            &operator,
+            operator_id,
+            Some("operator-provider"),
+            Some(&Principal::from_id(operator_id))
         ),
         Grants::of(Scope::Full)
     );
 
     assert_eq!(
-        admin_scope_for(
-            &app,
+        admin_scope_from_bindings(
+            &rb,
+            &operator,
+            operator_id,
             module,
-            Some(&Principal::from_id(crate::config::operator_principal_id()))
+            Some(&Principal::from_id(operator_id))
         ),
         Grants::default()
     );
 
     let p = grp_principal("test:alice", &["viewers", "admins"]);
-    assert!(admin_scope_for(&app, module, Some(&p)).allows(Scope::Full));
+    assert!(
+        admin_scope_from_bindings(&rb, &operator, operator_id, module, Some(&p))
+            .allows(Scope::Full)
+    );
     let p = grp_principal("test:alice", &["viewers"]);
     assert_eq!(
-        admin_scope_for(&app, module, Some(&p)),
+        admin_scope_from_bindings(&rb, &operator, operator_id, module, Some(&p)),
         Grants::of(Scope::ReadOnly)
     );
 
     let p = grp_principal("test:alice", &["strangers"]);
-    assert_eq!(admin_scope_for(&app, module, Some(&p)), Grants::default());
+    assert_eq!(
+        admin_scope_from_bindings(&rb, &operator, operator_id, module, Some(&p)),
+        Grants::default()
+    );
 
     let p = grp_principal("test:alice", &["no-admin"]);
-    assert_eq!(admin_scope_for(&app, module, Some(&p)), Grants::default());
+    assert_eq!(
+        admin_scope_from_bindings(&rb, &operator, operator_id, module, Some(&p)),
+        Grants::default()
+    );
 
     let stranger = Principal::from_id("test:bob");
     assert_eq!(
-        admin_scope_for(&app, module, Some(&stranger)),
+        admin_scope_from_bindings(&rb, &operator, operator_id, module, Some(&stranger)),
         Grants::default()
     );
 }
@@ -109,22 +124,33 @@ fn admin_scope_bindings_are_module_scoped() {
         "other-module",
         &[("admins", binding(None, None, Some("full")))],
     );
-    let app = crate::test_support::TestApp::new()
-        .role_bindings(rb)
-        .build();
+    let operator = Operator::new("operator-provider");
+    let operator_id = "operator:local";
     let p = grp_principal("test:alice", &["admins"]);
     assert!(
-        admin_scope_for(&app, Some("test-groups-module"), Some(&p)) == Grants::default(),
+        admin_scope_from_bindings(
+            &rb,
+            &operator,
+            operator_id,
+            Some("test-groups-module"),
+            Some(&p)
+        ) == Grants::default(),
         "a role asserted by module A must not ride module B's binding"
     );
 
     assert_eq!(
-        admin_scope_for(&app, Some("other-module"), Some(&p)),
+        admin_scope_from_bindings(&rb, &operator, operator_id, Some("other-module"), Some(&p)),
         Grants::of(Scope::Full)
     );
 
     assert_eq!(
-        admin_scope_for(&app, Some("unbound-module"), Some(&p)),
+        admin_scope_from_bindings(
+            &rb,
+            &operator,
+            operator_id,
+            Some("unbound-module"),
+            Some(&p)
+        ),
         Grants::default()
     );
 }
@@ -212,18 +238,17 @@ fn an_identified_principal_with_no_grant_is_refused() {
         principal,
         resolved: None,
     };
-    let refused =
-        |app: &crate::state::App, v: ChainVerdict, why: &str| match resolve_data_plane_identity(
-            app, v,
-        ) {
+    let refused = |role_bindings: &crate::config::RoleBindings, v: ChainVerdict, why: &str| {
+        match resolve_identity_from_bindings(role_bindings, v) {
             Err(IdentityRefusal::NoGrant) => {}
             other => panic!(
                 "{why}: refused NoGrant, got {:?}",
                 other.map(|(_, gov)| gov.key.map(|k| k.id.clone()))
             ),
-        };
+        }
+    };
 
-    let bare = crate::test_support::TestApp::new().build();
+    let bare = crate::config::RoleBindings::new();
     refused(
         &bare,
         identified("test-groups-module", grp_principal("test:nobody", &[])),
@@ -239,9 +264,7 @@ fn an_identified_principal_with_no_grant_is_refused() {
         "test-groups-module",
         &[("dev", binding(Some(&["pa"]), None, None))],
     );
-    let governed = crate::test_support::TestApp::new()
-        .role_bindings(table)
-        .build();
+    let governed = table;
     refused(
         &governed,
         identified("test-groups-module", grp_principal("test:nobody", &[])),
@@ -253,13 +276,13 @@ fn an_identified_principal_with_no_grant_is_refused() {
         "an unbound role under a governed module",
     );
 
-    let (who, gov) = resolve_data_plane_identity(
+    let (who, gov) = resolve_identity_from_bindings(
         &governed,
         identified("test-groups-module", grp_principal("test:dev", &["dev"])),
     )
     .expect("a bound role earns a key and is admitted");
     assert!(who.0.is_some() && gov.key.is_some());
-    let (who, gov) = resolve_data_plane_identity(&bare, ChainVerdict::Open).expect("open door");
+    let (who, gov) = resolve_identity_from_bindings(&bare, ChainVerdict::Open).expect("open door");
     assert!(who.0.is_none() && gov.key.is_none());
 }
 
