@@ -664,9 +664,31 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
         let Some(framing) = self.framing.as_mut().filter(|f| f.parked()) else {
             return false;
         };
-        match framing.poll_parked(cx) {
+        let progressed = match framing.poll_parked(cx) {
             Poll::Ready(r) => self.took(r),
             Poll::Pending => false,
+        };
+        self.finish_read_bodies();
+        progressed
+    }
+
+    fn finish_read_bodies(&mut self) {
+        if !self.read_done
+            || self.staged.is_some()
+            || self.framing.as_ref().is_some_and(Framing::parked)
+        {
+            return;
+        }
+        // EOF is not PIECE_END. First let any parked ingest yield its final pieces; only bodies
+        // still owned here after that completion have ended without their transport's whole end.
+        for inflow in self.inflows.values_mut() {
+            if let Some(body) = inflow.body.take() {
+                let error = std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "connection closed before the request body ended",
+                );
+                let _ = body.send(Err(error.into()));
+            }
         }
     }
 
@@ -695,9 +717,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 let r = framing.ingest(&buf[..n], end);
                 self.took(r);
                 if end {
-                    for inflow in self.inflows.values_mut() {
-                        inflow.body = None;
-                    }
+                    self.finish_read_bodies();
                     if let Some(s) = self.session.as_mut() {
                         s.closing = true;
                     }
