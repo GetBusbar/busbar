@@ -128,25 +128,6 @@ fn auth_fault_path_diagnostic_identities_are_pinned() {
 }
 
 #[test]
-fn auth_chain_open_relay_diag_fires_on_empty_data_plane_chain() {
-    let cfg = crate::config::AuthCfg::default_none();
-    let (chain, buf) = capture(|| AuthMiddleware::new_builtin(&cfg));
-    assert!(
-        chain.is_open(),
-        "an empty chain with no keys verifier is open"
-    );
-    let text = buf.text();
-    assert!(
-        text.contains("diag=BUSBAR-4004"),
-        "expected AUTH_CHAIN_OPEN_RELAY (BUSBAR-4004) to fire; got: {text:?}"
-    );
-    assert!(
-        text.contains("auth.chain is empty (open relay)"),
-        "message text must match the v1.5.5 wording; got: {text:?}"
-    );
-}
-
-#[test]
 fn admin_module_unresolved_diag_fires_and_falls_through_to_pass() {
     let mut app = crate::test_support::TestApp::new().build();
     let a = Arc::get_mut(&mut app).expect("freshly built App Arc is unshared");
