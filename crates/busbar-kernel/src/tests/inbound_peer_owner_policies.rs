@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
+use busbar_contract::abi::auth::AuthPoints;
 
 #[test]
 fn mixed_peer_answers_never_replace_their_per_request_verdicts() {
