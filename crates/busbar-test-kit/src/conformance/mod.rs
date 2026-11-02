@@ -2918,15 +2918,104 @@ mod newer_schema_tests;
 #[path = "../tests/conformance_ready_result_tests.rs"]
 mod ready_result_tests;
 
-#[cfg(all(test, loader_self_tests))]
+#[cfg(test)]
 mod ready_cleanup_tests {
+    use busbar_contract::abi::sdk::conn::Host;
+    use busbar_contract::abi::sdk::store::{
+        Op, OpRefused, OpResult, Scanned, Step, StoreSlots, Tail,
+    };
+    use busbar_contract::abi::store::OpId;
+    use busbar_contract::kinds::RecordBytes;
+    use busbar_contract::records::{
+        AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneRecordRef,
+        PlaneSelector, RecordStoreResult, UsageDelta, UsageLedger, VirtualKey,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static DROPS: AtomicUsize = AtomicUsize::new(0);
+
+    /// A real SDK store instance. This test exercises only boot/retirement; data calls refuse.
+    pub struct ReadinessStore;
+
+    impl Drop for ReadinessStore {
+        fn drop(&mut self) {
+            DROPS.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    // StoreSlots requires every data method even though this boot/cleanup fixture serves none.
+    macro_rules! refuse_data {
+        ($error:expr; $($name:ident($($arg:ident: $ty:ty),*) -> $result:ty;)*) => {$(
+            fn $name(&self, $($arg: $ty),*) -> Step<$result> {
+                Step::Ready(Err($error))
+            }
+        )*};
+    }
+
+    impl StoreSlots for ReadinessStore {
+        const TAIL: Tail = Tail {
+            ephemeral: true,
+            durable_plane: false,
+            fork_refusal: false,
+        };
+        fn validate(_: &[u8]) -> Result<(), String> {
+            Ok(())
+        }
+        fn open_with_secrets(_: &[u8], _: &[&[u8]], _: Option<Host>) -> Result<Self, String> {
+            Ok(Self)
+        }
+        refuse_data!(busbar_contract::records::RecordStoreError("readiness fixture has no data backend".into());
+            put_key(_cx: &mut Op<'_>, _key: &VirtualKey) -> RecordStoreResult<()>;
+            get_key(_cx: &mut Op<'_>, _id: &str) -> RecordStoreResult<Option<VirtualKey>>;
+            list_keys(_cx: &mut Op<'_>) -> RecordStoreResult<Vec<VirtualKey>>;
+            delete_key(_cx: &mut Op<'_>, _id: &str) -> RecordStoreResult<()>;
+            list_keys_since(_cx: &mut Op<'_>, _since: u64) -> RecordStoreResult<Vec<VirtualKey>>;
+            get_usage(_cx: &mut Op<'_>, _bucket_id: &str, _window_start: u64) -> RecordStoreResult<UsageLedger>;
+            put_usage(_cx: &mut Op<'_>, _bucket_id: &str, _window_start: u64, _ledger: &UsageLedger) -> RecordStoreResult<()>;
+            list_metering(_cx: &mut Op<'_>, _bucket: u64) -> RecordStoreResult<Vec<MeteringRow>>;
+            put_credential(_cx: &mut Op<'_>, _secret: &CredentialSecret) -> RecordStoreResult<()>;
+            put_key_with_credential(_cx: &mut Op<'_>, _key: &VirtualKey, _secret: &CredentialSecret) -> RecordStoreResult<()>;
+            list_credentials(_cx: &mut Op<'_>, _key_id: &str) -> RecordStoreResult<Vec<CredentialMeta>>;
+            revoke_credential(_cx: &mut Op<'_>, _id: &str, _reason: &str) -> RecordStoreResult<()>;
+            list_credentials_since(_cx: &mut Op<'_>, _since: u64) -> RecordStoreResult<Vec<CredentialSecret>>;
+            list_audit(_cx: &mut Op<'_>) -> RecordStoreResult<Vec<AuditRecord>>;
+            add_denylist(_cx: &mut Op<'_>, _id: &str, _reason: &str) -> RecordStoreResult<()>;
+            list_denylist(_cx: &mut Op<'_>) -> RecordStoreResult<Vec<String>>;
+            list_audit_tail(_cx: &mut Op<'_>, _limit: u64) -> RecordStoreResult<Vec<AuditRecord>>;
+            upsert_plane_record(_cx: &mut Op<'_>, _record: PlaneRecordRef<'_>) -> RecordStoreResult<()>;
+            get_plane_record(_cx: &mut Op<'_>, _kind: &str, _id: &str) -> RecordStoreResult<Option<Vec<u8>>>;
+            list_plane_records(_cx: &mut Op<'_>, _kind: &str, _selector: &PlaneSelector<'_>) -> RecordStoreResult<Vec<Vec<u8>>>;
+            list_plane_record_parents(_cx: &mut Op<'_>, _kind: &str) -> RecordStoreResult<Vec<String>>;
+            purge_plane_records_before(_cx: &mut Op<'_>, _kind: &str, _before: u64) -> RecordStoreResult<u64>;
+            delete_plane_record(_cx: &mut Op<'_>, _kind: &str, _id: &str) -> RecordStoreResult<()>;
+            redeem_plane_token(_cx: &mut Op<'_>, _kind: &str, _token: &str, _expires_at: u64, _now: u64) -> RecordStoreResult<bool>;
+            plane_token_live(_cx: &mut Op<'_>, _kind: &str, _token: &str, _expires_at: u64, _now: u64) -> RecordStoreResult<bool>;
+        );
+        refuse_data!(OpRefused::Refused("readiness fixture has no data backend".into());
+            append_plane_record_op(_cx: &mut Op<'_>, _op: OpId, _record: PlaneRecordRef<'_>) -> OpResult<()>;
+            add_usage_batch(_cx: &mut Op<'_>, _op: OpId, _cells: &[(&str, u64, UsageDelta)]) -> OpResult<()>;
+            add_metering_batch(_cx: &mut Op<'_>, _op: OpId, _deltas: &[MeteringDelta]) -> OpResult<()>;
+        );
+        refuse_data!("readiness fixture has no data backend".into();
+            record_put(_cx: &mut Op<'_>, _schema: &str, _key: &[u8], _value: &[u8]) -> Result<(), String>;
+            record_get(_cx: &mut Op<'_>, _schema: &str, _key: &[u8]) -> Result<Option<RecordBytes>, String>;
+            record_scan(_cx: &mut Op<'_>, _schema: &str, _prefix: &[u8], _limit: u32) -> Result<Scanned, String>;
+        );
+    }
+
+    mod real {
+        busbar_contract::store_door!(super::ReadinessStore, "ready-cleanup", "1.0.0", 8);
+    }
+
     #[test]
     fn failed_store_ready_is_invoked_once_and_closes_its_successful_open() {
-        let subject = super::Subject::new(
-            crate::both_ways::store_fixture::door,
-            "unused",
-            include_str!("../../tests/fixtures/store_conformance.json"),
-        );
+        DROPS.store(0, Ordering::SeqCst);
+        let subject = super::Subject::new(real::door, "unused", "{}");
         super::red_ready(&subject);
+        assert_eq!(
+            DROPS.load(Ordering::SeqCst),
+            1,
+            "the real SDK CLOSE drops its opened store exactly once"
+        );
     }
 }
