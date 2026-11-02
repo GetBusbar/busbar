@@ -2432,12 +2432,9 @@ fn is_real_auth_plugin_ref_exempts_keys_always_and_in_process_modules_only_where
 /// does not resolve, so empty maps are fine).
 const BOOT_MINIMAL_CONFIG: &str = "providers: {}\nmodels: {}\n";
 
-/// 1.5.3 durable-by-default at the BOOT path: with NO `config:` section the default overlay lands next
-/// to config.yaml and the config is reported mutable. The deprecated `BUSBAR_CONFIG_OVERLAY` env var
-/// (still honored when set) is cleared for the run so the DEFAULT path is what is under test; its
-/// precedence is pinned separately in the overlay consolidation tests.
+/// Operator-input loading reports mutable policy without opening the Store or creating an overlay.
 #[test]
-fn boot_default_config_resolves_a_durable_overlay_next_to_config() {
+fn boot_default_config_defers_store_overlay_recovery_until_the_anchor_opens() {
     let (dir, config_path, _providers_path) = boot_config_dir("durable", BOOT_MINIMAL_CONFIG);
     // Guarded so any ambient value is restored on drop (incl. panic).
     let _guard = EnvVarGuard::capture("BUSBAR_CONFIG_OVERLAY");
@@ -2445,10 +2442,12 @@ fn boot_default_config_resolves_a_durable_overlay_next_to_config() {
     let loaded = load_config_from_disk(&config_path, None, false, crate::config::EnvSubst::Strict)
         .expect("a mutable default config must boot");
     assert!(!loaded.config_locked, "default config is mutable");
+    assert!(loaded.overlay_path.is_none());
+    assert!(loaded.overlay_doc.is_none());
     assert_eq!(
-        loaded.overlay_path.as_deref(),
-        Some(dir.join("busbar-overlay.json").as_path()),
-        "durable-by-default: overlay next to config.yaml"
+        std::fs::read_dir(&dir).unwrap().count(),
+        2,
+        "only operator input files exist"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -2470,8 +2469,7 @@ fn boot_mutable_with_overlay_disabled_refuses_to_boot() {
     // "mutable-but-overlay-disabled" arm, distinct from the read-only-dir "not writable" arm and the
     // `overlay: true` "names no backend" arm.
     assert!(
-        err.contains("has no writable overlay backend")
-            && err.contains("`config.overlay` is disabled"),
+        err.contains("mutable config requires") && err.contains("Store-backed overlay"),
         "the boot refusal must be the specific mutable-without-backend message: {err}"
     );
     let _ = std::fs::remove_dir_all(&dir);

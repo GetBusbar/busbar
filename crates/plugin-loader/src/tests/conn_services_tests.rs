@@ -972,6 +972,9 @@ struct Scripted {
     close_gate: Gate,
     /// Every dial is still connecting when its establish asks: `landed` answers PENDING.
     landing: bool,
+    /// The independent dial and whole-request bounds every actual open received.
+    timeouts: Mutex<Vec<(u64, u64)>>,
+    declared_timeouts: Mutex<Vec<u64>>,
 }
 
 /// A door double's park: armed, the next caller notes it entered and waits for the release (at
@@ -1014,14 +1017,30 @@ impl Gate {
 type Upgrade = (ConnId, Option<String>, Option<String>);
 
 impl DeclaredConns for Scripted {
+    fn open_request(
+        &self,
+        caller: InstanceId,
+        need: NeedId,
+        desc: &OpenDesc<'_>,
+        require_secure: bool,
+        dial_timeout_ms: u64,
+    ) -> Result<ConnId, ConnError> {
+        self.timeouts
+            .lock()
+            .unwrap()
+            .push((dial_timeout_ms, desc.timeout_ms));
+        self.open_with_security(caller, need, desc, require_secure)
+    }
+
     fn declare(
         &self,
         owner: InstanceId,
         need: NeedId,
-        _: &ReadNeed,
+        spec: &ReadNeed,
         _: Option<&str>,
         _: Option<&str>,
     ) -> Result<(), ConnError> {
+        self.declared_timeouts.lock().unwrap().push(spec.timeout_ms);
         self.slab.declare(owner, need);
         Ok(())
     }
@@ -1192,12 +1211,20 @@ fn bound_over(table: &Arc<Scripted>) -> Plugin<TestKind> {
 
 /// [`bound_over`], adopted by `adopter` (a dispatcher's: its wakes route, so a read may pend).
 fn bound_over_by(table: &Arc<Scripted>, adopter: Adopter) -> Plugin<TestKind> {
+    bound_over_needs(table.clone(), adopter, &NAMED)
+}
+
+fn bound_over_needs(
+    conns: Arc<dyn DeclaredConns>,
+    adopter: Adopter,
+    needs: &'static [Need],
+) -> Plugin<TestKind> {
     // SAFETY: the real door and its Statement are `'static`.
     let real: Door = unsafe { *plug::busbar_plugin_door() };
     let st: Statement = unsafe { *real.statement() };
     let st: &'static Statement = Box::leak(Box::new(Statement {
-        needs: NAMED.as_ptr(),
-        needs_len: NAMED.len(),
+        needs: needs.as_ptr(),
+        needs_len: needs.len(),
         ..st
     }));
     let door: &'static Door = Box::leak(Box::new(unsafe {
@@ -1207,7 +1234,6 @@ fn bound_over_by(table: &Arc<Scripted>, adopter: Adopter) -> Plugin<TestKind> {
         })
     }));
     let v = validate_door::<TestKind>(door).expect("the door validates");
-    let conns: Arc<dyn DeclaredConns> = table.clone();
     Plugin::bind(
         v,
         None,
@@ -1221,6 +1247,9 @@ fn bound_over_by(table: &Arc<Scripted>, adopter: Adopter) -> Plugin<TestKind> {
     )
     .expect("the instance binds")
 }
+
+#[path = "conn_timeout_tests.rs"]
+mod conn_timeout_tests;
 
 fn head_of<I>(op: u32, seq: u32) -> ServiceHead {
     ServiceHead {
@@ -3234,6 +3263,7 @@ fn the_auth_request_signs_the_authority_the_socket_dials() {
         target: Vec::new(),
         fields: Vec::new(),
         timeout_ms: 0,
+        dial_timeout_ms: 0,
     };
     for (target, authority, path, query) in [
         (
@@ -3293,6 +3323,7 @@ fn the_auth_request_signs_the_lines_the_open_completes_the_head_with() {
             ("busbar-sealed-query".to_owned(), b"forged=value".to_vec()),
         ],
         timeout_ms: 0,
+        dial_timeout_ms: 0,
     };
     let located = busbar_contract::conn::HeadDefaults {
         lines: vec![

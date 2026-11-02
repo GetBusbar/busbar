@@ -32,6 +32,8 @@ use axum::{
 };
 use serde_json::Value;
 use tokio::task::JoinHandle;
+mod overlay;
+pub use overlay::{new_test_overlay, TestOverlayStore};
 
 /// Run boot's existing route preparation for a dependent crate's real hook-axis fixture.
 pub fn hook_route_declarations(
@@ -801,10 +803,10 @@ pub struct TestApp {
         &'static str,
         std::collections::BTreeMap<String, crate::config::pools::CandidatePoolCfg>,
     >,
-    overlay_path: Option<std::path::PathBuf>,
+    overlay_path: Option<std::sync::Arc<crate::config::overlay::OverlayStore>>,
     /// 1.5.3: when `true`, build a LOCKED app (no overlay backend) — the only way to get
     /// `overlay_path: None` now that the default is durable. Without it, `build()` provides a writable
-    /// temp overlay so mutation tests are durable-by-default, mirroring production boot.
+    /// Store overlay so mutation tests use the same persistence contract as production.
     explicit_no_overlay: bool,
     plugins_dir: Option<std::path::PathBuf>,
     plugins_cfg: Option<crate::config::PluginsCfg>,
@@ -1034,9 +1036,12 @@ impl TestApp {
         self
     }
 
-    /// Enable config-overlay persistence at `path` (for testing runtime-change durability).
-    pub fn overlay_path(mut self, path: std::path::PathBuf) -> Self {
-        self.overlay_path = Some(path);
+    /// Attach an actual Store-backed overlay for runtime-change durability tests.
+    pub fn overlay_backend(
+        mut self,
+        backend: std::sync::Arc<crate::config::overlay::OverlayStore>,
+    ) -> Self {
+        self.overlay_path = Some(backend);
         self.explicit_no_overlay = false;
         self
     }
@@ -1793,20 +1798,14 @@ impl TestApp {
             config_path: self.disk_paths.as_ref().map(|(c, _)| c.clone()),
             providers_path: self.disk_paths.as_ref().map(|(_, p)| p.clone()),
             // 1.5.3 durable-by-default: unless a test explicitly asked for a LOCKED app
-            // (`.no_overlay()`), give it a writable temp overlay so config mutations persist — the same
+            // (`.no_overlay()`), give it an isolated Store overlay so config mutations persist — the same
             // guarantee production boot enforces via the `locked` XOR overlay invariant. An explicit
-            // `.overlay_path(...)` still wins.
+            // `.overlay_backend(...)` still wins.
             overlay_path: self.overlay_path.or_else(|| {
                 if self.explicit_no_overlay {
                     None
                 } else {
-                    use std::sync::atomic::{AtomicU64, Ordering};
-                    static SEQ: AtomicU64 = AtomicU64::new(0);
-                    let n = SEQ.fetch_add(1, Ordering::Relaxed);
-                    Some(std::env::temp_dir().join(format!(
-                        "busbar-test-overlay-{}-{n}.json",
-                        std::process::id()
-                    )))
+                    Some(new_test_overlay())
                 }
             }),
             config_version: 0,

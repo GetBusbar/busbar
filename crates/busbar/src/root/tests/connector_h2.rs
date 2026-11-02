@@ -323,9 +323,13 @@ async fn ask(c: &Connector, url: &str) -> (Option<u32>, Vec<u8>) {
 
 /// Open one request (its opening message on its way, nothing read).
 fn start(c: &Connector, url: &str) -> ConnId {
+    start_need(c, NEED, url)
+}
+
+fn start_need(c: &Connector, need: NeedId, url: &str) -> ConnId {
     c.open(
         OWNER,
-        NEED,
+        need,
         &OpenDesc {
             target: url,
             fields: &[("content-type", b"application/json")],
@@ -370,6 +374,237 @@ fn pooled(settings: TransportSettings) -> TransportSettings {
         pool_idle_timeout_secs: 90,
         ..settings
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn recovered_transport_and_pool_settings_leave_the_bootstrap_anchor_serving() {
+    let (anchor_port, anchor_far) = h1_far_end().await;
+    let (effective_port, effective_far) = h2c_far_end().await;
+    let base = pooled(TransportSettings::default());
+    let c = connector(&base, &EgressTrust::default());
+    let anchor_url = format!("http://127.0.0.1:{anchor_port}/store-overlay");
+    let pending_anchor = start(&c, &anchor_url);
+    let effective = TransportSettings {
+        upstream_h2_prior_knowledge: true,
+        pool_max_idle_per_host: 0,
+        ..base
+    };
+    super::finalize_prepared(
+        &c,
+        crate::LINKED_TRANSPORT_DOORS,
+        &effective,
+        &["127.0.0.1:19080", "127.0.0.1:19081"],
+        crate::root::registry::Dropped::NONE,
+    )
+    .expect("effective transports open before publication");
+    c.declare_need(
+        OWNER,
+        NeedId(1),
+        busbar_core_admin::admin_codec::claims::TRANSPORT,
+        DEFAULT_CLASS,
+    )
+    .unwrap();
+    assert_eq!(
+        finish(&c, pending_anchor).await,
+        (Some(200), b"ok".to_vec())
+    );
+    let effective_url = format!("http://127.0.0.1:{effective_port}/request");
+    for _ in 0..2 {
+        let request = start_need(&c, NeedId(1), &effective_url);
+        assert_eq!(finish(&c, request).await, (Some(200), b"ok".to_vec()));
+    }
+    assert_eq!(
+        effective_far.accepted.load(Ordering::SeqCst),
+        2,
+        "effective pooling is disabled"
+    );
+    assert_eq!(
+        effective_far.request_stream_ids(),
+        vec![1, 1],
+        "fresh effective doors speak h2c"
+    );
+    // The same declared anchor is used again after finalization: its original HTTP/1 door still
+    // frames its Store connection even though the registry now chooses HTTP/2 for new needs.
+    assert_eq!(ask(&c, &anchor_url).await, (Some(200), b"ok".to_vec()));
+    assert_eq!(anchor_far.frames.lock().unwrap().len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn failed_effective_transport_preparation_keeps_the_anchor_and_base_view() {
+    let (port, far) = h1_far_end().await;
+    let base = pooled(TransportSettings::default());
+    let c = connector(&base, &EgressTrust::default());
+    let scheme = busbar_core_admin::admin_codec::claims::TRANSPORT;
+    let base_door = c.framer_for(scheme).unwrap();
+    let url = format!("http://127.0.0.1:{port}/store-overlay");
+    let pending_anchor = start(&c, &url);
+    // Every linked door is valid individually, but no effective view may claim each scheme
+    // twice. This is a real preparation failure after fresh doors have opened.
+    let repeated: Vec<_> = crate::LINKED_TRANSPORT_DOORS
+        .iter()
+        .chain(crate::LINKED_TRANSPORT_DOORS.iter())
+        .copied()
+        .collect();
+    let effective = TransportSettings {
+        upstream_h2_prior_knowledge: true,
+        pool_max_idle_per_host: 0,
+        ..base
+    };
+    assert!(super::finalize_prepared(
+        &c,
+        &repeated,
+        &effective,
+        &[],
+        crate::root::registry::Dropped::NONE,
+    )
+    .is_err());
+    assert!(
+        Arc::ptr_eq(&base_door, &c.framer_for(scheme).unwrap()),
+        "no effective door was published"
+    );
+    assert_eq!(
+        finish(&c, pending_anchor).await,
+        (Some(200), b"ok".to_vec())
+    );
+    assert_eq!(ask(&c, &url).await, (Some(200), b"ok".to_vec()));
+    assert_eq!(
+        far.accepted.load(Ordering::SeqCst),
+        1,
+        "the base pool was not changed on failure"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn recovered_http1_only_changes_the_offer_of_a_newly_declared_need() {
+    let (port, far, ca) = tls_far_end().await;
+    let base = TransportSettings::default();
+    let c = connector(
+        &base,
+        &EgressTrust {
+            extra_anchors: vec![ca],
+            ..EgressTrust::default()
+        },
+    );
+    let effective = TransportSettings {
+        upstream_http1_only: true,
+        ..base
+    };
+    super::finalize_prepared(
+        &c,
+        crate::LINKED_TRANSPORT_DOORS,
+        &effective,
+        &[],
+        crate::root::registry::Dropped::NONE,
+    )
+    .unwrap();
+    c.declare_over(
+        OWNER,
+        NeedId(1),
+        busbar_core_admin::admin_codec::claims::TRANSPORT,
+    )
+    .unwrap();
+    let url = format!("https://127.0.0.1:{port}/request");
+    let conn = start_need(&c, NeedId(1), &url);
+    let mut buf = [0; 1024];
+    let _ = tokio::time::timeout(
+        Duration::from_secs(2),
+        std::future::poll_fn(|cx| c.poll_read(OWNER, conn, cx, &mut buf)),
+    )
+    .await;
+    c.close(OWNER, conn).unwrap();
+    assert_eq!(
+        *far.offered.lock().unwrap(),
+        vec![vec![b"http/1.1".to_vec()]]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn recovered_body_cap_and_request_timeout_apply_while_the_anchor_keeps_its_door() {
+    let (port, _) = h1_far_end().await;
+    let base = TransportSettings::default();
+    let c = connector(&base, &EgressTrust::default());
+    let url = format!("http://127.0.0.1:{port}/store-overlay");
+    let effective = TransportSettings {
+        request_body_max_bytes: 8,
+        request_timeout_secs: 1,
+        ..base
+    };
+    super::finalize_prepared(
+        &c,
+        crate::LINKED_TRANSPORT_DOORS,
+        &effective,
+        &[],
+        crate::root::registry::Dropped::NONE,
+    )
+    .unwrap();
+    c.declare_over(
+        OWNER,
+        NeedId(1),
+        busbar_core_admin::admin_codec::claims::TRANSPORT,
+    )
+    .unwrap();
+    // The anchor's body is larger than the recovered cap. Its captured base instance remains
+    // usable; an identical request from the effective instance must fail.
+    assert_eq!(ask(&c, &url).await, (Some(200), b"ok".to_vec()));
+    match c.open(
+        OWNER,
+        NeedId(1),
+        &OpenDesc {
+            target: &url,
+            body: busbar_contract::conn::Bytes::from_static(b"123456789"),
+            method: b"POST",
+            head_target: b"/request",
+            ..OpenDesc::default()
+        },
+    ) {
+        Err(error) => assert_ne!(error, busbar_contract::conn::ConnError::Pending),
+        Ok(conn) => {
+            let mut buf = [0; 1024];
+            let answer = tokio::time::timeout(
+                Duration::from_secs(3),
+                std::future::poll_fn(|cx| c.poll_read(OWNER, conn, cx, &mut buf)),
+            )
+            .await
+            .expect("oversized effective body refuses promptly");
+            assert!(answer.is_err());
+            c.close(OWNER, conn).unwrap();
+        }
+    }
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let stalled_url = format!("http://{}/request", listener.local_addr().unwrap());
+    let (held_tx, held_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        held_tx.send(socket).unwrap();
+    });
+    let conn = c
+        .open(
+            OWNER,
+            NeedId(1),
+            &OpenDesc {
+                target: &stalled_url,
+                method: b"GET",
+                head_target: b"/request",
+                ..OpenDesc::default()
+            },
+        )
+        .unwrap();
+    let mut buf = [0; 1024];
+    let answer = tokio::time::timeout(
+        Duration::from_secs(3),
+        std::future::poll_fn(|cx| c.poll_read(OWNER, conn, cx, &mut buf)),
+    )
+    .await
+    .expect("the recovered one-second request clock must expire without a caller timeout");
+    assert!(answer.is_err());
+    let socket = tokio::time::timeout(Duration::from_secs(3), held_rx)
+        .await
+        .expect("the timed-out request reached its held-open peer")
+        .unwrap();
+    c.close(OWNER, conn).unwrap();
+    drop(socket);
+    server.await.unwrap();
+    assert_eq!(ask(&c, &url).await, (Some(200), b"ok".to_vec()));
 }
 
 /// h2c PRIOR KNOWLEDGE: the door opened with the prior-knowledge key speaks HTTP/2 from its first

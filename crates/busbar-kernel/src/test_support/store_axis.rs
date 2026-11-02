@@ -189,6 +189,17 @@ fn ready<'a, T: Send + 'a>(answer: Result<T, StoreFailure>) -> StoreCall<'a, T> 
 }
 
 impl<S: StoreSlots> StoreCalls for SlotStore<S> {
+    fn supports_record_transaction(&self) -> bool {
+        S::RECORD_TRANSACTION
+    }
+
+    fn record_transaction<'a>(
+        &'a self,
+        request: &'a busbar_contract::abi::sdk::store::conditional::Request,
+    ) -> StoreCall<'a, busbar_contract::abi::sdk::store::conditional::Decision> {
+        ready(self.op(|store, cx| S::record_transaction(store, cx, request)))
+    }
+
     fn add_usage_batch<'a>(
         &'a self,
         op: OpId,

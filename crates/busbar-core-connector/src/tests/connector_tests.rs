@@ -22,6 +22,9 @@ mod pending_write;
 #[path = "final_insert_retirement_tests.rs"]
 mod final_insert_retirement_tests;
 
+#[path = "declared_timeout_tests.rs"]
+mod declared_timeout_tests;
+
 /// The literal judge over a guard that allowlists the loopback far ends these tests dial, and the
 /// private address the scheme-rule test names (the destination guard refuses both by default), so
 /// what those tests assert stays the connector's own rule.

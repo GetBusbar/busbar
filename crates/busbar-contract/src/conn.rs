@@ -368,6 +368,29 @@ pub trait DeclaredConns: Conns {
     /// What [`DeclaredConns::declare`] answered for `owner`'s `need`; `None` = never declared.
     fn declared(&self, owner: InstanceId, need: NeedId) -> Option<Result<(), ConnError>>;
 
+    /// Open with a dial bound separate from the whole request's [`OpenDesc::timeout_ms`].
+    /// `dial_timeout_ms == 0` inherits the declared need's bound, or the existing host default.
+    /// This host-only seam carries `ESTABLISH`'s bound through a deferred framed request without
+    /// replacing its `REQUEST_HEAD` timeout (`0` still leaves that request to its op deadline).
+    /// A table without independent bounds refuses a distinct nonzero dial bound honestly.
+    ///
+    /// # Errors
+    ///
+    /// As [`Conns::open_with_security`], or [`ConnError::Refused`] for an unsupported distinct bound.
+    fn open_request(
+        &self,
+        caller: InstanceId,
+        need: NeedId,
+        desc: &OpenDesc<'_>,
+        require_secure: bool,
+        dial_timeout_ms: u64,
+    ) -> Result<ConnId, ConnError> {
+        if dial_timeout_ms != 0 && dial_timeout_ms != desc.timeout_ms {
+            return Err(ConnError::Refused);
+        }
+        self.open_with_security(caller, need, desc, require_secure)
+    }
+
     /// UPGRADE `conn`, an open raw byte stream, to connection security from its next byte on
     /// (`abi::host::conn::connector::service::UPGRADE_SECURE`: StartTLS after the plugin's own
     /// negotiation, or TLS from the first byte when made before any byte): offering `name`

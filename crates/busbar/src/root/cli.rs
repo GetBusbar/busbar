@@ -380,11 +380,8 @@ fn validate_config_command() -> i32 {
     };
     let providers_path = loaded.providers_path.clone();
     let unset_env_vars = loaded.unset_env_vars.clone();
-    // Apply the overlay's `root` section (API-set single-value config) onto the base DeployCfg BEFORE
-    // resolve, exactly as boot does — so --validate validates the EFFECTIVE config including the
-    // rate_card/store/security/limits/… overrides (and re-runs the limits projection + admin-mTLS
-    // boot-guard over the merged shape), not just the base file. The hooks/groups sections merge
-    // POST-resolve below.
+    // --validate reads operator inputs only and opens no Store. Runtime overlay recovery is a
+    // boot/live-reload operation; these projections remain no-ops for the input-only load here.
     if let Some(doc) = loaded.overlay_doc.as_ref() {
         config::overlay::apply_root_to_deploy(&mut loaded.deploy, doc);
     }

@@ -410,12 +410,13 @@ async fn apply(
         // Everything below reads config files + the overlay and re-runs the boot pipeline, so it is
         // queued onto `spawn_blocking` — under the mutation guard, off the reactor.
         Ok(txn.read_store(move || {
-            let mut loaded = busbar_kernel::load_config_from_disk_judged(
+            let mut loaded = busbar_kernel::load_config_from_disk_with_store(
                 &config_path,
                 Some(&providers_path),
                 false,
                 busbar_kernel::config::EnvSubst::Strict,
                 &*snapshot.root_rules,
+                snapshot.overlay_path.clone(),
             )
             .map_err(AdminError::Validation)?;
             // BASE-CONFIG PROTECTION: an entry declared in `config.yaml` is operator file config and
@@ -539,9 +540,8 @@ async fn apply(
                 busbar_kernel::build_app_from_config(
                     cfg,
                     loaded.deploy.plugins.clone(),
-                    // Preserve the LIVE overlay path (not the env-derived one the disk load
-                    // returns), exactly as the reset + config/settings rebuilds do.
-                    snapshot.overlay_path.clone(),
+                    // Publish the loader's fresh carrier only after persistence and rebuild succeed.
+                    loaded.overlay_path,
                     base_hook_names,
                     base_group_names,
                     (Some(config_path), Some(providers_path)),
@@ -576,25 +576,26 @@ async fn apply(
                 awaiting_restart,
                 busbar_kernel::state::planes_awaiting_restart_added(&installed, &snapshot),
             );
-            // PERSIST-then-SWAP, fail-closed: the overlay takes the change FIRST; only if disk
+            // PERSIST-then-SWAP, fail-closed: the overlay takes the change FIRST; only if the Store
             // accepts it does the engine swap. `commit_then` (not `commit`) so a governance
             // credential rotation fires only once persist AND swap have both returned `Ok`.
-            let p = installed.clone();
+            // Retain unknown-write custody on the currently published generation's carrier.
+            let persist_overlay = snapshot.overlay_path.clone();
             let persist_name = txn_name.clone();
             let persist_def = next_def.clone();
             Ok(Outcome::commit_then(
                 installed.clone(),
                 move || {
                     busbar_kernel::config::overlay::persist_named_map(
-                        p.overlay_path.as_deref(),
+                        persist_overlay.as_deref(),
                         txn_section,
                         &persist_name,
                         persist_def.as_ref(),
                     )
                     .map_err(|e| {
                         format!(
-                            "the `{}` change could not be persisted to the overlay: {e}; nothing \
-                             was changed (the running engine is unaffected)",
+                            "the `{}` change persistence to the overlay was not confirmed: {e}; \
+                             the running engine is unaffected",
                             txn_section.key()
                         )
                     })

@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 /// The busbar-owned config overlay (persistence substrate for API-applied hook changes).
 pub mod card;
 pub mod overlay;
+mod overlay_store;
 
 /// The credential positions `${VAR}` filled, and the settings a plane is handed over them: a secret
 /// reference at each, never the bytes (THE DESIGN §6); every other position as interpolated.

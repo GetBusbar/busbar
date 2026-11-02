@@ -6,6 +6,8 @@
 use super::*;
 use busbar_kernel::config::{migrated_store_module, HookCfg, HookKind, PromptAccess, UserAccess};
 
+#[path = "bootstrap_rollback.rs"]
+mod bootstrap_rollback;
 #[path = "usage_adjustment_range.rs"]
 mod usage_adjustment_range;
 
@@ -286,6 +288,12 @@ fn fake_tarball_with(
 }
 
 impl DirAdmission {
+    fn rollback_only(bytes: &[u8]) -> bool {
+        bytes
+            .strip_prefix(FAKE_HEAD)
+            .and_then(|json| serde_json::from_slice::<serde_json::Value>(json).ok())
+            .is_some_and(|value| value["trust"].as_str() == Some("rollback-only"))
+    }
     /// What `bytes` state and the verdict on them.
     fn read(bytes: &[u8]) -> Result<(Stated, Judged), String> {
         let json = bytes
@@ -308,6 +316,9 @@ impl DirAdmission {
                 publisher: stated.publisher.clone(),
             },
             Some("allowed") => Judged::Allowed,
+            Some("rollback-only") => Judged::Rejected {
+                reason: "operator bootstrap floor rejects this test target".into(),
+            },
             _ => Judged::Rejected {
                 reason: "unsigned plugin (set plugins.trust.allow_unsigned)".to_string(),
             },
@@ -398,10 +409,17 @@ impl PluginAdmission for DirAdmission {
         _dir: &std::path::Path,
         _file: &str,
         tarball: &[u8],
-        _cfg: &busbar_kernel::config::PluginsCfg,
+        cfg: &busbar_kernel::config::PluginsCfg,
     ) -> Result<Admitted, Refusal> {
-        let (stated, judged) = Self::read(tarball)
+        let (stated, mut judged) = Self::read(tarball)
             .map_err(|e| Refusal::Validation(format!("invalid plugin tarball: {e}")))?;
+        if Self::rollback_only(tarball)
+            && cfg.min_versions.get(&stated.name) == Some(&stated.version)
+        {
+            judged = Judged::Trusted {
+                publisher: stated.publisher.clone(),
+            };
+        }
         if let Judged::Rejected { reason } = judged {
             return Err(Refusal::Conflict(format!(
                 "plugin rejected by the trust policy: {reason}"
@@ -417,9 +435,18 @@ impl PluginAdmission for DirAdmission {
     fn inspect(
         &self,
         tarball: &[u8],
-        _cfg: &busbar_kernel::config::PluginsCfg,
+        cfg: &busbar_kernel::config::PluginsCfg,
     ) -> Result<(Stated, Judged), Refusal> {
-        Self::read(tarball).map_err(|e| Refusal::Validation(format!("invalid plugin tarball: {e}")))
+        let (stated, mut judged) = Self::read(tarball)
+            .map_err(|e| Refusal::Validation(format!("invalid plugin tarball: {e}")))?;
+        if Self::rollback_only(tarball)
+            && cfg.min_versions.get(&stated.name) == Some(&stated.version)
+        {
+            judged = Judged::Trusted {
+                publisher: stated.publisher.clone(),
+            };
+        }
+        Ok((stated, judged))
     }
 
     fn rollback_target(
@@ -430,6 +457,7 @@ impl PluginAdmission for DirAdmission {
     ) -> Result<Stated, Refusal> {
         match Self::read(bytes) {
             Ok((stated, Judged::Trusted { .. } | Judged::Allowed)) => Ok(stated),
+            Ok((stated, _)) if Self::rollback_only(bytes) => Ok(stated),
             Ok((stated, Judged::Rejected { reason })) => Err(Refusal::Conflict(format!(
                 "rollback target `{file}` is not loadable under the trust policy even with the \
                  floor lowered to its own version {}: {reason}",
@@ -4399,70 +4427,45 @@ fn every_admin_trust_moment_resolves_through_the_snapshots_builder() {
     assert!(validate_plugin_filename(&none, "plain.tar.gz").is_err());
 }
 
-/// An overlay file that is a NAMED PIPE, and the read of it as a race between the runtime and a
-/// watchdog: a read of the pipe parks until something opens its writing end. A sibling task on the
-/// test's one-worker runtime opens it — which it can do only if the read left that worker free. A
-/// watchdog thread opens it instead after a bound, so a read that held the worker still finishes,
-/// and says that it had to.
-///
-/// Returns whether the read ran off the worker: `true` when the sibling released it, `false` when
-/// only the watchdog could.
-#[cfg(unix)]
-async fn overlay_read_left_the_worker_free<F, Fut>(tag: &str, read: F) -> bool
+/// A Store read parks at a barrier. A sibling on the one-worker runtime announces it ran;
+/// the watchdog releases the read after that announcement or a bounded timeout. The timeout
+/// still releases an incorrectly inline read, so the regression fails without hanging.
+async fn overlay_read_left_the_worker_free<F, Fut>(read: F) -> bool
 where
     F: FnOnce(Arc<App>) -> Fut,
     Fut: std::future::Future<Output = ()>,
 {
-    let dir = tmp_plugins_dir(tag);
-    std::fs::create_dir_all(&dir).unwrap();
-    let pipe = dir.join("overlay.json");
-    let made = std::process::Command::new("mkfifo")
-        .arg(&pipe)
-        .status()
-        .expect("mkfifo runs");
-    assert!(made.success(), "mkfifo {}", pipe.display());
-    let app = crate::new_test_app().overlay_path(pipe.clone()).build();
-
-    let watchdog_fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let overlay = busbar_kernel::test_support::TestOverlayStore::new();
+    let app = crate::new_test_app()
+        .overlay_backend(overlay.backend())
+        .build();
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    overlay.block_reads(barrier.clone());
     let (done, finished) = std::sync::mpsc::channel::<()>();
-    let watchdog = {
-        let pipe = pipe.clone();
-        let fired = Arc::clone(&watchdog_fired);
-        std::thread::spawn(move || {
-            if finished
-                .recv_timeout(std::time::Duration::from_secs(5))
-                .is_err()
-            {
-                fired.store(true, std::sync::atomic::Ordering::SeqCst);
-                let _ = std::fs::OpenOptions::new().write(true).open(&pipe);
-            }
-        })
-    };
-    let sibling = {
-        let pipe = pipe.clone();
-        tokio::spawn(async move {
-            let _ = std::fs::OpenOptions::new().write(true).open(&pipe);
-        })
-    };
+    let watchdog = std::thread::spawn(move || {
+        let free = finished
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .is_ok();
+        barrier.wait();
+        free
+    });
+    let sibling = tokio::spawn(async move {
+        let _ = done.send(());
+    });
     read(app).await;
-    let _ = done.send(());
-    watchdog.join().unwrap();
-    // A read that held the worker never let the sibling start, and with the read over nothing
-    // would ever open the pipe's reading end for it: cancel it before its first poll. A read that
-    // left the worker free already let it run to completion, so this cancels nothing.
+    let free = watchdog.join().unwrap();
     sibling.abort();
     let _ = sibling.await;
-    !watchdog_fired.load(std::sync::atomic::Ordering::SeqCst)
+    free
 }
 
 /// RED (a read blocks an async worker): `GET /<section>` lists the overlay's unparseable entries,
-/// which reads and parses the operator's overlay FILE. That read runs off the async worker, as every
-/// other admin disk read does. RED while it ran inline: the worker parked on the file, the sibling
+/// which reads and parses the operator's Store overlay. That read runs off the async worker.
+/// RED while it ran inline: the worker parked in the Store, the sibling
 /// never ran, and only the watchdog could release the read.
-#[cfg(unix)]
 #[tokio::test(flavor = "current_thread")]
 async fn list_named_defs_reads_the_overlay_off_the_async_worker() {
-    let free = overlay_read_left_the_worker_free("named-list-pipe", |app| async move {
+    let free = overlay_read_left_the_worker_free(|app| async move {
         let page = AdminService::new(app)
             .list_named_defs(NamedMapSection::Export)
             .await
@@ -4472,17 +4475,16 @@ async fn list_named_defs_reads_the_overlay_off_the_async_worker() {
     .await;
     assert!(
         free,
-        "the named-definition list read the overlay file on the async worker: no other task ran \
+        "the named-definition list read the Store overlay on the async worker: no other task ran \
          while it was parked"
     );
 }
 
 /// RED, the single-entry twin: `GET /<section>/{name}` for a name the live config does not hold
-/// falls back to the overlay's unparseable entries — the same file read, off the worker too.
-#[cfg(unix)]
+/// falls back to the overlay's unparseable entries — the same Store read, off the worker too.
 #[tokio::test(flavor = "current_thread")]
 async fn get_named_def_reads_the_overlay_off_the_async_worker() {
-    let free = overlay_read_left_the_worker_free("named-get-pipe", |app| async move {
+    let free = overlay_read_left_the_worker_free(|app| async move {
         let err = AdminService::new(app)
             .get_named_def(NamedMapSection::Export, "absent")
             .await
@@ -4492,7 +4494,7 @@ async fn get_named_def_reads_the_overlay_off_the_async_worker() {
     .await;
     assert!(
         free,
-        "the named-definition read held the async worker while the overlay file was read"
+        "the named-definition read held the async worker while the Store overlay was read"
     );
 }
 
@@ -4501,14 +4503,14 @@ async fn get_named_def_reads_the_overlay_off_the_async_worker() {
 /// live definitions — moving the read off the worker changed where it runs, not what it says.
 #[tokio::test(flavor = "current_thread")]
 async fn named_defs_still_flag_an_unparseable_overlay_entry() {
-    let dir = tmp_plugins_dir("named-flagged");
-    std::fs::create_dir_all(&dir).unwrap();
-    let overlay = dir.join("overlay.json");
+    let overlay = busbar_kernel::test_support::TestOverlayStore::new();
     let mut doc = serde_json::json!({"version": 1, "named_maps": {}});
     doc["named_maps"][NamedMapSection::Export.key()] =
         serde_json::json!({"broken": {"no_such_field": true}});
-    std::fs::write(&overlay, doc.to_string()).unwrap();
-    let app = crate::new_test_app().overlay_path(overlay).build();
+    overlay.seed_bytes(doc.to_string().as_bytes());
+    let app = crate::new_test_app()
+        .overlay_backend(overlay.backend())
+        .build();
     let page = AdminService::new(Arc::clone(&app))
         .list_named_defs(NamedMapSection::Export)
         .await
@@ -4524,6 +4526,27 @@ async fn named_defs_still_flag_an_unparseable_overlay_entry() {
         serde_json::to_value(&page.items[0]).unwrap(),
         "the list and the single read give the one flagged view"
     );
+}
+
+/// A Store read failure is an error, never a fabricated empty list or missing definition.
+#[tokio::test]
+async fn named_defs_propagate_store_overlay_read_failures() {
+    let overlay = busbar_kernel::test_support::TestOverlayStore::new();
+    let app = crate::new_test_app()
+        .overlay_backend(overlay.backend())
+        .build();
+    overlay.fail_reads(true);
+    let service = AdminService::new(app);
+    assert!(matches!(
+        service.list_named_defs(NamedMapSection::Export).await,
+        Err(AdminError::Validation(_))
+    ));
+    assert!(matches!(
+        service
+            .get_named_def(NamedMapSection::Export, "absent")
+            .await,
+        Err(AdminError::Validation(_))
+    ));
 }
 
 /// SENSITIVE BY DEFAULT (owner ruling 2026-10-27): a settings bag in an admin view shows its keys,

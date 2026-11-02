@@ -11,7 +11,7 @@
 //! what it returns; nothing here keeps a second.
 
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use busbar_contract::abi::host::conn::connector::{EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB};
 use busbar_contract::abi::host::service::{
@@ -289,14 +289,14 @@ impl GuardJudge {
 pub fn judge(dest: Arc<dyn DestJudge>, own_ports: &[u16]) -> Arc<dyn DialJudge> {
     Arc::new(OneJudge {
         dest,
-        own: own_ports.into(),
+        own: Arc::new(RwLock::new(own_ports.into())),
     })
 }
 
 /// [`judge`]'s dial judge: the one destination judge and the node's own ports.
 struct OneJudge {
     dest: Arc<dyn DestJudge>,
-    own: Arc<[u16]>,
+    own: Arc<RwLock<Arc<[u16]>>>,
 }
 
 impl OneJudge {
@@ -323,22 +323,34 @@ impl OneJudge {
         let later = Arc::clone(&self.own);
         let pin = |v: &Admitted| v.as_ref().map(|(at, _)| *at).map_err(|r| r.verdict);
         let pended: Box<dyn FnOnce(Admitted) + Send> = Box::new(move |v| {
+            // Recovery may replace the listener ports while resolution is pending. Read the
+            // ports when the answer arrives, and release the metadata lock before its callback.
+            let own = Arc::clone(&later.read().expect("own ports"));
             let also = match &v {
                 Ok((at, addrs)) => addrs
                     .iter()
                     .map(|ip| SocketAddr::new(*ip, at.port()))
                     .filter(|a| a != at)
-                    .filter(|a| not_the_node(class, &later, Ok(*a)).is_ok())
+                    .filter(|a| not_the_node(class, &own, Ok(*a)).is_ok())
                     .collect(),
                 Err(_) => Vec::new(),
             };
-            done(not_the_node(class, &later, pin(&v)), also);
+            done(not_the_node(class, &own, pin(&v)), also);
         });
-        judging(pended).map(|v| not_the_node(class, &self.own, pin(&v)))
+        judging(pended).map(|v| {
+            let own = Arc::clone(&self.own.read().expect("own ports"));
+            not_the_node(class, &own, pin(&v))
+        })
     }
 }
 
 impl DialJudge for OneJudge {
+    fn own_ports_applied(&self, ports: &[u16]) {
+        let next: Arc<[u16]> = ports.into();
+        let previous = std::mem::replace(&mut *self.own.write().expect("own ports"), next);
+        drop(previous);
+    }
+
     fn judge_dial(
         &self,
         dest: &str,

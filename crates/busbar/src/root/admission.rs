@@ -10,7 +10,7 @@
 //! judgement is MANIFEST-ONLY: nothing here loads a plugin.
 //!
 //! [`DURABLE`] is the loader's one durable-write primitive (`root::loader::durable`) as the kernel's
-//! [`DurableFs`] seam: the overlay, the `plugins.fetch` directory and the admin plugin verbs write
+//! [`DurableFs`] seam: the `plugins.fetch` directory and the admin plugin verbs write
 //! through it.
 
 use std::path::Path;
@@ -279,107 +279,41 @@ pub fn dispatch_latched() -> bool {
     crate::root::loader::dispatch::handle::latched()
 }
 
-#[cfg(all(test, unix))]
-mod overlay_probe_permissions {
-    use super::{DurableFs as _, DurableOpts, DURABLE};
-    use busbar_kernel::config::overlay::{resolve_backend_with_env, OverlayDoc};
-    use busbar_kernel::config::ConfigMgmtCfg;
-    use std::os::unix::fs::PermissionsExt as _;
-    use std::path::{Path, PathBuf};
-
-    struct Scratch(PathBuf);
-
-    impl Scratch {
-        fn new(tag: &str) -> Self {
-            use std::sync::atomic::{AtomicU64, Ordering};
-            static SEQ: AtomicU64 = AtomicU64::new(0);
-            let stamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+#[cfg(test)]
+mod store_overlay_management {
+    use busbar_kernel::config::overlay::{persist_root, resolve_backend_with_env, RootSettings};
+    use busbar_kernel::config::{ConfigMgmtCfg, OverlayBackend, OverlayCfg};
+    use busbar_kernel::test_support::TestOverlayStore;
+    #[test]
+    fn legacy_overlay_file_is_untouched_and_store_remains_writable() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "busbar-overlay-input-{}-{stamp}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let legacy = dir.join("overlay.json");
+        let original = b"operator-owned legacy input";
+        std::fs::write(&legacy, original).unwrap();
+        let cfg = ConfigMgmtCfg {
+            locked: false,
+            overlay: Some(OverlayCfg::Backend(OverlayBackend {
+                file: Some(legacy.to_string_lossy().into_owned()),
+            })),
+        };
+        assert!(
+            resolve_backend_with_env(&cfg, &dir.join("config.yaml"), None, true)
                 .unwrap()
-                .as_nanos();
-            let dir = std::env::temp_dir().join(format!(
-                "busbar-overlay-probe-{tag}-{}-{stamp}-{}",
-                std::process::id(),
-                SEQ.fetch_add(1, Ordering::Relaxed)
-            ));
-            std::fs::create_dir(&dir).unwrap();
-            Self(dir)
-        }
-    }
-
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
-    // Use the installed production primitive directly. The kernel's test stand-in deliberately
-    // writes in place and cannot establish the sibling-rename permissions under test here.
-    fn persist_overlay(path: &Path) -> std::io::Result<()> {
-        let bytes = serde_json::to_vec_pretty(&OverlayDoc::default()).unwrap();
-        DURABLE.write_with(
-            path,
-            &bytes,
-            DurableOpts {
-                mode: Some(0o600),
-                ..Default::default()
-            },
-        )
-    }
-
-    #[test]
-    fn a_read_only_overlay_file_can_be_replaced_in_a_writable_directory() {
-        let scratch = Scratch::new("readonly-file");
-        let overlay = scratch.0.join("busbar-overlay.json");
-        let original = b"{\"version\":1}";
-        std::fs::write(&overlay, original).unwrap();
-        std::fs::set_permissions(&overlay, std::fs::Permissions::from_mode(0o444)).unwrap();
-
-        let resolved = resolve_backend_with_env(
-            &ConfigMgmtCfg::default(),
-            &scratch.0.join("config.yaml"),
-            None,
-            true,
-        )
-        .unwrap();
-        assert_eq!(std::fs::read(&overlay).unwrap(), original);
-        assert_eq!(std::fs::read_dir(&scratch.0).unwrap().count(), 1);
-        let persisted = persist_overlay(&overlay);
-
-        assert!(
-            persisted.is_ok(),
-            "the real writer replaces this file: {persisted:?}"
+                .enabled
         );
-        assert_eq!(resolved.path.as_deref(), Some(overlay.as_path()));
-        assert!(!resolved.read_only_backend);
-    }
-
-    #[test]
-    fn a_writable_overlay_file_in_a_read_only_directory_cannot_be_persisted() {
-        let scratch = Scratch::new("readonly-directory");
-        let overlay = scratch.0.join("busbar-overlay.json");
-        let original = b"{\"version\":1}";
-        std::fs::write(&overlay, original).unwrap();
-        std::fs::set_permissions(&overlay, std::fs::Permissions::from_mode(0o666)).unwrap();
-        std::fs::set_permissions(&scratch.0, std::fs::Permissions::from_mode(0o555)).unwrap();
-
-        let resolved = resolve_backend_with_env(
-            &ConfigMgmtCfg::default(),
-            &scratch.0.join("config.yaml"),
-            None,
-            true,
-        )
-        .unwrap();
-        let persisted = persist_overlay(&overlay);
-
-        assert!(
-            persisted.is_err(),
-            "the fixture must deny the real durable writer"
-        );
-        assert!(resolved.path.is_none());
-        assert!(resolved.read_only_backend);
-        assert_eq!(std::fs::read(&overlay).unwrap(), original);
-        assert_eq!(std::fs::read_dir(&scratch.0).unwrap().count(), 1);
+        let store = TestOverlayStore::new();
+        persist_root(Some(&store.backend()), &RootSettings::default()).unwrap();
+        assert!(store.read_bytes().is_some());
+        assert_eq!(std::fs::read(&legacy).unwrap(), original);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

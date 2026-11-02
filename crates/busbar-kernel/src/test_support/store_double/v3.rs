@@ -16,6 +16,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, MutexGuard};
 
 use busbar_contract::abi::sdk::conn::Host;
+use busbar_contract::abi::sdk::store::conditional;
 use busbar_contract::abi::sdk::store::{OpRefused, OpResult, Scanned, SyncStore, Tail};
 use busbar_contract::abi::store::{OpId, OP_ID_RETENTION_SECS};
 use busbar_contract::kinds::RecordBytes;
@@ -35,6 +36,7 @@ const SECRET_REFS: &[busbar_contract::abi::mechanism::call::AbiStr] =
 busbar_contract::statement_extensions!(REWRAP_EXTENSIONS: [
     (busbar_contract::abi::sdk::store::rewrap::INTENT, b"1"),
     (correction::CAPABILITY, busbar_contract::abi::sdk::store::correction::CAPABILITY_VALUE),
+    (conditional::CAPABILITY, b"1"),
 ]);
 
 busbar_contract::store_door!(
@@ -63,6 +65,7 @@ struct Recorded {
 enum Body {
     Ordinary(String),
     UsageCorrection([u8; 32]),
+    RecordTransaction([u8; 32]),
 }
 
 #[derive(Default)]
@@ -119,6 +122,58 @@ fn failed(e: busbar_contract::records::RecordStoreError) -> OpRefused {
 }
 
 impl MemoryStore {
+    fn v3_record_transaction(
+        &self,
+        request: &conditional::Request,
+    ) -> OpResult<conditional::Decision> {
+        use conditional::{Decision, Expected, Mutation};
+        request
+            .validate()
+            .map_err(|reason| OpRefused::Refused(reason.into()))?;
+        let body = Body::RecordTransaction(request.fingerprint());
+        let mut inner = self.v3.lock();
+        match inner.seen(request.op_id, &body) {
+            Seen::Replay(_) => return Ok(Decision::Applied),
+            Seen::Conflict => return Err(OpRefused::Conflict),
+            Seen::New => {}
+        }
+        let mut records = self.records.write().unwrap_or_else(|p| p.into_inner());
+        for predicate in &request.predicates {
+            let actual = records.get(&(predicate.schema.clone(), predicate.key.clone()));
+            let matches = match &predicate.expected {
+                Expected::Absent => actual.is_none(),
+                Expected::Bytes(bytes) => actual.is_some_and(|value| value.as_slice() == bytes),
+            };
+            if !matches {
+                return Ok(Decision::ConditionConflict);
+            }
+        }
+        for mutation in &request.mutations {
+            match mutation {
+                Mutation::Put { schema, key, value } => {
+                    records.insert(
+                        (schema.clone(), key.clone()),
+                        RecordBytes::new(value.clone()).expect("validated record bytes"),
+                    );
+                }
+                Mutation::Delete { schema, key } => {
+                    records.remove(&(schema.clone(), key.clone()));
+                }
+                Mutation::DeleteRange {
+                    schema,
+                    prefix,
+                    exact_key_length,
+                } => {
+                    records.retain(|(s, k), _| {
+                        s != schema || k.len() as u64 != *exact_key_length || !k.starts_with(prefix)
+                    });
+                }
+            }
+        }
+        inner.record(now(), request.op_id, body, Answer::Done);
+        Ok(Decision::Applied)
+    }
+
     /// Run one `op_id`-carrying write under the v3 lock: a replay answers the original, a
     /// conflict applies nothing, and a new op runs `apply` and is remembered only if it applied.
     fn deduped(
@@ -287,7 +342,15 @@ impl MemoryStore {
 /// Served whole by the SDK ([`SyncStore`]): the 1.5.5 op set is the double's
 /// [`RecordStore`](busbar_contract::records::RecordStore) impl, and every slot answers at once.
 impl SyncStore for MemoryStore {
+    const RECORD_TRANSACTION: bool = true;
     const USAGE_CORRECTION: bool = true;
+
+    fn record_transaction(
+        &self,
+        request: &conditional::Request,
+    ) -> OpResult<conditional::Decision> {
+        self.v3_record_transaction(request)
+    }
 
     const TAIL: Tail = Tail {
         ephemeral: true,

@@ -36,7 +36,7 @@ that replaces it. Move each at your convenience; none has a removal date yet.
 
 | Deprecated env var (since 1.5.3, still honoured) | config.yaml key |
 |---|---|
-| `BUSBAR_CONFIG_OVERLAY` | `config.overlay.file` (see [config mutability](#config-mutability-locked--overlay)) |
+| `BUSBAR_CONFIG_OVERLAY` | Deprecated compatibility selector; runtime state uses the configured Store (see [config mutability](#config-mutability-locked--overlay)) |
 | `BUSBAR_WORKER_THREADS` | `advanced.worker_threads` |
 | `BUSBAR_UPSTREAM_HTTP1_ONLY` | `advanced.upstream_http1_only` |
 | `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` | `advanced.upstream_h2_prior_knowledge` |
@@ -47,28 +47,51 @@ that replaces it. Move each at your convenience; none has a removal date yet.
 
 ### Config mutability (`locked` + `overlay`)
 
-The top-level `config:` block governs whether the admin API may change config at runtime and where those
-changes persist. **Durable by default:** with nothing specified, config is *mutable* and admin-API
-mutations persist to `busbar-overlay.json` next to config.yaml. A group or hook provisioned over the
-admin API therefore **survives a restart** out of the box.
+The top-level `config:` block governs whether the admin API may change config at runtime. Changes
+persist exclusively in the configured Store. A durable Store preserves hooks, groups, settings,
+plugin version pins and named definitions across restart; an ephemeral Store loses them on restart.
 
 ```yaml
 config:
   locked: false                 # false = mutable (admin API may change config); true = immutable
-  overlay:
-    file: busbar-overlay.json    # where mutations persist; default = next to config.yaml
 ```
 
 - **`locked: true`** is an immutable/GitOps deployment: admin-API config mutations are *refused* at
   runtime (edit config.yaml and `POST /config/reload` instead). The overlay is ignored.
-- **Boot invariant: `locked` XOR a writable overlay.** A *mutable* config with **no writable overlay**
-  (you set `overlay: false`, or the config directory is read-only) **refuses to boot**, with a message
-  telling you to either point `config.overlay.file` at a writable path or set `config.locked: true`.
-  This makes "applied but silently lost on restart" impossible to reach.
-  - **Read-only config dir (e.g. `/etc/busbar` on a read-only mount):** the default overlay path is
-    unwritable, so an unconfigured mutable busbar refuses to boot. Fix: set a writable
-    `config.overlay.file`, or set `config.locked: true` (a read-only/GitOps deployment never persists
-    runtime mutations anyway). See the [upgrade note](migration-1.5.md#153-config-consolidation).
+- Mutable management requires the Store's atomic conditional-record capability. Every mutation
+  persists before its config generation is published. Failed persistence refuses the mutation.
+- A read-only config directory has no effect on Store persistence. `overlay: false` still requires
+  `locked: true`. Legacy `config.overlay.file` and `BUSBAR_CONFIG_OVERLAY` selectors are accepted
+  with a deprecation warning; they never read, probe, create, update or remove an overlay file.
+  Existing legacy files remain untouched and are not silently imported or used as fallback state.
+- The operator's base `store:` is the overlay anchor for the deployment. Boot validates the base
+  inputs, initializes its connector with base transport settings, opens that Store and recovers the
+  complete overlay before opening effective hooks, planes or exporters. The recovered destination
+  and security policy, framer settings, pool settings and listener self-dial protection are finalized
+  before those effective plugins open. Existing anchor connections retain custody throughout.
+  An unavailable, incomplete,
+  corrupt or newer Store overlay refuses recovery; `--safe-mode` explicitly quarantines it and
+  starts from base inputs without deleting Store records. `--validate` reads operator inputs only
+  and never opens or probes a Store.
+- Live reload retains the same anchor. A runtime `store` setting edit remains restart-to-apply for
+  governance; at restart the effective governance Store may differ, but runtime config still lives
+  in the base-config anchor. Changing the operator's base `store:` selects a different anchor at
+  the next boot; move its state deliberately. There is no fallback when the old anchor is unavailable.
+- Overlay generations use bounded immutable Store records and one atomic head change. That change
+  retires the superseded generation; readers retry if their prior snapshot was retired. An unknown
+  transaction retains its exact candidate and replay identity. After receipt retention expires,
+  further mutation refuses until restart recovers the authoritative Store head. Crash-abandoned,
+  never-published staging records are retained because their ownership cannot be inferred from an
+  unreferenced key while another node may still be publishing it.
+- A running generation pins the overlay head it recovered. Another node's update requires an
+  explicit successful reload before this process can mutate config again; ordinary diagnostic reads
+  cannot refresh that authority. A failed rebuild leaves the old generation serving and quarantined
+  from further mutations when its Store head has changed.
+- The anchor Store and secret modules needed to open it must satisfy the operator's base trust
+  policy before their Store-owned version pins can be read. A plugin rollback that would make one
+  of those bootstrap dependencies unavailable is refused before persisting its pin. Keep an
+  admitted bootstrap version or deliberately change the base Store/trust/floor configuration first.
+  Other plugin pins are recovered before the complete application's plugin validation.
 
 **Worker threads and scaling.** Busbar's request path is CPU-bound (parse, translate, serialize), so
 throughput scales with data-plane workers. Since 1.6.0, `advanced.worker_threads` is the **data-plane
