@@ -956,7 +956,10 @@ pub(crate) fn enter_lifecycle(
     output: *mut c_void,
 ) -> RawOutcome {
     crate::ffi_thread::debug_assert_permanent(what);
-    op(instance, input, output)
+    // SAFETY: this private crossing is reached after cross_gated validates its selected slot
+    // and lends its initialized host frames and live instance for the synchronous worker call.
+    // The fixture caller selects a slot explicitly accepting NULL frames without reading them.
+    unsafe { op(instance, input, output) }
 }
 
 pub(crate) fn is_lifecycle(s: u32) -> bool {
