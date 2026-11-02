@@ -2255,7 +2255,7 @@ fn a_base_url_userinfo_is_accepted_and_no_validation_error_repeats_it() {
         p.scope = Some("api://x/.default".into());
 
         p.auth = Some(
-            serde_yaml::from_str(include_str!("fixtures/client_credentials_style.yaml"))
+            serde_yaml::from_str(include_str!("../../../../busbar-kernel/src/config_validate/tests/fixtures/client_credentials_style.yaml"))
                 .expect("a provider style"),
         );
         providers.insert("myprovider".to_string(), p);
