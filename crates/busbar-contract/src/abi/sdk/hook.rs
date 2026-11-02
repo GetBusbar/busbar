@@ -663,6 +663,36 @@ pub fn write_rewrite(
     Outcome::Ready
 }
 
+/// An owned hook settings/reply tree. Only its initialized owned strings and map keys are
+/// wiped here; the JSON parser's private scratch is not this owner's allocation.
+struct JsonValue(serde_json::Value);
+
+impl<'de> serde::Deserialize<'de> for JsonValue {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        <serde_json::Value as serde::Deserialize>::deserialize(de).map(Self)
+    }
+}
+
+impl Drop for JsonValue {
+    fn drop(&mut self) {
+        fn wipe(value: &mut serde_json::Value) {
+            use zeroize::Zeroize;
+            match value {
+                serde_json::Value::String(text) => text.zeroize(),
+                serde_json::Value::Array(items) => items.iter_mut().for_each(wipe),
+                serde_json::Value::Object(items) => {
+                    for (mut key, mut value) in std::mem::take(items) {
+                        key.zeroize();
+                        wipe(&mut value);
+                    }
+                }
+                _ => {}
+            }
+        }
+        wipe(&mut self.0);
+    }
+}
+
 /// The 1.5.5 reply, field for field 1.5.5's `HookResponse` (v1.5.5
 /// `crates/busbar/src/hooks/wire.rs:428-461`: the same fields, types, order and defaults, unknown
 /// keys ignored). A wrong type in any typed field fails the whole parse, and 1.5.5's host read a
@@ -675,11 +705,11 @@ struct Reply155 {
     #[serde(default)]
     abstain: bool,
     #[serde(default)]
-    reject: Option<serde_json::Value>,
+    reject: Option<JsonValue>,
     #[serde(default)]
-    restrict: Option<serde_json::Value>,
+    restrict: Option<JsonValue>,
     #[serde(default)]
-    rewrite: Option<serde_json::Value>,
+    rewrite: Option<JsonValue>,
 }
 
 /// A reject's status as the hook stated it: an integer that fits a `u16`, else none (the host then
@@ -698,8 +728,10 @@ fn reject_of(r: &serde_json::Value) -> (Option<u16>, String) {
 }
 
 /// A present reply verb: anything but an explicit `false` (JSON `null` reads as absent).
-fn verb(v: &Option<serde_json::Value>) -> Option<&serde_json::Value> {
-    v.as_ref().filter(|v| **v != serde_json::Value::Bool(false))
+fn verb(v: &Option<JsonValue>) -> Option<&serde_json::Value> {
+    v.as_ref()
+        .map(|v| &v.0)
+        .filter(|v| **v != serde_json::Value::Bool(false))
 }
 
 /// LOWER A 1.5.5 `decide` REPLY exactly as 1.5.5's host normalized it (v1.5.5
@@ -712,10 +744,10 @@ fn verb(v: &Option<serde_json::Value>) -> Option<&serde_json::Value> {
 #[must_use]
 pub fn lower_decide_reply(reply: Result<serde_json::Value, String>) -> Verdict {
     let v = match reply {
-        Ok(v) => v,
+        Ok(v) => JsonValue(v),
         Err(message) => return Verdict::Failed(message),
     };
-    let Ok(parsed) = serde_json::from_value::<Reply155>(v) else {
+    let Ok(parsed) = <Reply155 as serde::Deserialize>::deserialize(&v.0) else {
         return Verdict::Abstain;
     };
     if let Some(r) = verb(&parsed.reject) {
@@ -747,10 +779,10 @@ pub fn lower_decide_reply(reply: Result<serde_json::Value, String>) -> Verdict {
 #[must_use]
 pub fn lower_transform_reply(reply: Result<serde_json::Value, String>) -> RewriteVerdict {
     let v = match reply {
-        Ok(v) => v,
+        Ok(v) => JsonValue(v),
         Err(message) => return RewriteVerdict::Failed(message),
     };
-    let Ok(parsed) = serde_json::from_value::<Reply155>(v) else {
+    let Ok(parsed) = <Reply155 as serde::Deserialize>::deserialize(&v.0) else {
         return RewriteVerdict::Abstain;
     };
     if let Some(r) = verb(&parsed.reject) {
@@ -759,9 +791,14 @@ pub fn lower_transform_reply(reply: Result<serde_json::Value, String>) -> Rewrit
     }
     match parsed
         .rewrite
-        .filter(|rw| crate::hook_wire::reply::parse_rewrite(rw).is_some())
-    {
-        Some(rw) => RewriteVerdict::Rewrite(serde_json::to_vec(&rw).unwrap_or_default()),
+        // parse_rewrite's validity rule is exactly a nonempty messages array. Inspect that
+        // borrowed shape rather than constructing and dropping a second copy of every message.
+        .filter(|rw| {
+            rw.0.get("messages")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|items| !items.is_empty())
+        }) {
+        Some(rw) => RewriteVerdict::Rewrite(serde_json::to_vec(&rw.0).unwrap_or_default()),
         None => RewriteVerdict::Abstain,
     }
 }
@@ -1035,14 +1072,6 @@ impl<P> HookLife<P> {
     }
 }
 
-/// A pushed settings map as text; `"{}"` when absent (`configure` reads it as an object).
-fn settings_text(bytes: &[u8]) -> Cow<'_, str> {
-    if bytes.is_empty() {
-        return Cow::Borrowed("{}");
-    }
-    String::from_utf8_lossy(bytes)
-}
-
 /// [`HookOpen::open_with`] over `settings`, verbatim (an empty blob stays empty, so the plugin
 /// answers it in its own 1.5.5 words), `secrets` and `generation`; its refusal is the plugin's own
 /// words.
@@ -1140,8 +1169,12 @@ hook_op!(
             Some(Lowered::Decide(v)) => v,
             _ => {
                 let call = HookCall::new(life, &i);
-                let op = Op::over(&call, held.host());
+                let op = Op::over(&call, held.host()).with_deadline_ns(input.head.deadline_ns);
                 let Poll::Ready(v) = call.hook.decide(&Decoded::of(input), &op) else {
+                    if let Some(expiry) = op.wake_at_ns() {
+                        let earlier = out.raw().head.wake_at_ns;
+                        out.wake_at(if earlier == 0 { expiry } else { earlier.min(expiry) });
+                    }
                     call.park(&i);
                     return Outcome::Pending;
                 };
@@ -1171,8 +1204,12 @@ hook_op!(
             Some(Lowered::Transform(v)) => v,
             _ => {
                 let call = HookCall::new(life, &i);
-                let op = Op::over(&call, held.host());
+                let op = Op::over(&call, held.host()).with_deadline_ns(input.head.deadline_ns);
                 let Poll::Ready(v) = call.hook.transform(&Decoded::of(input), &op) else {
+                    if let Some(expiry) = op.wake_at_ns() {
+                        let earlier = out.raw().head.wake_at_ns;
+                        out.wake_at(if earlier == 0 { expiry } else { earlier.min(expiry) });
+                    }
                     call.park(&i);
                     return Outcome::Pending;
                 };
@@ -1193,15 +1230,19 @@ hook_op!(
 
 hook_op!(
     /// `notify`: PENDING while the hook waits on its exchange, re-entered on the wake.
-    Notify, NotifyIn, OutHead, |held, i, input, _out| {
+    Notify, NotifyIn, OutHead, |held, i, input, out| {
         if check_notify_in(&input).is_err() {
             return Outcome::Fault;
         }
         let call = HookCall::new(held.life(), &i);
-        let op = Op::over(&call, held.host());
+        let op = Op::over(&call, held.host()).with_deadline_ns(input.head.deadline_ns);
         match call.hook.notify(&DecodedTap::of(input), &op) {
             Poll::Ready(()) => Outcome::Ready,
             Poll::Pending => {
+                if let Some(expiry) = op.wake_at_ns() {
+                    let earlier = out.raw().wake_at_ns;
+                    out.wake_at(if earlier == 0 { expiry } else { earlier.min(expiry) });
+                }
                 call.park(&i);
                 Outcome::Pending
             }
@@ -1212,11 +1253,15 @@ hook_op!(
 hook_op!(
     /// `configure`: a refusal is FAILED with the hook's reason (READY must ack the pushed version).
     Configure, ConfigureIn, ConfigureOut, |held, _i, input, out| {
-        let text = settings_text(input.field(|i| &i.settings).bytes());
-        let Ok(serde_json::Value::Object(settings)) = serde_json::from_str::<serde_json::Value>(&text) else {
+        let bytes = input.field(|i| &i.settings).bytes();
+        let bytes = if bytes.is_empty() { &b"{}"[..] } else { bytes };
+        let Ok(settings) = serde_json::from_slice::<JsonValue>(bytes) else {
             return out.fail(Refusal::failed("settings: must be a JSON object"));
         };
-        match held.life().hook().configure_checkpoint(&settings, input.version) {
+        let Some(map) = settings.0.as_object() else {
+            return out.fail(Refusal::failed("settings: must be a JSON object"));
+        };
+        match held.life().hook().configure_checkpoint(map, input.version) {
             Ok(checkpoint) => {
                 if let Some(checkpoint) = checkpoint {
                     let mut bytes = checkpoint.encode();
