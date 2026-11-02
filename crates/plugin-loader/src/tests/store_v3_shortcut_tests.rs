@@ -1,37 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::sync::Arc;
-
 use busbar_contract::abi::store::OpId;
 use busbar_contract::records::{ModelTokensDelta, RecordStore, UsageDelta};
 use busbar_contract::store_calls::StoreCalls;
 
-use crate::dispatch::kinds::store::Store;
-use crate::dispatch::{load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink};
-use crate::store_v3::LoadedStore;
+use crate::actual_store;
 
-fn compiled_in() -> LoadedStore {
-    let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
-    let row = LinkedRow::of(crate::both_ways::store_fixture::door)
-        .expect("the store states its Statement");
-    let bind = Bind {
-        instance: Arc::from("the-instance"),
-        max_inflight_cap: 1024,
-        sink: Arc::new(NoSink),
-        dispatcher: d.adopter(),
-        conns: crate::dispatch::ConnTable::NoNeeds,
-    };
-    let p = load_linked::<Store>(&row, bind).expect("the door loads");
-    LoadedStore::open(p, d, b"{}", mint).expect("it opens")
-}
-
-fn mint() -> OpId {
-    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    OpId::from_parts(
-        0x7e58,
-        N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1,
-    )
+fn compiled_in() -> crate::store_v3::LoadedStore {
+    actual_store::open()
 }
 
 fn block<T>(f: impl std::future::Future<Output = T>) -> T {
@@ -72,7 +49,7 @@ fn the_compiled_in_shortcut_answers_a_replayed_write_differently() {
         RecordStore::get_usage(&table, "k", 60).expect("read")
     );
 
-    let shortcut = crate::both_ways::store_fixture::MemoryStore::new();
+    let shortcut = actual_store::open();
     shortcut.add_usage("k", 60, &cells[0].2).expect("write");
     shortcut.add_usage("k", 60, &cells[0].2).expect("retry");
     let through_shortcut = format!("{:?}", shortcut.get_usage("k", 60).expect("read"));
