@@ -6,7 +6,6 @@
 use crate::upstream::{re_derived, strip_re_derived};
 
 /// 1.5.5 built every upstream request's headers itself and sent no `accept-encoding` (its HTTP
-
 #[test]
 fn a_clients_accept_encoding_never_goes_upstream() {
     assert!(re_derived("accept-encoding", std::iter::empty()));

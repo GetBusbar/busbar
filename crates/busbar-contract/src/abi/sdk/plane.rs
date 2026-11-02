@@ -14,7 +14,6 @@ pub mod conditional;
 pub const NOT_A_MAP: &str = "the dealt settings are not a map of the plane's sections";
 
 /// The section `verb` names in the dealt blob `settings`: `None` when the blob is empty, writes no
-
 pub fn dealt_section(settings: &[u8], verb: &str) -> Result<Option<serde_json::Value>, String> {
     if settings.is_empty() {
         return Ok(None);
@@ -56,7 +55,6 @@ impl UnitCancel {
     }
 
     /// THE ONE CANCEL RULE over a plane's table of units by the kernel's key: the unit the host
-
     pub fn end<V>(
         self,
         units: &Keyed<u64, V>,
@@ -91,7 +89,6 @@ impl UnitCancel {
 }
 
 /// A cancelled unit's disposition: [`CANCEL_OK_PARTIAL`] when its far end had begun its answer
-
 #[must_use]
 pub const fn cancel_disposition(answered: bool) -> u32 {
     if answered {

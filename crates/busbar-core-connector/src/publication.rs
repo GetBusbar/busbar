@@ -276,7 +276,6 @@ impl Eq for ProducerCustody {}
 
 impl ProducerCustody {
     /// Recover the host publication owner after concurrent association removal. The owner is
-
     #[must_use]
     pub fn pairing(&self) -> Option<Arc<crate::datagram::Pairing>> {
         let memory = self.0.as_ref()?.memory.as_ref()?;
@@ -357,7 +356,6 @@ impl Custody {
         self.0.is_some()
     }
     /// Split already reserved storage into an independent owner before the parent reservation
-
     pub(crate) fn split(&mut self, bytes: usize) -> Self {
         let Some(lease) = self.0.as_mut() else {
             return Self::default();
@@ -380,7 +378,6 @@ impl Custody {
     }
 
     /// Return unused pre-crossing credit once every requested allocation is known. This is
-
     pub(crate) fn reduce(&mut self, retained: usize) {
         let Some(lease) = self.0.as_mut() else {
             return;
@@ -425,7 +422,6 @@ impl Custody {
     }
 
     /// Transfer storage to this leg's reader. Queued bytes on the writer's own leg cannot be
-
     #[must_use]
     pub fn reader_on(&self, leg: crate::datagram::Leg) -> ReaderCustody {
         self.reader_for(Some(match leg {
@@ -599,7 +595,6 @@ impl Messages {
     }
 
     /// Transfer an already charged message; no payload copy is made.
-
     pub fn send(&self, message: Message) -> Result<(), Message> {
         {
             let mut state = lock(&self.state);
@@ -672,7 +667,6 @@ impl Messages {
     }
 
     /// Take an already queued message, for source controls and nonblocking readers.
-
     pub fn try_recv(&self) -> Result<Message, std::sync::mpsc::TryRecvError> {
         let mut state = lock(&self.state);
         let node = state
@@ -689,7 +683,6 @@ impl Messages {
     }
 
     /// Close the producer. Already accepted messages remain readable and charged until the
-
     pub fn close(&self) {
         lock(&self.state).closed = true;
         self.ready.notify_waiters();

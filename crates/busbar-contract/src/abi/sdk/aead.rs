@@ -35,7 +35,6 @@ impl fmt::Display for Refused {
 impl std::error::Error for Refused {}
 
 /// An opaque AES-GCM key and its provider-owned AES/GHASH state.
-
 pub struct AesGcm(NonNull<lc::EVP_CIPHER_CTX>);
 
 // SAFETY: the context owns its allocations, has no thread affinity, and no pointer escapes.
@@ -52,7 +51,6 @@ impl fmt::Debug for AesGcm {
 
 impl AesGcm {
     /// Initialize AES-128-GCM or AES-256-GCM from a borrowed key.
-
     pub fn new(key: &[u8]) -> Result<Self, Refused> {
         lc::init();
         // SAFETY: these descriptors have static lifetime. The key slice lives through
@@ -83,7 +81,6 @@ impl AesGcm {
     }
 
     /// Write ciphertext followed by its 16-byte tag; return the bytes written.
-
     pub fn seal(
         &mut self,
         nonce: &[u8; GCM_NONCE_LEN],
@@ -107,7 +104,6 @@ impl AesGcm {
     }
 
     /// Authenticate ciphertext and its trailing 16-byte tag, then return plaintext length.
-
     pub fn open(
         &mut self,
         nonce: &[u8; GCM_NONCE_LEN],
@@ -220,7 +216,6 @@ pub mod test_support {
     }
 
     /// Observe newly initialized keys on this thread while `action` runs.
-
     pub fn with_owned_state_observer<T>(observer: Observer, action: impl FnOnce() -> T) -> T {
         struct Restore(Option<Observer>);
         impl Drop for Restore {

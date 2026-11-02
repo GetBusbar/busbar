@@ -72,7 +72,6 @@ impl fmt::Display for JsonReplyError {
 impl std::error::Error for JsonReplyError {}
 
 /// Read a JSON reply `body` into `T`. Every [`Cred`] member of `T` is captured as it is read (from
-
 pub fn json_reply<T: DeserializeOwned>(body: &[u8]) -> Result<T, JsonReplyError> {
     use serde_json::error::Category;
     serde_json::from_slice(body).map_err(|e| JsonReplyError {
@@ -89,7 +88,6 @@ pub fn json_reply<T: DeserializeOwned>(body: &[u8]) -> Result<T, JsonReplyError>
 
 impl Cred {
     /// Whether it begins with `prefix`: a public format marker (a provider's `ek_` on the tokens it
-
     #[must_use]
     pub fn starts_with(&self, prefix: &[u8]) -> bool {
         self.wire().starts_with(prefix)
@@ -171,7 +169,6 @@ impl SealedJson {
     }
 
     /// The encoded object, ready to write.
-
     pub fn encoded(&self) -> Result<SealedWrite, NotJsonText> {
         let mut len = 0;
         self.write(&mut |b| len += b.len())?;
@@ -186,7 +183,6 @@ impl SealedJson {
     }
 
     /// Hand the encoding to `put`, piece by piece. A credential's piece is encoded into a buffer
-
     fn write(&self, put: &mut dyn FnMut(&[u8])) -> Result<(), NotJsonText> {
         let json = |v: &dyn erased::Json| Zeroizing::new(v.to_json());
         put(b"{");

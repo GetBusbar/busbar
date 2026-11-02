@@ -34,11 +34,9 @@ pub trait PieceInFlight: Future<Output = Answered> + Send + Unpin {
     fn settled(&mut self) -> Option<Answered>;
 
     /// The `out` the answer carried; `None` before the answer, or when the op was faulted
-
     fn out(&self) -> Option<OnPieceOut>;
 
     /// The record writes of the `cancel` that ended the op (its client-drop path: a deadline, a
-
     fn cancel_writes(&self) -> Vec<CancelWrite> {
         Vec::new()
     }
@@ -71,7 +69,6 @@ pub struct Cancelled {
 
 impl CancelWrite {
     /// Each of the first `written` writes of `records`, its spans read in `arena` (a span past
-
     #[must_use]
     pub fn owned(
         records: &[crate::abi::plane::RecordWrite],
@@ -101,16 +98,13 @@ impl CancelWrite {
 /// One `serve` in flight on its ticket. Dropping it before it answered is a client drop.
 pub trait ServeInFlight: Future<Output = Answered> + Send + Unpin {
     /// The `out` the answer carried; `None` before the answer, or when the op was faulted
-
     fn out(&self) -> Option<ServeOut>;
 }
 
 /// Grow the host buffers a short answer named, re-pointing the `in` at them, before the one
-
 pub type Grow<'a, I, O> = &'a mut dyn FnMut(&O, &mut I);
 
 /// The owner of the host memory an op's `in` points into: kept alive by the host until the op's
-
 pub type Lent = Arc<dyn Any + Send + Sync>;
 
 /// A door's own `validate` over a whole section (its settings, JSON): `Ok`, or the door's words.
@@ -130,7 +124,6 @@ pub struct DoorFacing {
 }
 
 /// A door's facing for a section, its other owned sections (one JSON object keyed by section name,
-
 pub type FacingProbe = Arc<
     dyn Fn(&[u8], &[u8], Option<&str>, &[DialectFacts]) -> Result<DoorFacing, String> + Send + Sync,
 >;
@@ -149,7 +142,6 @@ pub struct DialectFacts {
 }
 
 /// THE ONE BUILDER OF A DOOR PLANE'S OPEN-TIME PROVIDER LIST, for its served instance and its probe
-
 pub fn dialect_facts(
     section: &serde_yaml::Value,
     lookup: impl Fn(&str) -> Option<(String, std::collections::BTreeMap<String, String>)>,
@@ -335,7 +327,6 @@ pub trait PlaneCalls: Send + Sync {
     fn now_ns(&self) -> u64;
 
     /// `arrive`, ticketless. A short answer calls `grow` and is re-called once; a second short
-
     fn arrive(
         &self,
         input: &mut ArriveIn,
@@ -344,25 +335,21 @@ pub trait PlaneCalls: Send + Sync {
     ) -> Outcome;
 
     /// The pool a READY `arrive` named ([`ArriveOut::pool`]), copied out of the
-
     fn arrived_pool(&self, out: &ArriveOut) -> Option<Vec<u8>>;
 
     /// The sticky-routing key a READY `arrive` stated ([`ArriveOut::affinity`]), copied out of
-
     fn arrived_affinity(&self, out: &ArriveOut) -> Option<Vec<u8>> {
         let _ = out;
         None
     }
 
     /// The trust facts a READY `arrive` stated ([`ArriveOut::trust_counterparty`],
-
     fn arrived_trust(&self, out: &ArriveOut) -> Option<ArrivedTrust> {
         let _ = out;
         None
     }
 
     /// The words a REFUSED `arrive` stated in its `head.error` (abi/plane "A refused arrival"),
-
     fn arrived_refusal(&self, out: &ArriveOut) -> Option<Vec<u8>> {
         let _ = out;
         None
@@ -377,7 +364,6 @@ pub trait PlaneCalls: Send + Sync {
     ) -> Outcome;
 
     /// `catalog`, ticketless, with the same one re-call as [`PlaneCalls::arrive`]: a catalog
-
     fn catalog(
         &self,
         input: &mut crate::abi::plane::CatalogIn,
@@ -389,7 +375,6 @@ pub trait PlaneCalls: Send + Sync {
     }
 
     /// `project`, ticketless, with the same one re-call as [`PlaneCalls::arrive`]: the hook kind's
-
     fn project(
         &self,
         input: &mut ProjectIn,
@@ -398,17 +383,14 @@ pub trait PlaneCalls: Send + Sync {
     ) -> Outcome;
 
     /// The host's own ticketless `cancel` of `ticket`, the ticket of the unit keyed `unit` (its
-
     fn cancel(&self, ticket: Ticket, unit: u64) -> Option<Cancelled>;
 
     /// Bind this live request-ticket generation to an admitted nonzero unit before submitting
-
     fn bind_unit(&self, ticket: Ticket, unit: u64) {
         let _ = (ticket, unit);
     }
 
     /// Eagerly enqueue one logical unit cancellation on its request worker, then await it.
-
     fn cancel_unit(
         &self,
         ticket: Ticket,
@@ -422,7 +404,6 @@ pub trait PlaneCalls: Send + Sync {
     fn mint(&self) -> Option<Ticket>;
 
     /// A second request ticket of the unit `beside` was minted for (a session's other leg), on the
-
     fn mint_beside(&self, beside: Ticket) -> Option<Ticket> {
         let _ = beside;
         self.mint()
@@ -435,11 +416,9 @@ pub trait PlaneCalls: Send + Sync {
     fn declared(&self) -> InstanceDecl;
 
     /// The instance's ONE driver ticket, minted: persistent, owned by the instance, outside
-
     fn driver(&self) -> Option<Ticket>;
 
     /// Lifecycle `tick` at `now_ns`, submitted on `driver` (the instance's driver ticket, which
-
     fn tick(
         &self,
         driver: Ticket,
@@ -447,21 +426,17 @@ pub trait PlaneCalls: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Option<u64>> + Send>>;
 
     /// THE DRIVER TICKET'S WAKES (R-PUSH): resolves `true` once a wake of the instance's driver
-
     fn woke(&self) -> Pin<Box<dyn Future<Output = bool> + Send>> {
         Box::pin(std::future::ready(false))
     }
 
     /// THE READY SESSIONS (R-B): the streams the instance's `drive` named on its driver ticket
-
     fn ready(&self) -> Pin<Box<dyn Future<Output = Vec<u64>> + Send>>;
 
     /// The client of `ticket` went away: an op in flight on it is cancelled on its worker, and its
-
     fn drop_client(&self, ticket: Ticket);
 
     /// Submit `on_piece` on `ticket`; it crosses on the ticket's worker. `lent` owns the host
-
     fn on_piece(
         &self,
         ticket: Ticket,
@@ -471,7 +446,6 @@ pub trait PlaneCalls: Send + Sync {
     ) -> Box<dyn PieceInFlight>;
 
     /// Submit `serve` (one of the snapshot's admin routes) on `ticket`, as [`PlaneCalls::on_piece`]
-
     fn serve(
         &self,
         ticket: Ticket,

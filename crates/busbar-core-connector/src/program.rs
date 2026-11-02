@@ -29,7 +29,6 @@ struct Fan {
 
 impl Fan {
     /// The caller owns `waker` before taking any member lock. Return the displaced owner so its
-
     fn register(&self, lease: u64, waker: &Arc<Waker>) -> Option<Arc<Waker>> {
         self.wakers
             .lock()
@@ -117,7 +116,6 @@ struct State {
 }
 
 /// THE MEMBER'S LOCK, held. NO PLUGIN CODE RUNS UNDER IT (`BUSBAR-1.6.0.md` §11.13 M1): a
-
 struct Locked<'m>(Option<MutexGuard<'m, State>>, &'m Member);
 
 impl std::ops::Deref for Locked<'_> {
@@ -166,7 +164,6 @@ impl Drop for Locked<'_> {
 }
 
 /// A connection a lease has out of its member. Only an unwind out of a drive drops it still
-
 struct Out<'m> {
     member: &'m Member,
     generation: u64,
@@ -184,7 +181,6 @@ impl Drop for Out<'_> {
 }
 
 /// A spawn in flight with no lock held. Only an unwind out of the spawn drops it armed: the spawn
-
 struct Spawning<'m> {
     member: &'m Member,
     armed: bool,
@@ -205,7 +201,6 @@ impl Drop for Spawning<'_> {
 }
 
 /// ONE MEMBER'S PROGRAM: its recipe, the entry framing its pipes, and the one connection every
-
 pub(crate) struct Member {
     program: Program,
     /// Its environment references, resolved at config time and held for every spawn.
@@ -303,7 +298,6 @@ fn piece(kind: PieceKind, len: usize, end: bool) -> Piece {
 
 impl State {
     /// Whether a lease of `generation` still open holds [`RECEIVE_BUFFER_BYTES`] unread: the
-
     fn backlogged(&self, generation: u64) -> bool {
         self.leases.values().any(|i| {
             i.generation == generation && i.ended.is_none() && i.queued >= RECEIVE_BUFFER_BYTES
@@ -311,7 +305,6 @@ impl State {
     }
 
     /// The program of `generation` ended (`failure` = how, `None` = its output closed): it is
-
     fn ended(&mut self, generation: u64, failure: Option<Failure>) {
         if self
             .live
@@ -331,7 +324,6 @@ impl State {
     }
 
     /// The running program is let go: its connection (when at home) is closed once the lock is
-
     fn kill(&mut self) {
         if let Some(conn) = self.live.take().and_then(|l| l.conn) {
             self.doomed.push(conn);
@@ -348,7 +340,6 @@ impl State {
 
 impl Member {
     /// The member running `program` over the carrier `via`, its environment references held as
-
     pub(crate) fn new(
         program: Program,
         env: crate::spawn_env::HeldEnv,
@@ -405,7 +396,6 @@ impl Member {
     }
 
     /// THE HAND-OFF (`BUSBAR-1.6.0.md` §11.13 M1). Take `generation`'s connection out of the
-
     fn crossing<'m, R>(
         &'m self,
         mut st: Locked<'m>,
@@ -444,7 +434,6 @@ impl Member {
     }
 
     /// Queue what `lease`'s open carried, once the program's queue has room: `Ok(false)` while it
-
     fn flush_unsent<'m>(
         &'m self,
         mut st: Locked<'m>,
@@ -481,7 +470,6 @@ impl Member {
     }
 
     /// A LEASE on the member's program: spawned first when none runs (a new generation; one found
-
     pub(crate) fn lease(&self, first: &[u8], expected: Option<Expected>) -> Result<u64, ConnError> {
         let waker = Arc::new(self.fan_waker());
         let mut st = self.lock();
@@ -616,7 +604,6 @@ impl Member {
     }
 
     /// `lease`'s next piece into `buf`: its head, then each frame the program wrote since it
-
     pub(crate) fn read(
         &self,
         lease: u64,
@@ -750,7 +737,6 @@ impl Member {
     }
 
     /// Write `bytes` on `lease` as ONE WHOLE MESSAGE: all taken, or `Pending` while the program's
-
     pub(crate) fn write(&self, lease: u64, bytes: &[u8]) -> Result<usize, ConnError> {
         let fan_waker = Arc::new(self.fan_waker());
         let mut cx = Context::from_waker(&fan_waker);
@@ -812,7 +798,6 @@ impl Member {
     }
 
     /// Close `lease`; the program runs on, unless the member is retired and this was its last
-
     pub(crate) fn close(&self, lease: u64) {
         let mut st = self.lock();
 
@@ -833,7 +818,6 @@ impl Member {
     }
 
     /// RETIRE the member: no new lease; its program is killed now when no lease is open, else
-
     pub(crate) fn retire(&self) {
         let mut st = self.lock();
         st.retired = true;
@@ -845,7 +829,6 @@ impl Member {
     }
 
     /// A RETIRED MEMBER WITH NO LEASE ENDS, once: its program is shut, then its carrier is told
-
     fn end_retired(&self) {
         {
             let mut st = self.lock();
@@ -872,7 +855,6 @@ impl Member {
 pub(crate) type Members = HashMap<String, Arc<Member>>;
 
 /// The member an open's target names: its text up to the first `/` (a path the plugin spelled
-
 pub(crate) fn member_of(target: &str) -> &str {
     target.split('/').next().unwrap_or_default()
 }

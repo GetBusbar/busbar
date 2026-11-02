@@ -13,7 +13,6 @@ use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 
 /// Request/response extras NAMESPACED BY SOURCE PROTOCOL. Outer key = source protocol name, inner
-
 pub type SourceScopedExtra = BTreeMap<String, Map<String, Value>>;
 
 #[cfg(test)]

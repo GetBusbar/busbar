@@ -33,7 +33,6 @@ pub const METHOD_ANY: u32 = (1 << 9) - 1;
 /// The whole path equals the route's path.
 pub const PATH_EXACT: u32 = 1;
 /// A segment pattern: `/` separated, a `{name}` segment matches one segment of any value, a
-
 pub const PATH_PATTERN: u32 = 2;
 /// Exactly one segment under the route's path (`/a` admits `/a/b`, never `/a`, `/ab` or `/a/b/c`).
 pub const PATH_PREFIX: u32 = 3;
@@ -108,7 +107,6 @@ pub struct LineEntry {
 }
 
 /// HOW THE ROUTE ROW IS MADE: from [`RouteMatch::EMPTY`], its plain fields set
-
 impl RouteMatch {
     /// Nothing stated: every string absent, every list empty, every number zero.
     pub const EMPTY: RouteMatch = RouteMatch {
@@ -178,7 +176,6 @@ pub fn method_bit(method: &str) -> u32 {
 }
 
 /// A `PATH_PATTERN` spelling as segments borrowed from it; `None` when it breaks the syntax (a `{`
-
 #[must_use]
 pub fn pattern_segments(pattern: &str) -> Option<Vec<SegRef<'_>>> {
     let segs: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
@@ -231,7 +228,6 @@ impl Interner {
     }
 
     /// A `PATH_PATTERN` as the grammar's `'static` segments, parsed and kept once per distinct
-
     #[must_use]
     pub fn intern_pattern(&mut self, pattern: &str) -> Option<&'static [PathSeg]> {
         let seen = self.strings.get(pattern).copied();
@@ -262,7 +258,6 @@ impl Interner {
 }
 
 /// Whether `path` matches a route's path in `form`, the one spelling of every form. A pattern that
-
 #[must_use]
 pub fn path_matches(form: u32, route_path: &str, path: &str) -> bool {
     match form {
@@ -276,7 +271,6 @@ pub fn path_matches(form: u32, route_path: &str, path: &str) -> bool {
 }
 
 /// Whether one field predicate holds over a head's field lines (`(name, value)`, names in any
-
 #[must_use]
 pub fn field_holds(op: u32, name: &str, value: &[u8], fields: &[(&str, &[u8])]) -> bool {
     fields

@@ -31,7 +31,6 @@ impl std::fmt::Display for BadClientIdentity {
 impl std::error::Error for BadClientIdentity {}
 
 /// The client TLS config an outbound connection is secured with, given the host's outbound trust.
-
 pub fn build_client_config(trust: &EgressTrust) -> Result<rustls::ClientConfig, BadClientIdentity> {
     install_crypto_provider();
     if trust.is_unset() {
@@ -63,7 +62,6 @@ pub fn build_client_config(trust: &EgressTrust) -> Result<rustls::ClientConfig, 
 }
 
 /// The client config for a need whose `trust_from` names an operator CA (`pem`, the PEM the need's
-
 pub fn operator_ca_config(pem: &[u8]) -> Result<rustls::ClientConfig, String> {
     use rustls::pki_types::pem::PemObject as _;
     let certs = rustls_pki_types::CertificateDer::pem_slice_iter(pem)
@@ -86,7 +84,6 @@ pub fn operator_ca_config(pem: &[u8]) -> Result<rustls::ClientConfig, String> {
 }
 
 /// The verifier half of the client config, before the client-auth choice: platform roots plus any
-
 fn wants_client_cert(
     trust: &EgressTrust,
 ) -> rustls::ConfigBuilder<rustls::ClientConfig, rustls::client::WantsClientCert> {
@@ -106,7 +103,6 @@ fn wants_client_cert(
 }
 
 /// THE UNVERIFIED CLIENT CONFIG: the far end's certificate (its chain, its name, its validity) is
-
 #[must_use]
 pub fn unverified_client_config() -> rustls::ClientConfig {
     let crypto = crate::tls::installed_crypto();
@@ -276,7 +272,6 @@ impl std::fmt::Display for BadAnchors {
 impl std::error::Error for BadAnchors {}
 
 /// SEAL `anchors` for dialling under `base` (the connector's client config, whose crypto provider
-
 pub fn seal(
     base: Option<&rustls::ClientConfig>,
     anchors: &busbar_contract::transport::trust::Anchors,
@@ -360,14 +355,12 @@ impl rustls::client::ResolvesClientCert for Presenting {
 }
 
 /// THE FAR END'S KEY PIN off its leaf certificate's DER, in the one spelling
-
 #[must_use]
 pub fn peer_key_pin(leaf_der: &[u8]) -> Option<String> {
     subject_public_key_info(leaf_der).map(busbar_contract::transport::trust::key_pin)
 }
 
 /// THE SubjectPublicKeyInfo of a DER certificate, whole (tag and length included), or `None` when the
-
 fn subject_public_key_info(cert_der: &[u8]) -> Option<&[u8]> {
     /// `[0] EXPLICIT`, the optional context tag carrying `TBSCertificate.version`.
     const TAG_VERSION: u8 = 0xA0;
@@ -440,14 +433,12 @@ fn contents(whole: &[u8]) -> Option<&[u8]> {
 }
 
 /// THE CHANNEL-BINDING DIGEST of a DER certificate (RFC 5929 section 4.1, `tls-server-end-point`):
-
 #[must_use]
 pub fn end_point_digest(cert_der: &[u8]) -> &'static ring::digest::Algorithm {
     signature_hash(cert_der).unwrap_or(&ring::digest::SHA256)
 }
 
 /// The SHA-384 or SHA-512 a certificate's `signatureAlgorithm` names (RSASSA-PSS through its
-
 fn signature_hash(cert_der: &[u8]) -> Option<&'static ring::digest::Algorithm> {
     /// ASN.1 OBJECT IDENTIFIER.
     const TAG_OID: u8 = 0x06;
@@ -489,7 +480,6 @@ fn signature_hash(cert_der: &[u8]) -> Option<&'static ring::digest::Algorithm> {
 }
 
 /// The client-side connection-security wrap: runs the rustls client handshake built by
-
 pub struct TlsDial {
     config: Arc<rustls::ClientConfig>,
     server_name: rustls::pki_types::ServerName<'static>,

@@ -9,7 +9,6 @@ use core::marker::PhantomData;
 use zeroize::Zeroize;
 
 /// A resolved secret held in memory. `Debug`/`Display` print `"[REDACTED]"`; the value never
-
 pub struct Secret<T: Zeroize, O = Kernel>(pub(crate) T, PhantomData<fn() -> O>);
 
 /// The default OWNER of a [`Secret`]: the kernel. Uninhabited, and no [`OwnerSeal`]: a
@@ -26,7 +25,6 @@ pub mod __owner {
 }
 
 /// A plugin crate's OWN SEAL over the secrets it holds ([`Secret::held`], [`Secret::expose_own`]):
-
 pub trait OwnerSeal: __owner::Minted {}
 
 /// MINT THIS CRATE'S OWN SEAL ([`OwnerSeal`]): `busbar_contract::own_seal!(Own);` declares the
@@ -124,7 +122,6 @@ impl<T: Zeroize> Secret<T> {
     }
 
     /// The value MOVED out (the same allocation, never a copy), sealed as [`Secret::expose`] is:
-
     pub fn into_exposed<S: crate::plugin::KernelSeal + ?Sized>(mut self, _seal: &S) -> T
     where
         T: Default,
@@ -134,7 +131,6 @@ impl<T: Zeroize> Secret<T> {
 }
 
 /// THE HOST'S ZEROIZING BYTE HOLDER: a secret plugin
-
 impl Secret<Vec<u8>> {
     /// A zeroed holder of `cap` bytes, to lend a secret plugin's `resolve` as its buffer.
     #[must_use]
@@ -143,13 +139,11 @@ impl Secret<Vec<u8>> {
     }
 
     /// The holder's buffer as a call lends it: its address and its length. Writing through it is
-
     pub fn lend_mut(&mut self) -> (*mut u8, usize) {
         (self.0.as_mut_ptr(), self.0.len())
     }
 
     /// Keep the first `n` bytes, the value a plugin wrote: the bytes past them are wiped in place
-
     pub fn keep(&mut self, n: usize) {
         let n = n.min(self.0.len());
         self.0[n..].zeroize();
@@ -157,7 +151,6 @@ impl Secret<Vec<u8>> {
     }
 
     /// The bytes as the UTF-8 text a text secret is, MOVED into a [`Secret<String>`] (the same
-
     pub fn into_text(mut self) -> Result<Secret<String>, NotText> {
         let bytes = core::mem::take(&mut self.0);
         let mut text = match String::from_utf8(bytes) {
@@ -195,7 +188,6 @@ pub enum NotText {
 }
 
 /// Every `Secret` wipes its value when it drops ([`Drop`] below): the marker a holder's type-level
-
 impl<T: Zeroize, O> zeroize::ZeroizeOnDrop for Secret<T, O> {}
 
 /// A holder can be wiped before it drops (a lend that fails part-way wipes what it lent).
@@ -212,7 +204,6 @@ impl<T: Zeroize, O: OwnerSeal> Secret<T, O> {
     }
 
     /// Borrow a secret the caller's own crate holds, under that crate's seal: the owner reads its
-
     pub fn expose_own(&self, _seal: &O) -> &T {
         &self.0
     }
@@ -225,7 +216,6 @@ impl<T: Zeroize> From<T> for Secret<T> {
 }
 
 /// `Debug` NEVER reveals the secret — this is the core guarantee that makes redaction structural for
-
 impl<T: Zeroize, O> fmt::Debug for Secret<T, O> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("[REDACTED]")
@@ -252,7 +242,6 @@ impl<T: Zeroize + Clone, O> Clone for Secret<T, O> {
 }
 
 /// Equality on two secrets is CONSTANT-TIME. This type exists to make secret handling safe, and an
-
 impl<T: Zeroize + AsRef<[u8]>, O> PartialEq for Secret<T, O> {
     fn eq(&self, other: &Self) -> bool {
         constant_time_eq(&self.0, &other.0)
@@ -262,7 +251,6 @@ impl<T: Zeroize + AsRef<[u8]>, O> PartialEq for Secret<T, O> {
 impl<T: Zeroize + AsRef<[u8]>, O> Eq for Secret<T, O> {}
 
 /// Constant-time comparison of the CONTENTS once lengths already match, to avoid leaking how much
-
 #[inline(never)]
 pub fn constant_time_eq<A: AsRef<[u8]> + ?Sized, B: AsRef<[u8]> + ?Sized>(a: &A, b: &B) -> bool {
     let (a_bytes, b_bytes) = (a.as_ref(), b.as_ref());
@@ -279,7 +267,6 @@ pub fn constant_time_eq<A: AsRef<[u8]> + ?Sized, B: AsRef<[u8]> + ?Sized>(a: &A,
 }
 
 /// Lowercase hex SHA-256 of `data` — THE digest facility credentials are compared under (a module
-
 pub fn sha256_hex(data: &[u8]) -> String {
     hex::encode(crate::abi::sdk::digest::sha256(data))
 }

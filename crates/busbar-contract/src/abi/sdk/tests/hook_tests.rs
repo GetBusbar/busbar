@@ -686,7 +686,6 @@ fn error_text(head: &OutHead) -> String {
 }
 
 /// A typed [`Hook`] reads the host's view as owned values through the slot, and answers into the
-
 #[test]
 fn the_decide_slot_hands_a_typed_hook_the_decoded_view() {
     let p = opened();
@@ -703,7 +702,6 @@ fn the_decide_slot_hands_a_typed_hook_the_decoded_view() {
 }
 
 /// RED: a host view whose prompt lists do not hold (a present prompt claiming messages behind a
-
 #[test]
 fn red_a_broken_host_view_is_a_fault_not_a_read() {
     let p = opened();
@@ -747,7 +745,6 @@ fn red_a_broken_host_view_is_a_fault_not_a_read() {
 }
 
 /// An instance-less failure (`validate` over settings that are not an object) answers FAILED with
-
 #[test]
 fn a_validate_failure_states_its_text() {
     let raw = b"[1]";
@@ -783,7 +780,6 @@ impl HookOpen for OpenPicky {
 }
 
 /// `validate` over `raw` for `P`'s hook, lent a reason buffer as the host's dispatcher lends every
-
 fn validated<P: HookOpen>(raw: &[u8]) -> (Outcome, String) {
     let mut reason = vec![0_u8; 1024];
     let mut input: ValidateIn = zeroed();
@@ -806,7 +802,6 @@ fn validated<P: HookOpen>(raw: &[u8]) -> (Outcome, String) {
 }
 
 /// RED (hook ABI defect 1): `validate` refuses the settings `open` refuses, in `open`'s words, so
-
 #[test]
 fn validate_refuses_what_open_refuses() {
     assert_eq!(
@@ -890,7 +885,6 @@ thread_local! {
 const DOWN: &str = "the far end is down";
 
 /// A scripted connector ESTABLISH: every even entry pends (the host finishes it off the op); the
-
 extern "C" fn establish_pends(
     _: HostCtx,
     input: *const c_void,
@@ -1128,7 +1122,6 @@ static DIALLING_SLOTS: ConnectorSlots = ConnectorSlots {
 };
 
 /// Open a [`Forward`] hook over `conns`, run one `decide` to PENDING on [`TICKET`], cancel that
-
 fn cancel_a_pending_decide(conns: &'static ConnectorSlots) {
     let tables = HostTables {
         size: std::mem::size_of::<HostTables>() as u32,
@@ -1172,7 +1165,6 @@ fn a_cancelled_exchange_closes_the_stream_it_established() {
 }
 
 /// GREEN twin: an exchange cancelled before its stream was established closes nothing: the
-
 #[test]
 fn a_cancelled_exchange_with_no_stream_closes_nothing() {
     cancel_a_pending_decide(&DIALLING_SLOTS);
@@ -1261,7 +1253,6 @@ fn a_hook_reads_the_session_and_the_1_5_5_projection_does_not_carry_it() {
 static ASKED: AtomicU32 = AtomicU32::new(0);
 
 /// A hook that asks the far end on every run (counted in [`ASKED`]) and answers more than the
-
 struct Asks;
 impl Hook for Asks {
     fn decide(&self, _: &Decoded<'_>, _: &Op<'_>) -> Poll<Verdict> {
@@ -1283,7 +1274,6 @@ impl HookOpen for OpenAsks {
 }
 
 /// RED (hook ABI defect 5): a `decide` / `transform` whose verdict does not fit the host's buffers
-
 #[test]
 fn red_the_short_buffer_re_call_answers_the_first_verdict_without_running_the_hook_again() {
     let p = opened_with::<OpenAsks>(&zeroed());
@@ -1462,7 +1452,6 @@ fn configure_sdk_leases_the_atomic_checkpoint_and_preserves_the_pushed_ack_versi
 }
 
 /// RED (hook ABI defect 3): a hook that will not take pushed settings says WHY, and the operator
-
 #[test]
 fn red_a_configure_refusal_states_the_hooks_reason() {
     let p = opened_with::<OpenPickyConfigure>(&zeroed());
@@ -1503,7 +1492,6 @@ impl HookOpen for OpenSecrets {
 }
 
 /// RED (hook ABI defect 6): `open` and `refresh` hand the hook the secrets the host resolved for
-
 #[test]
 fn red_open_and_refresh_hand_the_hook_its_secrets_and_generation() {
     use crate::abi::mechanism::lifecycle::slot::REFRESH;
@@ -1561,7 +1549,6 @@ fn red_open_and_refresh_hand_the_hook_its_secrets_and_generation() {
 }
 
 /// A hook whose request cannot be built: the builder's text is its failure, told apart from the
-
 struct Unsendable;
 impl Hook for Unsendable {
     fn decide(&self, _: &Decoded<'_>, op: &Op<'_>) -> Poll<Verdict> {
@@ -1583,7 +1570,6 @@ impl HookOpen for OpenUnsendable {
 }
 
 /// RED (hook ABI defect 11): `Op::exchange`'s request builder returns its own text when it cannot
-
 #[test]
 fn red_a_request_the_builder_refuses_answers_the_builders_text() {
     ESTABLISHED.set(0);
@@ -1616,7 +1602,6 @@ fn red_a_request_the_builder_refuses_answers_the_builders_text() {
 }
 
 /// RED (the shared test kit, E11): a plugin's test drives an op that asks the far end through
-
 #[test]
 fn a_scripted_far_end_drives_a_pending_decide_to_its_answer() {
     use crate::abi::sdk::test_support::fake::FakeHost;

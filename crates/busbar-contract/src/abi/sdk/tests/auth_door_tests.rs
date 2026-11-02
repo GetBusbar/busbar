@@ -27,7 +27,6 @@ mod plugin {
     use crate::abi::sdk::door::{abi_str, statement};
 
     /// Identifies `good` (naming it as the identity's credential), rejects `bad`, passes anything
-
     pub struct Judge {
         pub flushes: std::sync::atomic::AtomicU64,
     }
@@ -419,7 +418,6 @@ fn every_verdict_crosses_the_table_and_passes_the_kinds_check() {
 }
 
 /// THE REPLAY KEY: an identity that asks to be admitted once per key writes the key into the host's
-
 #[test]
 fn a_replay_key_crosses_as_a_bounded_span_with_its_ttl() {
     let (_, opened) = open(b"\"ok\"");
@@ -655,7 +653,6 @@ fn the_ops_it_does_not_serve_are_refused_and_the_tail_states_inbound_only() {
 }
 
 /// THE STRIPS AND THE DECISION (THE DESIGN, "Auth points and guest lists", step 3): every verdict
-
 #[test]
 fn every_verdict_names_its_strips_and_a_decision() {
     let (_, opened) = open(b"\"ok\"");
@@ -782,7 +779,6 @@ fn strips_that_do_not_fit_are_the_short_answer() {
 }
 
 /// THE VIEW AT A POINT: the plugin reads the point, the connection, the unit and, at `HeadBody`
-
 #[test]
 fn the_view_reads_the_point_the_conn_the_unit_and_the_body() {
     let (_, opened) = open(b"\"ok\"");
@@ -805,7 +801,6 @@ fn the_view_reads_the_point_the_conn_the_unit_and_the_body() {
 }
 
 /// THE OPERATOR CREDENTIAL'S TAIL: `with_operator` adds `FACT_OPERATOR` to the facts the tail already
-
 #[test]
 fn with_operator_states_the_fact_and_the_principal() {
     use crate::abi::auth::{AuthPoints, FACT_CACHEABLE, FACT_OPERATOR};
@@ -829,7 +824,6 @@ fn with_operator_states_the_fact_and_the_principal() {
 }
 
 /// RED (open160 WH1/ADM1): the verify kit's `validate` answered READY whatever the settings, so
-
 #[test]
 fn red_validate_refuses_the_settings_open_refuses() {
     let validate = |settings: &[u8]| {
@@ -860,7 +854,6 @@ fn red_validate_refuses_the_settings_open_refuses() {
 }
 
 /// RED (open160 A9): an op the verify door does not serve answered REFUSED with no text, so the
-
 #[test]
 fn red_an_unserved_op_is_refused_saying_why() {
     let (_, opened) = open(b"\"ok\"");
@@ -891,7 +884,6 @@ fn head_text(head: &OutHead) -> String {
 }
 
 /// GREEN (open160 A1): a REJECT names its reason in the answer's head, an owned text kept by the
-
 #[test]
 fn a_reject_names_its_reason_and_nothing_else_does() {
     let (_, opened) = open(b"\"ok\"");
@@ -912,7 +904,6 @@ fn a_reject_names_its_reason_and_nothing_else_does() {
 }
 
 /// GREEN (open160 A8): a plugin refuses a reload in its own dynamic words, with its own outcome;
-
 #[test]
 fn a_refresh_the_plugin_refuses_answers_its_words() {
     let (_, opened) = open(b"\"ok\"");
@@ -940,7 +931,6 @@ fn a_refresh_the_plugin_refuses_answers_its_words() {
 }
 
 /// GREEN (open160 A11): a `verify` reports a declared diagnostic through its op, in the reply's
-
 #[test]
 fn a_verify_reports_its_diagnostic_through_the_op() {
     let (_, opened) = open(b"\"ok\"");

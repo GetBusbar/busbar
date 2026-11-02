@@ -25,17 +25,14 @@ pub const fn bucket_all(id: &'static str) -> BucketId {
 pub struct Epoch(pub u64);
 
 /// The bucket a unit's in-flight slot is counted on.
-
 pub const IN_FLIGHT: BucketId = bucket_all("kernel:in_flight");
 
 /// The bucket one capped-`concurrent` GROUP's leases are counted on.
-
 pub const fn group_lease(group: &'static str) -> BucketId {
     bucket_all(group)
 }
 
 /// THE DOOR'S OWN COUNT OF THIS UNIT, held for as long as the unit is running.
-
 pub struct DoorGrant(Box<dyn std::any::Any + Send + Sync>);
 
 impl DoorGrant {
@@ -47,7 +44,6 @@ impl DoorGrant {
 
 impl std::fmt::Debug for DoorGrant {
     /// The type it carries, and nothing of what is inside it. A grant is a door's own counter and
-
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("DoorGrant")
             .field(&std::any::Any::type_id(&*self.0))
@@ -92,7 +88,6 @@ impl GroupLeaseSlip {
     }
 
     /// Hand over the count the door's yes is holding, for the slot to keep.
-
     pub fn holding(&self, grant: DoorGrant) {
         *self.grant.lock().unwrap_or_else(|e| e.into_inner()) = Some(grant);
     }
@@ -104,7 +99,6 @@ impl GroupLeaseSlip {
 }
 
 /// Does a unit of this origin take a concurrency lease?
-
 pub fn takes_lease(origin: OriginKind, kernel_verb_only: bool) -> bool {
     if kernel_verb_only {
         return false;
@@ -148,7 +142,6 @@ impl LeaseSet {
     }
 
     /// Keep the door's own count of this unit alongside the kernel's.
-
     pub fn hold_grant(&mut self, grant: DoorGrant) {
         self.grant = Some(grant);
     }
@@ -159,7 +152,6 @@ impl LeaseSet {
     }
 
     /// Give every lease back, and say how many were given.
-
     pub fn release_all(&mut self, gauge: &ConcurrencyGauge) -> usize {
         let count = self.held.len();
         for bucket in self.held.drain(..) {
@@ -195,7 +187,6 @@ impl LeaseCell {
     }
 
     /// Record a lease taken at the door.
-
     pub fn take(&self, bucket: BucketId) -> bool {
         match self.held.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
             Some(set) => {
@@ -207,7 +198,6 @@ impl LeaseCell {
     }
 
     /// Keep the door's own count of this unit here, for the life of the unit.
-
     pub fn hold_grant(&self, grant: DoorGrant) -> bool {
         match self.held.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
             Some(set) => {
@@ -237,7 +227,6 @@ impl LeaseCell {
     }
 
     /// Whether the leases are still the unit's own. An unowned cell is a slot one of the two ends
-
     pub fn is_owned(&self) -> bool {
         self.held
             .lock()
@@ -298,7 +287,6 @@ impl ConcurrencyGauge {
     }
 
     /// Count a lease a door has already granted.
-
     pub fn record(&self, bucket: &BucketId) {
         *self
             .counts

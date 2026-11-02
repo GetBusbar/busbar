@@ -12,7 +12,6 @@ use crate::record::Record;
 pub const SEGMENT_BYTES: u64 = 64 * 1024 * 1024;
 
 /// How much space a segment claims at a time as it fills. Small enough that a node on a nearly full
-
 pub const GROWTH_STEP_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Why an append did not happen.
@@ -75,7 +74,6 @@ impl std::fmt::Debug for Segment {
 
 impl Segment {
     /// Open a segment for appending at `write_offset` — which is where a recovery scan said the
-
     pub fn open_at(
         backend: Box<dyn SegmentBackend>,
         index: u64,
@@ -124,7 +122,6 @@ impl Segment {
     }
 
     /// Shorten the backing to `len` and resume appending there. Recovery calls this to cut a torn
-
     pub fn truncate_to(&mut self, len: u64) -> io::Result<()> {
         self.backend.set_len(len)?;
         self.claimed = len;
@@ -133,13 +130,11 @@ impl Segment {
     }
 
     /// Close the segment to further writes without cutting anything.
-
     pub fn close_to_writes(&mut self) {
         self.poisoned = true;
     }
 
     /// Append a whole batch and make it durable: one positional write, then one sync.
-
     pub fn append_batch(&mut self, records: &[Record]) -> Result<u64, SegmentError> {
         if self.poisoned {
             return Err(SegmentError::Poisoned);
@@ -174,7 +169,6 @@ impl Segment {
     }
 
     /// Close the segment for good after a failed write or sync, and cut what the failed batch may
-
     fn poison(&mut self) {
         self.poisoned = true;
         if self.backend.set_len(self.write_offset).is_ok() {

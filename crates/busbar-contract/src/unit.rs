@@ -285,7 +285,6 @@ pub enum FinishClass {
 }
 
 /// THE ONE MAPPING from how a unit ended to the finish class its audit record carries.
-
 pub fn finish_class_of(end: &UnitEnd<'_>, completed: FinishClass) -> FinishClass {
     match end {
         UnitEnd::Completed => completed,
@@ -377,7 +376,6 @@ pub struct AdmitFacts {
 
 impl AdmitFacts {
     /// The first declared response-ceiling pointer that resolves in a body.
-
     #[must_use]
     pub fn max_response_bytes<'u>(&self, body: &Ir<'u>) -> Option<&'u [u8]> {
         self.max_response_ptrs
@@ -405,7 +403,6 @@ pub struct Clock {
 }
 
 /// The configuration a plugin declared a schema for, as a read-only view.
-
 pub trait ConfigView: Send + Sync {
     /// A string value from this plugin's own configuration block.
     fn get_str(&self, key: &str) -> Option<&str>;
@@ -418,7 +415,6 @@ pub trait ConfigView: Send + Sync {
 }
 
 /// The session's kernel-owned fact maps, as a read-only view.
-
 pub trait SessionView: Send + Sync {
     /// Which session this is.
     fn id(&self) -> SessionId;
@@ -449,7 +445,6 @@ pub trait TransportView: Send + Sync {
 }
 
 /// Everything a plugin call is given besides its own arguments.
-
 pub struct Ctx<'u> {
     clock: Clock,
     config: &'u dyn ConfigView,
@@ -652,7 +647,6 @@ impl<'u> Unit<'u> {
     }
 
     /// The facts the draft carried, sealed by the kernel at construction.
-
     #[must_use]
     pub fn draft_facts(&self) -> &Facts<'u> {
         &self.facts
@@ -683,7 +677,6 @@ impl<'u> Unit<'u> {
     }
 
     /// Record a leg's reply. Kernel-only.
-
     pub fn push_leg_result(
         &mut self,
         _seal: &dyn KernelSeal,

@@ -18,7 +18,6 @@ fn creds(ufrag: &str, pwd: &str) -> IceCredentials {
 }
 
 /// A Binding request as a peer sends it to the owner of `to`: USERNAME "to.ufrag:from_ufrag",
-
 fn check(to: &IceCredentials, from_ufrag: &str, key: &str) -> Vec<u8> {
     let username = format!("{}:{from_ufrag}", to.ufrag).into_bytes();
     let padded = username.len().div_ceil(4) * 4;
@@ -39,7 +38,6 @@ fn check(to: &IceCredentials, from_ufrag: &str, key: &str) -> Vec<u8> {
 }
 
 /// The success response a full ICE agent sends to a probe: same transaction id, MESSAGE-INTEGRITY
-
 fn answer(probe: &[u8], pwd: &str) -> Vec<u8> {
     let mut m = vec![0x01, 0x01, 0, 0, 0x21, 0x12, 0xa4, 0x42];
     m.extend_from_slice(&probe[8..20]);

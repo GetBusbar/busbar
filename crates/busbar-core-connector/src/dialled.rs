@@ -33,7 +33,6 @@ pub(crate) fn after_next_write_take(hook: impl FnOnce() + 'static) {
 /// The most datagrams one drive reads before it yields.
 const READS_PER_DRIVE: usize = 256;
 /// The channel messages a leg holds for a reader that has not read them, at which it stops
-
 const MAX_READY: usize = 1024;
 /// The most bytes of the far end's description the open buffers before its end.
 const MAX_DESCRIPTION: usize = 64 * 1024;
@@ -43,7 +42,6 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 /// Take the next channel message a reader has not read into `buf`: how many bytes, and whether
-
 pub(crate) fn take_ready(ready: &Mutex<Messages>, buf: &mut [u8]) -> Option<(usize, bool)> {
     let mut queue = lock(ready);
     let message = &mut queue.first.as_mut()?.message;
@@ -155,7 +153,6 @@ struct Held {
 }
 
 /// An association out of its slot. Only an unwind drops it still holding the association: the
-
 struct Taken<'l> {
     leg: &'l UpstreamLeg,
     framing: Option<DatagramFraming>,
@@ -193,7 +190,6 @@ pub(crate) struct UpstreamLeg {
 
 impl UpstreamLeg {
     /// THE HAND-OFF: take the association out, `run` it on `arg` with no lock held, and bring it
-
     fn turn<A, R>(
         &self,
         arg: A,
@@ -288,7 +284,6 @@ impl UpstreamLeg {
     }
 
     /// Register this connection's latest read context before checking the ready queue, matching
-
     fn wait_ready(&self, waker: &Waker) {
         let incoming = waker.clone();
         let displaced = {
@@ -321,7 +316,6 @@ impl UpstreamLeg {
     }
 
     /// Take what the leg's association yielded through the pairing: line frames go across, the
-
     fn take(
         &self,
         pairing: &Arc<Pairing>,
@@ -409,7 +403,6 @@ impl UpstreamLeg {
     }
 
     /// Read every datagram waiting on the port, keep the association's clock, flush, and arm the
-
     fn drive(
         &self,
         pairing: &Arc<Pairing>,
@@ -491,7 +484,6 @@ impl UpstreamLeg {
 
 impl UpstreamLeg {
     /// Read until the first checked batch. Reserve before the port relinquishes a datagram;
-
     fn read_port(
         &self,
         pairing: &Pairing,
@@ -616,7 +608,6 @@ impl LegSink for UpstreamLeg {
 }
 
 /// A pending batch remains ordered while exclusive framer custody has already returned home.
-
 struct ChannelPublication<'a> {
     leg: &'a UpstreamLeg,
     producer: Option<crate::publication::ProducerCustody>,
@@ -702,7 +693,6 @@ pub(crate) struct Dialled {
 
 impl Dialled {
     /// The leg over `framing` (begun, its description sent as the exchange's body) on `port`, for
-
     pub(crate) fn new(
         mut framing: DatagramFraming,
         port: ReadyPort,
@@ -739,7 +729,6 @@ impl Dialled {
     }
 
     /// One piece the exchange answered, judged: `Some(piece)` for the reader, `None` when the
-
     pub(crate) fn exchanged(&self, piece: Piece, bytes: &[u8]) -> Result<Option<Piece>, ConnError> {
         let mut phase = lock(&self.phase);
         let Phase::Exchanging { ok, answer } = &mut *phase else {
@@ -831,7 +820,6 @@ impl Dialled {
     }
 
     /// A read once the leg runs: the next channel message, or Pending with `waker` woken when the
-
     pub(crate) fn read(&self, waker: &Waker, buf: &mut [u8]) -> Result<Piece, ConnError> {
         self.running(waker)?;
         self.leg.wait_ready(waker);
@@ -866,7 +854,6 @@ impl Dialled {
     }
 
     /// A write once the leg runs: gathered until `end`, then accepted as one bounded queued
-
     pub(crate) fn write(&self, bytes: &[u8], end: bool, text: bool) -> Result<usize, ConnError> {
         match &*lock(&self.phase) {
             Phase::Running => {}
@@ -1101,7 +1088,6 @@ impl Dialled {
 }
 
 /// THE EXCHANGE BODY OF A COMPOSED OPEN: what goes
-
 pub(crate) fn composed_body(
     fields: &[(&str, &[u8])],
     body: &[u8],
@@ -1128,7 +1114,6 @@ pub(crate) fn composed_body(
 }
 
 /// The `boundary` of a `multipart/form-data` content type (RFC 7578, RFC 2046 section 5.1.1),
-
 fn form_boundary(content_type: &str) -> Option<String> {
     let mut params = content_type.split(';');
     if !params

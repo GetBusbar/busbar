@@ -134,7 +134,6 @@ impl PrincipalId {
     }
 
     /// The anonymous principal: the kernel's own, carried by a round that has established no
-
     #[must_use]
     pub fn anonymous() -> Self {
         Self(String::from("anonymous"))

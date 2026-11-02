@@ -199,7 +199,6 @@ impl<T> Table<T> {
     }
 
     /// The value `token` names, held for one op; never waited for.
-
     pub fn reach(&self, token: u64) -> Result<Held<'_, T>, Reach> {
         let (slot, index, generation) = self.slot(token)?;
         let state = match slot.0.try_lock() {
@@ -211,7 +210,6 @@ impl<T> Table<T> {
     }
 
     /// The value `token` names, held for one op, waiting while another op holds it.
-
     pub fn hold(&self, token: u64) -> Result<Held<'_, T>, Reach> {
         let (slot, index, generation) = self.slot(token)?;
         let state = slot.0.lock().map_err(|_| Reach::Gone)?;
@@ -219,7 +217,6 @@ impl<T> Table<T> {
     }
 
     /// Drop the value `token` names and give its slot back; never waited for.
-
     pub fn remove(&self, token: u64) -> Result<T, Reach> {
         self.reach(token).map(Held::release)
     }

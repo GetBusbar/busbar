@@ -17,22 +17,18 @@ use crate::wal::{BatchAck, Clock, Mode, OpenError, Wal};
 pub const JOURNAL_MAGIC: [u8; 4] = *b"BJRN";
 
 /// The journal record layout version. A reader that meets one it does not know stops rather than
-
 pub const JOURNAL_VERSION: u16 = 1;
 
 /// How long a journal record's fixed header is. The body follows it.
 pub const JOURNAL_HEADER_BYTES: usize = 160;
 
 /// How many records the memory-buffered journal will hold for a store that has not acknowledged
-
 pub const MEMORY_BUFFER_RECORDS: usize = 8192;
 
 /// How many overflows the in-memory history names in detail.
-
 pub const OVERFLOW_HISTORY_RECORDS: usize = 16;
 
 /// Where in the header each field sits. Offsets are named rather than spelled at each use so that a
-
 mod at {
     /// The magic.
     pub const MAGIC: usize = 0;
@@ -198,7 +194,6 @@ pub struct Entry {
 
 impl Entry {
     /// An entry of `class` carrying `body`, with the clocks and epochs at zero — the shape a caller
-
     #[must_use]
     pub fn new(class: RecordClass, body: Vec<u8>) -> Self {
         Entry {
@@ -283,7 +278,6 @@ impl JournalRecord {
     }
 
     /// Read one record back out of its bytes.
-
     pub fn decode(bytes: &[u8]) -> Result<Self, JournalBreak> {
         if bytes.len() < JOURNAL_HEADER_BYTES {
             return Err(JournalBreak {
@@ -344,7 +338,6 @@ impl JournalRecord {
     }
 
     /// The chain hash this record's own fields should carry — everything in the header before the
-
     #[must_use]
     pub fn digest_of_chain(&self) -> [u8; 32] {
         let bytes = self.encode();
@@ -482,13 +475,11 @@ impl std::fmt::Display for JournalBreak {
 impl std::error::Error for JournalBreak {}
 
 /// Whether a run of journal records links and digests correctly, oldest first.
-
 pub fn verify(records: &[JournalRecord]) -> Result<(), JournalBreak> {
     verify_bridged(records, &[])
 }
 
 /// [`verify`], crossing the holes recovery set aside — those named by a quarantine `ChainBreak` in
-
 pub fn verify_bridged(records: &[JournalRecord], known: &[Bridge]) -> Result<(), JournalBreak> {
     let mut bridges: Vec<Bridge> = known.to_vec();
     bridges.extend(
@@ -577,7 +568,6 @@ impl Bridge {
 }
 
 /// Decode a run of log records into journal records, in order.
-
 pub fn decode_run(records: &[Record]) -> Result<Vec<JournalRecord>, JournalBreak> {
     records
         .iter()
@@ -592,7 +582,6 @@ pub fn decode_run(records: &[Record]) -> Result<Vec<JournalRecord>, JournalBreak
 }
 
 /// Where a node's own chain has reached in a run of records: the head to link onto and the sequence
-
 #[must_use]
 pub fn tail_of(records: &[JournalRecord], node: u64) -> Option<([u8; 32], u64)> {
     records
@@ -620,7 +609,6 @@ pub struct Overflow {
 
 impl Overflow {
     /// The `ChainBreak` body: how many went, then the two identities that bracket them — five
-
     #[must_use]
     pub fn body(&self) -> Vec<u8> {
         let mut body = Vec::with_capacity(40);
@@ -678,14 +666,12 @@ impl std::fmt::Debug for Journal {
 
 impl Journal {
     /// A journal over a memory-buffered log shipping through `shipper` — the default, and the shape a
-
     #[must_use]
     pub fn memory_buffered_to(node: u64, shipper: Box<dyn Shipper<Record>>, clock: Clock) -> Self {
         Journal::over(Wal::memory_buffered_to(shipper, clock), node)
     }
 
     /// A journal whose log keeps its segments as files under `dir`, resuming from whatever chain is
-
     pub fn in_directory(
         node: u64,
         dir: impl AsRef<std::path::Path>,
@@ -696,7 +682,6 @@ impl Journal {
     }
 
     /// [`Journal::in_directory`], writing as the node the directory's chain ALREADY names: the
-
     pub fn in_directory_adopting(
         fallback: u64,
         dir: impl AsRef<std::path::Path>,
@@ -712,7 +697,6 @@ impl Journal {
     }
 
     /// A journal over an already-open log, resuming from the tail the log recovered.
-
     #[must_use]
     pub fn over(log: Wal, node: u64) -> Self {
         let mut journal = Journal {
@@ -739,7 +723,6 @@ impl Journal {
     }
 
     /// A memory-buffered journal RESUMED from the chain the configured store kept: `records` are
-
     pub fn memory_resumed(
         node: u64,
         records: &[Record],
@@ -761,7 +744,6 @@ impl Journal {
     }
 
     /// The same journal KEEPING every record at its bound instead of dropping the oldest.
-
     #[must_use]
     pub fn retaining_at_bound(mut self) -> Self {
         self.drop_at_bound = false;
@@ -775,7 +757,6 @@ impl Journal {
     }
 
     /// Put every quarantine the log made at open on the chain, as one `ChainBreak` record each —
-
     pub fn record_quarantines(
         &mut self,
         token: &Grant<DurableWrite>,
@@ -797,7 +778,6 @@ impl Journal {
     }
 
     /// Every `(segment, first byte)` a quarantine `ChainBreak` already on the chain names. A log
-
     fn quarantines_on_chain(&self) -> std::collections::HashSet<(u64, u64)> {
         let Ok(back) = self.log.read_back() else {
             return std::collections::HashSet::new();
@@ -812,7 +792,6 @@ impl Journal {
     }
 
     /// The same journal with a different buffer bound. For batteries that need to reach the bound
-
     #[must_use]
     pub fn with_capacity(mut self, capacity: usize) -> Self {
         self.capacity = capacity.max(1);
@@ -862,7 +841,6 @@ impl Journal {
     }
 
     /// The most recent times the bound was reached, oldest first, at most
-
     #[must_use]
     pub fn overflows(&self) -> Vec<Overflow> {
         self.overflows.iter().cloned().collect()
@@ -887,7 +865,6 @@ impl Journal {
     }
 
     /// Seal a batch of entries onto the chain and commit them through the log.
-
     pub fn append(
         &mut self,
         token: &Grant<DurableWrite>,
@@ -923,7 +900,6 @@ impl Journal {
     }
 
     /// Read the chain back out of the whole log, every segment oldest first, verifying as it goes.
-
     pub fn replay(&self) -> std::io::Result<Result<Vec<JournalRecord>, JournalBreak>> {
         let back = self.log.read_back()?;
         let known: Vec<Bridge> = self
@@ -937,7 +913,6 @@ impl Journal {
     }
 
     /// Raise the next number to one the log does not already hold for this node.
-
     fn floor_seq_to_the_log(&mut self) {
         self.next_seq = u64::max(self.next_seq, self.log.next_free_seq(self.node));
     }
@@ -964,7 +939,6 @@ impl Journal {
     }
 
     /// Make room for `incoming` records, dropping the oldest unacknowledged ones if the bound would
-
     fn make_room(&mut self, incoming: usize) -> Option<Overflow> {
         let held = self.log.owed().len();
         if !self.drop_at_bound || held.saturating_add(incoming) <= self.capacity {
@@ -1094,7 +1068,6 @@ impl<'a> BodyReader<'a> {
     }
 
     /// Whether every byte has been read. A reader that stops short has not read the body it
-
     #[must_use]
     pub fn is_done(&self) -> bool {
         self.at == self.bytes.len()

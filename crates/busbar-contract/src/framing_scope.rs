@@ -47,7 +47,6 @@ pub trait FramingScope: std::fmt::Debug + Send + Sync {
     /// The trusted generation selected for a stream, or the initial opening Peer loan.
     fn policy_generation(&self, stream: u64, peer: bool) -> Option<u64>;
     /// Open a stream through the trusted host and retain its reply on this operation ticket.
-
     fn open_stream(
         &self,
         ticket: crate::abi::mechanism::ticket::Ticket,
@@ -73,7 +72,6 @@ pub trait FramingScope: std::fmt::Debug + Send + Sync {
         false
     }
     /// Associate a validated service with its still-unadmitted stream policy.
-
     fn claim_stream_operation(
         &self,
         _ticket: crate::abi::mechanism::ticket::Ticket,
@@ -85,18 +83,14 @@ pub trait FramingScope: std::fmt::Debug + Send + Sync {
     /// The serving host claimed and published this stream's admitted request.
     fn admit_stream(&self, _stream: u64) {}
     /// Complete the whole operation, retaining body-waiting streams on success. Failure or
-
     fn operation_finished(&self, _ticket: crate::abi::mechanism::ticket::Ticket, _failed: bool) {}
     /// A stream ended independently of the operation tickets that drove it.
     fn stream_ended(&self, stream: u64);
     /// Validate a service's caller and plugin-local connection token.
-
     fn check(&self, owner: u64, conn: u64, teardown: bool) -> Result<(), &'static str>;
     /// Confirm the token returned by a READY opening, including prior provisional claims.
-
     fn confirm(&self, conn: u64) -> Result<(), &'static str>;
     /// Seal the source after successful protocol detach, retaining its admission custody.
-
     fn detach(&self) -> Result<(), &'static str>;
     /// The confirmed source binding, available only after host detach.
     fn adoption_source(&self) -> Option<AdoptionSource>;

@@ -6,7 +6,6 @@
 use super::*;
 
 /// The full-duplex leg is enumerated and carries the same bounded, unique label every other
-
 #[test]
 fn websocket_is_enumerated_with_a_stable_unique_label() {
     assert_eq!(Transport::WebSocket.name(), "websocket");
@@ -22,7 +21,6 @@ fn websocket_is_enumerated_with_a_stable_unique_label() {
 }
 
 /// THE AXIS NAMES CHANNELS AND NO PLANE'S BINDINGS (Law 1; THE DESIGN, the kinds: "kernel, contract and
-
 #[test]
 fn the_transport_axis_names_channels_and_no_plane_binding() {
     let names: Vec<_> = Transport::ALL.iter().map(|t| t.name()).collect();

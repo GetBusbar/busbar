@@ -11,7 +11,6 @@ use busbar_contract::operation::{OpShape, OpVerb};
 use std::collections::HashSet;
 
 /// A minimal, single-poll async executor: every default `RoutingPolicy` method under test here
-
 fn block_on<F: std::future::Future>(fut: F) -> F::Output {
     use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
     fn no_op(_: *const ()) {}
@@ -50,7 +49,6 @@ fn from_ranked_drops_unknown_idxs_not_in_valid() {
 }
 
 /// If EVERY raw idx is unknown, the result coerces to `Abstain` (not `Prefer(vec![])`) — a policy
-
 #[test]
 fn from_ranked_all_unknown_coerces_to_abstain() {
     let valid: HashSet<usize> = [0, 1].into_iter().collect();
@@ -162,7 +160,6 @@ fn operation_all_lists_exactly_the_six_protocol_surface_verbs_in_order() {
 }
 
 /// `PromptProjection`'s `Debug` must actually WRITE the shape summary (system char count, message
-
 #[test]
 fn prompt_projection_debug_writes_shape_not_empty_and_never_the_text() {
     let proj = PromptProjection {
@@ -195,7 +192,6 @@ fn prompt_projection_debug_writes_shape_not_empty_and_never_the_text() {
 }
 
 /// `CallerIdentity`'s `Debug` shows the operator-facing key fields but redacts the end-user PII —
-
 #[test]
 fn caller_identity_debug_writes_key_fields_and_redacts_user() {
     let id = CallerIdentity {

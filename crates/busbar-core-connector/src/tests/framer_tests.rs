@@ -191,7 +191,6 @@ fn a_full_sink_is_re_called_until_every_byte_is_out() {
 }
 
 /// WS-DIAL: a dialled framing's `begin` is handed the dial's opening head fields
-
 #[test]
 fn a_dial_hands_its_opening_head_fields_to_begin() {
     let door = Arc::new(TestDoor::identity("bytes"));
@@ -291,7 +290,6 @@ fn locate_and_encode_answer() {
 }
 
 /// RED: a framer that offers protocols for a secured target is located: the host gives its offer a
-
 #[test]
 fn a_framer_offering_protocols_for_a_secured_target_is_located() {
     let door = TestDoor::new(
@@ -310,7 +308,6 @@ fn a_framer_offering_protocols_for_a_secured_target_is_located() {
 }
 
 /// RED: an ACCEPTED framing's head slots come out typed (method, target, an absent authority),
-
 #[test]
 fn an_accepted_framing_yields_its_request_head_typed() {
     let knobs = Knobs {
@@ -342,7 +339,6 @@ fn an_accepted_framing_yields_its_request_head_typed() {
 }
 
 /// RED: the host reassembles a stream's field block and never takes PIECE_CONTINUED on the framer's
-
 #[test]
 fn a_continued_field_piece_is_judged_by_the_host_not_the_framer() {
     let mut l = FieldLines::default();
@@ -371,7 +367,6 @@ fn a_continued_field_piece_is_judged_by_the_host_not_the_framer() {
 }
 
 /// A long value split across pieces reassembles byte-identically, and the stream's next block
-
 #[test]
 fn a_long_value_split_across_pieces_reassembles_byte_identically() {
     let block = b"x-long: abcdefghij\r\nx-b: 2\r\n";
@@ -396,7 +391,6 @@ fn a_long_value_split_across_pieces_reassembles_byte_identically() {
 }
 
 /// RED: a payload piece inside a stream's open field block is refused; a failed stream drops its
-
 #[test]
 fn a_payload_piece_inside_an_open_block_is_refused_and_a_failure_drops_the_block() {
     let fields = |continued, end| FieldPiece::Fields { continued, end };
@@ -419,7 +413,6 @@ fn a_payload_piece_inside_an_open_block_is_refused_and_a_failure_drops_the_block
 }
 
 /// A framer that keeps answering that it owes more (`YIELD_MORE`) and writes nothing FAULTs its
-
 #[test]
 fn a_framer_that_owes_more_forever_and_writes_nothing_faults() {
     use std::sync::mpsc;
@@ -532,7 +525,6 @@ fn final_fields_keep_their_kind_and_custody_across_pending_and_drain() {
 }
 
 /// A framer whose dial `begin` calls the auth service (handle seq 0) on its framing's ticket: it
-
 struct AuthDoor {
     facts: DoorFacts,
     host: Arc<AuthHost>,
@@ -607,7 +599,6 @@ impl std::task::Wake for Woken {
 }
 
 /// RED (a framer pends only on a ticketed auth call): a TICKETED `begin` whose auth call answers
-
 #[test]
 fn a_ticketed_begin_whose_auth_pends_resumes_on_the_wake_with_one_auth_call() {
     use std::sync::atomic::Ordering;
@@ -679,7 +670,6 @@ fn noop_cx() -> std::task::Context<'static> {
 }
 
 /// RED (A PENDING ANSWER PARKS ONLY ITS OWN STREAM, emit): two streams on one dialled framing.
-
 #[test]
 fn one_stream_pending_auth_parks_only_that_stream_and_resumes_with_one_auth_call() {
     let door = Arc::new(PendingDoor::new(TestDoor::identity("bytes"), 1));
@@ -761,7 +751,6 @@ fn one_stream_pending_auth_parks_only_that_stream_and_resumes_with_one_auth_call
 }
 
 /// A MULTIPLEXING ACCEPTING FRAMER double: each byte an `ingest` carries names the stream a
-
 struct MuxDoor {
     facts: DoorFacts,
     yield_writable: bool,
@@ -859,7 +848,6 @@ impl FramerDoor for MuxDoor {
 }
 
 /// RED (A PENDING ANSWER PARKS ONLY ITS OWN STREAM, ingest): on one accepted connection the first
-
 #[test]
 fn a_pending_ingest_holds_only_its_stream_and_the_next_stream_head_is_handed_up_first() {
     let door = Arc::new(MuxDoor::new());
@@ -907,7 +895,6 @@ fn a_pending_ingest_holds_only_its_stream_and_the_next_stream_head_is_handed_up_
 }
 
 /// THE OPENING BODY'S LENGTH (`EmitIn::body_len`): stated on a dialled framing's head emit when
-
 #[test]
 fn a_dialled_head_emit_states_its_body_length_and_nothing_else_does() {
     let door = Arc::new(PendingDoor::new(TestDoor::identity("bytes"), 99));
@@ -941,7 +928,6 @@ fn a_dialled_head_emit_states_its_body_length_and_nothing_else_does() {
 }
 
 /// RED (NO TICKET-LESS PATH FOR AN AUTH-CALLING FRAMER): a framing whose binding has auth points is
-
 #[test]
 fn a_binding_with_auth_points_is_refused_ticket_less() {
     use busbar_contract::abi::host::service::AuthRef;
@@ -1018,7 +1004,6 @@ fn a_binding_with_auth_points_is_refused_ticket_less() {
 }
 
 /// RED (Q128 arch u22 LOW 9; `busbar_contract::abi::transport`: "A framer that fills a buffer
-
 #[test]
 fn an_encode_answered_yield_more_faults_and_is_never_sent_truncated() {
     let door = TestDoor::new(
@@ -1043,7 +1028,6 @@ fn an_encode_answered_yield_more_faults_and_is_never_sent_truncated() {
 }
 
 /// An INTERIM head (a `1xx` the framer flags interim) is never the answer's head: the final head
-
 #[test]
 fn an_interim_head_is_never_handed_up_as_the_final_head() {
     let door = Arc::new(TestDoor::new(
@@ -1078,7 +1062,6 @@ fn an_interim_head_is_never_handed_up_as_the_final_head() {
 }
 
 /// A `PIECE_WRITABLE` piece is the framer telling the host a stream may be emitted on again, never
-
 #[test]
 fn a_writable_piece_is_never_handed_up_as_a_frame() {
     let door = Arc::new(TestDoor::new(
@@ -1099,7 +1082,6 @@ fn a_writable_piece_is_never_handed_up_as_a_frame() {
 }
 
 /// RED (a transport's size answer): `locate`'s short answer names the buffer sizes it needs, and
-
 #[test]
 fn a_locate_size_answer_past_the_hosts_bound_is_a_fault_never_an_allocation() {
     let needed = busbar_contract::abi::mechanism::check::MAX_BYTES;
@@ -1129,7 +1111,6 @@ fn a_locate_size_answer_past_the_hosts_bound_is_a_fault_never_an_allocation() {
 }
 
 /// GREEN twin: a short `locate` within the host's bound is asked again with the room it named,
-
 #[test]
 fn a_short_locate_within_the_hosts_bound_is_asked_again_with_room() {
     let door = TestDoor::new(

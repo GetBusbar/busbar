@@ -192,7 +192,6 @@ fn a_decide_view_carries_the_request_session_as_octets() {
 }
 
 /// An IN-PROCESS answer lands in the frame's own host buffers exactly as the SDK's door writes it:
-
 #[test]
 fn an_in_process_answer_reads_back_through_the_frame() {
     use crate::abi::hook::{
@@ -245,7 +244,6 @@ fn an_in_process_answer_reads_back_through_the_frame() {
 }
 
 /// The kept static half is checked in release too: a shorter dynamic half must never be
-
 #[test]
 fn a_mismatched_static_half_is_rejected_before_publishing_a_view() {
     let ctx = RoutingContext {
@@ -278,7 +276,6 @@ fn a_mismatched_static_half_is_rejected_before_publishing_a_view() {
 }
 
 /// Retaining an Arc on the client side cannot race a native operation's answer buffers.
-
 #[test]
 fn a_native_reservation_excludes_safe_answers_and_readers_until_the_last_owner_releases() {
     use crate::abi::sdk::hook::{RewriteVerdict, Verdict};
@@ -328,7 +325,6 @@ fn a_native_reservation_excludes_safe_answers_and_readers_until_the_last_owner_r
 }
 
 /// A settled reply can release the reservation before the dispatcher's owner is dropped.
-
 #[test]
 fn completing_a_reservation_does_not_let_its_late_drop_release_the_next_operation() {
     let ctx = RoutingContext {

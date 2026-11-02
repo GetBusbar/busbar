@@ -81,7 +81,6 @@ impl Sha256 {
 }
 
 /// One SHA-256 compression of `block` into `state` (FIPS 180-4 §6.2.2). The message schedule and
-
 fn compress(state: &mut [u32; 8], block: &[u8; BLOCK]) {
     let mut w = [0u32; 64];
     for (i, chunk) in block.as_chunks::<4>().0.iter().enumerate() {
@@ -118,7 +117,6 @@ fn compress(state: &mut [u32; 8], block: &[u8; BLOCK]) {
 }
 
 /// HMAC-SHA256 of `message` under `key` (FIPS 198-1), with every key-derived byte wiped before it
-
 pub(crate) fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
     assert!(
         key.len() <= BLOCK,

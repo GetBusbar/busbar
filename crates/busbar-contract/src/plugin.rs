@@ -7,7 +7,6 @@ pub(crate) mod sealed {
     pub trait KindSeal {}
 
     /// The private supertrait that closes [`KernelSeal`](super::KernelSeal) (#65).
-
     pub trait KernelSealed {}
 }
 
@@ -45,7 +44,6 @@ impl Kind {
     }
 
     /// THE KIND → VERB LIST: the config root key each kind is configured under. The one place a
-
     #[must_use]
     pub const fn verb(self) -> Verb {
         match self {
@@ -69,7 +67,6 @@ impl Kind {
     }
 
     /// The root key of a non-plane kind — how kernel and plugin code name it.
-
     #[must_use]
     pub const fn root(self) -> &'static str {
         match self.root_key() {
@@ -116,7 +113,6 @@ impl fmt::Display for Kind {
 }
 
 /// A compile-time stand-in for one kind.
-
 pub trait KindMarker: sealed::KindSeal {
     /// Which kind this marker stands for.
     const KIND: Kind;
@@ -165,7 +161,6 @@ pub mod markers {
 pub use crate::transport::AbiVersion;
 
 /// The base trait every plugin implements.
-
 pub trait Plugin: Send + Sync + 'static {
     /// The plugin's registry key. This is the open-vocabulary name the kernel dispatches on.
     fn key(&self) -> &'static str;
@@ -270,7 +265,6 @@ pub trait KernelSeal: sealed::KernelSealed {
 pub struct TestKernelSeal;
 
 /// Is `v` a well-formed semver core (`MAJOR.MINOR.PATCH`, each a decimal integer, with an optional
-
 #[must_use]
 pub fn valid_semver(v: &str) -> bool {
     let core = v.split(['-', '+']).next().unwrap_or("");

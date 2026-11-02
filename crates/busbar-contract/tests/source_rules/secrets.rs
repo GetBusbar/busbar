@@ -29,7 +29,6 @@ const CONTEXT_STRUCTS: &[&str] = &[
 const WRAPPERS: &[&str] = &["Secret", "Zeroizing", "SecretRef"];
 
 /// The documented exceptions: `(file, needle, field)`; an empty field covers every field the
-
 const ALLOWED: &[(&str, &str, &str)] = &[
     ("crates/busbar-contract/src/records.rs", "secret", "secret"),
     (

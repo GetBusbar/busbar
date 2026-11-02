@@ -69,7 +69,6 @@ pub struct FieldSpan {
 
 impl FieldSpan {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-
     pub const ZERO: Self = Self {
         name: Span::ZERO,
         value: Span::ZERO,

@@ -6,22 +6,18 @@ use std::sync::Mutex;
 use crate::cfg::{BreakerCfg, TripMode};
 
 /// Cell state encoding for the atomic `breaker_state` field. Kept as plain `u64` constants (not a
-
 const ST_CLOSED: u64 = 0;
 const ST_OPEN: u64 = 1;
 const ST_HALF_OPEN: u64 = 2;
 
 /// Bounded capacity of a cell's sliding outcome window (recent request outcomes feeding the
-
 const OUTCOME_WINDOW_CAPACITY: usize = 1024;
 
 /// FNV-1a 64-bit hash constants — used only to decorrelate simultaneous trips' jitter (see
-
 const FNV1A_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV1A_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 /// Lock a `std::sync::Mutex` without panicking on poison — a poisoned outcome-window or
-
 fn lock_recover<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -51,7 +47,6 @@ impl OutcomeWindow {
     }
 
     /// How many outcomes fall inside the window, and how many of those were errors — in ONE pass.
-
     fn outcomes_in_window(&self, now: u64, window_s: u64) -> (usize, usize) {
         let start = now.saturating_sub(window_s);
         let mut total = 0;
@@ -132,13 +127,11 @@ impl BreakerCell {
     }
 
     /// `(outcomes, errors)` recorded within `window_s` seconds of `now` — the error-rate trip
-
     pub fn outcomes_in_window(&self, now: u64, window_s: u64) -> (usize, usize) {
         lock_recover(&self.outcome_window).outcomes_in_window(now, window_s)
     }
 
     /// What survives a rebuild of this cell: its state and cooldown read as ONE pair under the
-
     pub fn snapshot(&self) -> CellSnapshot {
         let (state, cooldown_until) = {
             let _tx = lock_recover(&self.transition_lock);
@@ -162,7 +155,6 @@ impl BreakerCell {
     }
 
     /// Carry a [`Self::snapshot`] into this cell. A snapshot taken mid-probe restores as Open: the
-
     pub fn restore(&self, snap: CellSnapshot) {
         let _tx = lock_recover(&self.transition_lock);
         let state = if snap.state == ST_HALF_OPEN {
@@ -195,7 +187,6 @@ pub struct CellSnapshot {
 
 impl CellSnapshot {
     /// The verdict a cell [`BreakerCell::restore`]d from this snapshot would give at `now`, read
-
     pub fn verdict(&self, now: u64) -> BreakerVerdict {
         let state = if self.state == ST_HALF_OPEN {
             ST_OPEN
@@ -207,7 +198,6 @@ impl CellSnapshot {
 }
 
 /// A cell's verdict from its state and cooldown, the one decoding [`BreakerCell::verdict`] and
-
 fn decode(state: u64, until: u64, now: u64) -> BreakerVerdict {
     match state {
         ST_CLOSED => {
@@ -321,7 +311,6 @@ impl FailureEffect {
 
 impl BreakerCell {
     /// THE single decoder of a cell's breaker situation. Read-only — no Open→HalfOpen transition,
-
     pub fn verdict(&self, now: u64) -> BreakerVerdict {
         let state = self.breaker_state.load(Ordering::Acquire);
         let until = self.cooldown_until.load(Ordering::Acquire);
@@ -329,7 +318,6 @@ impl BreakerCell {
     }
 
     /// Side-effect-free readiness: would this cell admit a request right now, without stealing the
-
     pub fn ready(&self, now: u64) -> bool {
         matches!(
             self.verdict(now),
@@ -365,7 +353,6 @@ impl BreakerCell {
     }
 
     /// Compute the escalating cooldown duration, with jitter and an optional requested-wait floor.
-
     pub fn compute_cooldown_with_retry_after(
         &self,
         now_time: u64,
@@ -415,7 +402,6 @@ impl BreakerCell {
     }
 
     /// `open` body, assuming the caller already holds `transition_lock` (used by the record paths
-
     fn open_locked(
         &self,
         now_time: u64,
@@ -466,7 +452,6 @@ impl BreakerCell {
     }
 
     /// Recovery close for an out-of-band health probe: closes the cell ONLY if no peer has since
-
     pub fn close_if_recoverable(&self, now: u64, observed_cooldown: u64) -> bool {
         let _tx = lock_recover(&self.transition_lock);
         if self.cooldown_until.load(Ordering::Acquire) > observed_cooldown {
@@ -481,7 +466,6 @@ impl BreakerCell {
     }
 
     /// Release an UNDISPATCHED single-flight probe (owner-checked): a strict no-op unless
-
     pub fn release_probe_owned(&self, owned_epoch: u64) {
         let _tx = lock_recover(&self.transition_lock);
         if self.probe_epoch.load(Ordering::Acquire) != owned_epoch {
@@ -497,7 +481,6 @@ impl BreakerCell {
     }
 
     /// The mutating probe-acquisition step, run only on the one destination a dispatch path
-
     pub fn acquire(&self, now: u64) -> ProbeAdmit {
         let _tx = lock_recover(&self.transition_lock);
         let until = self.cooldown_until.load(Ordering::Acquire);
@@ -526,7 +509,6 @@ impl BreakerCell {
     }
 
     /// Record a failure (transient or rate-limit — identical breaker handling) against the cell:
-
     pub fn record_failure(
         &self,
         now_time: u64,
@@ -579,7 +561,6 @@ impl BreakerCell {
     }
 
     /// Record a success against the cell: reset the streak (unless the cell is Open — see below),
-
     pub fn record_success(&self, now_time: u64) -> bool {
         if self.breaker_state.load(Ordering::Acquire) == ST_CLOSED
             && self.streak.load(Ordering::Acquire) == 0
@@ -606,7 +587,6 @@ impl BreakerCell {
     }
 
     /// Trip this cell hard-down: a sticky cooldown of `hard_down_cooldown_secs`, unconditionally
-
     pub fn hard_down(&self, now_time: u64, hard_down_cooldown_secs: u64) -> bool {
         let _tx = lock_recover(&self.transition_lock);
         let was_closed = self.breaker_state.load(Ordering::Acquire) == ST_CLOSED;

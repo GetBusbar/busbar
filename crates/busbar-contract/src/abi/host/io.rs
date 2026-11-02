@@ -41,13 +41,11 @@ pub const MAX_ADDR: usize = 256;
 /// [`ReadyIn::dir`] / [`ShutIn::how`]: the read direction.
 pub const DIR_READ: u32 = 1;
 /// [`ReadyIn::dir`] / [`ShutIn::how`]: the write direction (for a stream still connecting, its
-
 pub const DIR_WRITE: u32 = 2;
 /// [`ShutIn::how`]: both directions.
 pub const DIR_BOTH: u32 = DIR_READ | DIR_WRITE;
 
 /// Whether a slot may answer PENDING, and so is callable only inside a ticketed op. `false` for an
-
 #[must_use]
 pub const fn may_pend(slot: u32) -> bool {
     matches!(slot, op::ACCEPT | op::READ | op::WRITE | op::READY)
@@ -207,7 +205,6 @@ pub struct SpawnIn {
 }
 
 /// A direction a `ready` waits on: exactly one of [`DIR_READ`] and [`DIR_WRITE`].
-
 pub const fn check_dir(dir: u32) -> Result<(), Fault> {
     match dir {
         DIR_READ | DIR_WRITE => Ok(()),
@@ -216,7 +213,6 @@ pub const fn check_dir(dir: u32) -> Result<(), Fault> {
 }
 
 /// What a `shut` shuts: [`DIR_READ`], [`DIR_WRITE`] or [`DIR_BOTH`].
-
 pub const fn check_how(how: u32) -> Result<(), Fault> {
     match how {
         DIR_READ | DIR_WRITE | DIR_BOTH => Ok(()),
@@ -225,7 +221,6 @@ pub const fn check_how(how: u32) -> Result<(), Fault> {
 }
 
 /// An address buffer: a capacity never comes with a NULL pointer, and it is at least
-
 pub fn check_addr_buf(buf: *mut u8, cap: usize, field: &'static str) -> Result<(), Fault> {
     check::listed(buf.cast_const(), cap, field)?;
     if cap < MAX_ADDR || buf.is_null() {
@@ -235,7 +230,6 @@ pub fn check_addr_buf(buf: *mut u8, cap: usize, field: &'static str) -> Result<(
 }
 
 /// A `spawn`'s lists: a count never comes with a NULL pointer.
-
 pub fn check_spawn_in(i: &SpawnIn) -> Result<(), Fault> {
     check::text(i.program, "io.spawn.program")?;
     check::listed(i.args, i.args_len, "io.spawn.args")?;

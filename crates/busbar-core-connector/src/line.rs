@@ -181,7 +181,6 @@ enum Turn<R> {
 }
 
 /// A connection a holder has out of its line. Only an unwind out of a drive drops it still holding
-
 struct Taken<'l> {
     line: &'l Line,
     conn: Option<Connection>,
@@ -228,7 +227,6 @@ impl std::fmt::Debug for Line {
 
 impl Line {
     /// A line over `conn`, held by its first exchange (a dialled connection's
-
     pub(crate) fn new(conn: Connection) -> Arc<Self> {
         let dialled = conn.dialled();
         let first = if dialled { EXCHANGE_STREAM } else { EVERY };
@@ -262,7 +260,6 @@ impl Line {
     }
 
     /// THE HAND-OFF. Take the connection out of the line (`s` is the line's lock, let go here),
-
     fn turn<R>(
         &self,
         mut s: MutexGuard<'_, State>,
@@ -291,7 +288,6 @@ impl Line {
     }
 
     /// Bring the connection `taken` back to the line: what was handed to its owner meanwhile is
-
     fn bring_back(&self, taken: &mut Taken<'_>, settle: impl FnOnce(&mut State)) {
         let mut discarded: Vec<Failure> = Vec::new();
         let mut s = self.state();
@@ -352,7 +348,6 @@ impl Line {
     }
 
     /// What the connection answers of itself (`home`), or, while a holder has it out, what it last
-
     fn fact<R>(
         &self,
         home: impl FnOnce(&Connection) -> R,
@@ -380,7 +375,6 @@ impl Line {
     }
 
     /// An idle line, read for what the far end sent while it sat: whether it can carry the next
-
     pub(crate) fn fresh(&self) -> bool {
         if self.tainted.load(Ordering::Acquire) {
             return false;
@@ -402,7 +396,6 @@ impl Line {
     }
 
     /// Whether an idle line may go back to the pool: never left mid-answer, and its connection can
-
     pub(crate) fn reusable(&self) -> bool {
         if self.tainted.load(Ordering::Acquire) {
             return false;
@@ -415,7 +408,6 @@ impl Line {
     }
 
     /// Open a new exchange on the line (the pool lent it, so its holder is already counted): its
-
     pub(crate) fn attach(
         &self,
         opening: Option<Opening>,
@@ -457,7 +449,6 @@ impl Line {
     }
 
     /// Read what the connection answered into the parked pieces, waking each holder a piece came
-
     fn park_pieces(
         &self,
         s: MutexGuard<'_, State>,
@@ -535,7 +526,6 @@ impl Line {
     }
 
     /// The next piece for `stream`: `Ready(Ok(Some))` a piece, `Ready(Ok(None))` the connection
-
     pub(crate) fn poll_piece(
         &self,
         stream: u64,
@@ -593,7 +583,6 @@ impl Line {
     }
 
     /// Whether the line's dial has landed (see [`Connection::poll_landed`]): `Pending` with `cx`'s
-
     pub(crate) fn poll_landed(
         &self,
         stream: u64,
@@ -616,7 +605,6 @@ impl Line {
     }
 
     /// Offer `bytes` on `stream` (`end` = its message is complete); answers how many were taken:
-
     pub(crate) fn emit(
         &self,
         stream: u64,
@@ -671,7 +659,6 @@ impl Line {
     }
 
     /// Upgrade this line's connection to connection security (a secure upgrade on an open dialled
-
     pub(crate) fn upgrade_secure(
         &self,
         config: &Arc<rustls::ClientConfig>,
@@ -705,14 +692,12 @@ impl Line {
     }
 
     /// The far end's certificate hash (the channel-binding input), once a handshake completed (see
-
     pub(crate) fn peer_cert_hash(&self) -> Option<String> {
         self.fact(Connection::peer_cert_hash, |s| s.peer_cert_hash.clone())
             .flatten()
     }
 
     /// `stream`'s holder leaves (`whole` = its answer was read to its end); answers how many
-
     pub(crate) fn leave(&self, stream: u64, whole: bool) -> usize {
         let retired = {
             let mut s = self.state();
@@ -738,7 +723,6 @@ impl Line {
     }
 
     /// Close the connection (the last holder left and the line is not kept). Never waits: a
-
     pub(crate) fn close(&self) {
         let (conn, abandoned) = {
             let mut s = self.state();

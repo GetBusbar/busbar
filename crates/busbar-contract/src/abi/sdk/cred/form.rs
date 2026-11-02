@@ -58,7 +58,6 @@ impl CredUrl {
     }
 
     /// The password, or an empty one when the text carries none: either carries the text's
-
     pub fn credential(&self) -> Cred {
         self.password.clone().unwrap_or_else(|| {
             let c = Cred::empty().with_floor(self.floor);
@@ -71,19 +70,16 @@ impl CredUrl {
     }
 
     /// Split `text` (a URL or connection string the plugin already holds).
-
     pub fn parse(text: &str) -> Result<Self, &'static str> {
         Self::split(text)
     }
 
     /// Capture PostgreSQL's keyword or URL password, with the last occurrence winning.
-
     pub fn parse_postgres(text: &str) -> Result<Self, &'static str> {
         native::postgres(text)
     }
 
     /// Capture a Valkey URL without passing a plaintext password to a URL parser.
-
     pub fn parse_valkey(text: &str) -> Result<Self, &'static str> {
         Ok(native::valkey(text))
     }
@@ -94,19 +90,16 @@ impl CredUrl {
     }
 
     /// The public URL, or the safe refusal discovered while capturing it.
-
     pub fn parsed(&self) -> Result<&str, &'static str> {
         self.parsing_error.map_or(Ok(self.public()), Err)
     }
 
     /// Replace credential echoes (including percent and form spellings) with `<redacted>`.
-
     pub fn redact_echo(&self, text: &str) -> String {
         native::redact(self, text)
     }
 
     /// Take a URL setting out of a parsed settings document: split it, and wipe the string where
-
     pub fn take(v: &mut serde_json::Value) -> Option<Result<Self, &'static str>> {
         let serde_json::Value::String(s) = v else {
             return None;
@@ -117,7 +110,6 @@ impl CredUrl {
     }
 
     /// [`CredUrl::parse`] taking only a userinfo password: a query parameter is the target's own (a
-
     pub fn parse_userinfo(text: &str) -> Result<Self, &'static str> {
         Self::split_with(text, false)
     }
@@ -159,7 +151,6 @@ type Bytes = Zeroizing<Vec<u8>>;
 type Found = (Bytes, PasswordAt);
 
 /// Whether the operator's text (its password already taken out) asks for a secure connection: a
-
 fn secure_requested(public: &str) -> bool {
     if super::secure_scheme(public) {
         return true;

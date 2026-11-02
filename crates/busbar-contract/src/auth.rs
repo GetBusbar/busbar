@@ -49,7 +49,6 @@ pub struct AuthPrincipal(pub Option<Principal>);
 
 impl AuthPrincipal {
     /// The attribution handle for audit records: the principal id, or `anonymous` for the
-
     pub fn actor_id(&self) -> &str {
         self.0
             .as_ref()
@@ -93,14 +92,12 @@ pub enum AuthVerdict {
 }
 
 /// One authentication module — a swappable implementation of the fixed `auth` engine stage. The
-
 pub trait AuthModule: Send + Sync {
     /// Stable module name for config references, metrics, and audit (e.g. `"tokens"`).
     fn name(&self) -> &'static str;
     /// Judge the presented candidate credential. Constant-time and side-effect-free.
     fn authenticate(&self, candidate: Option<&str>) -> AuthVerdict;
     /// Whether the engine may CACHE this module's verdicts (the credential cache). Default
-
     fn cacheable(&self) -> bool {
         false
     }

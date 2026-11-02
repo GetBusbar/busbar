@@ -84,7 +84,6 @@ pub struct PromptProjection<'a> {
 }
 
 /// Debug REDACTS the content: this struct exists precisely because the operator opted prompt text
-
 impl std::fmt::Debug for PromptProjection<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PromptProjection")
@@ -112,7 +111,6 @@ pub struct CallerIdentity {
 }
 
 /// Debug shows the operator-facing key labels but REDACTS the end-user identifier — it is caller
-
 impl std::fmt::Debug for CallerIdentity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CallerIdentity")
@@ -211,11 +209,9 @@ pub struct RoutingContext<'a> {
 }
 
 /// A boxed, thread-safe policy error. Kept dependency-free (no `anyhow`/`thiserror`) so the routing
-
 pub type PolicyError = Box<dyn std::error::Error + Send + Sync>;
 
 /// The result of a policy decision. `Ok(Abstain)` is the clean "no opinion" path; `Err` is coerced
-
 pub type PolicyResult = Result<RoutingDecision, PolicyError>;
 
 /// The decision: an ordered preference, or an explicit abstention.
@@ -245,7 +241,6 @@ pub enum RoutingDecision {
 
 impl RoutingDecision {
     /// Normalize a raw ranked list into a clean `Prefer`/`Abstain`: drop unknown idxs (not in
-
     pub fn from_ranked(
         raw: impl IntoIterator<Item = usize>,
         valid: &std::collections::HashSet<usize>,

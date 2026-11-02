@@ -3,7 +3,6 @@
 use busbar_contract::grammar::{PathSeg, Selector, SelectorFamily, SelectorForm};
 
 /// Every selector form, for walking the cross-product.
-
 const ALL_FORMS: &[SelectorForm] = &[
     SelectorForm::ExactPath,
     SelectorForm::PrefixOneLevel,
@@ -21,7 +20,6 @@ const ALL_FORMS: &[SelectorForm] = &[
 ];
 
 /// The table's own totality check: an exhaustive match, so a form added to the enum stops this
-
 fn is_listed(form: SelectorForm) -> bool {
     let listed = match form {
         SelectorForm::ExactPath
@@ -166,7 +164,6 @@ fn the_path_family_is_decided_rather_than_assumed() {
 }
 
 /// A one-level prefix read as the pattern it is: the prefix's literals, then one more segment.
-
 #[test]
 fn a_one_level_prefix_and_a_pattern_are_compared_segment_by_segment() {
     let prefix = Selector::PrefixOneLevel("/mesh");
@@ -204,7 +201,6 @@ fn two_suffixes_collide_only_when_one_ends_the_other() {
 }
 
 /// A suffix against a pattern, decided rather than assumed.
-
 #[test]
 fn a_suffix_against_a_pattern_pins_the_patterns_last_segments() {
     let mesh_tasks =
@@ -238,7 +234,6 @@ fn a_suffix_against_a_pattern_pins_the_patterns_last_segments() {
 }
 
 /// A substring against a pattern, decided rather than assumed.
-
 #[test]
 fn a_substring_against_a_pattern_asks_for_consecutive_segments() {
     let mesh_agents =
@@ -304,7 +299,6 @@ fn the_remaining_families_are_decided_rather_than_assumed() {
 }
 
 /// One table writes both the ladder and the claim list, so the two cannot disagree.
-
 #[test]
 fn one_ladder_table_writes_both_lists() {
     #[derive(Debug)]
@@ -380,7 +374,6 @@ fn a_claim_with_no_scheme_is_anonymous() {
 }
 
 /// The family a form belongs to is fixed, and this is WHICH one.
-
 #[test]
 fn every_form_has_one_family() {
     for form in ALL_FORMS {
@@ -408,7 +401,6 @@ fn every_form_has_one_family() {
 }
 
 /// The property the whole tightening rests on: DISJOINT means no arrival matches both.
-
 #[test]
 fn a_disjoint_answer_is_never_contradicted_by_an_arrival() {
     let selectors = path_fixtures();
@@ -429,7 +421,6 @@ fn a_disjoint_answer_is_never_contradicted_by_an_arrival() {
 }
 
 /// Every path-family form, in the shapes the declared claim set actually uses (plane roots
-
 fn path_fixtures() -> Vec<Selector> {
     const MESH_TASKS: &[PathSeg] = &[PathSeg::Lit("mesh"), PathSeg::Lit("tasks"), PathSeg::Var];
     const MESH_PUSH: &[PathSeg] = &[
@@ -526,7 +517,6 @@ fn arrival_corpus() -> Vec<String> {
 }
 
 /// Whether one path-family selector matches a concrete path, as the transports evaluate it.
-
 fn matches_path(selector: &Selector, path: &str) -> bool {
     match selector {
         Selector::ExactPath(p) => *p == path,
@@ -539,7 +529,6 @@ fn matches_path(selector: &Selector, path: &str) -> bool {
 }
 
 /// A corpus path as the `'static` string the exact-path form takes.
-
 fn leak(path: &str) -> &'static str {
     Box::leak(path.to_owned().into_boxed_str())
 }

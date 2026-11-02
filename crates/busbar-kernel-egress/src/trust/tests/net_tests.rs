@@ -141,7 +141,6 @@ fn the_shared_internal_predicate_covers_every_range_any_plane_ever_checked() {
 }
 
 /// The CONTROL. Without it a predicate that returned `true` unconditionally would pass the table
-
 #[test]
 fn the_shared_internal_predicate_admits_ordinary_public_addresses() {
     use std::net::IpAddr;
@@ -178,7 +177,6 @@ fn metadata_preflight_uses_both_ec2_ipv6_endpoints_and_preserves_carveouts() {
 }
 
 /// CLOUD METADATA IS A SEPARATE QUESTION FROM INTERNAL, because the two carry different policies:
-
 #[test]
 fn cloud_metadata_is_judged_separately_and_covers_every_vendor() {
     use std::net::IpAddr;
@@ -208,7 +206,6 @@ fn cloud_metadata_is_judged_separately_and_covers_every_vendor() {
 }
 
 /// NAT64 / RFC 6052 EMBEDDING MUST BE JUDGED, not left to fall through to the v6 range checks that
-
 #[test]
 fn nat64_embedded_ipv4_is_judged_by_the_shared_predicates() {
     use std::net::Ipv6Addr;
@@ -305,7 +302,6 @@ fn userinfo_is_refused_rather_than_stripped() {
 }
 
 /// A refusal names the URL, and a URL's authority is where a password goes.
-
 #[test]
 fn a_refusal_never_repeats_the_credential_in_the_authority() {
     let refusals = [
@@ -329,7 +325,6 @@ fn a_refusal_never_repeats_the_credential_in_the_authority() {
 }
 
 /// A provider base URL's userinfo is STRIPPED, as 1.5.5's `host_from_base` stripped
-
 #[test]
 fn a_base_url_userinfo_is_stripped_to_the_host_it_names() {
     for (written, stripped) in [
@@ -403,7 +398,6 @@ fn a_percent_encoded_metadata_host_normalizes_to_the_address_it_will_dial() {
 }
 
 /// An escape this decoder cannot read stays VERBATIM rather than being dropped or guessed at.
-
 #[test]
 fn a_malformed_percent_escape_is_left_exactly_as_it_was_written() {
     assert_eq!(
@@ -424,7 +418,6 @@ fn a_malformed_percent_escape_is_left_exactly_as_it_was_written() {
 }
 
 /// The decode runs EXACTLY ONCE. `%252E` is the escape for the literal text `%2E`, and a decoder
-
 #[test]
 fn the_decode_runs_once_and_does_not_unwrap_a_double_encoding() {
     assert_eq!(
@@ -435,7 +428,6 @@ fn the_decode_runs_once_and_does_not_unwrap_a_double_encoding() {
 }
 
 /// A decoding that would not be TEXT is abandoned and the original stands.
-
 #[test]
 fn a_decoding_that_would_not_be_text_leaves_the_host_as_it_was() {
     assert_eq!(
@@ -446,7 +438,6 @@ fn a_decoding_that_would_not_be_text_leaves_the_host_as_it_was() {
 }
 
 /// A NUL, by contrast, IS text and therefore DOES decode — pinned because the two escapes look
-
 #[test]
 fn an_escaped_nul_decodes_and_does_not_truncate_the_host() {
     assert_eq!(
@@ -463,7 +454,6 @@ fn an_escaped_nul_decodes_and_does_not_truncate_the_host() {
 }
 
 /// The decode happens BEFORE the trailing-root-dot strip, so an escaped trailing dot is stripped
-
 #[test]
 fn an_escaped_trailing_root_dot_is_stripped_because_the_decode_comes_first() {
     assert_eq!(
@@ -478,7 +468,6 @@ fn an_escaped_trailing_root_dot_is_stripped_because_the_decode_comes_first() {
 }
 
 /// A host with no `%` in it at all comes back unchanged — the ordinary case, pinned so the
-
 #[test]
 fn a_host_with_no_escape_in_it_is_returned_unchanged() {
     assert_eq!(
@@ -488,7 +477,6 @@ fn a_host_with_no_escape_in_it_is_returned_unchanged() {
 }
 
 /// WHITESPACE AROUND A URL MUST NOT BUY A METADATA HOP. The WHATWG basic URL parser begins by
-
 #[test]
 fn whitespace_padded_metadata_urls_are_still_refused() {
     for spelling in [
@@ -511,7 +499,6 @@ fn whitespace_padded_metadata_urls_are_still_refused() {
 }
 
 /// The CONTROL for the trim: whitespace INSIDE a host (not at either end of the input, and not one
-
 #[test]
 fn interior_spaces_are_not_trimmed_away() {
     assert_eq!(
@@ -529,7 +516,6 @@ fn interior_spaces_are_not_trimmed_away() {
 }
 
 /// THE OPERATOR'S DENYLIST IS THE THING THE PADDING DEFEATED. The metadata refusals above are
-
 #[test]
 fn a_padded_authority_does_not_slip_past_the_operator_denylist() {
     let blocked = vec!["10.99.99.99".to_string()];
@@ -551,7 +537,6 @@ fn a_padded_authority_does_not_slip_past_the_operator_denylist() {
 }
 
 /// The authority ends where the dialling stack ends it — at `/`, `?`, `#` or `\` — and the host is
-
 #[test]
 fn split_url_ends_the_authority_where_the_dialler_does() {
     for (url, host, port, path) in [
@@ -574,7 +559,6 @@ fn split_url_ends_the_authority_where_the_dialler_does() {
 }
 
 /// This pins the dialled host; the signed host is pinned equal to it by the plane driver's far-end
-
 #[test]
 fn test_host_from_base_backslash_authority_matches_wire_host() {
     for (url, host, port, path) in [
@@ -608,7 +592,6 @@ fn test_host_from_base_backslash_authority_matches_wire_host() {
 }
 
 /// THE HOST-STRING GUARDS MUST JUDGE THE NAT64 EMBEDDING TOO, not just the address predicates.
-
 #[test]
 fn nat64_embedded_ipv4_is_judged_by_the_host_string_guards() {
     for meta in [
@@ -666,7 +649,6 @@ fn nat64_embedded_ipv4_is_judged_by_the_host_string_guards() {
 }
 
 /// 1.5.5 PARITY: an entry that names no host the guard judges (UTS #46 refuses it, a `%` outside an
-
 #[test]
 fn a_list_entry_that_names_no_host_is_dropped_and_lifts_no_real_target() {
     let entries: Vec<String> = [
@@ -695,7 +677,6 @@ fn a_list_entry_that_names_no_host_is_dropped_and_lifts_no_real_target() {
 }
 
 /// RED (HIGH): an operator's list entry is read as a target's host is read. A full-width blocked
-
 #[test]
 fn a_list_entry_is_read_as_a_targets_host_is_read() {
     let full_width_ip = "\u{ff11}\u{ff10}.\u{ff19}\u{ff19}.\u{ff19}\u{ff19}.\u{ff19}\u{ff19}";

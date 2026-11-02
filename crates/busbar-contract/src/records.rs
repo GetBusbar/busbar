@@ -23,7 +23,6 @@ pub struct ScopeRef {
 
 impl ScopeRef {
     /// Build a `kind: "pool"` scope — today's only kind, and the one every wire-compat shim in
-
     pub fn pool(value: impl Into<String>) -> Self {
         ScopeRef {
             kind: "pool".to_string(),
@@ -33,7 +32,6 @@ impl ScopeRef {
 }
 
 /// THE SCOPE-KIND WIRE CONVENTION. A [`ScopeRef`] kind beyond the built-in `pool` (core's own
-
 pub mod scope_kinds {
     /// The frozen wire-field name for a scope `kind` — `allowed_{kind}s`.
     pub fn wire_field_for(kind: &str) -> String {
@@ -41,7 +39,6 @@ pub mod scope_kinds {
     }
 
     /// The scope kind a wire field carries, or `None` if the field is not an `allowed_*` scope
-
     pub fn kind_for_wire_field(field: &str) -> Option<String> {
         field
             .strip_prefix("allowed_")
@@ -51,7 +48,6 @@ pub mod scope_kinds {
 }
 
 /// The KIND-PARTITIONED wire shape for [`VirtualKey::allowed_scopes`] (1.6.0): each scope kind gets
-
 mod virtual_key_wire {
     use super::{scope_kinds, ScopeRef, VirtualKey};
     use std::collections::BTreeMap;
@@ -95,11 +91,9 @@ mod virtual_key_wire {
     }
 
     /// The per-kind wire partition: `(allowed_pools, {allowed_{kind}s → values})`. The map carries
-
     pub(super) type ScopePartition = (Option<Vec<String>>, BTreeMap<String, Vec<String>>);
 
     /// Partition `allowed_scopes` into the per-kind wire fields. Total and lossless: every
-
     pub(super) fn partition_scopes(scopes: &Option<Vec<ScopeRef>>) -> ScopePartition {
         let Some(list) = scopes else {
             return (None, BTreeMap::new());
@@ -121,7 +115,6 @@ mod virtual_key_wire {
     }
 
     /// Reassemble the per-kind wire fields into kind-tagged scopes. All three absent = the
-
     pub(super) fn assemble_scopes(
         pools: Option<Vec<String>>,
         by_kind: BTreeMap<String, Vec<String>>,
@@ -287,7 +280,6 @@ pub struct VirtualKey {
 
 impl VirtualKey {
     /// Whether this key may target the scope `(kind, value)`.
-
     pub fn scope_allowed(&self, kind: &str, value: &str) -> bool {
         match &self.allowed_scopes {
             None => true,
@@ -296,7 +288,6 @@ impl VirtualKey {
     }
 
     /// `false` once this key has been tombstoned (`delete_key`). Every admin-mutation existence
-
     pub fn is_live(&self) -> bool {
         self.deleted_at.is_none()
     }
@@ -428,7 +419,6 @@ pub struct CredentialSecret {
 
 impl CredentialSecret {
     /// Extract the raw plaintext for a `"v1:plain:<payload>"`-scheme secret — the ONLY scheme that
-
     pub fn plaintext(&self) -> Option<&str> {
         self.secret.strip_prefix("v1:plain:")
     }
@@ -451,14 +441,12 @@ impl std::fmt::Debug for CredentialSecret {
 }
 
 /// THE CANONICAL RESERVED UNIT NAMES (1.6.0 M1b). The reserved four pricing tiers are no longer a
-
 pub const UNIT_INPUT: &str = "input";
 pub const UNIT_OUTPUT: &str = "output";
 pub const UNIT_CACHE_READ: &str = "cache_read";
 pub const UNIT_CACHE_WRITE: &str = "cache_write";
 
 /// The reserved four, in canonical order — the set the pricer prices via the `RateNanos` tiers and
-
 pub const RESERVED_UNITS: [&str; 4] = [UNIT_INPUT, UNIT_OUTPUT, UNIT_CACHE_READ, UNIT_CACHE_WRITE];
 
 /// One model's accumulated billable-unit counts inside a [`UsageLedger`]. RAW counts, never money:
@@ -529,7 +517,6 @@ impl UsageLedger {
     }
 
     /// Total TOKENS across every model — the reserved token classes only (the scalar `tokens`
-
     pub fn total_tokens(&self) -> u64 {
         RESERVED_UNITS
             .iter()
@@ -537,7 +524,6 @@ impl UsageLedger {
     }
 
     /// Summed count of one reserved tier across every model — the durable counterpart of the
-
     fn total_tier(&self, unit: &str) -> u64 {
         self.models
             .iter()
@@ -545,7 +531,6 @@ impl UsageLedger {
     }
 
     /// UNCACHED-INPUT tokens across every model — the durable counterpart of the `tokens_input`
-
     pub fn total_input(&self) -> u64 {
         self.total_tier(UNIT_INPUT)
     }
@@ -556,13 +541,11 @@ impl UsageLedger {
     }
 
     /// CACHE-READ tokens across every model — the durable counterpart of the `tokens_cache_read`
-
     pub fn total_cache_read(&self) -> u64 {
         self.total_tier(UNIT_CACHE_READ)
     }
 
     /// Apply one signed per-model unit delta, flooring every counter at 0 (a refund can never
-
     pub fn apply_model_delta(&mut self, delta: &ModelTokensDelta) {
         let entry = match self.models.iter_mut().find(|m| m.model == delta.model) {
             Some(m) => m,
@@ -582,7 +565,6 @@ impl UsageLedger {
     }
 
     /// Apply a whole [`UsageDelta`] (admission requests + billable requests + every model row),
-
     pub fn apply_delta(&mut self, delta: &UsageDelta) {
         self.requests = self.requests.saturating_add_signed(delta.requests);
         self.billable_requests = self
@@ -840,7 +822,6 @@ impl Retention {
     }
 
     /// Whether a purge under this rule drops a row of `disposition` written at `ts`, against the
-
     #[must_use]
     pub fn drops(self, ts: u64, before: u64, disposition: PlaneDisposition) -> bool {
         ts < before
@@ -961,14 +942,11 @@ impl PlaneSelector<'_> {
 }
 
 /// The durable governance store — the `db` plugin contract. A backend (the built-in `SqliteStore`,
-
 pub trait RecordStore: Send + Sync + 'static {
     /// UPSERT `key` by `key.id` — the mint path and every in-place update (rename, enable/disable,
-
     fn put_key(&self, key: &VirtualKey) -> RecordStoreResult<()>;
     fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>>;
     /// EVERY key, live or tombstoned (`deleted_at` set or not) — deliberately UNFILTERED, so this
-
     fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>>;
     /// TOMBSTONE `id`: the row is NOT removed. An implementation must, atomically:
     /// 1. Destroy every credential row for this key (see [`RecordStore::list_credentials`]) — secret
@@ -992,7 +970,6 @@ pub trait RecordStore: Send + Sync + 'static {
     fn delete_key(&self, id: &str) -> RecordStoreResult<()>;
 
     /// Every key with `revision > since` — the INCREMENTAL hydration delta, used instead of a full
-
     fn list_keys_since(&self, since: u64) -> RecordStoreResult<Vec<VirtualKey>> {
         Ok(self
             .list_keys()?
@@ -1002,11 +979,9 @@ pub trait RecordStore: Send + Sync + 'static {
     }
 
     /// The TOKEN LEDGER for one (bucket, window). `bucket_id` is a key's own budget bucket (its
-
     fn get_usage(&self, bucket_id: &str, window_start: u64) -> RecordStoreResult<UsageLedger>;
 
     /// Atomically compare raw pre-states and commit every replacement with its applied receipt.
-
     fn apply_usage_correction(
         &self,
         request: &correction::Request,
@@ -1021,7 +996,6 @@ pub trait RecordStore: Send + Sync + 'static {
     }
 
     /// Write-behind ABSOLUTE set of a bucket's window ledger. SETS (replaces) the whole
-
     fn put_usage(
         &self,
         bucket_id: &str,
@@ -1030,7 +1004,6 @@ pub trait RecordStore: Send + Sync + 'static {
     ) -> RecordStoreResult<()>;
 
     /// Write-behind ADDITIVE accumulate of a bucket's window ledger: adds the signed requests
-
     fn add_usage(
         &self,
         bucket_id: &str,
@@ -1043,7 +1016,6 @@ pub trait RecordStore: Send + Sync + 'static {
     }
 
     /// Apply this complete usage batch atomically under the caller's immutable operation identity.
-
     fn add_usage_batch_deduped(
         &self,
         op: crate::abi::store::OpId,
@@ -1054,7 +1026,6 @@ pub trait RecordStore: Send + Sync + 'static {
     }
 
     /// Whether this implementation accepts caller-owned immutable usage batch identities.
-
     fn supports_usage_batch_deduped(&self) -> bool {
         false
     }
@@ -1065,7 +1036,6 @@ pub trait RecordStore: Send + Sync + 'static {
     }
 
     /// Apply the immutable metering body once under `op`. Replaying the same id and body
-
     fn add_metering_batch_deduped(
         &self,
         op: crate::abi::store::OpId,
@@ -1078,15 +1048,12 @@ pub trait RecordStore: Send + Sync + 'static {
     }
 
     /// Accumulate one completed response's RAW consumption into the per-(key, bucket, model,
-
     fn add_metering(&self, delta: &MeteringDelta) -> RecordStoreResult<()>;
 
     /// Every metering row accumulated in `bucket` (a metering-bucket day start), for the usage read's
-
     fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>>;
 
     /// Persist a row-looked-up credential (today: only the request-signing auth's kind) — see
-
     fn put_credential(&self, _secret: &CredentialSecret) -> RecordStoreResult<()> {
         Err(RecordStoreError(
             "this Store does not support row-looked-up credentials".to_string(),
@@ -1094,7 +1061,6 @@ pub trait RecordStore: Send + Sync + 'static {
     }
 
     /// Update only the envelope of an existing, unrevoked Recoverable credential, atomically
-
     fn rewrap_credential(
         &self,
         _expected: &CredentialSecret,
@@ -1106,7 +1072,6 @@ pub trait RecordStore: Send + Sync + 'static {
     }
 
     /// ATOMIC key+credential mint. Persist the bearer `VirtualKey` row AND its paired credential row
-
     fn put_key_with_credential(
         &self,
         key: &VirtualKey,
@@ -1118,13 +1083,11 @@ pub trait RecordStore: Send + Sync + 'static {
     }
 
     /// Every credential row for `key_id`, metadata only, never the secret. The admin/listing
-
     fn list_credentials(&self, _key_id: &str) -> RecordStoreResult<Vec<CredentialMeta>> {
         Ok(Vec::new())
     }
 
     /// Revoke ONE credential by id (independent of the owning key — see
-
     fn revoke_credential(&self, _id: &str, _reason: &str) -> RecordStoreResult<()> {
         Err(RecordStoreError(
             "this Store does not support credential revocation".to_string(),
@@ -1132,25 +1095,21 @@ pub trait RecordStore: Send + Sync + 'static {
     }
 
     /// Every credential row with `revision > since`, SECRET included — the incremental hydration
-
     fn list_credentials_since(&self, _since: u64) -> RecordStoreResult<Vec<CredentialSecret>> {
         Ok(Vec::new())
     }
 
     /// Append one 1.5.5 admin AUDIT row. No production path writes these rows any more (1.6.0's
-
     fn append_audit(&self, _entry: &AuditRecord) -> RecordStoreResult<()> {
         Ok(())
     }
 
     /// Every persisted audit record, oldest-first (by `seq`) — the boot RESTORE source when a durable
-
     fn list_audit(&self) -> RecordStoreResult<Vec<AuditRecord>> {
         Ok(Vec::new())
     }
 
     /// Add `sub` to the REVOCATION DENYLIST (1.5.0 signed-token keys): a minted token is stateless,
-
     fn add_denylist(&self, _sub: &str, _reason: &str) -> RecordStoreResult<()> {
         Err(RecordStoreError(
             "this Store does not support the revocation denylist".to_string(),
@@ -1158,13 +1117,11 @@ pub trait RecordStore: Send + Sync + 'static {
     }
 
     /// Every denied subject id (for the boot hydrate of the in-memory denylist set). DEFAULTED to
-
     fn list_denylist(&self) -> RecordStoreResult<Vec<String>> {
         Ok(Vec::new())
     }
 
     /// The most-recent `limit` audit records, oldest-first - the BOUNDED boot restore source. The
-
     fn list_audit_tail(&self, limit: u64) -> RecordStoreResult<Vec<AuditRecord>> {
         let mut all = self.list_audit()?;
         let limit = limit as usize;
@@ -1175,25 +1132,21 @@ pub trait RecordStore: Send + Sync + 'static {
     }
 
     /// UPSERT one plane record by `(record.kind, record.id)`, for any registered record kind.
-
     fn upsert_plane_record(&self, _record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
         Ok(())
     }
 
     /// The opaque `body` of the record identified by `(kind, id)`, or `None` when absent.
-
     fn get_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<Option<Vec<u8>>> {
         Ok(None)
     }
 
     /// APPEND one child plane record within `record.parent`, keyed and ordered by `record.seq`. The
-
     fn append_plane_record(&self, _record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
         Ok(())
     }
 
     /// The opaque bodies of a kind's records, narrowed by `selector` — every record of the kind
-
     fn list_plane_records(
         &self,
         _kind: &str,
@@ -1203,19 +1156,16 @@ pub trait RecordStore: Send + Sync + 'static {
     }
 
     /// Every distinct [`PlaneRecord::parent`] with at least one record of `kind` (the boot
-
     fn list_plane_record_parents(&self, _kind: &str) -> RecordStoreResult<Vec<String>> {
         Ok(Vec::new())
     }
 
     /// RETENTION: drop records of `kind` older than `before`, returning how many went. WHICH
-
     fn purge_plane_records_before(&self, _kind: &str, _before: u64) -> RecordStoreResult<u64> {
         Ok(0)
     }
 
     /// RETENTION, with the predicate named: drop records of `kind` older than `before` under
-
     fn purge_plane_records(
         &self,
         kind: &str,
@@ -1234,7 +1184,6 @@ pub trait RecordStore: Send + Sync + 'static {
     }
 
     /// TEST-AND-SET one single-use token of `kind`, valid until `expires_at`; `true` means THIS call
-
     fn redeem_plane_token(
         &self,
         _kind: &str,
@@ -1246,7 +1195,6 @@ pub trait RecordStore: Send + Sync + 'static {
     }
 
     /// IS THIS TOKEN STILL LIVE? A MULTI-USE, TIME-AND-STATE-BOUNDED CAPABILITY, and deliberately
-
     fn plane_token_live(
         &self,
         _kind: &str,
@@ -1274,13 +1222,11 @@ pub struct PlaneRequestCtx {
 
 impl PlaneRequestCtx {
     /// The resolved caller key, or `None` when governance is disabled. Borrows through the `Arc` so a
-
     pub fn key(&self) -> Option<&VirtualKey> {
         self.key.as_deref()
     }
 
     /// Whether this request carries a resolved key (governance enabled). `false` is the no-op posture:
-
     pub fn is_governed(&self) -> bool {
         self.key.is_some()
     }

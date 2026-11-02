@@ -887,7 +887,6 @@ fn a_secret_plugin_wires_every_kind_op() {
 }
 
 /// A kind op a door names no slot for is NULL (absent): the secret door above names `resolve`
-
 #[test]
 fn a_kind_op_a_door_does_not_name_is_absent() {
     // SAFETY: the macros' `'static` doors and their tables.
@@ -1385,7 +1384,6 @@ mod plane_plugin {
     }
 
     /// `open`: the plane's own `out`, carrying the snapshot; it notes how many providers' facts
-
     pub struct Open;
     impl RawSlot for Open {
         type In = PlaneOpenIn;
@@ -1444,7 +1442,6 @@ mod plane_plugin {
 }
 
 /// THE APPEND RULE ON `PlaneOpenIn::providers`: a host whose `open` `in` ends before the list (its
-
 #[test]
 fn a_plane_open_in_that_ends_before_the_providers_hands_none() {
     use crate::abi::plane::{Ops, PlaneOpenIn, PlaneOpenOut, ProviderFacts};

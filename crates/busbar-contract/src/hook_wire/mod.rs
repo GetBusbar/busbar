@@ -10,7 +10,6 @@ use serde::Serialize;
 pub mod reply;
 
 /// PER-REQUEST message kinds — the explicit `op` discriminator every per-request payload carries
-
 pub const OP_DECIDE: &str = "decide";
 pub const OP_TRANSFORM: &str = "transform";
 pub const OP_NOTIFY: &str = "notify";
@@ -189,7 +188,6 @@ pub struct HookContext<'a> {
 }
 
 /// Build the wire projection from the live request/candidates/context. Borrows everywhere — the
-
 pub fn build<'a>(
     op: &'static str,
     req: &'a RoutingRequest<'_>,
@@ -260,7 +258,6 @@ pub struct RestrictReply {
 }
 
 /// Parse the untyped `restrict` value fail-closed. A well-formed restrict is `{"tags_any": [non-empty
-
 pub fn parse_restrict(value: &serde_json::Value) -> Option<RestrictReply> {
     let tags_any: Vec<String> = value
         .get("tags_any")?

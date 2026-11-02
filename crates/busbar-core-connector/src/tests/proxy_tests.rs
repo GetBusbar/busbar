@@ -437,7 +437,6 @@ fn proxy_env_refusals_never_echo_the_proxy_password() {
 }
 
 /// A REFUSAL NAMES THE HOST THE VALUE DIALS, OR NONE. The dialling stack ends a web URL's authority
-
 #[test]
 fn a_proxy_refusal_names_no_host_the_value_does_not_dial() {
     for v in [
@@ -451,7 +450,6 @@ fn a_proxy_refusal_names_no_host_the_value_does_not_dial() {
 }
 
 /// The proxy's answer is read whole before the tunnel is up: an incomplete head waits, a 2xx
-
 #[test]
 fn the_proxys_answer_is_judged_on_its_status_line() {
     assert_eq!(connect_answer(b"HTTP/1.1 200 Conn", "t:1"), Ok(None));
@@ -477,7 +475,6 @@ fn the_proxys_answer_is_judged_on_its_status_line() {
 }
 
 /// A framer over the test carrier, the dial judged by a judge that pins IP literals and finds no
-
 fn proxying(config: Option<Arc<ProxyChoice>>) -> Connector {
     let view = Transports::new(vec![
         Entry {
@@ -502,7 +499,6 @@ fn proxying(config: Option<Arc<ProxyChoice>>) -> Connector {
 }
 
 /// A scripted proxy on loopback: it records the CONNECT head, answers `answer`, and (on a 2xx)
-
 async fn scripted_proxy(answer: &'static [u8]) -> (u16, Arc<std::sync::Mutex<String>>) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -558,7 +554,6 @@ async fn read_until(
 }
 
 /// THE PROOF: a framed dial to a name only the proxy resolves goes to the proxy, asks it for the
-
 #[test]
 fn a_framed_dial_rides_a_connect_tunnel_through_the_proxy() {
     worker().block_on(async {
@@ -626,7 +621,6 @@ fn a_proxy_refusing_the_tunnel_refuses_the_exchange() {
 }
 
 /// THE CLAIM (security.md, "target judged before the proxy is asked"): a target the guard refuses
-
 #[test]
 fn a_target_the_guard_refuses_never_reaches_the_proxy() {
     use busbar_contract::abi::host::service::{DEST_INTERNAL, DEST_METADATA};
@@ -679,7 +673,6 @@ fn a_target_the_guard_refuses_never_reaches_the_proxy() {
 }
 
 /// RED: a host `NO_PROXY` names is dialled direct, and a carrier carried as itself (a driver's raw
-
 #[test]
 fn no_proxy_and_a_raw_stream_dial_direct() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -739,7 +732,6 @@ fn no_proxy_and_a_raw_stream_dial_direct() {
 }
 
 /// RED (the proxy environment honoured "exactly as 1.5.5's reqwest clients did"): the proxy URL's
-
 #[test]
 fn the_proxy_credential_is_percent_decoded_before_it_is_presented() {
     use base64::Engine;

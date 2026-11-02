@@ -68,7 +68,6 @@ fn scalars_pointers_arrays_and_constants_map_to_c() {
 }
 
 /// A struct stated through `abi_struct!` renders exactly as the same struct written plainly, docs
-
 #[test]
 fn an_abi_struct_declaration_renders_as_the_plain_struct() {
     let plain = r#"
@@ -406,7 +405,6 @@ fn the_committed_header_is_what_the_sources_render() {
 }
 
 /// Audit contract-include #1: a struct the golden records by its module path
-
 #[test]
 fn every_struct_is_pinned_by_its_module_path_or_alias_and_an_unpinned_one_fails() {
     use render::render_sources_pinned;

@@ -46,7 +46,6 @@ fn creds(ufrag: &str, pwd: &str) -> IceCredentials {
 }
 
 /// A Binding request to the owner of `to`: USERNAME "to.ufrag:from_ufrag", MESSAGE-INTEGRITY under
-
 fn check(to_ufrag: &str, from_ufrag: &str, key: &str, txid: u8) -> Vec<u8> {
     let username = format!("{to_ufrag}:{from_ufrag}").into_bytes();
     let padded = username.len().div_ceil(4) * 4;
@@ -62,7 +61,6 @@ fn check(to_ufrag: &str, from_ufrag: &str, key: &str, txid: u8) -> Vec<u8> {
 }
 
 /// The success response to the request `req`: same transaction id, MESSAGE-INTEGRITY under `pwd`
-
 fn answer(req: &[u8], pwd: &str) -> Vec<u8> {
     let mut m = vec![0x01, 0x01, 0, 0, 0x21, 0x12, 0xa4, 0x42];
     m.extend_from_slice(&req[8..20]);
@@ -312,7 +310,6 @@ fn unhex(s: &str) -> Vec<u8> {
 
 impl Scripted {
     /// Dialling: a check to every path this call told, and a bind request for the first while
-
     fn check_told(&self, st: &mut St, lane: &DatagramLane) {
         if !self.knobs.dial {
             return;
@@ -462,7 +459,6 @@ struct Rig {
 const METADATA: &str = "169.254.169.254:3478";
 
 /// The destination judge: the link-local metadata range refused, any other literal admitted as
-
 fn judge(asked: Arc<Mutex<Vec<String>>>) -> Arc<dyn DialJudge> {
     Arc::new(move |dest: &str, _class: u32, _done: Judged| {
         asked.lock().unwrap().push(dest.to_owned());
@@ -1200,7 +1196,6 @@ fn closes(s: &Sink) -> u32 {
 }
 
 /// A connector serving the scripted dialling framer under `dg` and the identity framer under
-
 fn book() -> crate::Connector {
     let dg = Arc::new(Scripted {
         facts: DoorFacts {
@@ -1258,7 +1253,6 @@ fn open_unit(
 }
 
 /// RED arms of the session book: an open over a datagram framer's need serving no unit, or a unit
-
 #[test]
 fn the_session_book_refuses_no_unit_and_an_unregistered_unit_and_forgets_a_closed_one() {
     use busbar_contract::conn::ConnError;
@@ -1290,7 +1284,6 @@ fn the_session_book_refuses_no_unit_and_an_unregistered_unit_and_forgets_a_close
 }
 
 /// Two sessions' pairings never cross: a frame sorted on one reaches only its own other leg; and a
-
 #[test]
 fn two_sessions_never_cross_and_a_close_closes_both_legs_once() {
     use super::{Leg, Pairing};
@@ -1371,7 +1364,6 @@ fn leg(pairing: &Arc<super::Pairing>) -> crate::dialled::Dialled {
 }
 
 /// A far end that refuses the exchange is relayed whole (its head, its body, its end) and nothing
-
 #[test]
 fn a_refused_exchange_is_relayed_whole_and_leaves_no_bridge_and_an_answered_one_runs() {
     use busbar_contract::conn::PieceKind;
@@ -1420,7 +1412,6 @@ fn a_refused_exchange_is_relayed_whole_and_leaves_no_bridge_and_an_answered_one_
 }
 
 /// Lines that do not mirror refuse the open: the description settles nothing attached, and the
-
 #[test]
 fn an_answer_whose_lines_do_not_mirror_refuses_the_open() {
     use busbar_contract::conn::{ConnError, PieceKind};
@@ -1449,7 +1440,6 @@ fn an_answer_whose_lines_do_not_mirror_refuses_the_open() {
 }
 
 /// RED (THE DESIGN §5, datagram media: "ICE path migration rebinds only on a verified round-trip
-
 #[test]
 fn a_path_one_association_holds_is_never_taken_by_a_check_another_hears_from_it() {
     let (da, db) = (
@@ -1479,7 +1469,6 @@ fn a_path_one_association_holds_is_never_taken_by_a_check_another_hears_from_it(
 }
 
 /// RED (resource bounds): the paths a port routes to one association are only those it still
-
 #[test]
 fn a_port_keeps_no_path_for_an_association_that_no_longer_owns_it() {
     let da = scripted(Knobs::default());
@@ -1503,7 +1492,6 @@ fn a_port_keeps_no_path_for_an_association_that_no_longer_owns_it() {
 }
 
 /// RED (resource bounds): the far end's description is bounded. Buffered whole until the
-
 #[test]
 fn a_far_end_description_past_its_bound_fails_the_open() {
     use busbar_contract::conn::{ConnError, PieceKind};
@@ -1531,7 +1519,6 @@ fn a_far_end_description_past_its_bound_fails_the_open() {
 }
 
 /// RED (resource bounds; THE DESIGN §5 "Writes are back-pressured"): a message a plugin writes in
-
 #[test]
 fn a_message_written_in_parts_past_its_bound_is_refused() {
     use busbar_contract::conn::{ConnError, PieceKind};
@@ -2159,7 +2146,6 @@ fn park(
 }
 
 /// §11.13 M1: no plugin code runs under the port's lock. While `parked` holds association a's
-
 fn others_complete_while_parked(
     call: Parks,
     arm: impl FnOnce(&Arc<Scripted>) -> Arc<Scripted>,
@@ -2262,7 +2248,6 @@ fn a_refused_framing_parked_in_finish_holds_no_other_caller_of_its_port() {
 }
 
 /// What a caller owes an association out on another caller's crossing does not wait for it: it is
-
 #[test]
 fn what_an_association_out_on_a_crossing_is_owed_its_holder_runs_in_order() {
     let da = scripted(Knobs::default());

@@ -7,17 +7,14 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 /// One segment's storage.
-
 pub trait SegmentBackend: Send {
     /// Write `bytes` starting at `offset`, in full. A short write is an error, not a partial
-
     fn write_all_at(&mut self, offset: u64, bytes: &[u8]) -> io::Result<()>;
 
     /// Make everything written so far durable. This is the point the poison rule hangs on.
     fn sync(&mut self) -> io::Result<()>;
 
     /// Read into `buf` starting at `offset`, returning how many bytes were available. Short reads
-
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize>;
 
     /// How long the backing currently is.
@@ -29,33 +26,27 @@ pub trait SegmentBackend: Send {
     }
 
     /// Grow or shrink the backing to exactly `len`. Growing is how space is preallocated; the new
-
     fn set_len(&mut self, len: u64) -> io::Result<()>;
 }
 
 /// How a segment comes into being. The log asks for segment `index` and is handed a backing.
-
 pub trait SegmentFactory: Send {
     /// Open, or create, the backing for segment `index`.
     fn open(&mut self, index: u64) -> io::Result<Box<dyn SegmentBackend>>;
 
     /// The highest index this factory already has a backing for, or `None` when it has none.
-
     fn highest_index(&self) -> io::Result<Option<u64>>;
 
     /// The backing for segment `index` if this factory already has one, for READING; `None` when
-
     fn existing(&self, index: u64) -> io::Result<Option<Box<dyn SegmentBackend>>>;
 
     /// Whether this factory can put anything on a disk. A memory factory says no, and the log
-
     fn is_durable(&self) -> bool;
 
     /// The file segment `index` lives in, on a factory that keeps files.
     fn segment_file(&self, index: u64) -> Option<PathBuf>;
 
     /// Keep `bytes` — the damaged remainder of segment `index`, starting at `offset`, found at
-
     fn quarantine(
         &mut self,
         index: u64,
@@ -77,7 +68,6 @@ pub struct QuarantinedBytes {
 }
 
 /// The bytes of one memory segment, shared so that closing and reopening a segment — which is what
-
 pub type SharedBytes = std::sync::Arc<std::sync::Mutex<Vec<u8>>>;
 
 /// A segment kept in memory. The backing for a deployment with no data directory, and the base a
@@ -188,7 +178,6 @@ impl MemoryFactory {
     }
 
     /// A factory that keeps every segment's bytes alive for as long as it itself lives.
-
     pub fn retaining() -> Self {
         let factory = MemoryFactory::default();
         factory
@@ -200,7 +189,6 @@ impl MemoryFactory {
     }
 
     /// The shared bytes of segment `index`, creating the slot if it does not exist yet — or if the
-
     pub fn segment_bytes(&self, index: u64) -> SharedBytes {
         let mut held = self.segments.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(bytes) = held.slots.get(&index).and_then(std::sync::Weak::upgrade) {
@@ -216,7 +204,6 @@ impl MemoryFactory {
     }
 
     /// How many segments' bytes are still resident. On a log that is writing, that is the segment it
-
     pub fn segment_count(&self) -> usize {
         self.segments
             .lock()
@@ -245,7 +232,6 @@ impl SegmentFactory for MemoryFactory {
     }
 
     /// The highest index whose bytes are still resident. A slot whose only references are gone is
-
     fn highest_index(&self) -> io::Result<Option<u64>> {
         Ok(self
             .segments
@@ -259,7 +245,6 @@ impl SegmentFactory for MemoryFactory {
     }
 
     /// The bytes of segment `index` while somebody still holds them. A segment a non-retaining
-
     fn existing(&self, index: u64) -> io::Result<Option<Box<dyn SegmentBackend>>> {
         let held = self.segments.lock().unwrap_or_else(|e| e.into_inner());
         Ok(held
@@ -317,7 +302,6 @@ impl FileSegment {
     }
 
     /// Open the file at `path`, creating it if absent, and say whether it was CREATED.
-
     fn open_reporting(path: &Path) -> io::Result<(Self, bool)> {
         match std::fs::OpenOptions::new()
             .read(true)
@@ -394,7 +378,6 @@ pub struct DirectoryFactory {
 
 impl DirectoryFactory {
     /// A factory over `dir`. The directory is created if it is absent — but note that CONSTRUCTING
-
     pub fn new(dir: impl Into<PathBuf>) -> io::Result<Self> {
         let dir = dir.into();
         create_dir_durably(&dir)?;
@@ -407,7 +390,6 @@ impl DirectoryFactory {
     }
 
     /// A quarantine copy of `segment_name` already in the directory that holds exactly `bytes`.
-
     fn identical_copy(&self, segment_name: &str, bytes: &[u8]) -> io::Result<Option<PathBuf>> {
         let prefix = format!("{segment_name}.quarantine-");
         let mut candidates: Vec<PathBuf> = std::fs::read_dir(&self.dir)?
@@ -432,7 +414,6 @@ impl DirectoryFactory {
     }
 
     /// The index a file name in the directory stands for, or `None` if this crate did not name it.
-
     fn index_of(name: &str) -> Option<u64> {
         let digits = name.strip_suffix(".wal")?;
         if digits.len() != 16 || !digits.bytes().all(|b| b.is_ascii_digit()) {
@@ -444,7 +425,6 @@ impl DirectoryFactory {
 
 impl SegmentFactory for DirectoryFactory {
     /// A NEW segment's directory entry is made durable before the segment is handed out.
-
     fn open(&mut self, index: u64) -> io::Result<Box<dyn SegmentBackend>> {
         let path = self.segment_path(index);
         let (segment, created) = FileSegment::open_reporting(&path)?;
@@ -460,7 +440,6 @@ impl SegmentFactory for DirectoryFactory {
     }
 
     /// The highest-numbered `<index>.wal` in the directory. A listing, not a side file: the
-
     fn highest_index(&self) -> io::Result<Option<u64>> {
         let mut highest: Option<u64> = None;
         for entry in std::fs::read_dir(&self.dir)? {
@@ -487,7 +466,6 @@ impl SegmentFactory for DirectoryFactory {
     }
 
     /// `<segment>.quarantine-<unix_ms>` beside the segment, created fresh — never over an existing
-
     fn quarantine(
         &mut self,
         index: u64,
@@ -534,7 +512,6 @@ impl SegmentFactory for DirectoryFactory {
 }
 
 /// The directory whose ENTRY creating or removing `path` changes. A relative `path` with no parent
-
 fn holding_dir(path: &Path) -> &Path {
     path.parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -542,7 +519,6 @@ fn holding_dir(path: &Path) -> &Path {
 }
 
 /// fsync the directory that holds `path`, so creating it is itself durable.
-
 fn sync_holding_dir(path: &Path) -> io::Result<()> {
     match sync_dir(holding_dir(path)) {
         Err(e) if fsync_unsupported(&e) => Ok(()),
@@ -567,7 +543,6 @@ fn sync_dir(dir: &Path) -> io::Result<()> {
 }
 
 /// Whether `e` is a filesystem saying a directory cannot be fsynced at all, as opposed to failing to
-
 fn fsync_unsupported(e: &io::Error) -> bool {
     matches!(
         e.kind(),
@@ -576,7 +551,6 @@ fn fsync_unsupported(e: &io::Error) -> bool {
 }
 
 /// DURABLY create `path` and any missing ancestors: each directory actually created has its PARENT
-
 fn create_dir_durably(path: &Path) -> io::Result<()> {
     let mut missing: Vec<&Path> = Vec::new();
     let mut cur = Some(path);

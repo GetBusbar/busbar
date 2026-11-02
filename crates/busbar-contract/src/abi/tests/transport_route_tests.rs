@@ -156,7 +156,6 @@ fn the_interner_returns_one_copy_per_distinct_string() {
 }
 
 /// The contract holds no interner of its own: a second interner starts empty, and a pattern is
-
 #[test]
 fn an_interner_is_a_plain_value_its_holder_owns() {
     let mut first = Interner::default();

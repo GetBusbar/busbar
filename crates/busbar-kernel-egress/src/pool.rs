@@ -7,11 +7,9 @@ use crate::ports::DestinationId;
 use crate::select::WeightedFloor;
 
 /// The walk's deadline when the pool names none. Whole seconds, and the deadline is checked before
-
 pub const DEFAULT_FAILOVER_DEADLINE_SECS: u64 = 120;
 
 /// How many further members the walk may try after the first when the pool names no cap. The walk
-
 pub const DEFAULT_FAILOVER_CAP: usize = 3;
 
 /// One member of a pool.
@@ -137,7 +135,6 @@ impl Pool {
     }
 
     /// This pool's membership with its own blocklist applied.
-
     #[must_use]
     pub fn admissible_members(&self) -> std::borrow::Cow<'_, [Member]> {
         if self.failover.exclusions.is_empty() {

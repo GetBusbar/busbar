@@ -12,7 +12,6 @@ pub const FIRST_PARTY_PUBLISHER: &str = "busbar";
 /// table the door answers and which engine subsystem consumes it; discovery/trust/validation are
 /// shared. Each kind's manifest `abi_version` is that kind's one version (`supported_abi`, THE DESIGN
 /// §11.2). Every kind, `plane` and `transport` included, loads only through its door.
-
 #[rustfmt::skip]
 pub const KNOWN_KINDS: &[&str] = &["store", "auth", "hook", "secret", "export", "plane", "transport"];
 

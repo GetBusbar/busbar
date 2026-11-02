@@ -1887,7 +1887,6 @@ fn golden_members(text: &str) -> BTreeMap<&str, BTreeMap<&str, u64>> {
 }
 
 /// WHAT A RE-SEED WOULD BREAK: every change from `old` to `new` that is not an append. A struct
-
 fn layout_breaks(old: &str, new: &str) -> Vec<String> {
     let (old, new) = (golden_members(old), golden_members(new));
     let mut out = Vec::new();
@@ -1935,7 +1934,6 @@ fn layout_breaks(old: &str, new: &str) -> Vec<String> {
 }
 
 /// RED ARM, THE RE-SEED: a moved field, a resize, an insert and a removal are
-
 #[test]
 fn a_reseed_that_is_not_append_only_is_refused() {
     let actual = compute_layout();
@@ -1981,7 +1979,6 @@ fn a_reseed_that_is_not_append_only_is_refused() {
 }
 
 /// THE COMPARATOR: the golden and the layout agree line for line, or the first line that differs is
-
 fn compare(existing: &str, actual: &str) -> Result<(), String> {
     if existing == actual {
         return Ok(());
@@ -2047,7 +2044,6 @@ fn a_perturbed_plane_golden_line_fails_the_comparator() {
 }
 
 /// RED ARM, THE AUTH KIND: one perturbed auth golden line (`fields`' slot in the auth table) fails
-
 #[test]
 fn a_perturbed_auth_golden_line_fails_the_comparator() {
     let actual = compute_layout();
@@ -2089,7 +2085,6 @@ fn a_perturbed_hook_golden_line_fails_the_comparator() {
 }
 
 /// RED ARM, store kind: one perturbed store golden line (a `UsageCell`'s `window_start` offset)
-
 #[test]
 fn a_perturbed_store_golden_line_fails_the_comparator() {
     let actual = compute_layout();

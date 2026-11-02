@@ -8,7 +8,6 @@ use busbar_contract::caps::{Outcome, ReasonCode, StepName, UnitKey};
 use crate::record::{FinishClass, QuantitySource, Subject};
 
 /// THE ON-DISK TAG VOCABULARY, AS LITERALS — the test the frozen table actually needed.
-
 #[test]
 fn the_on_disk_tag_vocabulary_is_the_literal_text_and_not_a_rendering_of_a_type() {
     use crate::record::{
@@ -171,7 +170,6 @@ fn the_on_disk_tag_vocabulary_is_the_literal_text_and_not_a_rendering_of_a_type(
 }
 
 /// A SECRET DERIVED FROM THE DEPLOYMENT KEY is one value per key and label: the same key gives the
-
 #[test]
 fn a_derived_secret_is_one_per_key_and_label_and_never_the_seed() {
     use crate::sign::AuditSigningKey;

@@ -21,7 +21,6 @@ fn contracts_run_in_slot_order_contiguous_after_the_lifecycle() {
 }
 
 /// A framer pends only on a ticketed auth call: `begin`, `ingest` and `emit` may pend (each may call
-
 #[test]
 fn only_the_ticketed_framer_ops_may_pend_and_all_run_on_the_request_path() {
     let ticketed = [slot::BEGIN, slot::INGEST, slot::EMIT];

@@ -74,18 +74,15 @@ use crate::cost::rate::ClassPrice;
 use crate::cost::{NANOS_PER_CENT, NANOS_PER_MICRO};
 
 /// Joins a plane key to its lane: `"<plane>\u{1f}<lane>"` is a lane priced by THAT plane's own card
-
 pub const PLANE_LANE_SEP: char = '\u{1f}';
 
 /// The scale every [`Money`] figure is held at: six decimal places, i.e. micro-units (#81).
-
 pub const MONEY_SCALE: u32 = 6;
 
 /// `10^MONEY_SCALE`: how many mantissa steps make one whole money unit.
 const MONEY_SCALE_FACTOR: i128 = 1_000_000;
 
 /// The scale the accumulator runs at, before the single projection to [`MONEY_SCALE`].
-
 pub const EXACT_SCALE: u32 = MONEY_SCALE + 9;
 
 /// The divisor that takes the exact scale-15 accumulator down to [`MONEY_SCALE`]. Applied ONCE.
@@ -115,7 +112,6 @@ impl Money {
     }
 
     /// The amount in whole MINOR units, truncated toward zero.
-
     pub fn minor(self) -> i128 {
         let micros_per_minor = i128::try_from(NANOS_PER_CENT / NANOS_PER_MICRO)
             .expect("the one minor scale fits an i128");
@@ -128,7 +124,6 @@ impl Money {
     }
 
     /// The exact decimal spelling, always with [`MONEY_SCALE`] places: `34_510` reads `0.034510`.
-
     pub fn to_decimal_string(self) -> String {
         let negative = self.0 < 0;
 
@@ -195,7 +190,6 @@ impl LedgerEntry {
     }
 
     /// Add one class's count. A repeated class REPLACES rather than accumulating, because two
-
     pub fn with_count(mut self, class: impl Into<String>, count: Count) -> LedgerEntry {
         self.counts.insert(class.into(), count);
         self
@@ -287,13 +281,11 @@ impl std::fmt::Display for MoneyError {
 impl std::error::Error for MoneyError {}
 
 /// **THE ONE FUNCTION.** `money = f(ledger_slice, card_history)`.
-
 pub fn price(ledger: &[LedgerEntry], history: &History) -> Result<Money, MoneyError> {
     price_in_view(ledger, &history.current())
 }
 
 /// [`price`] against a PINNED snapshot of the history.
-
 pub fn price_in_view(ledger: &[LedgerEntry], view: &HistoryView<'_>) -> Result<Money, MoneyError> {
     let exact = price_exact(ledger, view)?;
 
@@ -301,7 +293,6 @@ pub fn price_in_view(ledger: &[LedgerEntry], view: &HistoryView<'_>) -> Result<M
 }
 
 /// [`price_in_view`] with the final projection WITHHELD: the exact accumulator at [`EXACT_SCALE`].
-
 pub fn price_exact(ledger: &[LedgerEntry], view: &HistoryView<'_>) -> Result<i128, MoneyError> {
     let mut tally = Tally::in_view(*view);
     for entry in ledger {
@@ -320,24 +311,20 @@ pub fn price_exact(ledger: &[LedgerEntry], view: &HistoryView<'_>) -> Result<i12
 }
 
 /// A whole-unit count at [`MONEY_SCALE`] — the shape both books hold their counts in today.
-
 pub fn whole(count: u64) -> Count {
     Count::from_micros(i128::from(count) * MONEY_SCALE_FACTOR)
 }
 
 /// The divisor from the exact scale-15 accumulator to NANO-units (scale 9). Applied once, by
-
 const EXACT_PER_NANO: i128 = 1_000_000;
 
 /// An exact scale-15 figure in whole NANO-units, truncated toward zero once — the unit the books
-
 pub fn nanos_of_exact(exact: i128) -> Result<u128, MoneyError> {
     u128::try_from(exact / EXACT_PER_NANO).map_err(|_| MoneyError::Overflow)
 }
 
 impl Money {
     /// The micro-unit mantissa narrowed to the `i64` a served `spend_micros` field carries,
-
     pub fn micros_i64(self) -> Result<i64, MoneyError> {
         i64::try_from(self.0).map_err(|_| MoneyError::Overflow)
     }
@@ -348,7 +335,6 @@ impl Money {
     }
 
     /// A NANO-unit total — a ledger row's summed `priced_amount` — as [`Money`]: one truncation,
-
     pub fn of_nanos(nanos: u128) -> Result<Money, MoneyError> {
         i128::try_from(nanos / NANOS_PER_MICRO)
             .map(Money)
@@ -409,7 +395,6 @@ impl<'a> Tally<'a> {
     }
 
     /// A tally pricing every row against ONE card — the reads that hold a current card rather than
-
     pub fn at_card(card: &'a crate::cost::rate::RateCard) -> Tally<'a> {
         Tally::at_card_seq(HistorySeq::OPENING, card)
     }
@@ -477,7 +462,6 @@ impl<'a> Tally<'a> {
     }
 
     /// Add a row that carries the flat fee and no counts — a bucket's billable-request count, which
-
     pub fn fee(
         &mut self,
         arrived_ms: u64,
@@ -490,7 +474,6 @@ impl<'a> Tally<'a> {
     }
 
     /// [`Self::fee`] for one LANE: the flat fees at the fee of the lane's own plane (#47) — for a
-
     pub fn lane_fee(
         &mut self,
         lane: &str,
@@ -520,7 +503,6 @@ impl<'a> Tally<'a> {
     }
 
     /// **THE FIGURE**, at [`EXACT_SCALE`]: each tier's pre-tier sum through the tier once, summed,
-
     pub fn exact(&self) -> Result<i128, MoneyError> {
         let mut total: i128 = 0;
         for (tier_bp, amount) in &self.pre_tier {
@@ -544,7 +526,6 @@ impl<'a> Tally<'a> {
 }
 
 /// The flat fee as a term of the accumulator: minor units lifted to nano-units, times the fee
-
 fn fee_term(card: &crate::cost::rate::RateCard, fee_count: Count) -> Result<i128, MoneyError> {
     fee_count
         .micros()

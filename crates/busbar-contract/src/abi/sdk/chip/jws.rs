@@ -13,7 +13,6 @@ mod rsa;
 
 impl Cred {
     /// Whether the credential is a supported PKCS #8 RSA private key.
-
     pub fn rsa_pkcs8_check(&self) -> Result<(), String> {
         rsa::Key::from_pkcs8(self.wire())
             .map(drop)
@@ -21,7 +20,6 @@ impl Cred {
     }
 
     /// The RS256 signature of `signing_input`, base64url without padding.
-
     pub fn jws_rs256(&self, signing_input: &[u8]) -> Result<Seal, Refused> {
         let mut key = rsa::Key::from_pkcs8(self.wire())
             .map_err(|_| Refused("the key is not a PKCS #8 RSA key"))?;

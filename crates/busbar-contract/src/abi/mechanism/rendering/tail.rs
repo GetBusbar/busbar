@@ -693,7 +693,6 @@ pub struct ReadAuthTail {
 }
 
 /// THE AUTH TAIL READ BACK from an auth rendering's kind tail facts, for a reader that must not open
-
 pub fn read_auth_tail(facts: &[u8]) -> Result<ReadAuthTail, Unreadable> {
     let mut i = In { b: facts, at: 0 };
     let caps = i.u32("auth.caps")?;
@@ -729,7 +728,6 @@ pub fn read_auth_tail(facts: &[u8]) -> Result<ReadAuthTail, Unreadable> {
 }
 
 /// A PLANE STATEMENT'S COMMAND-LINE HELP ([`plane::PlaneTail::cli_help`], in the
-
 pub fn read_plane_cli_help(facts: &[u8]) -> Result<String, Unreadable> {
     let mut i = In { b: facts, at: 0 };
     for field in [

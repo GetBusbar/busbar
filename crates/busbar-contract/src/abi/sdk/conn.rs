@@ -239,7 +239,6 @@ impl Host {
     };
 
     /// A host that only wakes tickets through a safe callback and an opaque scalar context.
-
     #[must_use]
     pub const fn wake_only(ctx: HostCtx, wake: WakeFn) -> Self {
         Self {
@@ -304,7 +303,6 @@ impl Host {
     }
 
     /// THE HOST'S I/O (`abi::host::io`, `io.*`) for ONE entry of the op running on `ticket`: what
-
     #[must_use]
     pub fn io(&self, ticket: Ticket) -> super::io::Io<'_> {
         super::io::Io::new(
@@ -317,7 +315,6 @@ impl Host {
     }
 
     /// WAKE `ticket` (the host's `wake`, `abi::mechanism::ticket`): from any thread, never blocks,
-
     pub fn wake(&self, ticket: Ticket) {
         if let Some(wake) = self.wake {
             wake(self.ctx, ticket);
@@ -325,7 +322,6 @@ impl Host {
     }
 
     /// The host services table these tables carry (`abi::host::service`), as the SDK's typed
-
     #[must_use]
     pub fn services(&self) -> Option<crate::abi::sdk::services::Services> {
         self.services
@@ -339,7 +335,6 @@ impl Host {
     }
 
     /// The connector for one entry of the op running on `ticket`, its handles counting on from
-
     #[must_use]
     pub fn connector_from(&self, ticket: Ticket, issued: u32) -> Connector<'_> {
         Connector {
@@ -352,7 +347,6 @@ impl Host {
     }
 
     /// Whether the host lent the instance a connector table: a host that declared none of its needs
-
     #[must_use]
     pub fn lends_connector(&self) -> bool {
         self.conns.is_some()
@@ -436,14 +430,12 @@ impl Connector<'_> {
     }
 
     /// Where the last service this connector made that failed was failed, as the host named it:
-
     #[must_use]
     pub fn cause(&self) -> u64 {
         self.cause.get()
     }
 
     /// Bound every request this connector sends to `ms` milliseconds: what is left of the op's
-
     #[must_use]
     pub const fn within(mut self, ms: u64) -> Self {
         self.budget_ms = Some(ms);
@@ -468,7 +460,6 @@ impl Connector<'_> {
     }
 
     /// Make one service through `f` with `input`, under the next handle on the ticket: the
-
     fn make<I: ServiceIn>(
         &mut self,
         op: u32,
@@ -521,7 +512,6 @@ impl Connector<'_> {
     }
 
     /// Cross into service `op` through `f` with `input`, under `handle`: the outcome the host
-
     fn cross_out<I: ServiceIn>(
         &self,
         op: u32,
@@ -548,13 +538,11 @@ impl Connector<'_> {
     }
 
     /// Establish a stream for the declared need `need` (its index), to `target` (`None` = the
-
     pub fn establish(&mut self, need: u32, target: Option<&str>, within: &str) -> Answer<u64> {
         self.establish_timed(need, target, within, 0)
     }
 
     /// [`Connector::establish`], its dial bounded by `timeout_ms` (`0` = the need's own timeout,
-
     pub fn establish_timed(
         &mut self,
         need: u32,
@@ -566,7 +554,6 @@ impl Connector<'_> {
     }
 
     /// [`Connector::establish_timed`] for the REGISTRATION `member` (its name in the plugin's
-
     pub fn establish_as(
         &mut self,
         need: u32,
@@ -588,7 +575,6 @@ impl Connector<'_> {
     }
 
     /// Write `bytes` to `stream`: how many the host took. The host reads `bytes` during this call
-
     pub fn write(&mut self, stream: u64, bytes: &[u8]) -> Answer<usize> {
         let input = IoIn {
             head: blank_head(),
@@ -601,7 +587,6 @@ impl Connector<'_> {
     }
 
     /// Read from `stream` into `buf`: how many bytes; `0` = the end. The host writes `buf` during
-
     pub fn read(&mut self, stream: u64, buf: &mut [u8]) -> Answer<usize> {
         let input = IoIn {
             head: blank_head(),
@@ -614,7 +599,6 @@ impl Connector<'_> {
     }
 
     /// Upgrade `stream` to connection security, offering `name` (`None` = the endpoint's) and
-
     pub fn upgrade_secure(
         &mut self,
         stream: u64,
@@ -625,7 +609,6 @@ impl Connector<'_> {
     }
 
     /// [`Connector::upgrade_secure`] with `UPGRADE_*` `flags`
-
     pub fn upgrade_secure_flagged(
         &mut self,
         stream: u64,
@@ -646,7 +629,6 @@ impl Connector<'_> {
     }
 
     /// WHAT `stream`'s CONNECTION SECURITY ESTABLISHED, as the host connector observed it
-
     pub fn facts(&mut self, stream: u64) -> Answer<Option<Observed>> {
         let mut slot = StreamFacts {
             size: 0,
@@ -679,7 +661,6 @@ impl Connector<'_> {
     }
 
     /// THE PROCESS IDENTITY (`service::IDENTITY`): the pid, OS user and program the host presents
-
     pub fn identity(&mut self) -> Answer<ProcessId> {
         let mut slot = ProcessIdentity {
             size: 0,
@@ -732,7 +713,6 @@ pub(crate) struct Closer {
 
 impl Closer {
     /// Close `stream` on no ticket: a close never pends, so it is made on none
-
     pub(crate) fn close(&self, stream: u64) {
         let host = Host {
             ctx: self.ctx,
@@ -767,7 +747,6 @@ impl Connector<'_> {
     }
 
     /// THE HOST'S VERDICT on the declared need `need` (its index in the Statement's needs), as it
-
     pub fn admit(&mut self, need: u32) -> Result<(), ConnFailure> {
         let input = NeedAdmitIn {
             head: blank_head(),
@@ -782,7 +761,6 @@ impl Connector<'_> {
     }
 
     /// APPEND `bytes` to the local file the host maps this instance's destination `dest_key` to
-
     pub fn disk_append(&mut self, dest_key: &str, bytes: &[u8]) -> DiskAnswer {
         let blank = DiskWritten::ZERO;
         let fail = |step, rotation, why| {
@@ -840,7 +818,6 @@ impl Connector<'_> {
     }
 
     /// Make a host service that NEVER pends through `pick`'s slot, on NO ticket: the host keeps no
-
     fn cross_now<I: ServiceIn>(
         &self,
         op: u32,
@@ -859,7 +836,6 @@ impl Connector<'_> {
     }
 
     /// Write one request piece on a framed `stream`: `piece` describes it, `bytes` holds what its
-
     pub fn write_request(
         &mut self,
         stream: u64,
@@ -889,7 +865,6 @@ pub struct Replied {
 
 impl Connector<'_> {
     /// Read the next piece of the reply on `stream` into `buf`, with its descriptor. `buf` (and
-
     pub fn read_reply(
         &mut self,
         stream: u64,

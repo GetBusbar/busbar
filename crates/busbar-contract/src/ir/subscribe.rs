@@ -45,7 +45,6 @@ pub struct SubscribeResp {
 }
 
 /// THE SUBSCRIBE FAMILY'S WALK — this IR's answer to [`crate::ir::facts::IrFacts`]. The one
-
 impl crate::ir::facts::IrFacts for SubscribeReq {
     fn verb(&self) -> OpVerb {
         OpVerb::SUBSCRIBE

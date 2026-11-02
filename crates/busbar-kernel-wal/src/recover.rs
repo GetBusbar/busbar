@@ -34,7 +34,6 @@ pub enum TailVerdict {
 
 impl TailVerdict {
     /// Whether this verdict is one the caller answers by cutting the segment with no copy kept.
-
     #[must_use]
     pub fn truncates(self) -> bool {
         !matches!(self, TailVerdict::Corrupt { .. })
@@ -157,7 +156,6 @@ impl QuarantineNote {
 }
 
 /// The hole a quarantine body names, read after its fixed fields: whether a record was kept before
-
 fn read_bridge(r: &mut crate::journal::BodyReader<'_>) -> Option<Bridge> {
     let has_before = r.num()?;
     let before = (r.num()?, r.num()?);
@@ -180,7 +178,6 @@ impl Quarantine {
     }
 
     /// The body of the `ChainBreak` journal record that says, durably, what was set aside: a tag,
-
     #[must_use]
     pub fn body(&self) -> Vec<u8> {
         let segment_file = self
@@ -215,7 +212,6 @@ impl Quarantine {
 }
 
 /// The first field of a quarantine's `ChainBreak` body, which tells it apart from the break an
-
 pub const QUARANTINE_BODY_TAG: &str = "journal-quarantine";
 
 impl std::fmt::Display for Quarantine {
@@ -310,7 +306,6 @@ pub struct Hole {
 
 impl Recovered {
     /// Whether the scan stopped on a genuine torn tail — an incomplete final record a crash left
-
     pub fn was_torn(&self) -> bool {
         self.verdict == TailVerdict::Torn
     }
@@ -322,7 +317,6 @@ impl Recovered {
 }
 
 /// Scan `segment` from its beginning and report every complete, verifying record, reading past
-
 pub fn scan(segment: &Segment) -> io::Result<Recovered> {
     let len = segment.len()?;
     let mut records: Vec<Record> = Vec::new();
@@ -409,7 +403,6 @@ pub fn scan(segment: &Segment) -> io::Result<Recovered> {
 }
 
 /// The identities and records a set-aside stretch `[from, until)` holds: every identity a frame in
-
 fn set_aside(segment: &Segment, from: u64, until: u64, mut beyond: Beyond) -> io::Result<SetAside> {
     let set_aside = read_set_aside(segment, from, until)?;
 
@@ -448,7 +441,6 @@ struct SetAside {
 }
 
 /// The first record behind damage: the offset of the first frame at or past `stop_at` (and past
-
 fn resync(
     segment: &Segment,
     durable_end: u64,
@@ -493,7 +485,6 @@ fn resync(
 }
 
 /// The complete, verifying records of `segment` from `from` (a record boundary) on, at most `limit`
-
 struct Walk {
     records: Vec<Record>,
     /// The offset the last complete record returned ends at.
@@ -503,7 +494,6 @@ struct Walk {
 }
 
 /// Walk `segment` from `from`, assembling records across continuation frames, until the writes end,
-
 fn walk(segment: &Segment, from: u64, limit: usize) -> io::Result<Walk> {
     let mut records = Vec::new();
     let mut offset: u64 = from;
@@ -587,7 +577,6 @@ fn walk(segment: &Segment, from: u64, limit: usize) -> io::Result<Walk> {
 }
 
 /// The complete, verifying records of `segment` from byte `from` — the start of a record — at most
-
 pub(crate) fn records_from(
     segment: &Segment,
     from: u64,
@@ -608,7 +597,6 @@ pub(crate) fn records_from(
 }
 
 /// Every record in `[from, len)`, read frame by frame through each frame's full verification or its
-
 fn read_set_aside(segment: &Segment, from: u64, len: u64) -> io::Result<Vec<(Record, bool)>> {
     let mut frame = [0u8; FRAME_BYTES];
     let mut at = from;
@@ -671,7 +659,6 @@ struct Beyond {
 }
 
 /// Walk `[from, len)` a frame at a time: note where the written bytes end, whether a subsequent commit
-
 fn look_past(segment: &Segment, from: u64, stop_at: u64, len: u64) -> io::Result<Beyond> {
     const BLOCK_FRAMES: usize = 128;
     let mut beyond = Beyond {
@@ -729,7 +716,6 @@ fn look_past(segment: &Segment, from: u64, stop_at: u64, len: u64) -> io::Result
 }
 
 /// Scan, then make the backing agree with the scan — branching on WHY it stopped.
-
 pub fn recover_and_truncate(
     segment: &mut Segment,
     factory: &mut dyn SegmentFactory,
@@ -752,7 +738,6 @@ pub fn recover_and_truncate(
 }
 
 /// Scan a segment the log no longer writes to — one below the tail — and set aside whatever
-
 pub fn quarantine_in_place(
     segment: &Segment,
     factory: &mut dyn SegmentFactory,
@@ -764,7 +749,6 @@ pub fn quarantine_in_place(
 }
 
 /// Copy every hole, and a corrupt tail, into a quarantine, and note each in
-
 fn set_aside_in_place(
     segment: &Segment,
     recovered: &mut Recovered,
@@ -824,7 +808,6 @@ fn set_aside_in_place(
 }
 
 /// Copy `[from, until)` of `segment` into a quarantine `factory` makes durable, and say where it
-
 fn copy_aside(
     segment: &Segment,
     factory: &mut dyn SegmentFactory,

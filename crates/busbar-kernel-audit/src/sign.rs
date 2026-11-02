@@ -7,22 +7,18 @@ use ed25519_dalek::{Signer as _, SigningKey, VerifyingKey};
 use zeroize::Zeroize as _;
 
 /// The domain this signature is FOR, and the first bytes of every preimage.
-
 pub const SIGNATURE_DOMAIN: &str = "busbar.audit.record.v1";
 
 /// The domain a LEDGER CHECKPOINT signature is for — the second use of the one audit key.
-
 pub const CHECKPOINT_SIGNATURE_DOMAIN: &str = "busbar.ledger.checkpoint.v1";
 
 /// The signature algorithm, named in the key set so a verifier never has to infer it from a length.
 pub const SIGNATURE_ALGORITHM: &str = "ed25519";
 
 /// How many bytes of the public key's SHA-256 make a key identifier. Eight — sixteen hex
-
 const KEY_ID_BYTES: usize = 8;
 
 /// The exact bytes an ed25519 signature over one record's digest is computed over.
-
 #[must_use]
 pub fn signing_preimage(digest_hex: &str) -> Vec<u8> {
     let mut preimage = Vec::with_capacity(SIGNATURE_DOMAIN.len() + 1 + digest_hex.len());
@@ -33,7 +29,6 @@ pub fn signing_preimage(digest_hex: &str) -> Vec<u8> {
 }
 
 /// The exact bytes a checkpoint signature is computed over.
-
 #[must_use]
 pub fn checkpoint_preimage(body: &[u8]) -> Vec<u8> {
     let digest_hex = crate::digest::sha256_hex(body);
@@ -109,7 +104,6 @@ impl std::fmt::Display for KeyError {
 impl std::error::Error for KeyError {}
 
 /// Decode lowercase hex into exactly `N` bytes, saying nothing about WHAT was wrong with it.
-
 fn from_hex_exact<const N: usize>(text: &str) -> Result<[u8; N], KeyError> {
     let bytes = text.as_bytes();
     if bytes.len() != N * 2 {
@@ -135,7 +129,6 @@ fn nibble(c: u8) -> Result<u8, KeyError> {
 }
 
 /// The identifier for one public key: the first [`KEY_ID_BYTES`] bytes of its SHA-256, in lowercase
-
 #[must_use]
 pub fn key_id_of(public_key: &VerifyingKey) -> String {
     let digest = crate::digest::sha256_hex(public_key.as_bytes());
@@ -144,14 +137,12 @@ pub fn key_id_of(public_key: &VerifyingKey) -> String {
 }
 
 /// THE NODE'S AUDIT SIGNING KEY. The secret half never leaves this type.
-
 pub struct AuditSigningKey {
     inner: SigningKey,
     key_id: String,
 }
 
 /// PRINTS THE IDENTIFIER AND NOTHING ELSE.
-
 impl std::fmt::Debug for AuditSigningKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AuditSigningKey")
@@ -163,7 +154,6 @@ impl std::fmt::Debug for AuditSigningKey {
 
 impl AuditSigningKey {
     /// Build one from a 32-byte ed25519 seed.
-
     #[must_use]
     pub fn from_seed(seed: &[u8; 32]) -> Self {
         let inner = SigningKey::from_bytes(seed);
@@ -172,7 +162,6 @@ impl AuditSigningKey {
     }
 
     /// Build one from 64 lowercase hex characters.
-
     pub fn from_hex_seed(text: &str) -> Result<Self, KeyError> {
         let mut seed = from_hex_exact::<32>(text.trim())?;
         let key = AuditSigningKey::from_seed(&seed);
@@ -187,7 +176,6 @@ impl AuditSigningKey {
     }
 
     /// A 32-BYTE SECRET DERIVED FROM THIS KEY under `label`: HMAC-SHA256 keyed by the seed, over
-
     #[must_use]
     pub fn derived_secret(&self, label: &[u8]) -> [u8; 32] {
         let mut seed = self.inner.to_bytes();
@@ -209,7 +197,6 @@ impl AuditSigningKey {
     }
 
     /// Sign one record's digest. The answer is 128 lowercase hex characters.
-
     #[must_use]
     pub fn sign_digest(&self, digest_hex: &str) -> String {
         to_hex(&self.inner.sign(&signing_preimage(digest_hex)).to_bytes())
@@ -218,7 +205,6 @@ impl AuditSigningKey {
 
 impl AuditSigningKey {
     /// Sign one ledger checkpoint's body: 64 raw ed25519 signature bytes over
-
     #[must_use]
     pub fn sign_checkpoint_body(&self, body: &[u8]) -> Vec<u8> {
         self.inner
@@ -240,7 +226,6 @@ pub struct AuditVerifyingKey {
 
 impl AuditVerifyingKey {
     /// Read one from 64 lowercase hex characters, refusing a small-order point.
-
     pub fn from_hex(text: &str) -> Result<Self, KeyError> {
         let bytes = from_hex_exact::<32>(text.trim())?;
         let inner = VerifyingKey::from_bytes(&bytes).map_err(|_| KeyError::NotAKey)?;
@@ -264,7 +249,6 @@ impl AuditVerifyingKey {
     }
 
     /// Check one signature over one digest.
-
     pub fn verify_digest(&self, digest_hex: &str, signature_hex: &str) -> Result<(), KeyError> {
         let raw =
             from_hex_exact::<64>(signature_hex.trim()).map_err(|_| KeyError::MalformedSignature)?;
@@ -313,7 +297,6 @@ impl AuditKeySet {
     }
 
     /// Check one ledger checkpoint's signature against EVERY key in the set.
-
     pub fn verify_checkpoint_body(&self, body: &[u8], signature: &[u8]) -> Result<(), KeyError> {
         let raw: [u8; 64] = signature
             .try_into()

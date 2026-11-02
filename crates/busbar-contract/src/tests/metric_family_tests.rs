@@ -55,7 +55,6 @@ fn a_plane_family_and_a_carried_first_party_series_are_admitted() {
 }
 
 /// RED ARM: a plane cannot mint a first-party series — an unlisted `busbar_` name is refused, and
-
 #[test]
 fn a_reserved_family_the_host_does_not_list_is_refused() {
     const MINTED: &[MetricFamily] = &[counter("busbar_minted_total", &[])];

@@ -92,7 +92,6 @@ const K: [u32; 64] = [
 ];
 
 /// Run SHA-256's compression function (FIPS 180-4, 6.2.2) over one whole `block` into `state`.
-
 fn compress(state: &mut [u32; 8], block: &[u8; BLOCK]) {
     let mut w = Zeroizing::new([0_u32; 64]);
     for (t, word) in block.as_chunks::<4>().0.iter().enumerate() {
@@ -127,7 +126,6 @@ fn compress(state: &mut [u32; 8], block: &[u8; BLOCK]) {
 }
 
 /// SHA-256 of `prefix` (one whole block, or none) followed by `data`. The chaining state and the
-
 pub(crate) fn sha256_wiped(prefix: Option<&[u8; BLOCK]>, data: &[u8]) -> Zeroizing<[u8; 32]> {
     let mut state = Zeroizing::new(SHA256_IV);
     let mut total = data.len() as u64;
@@ -159,7 +157,6 @@ pub(crate) fn sha256_wiped(prefix: Option<&[u8; BLOCK]>, data: &[u8]) -> Zeroizi
 }
 
 /// HMAC-SHA256 of `data` under `key` (RFC 2104; a key past the block size is hashed first). HMAC
-
 pub fn hmac_sha256(key: &[u8], data: &[u8]) -> Zeroizing<[u8; 32]> {
     let mut k0 = Zeroizing::new([0_u8; BLOCK]);
     if key.len() > BLOCK {
@@ -179,7 +176,6 @@ pub fn hmac_sha256(key: &[u8], data: &[u8]) -> Zeroizing<[u8; 32]> {
 }
 
 /// HMAC-SHA1 of the concatenation of `parts` under `key` (RFC 2104). Keys longer than the block
-
 pub fn hmac_sha1(key: &Cred, parts: &[&[u8]]) -> Zeroizing<[u8; 20]> {
     let key = key.wire();
     let mut k0 = Zeroizing::new([0_u8; BLOCK]);
@@ -205,7 +201,6 @@ pub fn hmac_sha1(key: &Cred, parts: &[&[u8]]) -> Zeroizing<[u8; 20]> {
 }
 
 /// SHA-256 of the concatenation of `parts`. Message copies, digest states and the returned digest
-
 pub fn sha256(parts: &[&[u8]]) -> Zeroizing<[u8; 32]> {
     digests::sha256(parts)
 }

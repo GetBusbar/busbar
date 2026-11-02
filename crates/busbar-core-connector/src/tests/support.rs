@@ -337,7 +337,6 @@ pub struct TestDoor {
 
 impl TestDoor {
     /// An entry named `name`, claiming `claims`, over `composes_over`. Its role is a FRAMER where it
-
     pub fn new(
         name: &str,
         claims: &[&'static str],
@@ -404,7 +403,6 @@ impl TestDoor {
     }
 
     /// The same entry, its claim reading a port whatever its role (a framer stating one is still no
-
     #[must_use]
     pub fn with_port(mut self) -> Self {
         self.facts.ported = true;
@@ -969,7 +967,6 @@ fn text_of(s: busbar_contract::abi::mechanism::call::AbiStr) -> String {
 
 impl TestDoor {
     /// The carrier ops: a byte-stream carrier over the process's host I/O, each connection named by
-
     fn carry_io(&self, side: &dyn Side, call: Carry<'_>) -> Crossed {
         let io = super::hostio::process();
         let t = side.ticket();
@@ -1173,11 +1170,9 @@ impl Side for AuthTicket {
 }
 
 /// One `emit` crossing as a [`PendingDoor`] saw it first: its stream, the opening body length it
-
 pub type EmitSeen = (u64, u64, u32);
 
 /// A TICKETED TEST ENTRY WHOSE AUTH MAY PEND: the test entry `inner`, its framings on tickets of
-
 pub struct PendingDoor {
     /// The entry the ops land on.
     pub inner: TestDoor,
@@ -1326,7 +1321,6 @@ pub fn lent(ptr: *const u8, len: usize) -> Vec<u8> {
 }
 
 /// A MULTIPLEXING framer's answer: one piece per byte of `lane_bytes`, on the stream the byte names
-
 pub fn pieces_on_lanes(sink: &FramerSink, o: &mut FramerOut, lane_bytes: &[u8]) {
     for (n, &b) in lane_bytes.iter().enumerate() {
         // SAFETY: the host's buffers; a test's few pieces fit them.

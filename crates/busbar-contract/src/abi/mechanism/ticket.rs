@@ -21,7 +21,6 @@ pub struct Ticket {
 
 impl Ticket {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-
     pub const ZERO: Self = Self {
         slot: 0,
         generation: 0,
@@ -56,7 +55,6 @@ pub struct CompletionHandle {
 
 impl CompletionHandle {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-
     pub const ZERO: Self = Self {
         ticket: Ticket::ZERO,
         seq: 0,
@@ -89,7 +87,6 @@ impl HostCtx {
 }
 
 /// `host.wake(ctx, ticket)`: callable from any thread, never blocks, never fails. A wake for a
-
 pub type WakeFn = extern "C" fn(ctx: HostCtx, ticket: Ticket);
 
 /// The host tables handed to `open`: the mechanism's own services and the shared host tables

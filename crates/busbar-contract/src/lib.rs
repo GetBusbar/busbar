@@ -96,7 +96,6 @@ pub mod wire;
 pub use http;
 
 /// Milliseconds on the kernel's monotonic clock.
-
 pub type Millis = u64;
 
 pub use bounded::{
@@ -150,11 +149,9 @@ pub use wire::{
 };
 
 /// The default admin-scope CEILING for an identity provider that names none (`read-only`). Relocated
-
 pub const DEFAULT_MAX_ADMIN_SCOPE: &str = "read-only";
 
 /// This crate's own test binary counts its allocations through [`alloc_counter::Counting`], the
-
 #[cfg(test)]
 extern crate self as busbar_contract;
 

@@ -26,7 +26,6 @@ const DECIDE_VERB_MASK: u32 = VERB_PREFER | VERB_ABSTAIN | VERB_REJECT | VERB_RE
 const TRANSFORM_VERB_MASK: u32 = VERB_REWRITE | VERB_ABSTAIN | VERB_REJECT;
 
 /// On READY, `verbs & mask` sets exactly one bit, and no bit outside `mask |
-
 fn check_verbs(
     ready: bool,
     verbs: u32,
@@ -47,7 +46,6 @@ fn check_verbs(
 }
 
 /// One host-buffer dimension of a short-buffer answer ([`results`]), from the `usize` counts the
-
 const fn dim(written: usize, needed: usize, cap: usize, max: u64, field: &'static str) -> Dim {
     Dim {
         written: written as u64,
@@ -59,7 +57,6 @@ const fn dim(written: usize, needed: usize, cap: usize, max: u64, field: &'stati
 }
 
 /// `reject_status` comes only with [`VERB_HAS_REJECT_STATUS`] (a plugin cannot smuggle a status
-
 fn check_reject_status(
     verbs: u32,
     reject_status: u16,
@@ -76,7 +73,6 @@ fn check_reject_status(
 }
 
 /// Validates `decide`'s `out` against the capacities [`super::DecideIn`] gave the plugin.
-
 pub fn check_decide(
     out: &DecideOut,
     reject_message_cap: usize,
@@ -125,7 +121,6 @@ pub fn check_decide(
 }
 
 /// Validates `transform`'s `out` against the capacities [`super::DecideIn`] gave the plugin.
-
 pub fn check_transform(
     out: &TransformOut,
     reject_message_cap: usize,
@@ -166,13 +161,11 @@ pub fn check_transform(
 }
 
 /// Validates `notify`'s `out` (the shared [`OutHead`]; `notify` reads nothing back beyond it).
-
 pub fn check_notify(out: &OutHead) -> Result<(), Fault> {
     failed_error(out, "notify.error")
 }
 
 /// Validates `configure`'s `out`: a READY answer acks the version the host pushed.
-
 pub fn check_configure(out: &ConfigureOut, pushed_version: u64) -> Result<(), Fault> {
     if out.head.outcome.0 == (Outcome::Ready as u8) && out.acked_version != pushed_version {
         return Err(fault(Rule::Contradiction, "configure.acked_version"));
@@ -181,19 +174,16 @@ pub fn check_configure(out: &ConfigureOut, pushed_version: u64) -> Result<(), Fa
 }
 
 /// Validates `status`'s `out`.
-
 pub fn check_status(out: &StatusOut) -> Result<(), Fault> {
     leased_blob!(out, "status", status)
 }
 
 /// Validates `describe`'s `out`.
-
 pub fn check_describe(out: &DescribeOut) -> Result<(), Fault> {
     leased_blob!(out, "describe", describe)
 }
 
 /// Validates `serve`'s `out`.
-
 pub fn check_serve(out: &ServeOut) -> Result<(), Fault> {
     let (h, n) = (out.headers_out, out.headers_out_len);
     served(&out.head, h, n, HARD_MAX_HEADERS_OUT_LEN, &out.body)
@@ -203,7 +193,6 @@ pub fn check_serve(out: &ServeOut) -> Result<(), Fault> {
 pub const HARD_MAX_MESSAGES: u64 = 65536;
 
 /// Validates a HOST-BUILT [`PromptView`] (`decide`/`transform`'s `in.prompt`) before a plugin
-
 pub fn check_prompt_view(view: &PromptView) -> Result<(), Fault> {
     if view.messages_len > 0 && view.messages.is_null() {
         return Err(fault(Rule::NullWithCount, "prompt.messages"));
@@ -221,7 +210,6 @@ pub fn check_prompt_view(view: &PromptView) -> Result<(), Fault> {
 pub const HARD_MAX_SIGNALS: u64 = 1024;
 
 /// Validates a HOST-BUILT [`NotifyIn`] (WIRE-HOOK Q5): the signal list's pointer/length pairing
-
 pub fn check_notify_in(input: &NotifyIn) -> Result<(), Fault> {
     if input.signals_len > 0 && input.signals.is_null() {
         return Err(fault(Rule::NullWithCount, "notify.signals"));

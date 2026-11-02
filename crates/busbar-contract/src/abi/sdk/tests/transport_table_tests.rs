@@ -27,7 +27,6 @@ fn every_index_has_one_place() {
 }
 
 /// A framing another op holds is answered at once (`Busy`), never waited for; once it is let go
-
 #[test]
 fn a_held_framing_answers_busy_at_once() {
     let table = Table::default();
@@ -63,7 +62,6 @@ fn hold_waits_for_the_op_that_holds_it() {
 }
 
 /// A finished framing's token reaches nothing, even once its slot holds a new framing; `remove`
-
 #[test]
 fn a_token_that_outlived_its_framing_reaches_nothing() {
     let table = Table::default();

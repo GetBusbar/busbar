@@ -275,7 +275,6 @@ async fn until_gone(pid: &str) -> bool {
 }
 
 /// RED: two exchanges on one member, one after the other, reach ONE running program (one pid, one
-
 #[test]
 fn opens_on_one_member_share_one_program_and_members_run_their_own() {
     worker().block_on(async {
@@ -309,7 +308,6 @@ fn opens_on_one_member_share_one_program_and_members_run_their_own() {
 }
 
 /// RED: every frame the program writes reaches every open lease of its generation (the plugin
-
 #[test]
 fn a_frame_reaches_every_open_lease_and_an_opens_body_is_its_first_message() {
     worker().block_on(async {
@@ -330,7 +328,6 @@ fn a_frame_reaches_every_open_lease_and_an_opens_body_is_its_first_message() {
 }
 
 /// RED: a lease opened while the program is part way through one frame does not read
-
 #[test]
 fn a_lease_opened_mid_frame_reads_from_the_next_frame() {
     worker().block_on(async {
@@ -374,7 +371,6 @@ fn a_lease_opened_mid_frame_reads_from_the_next_frame() {
 }
 
 /// RED: a program that ends ends every lease of its generation; the next open spawns it anew — the
-
 #[test]
 fn a_program_that_ends_is_a_new_generation_on_the_next_open() {
     worker().block_on(async {
@@ -397,7 +393,6 @@ fn a_program_that_ends_is_a_new_generation_on_the_next_open() {
 }
 
 /// RED: a re-declaration (a config apply) retires a member whose program changed or that is gone:
-
 #[test]
 fn a_redeclaration_kills_a_changed_or_removed_members_program() {
     worker().block_on(async {
@@ -485,7 +480,6 @@ fn a_members_program_inherits_only_its_stated_environment() {
 }
 
 /// THE HELD ENVIRONMENT: an `env` entry written as a secret reference stays the reference in the
-
 #[test]
 fn a_members_env_refsironment_resolves_at_the_declaration_and_is_held_for_the_spawn() {
     const VAR: &str = "BUSBAR_CONNECTOR_SPAWN_SECRET";
@@ -541,7 +535,6 @@ fn a_members_env_refsironment_resolves_at_the_declaration_and_is_held_for_the_sp
 }
 
 /// A member whose environment reference did not resolve at its declaration is not spawned
-
 #[test]
 fn a_member_whose_env_refsironment_does_not_resolve_is_not_spawned() {
     worker().block_on(async {
@@ -562,7 +555,6 @@ fn a_member_whose_env_refsironment_does_not_resolve_is_not_spawned() {
 }
 
 /// RED: a member-program need is carried only as a program need is (operator infrastructure, no
-
 #[test]
 fn a_member_program_need_is_refused_unless_declared_as_written() {
     worker().block_on(async {
@@ -617,7 +609,6 @@ fn a_member_program_need_is_refused_unless_declared_as_written() {
 }
 
 /// RED (`BUSBAR-1.6.0.md` l.388: the supervisor of a spawned program is its carrier's): THE HOST
-
 #[test]
 fn the_host_holds_no_restart_policy_of_its_own() {
     worker().block_on(async {
@@ -702,7 +693,6 @@ fn open_bounded(c: &Connector, target: &str) -> ConnId {
 }
 
 /// A lease's bound runs past its head, which the host serves the instant the lease opens, to the
-
 #[test]
 fn a_leases_bound_runs_past_its_head_to_the_programs_answer() {
     worker().block_on(async {
@@ -739,7 +729,6 @@ fn a_leases_bound_runs_past_its_head_to_the_programs_answer() {
 }
 
 /// The RED arm of the bound above, on the same hand: a bound set below the answer's arrival is a
-
 #[test]
 fn a_leases_bound_below_the_answer_is_a_timeout_and_the_answer_spends_it() {
     worker().block_on(async {
@@ -793,7 +782,6 @@ async fn drain(c: &Connector, id: ConnId, bound: Duration) -> usize {
 }
 
 /// RED (resource bounds; THE DESIGN §5, back-pressure): every frame the program writes is kept for
-
 #[test]
 fn a_lease_that_does_not_read_holds_its_program_back() {
     worker().block_on(async {
@@ -830,7 +818,6 @@ fn a_lease_that_does_not_read_holds_its_program_back() {
 }
 
 /// RED (`DialIn::supervision_key`): a member's spawn carries its supervision key, never `0`, one per
-
 #[test]
 fn a_members_spawn_carries_its_supervision_key_and_a_changed_member_a_new_one() {
     worker().block_on(async {
@@ -881,7 +868,6 @@ fn a_members_spawn_carries_its_supervision_key_and_a_changed_member_a_new_one() 
 }
 
 /// THE RESOLVER IS THE CONNECTOR'S, NOT THE PROCESS'S (BUSBAR-1.6.0.md Part 0, no process-global
-
 #[test]
 fn a_connector_handed_no_resolver_spawns_no_member_that_states_a_reference() {
     const VAR: &str = "BUSBAR_CONNECTOR_SPAWN_OWN_RESOLVER";
@@ -919,7 +905,6 @@ fn a_connector_handed_no_resolver_spawns_no_member_that_states_a_reference() {
 }
 
 /// An instance that is gone (replaced by a reload, closed or quarantined) leaves no member program
-
 #[test]
 fn a_forgotten_instance_leaves_no_member_program_running() {
     worker().block_on(async {
@@ -961,7 +946,6 @@ fn a_forgotten_instance_leaves_no_member_program_running() {
 }
 
 /// The test carrier, with a `read` that HANGS once armed: it says it is inside the crossing, then
-
 struct HangingRead {
     inner: TestDoor,
     gate: std::sync::Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
@@ -1001,7 +985,6 @@ impl crate::framer::FramerDoor for HangingRead {
 }
 
 /// RED while a member's lock was held across its program's carrier crossings (`BUSBAR-1.6.0.md`
-
 #[test]
 fn a_hung_carrier_read_on_one_lease_never_blocks_the_members_other_callers() {
     let rt = worker();
@@ -1082,7 +1065,6 @@ fn a_hung_carrier_read_on_one_lease_never_blocks_the_members_other_callers() {
 }
 
 /// RED (T5, stdio TS1): A RETIRED MEMBER'S KEY IS SIGNALLED RETIRED. A member a re-declaration
-
 #[test]
 fn a_retired_members_supervision_key_is_signalled_retired_once() {
     worker().block_on(async {

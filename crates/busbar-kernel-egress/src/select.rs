@@ -125,7 +125,6 @@ impl WeightedFloor {
     }
 
     /// One turn of the rotation over exactly these members.
-
     pub(crate) fn take_turn(&self, offered: &[(DestinationId, u32)]) -> Option<DestinationId> {
         if offered.is_empty() {
             return None;
@@ -157,7 +156,6 @@ impl WeightedFloor {
 }
 
 /// A won recovery probe, released if the dispatch that won it never records an outcome.
-
 pub struct ProbeGuard<'a> {
     breaker: &'a dyn Breaker,
     pool: &'a str,
@@ -188,13 +186,11 @@ impl<'a> ProbeGuard<'a> {
     }
 
     /// Hand the probe to something that will record its own outcome. From here the guard releases
-
     pub fn disarm(&mut self) {
         self.armed = false;
     }
 
     /// Hand the probe on and yield the epoch it was won at, so the dispatch that takes it can arm
-
     #[must_use]
     pub fn take_epoch(&mut self) -> u64 {
         self.armed = false;
@@ -218,11 +214,9 @@ impl Drop for ProbeGuard<'_> {
 }
 
 /// A ranking hook's preference over the members, by destination, best first.
-
 pub type Preference<'a> = Option<&'a [DestinationId]>;
 
 /// What one pick found.
-
 #[must_use = "a pick holds a concurrency permit and possibly a recovery probe"]
 pub struct Picked<'a> {
     /// Which member.
@@ -235,14 +229,12 @@ pub struct Picked<'a> {
 
 impl Picked<'_> {
     /// Hand this pick's probe, where it won one, to the dispatch that is about to run and will
-
     pub fn take_probe_epoch(&mut self) -> Option<u64> {
         self.probe.as_mut().map(ProbeGuard::take_epoch)
     }
 }
 
 /// Everything a pick reads.
-
 pub struct PickInput<'a, 't> {
     /// The breaker unit.
     pub breaker: &'a dyn Breaker,
@@ -265,7 +257,6 @@ pub struct PickInput<'a, 't> {
 }
 
 /// Pick one member of the pool for this hop, or find that there is nowhere to send it.
-
 pub fn pick_among<'a>(input: &PickInput<'a, '_>, ctx: &mut RequestCtx) -> Option<Picked<'a>> {
     let mut order = Order::new(input, ctx);
     let mut passed_over: Vec<(DestinationId, Unavailable)> = Vec::new();
@@ -317,7 +308,6 @@ struct Admitted<'a> {
 }
 
 /// The single mutating admission: the breaker, then the pool's own capacity.
-
 fn try_admit<'a>(
     input: &PickInput<'a, '_>,
     destination: DestinationId,

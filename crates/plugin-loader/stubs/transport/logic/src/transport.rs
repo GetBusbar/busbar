@@ -91,7 +91,6 @@ fn carried<'a>(i: &Instance<'a, State>) -> Result<(&'a Carried, Io<'a>), Refusal
 }
 
 /// The host's answer, as this op's refusal: the host's policy is REFUSED, the system's FAILED, each
-
 fn refusal(e: &IoFailure) -> Refusal {
     match e {
         IoFailure::Refused(t) => Refusal::refused(t.clone()),
@@ -110,7 +109,6 @@ macro_rules! over {
 }
 
 /// A framer op: REFUSED. A carrier frames nothing (`abi::transport`: a transport fills the slots of
-
 pub struct NotAFramer<I, O>(PhantomData<(I, O)>);
 
 impl<I: AbiIn, O: AbiOut> SafeSlot for NotAFramer<I, O> {
@@ -190,7 +188,6 @@ impl SafeSlot for Accept {
 }
 
 /// THE ADDRESS A DIAL OPENS, byte for byte: an IP literal (`v4:port` or `[v6]:port`) or a `unix:`
-
 #[must_use]
 pub fn resolve(authority: &str) -> Option<String> {
     let literal = authority.starts_with("unix:/") || authority.parse::<SocketAddr>().is_ok();
@@ -198,7 +195,6 @@ pub fn resolve(authority: &str) -> Option<String> {
 }
 
 /// `dial`: the authority's one address, opened once; the connection's token at once, its connect
-
 pub struct Dial;
 impl SafeSlot for Dial {
     type In = DialIn;
@@ -242,7 +238,6 @@ impl SafeSlot for Dial {
 }
 
 /// `flush`: a dial settles — connected; or refused, and the dial answers the far end's refusal.
-
 pub struct Flush;
 impl SafeSlot for Flush {
     type In = ConnIn;
@@ -331,7 +326,6 @@ impl SafeSlot for Write {
 }
 
 /// `shut`: the connection is closed, whatever the reason, and forgotten. An unknown connection is
-
 pub struct Shut;
 impl SafeSlot for Shut {
     type In = ShutIn;

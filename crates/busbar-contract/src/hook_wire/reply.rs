@@ -132,7 +132,6 @@ pub const MAX_METRIC_LABEL_CHARS: usize = 64;
 pub const MAX_METRIC_UNIT_CHARS: usize = 16;
 
 /// Validate a hook-reported metric NAME or LABEL KEY: `^[a-z][a-z0-9_]{0,63}$`. Anything else is
-
 pub fn valid_metric_name(name: &str) -> bool {
     let mut bytes = name.bytes();
     matches!(bytes.next(), Some(b'a'..=b'z'))
@@ -141,7 +140,6 @@ pub fn valid_metric_name(name: &str) -> bool {
 }
 
 /// Char-boundary-safe sanitize + cap (`String::truncate` takes BYTES and panics off a
-
 pub fn sanitize_cap(raw: &str, n: usize) -> String {
     raw.chars()
         .filter(|c| {
@@ -161,7 +159,6 @@ pub fn sanitize_cap(raw: &str, n: usize) -> String {
 }
 
 /// Parse + validate the metrics ARRAY of a `status` reply FAIL-OPEN: a malformed entry (bad
-
 pub fn parse_status_metrics(raw: &[serde_json::Value]) -> Vec<HookMetric> {
     let mut out = Vec::new();
     for v in raw {
@@ -242,7 +239,6 @@ pub fn parse_status_metrics(raw: &[serde_json::Value]) -> Vec<HookMetric> {
 use crate::hooks::RewriteReply;
 
 /// Parse the untyped `rewrite` value fail-closed. A well-formed rewrite is `{"messages": [...],
-
 pub fn parse_rewrite(value: &serde_json::Value) -> Option<RewriteReply> {
     let messages: Vec<serde_json::Value> = value.get("messages")?.as_array()?.clone();
     if messages.is_empty() {
@@ -260,7 +256,6 @@ pub fn parse_rewrite(value: &serde_json::Value) -> Option<RewriteReply> {
 pub const REJECT_STATUS_DEFAULT: u16 = 403;
 
 /// Clamp a hook-supplied reject status to the client-error range: anything outside 400..=499
-
 pub fn clamp_reject_status(status: u16) -> u16 {
     if (400..=499).contains(&status) {
         status
@@ -274,7 +269,6 @@ pub const REJECT_MESSAGE_MAX_CHARS: usize = 300;
 pub const REJECT_MESSAGE_DEFAULT: &str = "Request rejected by the routing policy.";
 
 /// Sanitize a reject message for the client error body AND the operator log line: strip control
-
 pub fn sanitize_reject_message(raw: &str) -> String {
     let message = sanitize_cap(raw, REJECT_MESSAGE_MAX_CHARS);
     if message.trim().is_empty() {

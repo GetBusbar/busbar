@@ -26,11 +26,9 @@ pub const READ_CHUNK: usize = 16 * 1024;
 pub const REPLY_MAX: usize = 16 * 1024 * 1024;
 
 /// The failure text of a reply whose body passed [`REPLY_MAX`]: a driver that words that case its
-
 pub const REPLY_OVER_BOUND: &str = "the reply passed the exchange's bound";
 
 /// A sealed request field: before which of the request's fields it goes (their count: last), its
-
 pub type SealedField = (usize, Vec<u8>, crate::abi::sdk::cred::Seal);
 
 /// ONE REQUEST, as [`exchange`] sends it through a framed need.
@@ -140,7 +138,6 @@ impl Zeroize for Ack {
 }
 
 /// What is sent: a framed request's head bytes and descriptors, or raw bytes. The bytes wipe on
-
 enum Sending {
     Framed {
         /// The head's method, target and field block, one after another.
@@ -191,7 +188,6 @@ impl std::fmt::Debug for Exchange {
 }
 
 /// An [`exchange`]'s (or a [`send_and_ack`]'s) state across its op's PENDING entries: what it sends
-
 pub struct Exchange {
     sending: Sending,
     /// The read buffer: each piece's bytes are wiped once applied, the whole of it on drop.
@@ -240,7 +236,6 @@ pub struct Exchange {
 
 impl Drop for Exchange {
     /// A parked exchange dropped before it closed its stream (its op cancelled, a fresh op on its
-
     fn drop(&mut self) {
         if let (Some(closer), Some(stream)) = (self.closer, self.stream.take()) {
             closer.close(stream);
@@ -294,7 +289,6 @@ impl Exchange {
     }
 
     /// Bound this complete exchange, from before establishment through its final reply piece.
-
     #[must_use]
     pub fn with_timeout_ms(mut self, timeout_ms: u64) -> Self {
         if !self.begun {
@@ -304,7 +298,6 @@ impl Exchange {
     }
 
     /// Clamp the complete exchange to a known absolute caller deadline on the host clock.
-
     #[must_use]
     pub fn with_deadline_ns(mut self, deadline_ns: u64) -> Self {
         if !self.begun {
@@ -314,7 +307,6 @@ impl Exchange {
     }
 
     /// The original absolute expiry for a pending exchange. Propagate the earliest nonzero wake
-
     #[must_use]
     pub const fn wake_at_ns(&self) -> Option<u64> {
         self.expires_at_ns
@@ -371,7 +363,6 @@ impl Exchange {
     }
 
     /// Lower the most this exchange's reply body may reach to `bytes`. A value above [`REPLY_MAX`]
-
     #[must_use]
     pub fn reply_limit(mut self, bytes: usize) -> Self {
         self.reply_ceiling = bytes.min(REPLY_MAX);
@@ -379,14 +370,12 @@ impl Exchange {
     }
 
     /// The stream this exchange established, once it has and until the exchange closed it: a
-
     #[must_use]
     pub const fn stream(&self) -> Option<u64> {
         self.stream
     }
 
     /// Read the stream's facts ([`Connector::facts`]) once its reply has ended — or once the reply
-
     #[must_use]
     pub fn observing(mut self) -> Self {
         self.observe = true;
@@ -394,7 +383,6 @@ impl Exchange {
     }
 
     /// Judge the reply on its HEAD alone: the first head (or ack) piece ends the reads and the
-
     #[must_use]
     pub fn head_only(mut self) -> Self {
         self.head_only = true;
@@ -402,21 +390,18 @@ impl Exchange {
     }
 
     /// What the stream's facts said ([`Exchange::observing`]); `None` before they were read, for
-
     #[must_use]
     pub fn observed(&self) -> Option<&Observed> {
         self.observed.as_ref()
     }
 
     /// WHETHER THE REPLY'S HEAD WAS RECEIVED: `true` once a head (or a pure-send transport's ack)
-
     #[must_use]
     pub const fn head_seen(&self) -> bool {
         self.head_seen
     }
 
     /// The status the reply's head carried ([`ExchangeResponse::status`], read as [`exchange`]
-
     #[must_use]
     pub fn head_status(&self) -> Option<u16> {
         self.head_seen
@@ -424,14 +409,12 @@ impl Exchange {
     }
 
     /// The response fields still owned by this exchange after its reply head was read; `None`
-
     #[must_use]
     pub fn reply_fields(&self) -> Option<&[(Vec<u8>, Vec<u8>)]> {
         self.head_seen.then_some(self.reply.fields.as_slice())
     }
 
     /// Land this exchange's dial only on an address of `within`, the set the plugin's
-
     #[must_use]
     pub fn landing_within(mut self, within: String) -> Self {
         self.within = within;
@@ -439,7 +422,6 @@ impl Exchange {
     }
 
     /// This exchange reaches the REGISTRATION `name` (its name in the plugin's declaring section):
-
     #[must_use]
     pub fn as_member(mut self, name: impl Into<String>) -> Self {
         self.member = Some(name.into());
@@ -447,19 +429,16 @@ impl Exchange {
     }
 
     /// An exchange sending `request` through a framed need.
-
     pub fn request(request: Request) -> Result<Self, ConnFailure> {
         Self::request_sealed(request, Vec::new())
     }
 
     /// [`Exchange::request`] with SEALED fields (`abi::sdk::chip`: an `authorization` value, an API
-
     pub fn request_sealed(request: Request, sealed: Vec<SealedField>) -> Result<Self, ConnFailure> {
         Self::request_with(request, sealed, None)
     }
 
     /// [`Exchange::request_sealed`] whose body is `body` (a form with sealed values,
-
     pub fn request_with(
         request: Request,
         sealed: Vec<SealedField>,
@@ -560,7 +539,6 @@ impl Exchange {
     }
 
     /// THE FIELDS THIS EXCHANGE FRAMES, read back off the head it sends: `(name, value)`, in
-
     #[must_use]
     pub fn framed_fields(&self) -> Vec<(&[u8], &[u8])> {
         match &self.sending {
@@ -624,7 +602,6 @@ fn write_all(mut write: impl FnMut(&[u8]) -> Answer<usize>, bytes: &[u8]) -> Ans
 }
 
 /// Append `bytes` to `body`, growing it as `Vec` grows it (to twice its capacity, at least what
-
 fn extend_wiping(body: &mut Vec<u8>, bytes: &[u8]) {
     let need = body.len().saturating_add(bytes.len());
     if need > body.capacity() {
@@ -637,7 +614,6 @@ fn extend_wiping(body: &mut Vec<u8>, bytes: &[u8]) {
 }
 
 /// Check an already anchored absolute bound around one service step. Clock reads never draw a
-
 fn bounded_step<T>(
     c: &mut Connector<'_>,
     expires_at_ns: Option<u64>,
@@ -713,7 +689,6 @@ fn send(c: &mut Connector<'_>, state: &mut Exchange, stream: u64) -> Answer<()> 
 }
 
 /// Send, then read the reply to its terminal piece into `state`, then close the stream: on a
-
 fn send_and_read(
     c: &mut Connector<'_>,
     state: &mut Exchange,
@@ -792,7 +767,6 @@ fn exchange_once(
 }
 
 /// Send on `stream`, then read the reply to its terminal piece (for a head-only exchange, its head
-
 fn read_to_end(c: &mut Connector<'_>, state: &mut Exchange, stream: u64) -> Answer<()> {
     ready!(send(c, state, stream));
     loop {
@@ -860,7 +834,6 @@ fn read_to_end(c: &mut Connector<'_>, state: &mut Exchange, stream: u64) -> Answ
 }
 
 /// Apply one reply piece, `p` and its first `len` bytes of the read buffer, to the reply `state`
-
 fn apply(state: &mut Exchange, p: ReplyPiece, len: usize, fresh: bool) -> Result<(), &'static str> {
     match p.kind {
         REPLY_HEAD | REPLY_ACK if fresh => {
@@ -894,7 +867,6 @@ fn apply(state: &mut Exchange, p: ReplyPiece, len: usize, fresh: bool) -> Result
 }
 
 /// Read `stream`'s facts into `state` where it asks ([`Exchange::observing`]): a facts answer the
-
 fn observe(c: &mut Connector<'_>, state: &mut Exchange, stream: u64) -> Poll<()> {
     if !state.observe {
         return Poll::Ready(());
@@ -910,7 +882,6 @@ fn observe(c: &mut Connector<'_>, state: &mut Exchange, stream: u64) -> Poll<()>
 }
 
 /// ONE REQUEST, ONE REPLY over the declared framed need `need` to `target` (`None` = the need's
-
 pub fn exchange(
     c: &mut Connector<'_>,
     state: &mut Exchange,
@@ -927,7 +898,6 @@ pub fn exchange(
 }
 
 /// SEND and learn what became of it, over any transport (a pure-send one answers a single ack):
-
 pub fn send_and_ack(
     c: &mut Connector<'_>,
     state: &mut Exchange,
@@ -1009,7 +979,6 @@ pub struct Inspection {
 }
 
 /// An operation failure with the reply head received before the failure, when one arrived.
-
 pub struct ExchangeFailure {
     cause: OpFailure,
     head: Option<Zeroizing<ExchangeResponse>>,
@@ -1027,7 +996,6 @@ impl ExchangeFailure {
     }
 
     /// The earlier status, reason and fields. The body is always empty. A caller can judge this
-
     #[must_use]
     pub fn head(&self) -> Option<&ExchangeResponse> {
         self.head.as_deref()
@@ -1062,7 +1030,6 @@ impl std::error::Error for ExchangeFailure {
 }
 
 /// ONE OP'S EXCHANGE ON ITS TICKET (THE DESIGN, the plugin ABI: every call is Ready or
-
 pub struct Op<'a> {
     on: &'a dyn Parks,
     host: Option<&'a Host>,
@@ -1082,7 +1049,6 @@ impl std::fmt::Debug for Op<'_> {
 
 impl<'a> Op<'a> {
     /// The op `instance` runs, over the host tables `open` handed it (`None`: every exchange
-
     #[must_use]
     pub fn new<'b: 'a, T: Send + Sync + 'static>(
         instance: &'a Instance<'b, T>,
@@ -1103,7 +1069,6 @@ impl<'a> Op<'a> {
     }
 
     /// Opt newly built exchanges into a complete wall-clock bound. A resumed exchange keeps its
-
     #[must_use]
     pub fn with_timeout_ms(self, timeout_ms: u64) -> Self {
         self.set_timeout_ms(timeout_ms);
@@ -1116,7 +1081,6 @@ impl<'a> Op<'a> {
     }
 
     /// Clamp new explicitly timed exchanges to the operation's known absolute deadline on the
-
     #[must_use]
     pub fn with_deadline_ns(self, deadline_ns: u64) -> Self {
         self.set_deadline_ns(deadline_ns);
@@ -1130,14 +1094,12 @@ impl<'a> Op<'a> {
     }
 
     /// The earliest absolute timer requested by this entry's pending exchange. A kind's caller
-
     #[must_use]
     pub fn wake_at_ns(&self) -> Option<u64> {
         self.wake_at_ns.get()
     }
 
     /// The host tables the op runs over (`None`: the instance was handed none): what an op that
-
     #[must_use]
     pub fn host(&self) -> Option<&'a Host> {
         self.host
@@ -1150,14 +1112,12 @@ impl<'a> Op<'a> {
     }
 
     /// Whether the kind SDK restored its parked continuation for this entry. This reports actual
-
     #[must_use]
     pub fn resuming(&self) -> bool {
         self.on.resuming()
     }
 
     /// Retain this operation's typed state with its continuation. Hook operations support this;
-
     pub fn context<T: Send + Sync + 'static>(
         &self,
         initialize: impl FnOnce() -> Arc<T>,
@@ -1184,7 +1144,6 @@ impl<'a> Op<'a> {
     }
 
     /// Read one negotiated generic host observation. The first supported entry appends a leased
-
     pub fn inspect<I: super::door::AbiIn, O: super::door::AbiOut>(
         &self,
         input: super::Lent<'_, I>,
@@ -1284,7 +1243,6 @@ impl<'a> Op<'a> {
     }
 
     /// [`exchange`] over the declared framed need `need` to `target`: `request` is built only on
-
     pub fn exchange(
         &self,
         need: u32,
@@ -1305,7 +1263,6 @@ impl<'a> Op<'a> {
     }
 
     /// [`Op::exchange`] whose reply body may reach at most `reply_limit` bytes
-
     pub fn exchange_bounded(
         &self,
         need: u32,
@@ -1331,7 +1288,6 @@ impl<'a> Op<'a> {
     }
 
     /// A bounded exchange that retains an earlier reply head when the exchange later fails.
-
     pub fn exchange_sealed_bounded_with_head(
         &self,
         need: u32,

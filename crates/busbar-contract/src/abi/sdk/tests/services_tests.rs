@@ -366,7 +366,6 @@ fn answer(out: *mut ServiceOut, outcome: Outcome, value: u64, len: u64, items: u
 }
 
 /// A judge that pends a resolving call on a ticket, refuses the metadata address by name, answers
-
 extern "C" fn judges(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
     // SAFETY: the wrapper hands a `DestJudgeIn` naming its live text, and a live `out`.
     unsafe {
@@ -428,7 +427,6 @@ fn write_due(
 }
 
 /// Write `names` into the caller's buffers `into`, READY with value `0`, or answer FAILED with what
-
 fn write_names(
     into: ServiceBufs,
     names: &[&str],
@@ -726,7 +724,6 @@ fn clock_now_answers_the_hosts_reading_and_every_failure_is_an_error() {
 }
 
 /// A host that verifies payload `ok`, refuses any other algorithm by name (`long`: a name longer
-
 extern "C" fn verifies(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
     use crate::abi::host::service::{SIGNED_ALGORITHM, SIGNED_VERIFIED};
     // SAFETY: the wrapper hands a `TrustVerifyIn` naming live blobs and buffer, and a live `out`.
@@ -851,7 +848,6 @@ const KEPT: &[u8] = b"approved";
 const LISTED: [(&[u8], &[u8]); 3] = [(b"t/1", b"one"), (b"t/2", b""), (b"t/3", b"three")];
 
 /// Write `rows` (key then value per record, one span each, `key` absent when `keyless`) into the
-
 fn write_rows(
     into: ServiceBufs,
     rows: &[(&[u8], &[u8])],
@@ -923,7 +919,6 @@ extern "C" fn finds_nothing(
 }
 
 /// A store listing [`LISTED`] (tombstones dropped) after the `in`'s `after`, at most its `limit`;
-
 extern "C" fn lists(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
     // SAFETY: the wrapper hands a `RecordsListIn` naming its live texts.
     let i = unsafe { input.cast::<RecordsListIn>().read_unaligned() };
@@ -975,7 +970,6 @@ extern "C" fn claims(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) 
 }
 
 /// THE RECORDS WRAPPERS (K-RECORDS): `records.get` answers the record as
-
 #[test]
 fn records_get_views_the_record_and_answers_absent_as_none() {
     let t = HostSlots {
@@ -1032,7 +1026,6 @@ fn records_get_views_the_record_and_answers_absent_as_none() {
 }
 
 /// `records.list` answers the records as `(key, value)` views in key order; `after` absent lists
-
 #[test]
 fn records_list_pages_by_the_last_key_and_reports_a_short_one() {
     let t = HostSlots {
@@ -1139,7 +1132,6 @@ fn records_list_pages_by_the_last_key_and_reports_a_short_one() {
 }
 
 /// `records.claim` is won once and taken after; a claim with no time to live is REFUSED before the
-
 #[test]
 fn records_claim_is_won_once_and_a_claim_without_a_ttl_never_reaches_the_host() {
     let t = HostSlots {
@@ -1189,7 +1181,6 @@ fn records_claim_is_won_once_and_a_claim_without_a_ttl_never_reaches_the_host() 
 }
 
 /// A host whose work handle 9 has reference `ab` and record `rec`, live: `work.open` answers it;
-
 extern "C" fn works(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
     // SAFETY: the wrapper hands a service `in` naming its live buffers, and a live `out`.
     unsafe {
@@ -1461,7 +1452,6 @@ fn content_scan_answers_pass_or_block_and_pends_on_a_ticket() {
 }
 
 /// A hook stage: a gate stops `stop` with 451 `no`; a rewrite from `0` rewrites to `rw` (resume 1),
-
 extern "C" fn hooks(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
     // SAFETY: the wrapper hands a `HookCallIn` naming its live prompt and buffer, and a live `out`.
     unsafe {
@@ -1542,7 +1532,6 @@ const KID: &str = "door-1";
 const SIG: &[u8] = b"\x01\x02\x03";
 
 /// A signer in the kernel's layout: span `0`, key = the key id, value = the signature (here the
-
 extern "C" fn signs(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
     // SAFETY: the wrapper hands a `SignIn` naming its live data and buffers, and a live `out`.
     unsafe {
@@ -1786,7 +1775,6 @@ extern "C" fn sees_scheme(_ctx: HostCtx, input: *const c_void, out: *mut Service
 }
 
 /// RED (the upstream's scheme): the code the host declared for the stream reaches the auth in the
-
 #[test]
 fn auth_call_hands_the_auth_the_scheme_the_request_carries() {
     let t = auth_table(Some(sees_scheme));
@@ -2059,14 +2047,12 @@ const DUMMY_SECRET: &[u8] = b"dummy-secret-0000";
 const LONG_SECRET: [u8; 300] = [0x5a; 300];
 
 /// How many crossings [`holds_secrets`] answered for the id `long` (each test reads its own id's
-
 static LONG_CROSSINGS: AtomicU8 = AtomicU8::new(0);
 
 /// How many crossings [`holds_secrets`] answered for the id `probe`.
 static PROBE_CROSSINGS: AtomicU8 = AtomicU8::new(0);
 
 /// A credential source for the kind `signing-key`: `AKID` live with [`LIVE_SECRET`]; `long` live
-
 extern "C" fn holds_secrets(
     _ctx: HostCtx,
     input: *const c_void,
@@ -2187,7 +2173,6 @@ fn records_secret_failures_are_errors() {
 }
 
 /// THE HOLDER ZEROIZES: wiping a [`CredentialSecret`] zeroes every byte its buffer held, and the
-
 #[test]
 fn the_secret_holder_zeroizes() {
     fn wipes_on_drop<T: ZeroizeOnDrop>() {}
@@ -2210,7 +2195,6 @@ fn the_secret_holder_zeroizes() {
 }
 
 /// ONE VERIFY'S HANDLES: [`VerifyOp`] issues the call's handles in order from `0`, so a body that
-
 #[test]
 fn a_verify_op_issues_its_handles_in_order_and_never_crosses_ticketless() {
     use crate::abi::sdk::auth_door::VerifyOp;
@@ -2239,7 +2223,6 @@ fn a_verify_op_issues_its_handles_in_order_and_never_crosses_ticketless() {
 }
 
 /// The ticket the minting host writes: longer than the SDK's first buffer, so the first crossing is
-
 fn minted_ticket() -> Vec<u8> {
     let mut t = b"bt_".to_vec();
     t.resize(600, b'k');
@@ -2253,7 +2236,6 @@ const MINTED_EXPIRES: u64 = 1_767_225_600;
 static MINTS: AtomicU8 = AtomicU8::new(0);
 
 /// A host that mints [`minted_ticket`]: into the caller's buffer READY with its expiry, or FAILED
-
 extern "C" fn mints(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
     MINTS.fetch_add(1, Ordering::SeqCst);
     // SAFETY: the wrapper hands a `TicketMintIn` naming its live buffer.
@@ -2281,7 +2263,6 @@ fn sealed_wire(w: &mut crate::abi::sdk::cred::SealedWrite) -> Vec<u8> {
 }
 
 /// RED-BEFORE-GREEN (R7: a plane never holds credential bytes; the chip precedent of the `ek_`
-
 #[test]
 fn a_minted_ticket_reaches_the_plane_sealed() {
     let t = HostSlots {

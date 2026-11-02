@@ -52,18 +52,14 @@ pub struct Ends {
 }
 
 /// THE HOST'S I/O over the OS handles it owns (module docs). Every method answers at once; one that
-
 pub trait IoHost: Send + Sync {
     /// Begin reaching `addr` for the dial `ticket` runs; the handle, the connect in flight.
-
     fn open(&self, owner: u64, ticket: Ticket, addr: &str) -> IoResult<u64>;
 
     /// Bind `bind` for the listen `ticket` runs; the handle and the address bound.
-
     fn listen(&self, owner: u64, ticket: Ticket, bind: &str) -> IoResult<(u64, String)>;
 
     /// The next connection off `listener`, for the accept `ticket` runs: its handle and its far
-
     fn accept(
         &self,
         owner: u64,
@@ -80,27 +76,21 @@ pub trait IoHost: Send + Sync {
     fn write(&self, owner: u64, handle: u64, bytes: &[u8], waker: &Waker) -> Poll<IoResult<usize>>;
 
     /// `Ready` once `handle` may make progress in `dir` (`abi::host::io::DIR_*`); for a stream
-
     fn ready(&self, owner: u64, handle: u64, dir: u32, waker: &Waker) -> Poll<IoResult<()>>;
 
     /// Shut `how` (`DIR_*`) of `handle` down.
-
     fn shut(&self, owner: u64, handle: u64, how: u32) -> IoResult<()>;
 
     /// Release `handle`; a spawned program is killed with it.
-
     fn close(&self, owner: u64, handle: u64) -> IoResult<()>;
 
     /// Start `spawn` for the dial `ticket` runs; the duplex handle over its input and output.
-
     fn spawn(&self, owner: u64, ticket: Ticket, spawn: &Spawn<'_>) -> IoResult<u64>;
 
     /// `handle`'s ends: its local port and its far end's address (empty = none), and for a
-
     fn ends(&self, owner: u64, handle: u64) -> IoResult<Ends>;
 
     /// Release every handle `owner` still holds, each as [`IoHost::close`] releases it: the
-
     fn reap(&self, owner: u64) {
         let _ = owner;
     }

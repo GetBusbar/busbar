@@ -10,7 +10,6 @@ pub fn cred(text: &str) -> crate::abi::sdk::cred::Cred {
 }
 
 /// Drive `w` over a test's own stand-in for the host's wire: `write` takes bytes and says how many
-
 pub fn drive_sealed<E>(
     w: &mut crate::abi::sdk::cred::SealedWrite,
     mut write: impl FnMut(&[u8]) -> std::task::Poll<Result<usize, E>>,
@@ -28,7 +27,6 @@ pub fn drive_sealed<E>(
 }
 
 /// The whole head an [`Exchange`](crate::abi::sdk::exchange::Exchange) frames (its method, target
-
 #[must_use]
 pub fn framed_head(exchange: &crate::abi::sdk::exchange::Exchange) -> Vec<u8> {
     exchange.head_bytes()

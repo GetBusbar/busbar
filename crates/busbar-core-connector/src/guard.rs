@@ -18,7 +18,6 @@ use busbar_contract::net::{
 use busbar_kernel::config::Destinations;
 
 /// THE DEFAULT POLICY, ONE TABLE: the egress classes whose dials the private address refusal holds
-
 pub const PRIVATE_REFUSED_IN: &[u32] = &[
     connector::EGRESS_DEFAULT,
     CARVE_OUT_CLASS,
@@ -26,15 +25,12 @@ pub const PRIVATE_REFUSED_IN: &[u32] = &[
 ];
 
 /// The one class the 1.5.5 metadata carve-outs are read in ([`Metadata::lifts`]): the provider
-
 const CARVE_OUT_CLASS: u32 = connector::EGRESS_PROVIDER;
 
 /// The loopback-allowed class: private addresses refused but loopback, and an alternate IPv4
-
 const LOOPBACK_CLASS: u32 = connector::EGRESS_LOOPBACK_ALLOWED;
 
 /// LOOPBACK AS 1.5.5'S COLLECTOR GUARD READ IT (v1.5.5 `crates/busbar/src/observability.rs:620-633`
-
 #[must_use]
 pub fn is_loopback(addr: IpAddr) -> bool {
     match addr {
@@ -44,7 +40,6 @@ pub fn is_loopback(addr: IpAddr) -> bool {
 }
 
 /// A HOST WRITTEN AS LOOPBACK, as 1.5.5's collector and webrequest guards read the URL's host for
-
 #[must_use]
 pub fn names_loopback(host: &str) -> bool {
     let Some(name) = norm(host) else {
@@ -57,11 +52,9 @@ pub fn names_loopback(host: &str) -> bool {
 }
 
 /// The classes a need whose config names its target is lifted out of, to operator infrastructure:
-
 const LIFTED_WHEN_CONFIGURED: &[u32] = &[connector::EGRESS_DEFAULT];
 
 /// The class a dial's address is judged under: a need's own, or (its target named by its config,
-
 #[must_use]
 pub fn judged_class(class: u32, configured: bool) -> u32 {
     let trusted = connector::EGRESS_OPERATOR_INFRASTRUCTURE;
@@ -165,7 +158,6 @@ impl Entry {
     }
 
     /// Whether this entry NAMES `addr` itself: a bare IP, or a /32 or /128, equal to it (in any
-
     fn pins(&self, addr: IpAddr) -> bool {
         matches!(self, Entry::Net(net, len) if *len == full(*net)) && self.covers(addr)
     }
@@ -186,13 +178,11 @@ fn prefix_eq(net: &[u8], addr: &[u8], len: u8) -> bool {
 }
 
 /// THE ONE MAPPING every name the guard compares goes through, a target's and a configured
-
 fn norm(host: &str) -> Option<String> {
     judged_host(host).ok()
 }
 
 /// An `advanced.allow_destinations` entry as [`strict`] reads it: unbracketed, lowercased, one
-
 fn fold(entry: &str) -> String {
     let h = entry.trim_start_matches('[').trim_end_matches(']');
     h.strip_suffix('.').unwrap_or(h).to_ascii_lowercase()
@@ -208,7 +198,6 @@ fn full(ip: IpAddr) -> u8 {
 }
 
 /// A 1.5.5 list entry (`allow_metadata_hosts`, `blocked_metadata_hosts`), read as 1.5.5 read it:
-
 fn legacy(entry: &str) -> Option<Entry> {
     let e = norm(entry.trim())?;
     if e.is_empty() {
@@ -321,7 +310,6 @@ impl Metadata {
     }
 
     /// Whether a carve-out lifts the refusal of `name` (normalized) answering `addr` (`None`: the
-
     fn lifts(&self, name: &str, addr: Option<IpAddr>, class: u32) -> bool {
         if class != CARVE_OUT_CLASS {
             return false;
@@ -336,7 +324,6 @@ impl Metadata {
     }
 
     /// Whether a carve-out ENTRY names `addr` itself for a dial of `name` under `class`: the
-
     fn carves_address(&self, name: &str, addr: IpAddr, class: u32) -> bool {
         let own = self.by_host.get(name).map_or(&[][..], Vec::as_slice);
         class == CARVE_OUT_CLASS && self.everywhere.iter().chain(own).any(|e| e.covers(addr))
@@ -368,7 +355,6 @@ impl Default for Guard {
 
 impl Guard {
     /// The guard a deployment states.
-
     pub fn from_config(d: &Destinations) -> Result<Guard, String> {
         Ok(Guard {
             block_private: d.block_private_addresses,
@@ -383,7 +369,6 @@ impl Guard {
     }
 
     /// A config commit: the metadata lists `d` states (the carve-outs and the extra refusals)
-
     pub fn publish(&self, d: &Destinations) {
         let lists = Arc::new(Metadata::from_config(d));
         *self
@@ -398,25 +383,21 @@ impl Guard {
     }
 
     /// Whether a private address is refused: where `block_private_addresses` holds and the class
-
     fn refuses_private(&self, class: u32, strict: bool) -> bool {
         strict || (self.block_private && PRIVATE_REFUSED_IN.contains(&class))
     }
 
     /// Whether private address `addr` is refused in the loopback-allowed class: where
-
     fn refuses_off_loopback(&self, class: u32, addr: IpAddr) -> bool {
         self.block_private && class == LOOPBACK_CLASS && !is_loopback(addr)
     }
 
     /// The name arm, before any resolution, under egress class `class`. `Ok(Some(ip))`: the host
-
     pub fn judge_name(&self, host: &str, class: u32) -> Result<Option<IpAddr>, Refusal> {
         self.judge_name_as(host, class, false)
     }
 
     /// [`Guard::judge_name`], private reach refused whatever the deployment says when `strict`.
-
     pub fn judge_name_as(
         &self,
         host: &str,
@@ -427,7 +408,6 @@ impl Guard {
     }
 
     /// [`Guard::judge_name_as`] for a destination its need holds a PRIVATE REACH to (`reach`, the
-
     pub fn judge_name_with(
         &self,
         host: &str,
@@ -474,13 +454,11 @@ impl Guard {
     }
 
     /// The answer arm, after resolution: EVERY address `host` answered with is judged, and one
-
     pub fn judge_answer(&self, host: &str, addrs: &[IpAddr], class: u32) -> Result<(), Refusal> {
         self.judge_answer_with(host, addrs, class, false, false)
     }
 
     /// [`Guard::judge_answer`] for a destination its need holds a private reach to
-
     pub fn judge_answer_with(
         &self,
         host: &str,
@@ -560,7 +538,6 @@ impl Guard {
 }
 
 /// Where one resolution's answer goes: called once, from any thread. `Err` is a resolution
-
 pub type Resolved = Box<dyn FnOnce(Result<Vec<IpAddr>, String>) + Send>;
 
 /// A resolver that answers off the caller's thread: the guard's one resolution of a name.
@@ -597,7 +574,6 @@ impl Resolve for SystemResolver {
 static RESOLVING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Resolve `host` by `lookup` on a thread of its own, answering through `done`, with at most `cap`
-
 pub(crate) fn resolve_capped<F>(
     host: &str,
     done: Resolved,

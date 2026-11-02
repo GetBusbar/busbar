@@ -314,7 +314,6 @@ mod rsa_tests {
     use crate::abi::sdk::chip::digests::sha1;
 
     /// A throwaway 1024-bit test key (generated for this test only): its public half as MySQL sends
-
     const PEM: &[u8] = b"-----BEGIN PUBLIC KEY-----
 MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDAeGNPEkihhFwx9XuiW0X6VMAp
 LuC5WLdzvwnpZSXfmzok6brqc60v9bnBiCl/T9O5m7/eLcck0usOyQ9eV5p9T4Y4
@@ -441,7 +440,6 @@ ijJ7b5W7pYuuReJdv9h481JKwwV75KY1M6dRf7kpYFOCA4Zo8xgdso69qxPTVUXL
     const PIN: &str = "6ddde6e6398722551e6dd73f2c62f247560990a999022d11fc55198facec8e98";
 
     /// RULING S5: RSA full authentication goes to a server key the operator pinned, or over a unix
-
     #[test]
     fn rsa_full_auth_needs_a_pin_tls_or_a_unix_socket() {
         let nonce: Vec<u8> = (1..=20).collect();
@@ -481,7 +479,6 @@ ijJ7b5W7pYuuReJdv9h481JKwwV75KY1M6dRf7kpYFOCA4Zo8xgdso69qxPTVUXL
 }
 
 /// Byte for byte what `mysql_common` 0.37.3 (the 1.5.5 driver's codec) serializes for the same
-
 #[test]
 fn mysql_messages_match_the_driver_byte_for_byte() {
     let c = allowing("s3cr3t-pw");
@@ -517,7 +514,6 @@ fn mysql_messages_match_the_driver_byte_for_byte() {
 }
 
 /// The floor reads the operator's text: libpq 16's `require_auth` (lists, `!` negation, the
-
 #[test]
 fn the_floor_reads_the_operators_connection_string() {
     let pg = |t: &str| AuthFloor::of(t).pg();
@@ -566,7 +562,6 @@ fn the_floor_reads_the_operators_connection_string() {
 }
 
 /// RULING S4: a Postgres server that asks for the password in clear or for MD5 gets nothing unless
-
 #[test]
 fn pg_cleartext_and_md5_are_refused_unless_require_auth_allows_them() {
     let first = "n=,r=abc";
@@ -607,7 +602,6 @@ fn pg_cleartext_and_md5_are_refused_unless_require_auth_allows_them() {
 }
 
 /// RULING S4, MySQL: `mysql_clear_password` and `mysql_old_password` are refused unless the
-
 #[test]
 fn mysql_clear_and_old_are_refused_unless_the_operator_allows_them() {
     let nonce: Vec<u8> = (1..=20).collect();
@@ -657,7 +651,6 @@ fn mysql_clear_and_old_are_refused_unless_the_operator_allows_them() {
 }
 
 /// RULING S5: the password in clear for `caching_sha2_password` full authentication goes out in the
-
 #[test]
 fn the_mysql_clear_packet_goes_out_in_the_open_only_on_a_socket() {
     assert!(from_url("mysql://u:pw@db/app")
@@ -677,7 +670,6 @@ fn the_mysql_clear_packet_goes_out_in_the_open_only_on_a_socket() {
 }
 
 /// A connection string with no password still carries its floor to the empty credential a store
-
 #[test]
 fn an_empty_password_keeps_the_operators_floor() {
     let url = CredUrl::parse("mysql://u@db/app?enable_cleartext_plugin=true").expect("parses");

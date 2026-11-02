@@ -252,7 +252,6 @@ fn a_final_status_past_the_claims_numbering_never_crosses() {
 }
 
 /// A refusal after the stream's response head went out is told so, and its block is closing lines
-
 #[test]
 fn a_refusal_after_the_head_is_told_the_head_went_out() {
     for head_sent in [false, true] {
@@ -319,7 +318,6 @@ fn field_lines_read_a_closing_block_in_order() {
 }
 
 /// A stream begins with its listener's scheme: SECURE where the connector terminated connection
-
 #[test]
 fn a_stream_begins_with_its_listeners_scheme() {
     for scheme in [SCHEME_SECURE, SCHEME_PLAIN] {

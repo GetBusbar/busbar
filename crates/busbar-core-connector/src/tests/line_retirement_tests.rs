@@ -31,7 +31,6 @@ fn lock_held(line: &Line) -> bool {
 type Gate = (mpsc::Sender<()>, mpsc::Receiver<()>);
 
 /// THE TEST CARRIER, with a read and a write that each park once when armed: the crossing says it
-
 struct Gated {
     inner: Arc<dyn FramerDoor>,
     line: OnceLock<Weak<Line>>,
@@ -183,7 +182,6 @@ impl Drop for Owned {
 }
 
 /// RED before the unwind path retired what the closing path does: `Taken::drop` closed the line
-
 #[test]
 fn an_unwound_driver_wakes_the_second_holder_and_abandons_the_queued_opening_outside_the_lock() {
     let rt = worker();
@@ -281,7 +279,6 @@ fn an_unwound_driver_wakes_the_second_holder_and_abandons_the_queued_opening_out
 }
 
 /// RED before a handed-over open's failure was filed only for a holder still on the line:
-
 #[test]
 fn a_handed_over_open_that_fails_after_its_holder_left_files_no_refusal_and_the_sibling_is_told() {
     let rt = worker();

@@ -10,7 +10,6 @@ pub const POINT_HEAD: u32 = 2;
 /// [`AuthPoints`] bit of [`AuthPoint::HeadBody`].
 pub const POINT_HEAD_BODY: u32 = 4;
 /// [`AuthPoints`] bit of [`AuthPoint::Frame`]: RESERVED. No set may hold it yet
-
 pub const POINT_FRAME: u32 = 8;
 
 /// One auth point. Its value is its [`AuthPoints`] bit, so the order is the design's:
@@ -32,7 +31,6 @@ pub enum AuthPoint {
 
 impl AuthPoint {
     /// The point a single bit names; `None` for any other value (no bit, several bits, an unknown
-
     #[must_use]
     pub const fn from_bit(bit: u32) -> Option<Self> {
         match bit {

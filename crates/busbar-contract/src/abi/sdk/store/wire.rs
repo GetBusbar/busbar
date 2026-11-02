@@ -19,12 +19,10 @@ use crate::abi::sdk::conn::{ConnFailure, Host, ProcessId};
 pub const READ_CHUNK: usize = 16 * 1024;
 
 /// THE REFUSAL OF AN UPGRADE OVER UNREAD INPUT: the far end sent bytes in the clear that the body
-
 pub const UPGRADE_OVER_UNREAD_INPUT: &str =
     "bytes the far end sent in the clear are still unread; the upgrade is refused";
 
 /// How long an op waiting for a kept connection, or re-offering a write the connector had no
-
 const RETRY_NS: u64 = 5_000_000;
 
 /// A store op's body, as [`drive`] runs it.
@@ -150,13 +148,11 @@ impl Wire {
     }
 
     /// The op's connection: declared need `need` to `target` (`None` = the need's own target), a
-
     pub async fn connect(&self, need: u32, target: Option<&str>) -> Result<(), ConnFailure> {
         self.connect_timed(need, target, 0).await
     }
 
     /// [`Wire::connect`], a new connection's dial bounded by `timeout_ms` (`0` = the need's own
-
     pub async fn connect_timed(
         &self,
         need: u32,
@@ -173,19 +169,16 @@ impl Wire {
     }
 
     /// Close the connection (it is not fit for reuse) and establish a FRESH one for the same need
-
     pub async fn reconnect(&self) -> Result<(), ConnFailure> {
         self.ask(Ask::Reconnect).await.map(|_| ())
     }
 
     /// CLOSE the op's connection now: it is never kept, and its unread input and unsent output go.
-
     pub async fn close(&self) {
         let _ = self.ask(Ask::Close).await;
     }
 
     /// THE OS USER the process runs as, off the host's IDENTITY service: what a store presents
-
     pub async fn os_user(&self) -> Result<String, ConnFailure> {
         self.ask(Ask::Identity).await?;
         Ok(self
@@ -197,7 +190,6 @@ impl Wire {
     }
 
     /// BOUND every wire call from the next one on by `ms` milliseconds in all (`0` = unbound): once
-
     pub fn bound(&self, ms: u32) {
         let mut st = self.state();
         st.bound_ms = ms;
@@ -216,7 +208,6 @@ impl Wire {
     }
 
     /// Never keep this connection: it is closed when the op answers (a protocol state the body
-
     pub fn discard(&self) {
         self.state().unfit = true;
     }
@@ -236,7 +227,6 @@ impl Wire {
     }
 
     /// Write all of `bytes`.
-
     pub async fn write_all(&self, bytes: &[u8]) -> Result<(), ConnFailure> {
         if bytes.is_empty() {
             return Ok(());
@@ -246,7 +236,6 @@ impl Wire {
     }
 
     /// Write a whole credential message without exposing its bytes to the plugin. The host's
-
     pub async fn write_sealed(&self, seal: crate::abi::sdk::cred::Seal) -> Result<(), ConnFailure> {
         {
             let mut st = self.state();
@@ -258,25 +247,21 @@ impl Wire {
     }
 
     /// Read more bytes onto the input ([`Wire::input`]): how many arrived; `0` = the far end
-
     pub async fn fill(&self) -> Result<usize, ConnFailure> {
         self.ask(Ask::Read).await
     }
 
     /// Secure the connection from its next byte on (TLS from the first byte, or after the
-
     pub async fn upgrade_secure(&self, name: Option<&str>) -> Result<(), ConnFailure> {
         self.upgrade(name, false).await
     }
 
     /// [`Wire::upgrade_secure`] WITHOUT verifying the far end's certificate: the operator's
-
     pub async fn upgrade_secure_unverified(&self, name: Option<&str>) -> Result<(), ConnFailure> {
         self.upgrade(name, true).await
     }
 
     /// The upgrade, asked of the connector only over an input the body consumed whole: bytes the
-
     async fn upgrade(&self, name: Option<&str>, verify_off: bool) -> Result<(), ConnFailure> {
         {
             let mut st = self.state();
@@ -294,7 +279,6 @@ impl Wire {
     }
 
     /// The bytes read and not yet consumed, to parse from and drain (a codec consumes a whole
-
     pub fn input<R>(&self, f: impl FnOnce(&mut Vec<u8>) -> R) -> R {
         f(&mut self.state().input)
     }
@@ -391,7 +375,6 @@ impl PoolState {
 }
 
 /// A STORE INSTANCE'S KEPT CONNECTIONS: at most `max` established at once (the store's 1.5.5
-
 pub struct Pool {
     max: usize,
     st: Mutex<PoolState>,
@@ -574,13 +557,11 @@ impl<T> Drop for Running<T> {
 }
 
 /// RUN `start`'s body over the op's own connection, across the op's entries: a fresh entry starts
-
 pub fn drive<T: 'static>(cx: &mut Op<'_>, start: impl FnOnce(Wire) -> Body<T>) -> Step<T> {
     run(cx, None, start)
 }
 
 /// [`drive`] on the store's kept set `pool`: the op's connection is drawn from it and goes back to
-
 pub fn drive_kept<T: 'static>(
     cx: &mut Op<'_>,
     pool: &Arc<Pool>,
@@ -590,7 +571,6 @@ pub fn drive_kept<T: 'static>(
 }
 
 /// ONE STORE OP'S SESSION on a kept connection: what a wire store opens over the op's [`Wire`]
-
 pub trait Kept: Sized + Send + 'static {
     /// What a session opens from: the instance's shared state, moved into the op.
     type Shared: Send + 'static;
@@ -611,7 +591,6 @@ pub trait Kept: Sized + Send + 'static {
 pub type OnKept<'s, T> = Pin<Box<dyn Future<Output = T> + Send + 's>>;
 
 /// RUN ONE OP on a session of the store's kept set `pool` ([`drive_kept`]): open a [`Kept`]
-
 pub fn on_kept<K: Kept, T: Send + 'static>(
     cx: &mut Op<'_>,
     pool: &Arc<Pool>,
@@ -912,7 +891,6 @@ fn connect<T>(
 }
 
 /// Make the connector service `ask` names: its answer, or PENDING (the ask stays posted and is
-
 fn serve<T>(cx: &mut Op<'_>, running: &Running<T>, ask: &Ask, buf: &mut [u8]) -> Served {
     let wire = &running.wire;
     match ask {

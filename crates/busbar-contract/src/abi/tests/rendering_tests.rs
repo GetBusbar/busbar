@@ -813,7 +813,6 @@ fn every_kind_renders_its_tail_facts_not_only_its_size() {
 }
 
 /// These are identity checks on the public rendering, not a second encoder: changing a declared
-
 fn distinct_tail_renderings<T>(kind: KindCode, cases: &[(&str, T)]) {
     let mut seen = Vec::new();
     for (name, tail) in cases {
@@ -1486,7 +1485,6 @@ fn transport_status_fault_and_setting_rows_keep_every_declared_fact() {
 }
 
 /// A PLANE'S COMMAND-LINE HELP READS BACK FROM ITS RENDERING, with no library (audit busbar-src r4
-
 #[test]
 fn a_plane_tails_cli_help_reads_back_with_no_library() {
     use crate::abi::plane::PlaneTail;

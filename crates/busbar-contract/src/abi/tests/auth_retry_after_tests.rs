@@ -15,7 +15,6 @@ fn the_key_is_retry_after() {
 }
 
 /// delta-seconds read as written, around optional whitespace; a value past `u64` is a very long
-
 #[test]
 fn delta_seconds_read_as_written() {
     for (v, n) in [
@@ -36,7 +35,6 @@ fn delta_seconds_read_as_written() {
 }
 
 /// An HTTP-date, in each of the three forms RFC 9110 §5.6.7 has a recipient accept, is the seconds
-
 #[test]
 fn an_http_date_is_seconds_from_now() {
     for v in [
@@ -191,7 +189,6 @@ fn junk_is_none() {
 }
 
 /// The reply-extensions entry: whole seconds as ASCII decimal under `retry_after`, read back
-
 #[test]
 fn the_extension_carries_whole_seconds_as_ascii_decimal() {
     let blob = retry_after_extensions(120);

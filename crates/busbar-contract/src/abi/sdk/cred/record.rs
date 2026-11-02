@@ -23,7 +23,6 @@ thread_local! {
 }
 
 /// Open while a record is encoded on this thread; closed on drop, a failed encode or a panic
-
 struct Scope;
 
 impl Scope {
@@ -40,7 +39,6 @@ impl Drop for Scope {
 }
 
 /// `value` encoded as a host record's JSON value, its credential fields written. Hand the answer
-
 pub fn to_vec<T: Serialize + ?Sized>(value: &T) -> Result<Zeroizing<Vec<u8>>, serde_json::Error> {
     let _scope = Scope::open();
     let mut out = crate::abi::sdk::secret_bytes::SecretBytes::default();
@@ -49,7 +47,6 @@ pub fn to_vec<T: Serialize + ?Sized>(value: &T) -> Result<Zeroizing<Vec<u8>>, se
 }
 
 /// The field's serializer: the credential as a JSON string, inside [`to_vec`] only.
-
 pub fn serialize<S: Serializer>(cred: &Cred, s: S) -> Result<S::Ok, S::Error> {
     if WRITING.with(Cell::get) == 0 {
         return Err(S::Error::custom(REFUSED));
@@ -59,7 +56,6 @@ pub fn serialize<S: Serializer>(cred: &Cred, s: S) -> Result<S::Ok, S::Error> {
 }
 
 /// The field's deserializer: the record's string captured as a [`Cred`].
-
 pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Cred, D::Error> {
     d.deserialize_string(Captured)
 }

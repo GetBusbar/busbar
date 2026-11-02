@@ -7,7 +7,6 @@ use super::call::{Blob, InHead, Op, OutHead};
 use super::ticket::{HostTables, Ticket};
 
 /// [`InHead::op`] of each lifecycle slot, in table order. A kind's own ops number on from
-
 pub mod slot {
     /// `validate`.
     pub const VALIDATE: u32 = 0;
@@ -28,10 +27,8 @@ pub mod slot {
     /// `close`.
     pub const CLOSE: u32 = 8;
     /// `ready`: the door's optional tail op ([`super::super::door::Door::ready`]), NOT a table
-
     pub const READY: u32 = u32::MAX;
     /// `migrate`: the door's optional tail op ([`super::super::door::Door::migrate`]), NOT a table
-
     pub const MIGRATE: u32 = u32::MAX - 1;
 }
 
@@ -238,7 +235,6 @@ fn first_segment(line: &str) -> &str {
 }
 
 /// A FAILED `validate`'s error text, as the rule on [`ValidateIn`] states it: not empty, no empty
-
 pub fn check_validate_refusal(text: &[u8]) -> Result<(), super::check::Fault> {
     use super::check::{fault, Rule};
     if text.is_empty() {

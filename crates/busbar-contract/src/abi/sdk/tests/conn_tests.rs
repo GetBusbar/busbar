@@ -180,7 +180,6 @@ fn a_connector_resumed_from_a_parked_count_issues_on_from_it() {
 }
 
 /// `open` learns the host's verdict on its needs: admitted, or refused with the host's text
-
 #[test]
 fn open_learns_the_hosts_verdict_on_a_need() {
     let h = host(&SLOTS);
@@ -224,7 +223,6 @@ fn establish_hands_the_host_the_set_its_dial_lands_within() {
 }
 
 /// `close` never pends, so it is made on no ticket (an instance closing its kept connections as it
-
 #[test]
 fn close_is_made_on_no_ticket() {
     let h = host(&SLOTS);
@@ -276,7 +274,6 @@ static REFUSING: ConnectorSlots = ConnectorSlots {
 };
 
 /// A refusal naming `CAUSE_CREDENTIAL_UNAVAILABLE` reads as [`ConnFailure::CredentialUnavailable`]:
-
 #[test]
 fn a_refusal_naming_an_unavailable_credential_reads_as_its_own_failure() {
     use crate::abi::host::conn::connector::{CAUSE_CREDENTIAL_UNAVAILABLE, CAUSE_NONE};

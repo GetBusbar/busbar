@@ -129,7 +129,6 @@ fn the_far_ends_close_ends_the_connection() {
 }
 
 /// RED: the cloud metadata refusal still fires before any dial — on the target, and on the
-
 #[test]
 fn a_metadata_host_is_refused_before_any_socket_exists() {
     worker().block_on(async {
@@ -164,7 +163,6 @@ fn a_metadata_host_is_refused_before_any_socket_exists() {
 }
 
 /// RED: a far end that accepts and then says nothing is held to the deadline the framer states:
-
 #[test]
 fn a_silent_far_end_is_held_to_the_framers_deadline() {
     worker().block_on(async {
@@ -237,7 +235,6 @@ fn localhost_cert() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
 }
 
 /// TLS is the connector's, with the protocol offer the registration states: the framer is told
-
 #[test]
 fn tls_and_the_protocol_offer_are_the_connectors() {
     crate::tls::install_crypto_provider();
@@ -289,7 +286,6 @@ fn tls_and_the_protocol_offer_are_the_connectors() {
 }
 
 /// THE OFFER IS THE FRAMER'S (THE DESIGN, connections): the protocols the handshake offers are
-
 #[test]
 fn the_handshake_offers_what_the_framer_located() {
     crate::tls::install_crypto_provider();
@@ -380,7 +376,6 @@ fn a_malformed_protocol_offer_refuses_the_dial() {
 }
 
 /// RED: a far end that never reads cannot grow the host's memory. Writes are taken while the
-
 #[test]
 fn a_far_end_that_never_reads_fills_the_buffer_and_writes_are_refused_room() {
     worker().block_on(async {
@@ -430,7 +425,6 @@ fn a_far_end_that_never_reads_fills_the_buffer_and_writes_are_refused_room() {
 }
 
 /// An EMPTY message, binary or text, is relayed as a message, its text bit kept; the stream ends
-
 #[test]
 fn empty_messages_relay_and_the_stream_ends_only_on_its_flag() {
     worker().block_on(async {
@@ -474,7 +468,6 @@ fn empty_messages_relay_and_the_stream_ends_only_on_its_flag() {
 }
 
 /// RED (Autobahn 3.2, 3.3, 4.1.3, 4.1.4, 4.2.3, 4.2.4, 5.15 NON-STRICT): the far side's frames
-
 #[test]
 fn a_message_handed_up_with_the_frames_end_is_still_answered() {
     worker().block_on(async {
@@ -511,7 +504,6 @@ fn a_message_handed_up_with_the_frames_end_is_still_answered() {
 }
 
 /// WHY A CONNECTION FAILED, named by stage and the underlying error's own words: a closed port
-
 #[test]
 fn a_failed_connection_names_its_stage_and_the_underlying_error() {
     use busbar_contract::abi::host::conn::connector::{
@@ -597,7 +589,6 @@ fn a_failed_connection_names_its_stage_and_the_underlying_error() {
 }
 
 /// The connection's own layer, STARTTLS response injection: a raw
-
 #[test]
 fn an_upgrade_over_a_piece_still_in_the_inbox_is_refused_and_the_connection_fails() {
     worker().block_on(async {
@@ -639,7 +630,6 @@ fn an_upgrade_over_a_piece_still_in_the_inbox_is_refused_and_the_connection_fail
 }
 
 /// A far end that sends far more than its holder reads (64 MiB, the
-
 #[test]
 fn a_holder_that_does_not_read_holds_the_far_end_back() {
     const SENT: usize = 64 * 1024 * 1024;
@@ -678,7 +668,6 @@ fn a_holder_that_does_not_read_holds_the_far_end_back() {
 }
 
 /// RED (THE DESIGN §5 "Writes are back-pressured (a full buffer answers not-ready)"; resource
-
 #[test]
 fn a_far_end_that_never_reads_is_not_read_past_the_answers_it_is_owed() {
     const SENT: usize = 64 * 1024 * 1024;
@@ -725,7 +714,6 @@ fn a_far_end_that_never_reads_is_not_read_past_the_answers_it_is_owed() {
 }
 
 /// RED (A PENDING ANSWER PARKS ONLY ITS OWN STREAM, on one connection): two streams on one
-
 #[test]
 fn one_stream_pending_auth_holds_only_that_stream_on_the_connection() {
     worker().block_on(async {
@@ -804,7 +792,6 @@ fn a_parked_streams_empty_write_backpressures_only_that_stream() {
 }
 
 /// RED (THE DESIGN §5: TLS is the connector's, "today's code moved byte-identically"; a write is
-
 #[test]
 fn one_write_larger_than_the_tls_send_buffer_crosses_whole() {
     const SENT: usize = 200_000;
@@ -867,7 +854,6 @@ fn one_write_larger_than_the_tls_send_buffer_crosses_whole() {
 }
 
 /// The agreed protocol is judged against the offer the handshake made (`check_agreed`) before the
-
 #[test]
 fn the_agreed_protocol_is_one_the_handshake_offered() {
     let offer = protocol_name_list(&[b"pa".to_vec(), Vec::new(), b"proto-b/1".to_vec()]);
@@ -887,7 +873,6 @@ fn the_agreed_protocol_is_one_the_handshake_offered() {
 }
 
 /// The contract ( `busbar_contract::abi::transport`, "A STREAM'S OWN BACKPRESSURE":
-
 #[test]
 fn a_full_stream_takes_nothing_more_until_the_framer_says_it_is_writable() {
     worker().block_on(async {
@@ -988,7 +973,6 @@ async fn opened(c: &mut Connection) {
 type Asked<'a> = (Vec<(&'a str, &'a [u8])>, &'a [u8]);
 
 /// RED: A LOCATED OPENING CARRIES THE HEAD THE FRAMER SAID IT WOULD NOT ADD (THE DESIGN section 6,
-
 #[test]
 fn a_located_opening_carries_the_framers_lines_and_the_bodys_length_last() {
     let stating = Arc::new(TestDoor::new(
@@ -1079,7 +1063,6 @@ fn a_located_opening_carries_the_framers_lines_and_the_bodys_length_last() {
 }
 
 /// RED (TSEAL; "the plane never sees credential bytes"): OVER A FRAMER THAT RENDERS SEALED VALUES
-
 #[test]
 fn a_sealed_credential_reaches_the_far_end_and_never_the_framer() {
     use busbar_contract::conn::SEALED_FIELDS_FIELD;

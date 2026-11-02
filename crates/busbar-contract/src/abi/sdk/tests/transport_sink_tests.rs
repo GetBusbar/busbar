@@ -102,7 +102,6 @@ fn wire_bytes_go_first_and_the_rest_is_owed() {
 }
 
 /// A piece that does not fit whole is split: its first part ends no frame, its last part does,
-
 #[test]
 fn a_piece_that_does_not_fit_is_split_its_end_on_its_last_part() {
     let mut f = Framing::default();
@@ -123,7 +122,6 @@ fn a_piece_that_does_not_fit_is_split_its_end_on_its_last_part() {
 }
 
 /// A status maps to its class and its fault; the end and the writable signal are said, never
-
 #[test]
 fn the_flags_say_what_each_piece_carries() {
     let mut f = Framing {
@@ -166,7 +164,6 @@ fn the_flags_say_what_each_piece_carries() {
 }
 
 /// A head's words ride its stream's head slots, their bytes in the frame ahead of the piece's; a
-
 #[test]
 fn head_words_ride_the_head_slots_ahead_of_the_head() {
     let words = HeadWords {
@@ -200,7 +197,6 @@ fn head_words_ride_the_head_slots_ahead_of_the_head() {
 }
 
 /// A field block is cut only at a line's start or inside a value, never inside a name: the host
-
 #[test]
 fn a_field_block_is_cut_only_where_a_continuation_extends_a_value() {
     let block = b"date: Mon\r\nx-a: 1\r\n";

@@ -18,17 +18,14 @@
 //! [`Transport::name`]'s strings are frozen, because they are a bounded metric and tracing label.
 
 /// Wire-format names shared by the plane declarations that state them and the readers that compare
-
 pub mod plane {
     /// JSON-RPC 2.0: an envelope where a BODY MEMBER names the operation.
     pub const WIRE_JSONRPC: &str = "jsonrpc";
 
     /// HTTP+JSON: the same exchange with the REQUEST LINE naming the operation instead of a body
-
     pub const WIRE_HTTP_JSON: &str = "http+json";
 
     /// The call-per-path binary wire format, as a wire-format name: lower-case here, upper-cased
-
     pub const WIRE_GRPC: &str = "grpc";
 }
 
@@ -66,13 +63,11 @@ pub enum Transport {
 
 impl Transport {
     /// Every transport, so a site that must cover all of them cannot silently cover some: a variant
-
     #[cfg_attr(not(test), allow(dead_code))]
     pub const ALL: &'static [Transport] =
         &[Transport::Http, Transport::Stdio, Transport::WebSocket];
 
     /// Stable identifier — a bounded metric/tracing label, exactly like
-
     pub fn name(self) -> &'static str {
         match self {
             Transport::Http => "http",

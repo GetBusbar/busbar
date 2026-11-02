@@ -15,7 +15,6 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
 /// The lines each crossing was handed, in order, still sealed (compared in constant time, never
-
 type Seen = Mutex<Vec<Vec<(String, Secret<Vec<u8>>)>>>;
 
 /// Answers `verified` on every call and records the lines it was handed.
@@ -151,7 +150,6 @@ fn every_answer_is_read_as_the_admin_chain_reads_it() {
 }
 
 /// SIGN-auth-kind 2026-10-30 (lead-signed under owner delegation, extending the owner-signed
-
 #[test]
 fn a_verdict_less_answer_is_refused_and_marked() {
     for (verified, no_verdict) in [

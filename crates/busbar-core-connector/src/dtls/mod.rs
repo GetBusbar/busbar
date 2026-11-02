@@ -64,7 +64,6 @@ pub enum Verdict {
 }
 
 /// A per-session certificate the host mints and owns. Its key is a ring key pair parked behind a
-
 pub struct SessionCert {
     der: Vec<u8>,
     handle: Vec<u8>,
@@ -87,7 +86,6 @@ impl Drop for SessionCert {
 
 impl SessionCert {
     /// Mint a fresh self-signed ECDSA P-256 certificate: ring generates the key, rcgen (on ring)
-
     pub fn mint() -> Result<Self, Failure> {
         use ::ring::signature::{EcdsaKeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
         let failed = |e: &dyn std::fmt::Display| Failure::Certificate(e.to_string());
@@ -160,7 +158,6 @@ impl SrtpProfile {
 }
 
 /// The DTLS-SRTP exporter's output (RFC 5764 §4.2): the profile and the keying material, zeroed
-
 pub struct SrtpKeying {
     /// The negotiated profile.
     pub profile: SrtpProfile,
@@ -278,7 +275,6 @@ impl std::fmt::Debug for Association {
 
 impl Association {
     /// An association for one session: the host's `cert`, the DTLS `role` from the SDP, the local
-
     #[must_use]
     pub fn new(
         cert: Arc<SessionCert>,
@@ -318,7 +314,6 @@ impl Association {
     }
 
     /// One datagram in from `path` (RFC 7983 demux; module docs). [`Verdict::Raw`] tells the caller
-
     pub fn ingest(&mut self, path: SocketAddr, datagram: &[u8], now: Instant) -> Verdict {
         #[cfg(test)]
         {
@@ -377,7 +372,6 @@ impl Association {
     }
 
     /// The framer's ICE agent chose `path`: run DTLS on it, now if core has proven the path, or
-
     pub fn bind_path(&mut self, path: SocketAddr, now: Instant) -> Result<Bind, BindRefused> {
         if self.failed.is_some() {
             return Err(BindRefused::Failed);
@@ -396,7 +390,6 @@ impl Association {
     }
 
     /// The framer's ICE agent moved the session from `old` to `new` (a network change). DTLS
-
     pub fn rebind_path(
         &mut self,
         old: SocketAddr,
@@ -423,7 +416,6 @@ impl Association {
     }
 
     /// May the framer send `datagram` (clear lane) to `path`? A STUN success response — the framer
-
     #[must_use]
     pub fn may_send_clear(&self, path: SocketAddr, datagram: &[u8]) -> bool {
         if self.failed.is_some() {
@@ -439,7 +431,6 @@ impl Association {
     }
 
     /// The host's destination guard admitted `path`, a far-end candidate the description advertised
-
     pub fn admit_candidate(&mut self, path: SocketAddr, now: Instant) -> bool {
         if self.failed.is_some() {
             return false;
@@ -454,14 +445,12 @@ impl Association {
     }
 
     /// Make this the dialling side (module docs): core's probes say ICE-CONTROLLING, and only a
-
     pub fn set_dialling(&mut self) {
         self.dialling = true;
         self.controlling = true;
     }
 
     /// Whether `datagram` from `path` is a verified check this DIALLING association will not hear
-
     #[must_use]
     pub fn unadmitted_check(&self, path: SocketAddr, datagram: &[u8]) -> bool {
         self.dialling
@@ -471,13 +460,11 @@ impl Association {
     }
 
     /// Whether a bind to `path` may be accepted: an admitted candidate, or (the accepting side
-
     fn admitted(&self, path: SocketAddr) -> bool {
         self.candidates.contains(&path) || (!self.dialling && self.heard.contains_key(&path))
     }
 
     /// Seal `plaintext` (SCTP, for the data channels) as DTLS application data toward the bound path.
-
     pub fn seal(&mut self, plaintext: &[u8]) -> Result<(), Failure> {
         if let Some(f) = &self.failed {
             return Err(f.clone());
@@ -575,7 +562,6 @@ impl Association {
     }
 
     /// Whether a verified check came from `path` (or core's own probe proved it) and consent has
-
     #[must_use]
     pub fn knows(&self, path: SocketAddr) -> bool {
         self.heard.contains_key(&path)
@@ -584,14 +570,12 @@ impl Association {
     }
 
     /// Whether the far end's certificate matched the fingerprint its description carried. Nothing
-
     #[must_use]
     pub fn peer_verified(&self) -> bool {
         self.peer_verified && self.failed.is_none()
     }
 
     /// Record a verified check from `path`. At the cap the oldest heard path that is neither bound
-
     fn hear(&mut self, path: SocketAddr, now: Instant) {
         if !self.heard.contains_key(&path) && self.heard.len() >= MAX_HEARD_PATHS {
             let keep = [self.bound, self.wanted];

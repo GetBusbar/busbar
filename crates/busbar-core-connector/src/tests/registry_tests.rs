@@ -70,7 +70,6 @@ fn door(d: TestDoor) -> Entry {
 }
 
 /// THE ADDRESS CARRIER IS THE DECLARATION'S: the first CARRIER, in
-
 #[test]
 fn the_address_carrier_is_the_first_declared_carrier_serving_a_port() {
     use busbar_contract::abi::transport::ROLE_FRAMER;

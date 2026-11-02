@@ -3,7 +3,6 @@
 use super::*;
 
 /// The root's view of a row and this module's own view of it are the same row. If they ever
-
 #[test]
 fn the_public_table_is_the_same_table_the_lookup_runs_against() {
     let public = table();
@@ -19,7 +18,6 @@ fn the_public_table_is_the_same_table_the_lookup_runs_against() {
 }
 
 /// A query string names arguments to an operation, not a different operation. The row a caller
-
 #[test]
 fn resolve_reads_through_a_query_string_to_the_same_row() {
     let bare = resolve("GET", "/api/v1/admin/audit").expect("audit is in the table");
@@ -31,7 +29,6 @@ fn resolve_reads_through_a_query_string_to_the_same_row() {
 }
 
 /// A pair the table does not declare has no answer. The point of a closed table is that its
-
 #[test]
 fn resolve_refuses_a_pair_the_table_does_not_declare() {
     assert!(resolve("GET", "/api/v1/admin/not-a-verb").is_none());
@@ -50,7 +47,6 @@ fn rejects_a_wrong_segment_count() {
 }
 
 /// An empty segment is a segment. A trailing slash, a doubled slash and a bare `{id}` position
-
 #[test]
 fn an_empty_segment_never_normalises_onto_a_row() {
     assert!(resolve("DELETE", "/api/v1/admin/keys/abc/").is_none());
@@ -80,7 +76,6 @@ fn fixture() -> serde_json::Value {
 }
 
 /// Mechanically converts a `PascalCase` `operationId` (`GetKeysIdUsage`) to this crate's own
-
 fn snake_case(operation_id: &str) -> String {
     let mut out = String::new();
     for (i, c) in operation_id.chars().enumerate() {
@@ -97,7 +92,6 @@ fn snake_case(operation_id: &str) -> String {
 }
 
 /// The table test required by the crate's design brief: for every one of the 66 operations the
-
 #[test]
 fn every_1_5_5_fixture_operation_resolves_to_the_right_verb_and_scope() {
     let doc = fixture();
@@ -148,7 +142,6 @@ fn every_1_5_5_fixture_operation_resolves_to_the_right_verb_and_scope() {
 }
 
 /// ITEM 149 — THE GATE AND THE VERB TABLE AGREE ON EVERY ADMIN ROUTE.
-
 #[test]
 fn the_live_gate_and_the_verb_table_agree_on_every_admin_route() {
     let mut checked = 0usize;

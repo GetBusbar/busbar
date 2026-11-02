@@ -35,7 +35,6 @@ fn only_on_piece_serve_and_the_boot_ops_may_pend() {
 }
 
 /// The four 1.5.5 cancel billing rules: a translate-abort and a failure never bill, a streamed
-
 #[test]
 fn cancel_billing_follows_the_four_rules() {
     assert!(!cancel_bills_reported_units(CANCEL_ABORTED, true));
@@ -83,7 +82,6 @@ fn the_section_and_ingress_flags_are_single_distinct_bits() {
 }
 
 /// A plane's help text reads as its slotted rows: bare text is one `Flags:` row (the shape a plane
-
 #[test]
 fn the_cli_help_grammar_reads_bare_and_slotted_rows() {
     fn rows(help: &str) -> Vec<(&str, &str)> {

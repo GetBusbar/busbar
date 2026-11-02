@@ -31,11 +31,9 @@ pub use points::{AuthPoint, AuthPoints, POINT_FRAME, POINT_HEAD, POINT_HEAD_BODY
 pub const ABI_VERSION: u32 = 3;
 
 /// The auth kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
-
 pub const LAYOUT_FINGERPRINT: u64 = 0x00c89280c6692621;
 
 /// The auth kind's shapes, in fold order ([`crate::layout_shape!`]): every `#[repr(C)]` struct
-
 pub const LAYOUT_SHAPES: &[&[u64]] = &[
     crate::layout_shape!(Ops =>
         head, verify, begin_login, complete_login, open_outbound, outbound_ready, fields, target
@@ -202,26 +200,19 @@ pub const CAP_LOGIN: u32 = 2;
 pub const CAP_OUTBOUND: u32 = 4;
 
 /// [`AuthTail::facts`]: the plugin's verdicts may be cached. INFORMATIONAL (status, operators):
-
 pub const FACT_CACHEABLE: u32 = 1;
 /// [`AuthTail::facts`]: `verify` reads the request body's hash. The body itself reaches `verify` as
-
 pub const FACT_INBOUND_NEEDS_BODY_HASH: u32 = 2;
 /// [`AuthTail::facts`]: `verify` reads EVERY request header, not only its carriers (the Statement's
-
 pub const FACT_INBOUND_ALL_HEADERS: u32 = 4;
 /// [`AuthTail::facts`]: this plugin's `verify` judges THE OPERATOR CREDENTIAL, the one admin
-
 pub const FACT_OPERATOR: u32 = 8;
 /// [`AuthTail::facts`]: this plugin's `verify` reads host-held credentials of the kinds
-
 pub const FACT_READS_CREDENTIALS: u32 = 16;
 /// [`AuthTail::facts`]: this plugin's carrier marks are the host's default inbound style: where a
-
 pub const FACT_DEFAULT_INBOUND_STYLE: u32 = 32;
 
 /// THE CACHE-FLUSH COUNT's metric family name. An auth plugin that caches verdicts declares a
-
 pub const METRIC_CACHE_FLUSHED: &str = "busbar_auth_cache_flushed_total";
 
 /// [`AuthTail::login_kind`]: no login ([`CAP_LOGIN`] not declared).
@@ -234,18 +225,14 @@ pub const LOGIN_KIND_CREDENTIAL: u32 = 2;
 /// [`StyleDecl::flags`]: `fields` needs [`FieldsIn::headers`], the exact envelope, for this style.
 pub const STYLE_NEEDS_HEADERS: u32 = 2;
 /// [`StyleDecl::flags`]: this style serves [`MODE_PASSTHROUGH`] as well as [`MODE_OWN`] — the
-
 pub const STYLE_CALLER_CREDENTIAL: u32 = 4;
 /// [`StyleDecl::flags`]: the style sends the credential to the provider entry's token endpoint.
-
 pub const STYLE_ENDPOINT_TOKEN_URL: u32 = 32;
 /// [`StyleDecl::flags`]: the style takes its token endpoint from the credential itself.
-
 pub const STYLE_ENDPOINT_FROM_CREDENTIAL: u32 = 64;
 /// [`StyleDecl::flags`]: the lowest bit of the style's LIST RANK ([`STYLE_RANK_MASK`]).
 pub const STYLE_RANK_SHIFT: u32 = 16;
 /// [`StyleDecl::flags`]: the style's LIST RANK, `1..=255`, or `0` (unranked).
-
 pub const STYLE_RANK_MASK: u32 = 0x00ff_0000;
 
 /// The [`StyleDecl::flags`] bits stating list rank `rank` ([`STYLE_RANK_MASK`]).
@@ -277,7 +264,6 @@ pub struct StyleDecl {
 
 impl StyleDecl {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-
     pub const ZERO: Self = Self {
         name: AbiStr::ZERO,
         flags: 0,
@@ -323,7 +309,6 @@ pub struct AuthTail {
 
 impl AuthTail {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-
     pub const ZERO: Self = Self {
         head: KindTailHead::ZERO,
         caps: 0,
@@ -339,10 +324,8 @@ impl AuthTail {
 }
 
 /// HOW THE AUTH KIND TAIL IS MADE: from [`AuthTail::EMPTY`], its plain fields set
-
 impl AuthTail {
     /// Nothing stated: every string absent, every list empty, every number zero; the head
-
     pub const EMPTY: AuthTail = AuthTail {
         head: KindTailHead {
             size: core::mem::size_of::<AuthTail>() as u32,
@@ -367,29 +350,23 @@ impl AuthTail {
 }
 
 /// The size [`AuthTail`] froze at before [`AuthTail::operator_principal`] was appended: the
-
 pub const TAIL_FROZEN: usize = 40;
 
 /// [`CancelOut::disposition`](super::mechanism::lifecycle::CancelOut) for an auth op: abandoned,
-
 pub const CANCEL_ABANDONED: u32 = 1;
 /// [`CancelOut::disposition`](super::mechanism::lifecycle::CancelOut) for an auth op: the call is
-
 pub const CANCEL_CONTINUES: u32 = 2;
 
 /// [`IdentifyOut::verdict`] for `verify`: identified; [`IdentifyOut::identity`] holds who.
 pub const VERDICT_IDENTITY: u32 = 1;
 /// [`IdentifyOut::verdict`] for `verify`: a credential was presented and is invalid. Fail-closed;
-
 pub const VERDICT_REJECT: u32 = 2;
 /// [`IdentifyOut::verdict`] for `verify`: not this plugin's credential; try the next.
 pub const VERDICT_PASS: u32 = 3;
 
 /// [`IdentifyOut::decision`] for `verify`: the transport goes on with the request (the next
-
 pub const DECISION_CONTINUE: u32 = 1;
 /// [`IdentifyOut::decision`] for `verify`: the transport stops the request. The SDK's default
-
 pub const DECISION_STOP: u32 = 2;
 
 /// [`StripName::place`]: a field line of the request head, matched ASCII case-insensitively.
@@ -400,13 +377,10 @@ pub const STRIP_QUERY: u32 = 2;
 /// [`IdentifyOut::verdict`] for `complete_login`: identified.
 pub const LOGIN_IDENTITY: u32 = 1;
 /// [`IdentifyOut::verdict`] for `complete_login`: the directory or IdP answered, and the credential
-
 pub const LOGIN_BAD_CREDENTIAL: u32 = 2;
 /// [`IdentifyOut::verdict`] for `complete_login`: the directory or IdP could not answer (connect,
-
 pub const LOGIN_OUTAGE: u32 = 3;
 /// [`IdentifyOut::verdict`] for `complete_login`: the IdP answered, and its answer failed the
-
 pub const LOGIN_SECURITY_CHECK_FAILED: u32 = 4;
 
 /// The identity buffer the host hands `verify`/`complete_login` to start: bytes.
@@ -416,7 +390,6 @@ pub const IDENTITY_GROUPS: u32 = 256;
 /// The field buffer the host hands `fields` to start: bytes.
 pub const FIELDS_BUF_BYTES: usize = 16 * 1024;
 /// The field buffer the host hands `fields` to start: fields. Also the strip array the host
-
 pub const FIELDS_MAX: u32 = 16;
 
 /// [`FieldsIn::mode`]: the plugin's own bound credential.
@@ -425,15 +398,12 @@ pub const MODE_OWN: u32 = 1;
 pub const MODE_PASSTHROUGH: u32 = 2;
 
 /// `fields`' EXTENSIONS KEY ([`crate::abi::mechanism::extensions`], carried in
-
 pub const EXT_SCOPE: &str = "scope";
 
 /// `complete_login`'s REPLY EXTENSIONS KEY: on a [`LOGIN_OUTAGE`], the IdP's `Retry-After`.
-
 pub const EXT_RETRY_AFTER: &str = "retry_after";
 
 /// The delay an IdP's `Retry-After` header value asks for, in whole seconds from `now_unix` (Unix
-
 #[must_use]
 pub fn retry_after_secs(header_value: &[u8], now_unix: u64) -> Option<u64> {
     let v = header_value.trim_ascii();
@@ -578,7 +548,6 @@ pub fn retry_after_extensions(secs: u64) -> Vec<u8> {
 }
 
 /// The delay reply `extensions` state under [`EXT_RETRY_AFTER`]: plain ASCII digits that fit a
-
 #[must_use]
 pub fn retry_after_of(extensions: &[u8]) -> Option<u64> {
     let v = crate::abi::mechanism::extensions::get(extensions, EXT_RETRY_AFTER)?;
@@ -589,29 +558,24 @@ pub fn retry_after_of(extensions: &[u8]) -> Option<u64> {
 }
 
 /// THE REQUEST FIELD BY WHICH A PLUGIN STATES ITS PER-CALL SCOPE to the host: a field of this name
-
 pub const SCOPE_REQUEST_FIELD: &str = "busbar-auth-scope";
 
 /// Whether the request field `name` is [`SCOPE_REQUEST_FIELD`] (a field name compares
-
 #[must_use]
 pub fn is_scope_field(name: &[u8]) -> bool {
     name.eq_ignore_ascii_case(SCOPE_REQUEST_FIELD.as_bytes())
 }
 
 /// THE REQUEST FIELD BY WHICH A PLUGIN WAIVES ITS MEMBER'S BINDING FOR ONE REQUEST: a field of this
-
 pub const NO_MEMBER_AUTH_FIELD: &str = "busbar-no-member-auth";
 
 /// Whether the request field `name` is [`NO_MEMBER_AUTH_FIELD`] (a field name compares
-
 #[must_use]
 pub fn is_no_member_auth_field(name: &[u8]) -> bool {
     name.eq_ignore_ascii_case(NO_MEMBER_AUTH_FIELD.as_bytes())
 }
 
 /// The extensions blob a request's stated `scope` is lent to its auth call in: one [`EXT_SCOPE`]
-
 #[must_use]
 pub fn scope_extensions(scope: Option<&[u8]>) -> Vec<u8> {
     scope.map_or_else(Vec::new, |s| {
@@ -620,21 +584,17 @@ pub fn scope_extensions(scope: Option<&[u8]>) -> Vec<u8> {
 }
 
 /// [`FieldSpan::flags`]: when SET, an h2 encoder sends the field never-indexed. Every credential
-
 pub const FIELD_SENSITIVE: u32 = 1;
 
 /// An auth instance's carrier selection in successful OPEN and REFRESH reply extensions: a JSON
-
 pub const EXT_CARRIERS: &str = "auth.carriers";
 
 /// [`FieldSpan::flags`]: this field is a QUERY PARAMETER, not a header. The host's framer appends
-
 pub const FIELD_QUERY: u32 = 2;
 
 /// [`LoginField::kind`]: plain text.
 pub const FORM_TEXT: u32 = 1;
 /// [`LoginField::kind`]: a password; its submitted value arrives as a secret
-
 pub const FORM_PASSWORD: u32 = 2;
 
 /// [`BeginLoginOut::shape`]: redirect to [`BeginLoginOut::authorize_url`].

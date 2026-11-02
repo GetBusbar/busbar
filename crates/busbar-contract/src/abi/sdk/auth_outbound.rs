@@ -30,7 +30,6 @@ use crate::abi::sdk::out::Out;
 use crate::abi::sdk::safe::{Instance, SafeSlot};
 
 /// Versioned sealed-field custody handshake in the existing call extensions. In a request,
-
 pub const EXT_SEALED_FIELDS: &str = "auth.sealed_fields";
 
 /// The version-one custody capability (request) or secure-connection requirement (reply).
@@ -72,7 +71,6 @@ impl<'a> FieldsView<'a> {
     }
 
     /// Whose credential to present. (A mode outside the vocabulary never reaches the plugin: the
-
     #[must_use]
     pub fn mode(&self) -> Mode {
         if self.input.mode == MODE_PASSTHROUGH {
@@ -132,7 +130,6 @@ impl<'a> FieldsView<'a> {
     }
 
     /// The exact head envelope the framer will send, in order: (name, value). Empty unless the
-
     pub fn headers(&self) -> impl Iterator<Item = (&'a [u8], &'a [u8])> + 'a {
         self.input
             .headers()
@@ -154,7 +151,6 @@ impl<'a> FieldsView<'a> {
     }
 
     /// The per-call scope the request stated ([`EXT_SCOPE`] in the call's extensions); `None` =
-
     #[must_use]
     pub fn scope(&self) -> Option<&'a [u8]> {
         let ext = self.input.field(|i| &i.head.extensions).bytes();
@@ -198,7 +194,6 @@ impl Diags {
     }
 
     /// The staged diagnostics, in order: `(id_idx, severity, text)` (a plugin's own tests read
-
     pub fn iter(&self) -> impl Iterator<Item = (u32, u8, &str)> {
         self.staged
             .iter()
@@ -224,7 +219,6 @@ struct Staged {
 }
 
 /// THE FIELDS A `fields` ANSWERS, staged by the plugin and written by the kit into the host's
-
 pub struct FieldsWriter<'a> {
     bytes: HostBuf<'a, u8>,
     spans: HostBuf<'a, FieldSpan>,
@@ -262,13 +256,11 @@ impl<'a> FieldsWriter<'a> {
     }
 
     /// Report the declared diagnostic `id_idx` at `severity`, saying `text`, in this call's reply
-
     pub fn diag(&mut self, id_idx: u32, severity: u8, text: impl Into<Box<str>>) {
         self.diags.push(id_idx, severity, text);
     }
 
     /// Stage the field `name: value`, after those staged before it. `flags` holds only
-
     pub fn push(&mut self, name: &[u8], value: &[u8], flags: u32) {
         if flags & !(FIELD_SENSITIVE | FIELD_QUERY) != 0 {
             self.stray = true;
@@ -284,7 +276,6 @@ impl<'a> FieldsWriter<'a> {
     }
 
     /// Stage public and sealed pieces as one field without exposing its value to the plugin.
-
     pub fn push_sealed(&mut self, name: &[u8], value: Parts, flags: u32) {
         if flags & !(FIELD_SENSITIVE | FIELD_QUERY) != 0 {
             self.stray = true;
@@ -308,7 +299,6 @@ impl<'a> FieldsWriter<'a> {
     }
 
     /// Append `b` to the staging bytes. Growing moves them into a new allocation and drops the old
-
     fn stage(&mut self, b: &[u8]) {
         let want = self.staged.len().saturating_add(b.len());
         if want > self.staged.capacity() {
@@ -321,7 +311,6 @@ impl<'a> FieldsWriter<'a> {
     }
 
     /// WRITE the staged fields into the host's buffers and answer READY, or, when they do not fit,
-
     fn write(mut self, out: &mut Out<'_, FieldsOut>) -> Outcome {
         if self.stray {
             return Outcome::Fault;
@@ -443,18 +432,15 @@ impl From<String> for OpenRefusal {
 /// AN AUTH PLUGIN THAT PRESENTS CREDENTIALS UPSTREAM, in safe Rust.
 pub trait OutboundPlugin: Send + Sync + Sized + 'static {
     /// `validate`: whether `settings` (one JSON document) open an instance; `Err` answers its
-
     fn validate(settings: &[u8]) -> Result<(), Refusal> {
         let _ = settings;
         Ok(())
     }
 
     /// Build the plugin from its settings blob (one JSON document) and its resolved secrets (one
-
     fn open(settings: &[u8], secrets: &[&[u8]], generation: u64) -> Result<Self, Refusal>;
 
     /// Bind `style` (one the tail declares) to its resolved `credential` (`None` for a
-
     fn open_outbound(
         &self,
         style: &str,
@@ -465,7 +451,6 @@ pub trait OutboundPlugin: Send + Sync + Sized + 'static {
     ) -> Result<u64, OpenRefusal>;
 
     /// The auth fields for `request`, staged into `out`; [`Poll::Pending`] while `op`'s one
-
     fn fields(
         &self,
         request: &FieldsView<'_>,
@@ -474,11 +459,9 @@ pub trait OutboundPlugin: Send + Sync + Sized + 'static {
     ) -> Poll<FieldsAnswer>;
 
     /// Whether `fields` on `handle` would answer with a credential now (`false` before a minting
-
     fn outbound_ready(&self, handle: u64) -> bool;
 
     /// A reload to `generation`, with the new settings and secrets: the handles opened from now on
-
     fn refresh(&self, settings: &[u8], secrets: &[&[u8]], generation: u64) -> Result<(), Refusal> {
         let _ = (settings, secrets, generation);
         Ok(())
@@ -490,21 +473,18 @@ pub trait OutboundPlugin: Send + Sync + Sized + 'static {
     }
 
     /// `tick` at `now_ns` on the instance's DRIVER TICKET `driver` (owned by the instance, outside
-
     fn tick(&self, now_ns: u64, host: Option<&Host>, driver: Ticket, diags: &mut Diags) -> u64 {
         let _ = (now_ns, host, driver, diags);
         0
     }
 
     /// `drive`: the driver ticket `driver` was woken (a read of the exchange that pended, or a
-
     fn drive(&self, host: Option<&Host>, driver: Ticket, diags: &mut Diags) -> Driven {
         let _ = (host, driver, diags);
         Driven::Refused
     }
 
     /// `cancel` of `ticket` (a call that waited, or the driver ticket): forget what waits on it,
-
     fn cancel(&self, ticket: Ticket) -> u32 {
         let _ = ticket;
         crate::abi::auth::CANCEL_ABANDONED
@@ -528,14 +508,12 @@ pub enum Driven {
 }
 
 /// A [`Life`] that holds an [`OutboundPlugin`] `T`: [`Outbound<T>`], or [`Both<T>`] for a plugin
-
 pub trait HoldsOutbound<T: OutboundPlugin>: Life {
     /// The plugin.
     fn outbound(&self) -> &T;
 }
 
 /// THE AUTH KIND'S [`Life`] over an [`OutboundPlugin`] `T`: the instance state the shared
-
 pub struct Outbound<T>(T);
 
 impl<T> std::fmt::Debug for Outbound<T> {
@@ -586,7 +564,6 @@ impl<T: OutboundPlugin> HoldsOutbound<T> for Outbound<T> {
 }
 
 /// THE AUTH KIND'S [`Life`] over a plugin `T` that both verifies and presents (the SigV4 shape):
-
 pub struct Both<T>(T);
 
 impl<T> std::fmt::Debug for Both<T> {
@@ -997,7 +974,6 @@ macro_rules! auth_door {
 }
 
 /// One outbound style the plugin serves, as its tail states it: `name`, its `STYLE_*` `flags` and
-
 #[must_use]
 pub const fn style(name: &'static str, flags: u32, points: AuthPoints) -> StyleDecl {
     StyleDecl {
@@ -1026,7 +1002,6 @@ pub const fn outbound_tail(facts: u32, styles: &'static [StyleDecl]) -> AuthTail
 }
 
 /// `tail` as a verifier too: it states [`CAP_INBOUND`](crate::abi::auth::CAP_INBOUND), called at
-
 #[must_use]
 pub const fn with_inbound(tail: AuthTail, points: AuthPoints) -> AuthTail {
     AuthTail {

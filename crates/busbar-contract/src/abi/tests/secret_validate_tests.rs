@@ -57,7 +57,6 @@ fn red(rule: Rule, field: &'static str) -> Result<(), Fault> {
 }
 
 /// RED (S3): a READY answer that names no material: a secret resolved to nothing is no secret,
-
 #[test]
 fn ready_with_no_secret_faults() {
     assert_eq!(
@@ -142,7 +141,6 @@ fn failed_with_unset_error_kind_faults() {
 }
 
 /// RED: `error_kind` past the known `0..=5` range, even on an otherwise well-formed FAILED
-
 #[test]
 fn error_kind_out_of_range_faults() {
     let mut out = base_out();
@@ -295,7 +293,6 @@ fn needed_at_the_secret_cap_passes() {
 }
 
 /// THE GENERATED RED TABLE: one RED per (field, rule) `check_resolve`'s declaration states, each
-
 #[test]
 fn every_declared_field_rule_is_red() {
     assert_eq!(RESOLVE_RULES.len(), 4);
@@ -311,7 +308,6 @@ fn every_declared_field_rule_is_red() {
 }
 
 /// THE KIND'S ANSWER CHECK: the frames are read at their structs (a short `in`, then a short
-
 #[test]
 fn check_answer_reads_the_frames_then_judges_resolve() {
     use crate::abi::mechanism::call::InHead;

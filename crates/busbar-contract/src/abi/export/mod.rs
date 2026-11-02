@@ -70,11 +70,9 @@ use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 pub const ABI_VERSION: u32 = 3;
 
 /// The export kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
-
 pub const LAYOUT_FINGERPRINT: u64 = 0x95a37b669466aab6;
 
 /// The export kind's shapes, in fold order ([`crate::layout_shape!`]): every `#[repr(C)]` struct
-
 pub const LAYOUT_SHAPES: &[&[u64]] = &[
     crate::layout_shape!(Ops => head, deliver, scrape, status, check, serve),
     crate::layout_shape!(DeliverIn => head, op_id, stream, _reserved, batch),
@@ -221,7 +219,6 @@ pub enum ExportStream {
 
 impl ExportStream {
     /// Every stream in the frozen vocabulary, in ascending sensitivity order — the ONE list every
-
     pub const ALL: &'static [ExportStream] = &[
         ExportStream::Metrics,
         ExportStream::Logs,
@@ -235,7 +232,6 @@ impl ExportStream {
     ];
 
     /// The stable snake_case wire/config token for this stream — the SAME spelling serde emits.
-
     pub const fn as_token(self) -> &'static str {
         match self {
             ExportStream::Metrics => "metrics",
@@ -252,7 +248,6 @@ impl ExportStream {
     }
 
     /// Parse a config/wire token into a stream. `None` for anything not in the frozen vocabulary —
-
     pub fn from_token(tok: &str) -> Option<ExportStream> {
         ExportStream::ALL
             .iter()
@@ -270,7 +265,6 @@ impl ExportStream {
     }
 
     /// The DOCUMENTED DEFAULT FIELD SET a sink receives when it subscribes to this stream and writes
-
     pub const fn default_fields(self) -> &'static [ExportField] {
         use ExportField as F;
         match self {
@@ -348,7 +342,6 @@ impl ExportStream {
     }
 
     /// The STRUCTURAL fields of this stream — the ones a `fields:` override may NOT remove.
-
     pub const fn pinned_fields(self) -> &'static [ExportField] {
         use ExportField as F;
         match self {
@@ -464,7 +457,6 @@ pub enum ExportField {
 
 impl ExportField {
     /// Every field in the frozen vocabulary — the ONE list every catalog walk iterates. Ordered to
-
     pub const ALL: &'static [ExportField] = &[
         ExportField::CorrelationId,
         ExportField::Ts,
@@ -509,7 +501,6 @@ impl ExportField {
     ];
 
     /// The stable snake_case wire/config token for this field — the SAME spelling serde emits, and
-
     pub const fn as_token(self) -> &'static str {
         match self {
             ExportField::CorrelationId => "correlation_id",
@@ -556,7 +547,6 @@ impl ExportField {
     }
 
     /// Parse a config/wire token into a field. `None` for anything not in the frozen vocabulary, so
-
     pub fn from_token(tok: &str) -> Option<ExportField> {
         ExportField::ALL
             .iter()
@@ -565,7 +555,6 @@ impl ExportField {
     }
 
     /// This field's stable BIT POSITION — its index in [`ExportField::ALL`]. The engine's projection
-
     pub fn bit(self) -> u32 {
         ExportField::ALL
             .iter()
@@ -599,7 +588,6 @@ pub struct MetricFamily {
 
 impl MetricFamily {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-
     pub const ZERO: Self = Self {
         name: String::new(),
         kind: String::new(),
@@ -623,7 +611,6 @@ pub struct MetricSample {
 
 impl MetricSample {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-
     pub const ZERO: Self = Self {
         name: String::new(),
         labels: Vec::new(),
@@ -648,7 +635,6 @@ pub const SCRAPE_KIND_COUNTER: u8 = 0;
 /// [`ScrapeFamily::kind`]: a gauge.
 pub const SCRAPE_KIND_GAUGE: u8 = 1;
 /// [`ScrapeFamily::kind`]: a histogram (`_bucket`/`_sum`/`_count` legs as separate
-
 pub const SCRAPE_KIND_HISTOGRAM: u8 = 2;
 /// [`ScrapeFamily::kind`]: a summary (`quantile` legs as separate [`ScrapeSample`]s).
 pub const SCRAPE_KIND_SUMMARY: u8 = 3;
@@ -656,7 +642,6 @@ pub const SCRAPE_KIND_SUMMARY: u8 = 3;
 pub const SCRAPE_KIND_UNTYPED: u8 = 4;
 
 /// [`super::mechanism::call::InHead::flags`] on `scrape`: the families are the HOOK families.
-
 pub const SCRAPE_FLAG_HOOK_FAMILIES: u32 = 2;
 
 /// One label on a [`ScrapeSample`]: a key AND its value, ARCHITECT review ruling (fresh-Opus
@@ -761,10 +746,8 @@ pub struct StatusOut {
 }
 
 /// [`CheckIn::phase`]: among the operational limits' checks (a bound this sink's instances
-
 pub const CHECK_PHASE_LIMITS: u32 = 0;
 /// [`CheckIn::phase`]: after the limits, each instance's own settings — the OLD
-
 pub const CHECK_PHASE_INSTANCES: u32 = 1;
 
 /// One instance `check` may read across, at [`CHECK_PHASE_INSTANCES`] (ARCHITECT review ruling,
@@ -856,7 +839,6 @@ pub const ROUTE_AUTH_NONE: u32 = 0;
 /// [`Route::auth`]: a data-plane key required before `serve` — OLD `RouteAuth::Key`.
 pub const ROUTE_AUTH_KEY: u32 = 1;
 /// [`Route::auth`]: admin auth required, reachable only on the admin listener — OLD
-
 pub const ROUTE_AUTH_ADMIN: u32 = 2;
 
 /// One HTTP route this instance serves via `serve` (ARCHITECT review ruling, fresh-Opus
@@ -895,7 +877,6 @@ pub struct Tail {
 
 impl Tail {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-
     pub const ZERO: Self = Self {
         head: KindTailHead::ZERO,
         streams: std::ptr::null(),
@@ -906,10 +887,8 @@ impl Tail {
 }
 
 /// HOW THE EXPORT KIND TAIL IS MADE: from [`Tail::EMPTY`], its plain fields set
-
 impl Tail {
     /// Nothing stated: every string absent, every list empty, every number zero; the head
-
     pub const EMPTY: Tail = Tail {
         head: KindTailHead {
             size: core::mem::size_of::<Tail>() as u32,
@@ -928,13 +907,10 @@ impl Tail {
 }
 
 /// The export kind's [`super::mechanism::lifecycle::CancelOut::disposition`] vocabulary.
-
 pub mod cancel {
     /// The pending op was aborted before it produced anything (deliver: the batch was not
-
     pub const ABORTED: u32 = 0;
     /// The op had already completed when the cancel arrived (a race with the deadline); its
-
     pub const RACED_TO_COMPLETION: u32 = 1;
 }
 

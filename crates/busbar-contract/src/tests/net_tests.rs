@@ -7,7 +7,6 @@ use super::*;
 use std::net::{IpAddr, Ipv4Addr};
 
 /// One row: the input, then what [`parse_url`] reads (scheme, userinfo, host, port, path), then
-
 type Row = (
     &'static str,
     (&'static str, bool, &'static str, Option<u16>, &'static str),
@@ -257,7 +256,6 @@ fn a_string_with_no_readable_host_is_refused_with_its_reason() {
 }
 
 /// A dial target reads as a URL when it is one and as a bare authority otherwise, so a scheme is
-
 #[test]
 fn a_dial_target_never_reads_its_scheme_as_the_host() {
     for (target, want) in [
@@ -305,7 +303,6 @@ fn every_literal_spelling_names_its_address() {
 }
 
 /// IPv6 link-local is its own fact, not a metadata one: `host_is_link_local_v6` holds fe80::/10 in
-
 #[test]
 fn ipv6_link_local_is_its_own_predicate_not_a_metadata_one() {
     for host in ["fe80::1", "FE80::a9fe:a9fe", "fe80::1%eth0", "febf:ffff::1"] {
@@ -324,7 +321,6 @@ fn ipv6_link_local_is_its_own_predicate_not_a_metadata_one() {
 }
 
 /// A SOCKET LITERAL is exactly what the standard parser accepts: every row agrees with
-
 #[test]
 fn a_socket_literal_is_exactly_what_the_standard_parser_accepts() {
     for (s, want) in [
@@ -363,7 +359,6 @@ fn a_socket_literal_is_exactly_what_the_standard_parser_accepts() {
 }
 
 /// AN IP LITERAL (v4 or v6) is exactly what the standard parser accepts: every row agrees with
-
 #[test]
 fn an_ip_literal_is_exactly_what_the_standard_parser_accepts() {
     for (s, want) in [
@@ -400,7 +395,6 @@ fn an_ip_literal_is_exactly_what_the_standard_parser_accepts() {
 }
 
 /// THE VERBATIM HOST READER keeps what the shared reader normalises: a trailing root dot stays
-
 #[test]
 fn the_verbatim_host_keeps_the_root_dot_the_shared_reader_drops() {
     use crate::net::{url_host, url_host_verbatim};
@@ -429,7 +423,6 @@ fn the_verbatim_host_keeps_the_root_dot_the_shared_reader_drops() {
 }
 
 /// THE ONE AUTHORITY SPLIT reads v1.5.5's authority: it ends at `/`, `?`, `#` and (no scheme, or a
-
 #[test]
 fn the_authority_ends_where_the_dialling_stack_ends_it() {
     fn at(url: &str) -> (Option<&str>, Option<&str>, &str, &str) {
@@ -475,7 +468,6 @@ fn the_authority_ends_where_the_dialling_stack_ends_it() {
 }
 
 /// The address value types a plugin names through the contract ARE `std::net`'s: a plugin that
-
 #[test]
 fn the_contract_address_values_are_the_std_types() {
     let v4: Result<super::Ipv4Addr, super::AddrParseError> = "127.0.0.1".parse();
@@ -496,7 +488,6 @@ fn the_contract_address_values_are_the_std_types() {
 }
 
 /// An IDN host reads as its UTS #46 punycode name, the name busbar 1.5.5 dialled and sent as its
-
 #[test]
 fn an_idn_host_reads_as_its_punycode_name() {
     for (input, host, port) in [
@@ -543,7 +534,6 @@ fn an_idn_host_reads_as_its_punycode_name() {
 }
 
 /// A mixed-case IDN normalises the way `url` normalises it: UTS #46 lower-cases the whole name,
-
 #[test]
 fn a_mixed_case_idn_normalises_the_way_url_does() {
     for (input, host) in [
@@ -563,7 +553,6 @@ fn a_mixed_case_idn_normalises_the_way_url_does() {
 }
 
 /// A WHATWG-forbidden host is refused, written as itself or produced by the UTS #46 mapping, and
-
 #[test]
 fn a_whatwg_forbidden_host_is_refused() {
     for input in [
@@ -602,7 +591,6 @@ fn an_ascii_host_is_unchanged() {
 }
 
 /// A non-special scheme's non-ASCII host is `url` 2.5.8's OPAQUE host, byte for byte
-
 #[test]
 fn a_non_special_idn_host_reads_as_urls_opaque_host() {
     for (input, host, port) in [
@@ -643,7 +631,6 @@ fn a_non_special_idn_host_reads_as_urls_opaque_host() {
 }
 
 /// A bare `host[:port]` dial target with a non-ASCII host reads as its punycode name, as a URL
-
 #[test]
 fn a_bare_idn_authority_reads_as_its_punycode_name() {
     for (input, host) in [
@@ -680,7 +667,6 @@ fn a_bare_idn_authority_reads_as_its_punycode_name() {
 }
 
 /// `url` 2.5.8'S IPv4 READING (`url/src/host.rs` `ends_in_a_number`, `parse_ipv4addr`): the short,
-
 #[test]
 fn url_host_ipv4_reads_a_host_as_url_2_5_8_reads_it() {
     let v4 = |s: &str| s.parse::<Ipv4Addr>().expect("an address");
@@ -716,7 +702,6 @@ fn url_host_ipv4_reads_a_host_as_url_2_5_8_reads_it() {
 }
 
 /// THE HOST A DESTINATION JUDGE COMPARES: a non-ASCII host is the ASCII name or address UTS #46
-
 #[test]
 fn judged_host_maps_to_what_a_url_client_dials() {
     for (host, judged) in [
@@ -759,7 +744,6 @@ fn judged_host_maps_to_what_a_url_client_dials() {
 }
 
 /// file: hosts are read opaque; no file: URL is dialled or judged. A non-ASCII local-file URL host
-
 #[test]
 fn a_local_file_url_host_reads_opaque() {
     for (input, host, path) in [
@@ -779,7 +763,6 @@ fn a_local_file_url_host_reads_opaque() {
 }
 
 /// RED (HIGH, the percent-escape the judge did not decode): a host reaches the judge decoded, so a
-
 #[test]
 fn judged_host_refuses_a_percent_outside_an_ipv6_zone_id() {
     for escaped in [

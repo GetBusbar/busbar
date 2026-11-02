@@ -19,7 +19,6 @@ pub(crate) const NONE: AbiStr = AbiStr {
 };
 
 /// The transport kind's tail: the CARRIER of the host's byte stream (its role stated, busbar
-
 pub(crate) const TAIL: TransportTail = TransportTail {
     head: KindTailHead {
         size: std::mem::size_of::<TransportTail>() as u32,

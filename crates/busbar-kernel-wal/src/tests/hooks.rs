@@ -33,7 +33,6 @@ pub(crate) fn fault_reset() {
 }
 
 /// The directory-fsync hook: record `parent` as fsynced on this thread, then fail if a
-
 pub(crate) fn parent_fsync(parent: &Path) -> io::Result<()> {
     PARENT_FSYNCS.with(|c| c.borrow_mut().push(parent.to_path_buf()));
     FAULT_INJECT.with(|c| {

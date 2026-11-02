@@ -127,7 +127,6 @@ pub struct RawUpstreamError {
 
 impl RawUpstreamError {
     /// THE STATUS ALONE, claiming no provider vocabulary — what one outbound attempt reports when
-
     pub fn from_status(status: u16) -> Self {
         Self {
             http_status: status,

@@ -18,22 +18,18 @@ pub const FRAME_TRAILER_BYTES: usize = 1;
 pub const FRAME_PAYLOAD_BYTES: usize = FRAME_BYTES - FRAME_HEADER_BYTES - FRAME_TRAILER_BYTES;
 
 /// The byte every frame ends with. Never zero, so a frame whose last byte is zero is one whose write
-
 pub const FRAME_END_MARK: u8 = 0xE5;
 
 /// Where the end mark sits: the frame's last byte.
 const END_MARK_OFFSET: usize = FRAME_BYTES - FRAME_TRAILER_BYTES;
 
 /// The four bytes every frame opens with. A frame that does not start with these is not a frame —
-
 pub const FRAME_MAGIC: [u8; 4] = *b"BWAL";
 
 /// The layout version this build WRITES, and the only one it reads. A reader that meets a version it
-
 pub const FRAME_VERSION: u16 = 3;
 
 /// How many leading header bytes the header check covers: magic, version, flags, node, node_seq,
-
 const HEADER_CHECKED_BYTES: usize = 34;
 
 /// Where the header check sits.
@@ -80,7 +76,6 @@ impl Record {
     }
 
     /// How many frames this record occupies. A record with an empty body still takes one, so that
-
     pub fn frame_count(&self) -> usize {
         if self.body.is_empty() {
             1
@@ -90,13 +85,11 @@ impl Record {
     }
 
     /// Frame this record, in order. Every frame is fully written, including the zero padding after
-
     pub fn encode(&self) -> Vec<[u8; FRAME_BYTES]> {
         self.encode_in_commit(false)
     }
 
     /// Frame this record as a group commit puts it down: when `opens_commit`, its first frame is
-
     pub fn encode_in_commit(&self, opens_commit: bool) -> Vec<[u8; FRAME_BYTES]> {
         let parts = self.frame_count();
         let mut frames = Vec::with_capacity(parts);
@@ -184,7 +177,6 @@ pub enum FrameError {
 
 impl FrameError {
     /// Whether this is a WHOLE frame whose bytes changed after they were written: a frame of this
-
     #[must_use]
     pub fn is_altered_whole_frame(self, version: u16) -> bool {
         version == FRAME_VERSION && self == FrameError::DigestMismatch
@@ -224,7 +216,6 @@ impl std::fmt::Display for FrameError {
 impl std::error::Error for FrameError {}
 
 /// Build one frame. Private because the only way to make frames is to frame a whole record: a
-
 fn encode_frame(
     node: u64,
     node_seq: u64,
@@ -274,7 +265,6 @@ pub fn frame_version(frame: &[u8; FRAME_BYTES]) -> u16 {
 }
 
 /// The header of a frame whose header CHECK passes, whatever its digest says — the identity and the
-
 #[must_use]
 pub fn checked_header(frame: &[u8; FRAME_BYTES]) -> Option<(FrameHeader, &[u8])> {
     if frame[0..4] != FRAME_MAGIC || frame_version(frame) != FRAME_VERSION {
@@ -289,14 +279,12 @@ pub fn checked_header(frame: &[u8; FRAME_BYTES]) -> Option<(FrameHeader, &[u8])>
 }
 
 /// Whether `frame` was WRITTEN WHOLE: the write that made it reached its last byte.
-
 #[must_use]
 pub fn written_whole(frame: &[u8; FRAME_BYTES]) -> bool {
     frame[END_MARK_OFFSET] != 0
 }
 
 /// Whether `frame` is what a write of a frame of THIS layout leaves when it stops before the frame's
-
 #[must_use]
 pub fn unfinished_write(frame: &[u8; FRAME_BYTES]) -> bool {
     if written_whole(frame) {
@@ -318,7 +306,6 @@ pub fn unfinished_write(frame: &[u8; FRAME_BYTES]) -> bool {
 }
 
 /// The header of a frame that is not an [`unfinished_write`] but whose header does not check, read
-
 #[must_use]
 pub fn unchecked_whole(frame: &[u8; FRAME_BYTES]) -> Option<(FrameHeader, &[u8])> {
     if unfinished_write(frame) || checked_header(frame).is_some() {
@@ -367,7 +354,6 @@ fn read_header(frame: &[u8; FRAME_BYTES]) -> Result<(FrameHeader, u16), FrameErr
 }
 
 /// The digest a frame carries: over the header up to the digest field, then over the payload area
-
 pub(crate) fn frame_digest(frame: &[u8; FRAME_BYTES]) -> [u8; 32] {
     let mut hasher = Context::new(&SHA256);
     hasher.update(&frame[0..DIGEST_OFFSET]);
@@ -383,7 +369,6 @@ pub(crate) fn digest32(hasher: Context) -> [u8; 32] {
 }
 
 /// Read one frame back: its header, and the payload bytes it really carries.
-
 pub fn decode_frame(frame: &[u8; FRAME_BYTES]) -> Result<(FrameHeader, &[u8]), FrameError> {
     if frame[0..4] != FRAME_MAGIC {
         return Err(FrameError::NotAFrame);

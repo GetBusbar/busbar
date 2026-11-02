@@ -113,7 +113,6 @@ pub trait PluginRows: Send + Sync + std::fmt::Debug {
     fn resolve(&self, name_or_alias: &str) -> Option<Row>;
 
     /// SHA-256 of the exact admitted archive from which the retained native image was read.
-
     fn archive_sha256(&self, _name_or_alias: &str) -> Option<String> {
         None
     }
@@ -131,22 +130,18 @@ pub trait PluginRows: Send + Sync + std::fmt::Debug {
     fn skipped(&self) -> Vec<Skipped>;
 
     /// THE DOOR the store `name_or_alias` resolves to opens through
-
     fn store_door(&self, name_or_alias: &str) -> Result<crate::store_calls::StoreDoor, String>;
 
     /// Why no secret plugin answers `name_or_alias` on the secret axis, in the registry's words.
     fn secret_refusal(&self, name_or_alias: &str) -> String;
 
     /// Why no `kind` plugin answers `name_or_alias` on that kind's axis, in the registry's words:
-
     fn kind_refusal(&self, kind: &str, purpose: &str, name_or_alias: &str) -> String;
 
     /// The secret reference keys the row `name_or_alias` resolves to states in its Statement
-
     fn secret_slots(&self, name_or_alias: &str) -> Vec<String>;
 
     /// The REFERENCE-CAPABLE, NOT-SECRET settings paths the row `name_or_alias` resolves to states
-
     fn reference_slots(&self, name_or_alias: &str) -> Vec<String> {
         let _ = name_or_alias;
         Vec::new()

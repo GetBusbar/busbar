@@ -144,7 +144,6 @@ fn reply_err(body: serde_json::Value, sent_id: serde_json::Value) -> NotAnAnswer
 }
 
 /// THE DEFECT, AT THE UNIT. Every one of these was accepted as the answer to request `1` before the
-
 #[test]
 fn a_response_that_does_not_name_the_request_that_was_sent_is_not_that_requests_answer() {
     for body in [
@@ -166,7 +165,6 @@ fn a_response_that_does_not_name_the_request_that_was_sent_is_not_that_requests_
 }
 
 /// The control the case above is worthless without: a response that DOES name the request is served,
-
 #[test]
 fn a_response_naming_the_request_that_was_sent_is_read_and_its_payload_survives() {
     assert_eq!(
@@ -188,7 +186,6 @@ fn a_response_naming_the_request_that_was_sent_is_read_and_its_payload_survives(
 }
 
 /// A string id and the number that stringifies to it are DIFFERENT ids, in this direction too — the
-
 #[test]
 fn correlation_never_coerces_across_types() {
     assert_eq!(
@@ -210,7 +207,6 @@ fn correlation_never_coerces_across_types() {
 }
 
 /// The ONE deliberate looseness, and its bound. JSON has a single number type, so `1` and `1.0` are
-
 #[test]
 fn the_same_number_written_two_ways_correlates_and_a_different_number_still_does_not() {
     assert!(read_response(
@@ -293,7 +289,6 @@ fn exact_numeric_ids_correlate_without_restricting_the_integer_range() {
 }
 
 /// A correlated body still has to BE a response. These are the arms that say "the peer is broken"
-
 #[test]
 fn a_correlated_body_that_is_not_a_response_is_refused_as_a_shape_and_not_as_a_correlation() {
     for body in [
@@ -318,7 +313,6 @@ fn a_correlated_body_that_is_not_a_response_is_refused_as_a_shape_and_not_as_a_c
 }
 
 /// `"error": null` beside a `result` is a shape real peers emit, and it means "no error". Reading it
-
 #[test]
 fn an_explicitly_null_error_member_is_absent_rather_than_an_error() {
     assert_eq!(
@@ -348,7 +342,6 @@ fn an_error_member_is_read_with_its_code_and_message() {
 }
 
 /// A KERNEL REFUSAL WITH NO UNIT, IN THE JSON-RPC WIRE: the bytes v1.5.5 answered when a request was
-
 #[test]
 fn a_unitless_kernel_refusal_renders_the_v1_5_5_bytes() {
     use crate::abi::plane::RefusalCode;

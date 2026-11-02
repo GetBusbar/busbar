@@ -83,7 +83,6 @@ pub enum Billing {
 }
 
 /// RENDER AN EXACT DURATION BACK ONTO THE WIRE, AND THE ONLY PLACE A BILLABLE QUANTITY BECOMES A
-
 #[must_use]
 pub fn duration_seconds_to_wire(seconds: Count) -> f64 {
     seconds.micros() as f64 / 1_000_000.0_f64
@@ -145,7 +144,6 @@ impl Default for RawTierRates {
 }
 
 /// READ A JSON NUMBER AS AN EXACT, NON-NEGATIVE INTEGER COUNT, or `None` when it is not one: the
-
 #[must_use]
 pub fn read_count_u64(v: &serde_json::Value) -> Option<u64> {
     if let Some(u) = v.as_u64() {

@@ -41,19 +41,16 @@ pub const MAX_PIECES: u64 = 4096;
 pub const MAX_CLAIMS: u64 = 1024;
 
 /// `listen`: no short path; the bound address fits `addr_cap`.
-
 pub const fn check_listen(out: &ListenOut, addr_cap: u64) -> Result<(), Fault> {
     within(out.addr_written, addr_cap, "listen.addr_written")
 }
 
 /// `accept`: no short path; the far end's address fits `peer_cap`.
-
 pub const fn check_accept(out: &AcceptOut, peer_cap: u64) -> Result<(), Fault> {
     within(out.peer_written, peer_cap, "accept.peer_written")
 }
 
 /// `arrival`: the far end's address, under the short-buffer rule.
-
 pub const fn check_arrival(outcome: Outcome, out: &ArrivalOut, peer_cap: u64) -> Result<(), Fault> {
     match result(
         outcome,
@@ -69,7 +66,6 @@ pub const fn check_arrival(outcome: Outcome, out: &ArrivalOut, peer_cap: u64) ->
 }
 
 /// `read`/`write`: no short path; at most the buffer's capacity or the bytes offered. Partial I/O
-
 pub const fn check_io(out: &IoOut, cap: u64) -> Result<(), Fault> {
     if out.flags & !super::READ_END_OF_FRAME != 0 {
         return Err(fault(Rule::UnknownCode, "io.flags"));
@@ -78,7 +74,6 @@ pub const fn check_io(out: &IoOut, cap: u64) -> Result<(), Fault> {
 }
 
 /// `locate`: authority, name and protocol offer under the short-buffer rule; `has_name` and
-
 pub fn check_locate(
     outcome: Outcome,
     out: &LocateOut,
@@ -138,7 +133,6 @@ pub fn check_locate(
 pub const MAX_ALPN_BYTES: u64 = 0xffff;
 
 /// A protocol offer in the handshake's ProtocolNameList encoding: it partitions exactly into ids,
-
 pub fn check_alpn(offer: &[u8]) -> Result<(), Fault> {
     let mut at = 0usize;
     while at < offer.len() {
@@ -155,7 +149,6 @@ pub fn check_alpn(offer: &[u8]) -> Result<(), Fault> {
 }
 
 /// The protocol the handshake agreed, against the framer's offer: none agreed, or one of the
-
 pub fn check_agreed(offer: &[u8], agreed: &[u8]) -> Result<(), Fault> {
     check_alpn(offer)?;
     if agreed.is_empty() {
@@ -276,7 +269,6 @@ abi_op! {
 }
 
 /// Every route a datagram framer reported, read only up to its stated count
-
 fn datagram_routes(out: &FramerOut, routes: &[DatagramRoute]) -> Result<(), Fault> {
     first(
         routes,
@@ -310,7 +302,6 @@ const fn request_paths_named(d: &DatagramYield) -> bool {
 }
 
 /// Rendezvous terms: absent whole, or every credential nonempty and the fingerprint exactly
-
 pub fn check_terms(t: &RendezvousTerms, frame_len: u64) -> Result<(), Fault> {
     code(
         u64::from(t.role),
@@ -374,7 +365,6 @@ abi_op! {
 }
 
 /// The lifecycle `cancel`'s disposition: on READY, one of the transport's three (`0` = unwritten is
-
 pub const fn check_cancel(outcome: Outcome, disposition: u32) -> Result<(), Fault> {
     if !matches!(outcome, Outcome::Ready) {
         if disposition != 0 {
@@ -391,7 +381,6 @@ pub const fn check_cancel(outcome: Outcome, disposition: u32) -> Result<(), Faul
 }
 
 /// A framer answer's field blocks, over the frame bytes it wrote (`frame`, the first `frame_len`
-
 pub fn check_framer_fields(pieces: &[FramePiece], frame: &[u8]) -> Result<(), Fault> {
     const FIELD: &str = "framer.piece.pseudo_field";
     for p in pieces.iter().filter(|p| p.flags & PIECE_FIELDS != 0) {
@@ -412,13 +401,11 @@ pub fn check_framer_fields(pieces: &[FramePiece], frame: &[u8]) -> Result<(), Fa
 }
 
 /// A framer answer's head slots (`heads`, the host's buffer of `heads_cap`): at most the
-
 pub fn check_head_slots(out: &FramerOut, heads: &[HeadSlots], heads_cap: u64) -> Result<(), Fault> {
     head_slots(out, heads, heads_cap, &[])
 }
 
 /// Head slots checked with the actual field pieces after [`check_framer`] passed. A reason-only
-
 pub fn check_head_slots_with_pieces(
     out: &FramerOut,
     heads: &[HeadSlots],
@@ -430,7 +417,6 @@ pub fn check_head_slots_with_pieces(
 }
 
 /// The actual first field piece adjacent to a dialled head's reason words, as the SDK sink
-
 #[must_use]
 pub fn head_piece_index(head: &HeadSlots, pieces: &[FramePiece]) -> Option<usize> {
     if head.method.len != 0
@@ -486,7 +472,6 @@ fn head_slots(
 }
 
 /// Connection facts: the size is the struct's own.
-
 pub const fn check_facts(facts: &ConnFacts) -> Result<(), Fault> {
     if facts.size as usize != core::mem::size_of::<ConnFacts>() {
         return Err(fault(Rule::Foreign, "facts.size"));
@@ -533,7 +518,6 @@ abi_op! {
 }
 
 /// Every claim row: no string or list counted with a NULL pointer, its fact-key list bounded and
-
 pub fn check_claims(claims: &[Claim]) -> Result<(), Fault> {
     claims.iter().try_for_each(check_claim)
 }
@@ -555,7 +539,6 @@ abi_op! {
 }
 
 /// THE ONE SOURCE OF CLAIM NAMES, at admit: a transport's tail has exactly one row per scheme its
-
 pub const fn check_claim_rows(statement_claims_len: usize, t: &TransportTail) -> Result<(), Fault> {
     if t.claim_rows_len != statement_claims_len {
         return Err(fault(Rule::Contradiction, "tail.claim_rows"));
@@ -564,25 +547,21 @@ pub const fn check_claim_rows(statement_claims_len: usize, t: &TransportTail) ->
 }
 
 /// The claims a framer composes over: no name counted with a NULL pointer.
-
 pub fn check_composes_over(names: &[AbiStr]) -> Result<(), Fault> {
     texts(names, "composes_over.name")
 }
 
 /// The claims a connection may upgrade to: no name counted with a NULL pointer.
-
 pub fn check_upgrades_to(names: &[AbiStr]) -> Result<(), Fault> {
     texts(names, "upgrades_to.name")
 }
 
 /// One claim's transport fact keys: no key counted with a NULL pointer.
-
 pub fn check_claim_facts(keys: &[AbiStr]) -> Result<(), Fault> {
     texts(keys, "claim.fact")
 }
 
 /// Every status row: names a claim, `lo <= hi`, and a class that is stated.
-
 pub fn check_status_rows(rows: &[StatusRow], claims_len: u64) -> Result<(), Fault> {
     rows.iter()
         .try_for_each(|r| check_status_row(r, claims_len))
@@ -598,7 +577,6 @@ abi_op! {
 }
 
 /// A stream's final status on close ([`FinishIn`]): `final_status` is a number the
-
 pub fn check_final_status(i: &FinishIn, rows: &[StatusRow], claim: u32) -> Result<(), Fault> {
     let mut numbered = rows.iter().filter(|r| r.claim == claim).peekable();
     let covered = if numbered.peek().is_none() {
@@ -626,7 +604,6 @@ pub fn check_final_status(i: &FinishIn, rows: &[StatusRow], claim: u32) -> Resul
 }
 
 /// An `emit`'s OPENING BODY LENGTH ([`EmitIn::body_len`]): `body_len_known` is `0` or `1`, its
-
 pub fn check_emit_body_len(i: &EmitIn) -> Result<(), Fault> {
     if i._body_len_reserved != 0 {
         return Err(fault(Rule::UnknownCode, "emit._body_len_reserved"));
@@ -639,7 +616,6 @@ pub fn check_emit_body_len(i: &EmitIn) -> Result<(), Fault> {
 }
 
 /// Validate an emit's neutral kind before consuming its fresh bytes. `side` is the framing's
-
 pub fn check_emit_flags(i: &EmitIn, side: u32, answers_head: bool) -> Result<(), Fault> {
     bits(
         u64::from(i.flags),
@@ -661,7 +637,6 @@ pub fn check_emit_flags(i: &EmitIn, side: u32, answers_head: bool) -> Result<(),
 }
 
 /// An `emit`'s STATUS ([`EmitIn::status`], INBOUND-LISTEN, `BUSBAR-1.6.0.md` l.4913): stated on
-
 pub fn check_emit_status(i: &EmitIn, answers_head: bool) -> Result<(), Fault> {
     if i._status_reserved != 0 {
         return Err(fault(Rule::UnknownCode, "emit._status_reserved"));
@@ -674,7 +649,6 @@ pub fn check_emit_status(i: &EmitIn, answers_head: bool) -> Result<(), Fault> {
 }
 
 /// Every fault row: names a claim, `lo <= hi`, and a fault reading that is stated (never
-
 pub fn check_fault_rows(rows: &[FaultRow], claims_len: u64) -> Result<(), Fault> {
     rows.iter().try_for_each(|r| check_fault_row(r, claims_len))
 }
@@ -689,7 +663,6 @@ abi_op! {
 }
 
 /// A claim that classes its answers classes them for the breaker too: every claim named by a status
-
 pub fn check_fault_cover(status: &[StatusRow], faults: &[FaultRow]) -> Result<(), Fault> {
     for r in status {
         if !faults.iter().any(|f| f.claim == r.claim) {
@@ -700,7 +673,6 @@ pub fn check_fault_cover(status: &[StatusRow], faults: &[FaultRow]) -> Result<()
 }
 
 /// Every setting: a path and a known kind.
-
 pub fn check_settings(settings: &[SettingDecl]) -> Result<(), Fault> {
     settings.iter().try_for_each(check_setting)
 }
@@ -716,7 +688,6 @@ abi_op! {
 }
 
 /// The auth points a transport offers, read from its Statement's `extensions`
-
 pub fn check_offered_points(extensions: &[u8]) -> Result<AuthPoints, Fault> {
     let Some(value) = crate::abi::mechanism::extensions::get(extensions, super::EXT_OFFERED_POINTS)
     else {
@@ -732,7 +703,6 @@ pub fn check_offered_points(extensions: &[u8]) -> Result<AuthPoints, Fault> {
 }
 
 /// Whether a transport renders sealed values, read from its Statement's `extensions`
-
 pub fn check_sealed_values(extensions: &[u8]) -> Result<bool, Fault> {
     match crate::abi::mechanism::extensions::get(extensions, super::EXT_SEALED_VALUES) {
         None => Ok(false),
@@ -762,7 +732,6 @@ abi_op! {
 }
 
 /// A framer's stated agreed protocol ([`super::FramerYield::agreed`]) against the offer it was
-
 pub const fn check_agreed_position(agreed: u32, offer_len: u64) -> Result<(), Fault> {
     if agreed as u64 > offer_len {
         return Err(fault(Rule::IndexOutOfRange, "framer.agreed"));
@@ -822,7 +791,6 @@ pub unsafe fn check_lines(i: &super::BeginIn) -> Result<(), Fault> {
 }
 
 /// A `begin`'s binding: on [`super::SIDE_DIAL`] a valid point set with a handle exactly when it
-
 pub const fn check_binding(i: &super::BeginIn) -> Result<(), Fault> {
     if i.side != super::SIDE_DIAL {
         if i.points != 0 || !i.auth.is_none() {
@@ -840,7 +808,6 @@ pub const fn check_binding(i: &super::BeginIn) -> Result<(), Fault> {
 }
 
 /// A `begin`'s scheme ([`super::BeginIn::scheme`]), on every side: a declared code,
-
 pub const fn check_begin_scheme(i: &super::BeginIn) -> Result<(), Fault> {
     use crate::abi::host::service::{SCHEME_SECURE, SCHEME_UNDECLARED};
     if i.scheme == SCHEME_UNDECLARED {
@@ -853,7 +820,6 @@ pub const fn check_begin_scheme(i: &super::BeginIn) -> Result<(), Fault> {
 }
 
 /// A route's CONTENT, read: a method set inside the vocabulary and not empty, a known path form, a
-
 pub fn check_route_view(r: &super::route::RouteView<'_>) -> Result<(), Fault> {
     use super::route::{pattern_segments, FIELD_VALUE_PREFIX, PATH_PATTERN, PATH_PREFIX};
     if r.methods == 0 {

@@ -31,7 +31,6 @@ pub const unsafe fn lend<T>(t: &T) -> crate::abi::sdk::Lent<'_, T> {
 pub use pairs::lent_pairs;
 
 /// A REVIEWED ABI struct whose all-zero bit pattern is a valid value. Sealed: the implementors are
-
 pub trait AllZero: sealed::Sealed + Copy + 'static {}
 
 /// The all-zero `T`: every integer `0`, every raw pointer NULL, every `Option<fn>` `None`. A test

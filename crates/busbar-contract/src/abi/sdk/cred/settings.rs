@@ -42,7 +42,6 @@ impl SettingsError {
 }
 
 /// `settings: ` and serde's own words, every value in them written `***` ([`SettingsError::path`]
-
 impl fmt::Display for SettingsError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "settings: {}", self.what)
@@ -118,17 +117,14 @@ impl de::Error for SettingsError {
 }
 
 /// Parse a plugin's settings document into `T`. Every [`Cred`] and [`CredUrl`] field is sealed as
-
 pub fn settings<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, SettingsError> {
     T::deserialize(Node::new(document(bytes)?, String::new()))
 }
 
 /// The key of the marker a host writes where it took a value at a declared wildcard secret path
-
 pub const SECRET_MARKER: &str = "$secret";
 
 /// [`settings`] over a document the host lent secrets with: each `{"$secret": <index>}` marker is
-
 pub fn settings_lent<T: DeserializeOwned>(doc: &[u8], lent: &[&[u8]]) -> Result<T, SettingsError> {
     let mut value = document(doc)?;
     if let Err(e) = substitute(&mut value, lent, "") {

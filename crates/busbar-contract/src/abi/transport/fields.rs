@@ -10,7 +10,6 @@ pub const SEPARATOR: &[u8] = b": ";
 pub const LINE_END: &[u8] = b"\r\n";
 
 /// The fields dropped from a dialled response block, the ONE list (K2's `NEVER_KEPT` names its hop half
-
 pub const HOP_BY_HOP: &[&str] = &[
     "connection",
     "keep-alive",
@@ -24,7 +23,6 @@ pub const HOP_BY_HOP: &[&str] = &[
 ];
 
 /// Whether the field `name` (lower-case) is hop-by-hop for an answer whose `connection` fields
-
 #[must_use]
 pub fn hop_by_hop<'a>(name: &str, nominated: impl IntoIterator<Item = &'a [u8]>) -> bool {
     HOP_BY_HOP.contains(&name)
@@ -35,7 +33,6 @@ pub fn hop_by_hop<'a>(name: &str, nominated: impl IntoIterator<Item = &'a [u8]>)
 }
 
 /// A field block's fields, `(name, value)`, in order. A line without [`SEPARATOR`] or
-
 pub fn lines(block: &[u8]) -> impl Iterator<Item = (&[u8], &[u8])> {
     let mut rest = block;
     std::iter::from_fn(move || {

@@ -24,7 +24,6 @@
 pub struct UnitRate(u64);
 
 /// Nano-units per configured micro-unit: the one scale step between the config's unit and the card's
-
 const NANOS_PER_MICRO_UNIT: u64 = super::NANOS_PER_MICRO as u64;
 
 impl UnitRate {

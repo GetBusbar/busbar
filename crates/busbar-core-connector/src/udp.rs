@@ -9,7 +9,6 @@ use std::net::{SocketAddr, UdpSocket};
 use socket2::{Domain, Protocol, Socket, Type};
 
 /// The largest datagram a read accepts: the whole IPv4/IPv6 UDP payload range. A read buffer of
-
 pub const MAX_DATAGRAM: usize = 65_536;
 /// Kernel buffer the port asks for each way — a few hundred milliseconds of many sessions' audio.
 const SOCKET_BUFFER: usize = 1 << 20;
@@ -22,7 +21,6 @@ pub struct UdpPort {
 }
 
 /// Bind a non-blocking UDP port on `bind` (a concrete `ip:port`; port `0` picks one).
-
 pub fn bind(bind: &str) -> io::Result<UdpPort> {
     let addr: SocketAddr = bind
         .parse()
@@ -52,7 +50,6 @@ impl UdpPort {
     }
 
     /// The next datagram into `buf` and the peer it came from; `None` when none is waiting.
-
     pub fn try_recv_from(&self, buf: &mut [u8]) -> io::Result<Option<(usize, SocketAddr)>> {
         match self.socket.recv_from(buf) {
             Ok(got) => Ok(Some(got)),
@@ -62,7 +59,6 @@ impl UdpPort {
     }
 
     /// Send `datagram` to `to` whole; `None` when the socket's send buffer is full.
-
     pub fn try_send_to(&self, datagram: &[u8], to: SocketAddr) -> io::Result<Option<()>> {
         match self.socket.send_to(datagram, to) {
             Ok(n) if n == datagram.len() => Ok(Some(())),
@@ -93,7 +89,6 @@ pub struct ReadyPort {
 
 impl ReadyPort {
     /// Put `port` on the calling worker's reactor.
-
     pub fn open(port: UdpPort) -> io::Result<ReadyPort> {
         let local = port.local;
         Ok(ReadyPort {
@@ -109,7 +104,6 @@ impl ReadyPort {
     }
 
     /// The next datagram into `buf` and the peer it came from; Pending with `cx`'s waker
-
     pub fn poll_recv_from(
         &self,
         cx: &mut std::task::Context<'_>,
@@ -120,7 +114,6 @@ impl ReadyPort {
     }
 
     /// Send `datagram` to `to` now; `false` = the send buffer was full and it was dropped.
-
     pub fn send_to(&self, datagram: &[u8], to: SocketAddr) -> io::Result<bool> {
         match self.socket.get_ref().send_to(datagram, to) {
             Ok(n) if n == datagram.len() => Ok(true),

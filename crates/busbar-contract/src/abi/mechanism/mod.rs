@@ -19,7 +19,6 @@ pub mod route;
 pub mod ticket;
 
 /// The seven kind WORDS: what a signed manifest's `kind` states, one per [`KindCode`]
-
 pub mod kind {
     /// `abi/store/`.
     pub const STORE: &str = "store";
@@ -38,11 +37,9 @@ pub mod kind {
 }
 
 /// The mechanism's version, stamped in every [`door::Door`]. v1.5.5 called it `TRANSPORT_VERSION`
-
 pub const MECHANISM_VERSION: u32 = 2;
 
 /// ASCII `"BUSBARPL"`, little-endian: a door's first eight bytes. Deliberately not the retired
-
 pub const DOOR_MAGIC: u64 = u64::from_le_bytes(*b"BUSBARPL");
 
 /// The ONE symbol a plugin exports, NUL-terminated for `dlsym`.
@@ -111,7 +108,6 @@ impl KindCode {
     }
 
     /// The ONE version of this kind's ABI the host accepts (no legacy loading: older and newer are
-
     #[must_use]
     pub const fn abi_version(self) -> u32 {
         match self {
@@ -126,7 +122,6 @@ impl KindCode {
     }
 
     /// The ONE layout fingerprint of this kind's ABI the host accepts ([`layout`]): a door stating
-
     #[must_use]
     pub const fn layout_fingerprint(self) -> u64 {
         match self {

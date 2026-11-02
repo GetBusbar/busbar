@@ -8,7 +8,6 @@ use core::fmt;
 use crate::json_grammar::{resolve_pointer, Resolved};
 
 /// The ONE scale every count is held at: six decimal places, i.e. micro-units.
-
 pub const COUNT_SCALE: u32 = 6;
 
 /// `10^COUNT_SCALE`: how many mantissa steps make one whole unit.
@@ -21,21 +20,18 @@ pub const MAX: Count = Count(i128::MAX);
 pub const MIN: Count = Count(i128::MIN);
 
 /// The largest quantity whose mantissa still fits a SIGNED 64-BIT store column — about `9.2e12`
-
 pub const MAX_ACROSS_A_64_BIT_COLUMN: Count = Count(i64::MAX as i128);
 
 /// The smallest quantity whose mantissa still fits a signed 64-bit store column.
 pub const MIN_ACROSS_A_64_BIT_COLUMN: Count = Count(i64::MIN as i128);
 
 /// The scale a record's SILENCE means: whole units, no fraction (#81a).
-
 pub const SCALE_WHOLE_UNITS: u32 = 0;
 
 /// The scale every row written from here on declares: micro-units, i.e. [`COUNT_SCALE`].
 pub const SCALE_MICRO_UNITS: u32 = COUNT_SCALE;
 
 /// The scale a record's absent discriminator means — the function `#[serde(default = "…")]` names.
-
 #[must_use]
 pub const fn stored_scale_default() -> u32 {
     SCALE_WHOLE_UNITS
@@ -61,7 +57,6 @@ impl Count {
     pub const EPSILON: Count = Count(1);
 
     /// A count from a mantissa that is ALREADY at [`COUNT_SCALE`].
-
     #[must_use]
     pub const fn from_micros(micros: i128) -> Count {
         Count(micros)
@@ -74,7 +69,6 @@ impl Count {
     }
 
     /// A count of `n` whole units.
-
     pub const fn from_integer(n: i128) -> Result<Count, CountError> {
         match n.checked_mul(SCALE_FACTOR) {
             Some(m) => Ok(Count(m)),
@@ -95,14 +89,12 @@ impl Count {
     }
 
     /// Whether this quantity's mantissa fits a signed 64-bit store column.
-
     #[must_use]
     pub const fn fits_a_64_bit_column(self) -> bool {
         self.0 >= MIN_ACROSS_A_64_BIT_COLUMN.0 && self.0 <= MAX_ACROSS_A_64_BIT_COLUMN.0
     }
 
     /// Read a count back out of a store, branching on the row's own scale discriminator (#81a).
-
     pub const fn from_stored(value: i128, scale: u32) -> Result<Count, CountError> {
         if scale == SCALE_WHOLE_UNITS {
             return Count::from_integer(value);
@@ -114,7 +106,6 @@ impl Count {
     }
 
     /// `self + rhs`, exactly.
-
     pub const fn checked_add(self, rhs: Count) -> Result<Count, CountError> {
         match self.0.checked_add(rhs.0) {
             Some(m) => Ok(Count(m)),
@@ -123,7 +114,6 @@ impl Count {
     }
 
     /// `self - rhs`, exactly.
-
     pub const fn checked_sub(self, rhs: Count) -> Result<Count, CountError> {
         match self.0.checked_sub(rhs.0) {
             Some(m) => Ok(Count(m)),
@@ -132,7 +122,6 @@ impl Count {
     }
 
     /// `self * rate`, where the rate is itself an exact decimal at the same scale.
-
     pub const fn checked_mul(self, rate: Count) -> Result<Count, CountError> {
         match self.0.checked_mul(rate.0) {
             None => Err(CountError::Overflow),
@@ -147,7 +136,6 @@ impl Count {
     }
 
     /// The exact mantissa of `self * rate` at DOUBLE the scale (12 places).
-
     pub const fn checked_mul_wide(self, rate: Count) -> Result<i128, CountError> {
         match self.0.checked_mul(rate.0) {
             Some(wide) => Ok(wide),
@@ -156,7 +144,6 @@ impl Count {
     }
 
     /// The total of a sequence, exactly.
-
     pub fn total<I: IntoIterator<Item = Count>>(counts: I) -> Result<Count, CountError> {
         let mut acc = Count::ZERO;
         for c in counts {
@@ -166,7 +153,6 @@ impl Count {
     }
 
     /// The canonical decimal spelling of this quantity.
-
     #[must_use]
     pub fn to_decimal_string(self) -> String {
         let magnitude = self.0.unsigned_abs();
@@ -184,13 +170,11 @@ impl Count {
     }
 
     /// Read decimal TEXT as an exact count.
-
     pub fn parse(text: &str) -> Result<Count, CountError> {
         Count::parse_bytes(text.as_bytes())
     }
 
     /// Read decimal text as an exact count, from bytes.
-
     pub fn parse_bytes(text: &[u8]) -> Result<Count, CountError> {
         let lexed = lex(text)?;
         if lexed.all_zero {
@@ -205,7 +189,6 @@ impl Count {
     }
 
     /// Read a JSON number located by pointer, straight out of a body's bytes.
-
     pub fn read_at(body: &[u8], pointer: &str) -> Result<Option<Count>, CountError> {
         match resolve_pointer(body, pointer) {
             Resolved::Found(span) => {
@@ -221,13 +204,11 @@ impl Count {
 }
 
 /// THE SEAM: read one reported usage count from its decimal text.
-
 pub fn read_count(text: &str) -> Result<Count, CountError> {
     read_count_bytes(text.as_bytes())
 }
 
 /// THE SEAM, over bytes — see [`read_count`].
-
 pub fn read_count_bytes(text: &[u8]) -> Result<Count, CountError> {
     let count = Count::parse_bytes(text)?;
     if count.is_negative() {
@@ -304,7 +285,6 @@ impl std::str::FromStr for Count {
 }
 
 /// What the grammar found: the significant digits as written, how many of them sat after the point,
-
 struct Lexed<'a> {
     negative: bool,
     digits: DigitRun<'a>,
@@ -338,11 +318,9 @@ impl DigitRun<'_> {
 }
 
 /// An exponent magnitude no mantissa can survive being shifted by, used when the exponent literal
-
 const ABSURD_EXPONENT: i64 = 1 << 40;
 
 /// The byte at `i`, by value, or `None` past the end.
-
 fn byte_at(text: &[u8], i: usize) -> Option<u8> {
     text.get(i).copied()
 }
@@ -449,7 +427,6 @@ fn lex(text: &[u8]) -> Result<Lexed<'_>, CountError> {
 }
 
 /// Turn a digit run and a decimal shift into the mantissa at [`COUNT_SCALE`].
-
 fn mantissa(digits: DigitRun<'_>, shift: i64, negative: bool) -> Result<Count, CountError> {
     let mut lo = 0usize;
     while lo < digits.len() && digits.at(lo) == b'0' {
@@ -486,7 +463,6 @@ fn mantissa(digits: DigitRun<'_>, shift: i64, negative: bool) -> Result<Count, C
 }
 
 /// The bytes with ASCII whitespace trimmed from both ends.
-
 fn trim_ascii_whitespace(bytes: &[u8]) -> &[u8] {
     let mut start = 0usize;
     let mut end = bytes.len();

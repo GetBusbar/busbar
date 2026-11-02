@@ -6,14 +6,12 @@
 use crate::caps::{Admission, Usage, VerifiedDestination};
 
 /// The seal on [`Step`]. Only the ten markers declared in this module implement it, so nothing
-
 mod sealed {
     /// The private supertrait no downstream type can name, and therefore cannot implement.
     pub trait Sealed {}
 }
 
 /// One step of the loop, as a zero-sized type-level marker.
-
 pub trait Step: sealed::Sealed + Send + Sync + 'static {
     /// What a "proceed" answer for this step carries forward.
     type Facts: Send + 'static;
@@ -66,7 +64,6 @@ impl StepName {
     ];
 
     /// Whether a hold is open at this step — strictly after the door.
-
     pub fn under_hold(self) -> bool {
         self > StepName::Admit
     }

@@ -102,7 +102,6 @@ fn a_leased_blob_is_held_until_release_and_named_in_the_head() {
 }
 
 /// RED: a leased string is named where its lease holds it, and the lease's release drops it
-
 #[test]
 fn a_leased_string_is_held_until_release_and_named_in_the_head() {
     let leases = Leases::default();
@@ -449,7 +448,6 @@ fn an_arrival_names_its_route_and_keeps_the_name() {
 }
 
 /// A READY ARRIVAL'S ROUTE NAME COSTS NO HEAP ONCE THE INSTANCE HAS KEPT IT (THE DESIGN
-
 #[test]
 fn a_route_entry_already_kept_is_named_without_allocating() {
     use crate::abi::plane::{ArriveOut, ROUTE_DIRECT};
@@ -507,7 +505,6 @@ fn an_arrival_states_its_trust_facts_and_keeps_them() {
 }
 
 /// `keep` names a lease for an answer whose only material is program memory: the static header
-
 #[test]
 fn keep_names_a_lease_for_static_material() {
     const HEADERS: &[AbiStr] = &[AbiStr {

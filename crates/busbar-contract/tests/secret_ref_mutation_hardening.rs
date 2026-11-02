@@ -6,7 +6,6 @@
 use busbar_contract::SecretRef;
 
 /// A `SecretRef` build from a distinctive "looks like a secret" string in its `settings` is
-
 #[test]
 fn secret_ref_settings_carry_only_the_reference_never_a_resolved_value() {
     let distinctive_marker = "SUPER_DISTINCTIVE_ENV_VAR_NAME_NOT_A_SECRET_VALUE";
@@ -28,7 +27,6 @@ fn secret_ref_settings_carry_only_the_reference_never_a_resolved_value() {
 }
 
 /// `SecretRef` has no `Display` impl at all — grep-proof via a `PartialEq`-shaped compile check is
-
 #[test]
 fn secret_ref_debug_output_never_contains_an_inline_literal_a_caller_tried_to_smuggle_in() {
     let distinctive_secret = "sk-DISTINCTIVE-7f3e9c-DO-NOT-ECHO";
@@ -46,7 +44,6 @@ fn secret_ref_debug_output_never_contains_an_inline_literal_a_caller_tried_to_sm
 }
 
 /// `serde::Serialize` round-trips the same non-secret reference data `Debug` shows — confirming
-
 #[test]
 fn secret_ref_serialize_exposes_the_same_reference_data_as_debug_no_more_no_less() {
     let r = SecretRef::file("/run/secrets/distinctive-marker-path");

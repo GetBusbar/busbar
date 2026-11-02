@@ -8,7 +8,6 @@ use std::collections::BTreeSet;
 use busbar_contract::upstream::{Disposition, StatusClass};
 
 /// Nine classes and four dispositions: the cardinalities the renderers outside this crate match
-
 #[test]
 fn the_table_has_nine_classes_and_four_dispositions() {
     assert_eq!(StatusClass::ALL.len(), 9);
@@ -35,7 +34,6 @@ fn every_label_is_distinct() {
 }
 
 /// The tokens and labels, verbatim: operator spellings and dashboard dimensions are part of the
-
 #[test]
 fn the_tokens_and_labels_are_the_pinned_bytes() {
     let tokens: Vec<&str> = StatusClass::ALL.iter().map(|c| c.token()).collect();

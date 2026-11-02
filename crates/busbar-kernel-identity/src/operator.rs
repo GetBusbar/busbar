@@ -11,7 +11,6 @@ use busbar_contract::auth_calls::{
 };
 
 /// A linked auth row: the key configuration names it by (and the auth catalog, `/info` and every
-
 pub type LinkedAuth = (&'static str, &'static str, AuthDoor);
 /// The door a linked auth row is opened through (`abi::auth`, one dispatcher).
 pub type AuthDoor = busbar_contract::abi::mechanism::door::DoorFn;
@@ -29,7 +28,6 @@ pub struct OperatorWords {
 }
 
 /// The auth rows this build LINKS (the composition root's, or a test binary's) and the operator
-
 static LINKED: std::sync::OnceLock<(&[LinkedAuth], OperatorWords)> = std::sync::OnceLock::new();
 
 /// Install this build's linked auth rows and the operator credential's words.
@@ -41,7 +39,6 @@ pub fn install_linked(rows: &'static [LinkedAuth], words: OperatorWords) {
 static TEST_WORDS: std::sync::OnceLock<OperatorWords> = std::sync::OnceLock::new();
 
 /// Supply operator metadata without linking any auth row. The first metadata hand-in stands;
-
 #[cfg(any(test, feature = "test-support"))]
 pub fn install_test_words(words: OperatorWords) {
     let _ = TEST_WORDS.set(words);
@@ -53,7 +50,6 @@ pub fn linked() -> &'static [LinkedAuth] {
 }
 
 /// The operator credential's provider key, as configuration spells it: the root's word once handed
-
 pub fn provider() -> &'static str {
     words().provider
 }
@@ -64,7 +60,6 @@ pub fn principal_id() -> &'static str {
 }
 
 /// The operator credential's words: a linked root's hand-in takes precedence over explicit test
-
 pub fn words() -> OperatorWords {
     if let Some((_, words)) = LINKED.get() {
         return *words;
@@ -89,7 +84,6 @@ pub fn answered(op: &str) -> bool {
 }
 
 /// Whether `module` names the plugin of the linked auth row keyed `op` by its identity, not its
-
 pub fn names(op: &str, module: &str) -> bool {
     module == op
         || linked()
@@ -98,7 +92,6 @@ pub fn names(op: &str, module: &str) -> bool {
 }
 
 /// A TEST REGISTRY ROW: link `door` (the door of the auth plugin a test binary links for the
-
 pub fn install_row(words: OperatorWords, door: AuthDoor) {
     static ROW: std::sync::OnceLock<[LinkedAuth; 1]> = std::sync::OnceLock::new();
     install_linked(
@@ -108,7 +101,6 @@ pub fn install_row(words: OperatorWords, door: AuthDoor) {
 }
 
 /// THE OPERATOR CREDENTIAL'S REFUSALS, v1.5.5's text byte for byte with the provider read off the
-
 pub fn unanswered_token(op: &str) -> String {
     format!(
         "an {op} token is configured but this binary was built WITHOUT the `auth-{op}` feature — \
@@ -208,7 +200,6 @@ impl Judgement {
     }
 
     /// A refusal for a verifier that answered NO VERDICT ([`Self::no_verdict`]), keeping the lines
-
     #[must_use]
     pub fn without_verdict(strips: Vec<Strip>) -> Self {
         Self {
@@ -219,7 +210,6 @@ impl Judgement {
     }
 
     /// A `verify` answer as a chain reads it: the verdict, the identity's replay claim, and the
-
     #[must_use]
     pub fn answered(answer: VerifyAnswer) -> Self {
         if matches!(answer.verified, Verified::Failed) {
@@ -260,7 +250,6 @@ pub enum OperatorCredential {
 
 impl OperatorCredential {
     /// The operator credential over the token digest `digest`: `answered` says whether a row answers
-
     pub fn open(
         answered: bool,
         digest: Option<&str>,
@@ -274,7 +263,6 @@ impl OperatorCredential {
     }
 
     /// Judge `request` — the request's field lines at `Head`, handed through as presented: the
-
     pub async fn judge(&self, request: VerifyRequest) -> Option<Judgement> {
         let module = match self {
             Self::Unanswered => return None,
@@ -285,7 +273,6 @@ impl OperatorCredential {
     }
 
     /// The SYNCHRONOUS PROBE of the same judgement: one ticketless, watchdog-bounded crossing on
-
     pub fn probe(&self, request: &VerifyRequest) -> Option<Judgement> {
         let module = match self {
             Self::Unanswered => return None,
@@ -300,7 +287,6 @@ impl OperatorCredential {
 }
 
 /// The operator credential on an admin chain: the credential the auth axis answered, and the
-
 pub struct Operator {
     cred: OperatorCredential,
     names: Vec<String>,
@@ -310,7 +296,6 @@ pub struct Operator {
 
 impl Operator {
     /// The operator credential of the operator provider `op`, answering for `op` referenced bare,
-
     pub fn new(op: &str) -> Self {
         Self {
             cred: OperatorCredential::Unanswered,
@@ -320,7 +305,6 @@ impl Operator {
     }
 
     /// THE ONE JUDGEMENT: whether the provider `name`, whose `identity-providers:` definition names
-
     pub fn backed(
         op: &str,
         name: &str,
@@ -331,7 +315,6 @@ impl Operator {
     }
 
     /// The operator credential of `op`, opened as [`OperatorCredential::open`] opens it, answering for
-
     pub fn open<'a>(
         op: &str,
         defs: impl Iterator<Item = (&'a str, &'a str)>,
@@ -356,7 +339,6 @@ impl Operator {
     }
 
     /// This operator credential, its row stating `carriers` (its Statement's carrier marks, in
-
     #[must_use]
     pub fn with_carriers(mut self, carriers: Vec<String>) -> Self {
         self.carriers = carriers;
@@ -364,7 +346,6 @@ impl Operator {
     }
 
     /// The carriers the operator credential's row states, in its Statement's order: the admin
-
     #[must_use]
     pub fn carriers(&self) -> &[String] {
         &self.carriers
@@ -376,7 +357,6 @@ impl Operator {
     }
 
     /// Whether a principal `id` that the admin-chain provider `name` identified is the operator: the
-
     pub fn mints(&self, name: Option<&str>, id: &str, principal_id: &str) -> bool {
         name.is_some_and(|n| self.is(n)) && id == principal_id
     }

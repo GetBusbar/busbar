@@ -58,7 +58,6 @@ impl FramerDoor for Input {
 }
 
 /// Pending auth retains input while fresh tickets still deliver a sibling. The real loader's
-
 struct Holding {
     inner: TestDoor,
     scope: Arc<FramingContext>,

@@ -21,7 +21,6 @@ use crate::framer::{Crossed, FramerDoor};
 use crate::hostio::{Admission, HostIo, OpenFailure};
 
 /// ONE SIDE of a carried connection: a ticket its entry's ops are driven on inline, and the task
-
 pub trait Side: Send + Sync {
     /// The ticket.
     fn ticket(&self) -> Ticket;
@@ -96,7 +95,6 @@ impl Driven {
     }
 
     /// Cross `call` on this side with `cx`'s waker registered: a RESUME when the same op pended on
-
     pub fn cross(
         &mut self,
         door: &dyn FramerDoor,
@@ -170,7 +168,6 @@ impl Dest {
 }
 
 /// THE CARRIER OF ONE CONNECTION: its entry, the host I/O it rides, the carrier's connection token,
-
 pub struct Carried {
     door: Arc<dyn FramerDoor>,
     io: Arc<HostIo>,
@@ -201,7 +198,6 @@ pub enum DialFailure {
 
 impl Carried {
     /// DIAL `dest` through the carrier `door`, the host admitting exactly `dest` for it: the
-
     pub fn dial(
         door: Arc<dyn FramerDoor>,
         io: Arc<HostIo>,
@@ -317,7 +313,6 @@ impl Carried {
     }
 
     /// THE KEY-RETIRED SIGNAL (`abi::transport::DEST_RETIRED`): tell the carrier `door` that the
-
     pub fn retire_key(door: &Arc<dyn FramerDoor>, io: &HostIo, key: u64) {
         let Some(mut wr) = Driven::of(door.as_ref()) else {
             return;
@@ -341,7 +336,6 @@ impl Carried {
     }
 
     /// The connection `conn` the carrier `door` accepted (host handle `handle`).
-
     pub fn accepted(
         door: Arc<dyn FramerDoor>,
         io: Arc<HostIo>,
@@ -374,7 +368,6 @@ impl Carried {
     }
 
     /// Whether the program a dial spawned has exited (without waiting for it); `false` for a
-
     #[must_use]
     pub fn program_exited(&self) -> bool {
         self.handle.is_some_and(|h| self.io.program_exited(h))
@@ -394,13 +387,11 @@ impl Carried {
     }
 
     /// The dial's connect settled (the carrier's `flush` on a fresh dial): `Ready(Err)` with the
-
     pub fn poll_connected(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), String>> {
         self.poll_flush(cx).map_err(|e| e.to_string())
     }
 
     /// Every byte the carrier took is on the wire (`flush`).
-
     pub fn poll_flush(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         let mut i: ConnIn = blank_in();
         i.conn = self.conn;
@@ -422,7 +413,6 @@ impl Carried {
     }
 
     /// Offer `bytes` (`end` = they complete a frame of the carrier's own wire): how many it took.
-
     pub fn poll_write(
         &mut self,
         cx: &mut Context<'_>,
@@ -448,7 +438,6 @@ impl Carried {
     }
 
     /// The next bytes into `buf`, and whether they complete a frame of the carrier's own wire;
-
     pub fn poll_read(
         &mut self,
         cx: &mut Context<'_>,
@@ -473,7 +462,6 @@ impl Carried {
     }
 
     /// CLOSE: whatever pends on either side is cancelled, then the carrier's `shut`. Idempotent.
-
     pub fn close(&mut self) {
         if std::mem::replace(&mut self.shut, true) {
             return;
@@ -490,7 +478,6 @@ impl Carried {
     }
 
     /// TAKE the dialled or accepted socket off the host's table as the byte stream moves on to the
-
     #[must_use]
     pub fn hand_up(mut self) -> Option<std::net::TcpStream> {
         let taken = self.handle.and_then(|h| self.io.take_stream(h));

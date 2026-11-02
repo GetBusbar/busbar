@@ -221,7 +221,6 @@ impl<'a> Txn<'a> {
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
-
     pub fn done<T, E>(&self, value: T) -> Outcome<T, E> {
         Outcome::Value(value)
     }

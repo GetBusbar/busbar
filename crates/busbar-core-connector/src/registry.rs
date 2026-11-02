@@ -89,7 +89,6 @@ pub struct Transports {
 
 impl Transports {
     /// The view over `entries`.
-
     pub fn new(entries: Vec<Entry>) -> Result<Self, ViewRefusal> {
         let view = Self { entries };
         let mut seen: Vec<(&str, &str)> = Vec::new();
@@ -142,7 +141,6 @@ impl Transports {
     }
 
     /// THE CARRIER OF A NETWORK ADDRESS: the first entry, in registration order, that is a CARRIER
-
     #[must_use]
     pub fn address_carrier(&self) -> Option<&Entry> {
         self.entries.iter().find(|e| {

@@ -109,7 +109,6 @@ fn the_two_byte_handles_do_what_they_say() {
 }
 
 /// A plane may name two places for the response ceiling, and the FIRST that resolves is the one.
-
 #[test]
 fn the_first_response_ceiling_pointer_that_resolves_is_the_one() {
     use busbar_contract::bounded::{BoundedVec, Ir, MAX_RESPONSE_PTRS};
@@ -156,7 +155,6 @@ fn the_first_response_ceiling_pointer_that_resolves_is_the_one() {
 }
 
 /// An arena that leaks, because a span table handed back from `spans::resolve` borrows the arena
-
 struct LeakPlaneAlloc;
 
 static PLANE_ALLOC: LeakPlaneAlloc = LeakPlaneAlloc;
@@ -185,7 +183,6 @@ impl PlaneAlloc for LeakPlaneAlloc {
 }
 
 /// A pointer the body does not carry is ABSENT from the table, not present and empty.
-
 #[test]
 fn only_the_declared_pointers_the_body_carries_reach_the_table() {
     let body = br#"{"model":"model-1"}"#;
@@ -202,7 +199,6 @@ fn only_the_declared_pointers_the_body_carries_reach_the_table() {
 }
 
 /// The table stops at the same ceiling the fact map does.
-
 #[test]
 fn a_plane_that_declares_more_pointers_than_the_ceiling_is_capped_at_it() {
     let declared = MAX_KEYS + 2;
@@ -231,7 +227,6 @@ fn a_plane_that_declares_more_pointers_than_the_ceiling_is_capped_at_it() {
 }
 
 /// The cursor stops at the ceiling its own documentation claims.
-
 #[test]
 fn the_frame_cursor_stops_at_the_per_connection_ceiling() {
     use busbar_contract::wire::{Frame, FrameCursor, FrameMeta};
@@ -270,7 +265,6 @@ fn the_frame_cursor_stops_at_the_per_connection_ceiling() {
 }
 
 /// The two answers a plane returns per frame stay small enough to return by value.
-
 #[test]
 fn the_per_frame_plane_answers_are_pointer_sized_payloads() {
     use busbar_contract::plane::{Ingress, Progress};

@@ -144,7 +144,6 @@ impl<B: From<String>> Piece<B> {
 }
 
 /// The `emit` just answered left its stream's queue at its high-water mark (`YIELD_STREAM_FULL`):
-
 pub fn mark_stream_full(o: &mut Out<'_, FramerOut>) {
     let mut y = o.get().yielded;
     y.flags |= YIELD_STREAM_FULL;
@@ -154,7 +153,6 @@ pub fn mark_stream_full(o: &mut Out<'_, FramerOut>) {
 /// What a framing owes the host, as [`fill`] reads it; `B` is its pieces' frame buffer.
 pub trait Owed<B> {
     /// Write as many wire bytes owed to the far side as `into` has room for, straight into it
-
     fn wire_into(&mut self, into: &mut HostBuf<'_, u8>);
     /// Whether wire bytes are still owed after a take.
     fn wire_pending(&self) -> bool;
@@ -169,7 +167,6 @@ pub trait Owed<B> {
 }
 
 /// Hand the host what `f` owes it, as far as the sink holds: wire bytes, then pieces (a piece that
-
 pub fn fill<B: AsRef<[u8]>, F: Owed<B>>(
     f: &mut F,
     sink: Lent<'_, FramerSink>,
@@ -326,7 +323,6 @@ pub fn fill<B: AsRef<[u8]>, F: Owed<B>>(
 }
 
 /// How much of a field block's `bytes` a sink with `room` may take: all of it when it fits, else
-
 #[must_use]
 pub fn field_cut(bytes: &[u8], room: usize, in_value: bool) -> usize {
     if bytes.len() <= room {

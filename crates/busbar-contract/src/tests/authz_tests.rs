@@ -6,7 +6,6 @@
 use super::*;
 
 /// Each scope's bit is the single bit at its own index in `Scope::ALL` — `ReadOnly` at the bottom
-
 #[test]
 fn each_scopes_bit_is_its_own_index_in_the_declared_chain() {
     assert_eq!(Scope::ReadOnly.bit(), 0b01, "ReadOnly is the bottom rung");
@@ -33,7 +32,6 @@ fn each_scopes_bit_is_its_own_index_in_the_declared_chain() {
 }
 
 /// The bit layout is what `Grants` stores, so pinning the bits pins the set: a single-scope grant
-
 #[test]
 fn grants_hold_exactly_the_bits_of_the_scopes_put_in_them() {
     assert!(Grants::of(Scope::ReadOnly).contains(Scope::ReadOnly));
@@ -70,7 +68,6 @@ fn scope_parse_drops_retired_tokens() {
 }
 
 /// The two-rung chain: `ReadOnly` does not satisfy a `Full` requirement, `Full` satisfies both, and
-
 #[test]
 fn readonly_not_allow_full_full_allows_readonly() {
     assert!(!Scope::ReadOnly.allows(Scope::Full));
@@ -171,7 +168,6 @@ fn two_ceilings_give_the_same_answer_in_either_order() {
 }
 
 /// The union direction, stated as the other half of the same property: unioning role bindings only
-
 #[test]
 fn a_union_authorizes_exactly_what_one_or_the_other_role_authorized() {
     for held in every_grants() {

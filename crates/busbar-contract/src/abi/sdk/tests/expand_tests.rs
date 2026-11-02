@@ -24,7 +24,6 @@ use crate::abi::transport::route::RouteMatch;
 use crate::abi::transport::{Claim, TransportTail};
 
 /// A `T` whose every byte is set, each to its own value, so two fields never read alike by chance.
-
 fn patterned<T>() -> T {
     let mut v = MaybeUninit::<T>::uninit();
     let at = v.as_mut_ptr().cast::<u8>();
@@ -38,7 +37,6 @@ fn patterned<T>() -> T {
 }
 
 /// The bytes of `v`, a value with no padding (each `val` field's type: integers, floats, arrays,
-
 fn bytes_of<T>(v: &T) -> Vec<u8> {
     // SAFETY: `v` is a live `T` of `size_of::<T>()` initialised bytes (no padding, above).
     unsafe { std::slice::from_raw_parts(ptr::from_ref(v).cast::<u8>(), size_of::<T>()) }.to_vec()
@@ -239,7 +237,6 @@ fn a_decl_str_is_made_and_read_as_its_fields_state() {
 }
 
 /// `v` for the program: one address, as a plugin's `'static` rows have (a `const` promoted at
-
 fn leak<T>(v: T) -> &'static T {
     Box::leak(Box::new(v))
 }

@@ -44,7 +44,6 @@ impl<P: PlaneLife> std::fmt::Debug for Opened<P> {
 }
 
 /// A PLANE'S LIFECYCLE: implement it for the plane's door state and name the door's lifecycle
-
 pub trait PlaneLife: Send + Sync + Sized + 'static {
     /// What each generation holds beside its snapshot.
     type Held: Send + Sync + 'static;
@@ -53,27 +52,22 @@ pub trait PlaneLife: Send + Sync + Sized + 'static {
     fn generations(&self) -> &Generations<PlaneSnapshot, Self::Held>;
 
     /// Optional owned answer leases, released by the existing generic RELEASE slot. A plane
-
     fn leases(&self) -> Option<&crate::abi::sdk::life::Leases> {
         None
     }
 
     /// `validate`: whether `settings` open an instance. The default is the SDK's object check.
-
     fn validate(settings: &[u8]) -> Result<(), Refusal> {
         settings_object(settings).map(|_| ())
     }
 
     /// `open`: the state, and the first generation's snapshot, from the plane's `open` `in`.
-
     fn open(input: &Lent<'_, PlaneOpenIn>) -> Result<Opened<Self>, Refusal>;
 
     /// `refresh` to `generation` with `settings`: that generation's snapshot.
-
     fn refresh(&self, settings: &[u8], generation: u64) -> Result<Published<Self::Held>, Refusal>;
 
     /// `refresh` from the whole lent `in`: what the slot calls. By default [`PlaneLife::refresh`]
-
     fn refresh_in(&self, input: &Lent<'_, RefreshIn>) -> Result<Published<Self::Held>, Refusal> {
         self.refresh(input.settings().bytes(), input.generation())
     }

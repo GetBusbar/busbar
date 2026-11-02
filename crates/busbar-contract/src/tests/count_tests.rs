@@ -31,7 +31,6 @@ fn the_scale_is_six_and_one_unit_is_a_million_mantissa_steps() {
 }
 
 /// THE IN-MEMORY RANGE CLAIM, CHECKED RATHER THAN QUOTED.
-
 #[test]
 fn the_in_memory_range_is_the_one_the_ruling_claims() {
     assert_eq!(MAX.micros(), i128::MAX);
@@ -78,7 +77,6 @@ fn the_owners_worked_values_read_exactly() {
 }
 
 /// THE ONE VALUE A DOUBLE CANNOT HOLD. `27.1` is `27.100000000000001421…` as binary floating point,
-
 #[test]
 fn the_value_binary_floating_point_cannot_hold_reads_exactly() {
     assert_eq!(micros_of("27.1"), 27_100_000);
@@ -192,7 +190,6 @@ fn text_that_is_not_a_number_is_refused() {
 }
 
 /// A JSON NUMBER WITH A HUGE EXPONENT, THE WAY A HOSTILE BODY SPELLS ONE. Refused as a magnitude,
-
 #[test]
 fn a_hostile_exponent_is_a_refusal_and_not_a_hang() {
     let mut text = String::from("9.9e");
@@ -267,7 +264,6 @@ fn every_mantissa_in_a_swept_band_round_trips_through_its_spelling() {
 }
 
 /// THE BANK-AUDITOR PROOF: NO QUANTITY LOSES A DIGIT GOING OUT AND COMING BACK.
-
 #[test]
 fn no_quantity_in_a_wide_deterministic_sweep_loses_a_digit_going_out_and_coming_back() {
     let mut checked = 0usize;
@@ -425,7 +421,6 @@ fn ordering_is_the_ordering_of_the_quantities() {
 }
 
 /// A ROW'S SILENCE MEANS WHOLE UNITS, AND NOTHING ON DISK IS TOUCHED.
-
 #[test]
 fn an_old_row_reads_as_whole_units_and_a_new_row_as_a_mantissa() {
     assert_eq!(stored_scale_default(), SCALE_WHOLE_UNITS);
@@ -470,7 +465,6 @@ fn a_row_from_a_scale_this_build_cannot_read_is_refused() {
 }
 
 /// THE RANGE THAT ACTUALLY BINDS IS THE 64-BIT COLUMN, NOT THE 128-BIT TYPE.
-
 #[test]
 fn the_store_column_binds_long_before_the_type_does() {
     assert_eq!(MAX_ACROSS_A_64_BIT_COLUMN.micros(), i128::from(i64::MAX));
@@ -501,11 +495,9 @@ const ROWS: usize = 1_000_000;
 const SHUFFLES: usize = 16;
 
 /// THE TOTAL, PINNED. If the arithmetic ever changes, this literal is what says so — an assertion
-
 const PINNED_TOTAL: &str = "2499999999.5";
 
 /// A 64-bit xorshift, written out so the shuffle draws from integers and nothing else.
-
 struct Xorshift(u64);
 
 impl Xorshift {
@@ -519,7 +511,6 @@ impl Xorshift {
     }
 
     /// A number below `bound`, by remainder. The slight bias a remainder has is irrelevant here:
-
     fn below(&mut self, bound: usize) -> usize {
         (self.step() % (bound as u64)) as usize
     }
@@ -617,7 +608,6 @@ fn a_body_that_spells_a_count_any_other_way_is_refused_at_the_read() {
 }
 
 /// THE DEFECT THIS SEAM REPLACES, STATED AS AN ASSERTION.
-
 #[test]
 fn a_float_spelled_count_is_the_count_and_never_a_silent_zero() {
     let body = br#"{"billed_units":{"output_tokens":27.0,"input_tokens":27.5}}"#;

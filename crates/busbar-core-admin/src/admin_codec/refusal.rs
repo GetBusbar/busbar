@@ -1,7 +1,6 @@
 //! The 1.5.5 admin error envelope: `{"error":{"code":"<code>","message":"<message>"}}`.
 
 /// The 1.5.5 admin error envelope around one code and one message.
-
 #[must_use]
 pub fn envelope_of(code: &str, message: &str) -> String {
     format!(

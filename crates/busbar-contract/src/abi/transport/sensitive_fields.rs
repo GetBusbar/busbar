@@ -18,7 +18,6 @@ pub struct SensitiveFields(Vec<String>);
 
 impl SensitiveFields {
     /// Normalize the host's credential field names, independently of whether sealing is offered.
-
     pub fn new(names: Vec<String>) -> Result<Self, &'static str> {
         let mut normalized = Vec::new();
         for name in names {
@@ -43,7 +42,6 @@ impl SensitiveFields {
     }
 
     /// Decode the complete known entry; absent metadata preserves the legacy unmarked request.
-
     pub fn from_extensions(bytes: &[u8]) -> Result<Option<Self>, &'static str> {
         extensions::get(bytes, EXT_SENSITIVE_FIELDS)
             .map(Self::decode)
@@ -51,7 +49,6 @@ impl SensitiveFields {
     }
 
     /// Encode a host input extension. An unmarked request needs no entry.
-
     pub fn extensions(&self) -> Result<Vec<u8>, &'static str> {
         if self.0.is_empty() {
             return Ok(Vec::new());

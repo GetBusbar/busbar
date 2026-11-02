@@ -18,7 +18,6 @@ use crate::abi::mechanism::check::{fault, listed, results, text, Dim, Fault, Rul
 /// The hard maximum of `needed_groups`: no identity asserts more groups than this.
 pub const IDENTITY_GROUPS_HARD_MAX: u32 = 65_536;
 /// The hard maximum of `needed_fields`: no style writes more auth fields than this. Also the
-
 pub const FIELDS_HARD_MAX: u32 = 64;
 
 /// The fields one op's arms name, as `op.arm`: the shared [`Fault`] carries one of them.
@@ -81,7 +80,6 @@ const BEGIN_LOGIN: Arms = arms!("begin_login", "form");
 const VERIFY_STRIP: &str = "verify.strip";
 
 /// A point set read off the ABI: only [`POINT_PEER`] | [`POINT_HEAD`] | [`POINT_HEAD_BODY`] bits
-
 pub const fn check_points(bits: u32, required: bool) -> Result<AuthPoints, Fault> {
     if bits & !(POINT_PEER | POINT_HEAD | POINT_HEAD_BODY | POINT_FRAME) != 0 {
         return Err(fault(Rule::UnknownCode, "points.unknown_flags"));
@@ -99,7 +97,6 @@ pub const fn check_points(bits: u32, required: bool) -> Result<AuthPoints, Fault
 }
 
 /// An [`AuthTail`](super::AuthTail)'s `inbound_points` against its `caps`: with
-
 pub const fn check_inbound_points(caps: u32, points: u32) -> Result<AuthPoints, Fault> {
     if caps & CAP_INBOUND != 0 {
         return check_points(points, true);
@@ -126,7 +123,6 @@ fn span(s: Span, cap: u64, optional: bool, a: &Arms) -> Result<(), Fault> {
 }
 
 /// One host-buffer dimension of an answer: what it needs, the capacity handed in and its hard
-
 const fn dim(needed: u64, cap: u64, max: u64, field: &'static str) -> Dim {
     Dim {
         written: 0,
@@ -138,7 +134,6 @@ const fn dim(needed: u64, cap: u64, max: u64, field: &'static str) -> Dim {
 }
 
 /// The host buffer's two dimensions (bytes and the op's counted one) under the multi-buffer
-
 fn needed(
     outcome: Outcome,
     (needed_bytes, bytes_cap): (u64, u64),
@@ -159,7 +154,6 @@ fn needed(
 }
 
 /// `verify`'s answer. `buf` is the [`IdentityBuf`] the host handed in, `groups` the first
-
 pub fn check_identify(
     outcome: Outcome,
     out: &IdentifyOut,
@@ -225,7 +219,6 @@ pub fn check_identify(
 }
 
 /// `complete_login`'s answer: the same identity rules as [`check_identify`] (and the same host
-
 pub fn check_complete_login(
     outcome: Outcome,
     out: &IdentifyOut,
@@ -264,7 +257,6 @@ pub fn check_complete_login(
 }
 
 /// A READY identity answer's shared rules: the verdict in `lo..=hi`, and, for the `identified`
-
 fn identity(
     out: &IdentifyOut,
     buf: &IdentityBuf,
@@ -313,7 +305,6 @@ fn identity(
 }
 
 /// `fields`' answer. `field_buf_cap`/`fields_cap` are the capacities the host handed in, and
-
 pub fn check_fields(
     outcome: Outcome,
     out: &FieldsOut,
@@ -351,7 +342,6 @@ pub fn check_fields(
 }
 
 /// `target`'s answer. `buf_cap` is the capacity of the buffer the host handed in. On READY the
-
 pub fn check_target(outcome: Outcome, out: &TargetOut, buf_cap: usize) -> Result<(), Fault> {
     let t = out.target;
     match outcome {
@@ -371,7 +361,6 @@ pub fn check_target(outcome: Outcome, out: &TargetOut, buf_cap: usize) -> Result
 }
 
 /// One [`super::StyleDecl`]'s `flags` and `points`: only [`STYLE_NEEDS_HEADERS`] |
-
 pub const fn check_style_decl(flags: u32, points: u32) -> Result<AuthPoints, Fault> {
     const KNOWN: u32 = STYLE_NEEDS_HEADERS
         | STYLE_CALLER_CREDENTIAL
@@ -389,7 +378,6 @@ pub const fn check_style_decl(flags: u32, points: u32) -> Result<AuthPoints, Fau
 }
 
 /// `begin_login`'s answer: exactly one of [`BEGIN_AUTHORIZE`] | [`BEGIN_FORM`], and the one it
-
 pub fn check_begin_login(outcome: Outcome, out: &BeginLoginOut) -> Result<(), Fault> {
     let a = &BEGIN_LOGIN;
     if outcome != Outcome::Ready {

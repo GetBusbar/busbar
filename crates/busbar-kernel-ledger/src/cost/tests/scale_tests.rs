@@ -7,7 +7,6 @@ use super::*;
 use crate::cost::{History, LaneClass, RateCard, MICROS_PER_CENT, NANOS_PER_CENT, NANOS_PER_MICRO};
 
 /// **THE SCALE IS A CONSTANT, NOT A CHOICE.** Ten million nano-units to one minor unit, which is
-
 #[test]
 fn the_one_scale_is_ten_million_nanos_and_nothing_can_name_another() {
     assert_eq!(NANOS_PER_CENT, 10_000_000);
@@ -20,7 +19,6 @@ fn the_one_scale_is_ten_million_nanos_and_nothing_can_name_another() {
 }
 
 /// **ONE TRUNCATION, AT THE ONE DIVISOR, AT THE BOUNDARY.** Carried over verbatim from the deleted
-
 #[test]
 fn the_minor_projection_truncates_once_at_the_one_boundary() {
     assert_eq!(minor_nanos(19_999_999), Ok(1));
@@ -37,7 +35,6 @@ fn the_minor_projection_truncates_once_at_the_one_boundary() {
 }
 
 /// The checked projection IS the one divisor: every in-range total reads exactly `nanos /
-
 #[test]
 fn the_minor_projection_is_the_one_divisor_or_a_refusal() {
     for nanos in [0u128, 1, 9_999_999, 10_000_000, 123_456_789, u128::MAX] {
@@ -48,7 +45,6 @@ fn the_minor_projection_is_the_one_divisor_or_a_refusal() {
 }
 
 /// **A FEE IS ALWAYS A FIGURE, NEVER A SILENCE** — #77(5) (`BUSBAR-1.6.0.md:420`): *"free is an
-
 #[test]
 fn a_fee_of_nothing_is_an_explicit_zero_row_and_a_named_fee_bills() {
     use crate::cost::{price_ledger, LedgerEntry};
@@ -75,7 +71,6 @@ fn a_fee_of_nothing_is_an_explicit_zero_row_and_a_named_fee_bills() {
 }
 
 /// **BILLING OFF IS THE ONE EXEMPTION** (#42 `BUSBAR-1.6.0.md:367`: *"rate_card ABSENT ⇒ NOT billed
-
 #[test]
 fn an_absent_card_prices_tokens_at_nothing_and_still_posts_its_fee() {
     use crate::cost::{price_ledger, LedgerEntry};

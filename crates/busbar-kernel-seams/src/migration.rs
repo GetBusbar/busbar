@@ -54,7 +54,6 @@ impl MigrationHead {
 /// Reads the previous release's chain head and balances at migration time.
 pub trait MigrationSource {
     /// The head and balances. An implementation that cannot answer returns an empty head rather
-
     fn read_head(&self) -> MigrationHead;
 }
 
@@ -119,10 +118,8 @@ pub struct MigrationFigures {
 }
 
 /// Reads the figures behind the previous release's chain head.
-
 pub trait MigrationLedgerRows: MigrationSource {
     /// The figures. An implementation that cannot answer returns an empty set rather than an error,
-
     fn read_figures(&self) -> MigrationFigures;
 }
 
@@ -150,14 +147,11 @@ pub struct MigrationMarker {
 }
 
 /// The ledger's own records, which is where the marker lives.
-
 pub trait MigrationRecords {
     /// The marker, if this deployment has already migrated.
-
     fn read_marker(&self) -> Result<Option<MigrationMarker>, MigrationError>;
 
     /// Seal the marker.
-
     fn write_marker(&mut self, marker: &MigrationMarker) -> Result<(), MigrationError>;
 }
 

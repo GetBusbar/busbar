@@ -55,7 +55,6 @@
 use serde_json::Value;
 
 /// The JSON-RPC 2.0 standard error codes this module can produce.
-
 pub const PARSE_ERROR: i64 = -32700;
 /// `-32600`: the body is JSON and is not an envelope this reader will honour.
 pub const INVALID_REQUEST: i64 = -32600;
@@ -99,7 +98,6 @@ pub struct Invalid {
 }
 
 /// Read a parsed JSON body as a JSON-RPC 2.0 envelope.
-
 pub fn read(value: &Value) -> Result<Envelope, Invalid> {
     let Some(obj) = value.as_object() else {
         return Err(Invalid {
@@ -161,7 +159,6 @@ pub fn read(value: &Value) -> Result<Envelope, Invalid> {
 }
 
 /// Whether a value is an id a response can be correlated by: a String or a Number, per section 4, minus
-
 fn is_legible_id(id: &Value) -> bool {
     id.is_string() || id.is_number()
 }
@@ -225,7 +222,6 @@ impl std::fmt::Display for NotAnAnswer {
 }
 
 /// Read a parsed JSON body as the JSON-RPC 2.0 RESPONSE to a request whose id was `sent_id`.
-
 pub fn read_response(value: &Value, sent_id: &Value) -> Result<Reply, NotAnAnswer> {
     let refuse = |reason: String| {
         Err(NotAnAnswer {
@@ -300,7 +296,6 @@ pub fn read_response(value: &Value, sent_id: &Value) -> Result<Reply, NotAnAnswe
 }
 
 /// Whether a response's `id` names the request that was sent.
-
 fn same_id(got: &Value, sent: &Value) -> bool {
     match (got, sent) {
         (Value::String(a), Value::String(b)) => a == b,
@@ -328,7 +323,6 @@ fn integer_matches_float(integer: &serde_json::Number, float: &serde_json::Numbe
 }
 
 /// The JSON-RPC error envelope, as a value.
-
 pub fn error_body(id: Value, code: i64, message: &str, data: Option<Value>) -> Value {
     let mut error = serde_json::Map::new();
     error.insert("code".into(), Value::from(code));
@@ -344,7 +338,6 @@ pub fn error_body(id: Value, code: i64, message: &str, data: Option<Value>) -> V
 }
 
 /// WHETHER `origin` MAY DRIVE THIS DEPLOYMENT.
-
 #[must_use]
 pub fn origin_admitted(origin: &str, allowed: &[String]) -> bool {
     is_loopback_origin(origin) || allowed.iter().any(|a| a == origin)
@@ -376,7 +369,6 @@ const UNITLESS_UNAUTHENTICATED: &[u8] =
 const UNITLESS_BODY_TOO_LARGE: &[u8] = br#"{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"request body exceeds the maximum allowed size"}}"#;
 
 /// THE JSON-RPC RENDERING OF A KERNEL REFUSAL THAT NAMES NO UNIT: the exact bytes v1.5.5 answered
-
 #[must_use]
 pub fn unitless_kernel_body(reason: u32) -> Option<&'static [u8]> {
     use crate::abi::plane::RefusalCode;
@@ -421,7 +413,6 @@ impl std::io::Write for JsonLength {
 }
 
 /// Count and emit the same borrowed envelope twice. The first pass retains no payload; the second
-
 fn envelope_bytes(write: impl Fn(&mut dyn std::io::Write) -> std::io::Result<()>) -> Vec<u8> {
     let mut length = JsonLength::default();
     write(&mut length).expect("JSON-RPC envelope length overflow");
@@ -440,7 +431,6 @@ fn push_str(out: &mut dyn std::io::Write, value: &str) -> std::io::Result<()> {
 }
 
 /// A success response: `{"id":<id>,"jsonrpc":"2.0","result":<result>}`. `id` and `result` are
-
 #[must_use]
 pub fn result_bytes(id: &[u8], result: &[u8]) -> Vec<u8> {
     envelope_bytes(|out| {
@@ -453,7 +443,6 @@ pub fn result_bytes(id: &[u8], result: &[u8]) -> Vec<u8> {
 }
 
 /// An error response:
-
 #[must_use]
 pub fn error_bytes(id: &[u8], code: i64, message: &str, data: Option<&[u8]>) -> Vec<u8> {
     envelope_bytes(|out| {
@@ -472,7 +461,6 @@ pub fn error_bytes(id: &[u8], code: i64, message: &str, data: Option<&[u8]>) -> 
 }
 
 /// A request: `{"id":<id>,"jsonrpc":"2.0","method":<method>,"params":<params>}`, with no `params`
-
 #[must_use]
 pub fn request_bytes(id: &[u8], method: &str, params: Option<&[u8]>) -> Vec<u8> {
     envelope_bytes(|out| {
@@ -484,7 +472,6 @@ pub fn request_bytes(id: &[u8], method: &str, params: Option<&[u8]>) -> Vec<u8> 
 }
 
 /// A notification: `{"jsonrpc":"2.0","method":<method>,"params":<params>}`, with no `params`
-
 #[must_use]
 pub fn notification_bytes(method: &str, params: Option<&[u8]>) -> Vec<u8> {
     envelope_bytes(|out| {

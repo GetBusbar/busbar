@@ -6,7 +6,6 @@
 use crate::caps::*;
 
 /// Every flag `PostingFlags` declares. Hand-kept, so the cell below holds it to the type's own
-
 const FLAGS: &[PostingFlags] = &[
     PostingFlags::ESTIMATED,
     PostingFlags::METER_DISPUTED,

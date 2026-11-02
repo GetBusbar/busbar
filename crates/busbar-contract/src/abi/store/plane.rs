@@ -9,7 +9,6 @@ use crate::abi::mechanism::call::{AbiStr, Blob, InHead};
 use crate::abi::mechanism::decl::abi_struct;
 
 /// [`PlaneRecordRow::disposition`]: the record may still change (`PlaneDisposition::Active`).
-
 pub const DISPOSITION_ACTIVE: u32 = 0;
 /// [`PlaneRecordRow::disposition`]: the record is final (`PlaneDisposition::Terminal`).
 pub const DISPOSITION_TERMINAL: u32 = 1;
@@ -17,18 +16,14 @@ pub const DISPOSITION_TERMINAL: u32 = 1;
 /// [`ListPlaneRecordsIn::selector`]: every record of the kind (`PlaneSelector::All`).
 pub const SELECT_ALL: u32 = 0;
 /// [`ListPlaneRecordsIn::selector`]: one parent's records, oldest first by `seq`
-
 pub const SELECT_PARENT: u32 = 1;
 
 /// [`KindBeforeIn::retention`]: every row of the kind older than `before` goes (`Retention::Age`).
-
 pub const RETENTION_AGE: u32 = 0;
 /// [`KindBeforeIn::retention`]: only the kind's `DISPOSITION_TERMINAL` rows older than `before`
-
 pub const RETENTION_TERMINAL_ONLY: u32 = 1;
 
 /// [`KindBeforeIn::retention`]: THE USAGE LEDGER'S PURGE (open160 ST6; no slot of its own, so the
-
 pub const RETENTION_USAGE_WINDOWS: u32 = 2;
 
 abi_struct! {

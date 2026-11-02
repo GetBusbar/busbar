@@ -9,7 +9,6 @@ use std::collections::BTreeSet;
 pub const PUBLIC_MARK: &str = "x-busbar-public";
 
 /// The settings `schema` declares public: each direct member of its root `properties` marked
-
 #[must_use]
 pub fn public_settings(schema: &serde_json::Value) -> BTreeSet<String> {
     schema

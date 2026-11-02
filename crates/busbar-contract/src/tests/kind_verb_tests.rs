@@ -6,7 +6,6 @@
 use super::*;
 
 /// The list, as the design's config section states it — the one other spelling of it, kept to pin
-
 const DESIGN: [(Kind, Verb); 7] = [
     (Kind::Store, Verb::Root("store")),
     (Kind::Secret, Verb::Root("secrets")),

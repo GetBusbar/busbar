@@ -36,7 +36,6 @@ pub fn append<'a>(bag: &mut SignalBag, terms: impl IntoIterator<Item = Term<'a>>
 }
 
 /// Decode the recipe without conflating a legacy producer with an empty or malformed recipe.
-
 pub fn decode(bag: &SignalBag) -> Result<Option<Vec<Term<'_>>>, &'static str> {
     let mut terms = Vec::new();
     let present = visit(bag, |term| terms.push(term))?;
@@ -44,7 +43,6 @@ pub fn decode(bag: &SignalBag) -> Result<Option<Vec<Term<'_>>>, &'static str> {
 }
 
 /// Visit a recipe without allocation. `false` means a legacy producer; `true` includes an empty
-
 pub fn visit<'a>(
     bag: &'a SignalBag,
     mut visitor: impl FnMut(Term<'a>),

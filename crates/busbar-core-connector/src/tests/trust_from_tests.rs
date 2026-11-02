@@ -21,7 +21,6 @@ fn private_ca() -> (String, Vec<u8>, Vec<u8>) {
 }
 
 /// A TLS far end on loopback presenting `leaf`: every connection whose handshake completes has its
-
 async fn tls_far_end(leaf: Vec<u8>, key: Vec<u8>) -> String {
     let server = rustls::ServerConfig::builder()
         .with_no_client_auth()
@@ -52,7 +51,6 @@ async fn tls_far_end(leaf: Vec<u8>, key: Vec<u8>) -> String {
 }
 
 /// The process's connector shape: a door whose targets ask for connection security, every literal
-
 fn secure_connector() -> Connector {
     crate::tls::install_crypto_provider();
     let view = Transports::new(vec![
@@ -127,7 +125,6 @@ async fn exchange(c: &Connector, far: &str) -> Result<Vec<u8>, ConnError> {
 }
 
 /// RED: a far end whose certificate chains to a private CA is refused over the public roots alone,
-
 #[test]
 fn a_private_ca_upstream_is_refused_without_trust_from_and_served_with_it() {
     let (ca_pem, leaf, key) = private_ca();
@@ -154,7 +151,6 @@ fn a_private_ca_upstream_is_refused_without_trust_from_and_served_with_it() {
 }
 
 /// RED: a `trust_from` that resolved to nothing, or to a PEM that holds no parsable certificate,
-
 #[test]
 fn a_trust_from_that_does_not_parse_refuses_the_need() {
     let (ca_pem, _, _) = private_ca();
@@ -194,7 +190,6 @@ fn a_trust_from_that_does_not_parse_refuses_the_need() {
 }
 
 /// RED: re-declaring the need (a refresh) with another CA moves its trust: the far end the old CA
-
 #[test]
 fn a_refresh_with_a_changed_ca_re_declares_the_trust() {
     let (ca_pem, leaf, key) = private_ca();
@@ -219,7 +214,6 @@ fn a_refresh_with_a_changed_ca_re_declares_the_trust() {
 }
 
 /// THE OWNED NAMESPACE (`owned.<section>.<key>`): an anchor named in a plane's other owned sections
-
 #[test]
 fn an_absent_owned_trust_anchor_declares_the_need_over_the_public_roots_alone() {
     let (_, leaf, key) = private_ca();
@@ -242,7 +236,6 @@ fn an_absent_owned_trust_anchor_declares_the_need_over_the_public_roots_alone() 
 }
 
 /// RED: an owned anchor the operator wrote is the operator CA added on top of the public roots, as
-
 #[test]
 fn an_owned_trust_anchor_serves_its_ca_and_refuses_another() {
     let (ca_pem, leaf, key) = private_ca();
@@ -265,7 +258,6 @@ fn an_owned_trust_anchor_serves_its_ca_and_refuses_another() {
 }
 
 /// RED: an owned anchor the operator wrote that is no trust anchor refuses the need, exactly as a
-
 #[test]
 fn a_written_owned_trust_anchor_that_does_not_parse_refuses_the_need() {
     let (ca_pem, _, _) = private_ca();
@@ -286,7 +278,6 @@ fn a_written_owned_trust_anchor_that_does_not_parse_refuses_the_need() {
 }
 
 /// A `settings.` trust anchor that resolved to nothing is OPTIONAL, as an owned one is: an auth
-
 #[test]
 fn an_absent_settings_trust_anchor_declares_the_need_over_the_public_roots_alone() {
     let (_, leaf, key) = private_ca();

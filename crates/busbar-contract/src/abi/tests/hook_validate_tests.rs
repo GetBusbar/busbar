@@ -47,7 +47,6 @@ fn blob_absent() -> Blob {
 }
 
 /// A single valid verb (ABSTAIN), nothing else set: the baseline every non-verb-focused test
-
 fn decide_out() -> DecideOut {
     DecideOut {
         head: head(Outcome::Ready),
@@ -105,7 +104,6 @@ fn decide_two_verbs_faults() {
 }
 
 /// RED: a `verbs` bit outside the known set is FAULT even though exactly one dimension
-
 #[test]
 fn decide_unknown_verb_bit_faults() {
     let mut out = decide_out();
@@ -117,7 +115,6 @@ fn decide_unknown_verb_bit_faults() {
 }
 
 /// PASS: a FAILED answer with `verbs == 0` is legal — `verbs` carries no meaning outside
-
 #[test]
 fn decide_failed_zero_verbs_passes() {
     let mut out = decide_out();
@@ -213,7 +210,6 @@ fn order_needed_without_failed_faults() {
 }
 
 /// RED (the multi-buffer short answer): `order_needed <= order_cap`, and no other dimension's
-
 #[test]
 fn order_needed_not_larger_than_cap_faults() {
     let mut out = decide_out();
@@ -226,7 +222,6 @@ fn order_needed_not_larger_than_cap_faults() {
 }
 
 /// PASS (the multi-buffer short answer): `order_needed <= order_cap` (fits) is legal when `reject_message`'s
-
 #[test]
 fn order_needed_fits_while_reject_message_overflows_passes() {
     let mut out = decide_out();
@@ -249,7 +244,6 @@ fn order_needed_past_hard_max_faults() {
 }
 
 /// The legitimate too-small answer passes: nothing written, `needed` bigger than `cap`,
-
 #[test]
 fn legitimate_reject_message_too_small_passes() {
     let mut out = decide_out();
@@ -282,7 +276,6 @@ fn decide_reject_message_needed_past_hard_max_faults() {
 }
 
 /// RED: `decide`'s `restrict_tags_written` beyond `restrict_tags_cap` is FAULT (the first
-
 #[test]
 fn decide_restrict_tags_written_beyond_cap_faults() {
     let mut out = decide_out();
@@ -294,7 +287,6 @@ fn decide_restrict_tags_written_beyond_cap_faults() {
 }
 
 /// RED (the multi-buffer short answer): `restrict_tags`
-
 #[test]
 fn decide_restrict_tags_needed_not_larger_than_cap_faults() {
     let mut out = decide_out();
@@ -318,7 +310,6 @@ fn transform_rewrite_written_beyond_cap_faults() {
 }
 
 /// RED: `transform`'s reject-message written beyond its cap is FAULT (transform's
-
 #[test]
 fn transform_reject_message_written_beyond_cap_faults() {
     let mut out = transform_out();
@@ -393,7 +384,6 @@ fn status_ready_material_without_lease_faults() {
 }
 
 /// RED: a READY `status` answer with no material but a lease is FAULT (the spurious-lease
-
 #[test]
 fn status_ready_no_material_with_lease_faults() {
     let mut out = StatusOut {
@@ -422,7 +412,6 @@ fn describe_null_with_len_faults() {
 }
 
 /// RED: a READY `describe` answer with material but no lease is FAULT (the missing-lease
-
 #[test]
 fn describe_ready_material_without_lease_faults() {
     let byte = 0u8;
@@ -436,7 +425,6 @@ fn describe_ready_material_without_lease_faults() {
 }
 
 /// RED: a READY `describe` answer with no material but a lease is FAULT (the
-
 #[test]
 fn describe_ready_no_material_with_lease_faults() {
     let mut out = DescribeOut {
@@ -538,7 +526,6 @@ fn serve_ready_material_without_lease_faults() {
 }
 
 /// RED: a READY `serve` answer with no headers and no body but a lease is FAULT (the
-
 #[test]
 fn serve_ready_no_material_with_lease_faults() {
     let mut out = ServeOut {
@@ -563,7 +550,6 @@ fn notify_out_passes() {
 }
 
 /// RED: `notify`'s NULL-error check fires on a FAILED answer with `error.len > 0` and a
-
 #[test]
 fn notify_null_error_faults() {
     let mut out = head(Outcome::Failed);
@@ -572,7 +558,6 @@ fn notify_null_error_faults() {
 }
 
 /// RED (the multi-buffer short answer): both `reject_message_needed` and
-
 #[test]
 fn transform_joint_both_dims_fit_faults() {
     let mut out = transform_out();
@@ -586,7 +571,6 @@ fn transform_joint_both_dims_fit_faults() {
 }
 
 /// PASS (the multi-buffer short answer): `rewrite_needed` fits its cap while
-
 #[test]
 fn transform_joint_one_dim_overflows_other_fits_passes() {
     let mut out = transform_out();
@@ -693,7 +677,6 @@ fn describe_oversize_faults() {
 }
 
 /// RED (the multi-buffer short answer): `decide`'s `reject_message` dimension is short
-
 #[test]
 fn decide_short_answer_writes_something_faults() {
     let mut out = decide_out();
@@ -707,7 +690,6 @@ fn decide_short_answer_writes_something_faults() {
 }
 
 /// RED (the multi-buffer short answer): same rule for `transform` — `rewrite` is short, so
-
 #[test]
 fn transform_short_answer_writes_something_faults() {
     let mut out = transform_out();
@@ -721,7 +703,6 @@ fn transform_short_answer_writes_something_faults() {
 }
 
 /// A zeroed `out` on PENDING and on REFUSED passes every op's check: those outcomes carry no
-
 #[test]
 fn zeroed_pending_and_refused_pass_every_op() {
     for o in [Outcome::Pending, Outcome::Refused] {

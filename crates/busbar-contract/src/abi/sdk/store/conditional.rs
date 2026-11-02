@@ -146,7 +146,6 @@ pub enum Decision {
 
 impl Request {
     /// Validate the semantics and existing record-byte bound. No batch-count limit is imposed.
-
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.version != VERSION {
             return Err("unsupported record transaction version");
@@ -232,14 +231,12 @@ impl Request {
     }
 
     /// Encode one bounded, versioned request. Lengths and counts are little-endian `u64`.
-
     pub fn encode(&self) -> Result<Vec<u8>, &'static str> {
         let mut encoded = self.encode_held()?;
         Ok(std::mem::take(&mut *encoded))
     }
 
     /// Encode under wiping custody, including every allocation retired during growth. Retain
-
     pub fn encode_held(&self) -> Result<Zeroizing<Vec<u8>>, &'static str> {
         self.validate()?;
         let mut writer = Writer(SecretBytes::default());
@@ -285,7 +282,6 @@ impl Request {
     }
 
     /// Decode one complete request, refusing unknown versions and trailing or truncated bytes.
-
     pub fn decode(bytes: &[u8]) -> Result<Self, &'static str> {
         let mut reader = Reader::new(bytes)?;
         let version = u32::from_le_bytes(reader.take(4)?.try_into().map_err(|_| WIRE)?);
@@ -387,7 +383,6 @@ pub fn supported(statement_extensions: &[u8]) -> bool {
 }
 
 /// Decode input intent before an ordinary GET. Malformed recognized intent never falls back.
-
 pub fn intent(input_extensions: &[u8]) -> Result<Option<Request>, &'static str> {
     let mut reader = Reader::new(input_extensions)?;
     let mut recognized = false;
@@ -428,7 +423,6 @@ pub fn encode_result(request: &Request, decision: Decision) -> Vec<u8> {
 }
 
 /// Validate a complete leased READY result against the exact immutable candidate.
-
 pub fn read_result(
     outcome: Outcome,
     leased: bool,

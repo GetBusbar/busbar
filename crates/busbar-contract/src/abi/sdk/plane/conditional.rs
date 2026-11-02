@@ -438,7 +438,6 @@ pub fn read_capability(bytes: &[u8]) -> Result<Option<Capability>, &'static str>
     Ok(Some(c))
 }
 /// Encode one immutable pending candidate, bound to this crossing's capability.
-
 pub fn encode_request(request: &Request) -> Result<Vec<u8>, &'static str> {
     let mut bytes = encode_request_held(request)?;
     Ok(std::mem::take(&mut *bytes))
@@ -575,7 +574,6 @@ impl Drop for Decoding {
     }
 }
 /// Decode and own every candidate byte before returning the plugin's answer lease.
-
 pub fn read_request(bytes: &[u8]) -> Result<Option<Request>, &'static str> {
     if bytes.len() > crate::abi::mechanism::check::HARD_MAX_BYTES as usize {
         return Err(INVALID);
@@ -798,7 +796,6 @@ pub fn read_settlement(bytes: &[u8]) -> Result<Option<Settlement>, &'static str>
 }
 
 /// Acknowledge only an exact receipt consumed by outcome-only settlement. This is not a request.
-
 pub fn encode_settlement_ack(settlement: &Settlement) -> Vec<u8> {
     let mut body = Vec::new();
     authority(&mut body, settlement.capability);

@@ -106,7 +106,6 @@ pub struct Judged<'b> {
 
 impl<'b> Judged<'b> {
     /// What decided a refusal the caller asked explained (`DEST_EXPLAIN`): the refused address,
-
     #[must_use]
     pub fn detail(&self) -> Option<&'b str> {
         if self.verdict == DEST_ALLOWED {
@@ -116,7 +115,6 @@ impl<'b> Judged<'b> {
     }
 
     /// The addresses as the set an ESTABLISH's dial must land on (`EstablishIn::within`): so the
-
     #[must_use]
     pub fn within(&self) -> String {
         self.addresses
@@ -284,7 +282,6 @@ pub struct RefusalCopy {
 }
 
 /// The first byte capacity [`Services::auth_call`] lends; a short answer earns one re-call at the
-
 const AUTH_CALL_BYTES: usize = 1024;
 /// The first span capacity [`Services::auth_call`] lends.
 const AUTH_CALL_SPANS: usize = 16;
@@ -429,7 +426,6 @@ impl Services {
     }
 
     /// `clock.now`: the kernel's one clock, wall and monotonic, so a plugin reads no clock of its
-
     pub fn clock_now(&self, handle: CompletionHandle) -> Result<ClockReading, ServiceError> {
         let mut reading = ClockReading {
             size: size_of::<ClockReading>() as u32,
@@ -451,7 +447,6 @@ impl Services {
     }
 
     /// `entitlement.check`: whether the unit the calling op serves is entitled to `target`,
-
     pub fn entitled(&self, handle: CompletionHandle, target: &str) -> Result<bool, ServiceError> {
         let input = EntitlementCheckIn {
             head: head::<EntitlementCheckIn>(op::ENTITLEMENT_CHECK, handle),
@@ -470,7 +465,6 @@ impl Services {
     }
 
     /// `random.fill`: fill `buf` from the kernel's CSPRNG. `buf` holds 1 to `MAX_RANDOM_FILL`
-
     pub fn random_fill(
         &self,
         handle: CompletionHandle,
@@ -503,7 +497,6 @@ impl Services {
     }
 
     /// `session.emit`: write `bytes`, unsolicited, on the open carrier session `session` (the number
-
     pub fn session_emit(
         &self,
         handle: CompletionHandle,
@@ -533,7 +526,6 @@ impl Services {
     }
 
     /// `ticket.mint`: a ticket for the principal of the unit this crossing serves, living
-
     pub fn ticket_mint(
         &self,
         handle: CompletionHandle,
@@ -583,7 +575,6 @@ impl Services {
     }
 
     /// `ticket.take`: the record of the ticket that admitted the unit this crossing serves, once.
-
     pub fn ticket_take<'b>(
         &self,
         handle: CompletionHandle,
@@ -604,7 +595,6 @@ impl Services {
     }
 
     /// `dest.judge`: the host's ONE destination judge over `dest` (a URL or `host:port` named
-
     pub fn dest_judge<'b>(
         &self,
         handle: CompletionHandle,
@@ -616,7 +606,6 @@ impl Services {
     }
 
     /// [`Self::dest_judge`] with the caller's further `flags` (`DEST_REFUSE_PRIVATE`,
-
     pub fn dest_judge_as<'b>(
         &self,
         handle: CompletionHandle,
@@ -650,7 +639,6 @@ impl Services {
     }
 
     /// `trust.sight`: report `counterparty`'s catalogue hash; the KERNEL judges it. Ready: a
-
     pub fn trust_sight(
         &self,
         handle: CompletionHandle,
@@ -661,7 +649,6 @@ impl Services {
     }
 
     /// `trust.sight` with [`TRUST_UNREACHABLE`]: the plane could NOT reach `counterparty` to look.
-
     pub fn trust_unreachable(&self, handle: CompletionHandle, counterparty: &str) -> Pend<u64> {
         self.sighting(handle, counterparty, "", TRUST_UNREACHABLE)
     }
@@ -689,7 +676,6 @@ impl Services {
     }
 
     /// `trust.sight_item`: report the digest ONE ITEM of `counterparty` is offered at now (the
-
     pub fn trust_sight_item(
         &self,
         handle: CompletionHandle,
@@ -713,7 +699,6 @@ impl Services {
     }
 
     /// `trust.serves`: THE KERNEL'S APPROVE as a query, for a route leg after its live re-fetch:
-
     pub fn trust_serves(
         &self,
         handle: CompletionHandle,
@@ -737,7 +722,6 @@ impl Services {
     }
 
     /// `trust.decide`: THE OPERATOR'S DECISION about one of this instance's trust keys
-
     pub fn trust_decide(
         &self,
         handle: CompletionHandle,
@@ -768,7 +752,6 @@ impl Services {
     }
 
     /// `trust.state`: the KERNEL'S TRUST STATE of `counterparty` and its items, as the core-admin
-
     pub fn trust_state<'b>(
         &self,
         handle: CompletionHandle,
@@ -800,7 +783,6 @@ impl Services {
     }
 
     /// `trust.due`: the counterparties the kernel's `tick` marked for re-verification, written
-
     pub fn trust_due<'b>(
         &self,
         handle: CompletionHandle,
@@ -816,7 +798,6 @@ impl Services {
     }
 
     /// `trust.verify`: verify `signatures` (the document's signature list as written, one JSON
-
     pub fn trust_verify<'b>(
         &self,
         handle: CompletionHandle,
@@ -849,7 +830,6 @@ impl Services {
     }
 
     /// `sign`: sign `data` with busbar's key under the plugin's declared signing domain and key-id
-
     pub fn sign<'b>(
         &self,
         handle: CompletionHandle,
@@ -873,7 +853,6 @@ impl Services {
     }
 
     /// `records.get`: the record `key` of the caller's own record `kind`, written into the caller's
-
     pub fn records_get<'b>(
         &self,
         handle: CompletionHandle,
@@ -911,7 +890,6 @@ impl Services {
     }
 
     /// `records.list`: the caller's own records of `kind` whose keys start with `prefix` (empty =
-
     pub fn records_list<'b>(
         &self,
         handle: CompletionHandle,
@@ -954,7 +932,6 @@ impl Services {
     }
 
     /// `records.claim`: claim `key` of the caller's own record `kind` once, for `ttl_ms`
-
     pub fn records_claim(
         &self,
         handle: CompletionHandle,
@@ -981,7 +958,6 @@ impl Services {
     }
 
     /// `records.secret`: the secret of the host-held credential `id` of `kind` (a kind the plugin's
-
     pub fn records_secret(
         &self,
         handle: CompletionHandle,
@@ -1043,7 +1019,6 @@ impl Services {
     }
 
     /// `work.open`: open a durable work handle of `kind` (one of the plugin's record kinds) for the
-
     pub fn work_open<'b>(
         &self,
         handle: CompletionHandle,
@@ -1074,7 +1049,6 @@ impl Services {
     }
 
     /// `work.find`: the handle `reference` names, within this instance and the principal of the
-
     pub fn work_find<'b>(
         &self,
         handle: CompletionHandle,
@@ -1120,7 +1094,6 @@ impl Services {
     }
 
     /// `work.resume`: bind this instance's handle `work` to the unit the op serves (a continuation,
-
     pub fn work_resume<'b>(
         &self,
         handle: CompletionHandle,
@@ -1150,7 +1123,6 @@ impl Services {
     }
 
     /// `unit.nest`: run a nested unit on whatever serves the claim `verb` `target` names, as a
-
     pub fn unit_nest<'b>(
         &self,
         handle: CompletionHandle,
@@ -1192,7 +1164,6 @@ impl Services {
     }
 
     /// `verify.lookup`: the instance's own entry under `key` in the host-side verify cache,
-
     pub fn verify_lookup<'b>(
         &self,
         handle: CompletionHandle,
@@ -1234,7 +1205,6 @@ impl Services {
     }
 
     /// `verify.store`: store the `entry` this caller fetched under `key` for `ttl_ms` (`0` = the
-
     pub fn verify_store(
         &self,
         handle: CompletionHandle,
@@ -1263,7 +1233,6 @@ impl Services {
     }
 
     /// `content.scan`: pass a piece of in-session `content` through the gates the unit the op
-
     pub fn content_scan<'b>(
         &self,
         handle: CompletionHandle,
@@ -1360,7 +1329,6 @@ impl Services {
     }
 
     /// `snapshot.read`: THE HOST SNAPSHOT SERVICE — the host's metric families of `scope`
-
     pub fn snapshot_read(
         &self,
         handle: CompletionHandle,
@@ -1372,7 +1340,6 @@ impl Services {
     }
 
     /// [`Self::snapshot_read`] together with the exact successful layout size, in bytes. The
-
     pub fn snapshot_read_with_used(
         &self,
         handle: CompletionHandle,
@@ -1409,7 +1376,6 @@ impl Services {
     }
 
     /// `auth.call`: call the auth `auth` names at `point` through the host (THE DESIGN, Auth points
-
     #[allow(clippy::too_many_arguments)]
     pub fn auth_call<O: OwnerSeal>(
         &self,
@@ -1473,7 +1439,6 @@ impl Services {
     }
 
     /// `unit.hand_in`: hand the request in with the line the transport matched; the kernel's
-
     #[allow(clippy::too_many_arguments)]
     pub fn unit_hand_in(
         &self,
@@ -1509,7 +1474,6 @@ impl Services {
     }
 
     /// `unit.refuse`: the refusal of a request, as the kernel owns and audits it (`cause` one of
-
     #[allow(clippy::too_many_arguments)]
     pub fn unit_refuse(
         &self,
@@ -1575,7 +1539,6 @@ impl Services {
     }
 
     /// Call `service` through `pick`'s slot with `input`, and judge the answer by `check`: the
-
     fn cross<I>(
         &self,
         service: u32,
@@ -1624,7 +1587,6 @@ const NO_BLOB: Blob = Blob {
 };
 
 /// `auth.call`'s READY answer, copied out of `written` and `spans`: a span with a value is an
-
 fn called<O: OwnerSeal>(
     answer: AuthAnswer,
     written: &[u8],
@@ -1672,7 +1634,6 @@ fn bufs(buf: &mut [u8], spans: &mut [ItemSpan]) -> ServiceBufs {
 }
 
 /// A naming service's crossed answer over the caller's `buf` and `spans`: READY, its `out` and the
-
 fn named<'b>(
     crossed: (Outcome, ServiceOut, Filled),
     buf: &'b [u8],
@@ -1691,7 +1652,6 @@ fn named<'b>(
 }
 
 /// A crossed answer that writes the caller's buffers: READY, its `out`; a short answer,
-
 fn ready(
     (outcome, out, filled): (Outcome, ServiceOut, Filled),
 ) -> Result<ServiceOut, ServiceError> {
@@ -1805,7 +1765,6 @@ pub struct Found<'b> {
 }
 
 /// A found handle's answer over the caller's `buf` and `spans`: span `0`'s one-byte key is the
-
 fn found<'b>(
     out: &ServiceOut,
     buf: &'b [u8],
@@ -1875,7 +1834,6 @@ pub struct Signature<'b> {
 }
 
 /// What `records.secret` answered: a credential's secret, in a holder the plugin owns that wipes
-
 pub struct CredentialSecret {
     secret: Zeroizing<Vec<u8>>,
     live: bool,
@@ -1889,7 +1847,6 @@ impl CredentialSecret {
     }
 
     /// Whether the credential is live (`SECRET_LIVE`: its key enabled and not revoked); `false` for
-
     #[must_use]
     pub const fn live(&self) -> bool {
         self.live
@@ -1915,11 +1872,9 @@ impl Zeroize for CredentialSecret {
 impl ZeroizeOnDrop for CredentialSecret {}
 
 /// The bytes the first `records.secret` crossing lends: above any secret a credential kind holds
-
 const SECRET_FIRST_BYTES: usize = 256;
 
 /// The bytes the first `ticket.mint` crossing lends: above a ticket's prefix and signed body; a
-
 const TICKET_FIRST_BYTES: usize = 512;
 
 /// The head of an `I` for `service`, under `handle`.
@@ -1971,14 +1926,12 @@ fn blank_out() -> ServiceOut {
 mod tests;
 
 /// THE SNAPSHOT LAYOUT, READ BACK: the export kind's scrape layout the host wrote into the caller's
-
 mod snapshot {
     use crate::abi::export::{ScrapeFamily, ScrapeLabel, ScrapeSample};
     use crate::abi::mechanism::call::AbiStr;
     use crate::export_calls::{Family, Sample};
 
     /// `n` records of `T` at `p`, when they lie inside `laid` (and `p` is aligned for `T`); NULL
-
     fn list<T>(laid: &[u8], p: *const T, n: usize) -> Option<&[T]> {
         if n == 0 {
             return Some(&[]);
@@ -2054,7 +2007,6 @@ mod snapshot {
         use std::mem::size_of;
 
         /// Construct the real ABI layout in initialized, aligned owned storage. The malformed
-
         fn layout(malformed: bool) -> Vec<u64> {
             let mut buf = vec![0u64; 256];
             let base = buf.as_mut_ptr().cast::<u8>();

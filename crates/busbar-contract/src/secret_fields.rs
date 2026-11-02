@@ -12,7 +12,6 @@ pub use crate::abi::sdk::cred::SECRET_MARKER;
 pub const WILDCARD: &str = "*";
 
 /// The single key that says "this object is the plugin's own data, not a reference":
-
 pub const LITERAL_KEY: &str = "literal";
 
 /// Whether the declared `path` has a `*` segment.
@@ -22,7 +21,6 @@ pub fn is_wildcard(path: &str) -> bool {
 }
 
 /// Whether `v` is a secret reference by shape: an object that reads as a
-
 #[must_use]
 pub fn is_reference(v: &Value) -> bool {
     v.is_object() && serde_json::from_value::<crate::secret_ref::SecretRef>(v.clone()).is_ok()
@@ -40,7 +38,6 @@ pub fn covers(path: &str, at: &[String]) -> bool {
 }
 
 /// The first position (`.`-joined) in `settings` that holds a secret reference no path in
-
 #[must_use]
 pub fn undeclared_reference(settings: &Value, declared: &[String]) -> Option<String> {
     fn walk(v: &Value, at: &mut Vec<String>, declared: &[String]) -> Option<String> {
@@ -68,7 +65,6 @@ pub fn undeclared_reference(settings: &Value, declared: &[String]) -> Option<Str
 }
 
 /// The refusal for a secret reference at `field` (the operator's path to it) in the settings of
-
 #[must_use]
 pub fn undeclared_refusal(field: &str, plugin: &str) -> String {
     format!(
@@ -80,7 +76,6 @@ pub fn undeclared_refusal(field: &str, plugin: &str) -> String {
 }
 
 /// The first position (`.`-joined) a declared path names, EXACT or WILDCARD, whose value in `tree` is
-
 #[must_use]
 pub fn declared_literal(tree: &Value, declared: &[String]) -> Option<String> {
     declared.iter().find_map(|path| {
@@ -95,7 +90,6 @@ pub fn declared_literal(tree: &Value, declared: &[String]) -> Option<String> {
 }
 
 /// The refusal for a literal at `field` (the operator's path to it), a position `plugin` declares
-
 #[must_use]
 pub fn declared_literal_refusal(field: &str, plugin: &str) -> String {
     format!(
@@ -105,7 +99,6 @@ pub fn declared_literal_refusal(field: &str, plugin: &str) -> String {
 }
 
 /// The first path the reference-capable list `reference` names that the secret list `secret` also
-
 #[must_use]
 pub fn contradiction(secret: &[String], reference: &[String]) -> Option<String> {
     reference.iter().find(|p| secret.contains(p)).cloned()
@@ -121,7 +114,6 @@ pub fn contradiction_refusal(path: &str, plugin: &str) -> String {
 }
 
 /// Every position (its segments) under `tree` that a `reference` path names, that holds a secret
-
 #[must_use]
 pub fn reference_positions(
     tree: &Value,
@@ -140,7 +132,6 @@ pub fn reference_positions(
 }
 
 /// RESOLVE the REFERENCE-CAPABLE positions of `tree` in place (lead ruling item 7a): each secret
-
 pub fn resolve_references(
     tree: &mut Value,
     secret: &[String],
@@ -161,7 +152,6 @@ pub fn resolve_references(
 }
 
 /// RESOLVE a plugin's settings `tree` as the kernel does before they cross the ABI: a reference
-
 pub fn resolve_declared(
     tree: &mut Value,
     declared: &[String],
@@ -172,7 +162,6 @@ pub fn resolve_declared(
 }
 
 /// [`resolve_declared`] with the plugin's REFERENCE-CAPABLE, NOT-SECRET paths `reference` beside
-
 pub fn resolve_declared_fields(
     tree: &mut Value,
     declared: &[String],
@@ -205,7 +194,6 @@ pub fn resolve_declared_fields(
 }
 
 /// LEND the declared secrets out of `block` (see the module docs). `keep_exact`: an exact path's
-
 pub fn lend<T: Zeroize, E>(
     block: &mut Value,
     paths: &[String],
@@ -252,7 +240,6 @@ pub fn lend<T: Zeroize, E>(
 }
 
 /// Every position (its segments) under `v` that the declared `path` names and that holds a secret
-
 #[must_use]
 pub fn declared_references(v: &Value, path: &str) -> Vec<Vec<String>> {
     let segs: Vec<&str> = path.split('.').collect();
@@ -276,7 +263,6 @@ fn at_mut_ref<'v>(v: &'v Value, at: &[String]) -> Option<&'v Value> {
 }
 
 /// Remove and answer the value at the exact `.`-separated `path` of `v`, if set. An array
-
 fn take_path(v: &mut Value, path: &str) -> Option<Value> {
     let (parent, last) = match path.rsplit_once('.') {
         Some((head, last)) => (
@@ -293,7 +279,6 @@ fn take_path(v: &mut Value, path: &str) -> Option<Value> {
 }
 
 /// Every position under `v` that `segs` names and that holds a string or a reference, in
-
 fn matches(v: &Value, segs: &[&str], at: &mut Vec<String>, out: &mut Vec<Vec<String>>) {
     let mut found = Vec::new();
     named(v, segs, at, &mut found);

@@ -113,7 +113,6 @@ fn cfg_test_module_files(rel: &str, file: &syn::File) -> Vec<String> {
 }
 
 /// Every production `.rs` under `roots` (repo-relative directories): test paths, files declared
-
 pub fn production(roots: &[&str]) -> Vec<Source> {
     let repo = repo();
     let mut parsed = Vec::new();
@@ -145,7 +144,6 @@ pub fn production(roots: &[&str]) -> Vec<Source> {
 }
 
 /// A source file parsed, each `abi_struct!` invocation's structs read in place (the macro states
-
 fn parse_source(text: &str) -> syn::Result<syn::File> {
     let mut file = syn::parse_file(text)?;
     splice_abi_structs(&mut file.items)?;
@@ -153,7 +151,6 @@ fn parse_source(text: &str) -> syn::Result<syn::File> {
 }
 
 /// Replaces each `abi_struct! { .. }` among `items` (inline modules included) by the items it
-
 fn splice_abi_structs(items: &mut Vec<syn::Item>) -> syn::Result<()> {
     let mut out = Vec::with_capacity(items.len());
     for mut item in items.drain(..) {

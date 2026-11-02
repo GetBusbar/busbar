@@ -31,18 +31,15 @@ const READ_CHUNK: usize = 16 * 1024;
 pub const DEFAULT_OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The most name lookups the host keeps in flight at once. A lookup that outlives its bound is let
-
 pub const MAX_PENDING_LOOKUPS: usize = 64;
 
 /// The stream a dialled connection's own exchange rides.
 pub const EXCHANGE_STREAM: u64 = 1;
 
 /// THE WRITE BUFFER CAP: the most bytes one connection holds on a caller's behalf and not yet on the
-
 pub const WRITE_BUFFER_BYTES: usize = 256 * 1024;
 
 /// THE RECEIVE BUFFER CAP: the most bytes the far end sent that one connection holds read off its
-
 pub const RECEIVE_BUFFER_BYTES: usize = 1024 * 1024;
 
 /// Why a connection did not answer.
@@ -127,7 +124,6 @@ impl std::fmt::Debug for Dial {
 }
 
 /// Connection security's error when the far end closes during the handshake (the words the
-
 const HANDSHAKE_EOF: &str = "tls handshake eof";
 
 enum Phase {
@@ -237,7 +233,6 @@ pub struct Connection {
 }
 
 /// One write held back until the framing takes it: its stream, bytes, whether they end the
-
 struct Early {
     stream: u64,
     bytes: Zeroizing<Vec<u8>>,
@@ -261,7 +256,6 @@ impl Early {
 }
 
 /// A CONNECT exchange in flight: the request (until it is queued), the proxy's answer so far, and
-
 struct Tunnel {
     request: Vec<u8>,
     asked: bool,
@@ -271,12 +265,10 @@ struct Tunnel {
 }
 
 /// THE REFUSAL OF A FAR END WHOSE KEY IS NOT THE PINNED ONE (the transport pin): the handshake's
-
 pub const PIN_REFUSED: &str =
     "tls: the far end's key is not the one its trust anchors pin; refused before any request byte";
 
 /// THE REFUSAL OF AN UPGRADE OVER UNREAD CLEAR BYTES (STARTTLS response injection, the class of
-
 pub const UPGRADE_OVER_CLEAR_BYTES: &str =
     "tls: bytes the far end sent in the clear are still unread; the upgrade is refused";
 
@@ -348,7 +340,6 @@ impl Drop for Connection {
 }
 
 /// A TLS connection whose send buffers are the connection's own: the TLS library's default limit
-
 fn unbounded<C, D>(mut tls: C) -> C
 where
     C: std::ops::DerefMut<Target = rustls::ConnectionCommon<D>>,
@@ -362,7 +353,6 @@ fn failed(e: impl std::fmt::Display) -> Failure {
 }
 
 /// `protocols`, most preferred first, in the handshake's ProtocolNameList encoding (one length
-
 fn protocol_name_list(protocols: &[Vec<u8>]) -> Vec<u8> {
     let mut list = Vec::new();
     for id in protocols {
@@ -375,7 +365,6 @@ fn protocol_name_list(protocols: &[Vec<u8>]) -> Vec<u8> {
 }
 
 /// THE AGREED PROTOCOL IS ONE THE HANDSHAKE OFFERED (`check_agreed`, before the framer is handed
-
 fn agreed_was_offered(offer: &[u8], agreed: Option<&[u8]>) -> Result<(), Failure> {
     busbar_contract::abi::transport::check::check_agreed(offer, agreed.unwrap_or_default()).map_err(
         |f| {
@@ -389,7 +378,6 @@ fn agreed_was_offered(offer: &[u8], agreed: Option<&[u8]>) -> Result<(), Failure
 
 impl Connection {
     /// Keep the original dial bound after a pended judgement; the TLS clock cannot restart at
-
     pub(crate) fn bound_open(&mut self, at: Instant) {
         if let Some(existing) = self.open_deadline {
             self.open_deadline = Some(existing.min(at));
@@ -397,7 +385,6 @@ impl Connection {
     }
 
     /// Dial `dial.target` through `door`, an IP literal dialled as written and judged by no
-
     pub fn dial(door: Arc<dyn FramerDoor>, via: &Via, dial: Dial) -> Result<Self, Failure> {
         endpoint::check(&dial.target).map_err(|e| Failure::Refused(e.to_string()))?;
         let planned = Planned::locate(door, via.clone(), dial)?;
@@ -413,7 +400,6 @@ impl Connection {
 }
 
 /// THE HEAD THE FRAMER WAS PROMISED (THE DESIGN section 6, step 5): the dial's opening completed
-
 fn complete_opening(dial: &mut Dial, located: &framer::Located) {
     let Some((fields, body)) = dial.opening.as_mut() else {
         return;
@@ -442,7 +428,6 @@ fn complete_opening(dial: &mut Dial, located: &framer::Located) {
 }
 
 /// Where a dial over a carrier CARRIED AS ITSELF goes: its target is an authority, `host:port`, or
-
 pub fn carried_at(claim: &str, target: &str) -> Result<framer::Located, Failure> {
     let authority = target
         .strip_prefix(claim)
@@ -462,7 +447,6 @@ pub fn carried_at(claim: &str, target: &str) -> Result<framer::Located, Failure>
 }
 
 /// A dial located but not yet dialled: the target and the authority the entry named each name a
-
 pub struct Planned {
     /// The framer; `None` = the carrier carried as itself.
     door: Option<Arc<dyn FramerDoor>>,
@@ -482,7 +466,6 @@ impl std::fmt::Debug for Planned {
 
 impl Planned {
     /// The target names a host, the entry's `locate`, and the authority it named names one too.
-
     pub fn locate(door: Arc<dyn FramerDoor>, via: Via, mut dial: Dial) -> Result<Self, Failure> {
         endpoint::named(&dial.target).map_err(|e| Failure::Refused(e.to_string()))?;
         let located = framer::locate(door.as_ref(), &dial.target)
@@ -498,7 +481,6 @@ impl Planned {
     }
 
     /// A dial over a carrier CARRIED AS ITSELF (a need over the carrier's own claim, `claim`): its
-
     pub fn carried(via: Via, dial: Dial) -> Result<Self, Failure> {
         endpoint::named(&dial.target).map_err(|e| Failure::Refused(e.to_string()))?;
         let claim = via.door.facts().claims.first().copied().unwrap_or_default();
@@ -525,7 +507,6 @@ impl Planned {
     }
 
     /// Whether a framer rides the dial (an application protocol over the stream), not a carrier
-
     #[must_use]
     pub fn framed(&self) -> bool {
         self.door.is_some()
@@ -544,7 +525,6 @@ impl Planned {
     }
 
     /// This dial's first message and its head words, taken out (a reuse sends them on a pooled
-
     #[must_use]
     pub fn into_opening(mut self) -> (Option<Opening>, HeadWords) {
         (
@@ -561,13 +541,11 @@ impl Planned {
     }
 
     /// Dial exactly `addr` — the address judged for [`Self::authority`] — with the name the entry
-
     pub fn dial_at(self, addr: std::net::SocketAddr) -> Result<Connection, Failure> {
         self.dial_via(addr, None)
     }
 
     /// [`Self::dial_at`] `addr`, a connect the far end refuses moving on to each of `also` in
-
     pub fn dial_at_any(
         self,
         addr: std::net::SocketAddr,
@@ -586,7 +564,6 @@ impl Planned {
     }
 
     /// Dial the PROXY at `proxy` and, once it connects, ask it for a tunnel to this plan's
-
     pub fn dial_through(
         self,
         proxy: std::net::SocketAddr,
@@ -687,7 +664,6 @@ struct Fallback {
 
 impl Connection {
     /// Dial the UNIX-DOMAIN socket at `path` (the target `unix:<path>`, [`socket::unix_path`]) as a
-
     pub fn dial_unix(
         door: Option<Arc<dyn FramerDoor>>,
         via: &Via,
@@ -711,7 +687,6 @@ impl Connection {
     }
 
     /// A dialled connection over `carried`, its connect in flight. `offer` is the protocols the
-
     fn open_dialled(
         door: Option<Arc<dyn FramerDoor>>,
         carried: Carried,
@@ -791,7 +766,6 @@ pub use crate::spawn_env::SpawnSecretFn;
 
 impl Connection {
     /// SPAWN `program` through the carrier `via` (the host spawns it: no shell, its absolute path
-
     pub fn spawn(
         via: &Via,
         program: &busbar_contract::conn::Program,
@@ -870,13 +844,11 @@ impl Connection {
     }
 
     /// Whether the program a spawned connection runs has exited (without waiting for it); `false`
-
     pub fn program_exited(&mut self) -> bool {
         self.carried.program_exited()
     }
 
     /// Offer ONE WHOLE MESSAGE on the exchange: framed and queued all at once, or not at all while
-
     pub fn write_whole(&mut self, bytes: &[u8], cx: &mut Context<'_>) -> Result<bool, Failure> {
         match &self.phase {
             Phase::Failed(f) => return Err(f.clone()),
@@ -908,14 +880,12 @@ impl Connection {
     }
 
     /// The process id of the program a spawned connection runs; `None` for a socket, or once the
-
     #[must_use]
     pub fn program_id(&self) -> Option<u32> {
         self.carried.program_id()
     }
 
     /// Take the connection `carried`, accepted by a listener's carrier: server TLS first when
-
     pub fn accepted(
         door: Option<Arc<dyn FramerDoor>>,
         carried: Carried,
@@ -1004,7 +974,6 @@ impl Connection {
     }
 
     /// THE PROTOCOL THE CONNECTION AGREED, as its framer last stated it on an accepted connection
-
     #[must_use]
     pub fn agreed(&self) -> Option<&[u8]> {
         let at = usize::try_from(self.agreed).ok()?.checked_sub(1)?;
@@ -1029,7 +998,6 @@ impl Connection {
     }
 
     /// Whether the connection carries CONCURRENT exchanges, one stream each: the protocol agreed
-
     #[must_use]
     pub fn multiplexes(&self) -> bool {
         self.dialled() && self.live() && self.established.agreed_protocol.as_deref() == Some(b"h2")
@@ -1042,7 +1010,6 @@ impl Connection {
     }
 
     /// Whether the connection can carry another exchange now: dialled, framed and open, with
-
     #[must_use]
     pub fn reusable(&self) -> bool {
         self.dialled()
@@ -1056,7 +1023,6 @@ impl Connection {
     }
 
     /// Take in whatever the far end sent while the connection sat idle (its goodbye, a closed
-
     pub fn fresh(&mut self, cx: &mut Context<'_>) -> bool {
         loop {
             match self.drive(cx) {
@@ -1071,7 +1037,6 @@ impl Connection {
     }
 
     /// Open a NEW exchange on this dialled connection, on `stream`: `opening`, encoded with its
-
     pub fn open_exchange(
         &mut self,
         stream: u64,
@@ -1152,14 +1117,12 @@ impl Connection {
     }
 
     /// The length of the body a DIALLED request opens with, for the framer's emit of its head
-
     fn opening_body_len(&self, opening: Option<&Opening>) -> Option<u64> {
         let (_, body) = opening?;
         (self.side == SIDE_DIAL && self.door.is_some()).then_some(body.len() as u64)
     }
 
     /// Hand `bytes` on `stream` to the wire: through the framing (`emit`); or, for a carrier carried
-
     fn put(&mut self, stream: u64, bytes: &[u8], end: bool, text: bool) -> Result<(), Failure> {
         self.put_opening(stream, bytes, end, text, None)
     }
@@ -1239,7 +1202,6 @@ impl Connection {
     }
 
     /// THE MID-STREAM SECURITY UPGRADE (`UPGRADE_SECURE`): secure this dialled connection with
-
     pub fn upgrade_secure(
         &mut self,
         config: &Arc<rustls::ClientConfig>,
@@ -1251,7 +1213,6 @@ impl Connection {
     }
 
     /// [`Self::upgrade_secure`] for a connection whose reader above (`unread_above`) still keeps
-
     pub(crate) fn upgrade_secure_over(
         &mut self,
         config: &Arc<rustls::ClientConfig>,
@@ -1329,13 +1290,11 @@ impl Connection {
     }
 
     /// Whether connection security is set and its handshake has completed: what
-
     pub(crate) fn secured(&self) -> bool {
         self.tls.as_ref().is_some_and(|t| !t.is_handshaking())
     }
 
     /// The far end's certificate hashed as RFC 5929 section 4.1 `tls-server-end-point` hashes it
-
     #[must_use]
     pub fn peer_cert_hash(&self) -> Option<String> {
         use std::fmt::Write as _;
@@ -1357,7 +1316,6 @@ impl Connection {
     }
 
     /// Why the connection failed, once it has: the stage it failed in (the socket's open,
-
     #[must_use]
     pub fn cause(&self) -> Option<&ConnCause> {
         self.cause.as_ref()
@@ -1388,7 +1346,6 @@ impl Connection {
     }
 
     /// The next frame piece: `Ready(Ok(Some))` a piece, `Ready(Ok(None))` the connection ended,
-
     pub fn poll_piece(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<Got>, Failure>> {
         loop {
             if let Some(p) = self.inbox.pop_front() {
@@ -1412,7 +1369,6 @@ impl Connection {
     }
 
     /// WHETHER THE DIAL HAS LANDED: the far end took the connect (through the proxy's tunnel,
-
     pub fn poll_landed(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Failure>> {
         loop {
             match &self.phase {
@@ -1450,7 +1406,6 @@ impl Connection {
     }
 
     /// Offer `bytes` on the connection's exchange (`end` = the caller's message is complete, `text` =
-
     pub fn write(
         &mut self,
         bytes: &[u8],
@@ -1462,7 +1417,6 @@ impl Connection {
     }
 
     /// Offer `bytes` on `stream` (`end` = the stream's message is complete, `text` = it is a text
-
     pub fn emit(
         &mut self,
         stream: u64,
@@ -1521,7 +1475,6 @@ impl Connection {
     }
 
     /// The connect was refused: dial the name's next admitted address in its place, the
-
     fn redial_next(&mut self) -> Option<Result<(), Failure>> {
         let f = self.fallback.as_mut()?;
         let next = f.next.pop_front()?;
@@ -1537,7 +1490,6 @@ impl Connection {
     }
 
     /// One pass: connect, handshake, flush, read, and keep the deadlines. `Ok(true)` = something
-
     fn drive(&mut self, cx: &mut Context<'_>) -> Result<bool, Failure> {
         self.check_open_deadlines(Instant::now())?;
         let mut moved = false;
@@ -1582,7 +1534,6 @@ impl Connection {
     }
 
     /// The socket reaches the far end: connection security's handshake starts, or the framing
-
     fn connected(&mut self) -> Result<(), Failure> {
         if self.tls.is_some() {
             self.phase = Phase::Handshaking;
@@ -1593,7 +1544,6 @@ impl Connection {
     }
 
     /// Read the proxy's answer to the tunnel request: once its head is whole and 2xx the socket is
-
     fn tunnel_read(&mut self, cx: &mut Context<'_>) -> Result<bool, Failure> {
         let mut buf = [0_u8; 256];
         let n = match self.carried.poll_read(cx, &mut buf) {
@@ -1625,7 +1575,6 @@ impl Connection {
     }
 
     /// Undelivered input held here or by the current framer. Line-owned pieces are accounted
-
     pub(crate) fn buffered_input(&self) -> usize {
         self.inbox.iter().fold(
             self.framing.as_ref().map_or(0, Framing::retained_input),
@@ -1638,7 +1587,6 @@ impl Connection {
     }
 
     /// Write what the carrier owes, as far as it takes it; once it took everything, its `flush`.
-
     fn flush(&mut self, cx: &mut Context<'_>) -> Result<bool, Failure> {
         let mut moved = false;
         loop {
@@ -1772,7 +1720,6 @@ impl Connection {
     }
 
     /// RE-DRIVE THE OPS PARKED on the framing's tickets (`cx`'s waker registered on each ticket):
-
     fn resume(&mut self, cx: &mut Context<'_>) -> Result<bool, Failure> {
         let Some(framing) = self.framing.as_mut().filter(|f| f.parked()) else {
             return Ok(false);
@@ -1806,7 +1753,6 @@ impl Connection {
     }
 
     /// Hand the writes held back to the framing, in order; a write on a stream still held waits
-
     fn put_early(&mut self) -> Result<(), Failure> {
         for e in std::mem::take(&mut self.early) {
             self.put_opening_marked(e.stream, &e.bytes, e.end, e.text, e.body_len, e.sensitive)?;
@@ -1821,7 +1767,6 @@ impl Connection {
     }
 
     /// Begin the framing over what the open established, then send the first message and any
-
     fn begin(&mut self) -> Result<(), Failure> {
         let mut opening = self.opening.take();
         let mut words = std::mem::take(&mut self.head_words);
@@ -1891,7 +1836,6 @@ impl Connection {
     }
 
     /// SEAL `opening` (TSEAL, [`crate::seal`]): its sealed-fields field taken out; over a framer
-
     fn seal(
         &mut self,
         stream: u64,
@@ -1924,7 +1868,6 @@ impl Connection {
     }
 
     /// AN OPENING'S SEALED VALUES ARE ALL SPLICED once it was emitted on `stream`: a filler the
-
     fn sealed_sent(&mut self, stream: u64) -> Result<(), Failure> {
         if !self.seals.pending_on(stream)
             || self.early.iter().any(|e| e.stream == stream)
@@ -1942,7 +1885,6 @@ impl Connection {
     }
 
     /// THE TRANSPORT PIN, held on a dialled connection whose handshake just completed: the far end's
-
     fn hold_to_anchors(&mut self) -> Result<(), Failure> {
         let Some(rustls::Connection::Client(c)) = self.tls.as_ref() else {
             return Ok(());
@@ -1962,7 +1904,6 @@ impl Connection {
     }
 
     /// What the carrier read (`end` = its clean end; `end_of_frame` = the bytes complete a frame of
-
     fn feed(&mut self, bytes: &[u8], end: bool, end_of_frame: bool) -> Result<(), Failure> {
         let Some(tls) = self.tls.as_mut() else {
             return self.ingest(bytes, end, end_of_frame);
@@ -2070,7 +2011,6 @@ impl Connection {
     }
 
     /// Take what the framer answered: its wire bytes to the socket (through TLS), its pieces to
-
     fn absorb(&mut self, mut y: Yielded) -> Result<(), Failure> {
         let mut wire = Zeroizing::new(std::mem::take(&mut y.wire));
         if !wire.is_empty() {
@@ -2143,7 +2083,6 @@ impl Connection {
     }
 
     /// Close: the framing finishes, TLS says goodbye, and what that owes is written as far as the
-
     pub fn close(mut self) {
         let framed = self.framing.is_some()
             || (self.door.is_none()

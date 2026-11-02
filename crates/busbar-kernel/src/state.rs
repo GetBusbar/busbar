@@ -82,7 +82,6 @@ pub struct App {
     /// pool field, so core carries no plane vocabulary in its own field names. Each plane's
     /// entry is its own resolved pool-member set (member selection derives lanes from member position).
     /// Read on the plane's submission/route path through [`App::plane_pools`].
-
     #[allow(dead_code)]
     pub plane_pools: std::collections::BTreeMap<
         &'static str,
@@ -150,7 +149,6 @@ pub struct App {
     /// as before. Composed at config apply by `appbuild` (and re-resolved on swap through
     /// [`busbar_kernel::plane_driver::slots::ContainerGateSink`]); read on the dispatch path by
     /// [`App::plane_gates`]. Empty for a plane that attaches nothing — the lookup costs one probe.
-
     #[allow(dead_code)]
     pub plane_gates: PlaneGateMap,
     /// THE PER-PLANE PER-CONTAINER REWRITE (`prompt: rw`) CHAINS, keyed by the plane's stable decl key —
@@ -160,7 +158,6 @@ pub struct App {
     /// through the same [`busbar_kernel::plane_driver::slots::ContainerGateSink`] callback the gates use. Empty
     /// for a plane that attaches no rewrite hook — the tap firing site's lookup costs one probe and the
     /// path stays byte-identical.
-
     #[allow(dead_code)]
     pub plane_rewrites: PlaneRewriteMap,
     /// The plugin-resolution environment for hooks: the validated plugin registry + the root's hook
@@ -222,7 +219,6 @@ pub struct App {
     /// a 409 (edit config.yaml — the API cannot silently shadow or subtract operator file config, and
     /// the additive overlay can't durably remove a base group); API-created (overlay) groups mutate
     /// freely. Immutable after boot — mirrors `base_hook_names`.
-
     #[allow(dead_code)]
     pub base_group_names: std::collections::HashSet<String>,
     /// The EFFECTIVE `identity-providers:` NAMED-DEFINITION map (base `config.yaml` + the overlay's

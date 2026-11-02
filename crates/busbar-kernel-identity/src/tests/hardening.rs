@@ -8,7 +8,6 @@ use crate::chain::AuthChain;
 use crate::module::AuthOutcome;
 
 /// The two chain-shape accessors answer about the chain they were built over, in BOTH directions.
-
 #[test]
 fn the_chain_shape_accessors_answer_in_both_directions() {
     let with_module = AuthChain::new(

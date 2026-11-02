@@ -6,7 +6,6 @@
 use super::*;
 
 /// Deserialize: the `{env}` / `{file}` sugar desugars to the canonical module + settings; the
-
 #[test]
 fn deserialize_accepts_canonical_and_sugar_rejects_malformed() {
     let r: SecretRef = serde_yaml::from_str("{ env: MY_VAR }").unwrap();
@@ -41,7 +40,6 @@ fn deserialize_accepts_canonical_and_sugar_rejects_malformed() {
 }
 
 /// `describe()`'s three real forms — the env/file sugar takes priority over the canonical
-
 #[test]
 fn describe_renders_env_file_and_module_forms() {
     assert_eq!(SecretRef::env("MY_VAR").describe(), "env:MY_VAR");
@@ -55,7 +53,6 @@ fn describe_renders_env_file_and_module_forms() {
 }
 
 /// `none` — the EXPLICIT keyless declaration — parses from the bare scalar and from the canonical
-
 #[test]
 fn none_is_the_one_scalar_a_secret_field_accepts() {
     let r: SecretRef = serde_yaml::from_str("none").unwrap();
@@ -91,7 +88,6 @@ fn none_is_the_one_scalar_a_secret_field_accepts() {
 }
 
 /// The `Visitor::expecting` error message actually names the accepted shapes — asserted via a
-
 #[test]
 fn deserialize_error_message_names_the_accepted_shapes() {
     let err = serde_yaml::from_str::<SecretRef>("[1, 2]").unwrap_err();
@@ -103,7 +99,6 @@ fn deserialize_error_message_names_the_accepted_shapes() {
 }
 
 /// The derived `oneOf` is itself a valid JSON Schema 2020-12 fragment, and it accepts EXACTLY
-
 #[test]
 fn oneof_schema_accepts_exactly_what_secretref_accepts() {
     let full = serde_json::json!({
@@ -144,7 +139,6 @@ fn oneof_schema_accepts_exactly_what_secretref_accepts() {
 }
 
 /// The derived fragment is written out by hand next to the deserializer, not generated from it, so
-
 #[test]
 fn the_schema_and_the_deserializer_agree_shape_for_shape() {
     let mut full = serde_json::json!({
@@ -204,7 +198,6 @@ fn the_schema_and_the_deserializer_agree_shape_for_shape() {
 }
 
 /// A secret is not always quoted. `api_key: 483920175534` and `api_key: true` are ordinary YAML, and
-
 #[test]
 fn an_unquoted_inline_secret_is_refused_without_echoing_it() {
     for (yaml, value) in [
@@ -229,7 +222,6 @@ fn an_unquoted_inline_secret_is_refused_without_echoing_it() {
 }
 
 /// A pasted credential dropped into the WRONG SLOT — `settings:` given as a scalar rather than the
-
 #[test]
 fn a_scalar_in_the_settings_slot_is_refused_without_echoing_it() {
     let err = serde_yaml::from_str::<SecretRef>("{ module: vault, settings: \"sk-live-abc123\" }")
@@ -246,7 +238,6 @@ fn a_scalar_in_the_settings_slot_is_refused_without_echoing_it() {
 }
 
 /// The sugar keys carry secrets too, and an unquoted YAML number/bool in an `{ env: … }` /
-
 #[test]
 fn a_non_string_sugar_value_is_refused_without_echoing_it() {
     for (yaml, value) in [("{ env: 12345 }", "12345"), ("{ file: true }", "true")] {
@@ -265,7 +256,6 @@ fn a_non_string_sugar_value_is_refused_without_echoing_it() {
 }
 
 /// A non-string `module:` names no module — and a typed `next_value::<String>()` would echo whatever
-
 #[test]
 fn a_non_string_module_is_refused_without_echoing_it() {
     let err = serde_yaml::from_str::<SecretRef>("{ module: 12345 }")
@@ -282,7 +272,6 @@ fn a_non_string_module_is_refused_without_echoing_it() {
 }
 
 /// Duplicate `module:` / `settings:` keys are a malformed reference, and the visitor catches each
-
 #[test]
 fn duplicate_keys_are_refused() {
     let err = serde_json::from_str::<SecretRef>(r#"{"module":"vault","module":"env"}"#)
@@ -305,7 +294,6 @@ fn duplicate_keys_are_refused() {
 }
 
 /// Serialize round-trip: every one of the four accepted input spellings lands on the SAME canonical
-
 #[test]
 fn serialize_yields_the_canonical_module_settings_wire_shape() {
     let env: SecretRef = serde_yaml::from_str("{ env: MY_VAR }").unwrap();
@@ -351,7 +339,6 @@ fn serialize_yields_the_canonical_module_settings_wire_shape() {
 }
 
 /// A TEMPLATE reference (a credential `${VAR}` filled in part) resolves by filling each `${VAR}`
-
 #[test]
 fn a_template_reference_resolves_each_variable_in_place() {
     let resolve = |r: &SecretRef| match r.env_var() {

@@ -22,7 +22,6 @@ fn a_default_egress_trust_is_unset() {
 }
 
 /// A hand-built DER certificate whose SubjectPublicKeyInfo is the seventh TBS member: the walk lands
-
 #[test]
 fn the_key_info_walk_lands_on_the_key() {
     fn tlv(tag: u8, content: &[u8]) -> Vec<u8> {
@@ -103,7 +102,6 @@ fn server(chain: &[Vec<u8>], key: &[u8], client_ca: Option<&[u8]>) -> Tls {
 }
 
 /// Dial `server` through a [`TlsDial`] built from `trust`, offering `name`, and exchange one
-
 async fn dial(server: Tls, trust: &EgressTrust, name: &str) -> Result<(), String> {
     let (server_io, client_io) = tokio::io::duplex(8192);
     let serving = tokio::spawn(async move {
@@ -152,7 +150,6 @@ fn pin_of(leaf: &[u8]) -> [u8; 32] {
 }
 
 /// An extra trust anchor is what lets a dial reach a peer whose chain the platform roots do not
-
 #[tokio::test]
 async fn an_extra_anchor_is_what_lets_a_dial_trust_a_private_ca() {
     let (ca, chain, key) = ca_and_leaf(&["upstream.test"]);
@@ -174,7 +171,6 @@ async fn an_extra_anchor_is_what_lets_a_dial_trust_a_private_ca() {
 }
 
 /// A pin is layered OVER chain verification: the peer whose key hashes to the pin is reached, and a
-
 #[tokio::test]
 async fn a_pinned_dial_reaches_only_the_pinned_key() {
     let (ca, chain, key) = ca_and_leaf(&["upstream.test"]);
@@ -202,7 +198,6 @@ async fn a_pinned_dial_reaches_only_the_pinned_key() {
 }
 
 /// A client identity is presented for a mutual handshake: a server that requires a certificate
-
 #[tokio::test]
 async fn a_client_identity_is_presented_to_a_mutual_peer() {
     let (server_ca, server_chain, server_key) = ca_and_leaf(&["upstream.test"]);
@@ -238,7 +233,6 @@ async fn a_client_identity_is_presented_to_a_mutual_peer() {
 }
 
 /// RED: a client identity whose key does not parse refuses, where it once fell
-
 #[test]
 fn a_client_identity_that_does_not_parse_is_refused() {
     let (_, chain, _) = ca_and_leaf(&["busbar-client"]);
@@ -266,7 +260,6 @@ fn cert_over(kp: &rcgen::KeyPair, names: &[&str]) -> Vec<u8> {
 }
 
 /// WHY THE PIN IS ON THE KEY AND NOT ON THE CERTIFICATE: a renewal re-issues the certificate and
-
 #[test]
 fn two_certificates_over_the_same_key_pin_identically_and_a_new_key_does_not() {
     let kp = rcgen::KeyPair::generate().expect("key");
@@ -291,7 +284,6 @@ fn two_certificates_over_the_same_key_pin_identically_and_a_new_key_does_not() {
 }
 
 /// A truncated certificate refuses rather than hashing whatever the walk reached: every proper
-
 #[test]
 fn a_truncated_certificate_refuses_rather_than_hashing_whatever_it_reached() {
     let cert = cert_over(
@@ -309,7 +301,6 @@ fn a_truncated_certificate_refuses_rather_than_hashing_whatever_it_reached() {
 }
 
 /// BER admits several spellings of one length. A parser that accepted them would let an upstream
-
 #[test]
 fn every_ber_length_form_that_gives_one_certificate_a_second_encoding_is_refused() {
     for (bytes, why) in [
@@ -333,7 +324,6 @@ fn every_ber_length_form_that_gives_one_certificate_a_second_encoding_is_refused
 }
 
 /// A destination's client identity crosses the seam with its key REDACTED: the identity prints the
-
 #[test]
 fn a_sealed_identity_keeps_its_key_redacted_until_the_seal_parses_it() {
     use busbar_contract::transport::trust::{Anchors, ClientIdentity};

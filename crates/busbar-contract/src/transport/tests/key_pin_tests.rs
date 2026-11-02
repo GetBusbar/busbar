@@ -9,7 +9,6 @@ use super::{canonical_key_pin, key_pin, BadKeyPin, KEY_PIN_TAG};
 const SPKI: &[u8] = b"a subject public key info";
 
 /// RED: the canonical spelling is the documented one, and both written spellings read to it. The
-
 #[test]
 fn red_both_spellings_read_to_the_documented_sha256_form() {
     let observed = key_pin(SPKI);
@@ -28,7 +27,6 @@ fn red_both_spellings_read_to_the_documented_sha256_form() {
 }
 
 /// The spelling is the digest's: SHA-256 over the whole SubjectPublicKeyInfo, standard base64 with
-
 #[test]
 fn the_pin_is_the_sha256_of_the_key_info_in_standard_base64() {
     use base64::Engine as _;
@@ -44,7 +42,6 @@ fn the_pin_is_the_sha256_of_the_key_info_in_standard_base64() {
 }
 
 /// A pin that names no SHA-256 digest is refused, in either spelling: empty, another tag, not
-
 #[test]
 fn a_pin_that_names_no_sha256_digest_is_refused() {
     let observed = key_pin(SPKI);
@@ -71,7 +68,6 @@ fn a_pin_that_names_no_sha256_digest_is_refused() {
 }
 
 /// RED: a PLAIN alias whose own base64 begins `sha256/` (`/` is a base64 digit) is read as that
-
 #[test]
 fn red_a_plain_alias_that_begins_like_the_tag_reads_as_the_alias() {
     use base64::Engine as _;
@@ -94,7 +90,6 @@ fn red_a_plain_alias_that_begins_like_the_tag_reads_as_the_alias() {
 }
 
 /// RED: a tagged value is canonical only where its tail decodes to EXACTLY one SHA-256 digest; a
-
 #[test]
 fn red_a_tagged_value_of_31_or_33_bytes_is_refused() {
     for n in [31_usize, 33] {
@@ -108,7 +103,6 @@ fn red_a_tagged_value_of_31_or_33_bytes_is_refused() {
 }
 
 /// The tagged spelling is the contract's ONE tagged-digest renderer's: the key pin of a key info is
-
 #[test]
 fn the_key_pin_is_the_one_tagged_digest() {
     assert_eq!(key_pin(SPKI), crate::abi::sdk::digest::sha256_tagged(SPKI));

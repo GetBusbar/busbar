@@ -115,7 +115,6 @@ macro_rules! lent_embeds {
 lent_field_list!(lent_embeds);
 
 /// EVERY POINTER AND LENGTH PAIR an `in` of type `t` carries, its embedded structs', strings' and
-
 pub fn lent_pairs(t: TypeId) -> Vec<(usize, usize, usize)> {
     let word = std::mem::size_of::<usize>();
     let mut out = if t == TypeId::of::<AbiStr>() {

@@ -13,7 +13,6 @@ pub struct ConfigScope {
 
 impl ConfigScope {
     /// The proof, for the host's boot, config-apply and refresh code ONLY (held to that by the
-
     #[must_use]
     pub fn config_time() -> Self {
         Self { _proof: () }
@@ -21,7 +20,6 @@ impl ConfigScope {
 }
 
 /// A secret source that reads the disk, asked to resolve without a [`ConfigScope`] (a request path
-
 pub const RESOLVE_OFF_CONFIG_TIME: &str =
     "this secret source reads the disk, which the host allows \
      only at config time (boot, a config apply, a refresh), never on a request path";

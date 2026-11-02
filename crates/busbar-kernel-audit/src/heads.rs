@@ -6,7 +6,6 @@
 use crate::record::AuditRecord;
 
 /// How often a head joins the permanent series: one per hour.
-
 pub const HEAD_SAMPLE_SECONDS: u64 = 3_600;
 
 /// ONE HEAD: what the chain's tip was, and who says so.
@@ -66,7 +65,6 @@ impl HeadHistory {
     }
 
     /// A history sampling at a chosen rate.
-
     #[must_use]
     pub fn every(sample_seconds: u64) -> Self {
         HeadHistory {
@@ -77,7 +75,6 @@ impl HeadHistory {
     }
 
     /// Restore independently retained hourly samples and their current tip.
-
     pub fn from_retained(
         series: Vec<SignedHead>,
         tip: Option<SignedHead>,
@@ -108,7 +105,6 @@ impl HeadHistory {
     }
 
     /// Take the head as it stands after one sealed record.
-
     pub(crate) fn observe(&mut self, record: &AuditRecord) {
         let head = SignedHead::of(record);
         let sample_due = match self.series.last() {
@@ -134,7 +130,6 @@ impl HeadHistory {
     }
 
     /// Every anchor this node can offer, in position order: the series, then the tip if the tip is
-
     #[must_use]
     pub fn anchors(&self) -> Vec<SignedHead> {
         let mut out = self.series.clone();
@@ -147,7 +142,6 @@ impl HeadHistory {
     }
 
     /// THE ANCHOR FOR A WINDOW: the newest anchor at or before a position.
-
     #[must_use]
     pub fn anchor_at(&self, seq: u64) -> Option<SignedHead> {
         self.anchors().into_iter().rfind(|h| h.seq <= seq)

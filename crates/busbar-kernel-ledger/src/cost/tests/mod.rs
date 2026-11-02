@@ -9,7 +9,6 @@ use busbar_contract::caps::{QuantitySource, UsageLine};
 use crate::cost::{LaneClass, RateCard};
 
 /// A nano-unit total in whole MINOR units through the CHECKED projection (item 28): the one money
-
 pub(crate) fn minor_nanos(nanos: u128) -> Result<i64, crate::cost::MoneyError> {
     crate::cost::Money::of_nanos(nanos).and_then(crate::cost::Money::minor_i64)
 }
@@ -48,7 +47,6 @@ pub(crate) fn lines(entries: &[(&'static str, u64)]) -> Vec<UsageLine> {
 }
 
 /// A card over one lane, priced in micro-units per token for the two reserved classes the older
-
 pub(crate) fn card(
     lane: &'static str,
     input_micro: f64,

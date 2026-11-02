@@ -92,7 +92,6 @@ impl PathBook {
     }
 
     /// `addr`'s number, numbering it now if it has none. At the cap the numbers of addresses the
-
     fn number(&mut self, addr: SocketAddr, keep: impl Fn(SocketAddr) -> bool) -> Option<u32> {
         if let Some(p) = self.by_addr.get(&addr) {
             return Some(*p);
@@ -162,7 +161,6 @@ impl Op<'_> {
 }
 
 /// One datagram operation, paused between checked host-output batches. The input is crossed
-
 #[must_use = "drain the turn or drop it to finish its accepted operation"]
 pub struct DatagramTurn<'f> {
     framing: &'f mut DatagramFraming,
@@ -309,7 +307,6 @@ impl<'f> DatagramTurn<'f> {
     }
 
     /// Take one checked output batch. Re-offer only after publishing the previous batch. `None`
-
     pub fn next_batch(&mut self) -> Result<Option<Yielded>, Refused> {
         match self.advance() {
             Err(error) if needs_credit(&error) => Err(error),
@@ -529,7 +526,6 @@ impl std::fmt::Debug for DatagramFraming {
 
 impl DatagramFraming {
     /// Reserve the next checked batch before reading fresh input from the port. A failed
-
     pub fn prepare_output(&mut self) -> bool {
         if self.credit.is_some() {
             return true;
@@ -544,13 +540,11 @@ impl DatagramFraming {
     }
 
     /// Return an unused pre-read reservation when the port did not relinquish input. Keeping
-
     pub fn release_output_reservation(&mut self) {
         self.credit = None;
     }
 
     /// One fresh raw datagram, producing at most one checked output batch. Call only when the
-
     pub fn datagram_step(
         &mut self,
         from: SocketAddr,
@@ -595,7 +589,6 @@ impl DatagramFraming {
     }
 
     /// The clock, producing at most one checked output batch. Continuations retain same-op
-
     pub fn timeout_step(&mut self, now: Instant) -> Result<LineStep, Refused> {
         if self.continuing() {
             return Err(fault("fresh timer while a same-op continuation is owed"));
@@ -704,7 +697,6 @@ impl DatagramFraming {
     }
 
     /// Cross at most one batch, resuming the old operation before any fresh Emit. A refused
-
     pub fn line_step(
         &mut self,
         input: Option<&Across>,
@@ -740,7 +732,6 @@ impl DatagramFraming {
     }
 
     /// Begin an ACCEPTING association on `door`: the host's certificate `cert` (the framer gets its
-
     pub fn accept(
         door: Arc<dyn FramerDoor>,
         cert: Arc<SessionCert>,
@@ -750,7 +741,6 @@ impl DatagramFraming {
     }
 
     /// Begin an ACCEPTING association on `door` under a certificate minted for it alone: as
-
     pub fn accept_minted(
         door: Arc<dyn FramerDoor>,
         local: SocketAddr,
@@ -760,7 +750,6 @@ impl DatagramFraming {
     }
 
     /// Begin a DIALLING association on `door`: as [`Self::accept`], with the `opening` fields the
-
     pub fn dial(
         door: Arc<dyn FramerDoor>,
         cert: Arc<SessionCert>,
@@ -821,7 +810,6 @@ impl DatagramFraming {
     }
 
     /// The far end's description. The framer's own description comes back as a piece, and the
-
     pub fn rendezvous(&mut self, description: &[u8], now: Instant) -> Result<Yielded, Refused> {
         let y = self.run(
             Op::Ingest {
@@ -839,7 +827,6 @@ impl DatagramFraming {
     }
 
     /// One datagram the port read from `from`. Before the rendezvous settled terms nothing on the
-
     pub fn datagram(
         &mut self,
         from: SocketAddr,
@@ -876,7 +863,6 @@ impl DatagramFraming {
     }
 
     /// One message's bytes for `stream` (`end_of_frame` sends it; `text` = a text message).
-
     pub fn emit(
         &mut self,
         stream: u64,
@@ -897,7 +883,6 @@ impl DatagramFraming {
     }
 
     /// Begin one emission, yielding its checked output a batch at a time. The caller retains
-
     pub fn emit_turn(
         &mut self,
         stream: u64,
@@ -919,7 +904,6 @@ impl DatagramFraming {
     }
 
     /// The clock: the secure layer's timers, and the framer's deadline when it has passed.
-
     pub fn timeout(&mut self, now: Instant) -> Result<Yielded, Refused> {
         if let Some(secure) = self.secure.as_mut() {
             secure.handle_timeout(now);
@@ -954,7 +938,6 @@ impl DatagramFraming {
     }
 
     /// How many routes the host refused to send (to a path the secure layer does not allow, or
-
     #[must_use]
     pub fn refused_routes(&self) -> u64 {
         self.refused_routes
@@ -967,7 +950,6 @@ impl DatagramFraming {
     }
 
     /// Whether a datagram from `path` is this association's: the secure layer knows it (a verified
-
     #[must_use]
     pub fn owns(&self, path: SocketAddr) -> bool {
         self.secure
@@ -984,7 +966,6 @@ impl DatagramFraming {
     }
 
     /// The far-end addresses this association owns ([`Self::owns`]) that it has numbered: on the
-
     pub fn addresses(&self) -> impl Iterator<Item = SocketAddr> + '_ {
         self.book.by_addr.keys().copied().filter(|a| self.owns(*a))
     }
@@ -1032,7 +1013,6 @@ impl DatagramFraming {
     }
 
     /// Drain the secure layer: its datagrams to the port, its plaintext to the framer, and the
-
     fn settle(&mut self, mut y: Yielded, now: Instant) -> Result<Yielded, Refused> {
         let mut turn = DatagramTurn::settling(self, now);
         while let Some(batch) = turn.next_batch()? {
@@ -1247,7 +1227,6 @@ impl DatagramFraming {
     }
 
     /// The dialling side's candidates: each judged by the destination judge first; an admitted one
-
     fn admit(&mut self, candidates: &[String], now: Instant) {
         if self.judge.is_none() {
             return;
@@ -1276,7 +1255,6 @@ impl DatagramFraming {
     }
 
     /// THE dialling side's one admission test, for an advertised candidate and a heard path alike:
-
     fn judged(&self, addr: SocketAddr) -> bool {
         let Some((judge, class)) = self.judge.as_ref() else {
             return false;
@@ -1288,7 +1266,6 @@ impl DatagramFraming {
     }
 
     /// The dialling side: a verified check came from `addr`, a path no admitted candidate named.
-
     fn admit_heard(&mut self, addr: SocketAddr, now: Instant) -> bool {
         if !self.judged(addr) {
             return false;
@@ -1342,7 +1319,6 @@ impl DatagramFraming {
 }
 
 /// The rendezvous terms a framer answered, read out of its frame (already judged by
-
 fn read_terms(t: &RendezvousTerms, frame: &[u8]) -> Result<Terms, Refused> {
     let span = |s: busbar_contract::abi::transport::FrameSpan| -> Result<&[u8], Refused> {
         let at = usize::try_from(s.offset).map_err(|_| fault("terms span"))?;
@@ -1497,7 +1473,6 @@ impl Associations {
     }
 
     /// Carry `framing` on this port; its number.
-
     pub fn add(&mut self, framing: DatagramFraming) -> Result<u64, NotAdded> {
         let user = self.admits(&framing)?;
         Ok(self.carry(user, framing))
@@ -1559,7 +1534,6 @@ impl Associations {
     }
 
     /// One datagram the port read from `from`: the association it belongs to and what that
-
     pub fn datagram(
         &mut self,
         from: SocketAddr,
@@ -1581,7 +1555,6 @@ impl Associations {
     }
 
     /// The association a datagram from `from` belongs to: a check's by its user name, anything
-
     fn find(&self, from: SocketAddr, bytes: &[u8]) -> Option<u64> {
         match check_user(bytes) {
             Some(user) => self.by_user.get(user).copied(),
@@ -1652,7 +1625,6 @@ impl Associations {
 }
 
 /// What a port's associations answered: each association's number and what it yielded or why it
-
 pub type Answered = Vec<(u64, Result<Yielded, Refused>)>;
 
 /// THE PORT'S ASSOCIATIONS, SHARED by every caller of one port: the port's task (datagrams, the
@@ -1679,7 +1651,6 @@ mod raw_ingress;
 pub use raw_ingress::RawIngress;
 
 /// An association out of the map. Only an unwind drops it still holding the framing: the
-
 struct Taken<'p> {
     port: &'p PortAssociations,
     id: u64,
@@ -1721,7 +1692,6 @@ impl PortAssociations {
         }
     }
     /// Wait before accepting/copying a busy application write. The returned permit keeps
-
     pub async fn emission_ready(&self, id: u64) -> Option<tokio::sync::OwnedSemaphorePermit> {
         let emission = self.lock().emissions.get(&id).cloned()?;
         let permit = Arc::clone(&emission.order).acquire_owned().await.ok()?;
@@ -1743,7 +1713,6 @@ impl PortAssociations {
     }
 
     /// The trusted queued incremental path. Newly received network datagrams use
-
     pub fn datagram_incremental(
         &self,
         from: SocketAddr,
@@ -1758,7 +1727,6 @@ impl PortAssociations {
     }
 
     /// The serving caller's incremental clock path. A busy producer retains its ordinary
-
     pub fn timeout_incremental(&self, now: Instant, send: &dyn Fn(SocketAddr, &[u8])) -> Answered {
         let due: Vec<_> = {
             let mut assocs = self.lock();
@@ -1935,7 +1903,6 @@ impl PortAssociations {
     }
 
     /// Drive a single LINE producer batch without retaining exclusive association custody
-
     pub fn poll_line(
         &self,
         id: u64,
@@ -2102,13 +2069,11 @@ impl PortAssociations {
     }
 
     /// Carry `framing` on this port; its number.
-
     pub fn add(&self, framing: DatagramFraming) -> Result<u64, NotAdded> {
         self.add_with(framing, |_| {})
     }
 
     /// Carry `framing`, publishing its host routing record before any port crossing can see it.
-
     pub fn add_with(
         &self,
         framing: DatagramFraming,
@@ -2129,7 +2094,6 @@ impl PortAssociations {
     }
 
     /// Stop carrying association `id`: its framing finishes, here with no lock held, or by its
-
     pub fn remove(&self, id: u64) {
         let (gone, pending, emission) = {
             let mut assocs = self.lock();
@@ -2181,7 +2145,6 @@ impl PortAssociations {
     }
 
     /// One datagram the port read from `from`, to the association it belongs to: what the
-
     pub fn datagram(
         &self,
         from: SocketAddr,
@@ -2219,7 +2182,6 @@ impl PortAssociations {
     }
 
     /// One message's bytes for `stream` on association `id`: whether it was taken (`false` = no
-
     #[allow(clippy::too_many_arguments)]
     pub fn emit(
         &self,
@@ -2242,7 +2204,6 @@ impl PortAssociations {
     }
 
     /// Wait for this association's emission turn without accepting or copying a busy write.
-
     #[allow(clippy::too_many_arguments)]
     pub async fn emit_ready(
         &self,
@@ -2286,7 +2247,6 @@ impl PortAssociations {
     }
 
     /// THE HAND-OFF: take association `id` out, run `first` on it and then what was owed it
-
     fn turn(
         &self,
         id: u64,
@@ -2410,7 +2370,6 @@ impl PortAssociations {
 }
 
 /// The user name a connectivity check names its receiver by: the part of its first USERNAME
-
 fn check_user(d: &[u8]) -> Option<&str> {
     const HEADER: usize = 20;
     if d.len() < HEADER || d[0..2] != [0x00, 0x01] || d[4..8] != [0x21, 0x12, 0xa4, 0x42] {
@@ -2455,7 +2414,6 @@ pub enum StreamHead {
 }
 
 /// Read a stream's head block (`name: value` lines): a `kind` field makes it a line, a `label`
-
 #[must_use]
 pub fn stream_head(block: &[u8]) -> Option<StreamHead> {
     let text = std::str::from_utf8(block).ok()?;
@@ -2515,7 +2473,6 @@ impl Bridge {
     }
 
     /// The upstream dial's opening fields: one `media` field per caller line, its kind, in order,
-
     #[must_use]
     pub fn opening(&self, channels: &[&str]) -> Vec<(String, Vec<u8>)> {
         self.caller
@@ -2530,7 +2487,6 @@ impl Bridge {
     }
 
     /// Whether the two legs' lines mirror: the same count, and the same kind at every position.
-
     pub fn mirrored(&self) -> Result<(), String> {
         if self.caller.len() != self.upstream.len() {
             return Err(format!(
@@ -2561,7 +2517,6 @@ impl Bridge {
     }
 
     /// The stream a frame on `leg`'s `stream` crosses to on the other leg; `None` = the stream is
-
     #[must_use]
     pub fn across(&self, leg: Leg, stream: u64) -> Option<u64> {
         if self.stopped || self.mirrored().is_err() {
@@ -2576,7 +2531,6 @@ impl Bridge {
     }
 
     /// Sort what `leg` yielded: a line's head is recorded, a line's frames go across (or are
-
     pub fn sort(
         &mut self,
         leg: Leg,
@@ -2620,18 +2574,15 @@ impl Bridge {
 }
 
 /// Whether a piece on a known LINE stream is application payload that crosses to the other leg.
-
 fn is_line_payload(g: &crate::framer::Got) -> bool {
     !g.fields && !g.failed && !g.ends_stream()
 }
 
 /// A LEG'S DOOR for what crosses into it: the owner of the leg's association (the claim door's
-
 pub trait LegSink: Send + Sync {
     /// Emit one line frame on this leg now.
     fn line(&self, across: Across, now: Instant);
     /// One producer batch, with no host lock held across its plugin crossing. `None` resumes
-
     fn poll_line(
         &self,
         _cx: &mut std::task::Context<'_>,
@@ -2658,7 +2609,6 @@ pub trait LegSink: Send + Sync {
         Ok(())
     }
     /// Schedule on the leg's captured reactor and task tracker. A rejected task is dropped,
-
     fn schedule(&self, task: PublicationTask) -> bool {
         match tokio::runtime::Handle::try_current() {
             Ok(runtime) => {
@@ -2673,7 +2623,6 @@ pub trait LegSink: Send + Sync {
 }
 
 /// ONE HELD SESSION'S PAIRING: its caller leg, registered under the session's unit key before the
-
 pub struct Pairing {
     state: std::sync::Mutex<PairState>,
     /// The caller leg's port address: the upstream leg binds a port of its own on the same host
@@ -2712,7 +2661,6 @@ impl Pairing {
     }
 
     /// A pairing with an optional advanced shared live-storage limit. The default is unset;
-
     #[must_use]
     pub fn with_memory_limit(
         caller: Arc<dyn LegSink>,
@@ -2761,7 +2709,6 @@ impl Pairing {
     }
 
     /// What `leg` yielded: its line heads recorded, its line frames handed to the other leg (once
-
     pub fn sort(
         &self,
         leg: Leg,
@@ -2786,7 +2733,6 @@ impl Pairing {
     }
 
     /// Attach the upstream leg once its lines are known (sorted from its answer): refused, and
-
     pub fn attach(&self, upstream: Arc<dyn LegSink>) -> Result<(), String> {
         let mut st = self.lock();
         if st.closed {

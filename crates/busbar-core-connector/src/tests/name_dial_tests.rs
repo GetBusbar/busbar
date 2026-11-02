@@ -24,7 +24,6 @@ const OWNER: InstanceId = InstanceId(1);
 const NEED: NeedId = NeedId(0);
 
 /// A resolver answering from a fixed table, off the caller's thread, after a pause — so the open
-
 struct Table(Vec<(&'static str, IpAddr)>);
 
 impl Resolve for Table {
@@ -47,7 +46,6 @@ impl Resolve for Table {
 }
 
 /// The connector serving a byte-exact door, its dials judged by the one guard over `allow` and
-
 fn connector_over(
     allow: &[&str],
     resolver: Arc<dyn Resolve>,
@@ -114,7 +112,6 @@ fn host(c: &Arc<Connector>) -> ConnHost {
 }
 
 /// The plugin's view of `host`'s table. `host` must not move while the view is used: the view's
-
 fn table(host: &ConnHost) -> HostConns {
     // SAFETY: the host's own slots over the context it minted; `host` outlives every call and
     // stays in place.
@@ -122,7 +119,6 @@ fn table(host: &ConnHost) -> HostConns {
 }
 
 /// THE PROOF: a hostname target opens at once, the read before the resolution answers is Pending,
-
 #[test]
 fn a_need_dials_a_hostname_through_the_one_guard() {
     worker().block_on(async {
@@ -161,7 +157,6 @@ fn a_need_dials_a_hostname_through_the_one_guard() {
 }
 
 /// A NAME'S ADDRESSES ARE TRIED IN TURN (oracle wire.tls client-hello cells, store.boot postgres
-
 #[test]
 fn a_refused_connect_moves_on_to_the_names_next_address() {
     worker().block_on(async {
@@ -195,7 +190,6 @@ fn a_refused_connect_moves_on_to_the_names_next_address() {
 }
 
 /// Ask `c` whether `id`'s dial has landed until it answers, as `ESTABLISH` asks on the plugin's
-
 async fn landed(c: &Connector, id: ConnId) -> Result<(), ConnError> {
     for _ in 0..2000 {
         match DeclaredConns::landed(c, OWNER, id, 7) {
@@ -207,7 +201,6 @@ async fn landed(c: &Connector, id: ConnId) -> Result<(), ConnError> {
 }
 
 /// A LIBPQ MULTI-HOST URL'S ENDPOINTS, as `ESTABLISH` answers them (oracle
-
 #[test]
 fn a_refused_endpoint_fails_its_landing_and_the_next_endpoint_lands() {
     worker().block_on(async {
@@ -258,7 +251,6 @@ fn a_refused_endpoint_fails_its_landing_and_the_next_endpoint_lands() {
 }
 
 /// The system resolver, through the same path: `localhost` resolves, is judged, and is dialled at
-
 #[test]
 fn a_need_dials_localhost_through_the_system_resolver() {
     use std::net::ToSocketAddrs;
@@ -293,7 +285,6 @@ fn a_need_dials_localhost_through_the_system_resolver() {
 }
 
 /// RED: a refusal the name decides answers the open itself, before any resolution; a name whose
-
 #[test]
 fn a_name_the_judge_refuses_is_never_dialled() {
     worker().block_on(async {
@@ -330,7 +321,6 @@ fn a_name_the_judge_refuses_is_never_dialled() {
 }
 
 /// A resolver that fails every name until `up` is set, then answers [`Table`]'s way: a collector's
-
 struct Flaky {
     up: Arc<std::sync::atomic::AtomicBool>,
     table: Table,
@@ -347,7 +337,6 @@ impl Resolve for Flaky {
 }
 
 /// RED (1.5.5 `otlp_resolves_to_internal`, v1.5.5
-
 #[test]
 fn a_name_that_does_not_resolve_fails_the_exchange_and_is_never_a_refusal() {
     worker().block_on(async {
@@ -419,7 +408,6 @@ fn a_name_that_does_not_resolve_fails_the_exchange_and_is_never_a_refusal() {
 }
 
 /// One read of `id` straight on the connector (the table a plugin's ESTABLISH reaches, where its
-
 async fn read_direct(c: &Arc<Connector>, id: ConnId) -> Result<Vec<u8>, ConnError> {
     let mut buf = [0_u8; 64];
     for _ in 0..2000 {
@@ -454,7 +442,6 @@ async fn counting_echo() -> (u16, Arc<AtomicU64>) {
 }
 
 /// THE LANDING RULE, GREEN: a dial stated `within` the address set the plugin's `dest.judge`
-
 #[test]
 fn a_judged_address_set_pins_the_dial() {
     worker().block_on(async {
@@ -483,7 +470,6 @@ fn a_judged_address_set_pins_the_dial() {
 }
 
 /// THE LANDING RULE, RED: the name was judged at one address and answers another at dial time
-
 #[test]
 fn a_rebound_name_is_refused_before_its_bytes_leave() {
     worker().block_on(async {
@@ -536,7 +522,6 @@ fn a_rebound_name_is_refused_before_its_bytes_leave() {
 }
 
 /// THE LANDING RULE, EMPTY: no set states no pin, so the same answer as the RED above (a name
-
 #[test]
 fn an_empty_address_set_keeps_the_dial_as_it_was() {
     worker().block_on(async {
@@ -564,7 +549,6 @@ fn an_empty_address_set_keeps_the_dial_as_it_was() {
 }
 
 /// RED (the destination guard): under the default, a name resolving to loopback is refused after
-
 #[test]
 fn a_name_resolving_to_loopback_is_refused_before_any_socket() {
     worker().block_on(async {
@@ -624,7 +608,6 @@ fn the_same_name_dials_when_allowlisted() {
 }
 
 /// THE DESIGN §5 egress-class table: the same name, when the need's
-
 #[test]
 fn a_config_named_target_on_loopback_is_trusted() {
     worker().block_on(async {
@@ -647,7 +630,6 @@ fn a_config_named_target_on_loopback_is_trusted() {
 }
 
 /// RED (THE DESIGN §5 destination guard: "refused unless allowlisted"
-
 #[test]
 fn a_config_named_provider_target_on_loopback_is_refused_until_allowlisted() {
     use busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER;

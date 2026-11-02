@@ -30,7 +30,6 @@ const HEADER: usize = 20;
 /// MESSAGE-INTEGRITY's value length.
 const MI_LEN: usize = 20;
 /// A probe states peer-reflexive priority (RFC 8445 §7.1.1), using the same UDP type preference
-
 const PROBE_PRIORITY: u32 = 0x6eff_ffff;
 
 /// One side's ICE credentials.
@@ -104,7 +103,6 @@ fn walk(d: &[u8], kind: [u8; 2]) -> Option<Walk<'_>> {
 }
 
 /// Does the MESSAGE-INTEGRITY at `mi_at` verify under `key` (RFC 8489 §14.5: over the message up to
-
 fn integrity_ok(d: &[u8], mi_at: usize, mac: &[u8], key: &hmac::Key) -> bool {
     let Ok(covered_len) = u16::try_from(mi_at + 4 + MI_LEN - HEADER) else {
         return false;
@@ -120,7 +118,6 @@ fn integrity_ok(d: &[u8], mi_at: usize, mac: &[u8], key: &hmac::Key) -> bool {
 }
 
 /// `true` when `d` is a Binding request whose USERNAME names the local ufrag first and whose
-
 pub(crate) fn is_verified_check(d: &[u8], keys: &Keys) -> bool {
     let Some(attrs) = walk(d, BINDING_REQUEST) else {
         return false;
@@ -141,7 +138,6 @@ pub(crate) fn is_verified_check(d: &[u8], keys: &Keys) -> bool {
 }
 
 /// The transaction id of `d` if it is a Binding success response whose MESSAGE-INTEGRITY verifies
-
 pub(crate) fn verified_probe_answer(d: &[u8], keys: &Keys) -> Option<[u8; 12]> {
     let attrs = walk(d, BINDING_SUCCESS)?;
     for (kind, at, value) in attrs {
@@ -179,7 +175,6 @@ fn set_len(m: &mut [u8], body: usize) {
 }
 
 /// A consent probe: a Binding request to the peer under the REMOTE credentials (USERNAME
-
 pub(crate) fn probe(
     keys: &Keys,
     txid: [u8; 12],

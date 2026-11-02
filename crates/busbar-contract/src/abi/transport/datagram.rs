@@ -11,7 +11,6 @@ pub const LANE_CLEAR: u32 = 1;
 /// [`DatagramLane::lane`] / [`DatagramRoute::lane`]: plaintext of the host's secure layer.
 pub const LANE_SECURED: u32 = 2;
 /// [`DatagramLane::lane`]: the far end's session description, from the signalling unit. Never a
-
 pub const LANE_RENDEZVOUS: u32 = 3;
 
 /// [`DatagramYield::request`]: no path request.
@@ -19,7 +18,6 @@ pub const PATH_REQUEST_NONE: u32 = 0;
 /// [`DatagramYield::request`]: bind `request_to` (nothing is bound yet).
 pub const PATH_REQUEST_BIND: u32 = 1;
 /// [`DatagramYield::request`]: move the association from the bound `request_from` to
-
 pub const PATH_REQUEST_REBIND: u32 = 2;
 
 /// [`RendezvousTerms::role`]: this answer carries no terms.
@@ -32,7 +30,6 @@ pub const HANDSHAKE_ANSWERS: u32 = 2;
 /// The most datagram routes one framer answer may produce.
 pub const MAX_ROUTES: u64 = 4096;
 /// The most keying-material bytes the host presents (two keys and two salts of the widest
-
 pub const MAX_KEYING_BYTES: u64 = 256;
 /// The length of [`RendezvousTerms::peer_fingerprint`]: a SHA-256 digest.
 pub const FINGERPRINT_BYTES: u64 = 32;
@@ -69,7 +66,6 @@ pub struct DatagramRoute {
 
 impl DatagramRoute {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-
     pub const ZERO: Self = Self {
         offset: 0,
         len: 0,
@@ -153,7 +149,6 @@ pub struct RendezvousTerms {
 
 impl RendezvousTerms {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-
     pub const ZERO: Self = Self {
         role: 0,
         _reserved: 0,

@@ -22,7 +22,6 @@ use rustls::{RootCertStore, ServerConfig};
 use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
 
 /// Install ring's [`rustls::crypto::CryptoProvider`] as the process default. Must run before
-
 pub fn install_crypto_provider() {
     let _ = ring().install_default();
 }
@@ -33,7 +32,6 @@ pub(crate) fn ring() -> rustls::crypto::CryptoProvider {
 }
 
 /// The process's crypto backend, installed first ([`install_crypto_provider`]): the default the
-
 #[must_use]
 pub fn installed_crypto() -> Arc<rustls::crypto::CryptoProvider> {
     let _ = ring().install_default();
@@ -43,7 +41,6 @@ pub fn installed_crypto() -> Arc<rustls::crypto::CryptoProvider> {
 }
 
 /// Resolve a TLS secret reference to its PEM bytes, mapping any resolve error into a clear,
-
 fn read_pem(
     resolver: &dyn busbar_contract::secret::SecretResolve,
     secret: &SecretRef,
@@ -58,7 +55,6 @@ fn read_pem(
 }
 
 /// Parse the PEM certificate chain (leaf first). Errors name the secret source; cert bytes are
-
 fn load_cert_chain(
     resolver: &dyn busbar_contract::secret::SecretResolve,
     secret: &SecretRef,
@@ -79,7 +75,6 @@ fn load_cert_chain(
 }
 
 /// Parse the PEM private key, accepting PKCS#8, PKCS#1 (RSA), or SEC1 (EC) encodings. NEVER logs key
-
 fn load_private_key(
     resolver: &dyn busbar_contract::secret::SecretResolve,
     secret: &SecretRef,
@@ -99,7 +94,6 @@ fn load_private_key(
 }
 
 /// BUSBAR'S CLIENT IDENTITY for one destination, from its two secret references: the PEM chain
-
 pub fn client_identity(
     resolver: &dyn busbar_contract::secret::SecretResolve,
     cert: &SecretRef,
@@ -114,7 +108,6 @@ pub fn client_identity(
 }
 
 /// Build the client-cert verifier root store from the operator's CA bundle (mTLS).
-
 fn load_client_roots(
     resolver: &SecretResolver,
     secret: &SecretRef,
@@ -139,7 +132,6 @@ fn load_client_roots(
 }
 
 /// The ALPN ids a TLS listener offers, in its order of preference. The listener's hyper builder
-
 const ALPN_OFFER: [&[u8]; 2] = [ALPN_H2, b"http/1.1"];
 
 /// The ALPN id of HTTP/2 over TLS (RFC 9113 §3.3).
@@ -149,7 +141,6 @@ const ALPN_H2: &[u8] = b"h2";
 const H2_PREFACE: &[u8; 24] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
 /// A connection whose ALPN is `h2` is KNOWN to be HTTP/2, so RFC 9113 §3.4 governs its first bytes
-
 async fn expect_h2_preface<S: futures::io::AsyncRead + Unpin>(io: &mut S) -> std::io::Result<()> {
     let mut got = [0u8; 24];
     let mut n = 0;
@@ -168,7 +159,6 @@ async fn expect_h2_preface<S: futures::io::AsyncRead + Unpin>(io: &mut S) -> std
 }
 
 /// An ALPN-h2 stream whose preface [`expect_h2_preface`] has read: reads hand the preface back
-
 struct Preface<S> {
     io: S,
     replayed: usize,
@@ -221,7 +211,6 @@ impl<S: futures::io::AsyncWrite + Unpin> futures::io::AsyncWrite for Preface<S> 
 }
 
 /// Construct the rustls [`ServerConfig`] from the operator's [`TlsCfg`].
-
 pub fn build_server_config(
     tls: &TlsCfg,
     resolver: &SecretResolver,
@@ -276,7 +265,6 @@ impl ConnectionSecurity for Identity {
 }
 
 /// The TLS connection-security wrap: runs the rustls server handshake built by
-
 pub struct Tls {
     config: Arc<ServerConfig>,
 }
@@ -345,7 +333,6 @@ impl std::fmt::Display for FailClosed {
 impl std::error::Error for FailClosed {}
 
 /// Reconcile one binding's operator config against its transport's capability and build the opaque
-
 pub fn prepare(
     label: &str,
     tls_cfg: Option<&TlsCfg>,

@@ -201,7 +201,6 @@ fn thread_cpu() -> std::time::Duration {
 }
 
 /// The cost of each of `runs`: the fewest nanoseconds of this thread's CPU time any one of
-
 fn costs(rounds: usize, runs: &mut [&mut dyn FnMut()]) -> Vec<f64> {
     let mut best = vec![std::time::Duration::MAX; runs.len()];
     for _ in 0..rounds {
@@ -219,7 +218,6 @@ const SMALL: usize = 1 << 17;
 const LARGE: usize = 1 << 20;
 
 /// A full walk of `body` by a production JSON reader (serde_json, every value read and ignored):
-
 fn reference_walk(body: &[u8]) {
     let walked: serde::de::IgnoredAny =
         serde_json::from_slice(std::hint::black_box(body)).expect("the body is JSON");
@@ -227,7 +225,6 @@ fn reference_walk(body: &[u8]) {
 }
 
 /// THE SCANNER'S BUDGET, judged as ratios a loaded machine cannot move. A wall clock on a shared
-
 fn judge(scan: &dyn Fn(&[u8])) -> Result<String, String> {
     let (small, large) = (big_body(SMALL), big_body(LARGE));
 
@@ -259,7 +256,6 @@ fn judge(scan: &dyn Fn(&[u8])) -> Result<String, String> {
 }
 
 /// The scan the budget is about: a body whose one interesting key is last, so the whole body is
-
 fn scan_for_the_last_key(body: &[u8]) {
     assert!(matches!(
         resolve_pointer(std::hint::black_box(body), "/lane"),
@@ -268,7 +264,6 @@ fn scan_for_the_last_key(body: &[u8]) {
 }
 
 /// The scanner's budget is under a microsecond per kibibyte of body scanned in a release build
-
 #[test]
 fn the_scanner_meets_its_budget_on_a_mebibyte() {
     match judge(&scan_for_the_last_key) {
@@ -278,7 +273,6 @@ fn the_scanner_meets_its_budget_on_a_mebibyte() {
 }
 
 /// THE BUDGET'S RED ARM: a planted QUADRATIC scanner fails [`judge`]. It is the regression the
-
 #[test]
 fn a_quadratic_scanner_fails_the_budget() {
     fn rescanning(body: &[u8]) {

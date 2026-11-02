@@ -158,7 +158,6 @@ impl Pools {
     }
 
     /// Bootstrap recovery replaces the posture without replacing the connector or its active
-
     pub(crate) fn reconfigure(&self, posture: PoolPosture) {
         let mut gone = Vec::new();
         {
@@ -192,7 +191,6 @@ impl Pools {
     }
 
     /// THE IDLE REAPER: once the earliest idle deadline has passed, every shard is swept and each
-
     fn reap_if_due(&self, now: Instant) {
         let posture = self.posture.read().expect("pool posture");
         let at = self.since_epoch(now);
@@ -256,7 +254,6 @@ impl Pools {
     }
 
     /// Hold a line just dialled for `key` on `shard`: in use by its first exchange, and, once it
-
     pub(crate) fn hold(&self, shard: usize, key: PoolKey, line: &Arc<Line>) {
         let posture = self.posture.read().expect("pool posture");
         if posture.max_idle_per_host == 0 {
@@ -275,7 +272,6 @@ impl Pools {
     }
 
     /// A line for `key` on `shard`, LENT (its holder counted): a live multiplexing one, in use or
-
     pub(crate) fn lend(&self, shard: usize, key: &PoolKey) -> Option<Arc<Line>> {
         if !self.keeps() {
             return None;
@@ -368,7 +364,6 @@ impl Pools {
     }
 
     /// `line`'s last holder for `key` on `shard` left (`users() == 0`): kept idle when it can carry
-
     pub(crate) fn release(&self, shard: usize, key: &PoolKey, line: &Arc<Line>) {
         let applied = self.posture.read().expect("pool posture");
         let posture = *applied;
@@ -443,7 +438,6 @@ impl Pools {
     }
 
     /// `owner` is gone: every line dialled for it leaves the pool, and each nobody holds is
-
     pub(crate) fn forget(&self, owner: InstanceId) {
         let mut gone = Vec::new();
         for shard in &*self.shards {
@@ -463,7 +457,6 @@ impl Pools {
     }
 
     /// Drop `line` from the pool for `key` on `shard` (it failed its exchange's open); closed when
-
     pub(crate) fn drop_line(&self, shard: usize, key: &PoolKey, line: &Arc<Line>) {
         {
             let mut map = self.shards[shard].lock().expect("pool");

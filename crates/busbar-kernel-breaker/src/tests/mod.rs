@@ -6,7 +6,6 @@ use crate::cfg::{BreakerCfg, TripConfig, TripMode};
 use crate::{BreakerUnit, DestinationId};
 
 /// A fixed "now" for the tests that need one but are not ABOUT it — the kernel supplies this value
-
 const NOW: u64 = 1_700_000_000;
 
 /// The probe fold's one test that takes no token (it reads a crate-private cell census); the ones
@@ -56,7 +55,6 @@ fn the_oracle_cooldown_pool_draws_a_whole_second_in_one_to_three() {
 }
 
 /// A CONFIGURATION THAT INVERTS THE COOLDOWN BOUNDS ANSWERS; IT DOES NOT BRING THE NODE DOWN.
-
 #[test]
 fn a_cooldown_ceiling_below_the_floor_is_answered_rather_than_panicked_on() {
     for (label, cfg) in [
@@ -187,7 +185,6 @@ fn a_threshold_crossing_failure_keeps_the_previous_requested_wait() {
 }
 
 /// THE TRIP IS A FUNCTION OF THE `now` IT WAS HANDED, not of the wall clock underneath it.
-
 #[test]
 fn the_armed_cooldown_is_a_function_of_the_now_the_caller_supplied() {
     let cfg = BreakerCfg {
@@ -228,7 +225,6 @@ fn the_armed_cooldown_is_a_function_of_the_now_the_caller_supplied() {
 }
 
 /// `record_failure` says which arm it took, so a caller never has to guess from a state it read
-
 #[test]
 fn record_failure_says_which_arm_it_took() {
     let cfg = consecutive_cfg(100, 10_000);
@@ -272,7 +268,6 @@ fn record_failure_says_which_arm_it_took() {
 }
 
 /// A reader must never pair a cell's stale cooldown with its freshly stored state.
-
 #[test]
 fn a_verdict_never_pairs_a_stale_cooldown_with_a_fresh_state() {
     use crate::cell::BreakerVerdict;
@@ -314,7 +309,6 @@ fn a_verdict_never_pairs_a_stale_cooldown_with_a_fresh_state() {
 }
 
 /// A pool cell that a caller can reach is a pool cell a hard-down can reach.
-
 #[test]
 fn a_reachable_pool_cell_is_always_reachable_by_a_hard_down() {
     const NOISE: usize = 8;
@@ -379,7 +373,6 @@ fn budget_spend_never_drives_the_counter_negative() {
 }
 
 /// A negative cap is the unlimited sentinel, whichever constructor it reaches.
-
 #[test]
 fn a_negative_cap_is_unlimited_and_never_an_admissible_budget_that_refuses_every_spend() {
     let budget = LifetimeBudget::limited(-1);
@@ -399,7 +392,6 @@ fn a_negative_cap_is_unlimited_and_never_an_admissible_budget_that_refuses_every
 }
 
 /// The requested-wait ceiling the cases below pass: they supply no upstream requested wait, so the
-
 const MAX_RETRY_AFTER: u64 = 3_600;
 
 #[test]
@@ -553,7 +545,6 @@ fn a_long_failure_streak_saturates_the_cooldown_instead_of_wrapping_it_to_zero()
 }
 
 /// The consecutive-failure streak bump happens UNDER the transition lock, serialized with the
-
 #[test]
 fn streak_bump_is_serialized_under_the_transition_lock() {
     use std::sync::{Arc, Barrier};
@@ -604,7 +595,6 @@ fn streak_bump_is_serialized_under_the_transition_lock() {
 }
 
 /// Park the default cell of `d` as a WON probe, exactly as an admission leaves it after winning the
-
 fn win_probe(unit: &BreakerUnit, d: DestinationId) -> u64 {
     let _ = unit.cell("", d).hard_down(NOW, 0);
     let admit = unit
@@ -620,7 +610,6 @@ fn win_probe(unit: &BreakerUnit, d: DestinationId) -> u64 {
 }
 
 /// A won probe given back without a dispatch (what an armed guard's drop does; the egress unit's
-
 #[test]
 fn dropping_armed_guard_releases_probe() {
     let unit = BreakerUnit::new();
@@ -647,7 +636,6 @@ fn dropping_armed_guard_releases_probe() {
 }
 
 /// A STALLED guard (it won an earlier probe, whose outcome was since recorded, and a newer probe
-
 #[test]
 fn stalled_guard_does_not_release_a_newer_probe() {
     let unit = BreakerUnit::new();
@@ -679,7 +667,6 @@ fn stalled_guard_does_not_release_a_newer_probe() {
 }
 
 /// A cell carried across a rebuild keeps its state, cooldown, streak and error count — and a
-
 #[test]
 fn snapshot_restore_round_trips_and_normalizes_a_mid_probe_capture() {
     use crate::cell::CellSnapshot;
@@ -710,7 +697,6 @@ fn snapshot_restore_round_trips_and_normalizes_a_mid_probe_capture() {
 }
 
 /// The unit's own budget object is what a holder spends: a spend through the shared handle is a
-
 #[test]
 fn a_shared_budget_is_the_units_budget() {
     let unit = BreakerUnit::new();
@@ -728,7 +714,6 @@ fn a_shared_budget_is_the_units_budget() {
 }
 
 /// `with_limits` is the path the two `limits.*` knobs take: the unit reports them back, and a
-
 #[test]
 fn with_limits_drives_the_hard_down_cooldown() {
     let unit = BreakerUnit::new().with_limits(600, 7200);

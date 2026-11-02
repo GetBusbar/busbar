@@ -94,7 +94,6 @@ impl Signal {
     ];
 
     /// The stable wire/config key for this signal — snake_case, matching the `#[serde(rename_all =
-
     pub fn name(self) -> &'static str {
         match self {
             Signal::RequestedModel => "requested_model",
@@ -112,7 +111,6 @@ impl Signal {
     }
 
     /// A dense, stable bit position for this signal — the `RequestedSignals` bitmask's index.
-
     pub fn bit(self) -> u32 {
         Self::ALL
             .iter()
@@ -158,7 +156,6 @@ impl Serialize for SignalValue {
 }
 
 /// The inline-capacity-4 backing store: the common case (0-4 signals declared for a given
-
 type SignalBagInner = smallvec::SmallVec<[(Signal, SignalValue); 4]>;
 
 /// The signal bag a projection (`RoutingRequest`, `Candidate`, and the response stage tap's
@@ -189,13 +186,11 @@ impl SignalBag {
     }
 
     /// Insert one signal's value. Optional telemetry is computed only when requested; the
-
     pub fn push(&mut self, signal: Signal, value: SignalValue) {
         self.0.push((signal, value));
     }
 
     /// Read back a previously-pushed value (test/debug convenience; the wire never round-trips
-
     pub fn get(&self, signal: Signal) -> Option<&SignalValue> {
         self.0.iter().find(|(s, _)| *s == signal).map(|(_, v)| v)
     }
@@ -206,7 +201,6 @@ impl SignalBag {
     }
 
     /// Whether the bag has spilled its inline `SmallVec` capacity onto the heap. Test/proof aid
-
     pub fn spilled(&self) -> bool {
         self.0.spilled()
     }

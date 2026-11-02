@@ -48,7 +48,6 @@ fn socket_path(tag: &str) -> (std::path::PathBuf, String) {
 }
 
 /// A unix-domain far end at `path`: per connection it reads five bytes, pauses, then answers
-
 fn far_end(path: &std::path::Path) {
     let l = tokio::net::UnixListener::bind(path).unwrap();
     tokio::spawn(async move {
@@ -92,7 +91,6 @@ async fn send(c: &Connector, id: ConnId, bytes: &[u8]) {
 }
 
 /// RED: an operator-infrastructure `tcp` need reaches a real unix-domain far end at `unix:<path>`:
-
 #[test]
 fn an_operator_infrastructure_need_reaches_a_unix_domain_far_end() {
     worker().block_on(async {
@@ -130,7 +128,6 @@ fn an_operator_infrastructure_need_reaches_a_unix_domain_far_end() {
 }
 
 /// RED ("the connector serves unix-domain targets for
-
 #[test]
 fn a_loopback_allowed_need_is_refused_a_unix_target() {
     worker().block_on(async {
@@ -161,7 +158,6 @@ fn a_unix_target_is_refused_to_every_other_class() {
 }
 
 /// RED: a need whose config names its unix path dials that path and no other: another path is
-
 #[test]
 fn a_config_targeted_need_is_pinned_to_its_unix_path() {
     worker().block_on(async {
@@ -201,7 +197,6 @@ fn no_socket_at_the_path_is_refused() {
 }
 
 /// Only `unix:` with one leading `/` is a unix target; the URL spelling `unix:///…` is not, and is
-
 #[test]
 fn only_the_unix_colon_path_form_is_a_unix_target() {
     assert_eq!(socket::unix_path("unix:/run/v.sock"), Some("/run/v.sock"));

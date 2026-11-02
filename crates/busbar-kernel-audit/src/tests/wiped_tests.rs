@@ -23,7 +23,6 @@ fn the_wiped_hmac_reproduces_the_rfc_4231_vectors() {
 }
 
 /// The wiped HMAC agrees with `ring`'s on every key length up to a block and on messages that
-
 #[test]
 fn the_wiped_hmac_agrees_with_ring_across_key_and_message_lengths() {
     let bytes: Vec<u8> = (0..300u32).map(|i| (i * 7 + 3) as u8).collect();

@@ -33,7 +33,6 @@ impl DeclStr {
     }
 
     /// A stated string that lives for the program: [`DeclStr::new`], named as
-
     #[must_use]
     pub const fn of(s: &'static str) -> Self {
         Self::new(s)
@@ -130,7 +129,6 @@ pub struct WireField {
 }
 
 /// Every closed vocabulary a slot or the row carries crosses as a byte, `0` = absent where the
-
 pub mod code {
     use crate::grammar::SelectorForm;
     use crate::transport::wire::{Framing, StatusAt, Unit0Trigger, WireStatusClass};

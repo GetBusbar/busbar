@@ -85,7 +85,6 @@ fn pended(j: &Arc<dyn DialJudge>, dest: &str, class: u32) -> Result<SocketAddr, 
 }
 
 /// Every egress class a need may declare is judged by the one guard: a public address is judged
-
 #[test]
 fn every_egress_class_is_judged_by_the_one_guard() {
     let j = process_judge(&[], vec![]);
@@ -99,7 +98,6 @@ fn every_egress_class_is_judged_by_the_one_guard() {
 }
 
 /// RED: under the default, the provider class and a request-data class (the default class,
-
 #[test]
 fn a_private_address_is_refused_for_providers_and_request_data_unless_allowlisted() {
     let strict = process_judge(&[], vec![]);
@@ -136,7 +134,6 @@ fn a_private_address_is_refused_for_providers_and_request_data_unless_allowliste
 }
 
 /// RED: a name resolving to loopback is refused after its one resolution, before any socket; the
-
 #[test]
 fn a_name_resolving_to_loopback_is_refused_until_allowlisted() {
     let names = || vec![("db.internal", IpAddr::from([127, 0, 0, 1]))];
@@ -157,7 +154,6 @@ fn a_name_resolving_to_loopback_is_refused_until_allowlisted() {
 }
 
 /// Loopback-allowed (its loopback allowlisted) dials loopback, but never the node's own ports,
-
 #[test]
 fn loopback_allowed_refuses_the_nodes_own_ports() {
     let names = vec![("localhost", IpAddr::from([127, 0, 0, 1]))];
@@ -180,7 +176,6 @@ fn loopback_allowed_refuses_the_nodes_own_ports() {
 }
 
 /// `dest.judge`'s arms through the same judge: a URL's scheme by class (open-web secure only,
-
 #[test]
 fn the_kernel_asks_the_same_judge() {
     let j = guard_judge(&["127.0.0.1", "10.1.2.3"], vec![]);
@@ -309,7 +304,6 @@ impl Resolve for Asked {
 }
 
 /// An IDN name 1.5.5 dialled: a bare non-ASCII name the guard admitted is resolved as its
-
 #[test]
 fn an_idn_name_is_resolved_as_its_punycode_name() {
     let public: IpAddr = "93.184.216.34".parse().unwrap();

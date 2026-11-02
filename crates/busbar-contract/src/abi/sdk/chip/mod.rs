@@ -77,7 +77,6 @@ fn b64(bytes: &[u8]) -> Bytes {
 }
 
 /// A fresh 24-character PostgreSQL SCRAM nonce (printable ASCII excluding comma).
-
 pub fn pg_scram_nonce() -> Result<String, Refused> {
     let mut nonce = String::with_capacity(24);
     while nonce.len() < 24 {
@@ -98,7 +97,6 @@ pub fn pg_scram_nonce() -> Result<String, Refused> {
 }
 
 /// What a SCRAM exchange left to check: the server's signature, held until the server-final
-
 #[allow(missing_debug_implementations)]
 pub struct ScramLink(Held<Zeroizing<[u8; 32]>>);
 
@@ -297,7 +295,6 @@ impl Cred {
     }
 
     /// Whether `presented` equals the credential, compared over SHA-256 digests so neither content
-
     pub fn verify_eq(&self, presented: &[u8]) -> bool {
         let a = digests::sha256(&[self.wire()]);
         let b = digests::sha256(&[presented]);
@@ -305,7 +302,6 @@ impl Cred {
     }
 
     /// `text` with every occurrence of the credential replaced by `[redacted]`: for a destination
-
     pub fn redact_echo(&self, text: &str) -> String {
         let needle = self.wire();
         if needle.is_empty() || needle.len() > text.len() {
@@ -335,7 +331,6 @@ impl Cred {
     }
 
     /// Postgres `PasswordMessage` carrying the password in clear (AuthenticationCleartextPassword).
-
     pub fn pg_password_message(&self) -> Result<Seal, Refused> {
         self.pg_allows(PgAuth::Password, PG_CLEARTEXT_REFUSED)?;
         if self.wire().contains(&0) {
@@ -345,7 +340,6 @@ impl Cred {
     }
 
     /// Postgres `PasswordMessage` for AuthenticationMD5Password:
-
     pub fn pg_md5_message(&self, user: &str, salt: [u8; 4]) -> Result<Seal, Refused> {
         self.pg_allows(PgAuth::Md5, PG_MD5_REFUSED)?;
         let inner = digests::md5(&[self.wire(), user.as_bytes()]);
@@ -357,7 +351,6 @@ impl Cred {
     }
 
     /// Postgres `SASLResponse` carrying the SCRAM-SHA-256 client-final message (RFC 5802, 7677),
-
     pub fn pg_scram_sha256(
         &self,
         client_first_bare: &str,
@@ -371,7 +364,6 @@ impl Cred {
     }
 
     /// PostgreSQL store counterpart with its native positive iteration range 1..=100000.
-
     pub fn pg_scram_sha256_postgres(
         &self,
         client_first_bare: &str,
@@ -495,7 +487,6 @@ impl Cred {
     }
 
     /// A seal of the password in clear (or encrypted to a key nobody pinned): it goes out in the
-
     fn mysql_seal(&self, bytes: Bytes, open: bool) -> Seal {
         let seal = self.seal(bytes);
         if open {
@@ -537,7 +528,6 @@ impl Cred {
     }
 
     /// A MySQL `HandshakeResponse41` packet, whole, header included.
-
     pub fn mysql_handshake_response(&self, h: &MysqlHandshake<'_>) -> Result<Seal, Refused> {
         self.mysql_allows(h.auth)?;
         let mut caps = h.capabilities | CLIENT_PLUGIN_AUTH;
@@ -598,7 +588,6 @@ impl Cred {
     }
 
     /// A MySQL auth-switch response packet for `auth` over the switch request's `nonce`, whole.
-
     pub fn mysql_auth_switch_response(
         &self,
         seq: u8,
@@ -611,7 +600,6 @@ impl Cred {
     }
 
     /// A MySQL packet carrying the password in clear, NUL-terminated: `caching_sha2_password` full
-
     pub fn mysql_clear_packet(&self, seq: u8) -> Result<Seal, Refused> {
         let mut p = Zeroizing::new(self.wire().to_vec());
         p.push(0);
@@ -622,7 +610,6 @@ impl Cred {
 
 impl Cred {
     /// A MySQL packet for `caching_sha2_password` full authentication on a link with no TLS: the
-
     pub fn mysql_rsa_packet(
         &self,
         seq: u8,

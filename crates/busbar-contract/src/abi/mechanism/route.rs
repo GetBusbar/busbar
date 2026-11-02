@@ -25,7 +25,6 @@ pub enum RouteMethod {
 
 impl RouteMethod {
     /// The canonical uppercase HTTP method token (`"GET"`, …) — the same spelling that rides the wire,
-
     pub fn as_str(&self) -> &'static str {
         match self {
             RouteMethod::Get => "GET",

@@ -18,7 +18,6 @@ impl std::fmt::Debug for HostWire {
 
 impl HostWire {
     /// The entry behind `door`, admitted to be served over the host's sockets. Its registry key is
-
     pub fn new(door: &dyn FramerDoor) -> Result<Self, String> {
         let facts = door.facts();
         let Some(&key) = facts.claims.first() else {

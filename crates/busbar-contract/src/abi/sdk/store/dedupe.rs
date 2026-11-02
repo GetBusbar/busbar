@@ -167,7 +167,6 @@ impl<'a> Dedupe<'a> {
     }
 
     /// What the body recorded under the op's `op_id` (`None`: nothing is) makes of this op. A body
-
     #[must_use]
     pub fn seen(&self, recorded: Option<&[u8]>) -> Seen {
         let Some(recorded) = recorded else {
@@ -191,7 +190,6 @@ impl<'a> Dedupe<'a> {
     }
 
     /// The op's answer from what its async body found: `None` = it applied the op and recorded its
-
     pub fn answer<B: AsRef<[u8]>>(&self, ran: OpResult<Option<B>>) -> OpResult<()> {
         let found = ran?;
         match self.seen(found.as_ref().map(|b| b.as_ref())) {
@@ -201,7 +199,6 @@ impl<'a> Dedupe<'a> {
     }
 
     /// RUN THE OP DEDUPED over the store's log `log`, in ONE atomic step the store holds (its lock,
-
     pub fn run<L, B: AsRef<[u8]>>(
         &self,
         log: &mut L,
@@ -217,7 +214,6 @@ impl<'a> Dedupe<'a> {
     }
 
     /// Whether `recorded` is this op's body in the form builds before this one recorded: the slot's
-
     fn older_form_is(&self, recorded: &[u8]) -> bool {
         let mut older = String::new();
         match self.values {

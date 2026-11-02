@@ -260,7 +260,6 @@ pub(super) fn postgres(text: &str) -> Result<CredUrl, &'static str> {
 }
 
 /// WHATWG preprocessing: strip leading/trailing C0/space, ignore tab/newline/CR anywhere.
-
 fn normalized(text: &str) -> Zeroizing<String> {
     let mut out = Zeroizing::new(String::with_capacity(text.len()));
     for c in text.trim_matches(|c: char| c <= '\u{20}').chars() {
@@ -463,7 +462,6 @@ pub(super) fn valkey(text: &str) -> CredUrl {
 }
 
 /// Compare one sealed spelling to a message suffix. Percent triplets ignore only hex case;
-
 fn echo_len_mode(message: &[u8], secret: &[u8], encoded: bool) -> Option<usize> {
     if secret.is_empty() {
         return None;

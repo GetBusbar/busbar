@@ -8,7 +8,6 @@ use crate::bounded::SlabBytes;
 const B64_ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 /// Standard base64 (RFC 4648 section 4, with `=` padding). Audio cells cross the JSON/binary boundary
-
 pub fn base64_encode(input: &[u8]) -> String {
     let mut out = Vec::with_capacity(input.len().div_ceil(3) * 4);
     base64_encode_into(input, &mut out);
@@ -17,7 +16,6 @@ pub fn base64_encode(input: &[u8]) -> String {
 }
 
 /// [`base64_encode`], APPENDED to a buffer the caller holds: the same bytes, with no allocation when
-
 pub fn base64_encode_into(input: &[u8], out: &mut Vec<u8>) {
     out.reserve(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
@@ -41,7 +39,6 @@ pub fn base64_encode_into(input: &[u8], out: &mut Vec<u8>) {
 }
 
 /// The REVERSE of [`B64_ALPHABET`]: byte → its 6-bit value, `255` for every byte that is not a
-
 const B64_REVERSE: [u8; 256] = {
     let mut val = [255u8; 256];
     let mut i = 0;
@@ -53,7 +50,6 @@ const B64_REVERSE: [u8; 256] = {
 };
 
 /// Decode standard base64 (padding optional; whitespace ignored). Returns `None` on any invalid byte
-
 pub fn base64_decode(input: &str) -> Option<SlabBytes> {
     let val = &B64_REVERSE;
     let mut bits: u32 = 0;

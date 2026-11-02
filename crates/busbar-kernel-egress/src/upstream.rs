@@ -6,24 +6,20 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Historical default cap on a buffered upstream ERROR / verbatim-relay body (bytes) — 256 KiB, the
-
 pub const UPSTREAM_ERROR_BODY_MAX_BYTES_DEFAULT: usize = 256 * 1024;
 
 /// Historical default egress translate-body cap (bytes) — 32 MiB, the value read before any operator
 pub use busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT;
 
 /// Process-global egress translate-body cap (bytes). Seeded to the historical default so an
-
 static TRANSLATE_BODY_MAX_BYTES: AtomicUsize = AtomicUsize::new(TRANSLATE_BODY_MAX_BYTES_DEFAULT);
 
 /// Read the installed egress translate-body cap (bytes). The neutral twin of core's
-
 pub fn max_translate_body_bytes() -> usize {
     TRANSLATE_BODY_MAX_BYTES.load(Ordering::Relaxed)
 }
 
 /// Install the resolved egress translate-body cap process-wide. Called ONLY by core's `limits`
-
 pub fn set_max_translate_body_bytes(bytes: usize) {
     TRANSLATE_BODY_MAX_BYTES.store(bytes, Ordering::Relaxed);
 }
@@ -34,7 +30,6 @@ pub const ERR_NET_CONNECT: &str = "connect";
 pub const ERR_NET_TIMEOUT: &str = "timeout";
 
 /// The fields the upstream connection derives for itself, beyond HTTP's hop-by-hop set.
-
 pub const RE_DERIVED: &[&str] = &["host", "content-length", "accept-encoding"];
 
 /// The content coding busbar asks a provider for. 1.6.0 has one choice, `Identity` (as 1.5.5):
@@ -64,7 +59,6 @@ pub const fn upstream_encoding() -> UpstreamEncoding {
 }
 
 /// Write busbar's own `accept-encoding` choice ([`upstream_encoding`]) onto an upstream head that
-
 pub fn apply_upstream_encoding(fields: &mut Vec<(Vec<u8>, Vec<u8>)>) {
     if let Some(value) = upstream_encoding().accept_encoding() {
         fields.push((b"accept-encoding".to_vec(), value.as_bytes().to_vec()));
@@ -75,7 +69,6 @@ pub fn apply_upstream_encoding(fields: &mut Vec<(Vec<u8>, Vec<u8>)>) {
 pub const CONTROL_PREFIX: &str = "x-busbar-";
 
 /// Whether the client field `name` is a per-connection mechanic the upstream request re-derives: a
-
 #[must_use]
 pub fn re_derived<'a>(name: &str, nominated: impl IntoIterator<Item = &'a [u8]>) -> bool {
     let lower: std::borrow::Cow<'_, str> = if name.bytes().any(|b| b.is_ascii_uppercase()) {
@@ -88,7 +81,6 @@ pub fn re_derived<'a>(name: &str, nominated: impl IntoIterator<Item = &'a [u8]>)
 }
 
 /// Drop from the head a plane hands the kernel what the host drops from a client's:
-
 pub fn strip_re_derived(fields: &mut Vec<(Vec<u8>, Vec<u8>)>) {
     let nominated: Vec<Vec<u8>> = fields
         .iter()

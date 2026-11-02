@@ -6,7 +6,6 @@
 use super::attempt_cap_ms;
 
 /// The cap is floored by the request's remaining budget, and never zero: 200 ms under 30 s left is
-
 #[test]
 fn test_attempt_cap_budget_floor() {
     assert_eq!(attempt_cap_ms(200, 30_000), 200);

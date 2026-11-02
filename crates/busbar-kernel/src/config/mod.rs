@@ -694,7 +694,6 @@ pub use busbar_kernel::config::pools::{
 pub use busbar_kernel::config::auth::{default_admin_auth, default_admin_auth_names};
 
 #[allow(clippy::too_many_arguments)]
-
 fn check_failover_pool(
     errors: &mut Vec<String>,
     section: &str,
@@ -864,7 +863,6 @@ pub struct PlaneFeesCfg {
 }
 
 /// Deployment configuration - operator-owned config.yaml structure.
-
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeployCfg {
@@ -899,7 +897,6 @@ pub struct DeployCfg {
     /// resource server. Its PRESENCE is what mounts that plane's endpoint — absent, the deployment
     /// carries no ingress for it and no `.well-known` document, and nothing joins the route table.
     /// See that plane's own endpoint config type.
-
     ///
     /// A CARRIER, not a parsed field: the key is lifted off the document by
     /// [`crate::config::prepass`] before this struct parses, so it is never in this struct's

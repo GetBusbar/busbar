@@ -11,7 +11,6 @@ const OWNER: InstanceId = InstanceId(1);
 const SOCKET: &str = "unix:///run/busbar.sock";
 
 /// A need declared over `unix` is refused at its declaration (no entry serves the scheme; the
-
 #[test]
 fn a_need_over_a_unix_scheme_is_refused() {
     let c = Connector::new();
@@ -30,7 +29,6 @@ fn a_need_over_a_unix_scheme_is_refused() {
 }
 
 /// A `unix://` target names no host, so the endpoint check refuses it before any transport is asked
-
 #[test]
 fn a_unix_target_names_no_host_and_is_refused_before_any_dial() {
     assert_eq!(

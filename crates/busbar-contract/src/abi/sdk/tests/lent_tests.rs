@@ -303,7 +303,6 @@ fn a_failed_open_writes_its_reason_into_the_lent_buffer_cut_on_a_char_boundary()
 }
 
 /// THE LOGIN LISTS: `begin_login`'s scopes and `complete_login`'s submitted fields lend each
-
 #[test]
 fn the_login_lists_lend_within_bounds_and_empty_when_null_or_zero() {
     use crate::abi::auth::{BeginLoginIn, CompleteLoginIn, NamedValue};
@@ -373,7 +372,6 @@ fn text(s: &'static str) -> AbiStr {
 }
 
 /// THE EXPORT KIND, without `unsafe`: `scrape`'s snapshot is read family by family, sample by
-
 #[test]
 fn an_export_scrape_check_and_serve_lend_their_lists_and_buffer() {
     use crate::abi::export::{

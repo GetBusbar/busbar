@@ -79,7 +79,6 @@ fn the_host_accepts_each_kind_at_its_own_fingerprint() {
 }
 
 /// RED: any moved word moves the fold: a struct one field-width larger, a field at another
-
 #[test]
 fn a_moved_layout_moves_the_fingerprint() {
     for (kind, stated, shapes) in KINDS {

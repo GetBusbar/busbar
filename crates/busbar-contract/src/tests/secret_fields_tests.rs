@@ -14,7 +14,6 @@ fn at(p: &[&str]) -> Vec<String> {
 }
 
 /// The lend every host runs with a resolver standing in: a reference lends `R:<env>`, a string
-
 fn lent(block: &mut Value, declared: &[&str]) -> Vec<Vec<u8>> {
     let resolve = |v: Value| -> Result<Vec<u8>, String> {
         match v {
@@ -372,7 +371,6 @@ fn resolve_declared_resolves_declared_references_in_place_and_refuses_the_rest()
 }
 
 /// As the kernel resolves (lead ruling item 7b): a literal at a declared path is refused, at an
-
 #[test]
 fn resolve_declared_refuses_a_literal_at_an_exact_or_a_wildcard_declared_path() {
     let resolve = |_: &str, r: &crate::secret_ref::SecretRef| Ok(format!("R:{}", r.describe()));
@@ -419,7 +417,6 @@ fn resolve_declared_refuses_a_literal_at_an_exact_or_a_wildcard_declared_path() 
 }
 
 /// REFERENCE-CAPABLE, NOT-SECRET FIELDS (lead ruling item 7a): at a path the plugin names in its
-
 #[test]
 fn a_reference_capable_field_resolves_a_reference_and_passes_a_literal() {
     let resolve = |_: &str, r: &crate::secret_ref::SecretRef| Ok(format!("R:{}", r.describe()));
@@ -468,7 +465,6 @@ fn a_reference_capable_field_resolves_a_reference_and_passes_a_literal() {
 }
 
 /// A reference-capable field is NEVER a secret: it is never lent (no `{"$secret": …}` marker, no
-
 #[test]
 fn a_reference_capable_field_is_never_lent_and_a_secret_beside_it_still_refuses_a_literal() {
     let resolve = |_: &str, r: &crate::secret_ref::SecretRef| Ok(format!("R:{}", r.describe()));

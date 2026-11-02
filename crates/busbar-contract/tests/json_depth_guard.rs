@@ -157,7 +157,6 @@ fn the_edge_cases_the_floor_exists_for() {
 }
 
 /// Every string up to six bytes over the bytes the scan reads (plus one it does not), at every
-
 #[test]
 fn every_short_input_gets_the_kernel_verdict() {
     const ALPHABET: &[u8] = b"[{]}\"\\a";

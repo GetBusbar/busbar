@@ -6,7 +6,6 @@
 use super::*;
 
 /// A recorder exposition in the host recorder's own shape: a described counter, an undescribed
-
 const EXPOSITION: &str = "\
 # HELP busbar_requests_total Total ingress requests, by ingress protocol, pool, and outcome
 # TYPE busbar_requests_total counter

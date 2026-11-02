@@ -9,7 +9,6 @@ use crate::abi::sdk::{Lent, Out};
 use crate::abi::transport::{FramePiece, FramerOut, FramerSink, HeadSlots};
 
 /// Fill the caller's real buffers from `owed` using the SDK's unchanged sink implementation.
-
 pub fn fill<B: AsRef<[u8]>, F: Owed<B>>(
     owed: &mut F,
     wire: &mut [u8],

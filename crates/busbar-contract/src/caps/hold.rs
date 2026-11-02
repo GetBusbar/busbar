@@ -110,7 +110,6 @@ pub enum Admission {
 }
 
 /// The unit's admission, as a fact: whose it is and which call opened it. It carries no figure.
-
 #[must_use = "a hold must reach the exit path; dropping it here loses the unit's admission"]
 pub struct Hold {
     principal: PrincipalId,
@@ -170,7 +169,6 @@ impl HoldAccrual {
     }
 
     /// Convert an outstanding accrual into a child-owned hold, at the parent's exit, so the child
-
     pub fn convert_at_parent_exit(self, token: &Grant<Admittance>) -> Result<Hold, HoldAccrual> {
         if token.call() != self.call {
             return Err(self);
@@ -291,7 +289,6 @@ impl HoldCell {
     }
 
     /// The one transition: swap the arrival hold for the admitted one, and hand the arrival hold
-
     pub fn admit(&self, admitted: Hold, token: &Grant<Admittance>) -> Result<Hold, AdmitRejected> {
         if token.call() != admitted.call {
             return Err(AdmitRejected {
@@ -323,7 +320,6 @@ impl HoldCell {
     }
 
     /// Take the hold, whichever state it is in. Exactly three take sites hold an exit grant, all in
-
     pub fn take(&self, _token: &Grant<Exit>) -> Option<Hold> {
         let mut slot = self.slot();
         match std::mem::replace(&mut *slot, Slot::Taken) {
@@ -333,7 +329,6 @@ impl HoldCell {
     }
 
     /// Let a child unit run under this cell's admission.
-
     pub fn accrue_child(
         &self,
         principal: &PrincipalId,
@@ -357,7 +352,6 @@ impl HoldCell {
     }
 
     /// Write a child's posting into this cell's admission, under one guard.
-
     pub fn post_child(
         &self,
         accrual: HoldAccrual,
@@ -431,7 +425,6 @@ pub struct Posted {
 
 impl Posted {
     /// Close a hold at the count its unit reported. Takes the hold by value: a hold that has been
-
     pub fn settle(hold: Hold, quantity: u64, usage: &Usage, _token: &Grant<WriteMoney>) -> Self {
         let flags = if usage.is_estimated() {
             PostingFlags::ESTIMATED
@@ -446,7 +439,6 @@ impl Posted {
     }
 
     /// Post a child's run that ended inside its parent's admission. The caller-facing spelling of
-
     pub fn into_parent(
         accrual: HoldAccrual,
         parent: &HoldCell,

@@ -26,7 +26,6 @@ use crate::abi::sdk::out::{Replies, ReplyKey};
 pub use tracing_log as __tracing_log;
 
 /// Where a plugin image keeps its [`CaptureSlot`]s: one per thread. Implemented only by the type
-
 pub trait CaptureHome {
     /// Run `f` on this thread's slot.
     fn with<R>(f: impl FnOnce(&mut CaptureSlot) -> R) -> R;
@@ -276,7 +275,6 @@ impl Subscriber for Capture {
 }
 
 /// One thread's long-lived tracing dispatcher in one plugin image. Returned diagnostics are
-
 pub struct CaptureSlot {
     dispatch: Dispatch,
 }

@@ -9,7 +9,6 @@ use core::fmt;
 pub use crate::abi::transport::TRANSPORT_ABI;
 
 /// The transport fact keys the kernel reserves, spelled once.
-
 pub mod facts {
     /// The request target's path.
     pub const PATH: &str = "path";
@@ -34,7 +33,6 @@ pub mod facts {
     }
 
     /// The first reserved key a transport publishes without having declared it.
-
     #[must_use]
     pub fn undeclared<'a>(declared: &[&'a str], published: &[&'a str]) -> Option<&'a str> {
         published
@@ -45,10 +43,8 @@ pub mod facts {
 }
 
 /// The status numberings the kernel reserves, spelled once.
-
 pub mod status_ns {
     /// The status-line numbering: three-digit codes, as the request-response transports (and the
-
     pub const HTTP: &str = "http";
     /// The trailer numbering, as a call-per-path transport reads it off an answer's trailer.
     pub const GRPC: &str = "grpc";
@@ -90,11 +86,9 @@ pub struct TransportSettings {
 }
 
 /// The uninstalled-config fallback for [`TransportSettings::request_body_max_bytes`] — the value the
-
 pub const DEFAULT_REQUEST_BODY_MAX_BYTES: usize = 32 * 1024 * 1024;
 
 /// The uninstalled-config fallback for [`TransportSettings::request_timeout_secs`] — the value the
-
 pub const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 300;
 
 impl Default for TransportSettings {
@@ -177,7 +171,6 @@ impl fmt::Display for CompositionError {
 impl std::error::Error for CompositionError {}
 
 /// The boot check over a registry's transports: every declared layer exists, and every composition
-
 pub fn check_composition(registered: &[Registered]) -> Result<(), CompositionError> {
     for (i, r) in registered.iter().enumerate() {
         if registered[..i].iter().any(|other| other.key == r.key) {

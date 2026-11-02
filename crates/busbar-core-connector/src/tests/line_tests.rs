@@ -24,11 +24,9 @@ mod retirement_tests;
 mod cancelled_opening_tests;
 
 /// One carrier crossing as the stub saw it: the op, the thread it ran on, and whether the line's
-
 type Crossing = (&'static str, ThreadId, bool);
 
 /// THE TEST CARRIER, with a read that HANGS once armed: it says it is inside the crossing, then
-
 struct Hanging {
     inner: Arc<dyn FramerDoor>,
     line: OnceLock<Weak<Line>>,
@@ -164,7 +162,6 @@ fn abandoned_pooled_openings_wipe_query_storage_on_rejection_close_and_return() 
 }
 
 /// RED before the connection had one owner: the line's lock was held across every crossing of a
-
 #[test]
 fn a_hung_carrier_crossing_holds_no_lock_and_a_close_beside_it_never_waits() {
     let rt = worker();

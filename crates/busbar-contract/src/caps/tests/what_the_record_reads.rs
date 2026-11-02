@@ -6,7 +6,6 @@
 use crate::caps::*;
 
 /// Every way an accrual is turned away, with its rendering. Hand-kept, so the cell below holds it to
-
 const REFUSALS: &[(AccrualRefused, &str)] = &[
     (AccrualRefused::ParentNotAdmitted, "parent not admitted"),
     (AccrualRefused::ParentExited, "parent already exited"),

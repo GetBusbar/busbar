@@ -124,7 +124,6 @@ impl FormBody {
     }
 
     /// The encoded body, ready to write.
-
     pub fn encoded(&self) -> Result<SealedWrite, crate::abi::sdk::chip::Refused> {
         use crate::abi::sdk::chip::Refused;
 

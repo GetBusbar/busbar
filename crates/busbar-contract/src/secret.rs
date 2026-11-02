@@ -6,7 +6,6 @@
 use crate::secret_ref::SecretRef;
 
 /// RESOLVED SECRET BYTES, as the host holds them: the
-
 pub type SecretBytes = crate::redacted::Secret<Vec<u8>>;
 
 /// The result type every secret module call returns.
@@ -34,7 +33,6 @@ pub enum SecretErrorKind {
 }
 
 /// A secret-resolution failure: a [`SecretErrorKind`] plus a human-readable message. The message
-
 pub struct SecretModuleError {
     pub kind: SecretErrorKind,
     pub message: String,
@@ -81,7 +79,6 @@ impl std::fmt::Display for SecretModuleError {
 impl std::error::Error for SecretModuleError {}
 
 /// Every error constructed before this taxonomy existed becomes `Internal` — behaviorally identical
-
 impl From<String> for SecretModuleError {
     fn from(s: String) -> Self {
         SecretModuleError::internal(s)
@@ -94,19 +91,15 @@ impl From<&str> for SecretModuleError {
 }
 
 /// The NEUTRAL secret-resolver SEAM an extracted plane names instead of the engine's concrete
-
 pub trait SecretResolve: Send + Sync {
     /// Resolve a reference to raw bytes (fail-closed). Some consumers — a raw-file loader, for
-
     fn resolve(&self, secret: &SecretRef) -> Result<crate::redacted::Secret<Vec<u8>>, String>;
 
     /// Resolve a reference to UTF-8 TEXT (trailing newline trimmed; fail-closed on non-UTF-8 or
-
     fn resolve_string(&self, secret: &SecretRef)
         -> Result<crate::redacted::Secret<String>, String>;
 
     /// [`Self::resolve`] at CONFIG TIME, with its proof: the one way a reference to a source that
-
     fn resolve_at_config(
         &self,
         secret: &SecretRef,
@@ -125,7 +118,6 @@ pub trait SecretResolve: Send + Sync {
     }
 
     /// [`Self::resolve`] (or, with `scope`, [`Self::resolve_at_config`]) whose refusal KEEPS the
-
     fn resolve_refusing(
         &self,
         secret: &SecretRef,
@@ -154,14 +146,11 @@ pub struct SecretRefused {
 }
 
 /// ONE OPENED SECRET PLUGIN INSTANCE'S CALLS, as the kernel's secret resolver makes them (every
-
 pub trait SecretCalls: Send + Sync {
     /// `resolve` one reference's `settings` object (JSON bytes) to the secret's material, which the
-
     fn resolve(&self, settings: &[u8]) -> Result<crate::redacted::Secret<Vec<u8>>, SecretRefused>;
 
     /// `resolve` at CONFIG TIME, with its proof ([`ConfigScope`](crate::config_time::ConfigScope)):
-
     fn resolve_at_config(
         &self,
         settings: &[u8],
@@ -172,31 +161,25 @@ pub trait SecretCalls: Send + Sync {
 }
 
 /// The secret axis the composition root hands to the kernel, through
-
 pub trait SecretAxis: Send + Sync {
     /// The SUGARS the admitted secret plugins' Statements declare (audit contract-admin #10, Law 1:
-
     fn sugars(&self) -> crate::secret_ref::Sugars;
 
     /// Whether a secret plugin answers `module`, linked or dropped in.
     fn answers(&self, module: &str) -> bool;
 
     /// Whether `module` names a secret plugin this build LINKS (a reference to it needs no
-
     fn linked(&self, module: &str) -> bool;
 
     /// JUDGE one reference to `module` at config time, before anything resolves: its plugin's
-
     fn check(&self, _module: &str, _settings: &serde_json::Value) -> Result<(), Vec<String>> {
         Ok(())
     }
 
     /// The process's ONE instance of the linked plugin `module` names, opened on first use with no
-
     fn shared(&self, module: &str) -> Result<std::sync::Arc<dyn SecretCalls>, String>;
 
     /// OPEN a new instance of `module` over its module-level `settings` (as written: a secret
-
     fn open(
         &self,
         module: &str,

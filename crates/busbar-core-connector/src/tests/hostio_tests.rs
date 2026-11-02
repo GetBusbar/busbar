@@ -282,7 +282,6 @@ fn nothing_is_opened_bound_or_spawned_that_was_not_admitted() {
 }
 
 /// A released handle is never made again: its slot holds the next handle under a new generation,
-
 #[test]
 fn a_released_handle_is_never_made_again() {
     worker().block_on(async {
@@ -389,7 +388,6 @@ fn an_admitted_program_is_spawned_bare_and_killed_with_its_handle() {
 }
 
 /// RED (a program carrier's end, coordinator ruling (A)): `io.ends` on a program's handle answers the program's
-
 #[test]
 fn a_programs_own_exit_is_answered_by_ends_while_a_descendant_holds_its_output() {
     worker().block_on(async {
@@ -479,7 +477,6 @@ async fn env_lines(io: &HostIo, t: u32) -> Result<Vec<String>, IoRefusal> {
 }
 
 /// THE HELD ENVIRONMENT: the carrier hands the host's `io.spawn` the program's WRITTEN environment
-
 #[test]
 fn a_programs_environment_reference_is_held_for_the_hosts_spawn() {
     const VAR: &str = "BUSBAR_HOSTIO_SPAWN_SECRET";
@@ -539,7 +536,6 @@ fn a_programs_environment_reference_is_held_for_the_hosts_spawn() {
 }
 
 /// A SPAWN RESOLVES NOTHING. A spawn serves a request (a member's first lease, a respawn, a program
-
 #[test]
 fn a_spawn_resolves_nothing_and_a_rotation_reaches_the_first_child_after_the_refresh() {
     const VAR: &str = "BUSBAR_HOSTIO_SPAWN_ROTATED";
@@ -600,7 +596,6 @@ fn a_spawn_resolves_nothing_and_a_rotation_reaches_the_first_child_after_the_ref
 }
 
 /// RED (transport ABI defect 2): `reap` releases every handle its owner still holds, as `close`
-
 #[test]
 fn reap_releases_every_handle_of_its_owner_and_no_other() {
     worker().block_on(async {
@@ -629,7 +624,6 @@ fn reap_releases_every_handle_of_its_owner_and_no_other() {
 }
 
 /// Linux can stop a listening socket while a fork holds its close-on-exec descriptor before
-
 #[cfg(target_os = "linux")]
 #[test]
 fn a_retired_listener_stops_accepting_while_a_fork_copy_of_its_descriptor_is_open() {

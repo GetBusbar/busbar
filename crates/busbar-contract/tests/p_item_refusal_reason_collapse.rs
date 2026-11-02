@@ -59,7 +59,6 @@ fn p_item_refusal_reason_collapse_every_class_is_reached() {
 }
 
 /// The reasons 1.5.5's one surface answered keep a family of their own, and none of them is a
-
 #[test]
 fn p_item_refusal_reason_collapse_the_1_5_5_reasons_keep_their_own_family() {
     for (reason, class) in [
@@ -80,7 +79,6 @@ fn p_item_refusal_reason_collapse_the_1_5_5_reasons_keep_their_own_family() {
 }
 
 /// Only a fault of this node is a node fault. Every admission, capacity, rate, budget, breaker,
-
 #[test]
 fn p_item_refusal_reason_collapse_only_the_nodes_own_faults_are_node_faults() {
     let faults: Vec<ReasonCode> = ReasonCode::ALL

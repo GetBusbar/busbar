@@ -40,7 +40,6 @@ struct Backend {
 }
 
 /// The gate, if one is armed, taken OUT of its mutex before anyone waits on it (so an overlapping
-
 fn park(gate: &Mutex<Option<Gate>>) {
     let armed = gate.lock().unwrap().take();
     if let Some((entered, release)) = armed {
@@ -239,7 +238,6 @@ fn entries(host: &ConnHost) -> usize {
 }
 
 /// A copy of the string the connection's retention CURRENTLY owns at exactly `d`'s address and
-
 fn owner(host: &ConnHost, conn: ConnId, d: DeclStr) -> Option<String> {
     host.state.held().get(&conn).and_then(|held| {
         held.retention
@@ -250,7 +248,6 @@ fn owner(host: &ConnHost, conn: ConnId, d: DeclStr) -> Option<String> {
 }
 
 /// A successful answer on a fresh connection of `host`: the numbering and the sni are published and
-
 fn assert_a_fresh_connection_serves(backend: &Backend, host: &ConnHost) {
     *backend.namespace.lock().unwrap() = Some("fresh-numbering".into());
     *backend.facts.lock().unwrap() = ConnFacts {
@@ -275,7 +272,6 @@ fn assert_a_fresh_connection_serves(backend: &Backend, host: &ConnHost) {
 }
 
 /// RED before the epoch: the read's backend answered `Ok` and was parked with its answer built; the
-
 #[test]
 fn a_read_resumed_after_a_raw_close_answers_closed_publishes_nothing_and_keeps_nothing() {
     let (backend, a, _b) = rig();
@@ -360,7 +356,6 @@ fn a_facts_resumed_after_a_raw_close_answers_closed_publishes_nothing_and_keeps_
 }
 
 /// A reentrant backend (its `read` closes the very connection through the raw slot, from inside the
-
 #[test]
 fn a_backend_that_closes_through_the_raw_slot_while_reading_does_not_deadlock() {
     let (backend, a, _b) = rig();
@@ -387,7 +382,6 @@ fn a_backend_that_closes_through_the_raw_slot_while_reading_does_not_deadlock() 
 }
 
 /// Overlapping operations that publish nothing cannot prune the entry the other still needs: A is
-
 #[test]
 fn overlapping_empty_operations_cannot_prune_a_shared_active_epoch() {
     let (backend, a, _b) = rig();
@@ -433,7 +427,6 @@ fn overlapping_empty_operations_cannot_prune_a_shared_active_epoch() {
 }
 
 /// Every way an operation can end without publishing prunes its entry: each error, a panic in the
-
 #[test]
 fn the_last_operation_prunes_its_empty_entry_on_every_outcome_that_publishes_nothing() {
     let (backend, a, b) = rig();
@@ -501,7 +494,6 @@ fn the_last_operation_prunes_its_empty_entry_on_every_outcome_that_publishes_not
 }
 
 /// `close` ends the borrows on success or `Closed` and on nothing else: another instance's close
-
 #[test]
 fn only_success_or_closed_retires_and_the_backends_outcome_is_what_the_plugin_is_told() {
     let (backend, a, b) = rig();
@@ -537,7 +529,6 @@ fn only_success_or_closed_retires_and_the_backends_outcome_is_what_the_plugin_is
 }
 
 /// Each of `open`/`write`/`wait`/`facts` given a NULL required out-slot answers Fault BEFORE the
-
 #[test]
 fn a_null_out_slot_faults_before_any_backend_effect_and_valid_calls_still_work() {
     let (backend, a, _b) = rig();

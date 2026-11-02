@@ -70,7 +70,6 @@ pub struct ProxyChoice {
 
 impl ProxyChoice {
     /// The choice of a `secured` slot, a `plain` slot, and the exemption list `exempt` as its
-
     #[must_use]
     pub fn new(secured: Option<Arc<ProxyHop>>, plain: Option<Arc<ProxyHop>>, exempt: &str) -> Self {
         Self {
@@ -81,7 +80,6 @@ impl ProxyChoice {
     }
 
     /// The per-dial choice — `None` → direct (the host is exempt, or no proxy is set for the
-
     #[must_use]
     pub fn select(&self, secured_target: bool, target_host: &str) -> Option<Arc<ProxyHop>> {
         if self.exempt.matches(target_host) {
@@ -124,7 +122,6 @@ enum NoProxyEntry {
 
 impl NoProxy {
     /// Comma-separated entries, whitespace trimmed, empties dropped. Entry classification
-
     fn parse(raw: &str) -> Self {
         let mut entries = Vec::new();
         for part in raw.split(',') {
@@ -175,7 +172,6 @@ impl NoProxy {
 }
 
 /// CIDR containment by prefix-length bit compare over octets — the ~10 lines that make an
-
 fn cidr_contains(net: &IpAddr, prefix: u8, addr: &IpAddr) -> bool {
     match (net, addr) {
         (IpAddr::V4(n), IpAddr::V4(a)) => octets_prefix_eq(&n.octets(), &a.octets(), prefix),
@@ -185,7 +181,6 @@ fn cidr_contains(net: &IpAddr, prefix: u8, addr: &IpAddr) -> bool {
 }
 
 /// The first `prefix` bits of `net` and `addr` are equal. `prefix` is pre-validated against
-
 fn octets_prefix_eq(net: &[u8], addr: &[u8], prefix: u8) -> bool {
     let whole = usize::from(prefix / 8);
     let rem = prefix % 8;

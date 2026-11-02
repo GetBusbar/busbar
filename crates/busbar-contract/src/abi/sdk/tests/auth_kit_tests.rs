@@ -28,7 +28,6 @@ fn refused(json: &str) -> String {
 }
 
 /// A missing or unknown field is named as serde names it; any other failure is its class and
-
 #[test]
 fn a_decode_error_withholds_the_decoders_text() {
     let raw = |json: &str| serde_json::from_str::<Settings>(json).expect_err("refused");
@@ -151,7 +150,6 @@ mod outage_plugin {
 }
 
 /// One `complete_login` with host buffers of `cap` bytes and `groups` spans: the answer, and the
-
 fn login(cap: usize, groups: usize) -> (Outcome, IdentifyOut, Vec<u8>, Vec<Span>) {
     login_on(plugin::MACRO_DOOR, cap, groups)
 }
@@ -187,7 +185,6 @@ fn login_on(
 }
 
 /// The principal crosses as the identity: subject, name, its roles as groups and its TTL, every
-
 #[test]
 fn a_completed_login_crosses_as_the_identity_answer() {
     let (outcome, out, mut bytes, mut spans) = login(64, 4);
@@ -221,7 +218,6 @@ fn a_completed_login_crosses_as_the_identity_answer() {
 }
 
 /// A buffer too small for the bytes, or for the groups, writes nothing and answers FAILED with
-
 #[test]
 fn a_short_buffer_writes_nothing_and_names_what_it_needs() {
     let need = "probe:alice".len() + "Alice".len() + "ops".len() + "dev".len();
@@ -237,7 +233,6 @@ fn a_short_buffer_writes_nothing_and_names_what_it_needs() {
 }
 
 /// An IdP that could not answer (owner-signed 2026-10-30, OWNER-QUEUE.md item "IdP errors"):
-
 #[test]
 fn a_login_outage_carries_the_idps_retry_after_in_the_hosts_buffer() {
     use crate::abi::auth::{retry_after_of, EXT_RETRY_AFTER, LOGIN_OUTAGE};

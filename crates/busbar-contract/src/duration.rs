@@ -4,7 +4,6 @@
 //! The neutral `<n><unit>` duration parser shared by the plane config readers.
 
 /// Parse a duration string (`<n><unit>`, unit in s|m|h|d) to seconds. Bounded so an absurd value
-
 pub fn parse_duration_secs(s: &str) -> Result<u64, String> {
     let s = s.trim();
     let (num, unit) = s.split_at(

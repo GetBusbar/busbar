@@ -28,7 +28,6 @@ fn bucket_money<'a>(
 }
 
 /// With NO card, quantities derive to nothing and only the flat fee counts. This is the
-
 #[test]
 fn an_absent_card_prices_quantities_at_zero() {
     let c = RateCard::absent(3);
@@ -41,7 +40,6 @@ fn an_absent_card_prices_quantities_at_zero() {
 }
 
 /// With a card, derivation is integer arithmetic over the class split. Two and a half micro-units
-
 #[test]
 fn a_present_card_derives_integer_spend() {
     let c = card("lane-5", 2.5, 10.0, 0);
@@ -57,7 +55,6 @@ fn a_present_card_derives_integer_spend() {
 }
 
 /// Sub-micro precision survives the nano scale: three and an eighth micro-units per token times
-
 #[test]
 fn the_nano_scale_keeps_sub_micro_precision() {
     let c = card("m", 3.125, 0.0, 0);
@@ -84,7 +81,6 @@ fn an_unknown_lane_with_a_card_is_unpriced_and_refuses() {
 }
 
 /// REPRICE ON READ: the quantities are fixed, so deriving under a corrected card yields the
-
 #[test]
 fn repricing_on_read_recomputes_the_derived_spend() {
     let l = lines(&[(INPUT, 1_000_000)]);
@@ -116,7 +112,6 @@ fn the_derivation_refuses_an_overflow_and_never_pins_or_wraps() {
 }
 
 /// Every class bills against its own rate. The quantities are chosen so any swap between two rates
-
 #[test]
 fn a_four_class_card_prices_each_class_against_its_own_rate() {
     let c = card4("quad", [1.0, 2.0, 0.5, 4.0], 0);
@@ -133,7 +128,6 @@ fn a_four_class_card_prices_each_class_against_its_own_rate() {
 }
 
 /// The cent derivation truncates toward zero and never rounds up: a fractional cent is dropped
-
 #[test]
 fn the_cent_derivation_truncates_toward_zero() {
     let c = card("m", 1.0, 0.0, 0);
@@ -147,7 +141,6 @@ fn the_cent_derivation_truncates_toward_zero() {
 }
 
 /// Two lanes billed into ONE bucket accumulate nano-units first and divide to cents ONCE. Two
-
 #[test]
 fn sub_cent_contributions_across_lanes_sum_before_flooring() {
     let c = RateCard::from_micro_rates(
@@ -190,7 +183,6 @@ fn an_explicit_zero_rate_lane_derives_zero() {
 }
 
 /// A PARTIAL card: the named lane prices, and the unnamed one REFUSES the whole derivation (#42) —
-
 #[test]
 fn a_partial_card_prices_the_known_lane_and_refuses_the_missing_one() {
     let c = card("priced", 2.0, 0.0, 0);
@@ -218,7 +210,6 @@ fn a_partial_card_prices_the_known_lane_and_refuses_the_missing_one() {
 }
 
 /// The flat fee is the fee times the billable request count. A product
-
 #[test]
 fn the_flat_fee_refuses_an_overflow_and_zero_billable_requests_add_nothing() {
     let c = RateCard::absent(i64::MAX);
@@ -235,7 +226,6 @@ fn the_flat_fee_refuses_an_overflow_and_zero_billable_requests_add_nothing() {
 }
 
 /// A negative configured fee is clamped at resolve, so a hundred requests bill nothing rather than
-
 #[test]
 fn a_negative_fee_can_never_credit_a_bucket() {
     let c = RateCard::absent(-5);
@@ -249,7 +239,6 @@ fn a_negative_fee_can_never_credit_a_bucket() {
 }
 
 /// The micro projection's fee component is the cent fee times ten thousand, so the two projections
-
 #[test]
 fn the_micro_projection_fee_is_ten_thousand_times_the_cent_fee() {
     let c = RateCard::absent(3);
@@ -269,7 +258,6 @@ fn the_micro_projection_fee_is_ten_thousand_times_the_cent_fee() {
 }
 
 /// The budget boundary, in the exact cents the admission comparison uses: a quantity chosen to land
-
 #[test]
 fn the_derived_spend_lands_exactly_on_an_integer_cap() {
     let c = card("m", 1.0, 0.0, 0);

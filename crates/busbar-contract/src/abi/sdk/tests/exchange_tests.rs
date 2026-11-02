@@ -86,7 +86,6 @@ fn answer(out: *mut ServiceOut, o: Outcome, value: u64, len: u64) -> RawOutcome 
 }
 
 /// Write one reply piece the way a connector host does: its bytes (reason, then the field block,
-
 fn play(io: ReplyIn, (kind, code, reason, fields, body): Scripted) -> u64 {
     let mut bytes = Vec::new();
     let mut piece = ReplyPiece {
@@ -131,7 +130,6 @@ fn take(framed: &mut Framed, io: RequestIn) -> u64 {
 }
 
 /// One scripted service: the first issue of a handle runs it (and pends, or refuses at once); a
-
 fn serve(op: u32, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
     // SAFETY: every service `in` leads with a `ServiceHead`.
     let head = unsafe { *input.cast::<ServiceHead>() };
@@ -303,7 +301,6 @@ const TICKET: Ticket = Ticket {
 };
 
 /// What one run of an op answered, how many entries it took, how often each service ran, and what
-
 struct Run<T> {
     answered: Result<T, ConnFailure>,
     entries: u32,
@@ -388,7 +385,6 @@ fn http_reply() -> Vec<Scripted> {
 }
 
 /// RED: the request's head (method, target, fields) reaches the framer; its body streams and END
-
 #[test]
 fn a_request_reaches_the_framer_and_the_reply_comes_back_as_sent() {
     let _g = SERIAL
@@ -430,7 +426,6 @@ fn a_request_reaches_the_framer_and_the_reply_comes_back_as_sent() {
 }
 
 /// RED: the request's timeout is clamped to what is left of the op's deadline; `0` asks for all of
-
 #[test]
 fn a_request_timeout_is_clamped_to_the_ops_deadline() {
     let _g = SERIAL
@@ -474,7 +469,6 @@ fn a_request_timeout_is_clamped_to_the_ops_deadline() {
 }
 
 /// RED: a stream that is not framed refuses a request piece, and the host's text reaches the
-
 #[test]
 fn a_stream_that_is_not_framed_refuses_a_request() {
     let _g = SERIAL
@@ -517,7 +511,6 @@ fn a_pseudo_field_in_a_request_is_refused() {
 }
 
 /// RED: a pure-send transport's ack FAILURE (a code and the peer's text) reaches the plugin
-
 #[test]
 fn a_pure_send_acks_its_failure_with_a_code_and_the_peers_text() {
     let _g = SERIAL
@@ -542,7 +535,6 @@ fn a_pure_send_acks_its_failure_with_a_code_and_the_peers_text() {
 }
 
 /// RED: a transport that answers a read with no reply piece breaks the every-request-is-acked
-
 #[test]
 fn a_transport_that_never_acks_is_a_conformance_failure() {
     let _g = SERIAL
@@ -594,7 +586,6 @@ fn an_observing_exchange_reads_its_streams_facts_before_the_close() {
 }
 
 /// RED (SEAM-4p): an exchange that names a REGISTRATION (`Exchange::as_member`) establishes its
-
 #[test]
 fn an_exchange_names_its_registration_on_its_establish() {
     let _g = SERIAL
@@ -623,7 +614,6 @@ fn an_exchange_names_its_registration_on_its_establish() {
 }
 
 /// `framed_fields` reads the fields back off the head the exchange will send, in order, and a raw
-
 #[test]
 fn the_framed_fields_are_the_head_the_exchange_sends() {
     let request = Request {
@@ -659,7 +649,6 @@ fn body_reply(first: usize, second: usize) -> Vec<Scripted> {
 }
 
 /// RED: a reply whose body passes the exchange's lowered limit is refused as one past `REPLY_MAX`
-
 #[test]
 fn a_reply_over_the_exchanges_limit_is_refused() {
     let _g = SERIAL
@@ -715,7 +704,6 @@ impl Parks for Parked {
 }
 
 /// Run [`Op::exchange_bounded`] under `reply` to completion: re-entered from the top while it
-
 fn op_bounded(
     reply: Vec<Scripted>,
     limit: usize,
@@ -745,7 +733,6 @@ fn op_bounded(
 }
 
 /// RED (a plugin with a documented reply cap below `REPLY_MAX`, secret-vault's 1 MiB): an op's
-
 #[test]
 fn an_ops_bounded_exchange_refuses_a_reply_over_its_limit() {
     let _g = SERIAL
@@ -760,7 +747,6 @@ fn an_ops_bounded_exchange_refuses_a_reply_over_its_limit() {
 }
 
 /// The limit holds across the op's re-entries: a reply exactly at it passes whole, the resumed
-
 #[test]
 fn an_ops_bounded_exchange_passes_a_reply_at_its_limit() {
     let _g = SERIAL
@@ -859,7 +845,6 @@ fn a_refused_send_closes_its_stream() {
 }
 
 /// GREEN twin: an exchange that completes still closes its stream exactly once, last, and holds
-
 #[test]
 fn a_completed_exchange_closes_its_stream_once() {
     let _g = SERIAL
@@ -902,7 +887,6 @@ fn a_limit_above_reply_max_clamps() {
 }
 
 /// RED (Q128, a send-once caller's leak): an exchange that FAILS after it established its stream
-
 #[test]
 fn a_failed_exchange_closes_its_stream_before_it_answers() {
     let _g = SERIAL
@@ -945,7 +929,6 @@ fn wipes_on_drop<T: zeroize::ZeroizeOnDrop + ?Sized>(_: &T) {}
 fn wipeable<T: Zeroize>() {}
 
 /// Every buffer an exchange holds of the request or the reply wipes on drop: the head it frames,
-
 #[test]
 fn every_buffer_an_exchange_holds_wipes_on_drop() {
     wipeable::<Request>();
@@ -967,7 +950,6 @@ fn every_buffer_an_exchange_holds_wipes_on_drop() {
 }
 
 /// RED: the read buffer is reused for every piece of the reply (and every replay of one); once the
-
 #[test]
 fn the_reused_read_buffer_keeps_no_reply_bytes() {
     let _g = SERIAL
@@ -1004,7 +986,6 @@ fn the_head_is_framed_into_one_exact_allocation() {
 }
 
 /// The reply body grows as `Vec` grows it (the same capacities, so the same allocations), and
-
 #[test]
 fn the_reply_body_grows_as_a_vec_grows() {
     let mut wiped = Vec::new();
@@ -1042,7 +1023,6 @@ fn a_request_a_reply_and_an_ack_wipe_to_empty() {
 }
 
 /// RED: a reply whose stream resets after its head fails, and the exchange says the head was
-
 #[test]
 fn a_reset_after_the_head_reports_the_head_and_its_status() {
     let _g = SERIAL
@@ -1097,7 +1077,6 @@ fn a_send_failure_reports_no_head() {
 }
 
 /// RED: a reply whose body passes the exchange's bound is refused, and its head's status is still
-
 #[test]
 fn a_reply_over_the_bound_still_reports_its_status() {
     let _g = SERIAL
@@ -1202,7 +1181,6 @@ fn a_sealed_body_replaces_the_requests_own() {
 }
 
 /// SECURE_REQUIRED (CHIP-DESIGN v4.1 change 4), RED before the check: a credential the operator's
-
 #[test]
 fn a_credential_that_must_go_out_secured_is_refused_on_a_clear_target() {
     use crate::abi::sdk::cred::{Cred, NOT_SECURE};
@@ -1241,7 +1219,6 @@ fn a_credential_that_must_go_out_secured_is_refused_on_a_clear_target() {
 static HUGE: [u8; READ_CHUNK] = [b'x'; READ_CHUNK];
 
 /// A 2xx head, then body pieces with no end: the scripted host plays the last piece on every read
-
 fn head_then_endless_body() -> Vec<Scripted> {
     vec![
         piece(REPLY_HEAD, 200, b"OK", b"x-a: 1\r\n", b""),
@@ -1250,7 +1227,6 @@ fn head_then_endless_body() -> Vec<Scripted> {
 }
 
 /// RED: a HEAD-ONLY exchange is judged on the reply's head, as 1.5.5 judged a webhook delivery. A
-
 #[test]
 fn a_head_only_exchange_is_judged_on_the_head_and_never_reads_the_body() {
     let _g = SERIAL
@@ -1306,7 +1282,6 @@ fn op_run(reply: Vec<Scripted>, limit: usize) -> Result<ExchangeResponse, super:
 }
 
 /// RED (SV-F): an op's exchange takes the reply limit, so a source can cap a reply (a vault read
-
 #[test]
 fn an_ops_exchange_takes_its_reply_limit() {
     let _g = SERIAL

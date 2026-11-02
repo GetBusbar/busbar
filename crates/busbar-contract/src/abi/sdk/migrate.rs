@@ -87,7 +87,6 @@ impl Migrated {
 /// A plugin's own migration of its settings section.
 pub trait Migrate {
     /// Migrate `settings` (the section as the operator wrote it; `null` when it wrote none) from
-
     fn migrate(settings: serde_json::Value, from: &str) -> Migrated;
 }
 
@@ -165,7 +164,6 @@ unsafe fn lent<'a>(p: *const u8, len: usize) -> &'a [u8] {
 }
 
 /// The answer a door's `migrate` named, read back by the HOST: the plugin's [`Migrated`], or the
-
 pub fn read_answer(outcome: Outcome, answer: &[u8]) -> Result<Migrated, String> {
     let text = String::from_utf8_lossy(answer);
     match outcome {

@@ -105,7 +105,6 @@ fn a_frame_from_a_layout_this_build_does_not_know_stops_the_scan() {
 }
 
 /// Version 1 — the layout before the header check — was never released, so this build does not read
-
 #[test]
 fn a_version_1_frame_is_a_layout_this_build_does_not_read() {
     let record = Record::new(1, 1, vec![1u8; 10]);
@@ -146,7 +145,6 @@ fn the_header_leaves_the_documented_amount_of_room_for_a_payload() {
 }
 
 /// Every frame ENDS with its end mark, and the end mark is never zero: it is the byte that says the
-
 #[test]
 fn every_frame_ends_with_its_end_mark() {
     assert_ne!(FRAME_END_MARK, 0);
@@ -165,7 +163,6 @@ fn every_frame_ends_with_its_end_mark() {
 }
 
 /// **A WRITE THAT STOPS ANYWHERE INSIDE A FRAME LEAVES AN UNFINISHED WRITE; A WHOLE FRAME THAT
-
 #[test]
 fn a_write_stopped_at_any_byte_is_unfinished_and_a_changed_whole_frame_is_not() {
     let mut body = vec![7u8; 300];
@@ -196,7 +193,6 @@ fn a_write_stopped_at_any_byte_is_unfinished_and_a_changed_whole_frame_is_not() 
 }
 
 /// A frame of a layout this build does not read is never an unfinished write of this one, even
-
 #[test]
 fn a_frame_of_another_layout_is_never_an_unfinished_write() {
     let mut frame = Record::new(1, 1, vec![1u8; 10]).encode().remove(0);
@@ -208,7 +204,6 @@ fn a_frame_of_another_layout_is_never_an_unfinished_write() {
 }
 
 /// The first frame of a group commit says so, and no other frame does: it is the frame whose
-
 #[test]
 fn only_the_first_frame_of_a_commit_opens_it() {
     let record = Record::new(2, 5, vec![3u8; 1000]);
@@ -225,7 +220,6 @@ fn only_the_first_frame_of_a_commit_opens_it() {
 }
 
 /// A frame whose header field is edited fails its HEADER CHECK before anything else is read: an edit
-
 #[test]
 fn a_header_edit_fails_its_header_check() {
     let record = Record::new(1, 1, vec![1u8; 10]);
@@ -235,7 +229,6 @@ fn a_header_edit_fails_its_header_check() {
 }
 
 /// A frame whose PAYLOAD is edited keeps its header check and its end mark and fails its digest: a
-
 #[test]
 fn a_payload_edit_is_an_altered_whole_frame() {
     let record = Record::new(1, 1, vec![1u8; 10]);
@@ -247,7 +240,6 @@ fn a_payload_edit_is_an_altered_whole_frame() {
 }
 
 /// THE ON-DISK DIGESTS ARE SHA-256, BYTE FOR BYTE. The frame digest, the header check and the
-
 #[test]
 fn the_frame_digest_and_header_check_are_sha256_byte_for_byte() {
     use sha2::Digest as _;

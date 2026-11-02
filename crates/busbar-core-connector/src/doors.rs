@@ -26,7 +26,6 @@ use busbar_plugin_loader::dispatch::{
 static ONE: OnceLock<Arc<Dispatcher>> = OnceLock::new();
 
 /// Hand the doors the process's one dispatcher (`root::dispatch`), before any door binds; the first
-
 pub fn install_dispatcher(d: Arc<Dispatcher>) {
     let _ = ONE.set(d);
 }
@@ -46,11 +45,9 @@ fn process_dispatcher() -> &'static Arc<Dispatcher> {
 }
 
 /// Where a linked row's plugin log file is opened: the composition root's `plugins.logs`
-
 static LOGS: OnceLock<&'static PluginLogConfig> = OnceLock::new();
 
 /// Hand the doors the composition root's configured `plugins.logs` (`root::boot`), once it is read
-
 pub fn install_plugin_logs(logs: &'static PluginLogConfig) {
     let _ = LOGS.set(logs);
 }
@@ -68,13 +65,11 @@ fn plugin_logs() -> &'static PluginLogConfig {
 }
 
 /// What a transport door is bound to. The instance label is the transport lane's own; every door
-
 pub fn bind() -> Bind {
     bind_on(dispatcher())
 }
 
 /// [`bind`], adopted by `on`: a composition of its own (a root cell's rig) binds its doors on its
-
 pub fn bind_on(on: &Dispatcher) -> Bind {
     Bind {
         instance: Arc::from("transport"),
@@ -87,7 +82,6 @@ pub fn bind_on(on: &Dispatcher) -> Bind {
 }
 
 /// What a LINKED row's door is bound to: [`bind`], labelled with the row's name (its registry
-
 pub fn row_bind(row: &str) -> Result<Bind, String> {
     let bound = bind();
     let sink = plugin_logs().sink(
@@ -103,7 +97,6 @@ pub fn row_bind(row: &str) -> Result<Bind, String> {
 }
 
 /// One transport door, opened, as the connector reaches it: on the dispatcher it was bound on,
-
 pub struct Dispatched {
     live: Arc<Live>,
     facts: DoorFacts,
@@ -117,7 +110,6 @@ pub struct Dispatched {
 }
 
 /// ONE OPENED TRANSPORT INSTANCE, as a config apply refreshes it: the instance, the setting paths
-
 struct Live {
     plugin: Plugin<TransportKind>,
     settings_keys: Vec<&'static str>,
@@ -125,11 +117,9 @@ struct Live {
 }
 
 /// EVERY TRANSPORT INSTANCE THIS PROCESS OPENED and still holds, linked and dropped in alike: what
-
 static LIVE: Mutex<Vec<Weak<Live>>> = Mutex::new(Vec::new());
 
 /// The settings blob a door that declares `blob` is handed (`None`: it declares none, and is handed
-
 fn settings_arg(blob: Option<&[u8]>) -> Blob {
     match blob {
         Some(b) => Blob {
@@ -149,7 +139,6 @@ fn settings_arg(blob: Option<&[u8]>) -> Blob {
 
 impl Live {
     /// REFRESH this instance onto the next generation with the deployment's value of every
-
     fn refresh(
         &self,
         settings: &busbar_contract::transport::TransportSettings,
@@ -178,7 +167,6 @@ impl Live {
 }
 
 /// A CONFIG APPLY, as every opened transport instance takes it (`BUSBAR-1.6.0.md` §11.4, "a plugin
-
 pub fn refresh_live(settings: &busbar_contract::transport::TransportSettings) -> Vec<String> {
     refresh_named(settings, |_| true)
 }
@@ -202,7 +190,6 @@ pub fn refresh_named(
 }
 
 /// The deployment's value of the transport setting at config path `path`, as the door's settings
-
 fn dealt(
     path: &str,
     s: &busbar_contract::transport::TransportSettings,
@@ -217,7 +204,6 @@ fn dealt(
 }
 
 /// The settings blob a door that declares `declared` is opened with: each declared path the
-
 #[must_use]
 pub fn settings_blob(
     declared: &[&str],
@@ -232,7 +218,6 @@ pub fn settings_blob(
 
 impl Dispatched {
     /// Open `plugin` with the deployment's value of every setting its tail declares
-
     pub fn open(
         plugin: Plugin<TransportKind>,
         settings: &busbar_contract::transport::TransportSettings,
@@ -241,7 +226,6 @@ impl Dispatched {
     }
 
     /// [`Dispatched::open`], for a `plugin` bound on `on` ([`bind_on`]): its `ready`, its host I/O
-
     pub fn open_on(
         plugin: Plugin<TransportKind>,
         settings: &busbar_contract::transport::TransportSettings,
@@ -303,7 +287,6 @@ impl Dispatched {
     }
 
     /// REFRESH this instance with the deployment's applied `settings`: what [`refresh_live`] does
-
     #[cfg(any(test, feature = "test-support"))]
     pub fn refresh(
         &self,
@@ -326,7 +309,6 @@ fn go<I: InFrame, O: OutFrame>(p: &Plugin<TransportKind>, s: u32, i: &mut I, o: 
 }
 
 /// One side of a carried connection: an inline ticket of the dispatcher its door is adopted by (its
-
 struct InlineSide(busbar_plugin_loader::dispatch::InlineTicket);
 
 impl Side for InlineSide {
@@ -340,7 +322,6 @@ impl Side for InlineSide {
 }
 
 /// One INLINE crossing on `ticket` (a RESUME when `resume`): the host's `in`/`out` copied in, the
-
 fn go_inline<I: InFrame, O: OutFrame>(
     p: &Plugin<TransportKind>,
     ticket: busbar_contract::abi::mechanism::ticket::Ticket,
@@ -482,7 +463,6 @@ impl FramerDoor for Dispatched {
     }
 
     /// A framer's framing runs its ticketed ops (`begin`, `ingest`, `emit`) on inline tickets of
-
     fn framing_side(&self) -> Option<Box<dyn Side>> {
         if self.facts.role != busbar_contract::abi::transport::ROLE_FRAMER {
             return None;
@@ -508,7 +488,6 @@ impl FramerDoor for Dispatched {
 pub type Served = (Arc<dyn FramerDoor>, Arc<HostWire>);
 
 /// A door, opened with the deployment's `settings` and admitted to be served over the host's
-
 pub fn served(
     plugin: Plugin<TransportKind>,
     settings: &busbar_contract::transport::TransportSettings,
@@ -519,7 +498,6 @@ pub fn served(
 }
 
 /// A linked row's build: its door admitted through the one validation, bound under the row's name
-
 pub fn build(
     row: &str,
     door: DoorFn,
@@ -552,7 +530,6 @@ pub struct RowFacts {
 }
 
 /// [`RowFacts`] of a linked row's `door`, or the refusal: the door, its Statement or its tail is
-
 pub fn stated_row(door: DoorFn) -> Result<RowFacts, String> {
     let facts = busbar_plugin_loader::dispatch::kinds::transport::linked_facts(door)?;
     let Some(&key) = facts.claims.first() else {
@@ -576,14 +553,12 @@ pub fn stated_row(door: DoorFn) -> Result<RowFacts, String> {
 }
 
 /// [`RowFacts`] of a linked row's `door`, as the boot seal reads them.
-
 #[must_use]
 pub fn row_facts(door: DoorFn) -> RowFacts {
     stated_row(door).unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
 }
 
 /// Every scheme a linked row's door claims, its own first, read off the door's Statement (ONE ENTRY
-
 #[must_use]
 pub fn claims_of(door: DoorFn) -> Vec<&'static str> {
     busbar_plugin_loader::dispatch::kinds::transport::linked_facts(door)
@@ -592,7 +567,6 @@ pub fn claims_of(door: DoorFn) -> Vec<&'static str> {
 }
 
 /// The auth points a linked row's door offers, read off its Statement's `extensions`
-
 #[must_use]
 pub fn offered_of(door: DoorFn) -> busbar_contract::abi::auth::AuthPoints {
     busbar_plugin_loader::dispatch::kinds::transport::linked_facts(door)
@@ -607,7 +581,6 @@ pub fn offers_unstated() -> busbar_contract::abi::auth::AuthPoints {
 }
 
 /// The claims a linked row's door opens at an UPGRADE (their row's `unit0_trigger`), read off the
-
 #[must_use]
 pub fn upgrades_of(door: DoorFn) -> Vec<&'static str> {
     busbar_plugin_loader::dispatch::kinds::transport::linked_facts(door)
@@ -616,7 +589,6 @@ pub fn upgrades_of(door: DoorFn) -> Vec<&'static str> {
 }
 
 /// The claims a linked row's door opens on their FIRST LINE (their row's `unit0_trigger`), read off
-
 #[must_use]
 pub fn lines_of(door: DoorFn) -> Vec<&'static str> {
     busbar_plugin_loader::dispatch::kinds::transport::linked_facts(door)

@@ -10,5 +10,4 @@ mod tests;
 pub mod verbs;
 
 /// The key the admin surface's one claimant line is sealed under in the claim-precedence table
-
 pub const KEY: &str = "admin";

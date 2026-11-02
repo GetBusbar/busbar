@@ -58,7 +58,6 @@ fn red(rule: Rule, field: &'static str) -> Result<(), Fault> {
 }
 
 /// A zeroed `out` on PENDING and on REFUSED passes every op's check: those outcomes carry no
-
 #[test]
 fn zeroed_pending_and_refused_pass_every_op() {
     for o in [Outcome::Pending, Outcome::Refused] {

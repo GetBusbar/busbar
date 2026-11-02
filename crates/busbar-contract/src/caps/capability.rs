@@ -10,7 +10,6 @@ mod sealed {
 }
 
 /// One privileged action, as a zero-sized type-level marker.
-
 pub trait Capability: sealed::Sealed + Send + Sync + 'static {
     /// The capability as a runtime name, for `Debug` alone.
     const NAME: &'static str;

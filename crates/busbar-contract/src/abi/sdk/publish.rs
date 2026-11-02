@@ -58,7 +58,6 @@ use crate::ids::OpClassId;
 use crate::records::Retention;
 
 /// The storage one published generation points into. Only the SDK makes one and writes into it;
-
 pub struct Backing {
     bytes: Vec<Box<[u8]>>,
     lists: Vec<Box<dyn Any + Send + Sync>>,
@@ -136,7 +135,6 @@ impl Backing {
     }
 
     /// Each of `names` copied, held as one list of strings; its pointer (NULL when empty) and
-
     fn strs(&mut self, names: &[String]) -> (*const AbiStr, usize) {
         if names.is_empty() {
             return (std::ptr::null(), 0);
@@ -167,7 +165,6 @@ mod sealed {
 }
 
 /// An ABI value a plugin publishes, and the owned description it publishes it from. Only the SDK
-
 pub trait Publish: sealed::Sealed + Copy + 'static {
     /// The owned description a plugin hands the SDK.
     type Spec;
@@ -330,7 +327,6 @@ impl Publish for PlaneSnapshot {
 }
 
 /// One published generation: the value (boxed: its address is what the host holds), the backing
-
 struct Generation<T, P> {
     generation: u64,
     _value: Box<T>,
@@ -346,7 +342,6 @@ unsafe impl<T, P: Send + Sync> Send for Generation<T, P> {}
 unsafe impl<T, P: Send + Sync> Sync for Generation<T, P> {}
 
 /// THE PUBLISHED GENERATIONS of one instance: instance state (`Send + Sync`), holding each
-
 pub struct Generations<T: Publish, P = ()> {
     live: Mutex<Vec<Generation<T, P>>>,
     /// Alive while these generations are: an answer that published from them is FAULT when they
@@ -369,7 +364,6 @@ impl<T: Publish, P> Default for Generations<T, P> {
 
 impl<T: Publish> Generations<T, ()> {
     /// Publish `spec` as `generation`, with no payload: the SDK's copy, lowered; the address the
-
     pub fn publish(&self, generation: u64, spec: &T::Spec) -> *const T {
         self.publish_with(generation, spec, ())
     }
@@ -392,7 +386,6 @@ impl<T: Publish, P> Generations<T, P> {
     }
 
     /// Publish `spec` as `generation` with the plugin's `payload` for it: the SDK's copy, lowered;
-
     pub fn publish_with(&self, generation: u64, spec: &T::Spec, payload: P) -> *const T {
         let mut backing = Backing::new();
         let value = Box::new(T::lower(spec, generation, &mut backing));
@@ -426,7 +419,6 @@ impl<T: Publish, P> Generations<T, P> {
     }
 
     /// Drop every value published as `generation`, its storage, and the SDK's hold on its
-
     pub fn retire(&self, generation: u64) {
         let gone: Vec<Generation<T, P>> = {
             let mut live = self.lock();
@@ -447,7 +439,6 @@ impl<T: Publish, P> Generations<T, P> {
 }
 
 /// PER-INSTANCE KEYED STATE: a map the SDK locks for the plugin, so a `forbid(unsafe_code)` plugin
-
 pub struct Keyed<K, V> {
     shards: Box<[Mutex<BTreeMap<K, V>>]>,
     shard_of: fn(&K) -> usize,
@@ -521,7 +512,6 @@ impl<K, V> Keyed<K, V> {
 }
 
 /// The whole of a sharded map, as [`Keyed::with_all`] hands it out, every shard held; on drop (a
-
 struct AllShards<'a, K: Ord, V> {
     keyed: &'a Keyed<K, V>,
     held: Vec<std::sync::MutexGuard<'a, BTreeMap<K, V>>>,
@@ -594,13 +584,11 @@ impl<K: Ord, V> Keyed<K, V> {
     }
 
     /// Run `f` over the entry `key` names, or `None`, under its shard's lock. `f` must not reach
-
     pub fn with<R>(&self, key: &K, f: impl FnOnce(Option<&mut V>) -> R) -> R {
         f(self.shard(key).get_mut(key))
     }
 
     /// Run `f` over the entry `key` names, made with `make` when it has none and fewer than
-
     pub fn with_or_insert_within<R>(
         &self,
         key: K,
@@ -631,7 +619,6 @@ impl<K: Ord, V> Keyed<K, V> {
     }
 
     /// Run `f` over the whole map, under every lock. `f` must not reach this same `Keyed` again.
-
     pub fn with_all<R>(&self, f: impl FnOnce(&mut BTreeMap<K, V>) -> R) -> R {
         if let [one] = &*self.shards {
             let mut map = keyed_lock(one);
@@ -679,7 +666,6 @@ pub struct ServedRoute {
 
 impl ServedRoute {
     /// The claim flags the route states: a target with a path variable is a pattern
-
     #[must_use]
     pub fn claim_flags(&self) -> u32 {
         let mut flags = if self.target.contains('{') {
@@ -701,7 +687,6 @@ impl ServedRoute {
 }
 
 /// One admin route in the ABI's spelling, over `'static` strings: `route` is `(verb, target)`
-
 #[must_use]
 pub const fn admin_route(
     route: (&'static str, &'static str),
@@ -718,7 +703,6 @@ pub const fn admin_route(
 }
 
 /// One record kind's RETENTION RULE in the ABI's spelling (`PlaneTail::record_retentions`): `kind`
-
 #[must_use]
 pub const fn record_retention(kind: u32, rule: Retention) -> RecordRetention {
     RecordRetention {
@@ -728,7 +712,6 @@ pub const fn record_retention(kind: u32, rule: Retention) -> RecordRetention {
 }
 
 /// The index of `op` in a plane's operation-class list `classes`, in the order its Statement
-
 #[must_use]
 pub fn class_index(classes: &[OpClassId], op: OpClassId) -> Option<u32> {
     classes

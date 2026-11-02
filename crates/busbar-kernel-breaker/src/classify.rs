@@ -22,7 +22,6 @@ pub enum Reading {
 }
 
 /// The disposition one [`Reading`] carries.
-
 #[must_use]
 pub const fn classify(reading: Reading) -> Disposition {
     match reading {

@@ -77,7 +77,6 @@ impl Reader {
 }
 
 /// A subject as the two frozen fields an amendment digests it by: its tag, then its identifier.
-
 pub fn subject_fields(subject: &Subject) -> (&'static str, String) {
     (subject_tag(subject), subject_value(subject))
 }
@@ -193,7 +192,6 @@ pub struct AmendChain {
 }
 
 /// HAND-WRITTEN, and it must stay that way — the same reason the retired admin chain writes its
-
 impl Default for AmendChain {
     fn default() -> Self {
         AmendChain::new()
@@ -228,7 +226,6 @@ impl AmendChain {
     }
 
     /// Append one amendment, linking and sealing it.
-
     pub fn append(&mut self, body: AmendBody, _token: &Pass<Audit>) -> Amendment {
         let mut amendment = Amendment {
             seq: self.next_seq,
@@ -243,7 +240,6 @@ impl AmendChain {
     }
 
     /// Recompute one amendment's digest from its own fields.
-
     pub fn digest_of(amendment: &Amendment) -> String {
         let mut d = crate::digest::Digest::new(crate::digest::Framing::LengthPrefixed);
         d.text(&amendment.prev_hash);
@@ -288,7 +284,6 @@ impl AmendChain {
     }
 
     /// VERIFY A WHOLE CHAIN of amendments: `amendments` is oldest-first and starts at the chain's
-
     pub fn verify(amendments: &[Amendment]) -> Result<(), crate::record::AuditBreak> {
         let mut expected_prev = String::new();
         let mut expected_seq = 1u64;
@@ -317,7 +312,6 @@ impl AmendChain {
     }
 
     /// Whether a run of amendments ENDING AT THIS CHAIN'S HEAD is whole: the walk from the genesis,
-
     pub fn verify_to_head(
         &self,
         amendments: &[Amendment],
@@ -357,7 +351,6 @@ pub fn content_access(
 }
 
 /// How many amendments a journal keeps in memory. Bounds RAM, not history: accesses are written at
-
 pub const AMENDMENTS_RETAINED: usize = 1000;
 
 /// A chain together with the amendments it sealed: the one node-wide journal a hook read and an
@@ -402,7 +395,6 @@ impl AmendJournal {
     }
 
     /// REBUILD A JOURNAL FROM A WHOLE RUN read back off durable storage, oldest first from the
-
     pub fn restore(run: Vec<Amendment>) -> Result<AmendJournal, crate::record::AuditBreak> {
         AmendChain::verify(&run)?;
         let chain = run.last().map_or_else(AmendChain::new, |a| {
@@ -417,7 +409,6 @@ impl AmendJournal {
     }
 
     /// Verify what is held: from the genesis while nothing has been released, and always to the
-
     pub fn verify(&self) -> Result<(), crate::record::AuditBreak> {
         self.verify_window()
     }
@@ -463,7 +454,6 @@ impl AmendJournal {
 }
 
 /// WHERE A NODE JOURNAL'S AMENDMENTS ARE MADE DURABLE: handed every amendment the journal seals, in
-
 pub trait AmendSink: Send + Sync {
     /// `amendment` was just sealed onto the journal.
     fn sealed(&self, amendment: &Amendment);
@@ -504,7 +494,6 @@ impl NodeAmendments {
     }
 
     /// Poison-recovering: a panic under this lock (a sink that panicked) leaves an amendment that
-
     fn held(&self) -> std::sync::MutexGuard<'_, Held> {
         self.held.lock().unwrap_or_else(|p| p.into_inner())
     }
@@ -519,7 +508,6 @@ impl NodeAmendments {
     }
 
     /// VERIFY THE JOURNAL AS IT IS HELD NOW — the on-demand check `GET /admin/verify` runs. The boot
-
     pub fn verify(&self) -> Result<(), crate::record::AuditBreak> {
         self.held().journal.verify()
     }
@@ -535,7 +523,6 @@ impl NodeAmendments {
     }
 
     /// REBUILD THE JOURNAL from a whole run read back off durable storage (see
-
     pub fn restore(
         &self,
         run: Vec<Amendment>,
@@ -548,7 +535,6 @@ impl NodeAmendments {
     }
 
     /// BIND the journal's sink (`None` unbinds). Every amendment it still holds above position
-
     pub fn bind(
         &self,
         sink: Option<std::sync::Arc<dyn AmendSink>>,
@@ -565,7 +551,6 @@ impl NodeAmendments {
     }
 
     /// Record that `reader` `name` was handed `fields` of a unit's content at `wall` (unix seconds,
-
     #[allow(clippy::too_many_arguments)]
     pub fn record_read(
         &self,

@@ -613,7 +613,6 @@ fn kind_before(retention: u32) -> KindBeforeIn {
 }
 
 /// GREEN: each rule a purge may carry passes, and the zero an older host's shorter `in` reads as
-
 #[test]
 fn green_a_purge_carries_a_known_retention() {
     assert_eq!(check_kind_before(&kind_before(RETENTION_AGE)), Ok(()));
@@ -678,7 +677,6 @@ fn answer<I, O>(
 }
 
 /// `record_get` reads its `in` first, then its `out`, and is judged against the capacity its `in`
-
 #[test]
 fn check_answer_reads_the_frames_in_order_then_judges_the_op() {
     use crate::abi::store::{slot, RecordGetIn};
@@ -736,7 +734,6 @@ fn check_answer_reads_the_frames_in_order_then_judges_the_op() {
 }
 
 /// A leased list is read only on READY, its count capped before any slice exists, and its fault
-
 #[test]
 fn check_answer_reads_a_leased_list_only_on_ready() {
     use crate::abi::store::slot;

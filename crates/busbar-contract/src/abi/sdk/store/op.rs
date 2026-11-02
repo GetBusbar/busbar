@@ -55,7 +55,6 @@ pub(crate) struct Parked {
 
 impl Drop for Parked {
     /// Parked state the SDK drops (a recycle, an instance that faulted and closed) closes the op's
-
     fn drop(&mut self) {
         if let (Some(c), Some(h)) = (self.checkout.take(), self.host) {
             let _ = h.connector_from(self.ticket, self.issued).close(c.stream);
@@ -94,7 +93,6 @@ impl std::fmt::Debug for Op<'_> {
 
 impl Op<'static> {
     /// An op on no ticket: the synchronous bridge's fallback on a dispatcher's only worker, a
-
     #[must_use]
     pub fn detached() -> Self {
         Self {
@@ -164,7 +162,6 @@ impl<'a> Op<'a> {
     }
 
     /// The wire driver is retrying the same pending logical service, rather than starting a
-
     pub(crate) fn replay_last_service(&mut self) {
         self.replay = Some(
             self.last_service
@@ -173,7 +170,6 @@ impl<'a> Op<'a> {
     }
 
     /// A terminal error or explicit close abandons the pending logical service. Future work
-
     pub(crate) fn abandon_pending_service(&mut self) {
         self.replay = None;
     }
@@ -191,7 +187,6 @@ impl<'a> Op<'a> {
     }
 
     /// Keep `state` across this op's PENDING answer: the op's own continuation. It replaces what
-
     pub fn park<S: Send + Sync + 'static>(&mut self, state: S) {
         if self.can_pend() {
             self.state = Some(Box::new(state));
@@ -199,7 +194,6 @@ impl<'a> Op<'a> {
     }
 
     /// Take back what [`Op::park`] kept, in the op's RESUME; `None` in a fresh entry or when
-
     pub fn resume<S: Send + Sync + 'static>(&mut self) -> Option<S> {
         match self.state.take()?.downcast::<S>() {
             Ok(s) => Some(*s),
@@ -217,7 +211,6 @@ impl<'a> Op<'a> {
     }
 
     /// Make connector services for this entry, their handles counted on from what the op made
-
     pub fn connector(&mut self) -> Result<Services<'_, 'a>, ConnFailure> {
         let host = self.host.ok_or(ConnFailure::Unarmed)?;
         if !self.can_pend() {
@@ -236,13 +229,11 @@ impl<'a> Op<'a> {
     }
 
     /// The op's ONE connection, for declared need `need` to `target`: established once (the answer
-
     pub fn checkout(&mut self, need: u32, target: Option<&str>) -> Answer<u64> {
         self.checkout_timed(need, target, 0)
     }
 
     /// [`Op::checkout`], its dial bounded by `timeout_ms` (`0` = the need's own timeout, else the
-
     pub fn checkout_timed(
         &mut self,
         need: u32,
@@ -284,19 +275,16 @@ impl Op<'_> {
     }
 
     /// Take the op's connection out of its keeping: it is no longer closed when the op ends (a
-
     pub(crate) fn take_checkout(&mut self) -> Option<Checkout> {
         self.checkout.take()
     }
 
     /// Make `c` the op's connection (one drawn from its instance's kept set): closed if the op
-
     pub(crate) fn adopt(&mut self, c: Checkout) {
         self.checkout = Some(c);
     }
 
     /// Close the op's connection now (it is not fit for reuse); the next [`Op::checkout`]
-
     pub(crate) fn close_checkout(&mut self) {
         self.abandon_pending_service();
         if let Some(c) = self.checkout.take() {

@@ -49,7 +49,6 @@ pub struct Door {
 }
 
 /// The door function: the ONE symbol a plugin exports. `extern "C"`: a panic escaping it aborts.
-
 pub type DoorFn = extern "C" fn() -> &'static Door;
 
 /// A door's fields, plain: what [`Door::__from_parts`] takes and [`Door::read_parts`] answers. A
@@ -342,7 +341,6 @@ pub struct MetricFamily {
 
 impl MetricFamily {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-
     pub const ZERO: Self = Self {
         name: AbiStr::ZERO,
         help: AbiStr::ZERO,
@@ -355,7 +353,6 @@ impl MetricFamily {
 }
 
 /// HOW A `MetricFamily` IS MADE: [`MetricFamily::new`], its label keys set with
-
 impl MetricFamily {
     /// The family `name`, with `help`, `unit` (absent = none) and `kind`, and no label keys.
     #[must_use]
@@ -458,7 +455,6 @@ pub struct Statement {
 
 impl Statement {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-
     pub const ZERO: Self = Self {
         size: 0,
         kind: 0,
@@ -522,7 +518,6 @@ impl Statement {
     }
 
     /// Point the kind tail at `tail`, which lives for the program: one of the kinds' tails, each
-
     #[must_use]
     pub const fn with_kind_tail<T: KindTail>(mut self, tail: &'static T) -> Self {
         self.kind_tail = std::ptr::from_ref(tail).cast::<KindTailHead>();
@@ -543,7 +538,6 @@ impl Statement {
     }
 
     /// The kind tail's raw pointer (NULL = none): the host reads it under its own checks
-
     #[must_use]
     pub const fn kind_tail(&self) -> *const KindTailHead {
         self.kind_tail
@@ -562,7 +556,6 @@ mod sealed {
 }
 
 /// A KIND'S STATEMENT TAIL: a `#[repr(C)]` struct leading with a [`KindTailHead`], one per kind
-
 pub trait KindTail: sealed::Sealed + 'static {}
 impl KindTail for crate::abi::store::StoreTail {}
 impl KindTail for crate::abi::auth::AuthTail {}
@@ -583,24 +576,18 @@ pub const MARK_BLOCKS: u64 = 1 << 3;
 pub const MARKS_KNOWN: u64 = MARK_ONE_INSTANCE | MARK_EPHEMERAL | MARK_CATALOG | MARK_BLOCKS;
 
 /// [`MarkWord::class`]: a hook word (a strategy word such as a ranking order). EXCLUSIVE: two
-
 pub const MARK_WORD_HOOK: u32 = 1;
 /// [`MarkWord::class`]: a carrier class the plugin consumes (an inbound credential carrier an auth
-
 pub const MARK_WORD_CARRIER: u32 = 2;
 /// [`MarkWord::class`]: the literal prefix of the public id the host issues for the row's
-
 pub const MARK_WORD_ISSUED_ID_PREFIX: u32 = 3;
 /// [`MarkWord::class`]: the issued public id's total length in characters, prefix included, as a
-
 pub const MARK_WORD_ISSUED_ID_LENGTH: u32 = 4;
 /// [`MarkWord::class`]: the issued public id's alphabet after its prefix: distinct ASCII graphic
-
 pub const MARK_WORD_ISSUED_ID_ALPHABET: u32 = 5;
 /// [`MarkWord::class`]: the issued secret's length in characters, as a decimal word. SHARED.
 pub const MARK_WORD_ISSUED_SECRET_LENGTH: u32 = 6;
 /// [`MarkWord::class`]: the issued secret's alphabet: distinct ASCII graphic characters, each drawn
-
 pub const MARK_WORD_ISSUED_SECRET_ALPHABET: u32 = 7;
 
 /// One word mark: its class and the word.
@@ -617,7 +604,6 @@ pub struct MarkWord {
 
 impl MarkWord {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-
     pub const ZERO: Self = Self {
         class: 0,
         _reserved: 0,
@@ -626,29 +612,21 @@ impl MarkWord {
 }
 
 /// [`Rewrite::class`]: `from` is another name config may give the plugin (a module alias). The
-
 pub const REWRITE_ALIAS: u32 = 1;
 /// [`Rewrite::class`]: `from` is a reference key naming the plugin (the `k` in `{k: X}`, a secret
-
 pub const REWRITE_SUGAR: u32 = 2;
 /// [`Rewrite::class`]: the setting key `from` is rewritten to the path `to` before the plugin's
-
 pub const REWRITE_KEY: u32 = 3;
 /// [`Rewrite::class`]: `from` is a sugar word the same Statement declares; `to` is the placeholder
-
 pub const REWRITE_SUGAR_SHOWN: u32 = 4;
 /// [`Rewrite::class`]: `from` is a sugar word the same Statement declares; `to` is what its value
-
 pub const REWRITE_SUGAR_NAMES: u32 = 5;
 /// [`Rewrite::class`]: `from` is a sugar word the same Statement declares; `to` is the core role
-
 pub const REWRITE_SUGAR_ROLE: u32 = 6;
 
 /// [`REWRITE_SUGAR_ROLE`]: a config `${VAR}` at a credential position names the value of this
-
 pub const SUGAR_ROLE_FILL: &str = "fill";
 /// [`REWRITE_SUGAR_ROLE`]: the value of this sugar is a file path a credential may name in place of
-
 pub const SUGAR_ROLE_PATH: &str = "path";
 
 /// One live rewrite.
@@ -668,7 +646,6 @@ pub struct Rewrite {
 
 impl Rewrite {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-
     pub const ZERO: Self = Self {
         class: 0,
         _reserved: 0,
@@ -684,7 +661,6 @@ pub const SECTION_REQUIRED: u32 = 1 << 1;
 /// [`Section::flags`]: the plugin reads the section but does not own its grammar.
 pub const SECTION_CONSUMED: u32 = 1 << 2;
 /// [`Section::flags`]: this section's presence uses the plane (it selects it at boot, Law 7).
-
 pub const SECTION_SELECTS: u32 = 1 << 4;
 
 /// One top-level config section the plugin owns or reads.
@@ -701,7 +677,6 @@ pub struct Section {
 
 impl Section {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-
     pub const ZERO: Self = Self {
         name: AbiStr::ZERO,
         flags: 0,
@@ -721,7 +696,6 @@ pub struct KindTailHead {
 
 impl KindTailHead {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-
     pub const ZERO: Self = Self {
         size: 0,
         _reserved: 0,
@@ -729,7 +703,6 @@ impl KindTailHead {
 }
 
 /// THE KIND TAIL GROWTH RULE: a kind tail grows only by APPENDING fields, and its head's `size`
-
 #[must_use]
 pub const fn tail_read_len(size: u32, frozen: usize, host: usize) -> Option<usize> {
     let size = size as usize;

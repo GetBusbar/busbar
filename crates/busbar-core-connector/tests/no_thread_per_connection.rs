@@ -90,7 +90,6 @@ fn a_thread_per_connection_is_seen_by_the_count() {
 }
 
 /// No thread per connection: 64 connections open, move bytes and close, and the process runs no
-
 #[test]
 fn no_thread_per_connection() {
     let _one = ONE_AT_A_TIME

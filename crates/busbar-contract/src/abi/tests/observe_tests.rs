@@ -7,7 +7,6 @@ use super::*;
 use serde_json::json;
 
 /// THE FIXED POINT. `PluginMetric` is the hook kind's frozen metric shape generalized, and the hook
-
 #[test]
 fn plugin_metric_reads_the_hook_metric_wire_form_unchanged() {
     let raw = json!({
@@ -44,7 +43,6 @@ fn plugin_metric_reads_the_hook_metric_wire_form_unchanged() {
 }
 
 /// The MINIMAL entry — `{name, type}` — is what the simplest plugin sends, and `value` defaults to
-
 #[test]
 fn plugin_metric_accepts_the_minimal_entry() {
     let m: PluginMetric =
@@ -54,7 +52,6 @@ fn plugin_metric_accepts_the_minimal_entry() {
 }
 
 /// A plugin may send members this build does not know — a newer plugin against an older host — and
-
 #[test]
 fn plugin_metric_ignores_unknown_members() {
     let m: PluginMetric = serde_json::from_value(
@@ -65,7 +62,6 @@ fn plugin_metric_ignores_unknown_members() {
 }
 
 /// The SERIALIZED form omits every unset optional, so the common `{name, type, value}` sample costs
-
 #[test]
 fn plugin_metric_serializes_without_unset_optionals() {
     let s = serde_json::to_string(&PluginMetric::counter("x_total", 1.0)).expect("serialize");
@@ -88,7 +84,6 @@ fn plugin_metric_builders_produce_the_declared_sample() {
 }
 
 /// The envelope's WIRE FORM, pinned. A plugin author in C/Go/Zig matches these three keys literally,
-
 #[test]
 fn envelope_wire_form_is_pinned() {
     let e = Envelope {
@@ -103,7 +98,6 @@ fn envelope_wire_form_is_pinned() {
 }
 
 /// THE COMMON CASE COSTS NOTHING. A plugin with nothing to report emits only `result` — the two
-
 #[test]
 fn a_bare_envelope_carries_only_the_result() {
     let e = Envelope::bare(json!({"Delivered": null}));
@@ -115,7 +109,6 @@ fn a_bare_envelope_carries_only_the_result() {
 }
 
 /// And it decodes back: an absent `metrics`/`diagnostics` is an EMPTY one, never a decode failure.
-
 #[test]
 fn an_absent_back_channel_decodes_as_empty() {
     let e: Envelope<serde_json::Value> =
@@ -125,7 +118,6 @@ fn an_absent_back_channel_decodes_as_empty() {
 }
 
 /// A DIAGNOSTIC's minimal entry is its code alone, read at `warn` — the level the catalogue mostly
-
 #[test]
 fn plugin_diagnostic_defaults_to_warn() {
     let d: PluginDiagnostic = serde_json::from_value(json!({"code": "BUSBAR-1234"})).expect("min");
@@ -159,7 +151,6 @@ fn diag_level_tokens_match_serde() {
 }
 
 /// K9c: a diagnostic's fields attached OUT of key order carry that order (`order`), which a host
-
 #[test]
 fn a_diagnostics_attach_order_rides_the_wire_only_when_it_is_not_key_order() {
     let d = PluginDiagnostic::warn("BUSBAR-1", "m")

@@ -46,7 +46,6 @@ fn base64_decode_fails_loud_on_malformed() {
 }
 
 /// Padding is TERMINAL: `=` ends the encoded data. Skipping `=` wherever it appeared meant two
-
 #[test]
 fn base64_decode_treats_padding_as_terminal() {
     assert_eq!(base64_decode("QQ==").as_deref(), Some(&b"A"[..]));
@@ -86,7 +85,6 @@ fn image_output_is_additive_b64_and_url_coexist() {
 }
 
 /// The compile-time reverse table must be exactly what the per-call loop it replaced would have
-
 #[test]
 fn base64_reverse_table_matches_the_alphabet_it_is_built_from() {
     let mut expected = [255u8; 256];

@@ -3,7 +3,6 @@
 use super::*;
 
 /// The frozen wire shape, from the one place it is written.
-
 #[test]
 fn envelope_shape_matches_the_1_5_5_error_contract() {
     let rendered = envelope_of("forbidden", "insufficient scope");
@@ -20,7 +19,6 @@ fn envelope_shape_matches_the_1_5_5_error_contract() {
 }
 
 /// Byte-for-byte, not merely shaped right once parsed.
-
 #[test]
 fn the_envelope_is_the_frozen_bytes_and_not_merely_the_frozen_document() {
     assert_eq!(
@@ -30,7 +28,6 @@ fn the_envelope_is_the_frozen_bytes_and_not_merely_the_frozen_document() {
 }
 
 /// Every one of the eleven frozen codes renders, and renders only itself.
-
 #[test]
 fn all_eleven_frozen_codes_render_verbatim() {
     const FROZEN_CODES: &[&str] = &[
@@ -60,7 +57,6 @@ fn all_eleven_frozen_codes_render_verbatim() {
 }
 
 /// A message carrying caller text stays one JSON document whose message is that text.
-
 #[test]
 fn a_message_carrying_caller_text_is_escaped_into_one_string() {
     let hostile = r#"`pool` names `a","injected":"x\`, which is not a configured pool"#;

@@ -22,7 +22,6 @@ use busbar_contract::unit::{
 use busbar_contract::wire::{Decode, DiscardCode, Encode, Frame, FrameCursor};
 
 /// The codec host every context this fixture builds hands its plane: a fixed, non-zero entropy fill
-
 pub struct FixtureCodecHost;
 
 impl busbar_contract::codec::CodecHost for FixtureCodecHost {
@@ -281,7 +280,6 @@ impl SessionPlane for FixturePlane {
 }
 
 /// A transport's declarations. A transport is a memory-ABI framer door, not a trait object (step
-
 struct FixtureTransport;
 
 impl Plugin for FixtureTransport {

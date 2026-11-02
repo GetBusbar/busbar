@@ -91,7 +91,6 @@ pub fn neg1() -> i64 {
 /// `Passthrough` forwards the CALLER's credential upstream. A proto writer uses THIS to resolve an
 /// otherwise-ambiguous credential scheme to the single native header the caller's real client
 /// produces. (Split out of the old `AuthMode`, now its own config key — `AuthMode` is gone.)
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UpstreamCreds {

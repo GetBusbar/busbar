@@ -4,7 +4,6 @@
 //! A sealed record survives the journal: `audit.v4` keeps the whole record, and reading it back
 
 /// AN OUTCOME TAG THAT DOES NOT RE-RENDER IS REFUSED, never mapped to a different reason — the
-
 #[test]
 fn an_outcome_tag_that_does_not_re_render_is_refused_never_remapped() {
     use crate::journal::outcome_of;
@@ -24,7 +23,6 @@ fn an_outcome_tag_that_does_not_re_render_is_refused_never_remapped() {
 }
 
 /// A TEXT TOO LONG FOR THE LENGTH PREFIX REFUSES THE BODY, never cuts the field. The bound in a
-
 #[test]
 fn a_text_over_the_length_prefix_refuses_the_body_never_cuts_it() {
     use crate::journal::{FieldTooLong, Writer};

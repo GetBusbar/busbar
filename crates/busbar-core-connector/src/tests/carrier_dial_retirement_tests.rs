@@ -28,7 +28,6 @@ enum Answer {
 }
 
 /// The test carrier entry, its `dial` scripted. It makes the host handle through the `HostIo`
-
 struct Dialer {
     inner: TestDoor,
     io: Arc<HostIo>,
@@ -149,7 +148,6 @@ async fn far() -> (tokio::net::TcpListener, String) {
 }
 
 /// The host really closed the socket its dial made: the far end that accepted it reads the end of
-
 async fn far_sees_the_close(far: &tokio::net::TcpListener) {
     let (mut peer, _) = tokio::time::timeout(Duration::from_secs(5), far.accept())
         .await

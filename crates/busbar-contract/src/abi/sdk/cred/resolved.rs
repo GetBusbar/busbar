@@ -18,7 +18,6 @@ pub const EMPTY_VALUE: &str =
     "the secret resolved to an EMPTY value; a secret must be non-empty (fail-closed)";
 
 /// Answer `resolve` with `value`: written into the host's buffer (READY), or, when it does not fit,
-
 pub fn resolved<V: Zeroize + AsRef<[u8]>>(
     input: Lent<'_, ResolveIn>,
     out: &mut Out<'_, ResolveOut>,

@@ -21,7 +21,6 @@ use crate::registry::{Entry, Transports};
 use crate::{Connector, DialJudge, Judged, JudgedAll, Verdict, WakeTicket};
 
 /// THE PROCESS'S CONNECTOR over the framer entries `entries` yields, judging every dial through
-
 pub fn build_with_secrets(
     entries: impl FnOnce() -> Result<Vec<Entry>, String>,
     dest: Arc<dyn DestJudge>,
@@ -44,7 +43,6 @@ pub fn build_with_secrets(
 }
 
 /// THE DEPLOYMENT'S ONE DESTINATION JUDGE: its [`Guard`] over the system resolver.
-
 pub fn dest_judge(d: &Destinations) -> Result<Arc<GuardJudge>, String> {
     Ok(Arc::new(GuardJudge::new(
         Guard::from_config(d)?,
@@ -53,7 +51,6 @@ pub fn dest_judge(d: &Destinations) -> Result<Arc<GuardJudge>, String> {
 }
 
 /// THE DESTINATION JUDGE (`busbar_kernel::host_services::DestJudge`) over the one [`Guard`]: a
-
 pub struct GuardJudge {
     guard: Guard,
     resolver: Arc<dyn Resolve>,
@@ -73,7 +70,6 @@ impl GuardJudge {
     }
 
     /// The name and scheme arms: the host, port and scheme to dial, and the literal when the host
-
     fn named(
         &self,
         dest: &str,
@@ -105,7 +101,6 @@ impl GuardJudge {
 }
 
 /// Loopback-allowed's scheme rule, held once the guard admitted the destination: plaintext only to
-
 fn plaintext_to_loopback(class: u32, https: bool, host: &str) -> Result<(), u64> {
     if class == EGRESS_LOOPBACK_ALLOWED && !https && !names_loopback(host) {
         return Err(DEST_PLAINTEXT);
@@ -114,7 +109,6 @@ fn plaintext_to_loopback(class: u32, https: bool, host: &str) -> Result<(), u64>
 }
 
 /// A destination as `(host, port, https)`: an `http(s)` URL (any other scheme refused, userinfo
-
 fn split(dest: &str) -> Result<(String, u16, bool), u64> {
     if let Some((scheme, rest)) = dest.split_once("://") {
         let lowered = format!("{}://{rest}", scheme.to_ascii_lowercase());
@@ -199,7 +193,6 @@ impl DestJudge for GuardJudge {
 
 impl GuardJudge {
     /// The judgement [`DestJudge::judge`] and [`DestJudge::judge_reaching`] share: `reach`, the
-
     fn judged(
         &self,
         dest: &str,
@@ -244,7 +237,6 @@ impl GuardJudge {
 }
 
 /// THE DIAL JUDGE the one Connector holds (spec section 5, "Dialing only what the kernel
-
 #[must_use]
 pub fn judge(dest: Arc<dyn DestJudge>, own_ports: &[u16]) -> Arc<dyn DialJudge> {
     Arc::new(OneJudge {
@@ -261,7 +253,6 @@ struct OneJudge {
 
 impl OneJudge {
     /// A dial judged by `judging` (the plain judgement or the reaching one), its pin held off the
-
     fn pinned(
         &self,
         class: u32,
@@ -273,7 +264,6 @@ impl OneJudge {
     }
 
     /// [`Self::pinned`], the pended answer naming the name's other admitted addresses on the same
-
     fn pinned_all(
         &self,
         class: u32,
@@ -354,7 +344,6 @@ impl DialJudge for OneJudge {
 }
 
 /// A loopback-allowed pin on one of the node's own ports, refused (`DEST_INTERNAL`); any other
-
 fn not_the_node(
     class: u32,
     own: &[u16],
@@ -373,7 +362,6 @@ fn not_the_node(
 }
 
 /// The ports the node listens on, read off its listen addresses (`listen`, `admin_listen`): an
-
 #[must_use]
 pub fn own_ports(listens: &[&str]) -> Vec<u16> {
     listens

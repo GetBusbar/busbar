@@ -22,7 +22,6 @@ const BODY: [SettingRow; 1] = [SettingRow {
 }];
 
 /// The probe carrier: it holds nothing and reads one setting. `pub`: the stubs `not_served!`
-
 pub struct Probe;
 
 impl Life for Probe {
@@ -82,7 +81,6 @@ fn out() -> OutHead {
 }
 
 /// Through the door: the stub is REFUSED in the role's words, and a carrier op on an instance the
-
 #[test]
 fn a_role_stub_and_a_carrier_op_without_io_answer_in_words() {
     let view = DoorView::of(plugin::MACRO_DOOR);
@@ -133,7 +131,6 @@ fn a_role_stub_and_a_carrier_op_without_io_answer_in_words() {
 }
 
 /// A carrier op on no open instance is FAILED saying so: the words reach the caller although the
-
 #[test]
 fn a_carrier_op_on_no_instance_answers_in_words() {
     let view = DoorView::of(plugin::MACRO_DOOR);
@@ -158,7 +155,6 @@ fn a_carrier_op_on_no_instance_answers_in_words() {
 }
 
 /// A transport's settings: empty or an object of keys it reads; any other key refused naming it,
-
 #[test]
 fn a_key_a_transport_does_not_read_is_refused_naming_it() {
     let reads = BODY;
@@ -182,7 +178,6 @@ fn a_key_a_transport_does_not_read_is_refused_naming_it() {
 }
 
 /// A value its setting's declared kind refuses is refused naming the key: a count that is zero or
-
 #[test]
 fn a_value_its_declared_kind_refuses_is_refused_naming_it() {
     let row = |path, kind| SettingRow {

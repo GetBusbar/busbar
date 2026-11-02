@@ -6,7 +6,6 @@
 use super::*;
 
 /// `AuthPrincipal::actor_id` is the audit-attribution handle: the principal's own id when one
-
 #[test]
 fn auth_principal_actor_id_is_the_principal_id_or_anonymous() {
     let identified = AuthPrincipal(Some(Principal::from_id("vk_1")));
@@ -17,7 +16,6 @@ fn auth_principal_actor_id_is_the_principal_id_or_anonymous() {
 }
 
 /// `CallerToken`'s manual `Debug` must NEVER print the token contents — presence only, and the two
-
 #[test]
 fn caller_token_debug_redacts_and_shows_presence_only() {
     let present = CallerToken(Some("super-secret-caller-token".to_string()));
@@ -36,7 +34,6 @@ fn caller_token_debug_redacts_and_shows_presence_only() {
 }
 
 /// `AuthModule::cacheable` DEFAULTS to `false` — an in-process module is microseconds, and caching
-
 #[test]
 fn auth_module_cacheable_defaults_to_false() {
     struct Minimal;
@@ -52,7 +49,6 @@ fn auth_module_cacheable_defaults_to_false() {
 }
 
 /// RED (auth ABI defect 2): the login step types never print a credential through `Debug`: not
-
 #[test]
 fn login_debug_never_prints_a_credential() {
     let hop = LoginHop {
@@ -90,7 +86,6 @@ fn login_debug_never_prints_a_credential() {
 }
 
 /// RED (auth ABI, FIELD_SENSITIVE ruling 2026-10-27): an auth field whose sensitivity the plugin
-
 #[test]
 fn an_auth_field_never_prints_its_value_marked_or_not() {
     for sensitive in [false, true] {
@@ -140,7 +135,6 @@ fn a_connector_open_never_debug_prints_the_query_handoff_or_target() {
 }
 
 /// RED (open160 A2): a login hop's form and header values (a bearer token, a client credential)
-
 #[test]
 fn red_every_login_credential_is_held_in_a_wiping_buffer() {
     fn wipes<T: zeroize::ZeroizeOnDrop>(_: &T) {}

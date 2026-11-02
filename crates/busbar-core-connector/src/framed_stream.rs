@@ -40,7 +40,6 @@ fn fault(error: impl Into<String>) -> Refused {
 
 impl FramedStream {
     /// Open the stream that arrived at `target` with `head` (its head fields, as the caller sent
-
     pub fn open(
         door: Arc<dyn FramerDoor>,
         claim: &str,
@@ -52,7 +51,6 @@ impl FramedStream {
     }
 
     /// [`FramedStream::open`] over `binding`. A stream is framed TICKET-LESS, so a binding with
-
     pub fn open_bound(
         door: Arc<dyn FramerDoor>,
         claim: &str,
@@ -103,14 +101,12 @@ impl FramedStream {
     }
 
     /// Initial response fields supplied by the stream's framer at Begin, before any body or
-
     #[must_use]
     pub fn opening_fields(&self) -> &[HeadWords] {
         &self.opening
     }
 
     /// The stream's body bytes (`end` = its last); the messages they complete, in order.
-
     pub fn ingest(&mut self, body: &[u8], end: bool) -> Result<Vec<Vec<u8>>, Refused> {
         let mut y = self.framing.ingest(body, end)?;
         let mut messages = Vec::new();
@@ -133,7 +129,6 @@ impl FramedStream {
     }
 
     /// One reply message's bytes (`ends` = they complete it); the stream's body bytes.
-
     pub fn emit(&mut self, message: &[u8], ends: bool) -> Result<Vec<u8>, Refused> {
         self.framing
             .emit(STREAM, message, ends, false)
@@ -141,7 +136,6 @@ impl FramedStream {
     }
 
     /// End the stream refused: `bytes` and the refusal's neutral `status`; the closing field block.
-
     pub fn refuse(
         &mut self,
         bytes: &[u8],
@@ -155,7 +149,6 @@ impl FramedStream {
     }
 
     /// End the stream with the final status the unit stated (`status` in the claim's numbering,
-
     pub fn finish(
         &mut self,
         status: u32,
@@ -170,7 +163,6 @@ impl FramedStream {
 }
 
 /// An initial field block must be wholly parsed and carry only valid ordinary field names and
-
 fn opening_fields(block: &[u8]) -> Result<Vec<HeadWords>, Refused> {
     use busbar_contract::abi::transport::fields;
     let mut read = 0;
@@ -203,7 +195,6 @@ fn closing(y: &Yielded) -> Result<Vec<HeadWords>, Refused> {
 }
 
 /// FIELD LINES (`name: value` CRLF each, a blank line or the end closing them), read in order. A
-
 pub fn field_lines(block: &[u8]) -> Result<Vec<HeadWords>, Refused> {
     let mut out = Vec::new();
     for line in block.split(|b| *b == b'\n') {

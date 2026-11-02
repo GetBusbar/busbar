@@ -31,7 +31,6 @@ impl std::fmt::Display for FieldTooLong {
 impl std::error::Error for FieldTooLong {}
 
 /// The journal body of one sealed record.
-
 pub fn journal_body(record: &AuditRecord) -> Result<Vec<u8>, FieldTooLong> {
     let mut w = Writer::new();
     w.text(JOURNAL_TAG);
@@ -97,7 +96,6 @@ pub fn journal_body(record: &AuditRecord) -> Result<Vec<u8>, FieldTooLong> {
 }
 
 /// Read a journal body back into the record it keeps.
-
 pub fn from_journal_body(
     bytes: &[u8],
     class: &dyn Fn(&str) -> Option<MeterClassId>,
@@ -110,7 +108,6 @@ pub fn from_journal_body(
 }
 
 /// The independently retained head fields of one journalled audit record.
-
 pub struct JournalHead {
     /// The original record's published position, digest, signature, key identifier and wall clock.
     pub head: crate::heads::SignedHead,
@@ -121,7 +118,6 @@ pub struct JournalHead {
 }
 
 /// Read audit head metadata without resolving the historical plane's meter vocabulary.
-
 pub fn head_from_journal_body(bytes: &[u8]) -> Result<Option<JournalHead>, String> {
     let mut r = Reader { bytes, at: 0 };
     if r.text().as_deref() != Some(JOURNAL_TAG) {
@@ -353,7 +349,6 @@ fn read_source(r: &mut Reader<'_>) -> Option<QuantitySource> {
 }
 
 /// The subject a sealed body's two frozen fields name — through the ONE decoder the amendment
-
 pub(crate) fn subject_of(tag: &str, value: &str) -> Option<Subject> {
     crate::amend::subject_from_fields(tag, value)
 }
@@ -399,7 +394,6 @@ fn finish_of(tag: &str) -> Option<FinishClass> {
 }
 
 /// The inverse of [`outcome_tag`], checked by re-rendering: an outcome is accepted only when it
-
 pub(crate) fn outcome_of(tag: &str) -> Option<Outcome> {
     let outcome = if tag == "Completed" {
         Outcome::Completed
@@ -447,7 +441,6 @@ fn abort_of(tag: &str) -> Option<Abort> {
 }
 
 /// The body writer. A text longer than `limit` (the length prefix's own bound, `u32::MAX`, outside
-
 pub(crate) struct Writer {
     out: Vec<u8>,
     limit: usize,

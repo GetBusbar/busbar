@@ -9,11 +9,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 /// The caller's first line stream and its upstream counterpart (line position 0 of each leg).
-
 const CALLER_LINE: u64 = 10;
 const UPSTREAM_LINE: u64 = 20;
 /// The caller's second line stream and its upstream counterpart (line position 1 of each leg):
-
 const CALLER_ENDING: u64 = 11;
 const UPSTREAM_ENDING: u64 = 21;
 
@@ -55,7 +53,6 @@ fn fields(stream: u64, bytes: &[u8], end_of_frame: bool) -> Got {
 }
 
 /// A failed stream's last piece: the bytes are the reason, and `PIECE_END` is NOT set. Nothing
-
 fn failed(stream: u64, reason: &[u8]) -> Got {
     Got {
         failed: true,
@@ -121,7 +118,6 @@ fn line_heads(first: u64, second: u64) -> Vec<Got> {
 }
 
 /// A bridge whose caller lines `CALLER_LINE`/`CALLER_ENDING` mirror upstream lines
-
 fn mirrored_bridge() -> Bridge {
     let mut b = Bridge::new();
     let (session, across) = b.sort(Leg::Caller, line_heads(CALLER_LINE, CALLER_ENDING));
@@ -133,7 +129,6 @@ fn mirrored_bridge() -> Bridge {
 }
 
 /// The rest of a known line's head, split by a small sink after the piece that named the line:
-
 fn head_tail(stream: u64) -> Vec<Got> {
     vec![
         fields(stream, b"x-continued: tail\r\n", false),
@@ -142,7 +137,6 @@ fn head_tail(stream: u64) -> Vec<Got> {
 }
 
 /// A known line's fields after its body: trailers, and a field block with no field left in it.
-
 fn trailers(stream: u64) -> Vec<Got> {
     vec![
         fields(stream, b"x-trailer: done\r\n", true),

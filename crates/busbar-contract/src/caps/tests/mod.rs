@@ -6,7 +6,6 @@
 use crate::caps::*;
 
 /// The lint rule data. It is a proof, not surface: no plugin, unit or kernel path names it, so it
-
 mod lint {
     include!("../fixtures/lint_rules.rs");
 }
@@ -21,7 +20,6 @@ mod the_posting_arithmetic;
 mod what_the_usage_report_says;
 
 /// Whether the kernel keeps this step's token to itself, read off the step markers' own
-
 fn kernel_owned_marker(name: StepName) -> bool {
     match name {
         StepName::Arrival => <Arrival as Step>::KERNEL_OWNED,
@@ -106,7 +104,6 @@ fn every_way_a_unit_can_end_names_a_step_or_deliberately_does_not() {
 }
 
 /// An abort names one reason, and the reason is where it is named.
-
 #[test]
 fn every_abort_names_a_reason_of_its_own() {
     let aborts = [
@@ -168,7 +165,6 @@ fn the_lint_hooks_name_every_escape_the_compiler_cannot_close() {
 }
 
 /// One vocabulary, two spellings, and a bridge that cannot be left incomplete.
-
 #[test]
 fn every_reason_code_has_a_contract_spelling() {
     for &code in ReasonCode::ALL {
@@ -177,7 +173,6 @@ fn every_reason_code_has_a_contract_spelling() {
 }
 
 /// Two codes that render as one spelling make two refusals indistinguishable to whatever reads
-
 #[test]
 fn the_contract_spelling_of_a_reason_code_is_its_own() {
     use crate::unit::RefusalReason;

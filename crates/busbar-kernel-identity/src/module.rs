@@ -21,7 +21,6 @@ pub enum AuthOutcome {
 }
 
 /// A chain module.
-
 pub trait AuthModule: Send + Sync {
     /// The module's own name, as it reports it.
     fn name(&self) -> &'static str;

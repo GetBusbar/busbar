@@ -350,7 +350,6 @@ const PLANE_TAIL: crate::abi::plane::PlaneTail = crate::abi::plane::PlaneTail {
 };
 
 /// A plane door, laid out as `plugin_door!` lays one (its Statement stamped, every slot absent):
-
 const PLANE_STATEMENT: &Statement =
     &crate::abi::sdk::door::stamp::<crate::abi::plane::Ops>(Statement {
         kind_tail: (&PLANE_TAIL as *const crate::abi::plane::PlaneTail).cast::<KindTailHead>(),
@@ -623,7 +622,6 @@ use crate::abi::plane::{PlaneRefreshOut, PlaneSnapshot};
 use crate::abi::secret::ResolveOut;
 
 /// A stand-in slot: it answers the `O` its instance points at, whole, as a plugin writes its
-
 extern "C" fn answer<O: Reply>(
     instance: *mut c_void,
     _: *const c_void,
@@ -1312,7 +1310,6 @@ fn a_double_reading_a_write_region_or_writing_through_no_region_answers_fault() 
 }
 
 /// Every `pub fn` of `src` (outside a `#[cfg(test)]` item) whose signature names a host table or a
-
 fn table_leaks(src: &str) -> Vec<String> {
     const TABLE_TYPES: [&str; 5] = [
         "ServiceFn",

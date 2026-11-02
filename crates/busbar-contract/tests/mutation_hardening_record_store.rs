@@ -161,7 +161,6 @@ fn redeem_plane_token_default_is_fail_closed() {
 }
 
 /// `put_key_with_credential`'s DEFAULT is sequential (`put_key` THEN `put_credential`), never the
-
 #[test]
 fn put_key_with_credential_default_calls_put_key_then_surfaces_the_credential_error() {
     let s = Bare::default();

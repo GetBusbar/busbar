@@ -110,7 +110,6 @@ fn rig() -> (Arc<Scripted>, Box<ConnHost>, Box<ConnHost>) {
 }
 
 /// A connection the instance behind `host` opened (through the SDK's view, which is all it is used
-
 fn open(host: &ConnHost) -> ConnId {
     // SAFETY: the host's own table over the context `host` keeps alive for the test.
     let plugin = unsafe { HostConns::new(host_slots(), host.ctx()) };
@@ -140,7 +139,6 @@ fn raw_read(ctx: ConnCtx, conn: ConnId) -> DeclStr {
 }
 
 /// The `facts` slot itself: the six string ranges, in field order (sni, alpn, subject, issuer,
-
 fn raw_facts(ctx: ConnCtx, conn: ConnId) -> [DeclStr; 6] {
     // SAFETY: an all-zero `WireConnFacts` is a valid out-slot (integers, NULL ranges).
     let mut w: WireConnFacts = unsafe { core::mem::zeroed() };
@@ -164,7 +162,6 @@ fn raw_close(ctx: ConnCtx, conn: ConnId) -> Result<(), ConnError> {
 }
 
 /// A copy of the string the connection's retention CURRENTLY owns at exactly the saved address and
-
 fn live(host: &ConnHost, conn: ConnId, d: DeclStr) -> Option<String> {
     host.state.held().get(&conn).and_then(|held| {
         held.retention
@@ -201,7 +198,6 @@ fn retired(host: &ConnHost, conn: ConnId) -> bool {
 }
 
 /// The text of a range the slots handed out: the CURRENT live owner's copy at the saved address and
-
 fn copy(host: &ConnHost, conn: ConnId, d: DeclStr) -> String {
     live(host, conn, d).unwrap_or_else(|| {
         panic!(
@@ -231,7 +227,6 @@ fn facts_of(
 }
 
 /// RED: `host_read` overwrote the connection's one numbering string, freeing the heap bytes an
-
 #[test]
 fn an_earlier_numbering_range_outlives_a_different_and_an_absent_one_until_close() {
     let (script, a, _b) = rig();
@@ -290,7 +285,6 @@ fn an_earlier_numbering_range_outlives_a_different_and_an_absent_one_until_close
 }
 
 /// An absent numbering allocates nothing and files no entry for the connection: a read with none
-
 #[test]
 fn an_absent_numbering_files_nothing() {
     let (_script, a, _b) = rig();
@@ -305,7 +299,6 @@ fn an_absent_numbering_files_nothing() {
 }
 
 /// RED: `host_facts` replaced the connection's one `ConnFacts` (`Option::insert`), freeing the six
-
 #[test]
 fn every_facts_string_range_outlives_later_versions_and_an_absent_certificate_until_close() {
     let (script, a, _b) = rig();
@@ -398,7 +391,6 @@ fn every_facts_string_range_outlives_later_versions_and_an_absent_certificate_un
 }
 
 /// Many distinct numberings and facts grow the retention through many rehashes; no range handed out
-
 #[test]
 fn many_growth_calls_keep_every_earlier_range_where_it_was_handed_out() {
     let (script, a, _b) = rig();
@@ -433,7 +425,6 @@ fn many_growth_calls_keep_every_earlier_range_where_it_was_handed_out() {
 }
 
 /// Raw `read` and `facts` calls from several threads on one connection, each call a different one
-
 #[test]
 fn concurrent_raw_reads_and_facts_on_one_connection_keep_every_handed_range() {
     let (script, a, _b) = rig();
@@ -515,7 +506,6 @@ fn concurrent_raw_reads_and_facts_on_one_connection_keep_every_handed_range() {
 }
 
 /// Only a SUCCESSFUL close by the owner ends the borrows: a close another instance attempts (not its
-
 #[test]
 fn only_a_successful_owner_close_retires_the_exposed_ranges() {
     let (script, a, b) = rig();

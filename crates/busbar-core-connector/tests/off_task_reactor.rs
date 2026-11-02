@@ -22,7 +22,6 @@ impl Wake for Signal {
 }
 
 /// A runtime driven by a thread of its own for the life of the process: the root's connector
-
 fn driven_reactor() -> tokio::runtime::Handle {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()

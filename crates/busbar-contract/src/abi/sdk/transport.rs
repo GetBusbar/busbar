@@ -30,7 +30,6 @@ pub const fn form_codes<const N: usize>(forms: &[SelectorForm]) -> [u8; N] {
 }
 
 /// The request-body bound's default ([`DEFAULT_REQUEST_BODY_MAX_BYTES`]) as the decimal text a
-
 pub const DEFAULT_BODY_MAX: &str = "33554432";
 
 /// `text` read as a decimal count.
@@ -74,7 +73,6 @@ impl SettingRow {
     }
 
     /// Why `value` is not a value of this setting's kind: [`SETTING_FLAG`] is `true`/`false`,
-
     fn refuses(&self, value: &serde_json::Value) -> Option<String> {
         let path = self.path;
         match self.kind {
@@ -103,7 +101,6 @@ pub const fn setting_decls<const N: usize>(rows: &[SettingRow; N]) -> [SettingDe
 }
 
 /// A transport's `settings` as the JSON object they must be (`{}` when empty), read against the
-
 pub fn settings_reading(
     settings: &[u8],
     reads: &[SettingRow],
@@ -139,7 +136,6 @@ macro_rules! carried {
 }
 
 /// [`carried!`](crate::carried)'s body: the instance and its armed I/O, or FAILED saying
-
 pub fn carried_saying<'a, L: Life>(
     i: &Instance<'a, Held<L>>,
     no_instance: &'static str,

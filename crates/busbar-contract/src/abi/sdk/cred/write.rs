@@ -66,7 +66,6 @@ impl Parts {
 }
 
 /// Bytes on their way to the host, held where the plugin cannot read them. Park it on the op's
-
 #[allow(missing_debug_implementations)]
 pub struct SealedWrite {
     pub(crate) buf: Zeroizing<Vec<u8>>,
@@ -80,7 +79,6 @@ pub struct SealedWrite {
 }
 
 /// Before a credential that must go out secured is written on `stream`: whether the host connector
-
 pub(crate) fn confirm_secure(c: &mut Connector<'_>, stream: u64, allow_replay: bool) -> Answer<()> {
     match c.facts(stream) {
         Poll::Pending => Poll::Pending,
@@ -177,7 +175,6 @@ impl SealedWrite {
     }
 
     /// Write what is left on an I/O `handle`: `Ready(Ok(()))` once every byte is taken.
-
     pub fn poll_io(&mut self, io: &mut Io<'_>, handle: u64) -> Poll<IoAnswer<()>> {
         if self.secure {
             return Poll::Ready(Err(crate::abi::sdk::io::IoFailure::Refused(
@@ -208,10 +205,8 @@ impl SealedWrite {
 }
 
 /// THE ANSWER PATH OF A KIND THAT ANSWERS INTO A HOST BUFFER (a plane's `on_piece` reply). The
-
 impl SealedWrite {
     /// Write what is left into `buf`, as much as there is room for (backpressure: the host
-
     pub fn stream_into(
         &mut self,
         buf: &mut crate::abi::sdk::HostBuf<'_, u8>,

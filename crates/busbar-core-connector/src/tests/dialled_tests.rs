@@ -82,7 +82,6 @@ fn a_concurrent_reader_gets_the_partial_messages_suffix_before_the_next_message(
 }
 
 /// RED (THE DESIGN §5: a plugin's slow I/O answers not-ready, "no blocking thread exists"): a
-
 #[test]
 fn a_message_longer_than_the_readers_buffer_is_read_in_parts_and_never_wedges_the_reader() {
     let ready = Arc::new(Mutex::new(ready_messages(&[(b"abcd", true)])));
@@ -130,7 +129,6 @@ fn message(bytes: &[u8]) -> crate::framer::Got {
 }
 
 /// RED (THE DESIGN §5: reads are back-pressured, nothing is lost silently on
-
 #[test]
 fn every_channel_message_reaches_the_reader_empty_ones_and_past_the_bound() {
     crate::support::worker().block_on(async {
@@ -182,7 +180,6 @@ fn every_channel_message_reaches_the_reader_empty_ones_and_past_the_bound() {
 }
 
 /// A datagram framer that answers every op with nothing (its `begin` naming framing `1`), and whose
-
 struct Hanging {
     facts: crate::framer::DoorFacts,
     gate: Mutex<Option<(mpsc::Sender<std::thread::ThreadId>, mpsc::Receiver<()>)>>,
@@ -224,7 +221,6 @@ impl crate::framer::FramerDoor for Hanging {
 }
 
 /// RED before the leg's association was driven under no lock (`BUSBAR-1.6.0.md` §11: no plugin
-
 #[test]
 fn a_close_beside_a_hung_datagram_emit_never_waits_and_the_holder_finishes_it() {
     use crate::datagram::{Across, LegSink as _};
@@ -344,7 +340,6 @@ impl crate::datagram::LegSink for ReturnedLines {
 }
 
 /// A finite Emit answer with a channel head, LINE feedback, and more channel messages than the
-
 struct LineOutputs {
     facts: crate::framer::DoorFacts,
     pending: Mutex<VecDeque<(u64, Vec<u8>, u16)>>,

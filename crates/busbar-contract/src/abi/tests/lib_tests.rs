@@ -61,7 +61,6 @@ fn sized_field_guard_hides_truncated_tail() {
 }
 
 /// A peer's attested size is CLAMPED to this build's struct: an over-claim never widens the read
-
 #[test]
 fn an_over_large_attested_size_is_clamped_to_this_builds_struct() {
     let ours = core::mem::size_of::<Pod>();
@@ -73,7 +72,6 @@ fn an_over_large_attested_size_is_clamped_to_this_builds_struct() {
 }
 
 /// The sized-field guard must be safe to point at a peer buffer that is SHORTER than the struct it
-
 #[test]
 fn sized_field_guard_reads_a_buffer_shorter_than_the_struct() {
     const PREFIX: usize = core::mem::offset_of!(Pod, tail_ptr);
@@ -99,7 +97,6 @@ fn sized_field_guard_reads_a_buffer_shorter_than_the_struct() {
 }
 
 /// THE AUTH TAIL'S FACT BITS are distinct single bits, the default inbound style among them (row
-
 #[test]
 fn the_auth_fact_bits_are_distinct_and_name_the_default_inbound_style() {
     use crate::abi::auth::{

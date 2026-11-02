@@ -195,7 +195,6 @@ impl ConnError {
     }
 
     /// Whether this is an AUTH outcome ([`ConnError::AuthRefused`], [`ConnError::AuthFailed`]):
-
     #[must_use]
     pub const fn is_auth(self) -> bool {
         matches!(self, Self::AuthRefused | Self::AuthFailed)
@@ -211,21 +210,17 @@ impl std::fmt::Display for ConnError {
 impl std::error::Error for ConnError {}
 
 /// THE CALLER'S WAKE TICKET: an opaque number the caller mints for the task waiting on a read or a
-
 pub type Ticket = u64;
 
 /// The ticket that names no waiting task: a call handed it registers no interest.
 pub const NO_TICKET: Ticket = 0;
 
 /// HOW A TABLE WAKES A CALLER'S TICKET: the caller the interest was registered for, and its ticket.
-
 pub type ConnWake = std::sync::Arc<dyn Fn(InstanceId, Ticket) + Send + Sync>;
 
 /// THE HOST'S CONNECTION TABLE, as the host implements it. Every method names the `caller`, which
-
 pub trait Conns: Send + Sync {
     /// Open a connection for the caller's declared `need`.
-
     fn open(
         &self,
         caller: InstanceId,
@@ -234,7 +229,6 @@ pub trait Conns: Send + Sync {
     ) -> Result<ConnId, ConnError>;
 
     /// Open while preserving the auth field batch's required connection security. A table that
-
     fn open_with_security(
         &self,
         caller: InstanceId,
@@ -249,7 +243,6 @@ pub trait Conns: Send + Sync {
     }
 
     /// Offer `bytes` to the connection (`end` = the caller's message is complete, `text` = it is a
-
     fn write(
         &self,
         caller: InstanceId,
@@ -260,7 +253,6 @@ pub trait Conns: Send + Sync {
     ) -> Result<usize, ConnError>;
 
     /// The next piece, its bytes into `buf`; with nothing ready, [`ConnError::Pending`] and interest
-
     fn read(
         &self,
         caller: InstanceId,
@@ -270,15 +262,12 @@ pub trait Conns: Send + Sync {
     ) -> Result<Piece, ConnError>;
 
     /// The position in `set` of a connection with a piece ready; with none ready,
-
     fn wait(&self, caller: InstanceId, set: &[ConnId], ticket: Ticket) -> Result<usize, ConnError>;
 
     /// What connection security established on the connection.
-
     fn facts(&self, caller: InstanceId, conn: ConnId) -> Result<ConnFacts, ConnError>;
 
     /// Close the connection.
-
     fn close(&self, caller: InstanceId, conn: ConnId) -> Result<(), ConnError>;
 }
 
@@ -294,10 +283,8 @@ pub struct ConnCause {
 }
 
 /// THE HOST'S CONNECTION TABLE, as the host declares an instance's needs on it (host-side: never
-
 pub trait DeclaredConns: Conns {
     /// Record that `owner` declared `need` (its index in the instance's Statement), as the Statement
-
     fn declare(
         &self,
         owner: InstanceId,
@@ -311,7 +298,6 @@ pub trait DeclaredConns: Conns {
     fn declared(&self, owner: InstanceId, need: NeedId) -> Option<Result<(), ConnError>>;
 
     /// Open with a dial bound separate from the whole request's [`OpenDesc::timeout_ms`].
-
     fn open_request(
         &self,
         caller: InstanceId,
@@ -327,7 +313,6 @@ pub trait DeclaredConns: Conns {
     }
 
     /// UPGRADE `conn`, an open raw byte stream, to connection security from its next byte on
-
     fn upgrade_secure(
         &self,
         caller: InstanceId,
@@ -342,25 +327,21 @@ pub trait DeclaredConns: Conns {
     }
 
     /// WHETHER `conn`'s DIAL HAS LANDED: the far end took the connect. An open answers with its
-
     fn landed(&self, caller: InstanceId, conn: ConnId, ticket: Ticket) -> Result<(), ConnError> {
         let _ = (caller, conn, ticket);
         Ok(())
     }
 
     /// Whether `owner`'s `need` is carried over a FRAMED transport (a framer composed over a
-
     fn framed(&self, owner: InstanceId, need: NeedId) -> bool {
         let _ = (owner, need);
         false
     }
 
     /// Whether a loaded transport serves `transport` (a need's scheme). THE BOOT'S SCHEME MATCH
-
     fn serves_scheme(&self, transport: &str) -> bool;
 
     /// Record that `owner` declared `need` (as [`DeclaredConns::declare`]), its target a PROGRAM
-
     fn declare_program(
         &self,
         owner: InstanceId,
@@ -373,27 +354,23 @@ pub trait DeclaredConns: Conns {
     }
 
     /// Why `owner`'s connection `conn` failed, once it has: where (a `CAUSE_*` stage) and the
-
     fn cause(&self, owner: InstanceId, conn: ConnId) -> Option<ConnCause> {
         let _ = (owner, conn);
         None
     }
 
     /// THE HOST WRITES THE AUTHORITY of every connection `owner` opens: an open whose head
-
     fn hold_authority(&self, owner: InstanceId) {
         let _ = owner;
     }
 
     /// THE FRAMER'S OWN HEAD on a request `owner`'s `need` opens to `target` (empty = the need's
-
     fn request_head(&self, owner: InstanceId, need: NeedId, target: &str) -> HeadDefaults {
         let _ = (owner, need, target);
         HeadDefaults::default()
     }
 
     /// Hold `binding` as the auth binding of `owner`'s requests on `need` that name the
-
     fn bind_auth(
         &self,
         owner: InstanceId,
@@ -406,7 +383,6 @@ pub trait DeclaredConns: Conns {
     }
 
     /// The binding [`DeclaredConns::bind_auth`] holds for `owner`'s requests on `need` that name
-
     fn auth_of(
         &self,
         owner: InstanceId,
@@ -419,7 +395,6 @@ pub trait DeclaredConns: Conns {
     }
 
     /// Record that `owner` declared `need` (as [`DeclaredConns::declare`]), its `target_from` the
-
     fn declare_member_programs(
         &self,
         owner: InstanceId,
@@ -432,14 +407,12 @@ pub trait DeclaredConns: Conns {
     }
 
     /// THE INSTANCE IS GONE (closed, replaced by a reload, or quarantined): it never crosses
-
     fn forget(&self, owner: InstanceId) {
         let _ = owner;
     }
 }
 
 /// THE ORIGIN of a URL, `scheme://authority`: what a member's route is sealed at and its binding
-
 #[must_use]
 pub fn origin_of(url: &str) -> &str {
     let after = url.find("://").map_or(0, |at| at + 3);
@@ -462,7 +435,6 @@ pub const CONTENT_LENGTH: &[u8] = b"content-length";
 
 impl HeadDefaults {
     /// THE LINES THE HOST ADDS to a request head (THE DESIGN section 6, step 5: nothing is added
-
     #[must_use]
     pub fn completing(
         &self,
@@ -489,10 +461,8 @@ impl HeadDefaults {
 }
 
 /// THE CREDENTIAL A UNIT LENDS its passthrough member (the kernel's caller-credential lending): the
-
 pub trait LendCredential: Send + Sync {
     /// The credential `unit`'s caller presented, while the unit runs; `None` when it presented
-
     fn lent(&self, unit: u64) -> Option<crate::redacted::Secret<Vec<u8>>>;
 }
 
@@ -533,11 +503,9 @@ impl std::fmt::Debug for ConnAuth {
 }
 
 /// THE OPENER'S SEALED FIELDS (TSEAL): a field of this name in an open's fields is the HOST'S,
-
 pub const SEALED_FIELDS_FIELD: &str = "busbar-sealed-fields";
 
 /// One host-owned auth query pair, percent-encoded as `name=value`. Repeated entries retain
-
 pub const SEALED_QUERY_FIELD: &str = "busbar-sealed-query";
 
 /// Whether a field carries the host's auth query metadata, never a wire header.
@@ -553,23 +521,18 @@ pub fn is_sealed_fields_field(name: &[u8]) -> bool {
 }
 
 /// The field a member-program connection's HEAD carries (the first piece every open on it reads,
-
 pub const PROGRAM_GENERATION_FIELD: &str = "generation";
 
 /// The host member incarnation. A replacement launch configuration receives a distinct value,
-
 pub const PROGRAM_INSTANCE_FIELD: &str = "program-instance";
 
 /// Standard-base64 UTF-8 absolute command path from the host-admitted program. This identifies
-
 pub const PROGRAM_IDENTITY_FIELD: &str = "program-identity";
 
 /// Host-only open constraint: the member incarnation previously observed in its first HEAD.
-
 pub const PROGRAM_EXPECT_INSTANCE_FIELD: &str = "program-expect-instance";
 
 /// Host-only generation constraint paired with [`PROGRAM_EXPECT_INSTANCE_FIELD`]. Both fields
-
 pub const PROGRAM_EXPECT_GENERATION_FIELD: &str = "program-expect-generation";
 
 /// The registration key a member's program environment is read from ([`Program::from_settings`]).
@@ -643,7 +606,6 @@ pub enum ProgramRefused {
 
 impl Program {
     /// A REGISTRATION's program ([`crate::section::MEMBER_PROGRAM`]): its `command`, `args`, `cwd`
-
     pub fn of_member(registration: &serde_json::Value) -> Option<Result<Self, ProgramRefused>> {
         let map = registration.as_object()?;
         map.get("command")?;
@@ -656,7 +618,6 @@ impl Program {
     }
 
     /// The settings' spelling of a program: `{command, args?, env?, cwd?}` — paths are absolute,
-
     pub fn from_settings(value: &serde_json::Value) -> Result<Self, ProgramRefused> {
         let map = value.as_object().ok_or(ProgramRefused::NoCommand)?;
         if map
@@ -731,10 +692,8 @@ impl Program {
 }
 
 /// THE HOST-SIDE READER'S CONNECTION TABLE: [`Conns`] plus a read that wakes a [`Waker`] instead of
-
 pub trait PollConns: Conns {
     /// [`Conns::read`], for a reader on the host's own side (the kernel's egress walk): with nothing
-
     fn poll_read(
         &self,
         caller: InstanceId,
@@ -744,7 +703,6 @@ pub trait PollConns: Conns {
     ) -> Poll<Result<Piece, ConnError>>;
 
     /// SEAL THE TRUST ANCHORS of one destination `owner`'s declared `need` reaches at `target` (a
-
     fn anchor(
         &self,
         owner: InstanceId,
@@ -762,14 +720,12 @@ pub trait PollConns: Conns {
     }
 
     /// THE FRAMER'S OWN HEAD on a request `owner`'s `need` opens to `target` (the transport ABI's
-
     fn head_defaults(&self, owner: InstanceId, need: NeedId, target: &str) -> HeadDefaults {
         let _ = (owner, need, target);
         HeadDefaults::default()
     }
 
     /// SEAL ONE REGISTRATION'S PRIVATE REACH (`abi::plane::TRUST_PRIVATE_REACH`, SEAM-4k: keyed
-
     fn seal_reach(
         &self,
         owner: InstanceId,
@@ -801,7 +757,6 @@ enum Entry<T> {
 }
 
 /// THE OWNERSHIP BOOK of a host's connections: which needs each instance declared, and which
-
 pub struct ConnSlab<T> {
     entries: Mutex<Vec<Entry<T>>>,
     declared: Mutex<std::collections::BTreeSet<(InstanceId, NeedId)>>,
@@ -832,7 +787,6 @@ impl<T> ConnSlab<T> {
     }
 
     /// Whether `caller` declared `need`.
-
     pub fn check_need(&self, caller: InstanceId, need: NeedId) -> Result<(), ConnError> {
         if self
             .declared
@@ -847,7 +801,6 @@ impl<T> ConnSlab<T> {
     }
 
     /// Hold `state` as a connection `owner` opened for `need`, answering its id.
-
     pub fn insert(&self, owner: InstanceId, need: NeedId, state: T) -> Result<ConnId, ConnError> {
         let declared = self
             .declared
@@ -892,7 +845,6 @@ impl<T> ConnSlab<T> {
     }
 
     /// The live connection `conn`, when `caller` owns it: its need and state.
-
     pub fn get(&self, caller: InstanceId, conn: ConnId) -> Result<(NeedId, Arc<T>), ConnError> {
         let entries = self.lock();
         match Self::slot(&entries, conn)? {
@@ -905,7 +857,6 @@ impl<T> ConnSlab<T> {
     }
 
     /// Release `conn`, when `caller` owns it, answering its state.
-
     pub fn remove(&self, caller: InstanceId, conn: ConnId) -> Result<Arc<T>, ConnError> {
         let mut entries = self.lock();
         let index = match Self::slot(&entries, conn)? {
@@ -926,7 +877,6 @@ impl<T> ConnSlab<T> {
     }
 
     /// Forget `owner`: every need it declared is dropped (an insert or a need check for it is
-
     pub fn forget(&self, owner: InstanceId) -> Vec<ConnId> {
         self.declared
             .lock()

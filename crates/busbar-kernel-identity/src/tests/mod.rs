@@ -14,7 +14,6 @@ use crate::chain::{ChainEntry, ResolvedKey};
 use crate::module::{AuthModule, AuthOutcome};
 
 /// A stand-in module with a canned answer, so a test can state exactly
-
 pub(crate) struct Canned {
     pub(crate) name: &'static str,
     pub(crate) outcome: AuthOutcome,

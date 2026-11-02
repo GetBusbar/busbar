@@ -6,7 +6,6 @@
 use busbar_contract::UpstreamAddress;
 
 /// The environment a member-program child is spawned under is the node's credential hand-off: the
-
 #[test]
 fn a_program_upstream_does_not_print_or_serialise_its_environment_values() {
     let a = UpstreamAddress::Program {

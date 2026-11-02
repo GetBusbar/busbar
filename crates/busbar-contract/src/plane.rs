@@ -10,7 +10,6 @@ use crate::wire::{Decode, DiscardCode, Encode, Frame, FrameCursor};
 use std::any::Any;
 
 /// Everything a plane declares about itself.
-
 pub trait PlaneMeta {
     /// The plane's registry key.
     const KEY: &'static str;
@@ -37,7 +36,6 @@ pub trait PlaneMeta {
 }
 
 /// A plane's codec state for one connection.
-
 pub struct PlaneSessionState {
     inner: Box<dyn Any + Send>,
 }
@@ -173,7 +171,6 @@ pub enum Progress<'u> {
 }
 
 /// What bytes mean.
-
 pub trait Plane: Plugin + Send + Sync + 'static {
     /// Read inbound bytes.
     fn decode_ingress<'u>(
@@ -193,7 +190,6 @@ pub trait Plane: Plugin + Send + Sync + 'static {
     ) -> Result<EgressBody<'u>, Encode>;
 
     /// Write one inbound frame of an open unit onward to its destination. Returning nothing means
-
     fn encode_ingress_frame<'u>(
         &self,
         u: &Unit<'u>,
@@ -221,7 +217,6 @@ pub trait Plane: Plugin + Send + Sync + 'static {
     ) -> Result<ScratchBytes<'u>, Encode>;
 
     /// Write a refusal in this dialect's shape. The codec state is borrowed immutably on purpose:
-
     fn encode_refusal<'u>(
         &self,
         refusal: &Refusal,
@@ -240,7 +235,6 @@ pub trait Plane: Plugin + Send + Sync + 'static {
     ) -> Result<Option<ScratchBytes<'u>>, Encode>;
 
     /// Say where the credential is, and narrow the claim's scheme if the dialect narrows it.
-
     fn authenticate<'u>(&self, u: &Unit<'u>, ctx: &Ctx<'u>) -> crate::kinds::CredentialLocator;
 
     /// Say where this unit wants to go.
@@ -253,11 +247,9 @@ pub trait Plane: Plugin + Send + Sync + 'static {
     fn meter<'u>(&self, u: &Unit<'u>, r: &Response<'u>, ctx: &Ctx<'u>) -> UsageLocators;
 
     /// Say what this unit was and how it ended.
-
     fn audit<'u>(&self, u: &Unit<'u>, out: &UnitEnd, ctx: &Ctx<'u>) -> AuditFacts;
 
     /// Answer one of this plane's declared read-only introspection verbs. Errors when the verb
-
     fn plane_facts<'u>(
         &self,
         verb: AdminVerbId,
@@ -275,7 +267,6 @@ pub trait Plane: Plugin + Send + Sync + 'static {
 }
 
 /// A plane that can run over a session transport.
-
 pub trait SessionPlane: Plane {
     /// Open the client half of this session's codec state.
     fn open_session<'u>(&self, ctx: &Ctx<'u>) -> PlaneSessionState;
@@ -434,7 +425,6 @@ pub struct ServedOpClass {
 }
 
 /// THE ONE-SERVER GUARD over a set of declarations' [`PlaneDeclaration::served_op_classes`]: `Ok(())`
-
 pub fn check_served_op_classes(decls: &[&PlaneDeclaration]) -> Result<(), String> {
     let mut seen: std::collections::BTreeMap<OpClassId, &str> = std::collections::BTreeMap::new();
     for decl in decls {
@@ -468,11 +458,9 @@ pub struct MetricFamily {
 pub const COUNTER: &str = "counter";
 
 /// The reserved first-party metric namespace. A plane's family in it is admitted only when the
-
 pub const RESERVED_METRIC_PREFIX: &str = "busbar_";
 
 /// The most label keys one family may declare — the cap the host's metric validator holds every
-
 pub const MAX_FAMILY_LABELS: usize = 8;
 
 /// A series name or label key a scrape can carry: `^[a-z][a-z0-9_]{0,63}$`.
@@ -484,7 +472,6 @@ fn metric_ident(s: &str) -> bool {
 }
 
 /// THE METRIC-FAMILY GUARD over a set of declarations' [`PlaneDeclaration::metric_families`],
-
 pub fn check_metric_families(
     decls: &[&PlaneDeclaration],
     carried: &[(&str, &[&str])],
@@ -551,7 +538,6 @@ pub const PER_REQUEST: &str = "per_request";
 pub const PER_SESSION: &str = "per_session";
 
 /// THE CONDITION OF A REFUSED ADMIN ANSWER: the reply head field a door's `serve` names, beside a
-
 pub const ADMIN_CONDITION_FIELD: &str = "busbar-admin-condition";
 
 /// [`ADMIN_CONDITION_FIELD`]: the request body did not parse as the verb's expected shape.
@@ -561,7 +547,6 @@ pub const ADMIN_CONDITION_MALFORMED_BODY: &str = "malformed-body";
 pub const ADMIN_CONDITION_INVALID_CONFIG: &str = "invalid-config";
 
 /// THE DUP-CLAIM GUARD over a set of declarations' [`PlaneDeclaration::owned_config_sections`],
-
 pub fn check_owned_config_claims(
     decls: &[&PlaneDeclaration],
     reserved: &[&'static str],

@@ -78,7 +78,6 @@ pub enum UpstreamAddress {
 }
 
 /// Serialize an environment as the names it sets and nothing else.
-
 fn env_names_only<S: serde::Serializer>(
     env: &&'static [(&'static str, &'static str)],
     serializer: S,
@@ -150,7 +149,6 @@ impl UpstreamAddress {
     }
 
     /// The name a presented certificate is checked against, where the deployment named one.
-
     #[must_use]
     pub const fn sni(&self) -> Option<&'static str> {
         match self {
@@ -160,7 +158,6 @@ impl UpstreamAddress {
     }
 
     /// The program to spawn, for the shape whose upstream is a process.
-
     #[must_use]
     pub const fn program(&self) -> Option<&'static str> {
         match self {
@@ -196,7 +193,6 @@ impl UpstreamAddress {
     }
 
     /// One declared fact, by key. `None` for a key this destination does not declare.
-
     #[must_use]
     pub fn extra(&self, key: &str) -> Option<&'static str> {
         self.extras()
@@ -206,7 +202,6 @@ impl UpstreamAddress {
     }
 
     /// The first key a transport requires that this destination does not declare.
-
     #[must_use]
     pub fn missing<'k>(&self, required: &[&'k str]) -> Option<&'k str> {
         required
@@ -216,7 +211,6 @@ impl UpstreamAddress {
     }
 
     /// A socket target with no certificate name and nothing declared beyond the shape. The common
-
     #[must_use]
     pub const fn socket(authority: &'static str) -> Self {
         Self::Socket {

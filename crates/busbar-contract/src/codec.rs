@@ -10,7 +10,6 @@ use crate::operation::OpVerb;
 use serde_json::Value;
 
 /// A serialized wire body plus the content-type the OperationHandler chose for it. The engine relays both without
-
 pub struct WireBody {
     pub bytes: SlabBytes,
     pub content_type: http::HeaderValue,
@@ -25,7 +24,6 @@ impl WireBody {
         }
     }
     /// A body with an explicit content-type (e.g. audio speech). Falls back to octet-stream if the
-
     pub fn typed(bytes: SlabBytes, content_type: &str) -> Self {
         let content_type = http::HeaderValue::from_str(content_type)
             .unwrap_or_else(|_| http::HeaderValue::from_static("application/octet-stream"));
@@ -37,7 +35,6 @@ impl WireBody {
 }
 
 /// The egress request wire a hop produced: a JSON `Value` still to be shim/model-shaped by the
-
 pub enum EgressWire {
     /// A JSON egress body the router still post-shapes (shim-key strip, model rewrite, path-base).
     Json(Value),
@@ -48,7 +45,6 @@ pub enum EgressWire {
 }
 
 /// The neutral outcome of a non-stream cross-protocol response translation. Mirrors every exit of the
-
 pub enum TranslatedResponse {
     /// A JSON ingress body (`application/json`) the caller still post-processes (native response-metrics
     Json(Value),
@@ -63,7 +59,6 @@ pub enum TranslatedResponse {
 }
 
 /// What routing hands a request handler so it can render the upstream URL path. RESOLVED PRIMITIVES
-
 pub struct EgressCtx<'a> {
     /// Which operation's endpoint to render — the template selector.
     pub operation: OpVerb,
@@ -142,7 +137,6 @@ impl UsageTapFault {
     }
 
     /// The reason the kernel counts a door's answer code under, the byte read as the CLOSED enum
-
     #[must_use]
     pub const fn reason_of(code: u8) -> Option<&'static str> {
         match Self::of_code(code) {
@@ -156,7 +150,6 @@ impl UsageTapFault {
     pub const UNKNOWN_REASON: &'static str = "unknown";
 
     /// The fault a door's answer code names; `None` for [`crate::abi::plane::TAP_FAULT_NONE`] and
-
     #[must_use]
     pub const fn of_code(code: u8) -> Option<Self> {
         match code {
@@ -204,26 +197,21 @@ pub const TRANSLATE_BODY_MAX_BYTES_DEFAULT: usize = 32 * 1024 * 1024;
 /// ```
 pub trait CodecHost: Sync {
     /// Fill `out` with fresh bytes from the host's CSPRNG and answer `true`, or answer `false` when
-
     fn fill_entropy(&self, out: &mut [u8]) -> bool;
 
     /// The host's wall clock, whole seconds since the Unix epoch, or `None` when the host holds no
-
     fn wall_clock_now(&self) -> Option<u64>;
 
     /// The host's MONOTONIC clock, nanoseconds from an origin fixed for the process's life (the
-
     fn monotonic_ns(&self) -> Option<u64> {
         None
     }
 }
 
 /// ONE ROW OF A PROTOCOL'S SUPPORT MATRIX — a verb the protocol speaks and the codec that speaks it.
-
 pub type Cell = (OpVerb, &'static dyn OperationHandler);
 
 /// THE ROW LOOKUP every [`RequestHandler::operation_handler`] is — stated once so there are not
-
 pub fn cell_of(cells: &'static [Cell], op: OpVerb) -> Option<&'static dyn OperationHandler> {
     cells
         .iter()
@@ -232,7 +220,6 @@ pub fn cell_of(cells: &'static [Cell], op: OpVerb) -> Option<&'static dyn Operat
 }
 
 /// THE (verb → upstream path) LOOKUP, for the protocols whose egress paths are constants rather
-
 pub fn path_of(paths: &'static [(OpVerb, &'static str)], op: OpVerb) -> Option<&'static str> {
     paths
         .iter()
@@ -241,10 +228,8 @@ pub fn path_of(paths: &'static [(OpVerb, &'static str)], op: OpVerb) -> Option<&
 }
 
 /// A pure per-(protocol × operation) codec. Feed it wire, assert the IR; feed it IR, assert the wire.
-
 pub trait OperationHandler: Send + Sync {
     /// WHAT THIS UPSTREAM'S FAILURE MEANT — the attributed outcome of one outbound attempt, which
-
     fn extract_error(&self, status: u16, _body: &[u8]) -> crate::upstream::RawUpstreamError {
         crate::upstream::RawUpstreamError::from_status(status)
     }
@@ -258,17 +243,14 @@ pub trait OperationHandler: Send + Sync {
         false
     }
     /// The caller's stream intent, from the parsed ingress body. Chat reads the body's top-level
-
     fn wants_stream(&self, _body: &Value) -> bool {
         false
     }
     /// A body-derived session-affinity key (used only when no affinity header is present). Chat uses
-
     fn body_affinity_key<'a>(&self, _body: &'a Value) -> Option<&'a str> {
         None
     }
     /// Extract billable usage from a complete same-protocol non-stream 2xx body (called once at stream
-
     fn extract_usage(
         &self,
         host: &dyn CodecHost,
@@ -281,18 +263,15 @@ pub trait OperationHandler: Send + Sync {
         }
     }
     /// Recover independently reported billing when the complete response cannot be decoded.
-
     fn recover_response_billing(&self, _host: &dyn CodecHost, _body: &[u8]) -> Option<Billing> {
         None
     }
     /// The Content-Type of THIS operation's egress request wire (what `write_request` emits).
-
     fn egress_request_content_type(&self) -> &'static str {
         crate::protocol::APPLICATION_JSON
     }
 
     /// The egress `Accept` header for the upstream request. `egress_stream_accept` is the egress
-
     fn egress_accept(
         &self,
         egress_stream_accept: &'static str,
@@ -306,7 +285,6 @@ pub trait OperationHandler: Send + Sync {
     }
 
     /// Value-level codec bridge (request) — for engine seams that already hold a PARSED JSON body
-
     fn read_request_value(&self, v: &Value) -> Result<Box<dyn IrHandle>, IngressReject> {
         let bytes = serde_json::to_vec(v).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
         self.read_request(&bytes, crate::protocol::APPLICATION_JSON)
@@ -322,14 +300,12 @@ pub trait OperationHandler: Send + Sync {
     }
 
     /// Wire → IR HANDLE (request). The OperationHandler owns the ENTIRE wire format: it receives RAW
-
     fn read_request(
         &self,
         body: &[u8],
         content_type: &str,
     ) -> Result<Box<dyn IrHandle>, IngressReject>;
     /// Egress wire → IR HANDLE (response) — for the usage tap or a cross-protocol translation. Raw
-
     fn read_response(
         &self,
         host: &dyn CodecHost,
@@ -340,24 +316,19 @@ pub trait OperationHandler: Send + Sync {
 /// A protocol's dialect + its OperationHandlers (one impl per protocol).
 pub trait RequestHandler: Send + Sync {
     /// Stable protocol identity (matches the dialect's own protocol name). Called only from `busbar-core`'s
-
     fn protocol_name(&self) -> &'static str;
 
     /// This protocol's row of the support matrix. `None` ⇒ the protocol does not serve the operation
-
     fn operation_handler(&self, op: OpVerb) -> Option<&dyn OperationHandler>;
 
     /// WHICH operation this request asks for — the RequestHandler knows its protocol and reads the
-
     fn resolve_operation(&self, path: &str, body: &[u8]) -> Option<OpVerb>;
 
     /// The model named in the PATH, for path-model dialects (`models/{m}:action`,
-
     fn path_model(&self, _path: &str) -> Option<String> {
         None
     }
 
     /// The `(protocol, operation) → path template` map: this protocol's upstream URL for the operation
-
     fn upstream_path(&self, ctx: &EgressCtx) -> String;
 }

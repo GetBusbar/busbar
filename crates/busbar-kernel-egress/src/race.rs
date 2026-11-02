@@ -12,7 +12,6 @@ use std::task::{Context, Poll};
 pub struct Elapsed;
 
 /// Run `work`, giving up if `deadline` finishes first. The DEADLINE is polled first, so an expired
-
 pub async fn deadline_first<T>(
     work: impl Future<Output = T>,
     deadline: impl Future<Output = ()>,

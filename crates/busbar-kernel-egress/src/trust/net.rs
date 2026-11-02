@@ -43,11 +43,9 @@ impl std::fmt::Display for AddressRefusal {
 }
 
 /// A refusal is an error a caller can carry in a cause chain: the egress client's dial judge hands
-
 impl std::error::Error for AddressRefusal {}
 
 /// Split an `http(s)://host[:port][/path]` URL into `(https, host, port, path)`.
-
 pub fn split_url(url: &str) -> Result<(bool, String, u16, String), AddressRefusal> {
     let https = match url.split_once("://").map(|(scheme, _)| scheme) {
         Some(scheme) if scheme.eq_ignore_ascii_case("https") => true,
@@ -70,7 +68,6 @@ pub fn split_url(url: &str) -> Result<(bool, String, u16, String), AddressRefusa
 }
 
 /// The URL as a refusal may repeat it: everything an authority put before its last `@` replaced by a
-
 pub fn redact_userinfo(url: &str) -> String {
     let (prefix, rest) = match url.split_once("://") {
         Some((scheme, rest)) => (&url[..scheme.len() + 3], rest),
@@ -84,7 +81,6 @@ pub fn redact_userinfo(url: &str) -> String {
 }
 
 /// A provider BASE URL with its authority's userinfo removed: `scheme://user:pass@host:port/path`
-
 pub fn strip_userinfo(url: &str) -> std::borrow::Cow<'_, str> {
     let Some((scheme, rest)) = url.split_once("://") else {
         return std::borrow::Cow::Borrowed(url);
@@ -97,7 +93,6 @@ pub fn strip_userinfo(url: &str) -> std::borrow::Cow<'_, str> {
 }
 
 /// The scheme a string CLAIMS, for a refusal message. Nothing is decided from it — the decision is
-
 fn scheme_of(url: &str) -> String {
     match url.split_once(':') {
         Some((s, _)) if !s.is_empty() && !s.contains('/') => s.to_ascii_lowercase(),
@@ -133,7 +128,6 @@ struct HostSet {
 }
 
 /// AN OPERATOR'S LIST ENTRY (`security.blocked_metadata_hosts`, `security.allow_metadata_hosts`, a
-
 pub fn list_entry_host(entry: &str) -> Result<std::borrow::Cow<'_, str>, UrlRefusal> {
     let entry = entry.trim();
     if entry.is_ascii() {
@@ -148,7 +142,6 @@ pub fn list_entry_host(entry: &str) -> Result<std::borrow::Cow<'_, str>, UrlRefu
 
 impl HostSet {
     /// Canonicalize a list of operator-written entries, each read as a target's host is
-
     fn parse(entries: &[String]) -> Self {
         let mut set = HostSet::default();
         for entry in entries {
@@ -173,13 +166,11 @@ impl HostSet {
     }
 
     /// True when the list names nothing at all — the common case, and the one a dial should spend
-
     fn is_empty(&self) -> bool {
         self.names.is_empty()
     }
 
     /// True when the already-normalized `host` (as produced by [`extract_normalized_host`]) matches
-
     fn matches(&self, host: &str) -> bool {
         use std::net::IpAddr;
 
@@ -213,7 +204,6 @@ impl HostSet {
 }
 
 /// Return `Some(host)` if the given URL targets a CLOUD-METADATA endpoint that must be blocked, else
-
 pub fn ssrf_blocked_host(
     url: &str,
     allow_overrides: &[String],

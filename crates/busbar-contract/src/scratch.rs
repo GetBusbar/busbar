@@ -5,25 +5,20 @@ use core::fmt;
 use crate::bounded::{ScratchBytes, Span};
 
 /// Per-call scratch memory that grows on demand and never refuses a request for being too large.
-
 pub trait Scratch {
     /// Copy bytes into the pad and hand back a borrowed view of where they landed.
-
     fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ScratchBytes<'a>, ScratchRefused>;
 
     /// Copy a string into the pad and hand back a borrowed view of it.
-
     fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, ScratchRefused>;
 
     /// Copy a resolved span table into the pad.
-
     fn alloc_spans<'a>(
         &'a self,
         src: &[(&'a str, Span)],
     ) -> Result<&'a [(&'a str, Span)], ScratchRefused>;
 
     /// How many more bytes the pad will hand out before the abuse backstop trips.
-
     fn remaining(&self) -> usize;
 }
 

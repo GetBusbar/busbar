@@ -8,7 +8,6 @@ use crate::abi::mechanism::call::{Blob, BLOB_JSON, BLOB_OCTETS};
 use crate::abi::mechanism::lifecycle::slot;
 
 /// A stub plugin's migration: renames `signing-secret` to `signing_secret`, and asks core to allow
-
 struct Stub;
 impl Migrate for Stub {
     fn migrate(mut settings: serde_json::Value, from: &str) -> Migrated {
@@ -121,7 +120,6 @@ fn an_answer_larger_than_the_buffer_is_refused_and_writes_nothing() {
 }
 
 /// The host can explain an oversized migration without printing any of its settings. The reason
-
 #[test]
 fn an_oversized_answer_names_a_nonsecret_reason_when_it_fits() {
     let secret = "private-setting-sentinel".repeat(32);
@@ -136,7 +134,6 @@ fn an_oversized_answer_names_a_nonsecret_reason_when_it_fits() {
 }
 
 /// A reason that exactly fills the lent buffer is named in full. One byte less cannot carry it,
-
 #[test]
 fn an_overflow_reason_fits_exactly_or_writes_nothing() {
     let settings = serde_json::to_vec(&serde_json::json!({ "data": "x".repeat(512) })).unwrap();
@@ -221,7 +218,6 @@ mod witness {
 }
 
 /// THE DOOR STATES IT: `plugin_door!`'s `migrate:` lands on the door's tail, the host calls it
-
 #[test]
 fn a_door_states_migrate_on_its_tail_and_the_host_calls_it_with_no_instance() {
     use crate::abi::mechanism::door::Door;
@@ -277,7 +273,6 @@ fn a_door_states_migrate_on_its_tail_and_the_host_calls_it_with_no_instance() {
 }
 
 /// A host the plugin cannot judge itself (its `migrate` reads nothing but its arguments) is raised
-
 #[test]
 fn the_allow_if_private_need_is_its_own_word_on_the_wire() {
     let need = MigrateNeed::AllowDestinationIfPrivate("ollama.internal".into());

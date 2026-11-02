@@ -118,7 +118,6 @@ pub struct InspectionReceipt {
 }
 
 /// Maximum carrier IDs fitting BOTH request and full correlated receipt, with the existing
-
 #[must_use]
 pub fn max_carrier_sessions(existing_extension_bytes: usize) -> usize {
     let request_overhead = 30 + extensions::entry_len(EXT_REQUEST, &[]);

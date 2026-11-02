@@ -27,7 +27,6 @@ pub enum Unavailable {
     /// estimate, in which case `recovery_hint_ms` falls back to [`AT_CAPACITY_RECOVERY_FLOOR_MS`].
     AtCapacity { drain_hint_ms: Option<u64> },
     /// Inbound backpressure shed this request before lane selection (`limits.max_inbound_concurrent`).
-
     #[cfg_attr(not(test), allow(dead_code))]
     Shedding,
 }

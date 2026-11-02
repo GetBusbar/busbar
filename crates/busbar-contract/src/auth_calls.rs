@@ -13,7 +13,6 @@ use crate::abi::auth::AuthPoint;
 use crate::auth::{BeginLogin, CompleteLogin, LoginKind, LoginOutcome};
 
 /// One inbound request at one AUTH POINT, as the host hands it to `verify` (THE DESIGN, "Auth
-
 pub struct VerifyRequest {
     /// The point the call is made at.
     pub point: AuthPoint,
@@ -211,7 +210,6 @@ pub struct VerifyAnswer {
 
 impl From<Verified> for VerifyAnswer {
     /// The verdict with no strips and its default decision: continue on an identity or a pass,
-
     fn from(verified: Verified) -> Self {
         let decision = match verified {
             Verified::Identity(_) | Verified::Pass => Decision::Continue,
@@ -229,11 +227,9 @@ impl From<Verified> for VerifyAnswer {
 /// One `verify` in flight. Dropping it before it answered is a client drop.
 pub trait Verifying: Future<Output = VerifyAnswer> + Send + Unpin {
     /// The answer, if it has arrived; never waits. A SYNC caller polls this once and fails closed
-
     fn settled(&mut self) -> Option<VerifyAnswer>;
 
     /// Whether the verify's answer is a FAULT: the plugin broke its contract (a caught panic, a
-
     fn faulted(&self) -> bool {
         false
     }
@@ -254,13 +250,11 @@ pub struct LoginCallback {
 }
 
 /// One `begin_login` or `complete_login` in flight. Dropping it before it answered abandons it.
-
 pub trait LoginCall: Future<Output = LoginOutcome> + Send + Unpin {
     /// The answer, if it has arrived; never waits.
     fn settled(&mut self) -> Option<LoginOutcome>;
 
     /// Whether the step's answer is a FAULT: the plugin broke its contract (a caught panic, a
-
     fn faulted(&self) -> bool {
         false
     }
@@ -314,56 +308,46 @@ pub trait AuthCalls: Send + Sync {
     fn facts(&self) -> u32;
 
     /// With [`crate::abi::auth::FACT_READS_CREDENTIALS`]: the host-held credential kinds `verify`
-
     fn credential_kinds(&self) -> Vec<String> {
         Vec::new()
     }
 
     /// With [`crate::abi::auth::FACT_READS_CREDENTIALS`]: the shape of the credential the host issues
-
     fn issued_shape(&self) -> Option<IssuedShape> {
         None
     }
 
     /// The auth points `verify` is called at, as the tail states them
-
     fn inbound_points(&self) -> crate::abi::auth::AuthPoints {
         crate::abi::auth::AuthPoints::HEAD
     }
 
     /// The inbound carriers `verify` reads (field line names, lower-case), as the Statement's
-
     fn carriers(&self) -> Vec<String> {
         Vec::new()
     }
 
     /// `verify` ON THE SPOT: one ticket-less crossing on the caller's thread, bounded by the
-
     fn verify_now(&self, request: &VerifyRequest) -> Option<VerifyAnswer>;
 
     /// Submit `verify`; it crosses on a dispatcher worker and its answer is a future, so no thread
-
     fn verify(&self, request: VerifyRequest) -> Box<dyn Verifying>;
 
     /// `refresh` with a NEW generation and unchanged settings: the admin cache flush. The plugin
-
     fn refresh(&self) -> Result<u64, String>;
 
     /// How the plugin's login starts, as its tail states it (`abi::auth::LOGIN_KIND_*`); `None` =
-
     fn login_kind(&self) -> Option<LoginKind> {
         None
     }
 
     /// Submit `begin_login`: the IdP authorize URL ([`LoginOutcome::Authorize`]) or the credential
-
     fn begin_login(&self, request: BeginLogin) -> Box<dyn LoginCall> {
         let _ = request;
         Box::new(LoginSettled(Some(LoginOutcome::Reject)))
     }
 
     /// Submit `complete_login`: the plugin runs the token exchange over its own need, holding its
-
     fn complete_login(&self, request: LoginCallback) -> Box<dyn LoginCall> {
         let _ = request;
         Box::new(LoginSettled(Some(LoginOutcome::Reject)))
@@ -371,7 +355,6 @@ pub trait AuthCalls: Send + Sync {
 }
 
 /// THE AUTH AXIS, as the composition root hands it to the kernel (the shape of the export kind's
-
 pub trait AuthAxis: Send + Sync {
     /// The config keys of the auth rows this build LINKS, in registration order.
     fn linked_names(&self) -> Vec<String>;
@@ -383,11 +366,9 @@ pub trait AuthAxis: Send + Sync {
     fn linked(&self, module: &str) -> bool;
 
     /// THE OPERATOR CREDENTIAL'S ROW: the auth row whose Statement states
-
     fn operator(&self) -> Option<(String, String)>;
 
     /// OPEN one instance of `module` over `settings` (the provider's settings, one JSON document,
-
     fn open(
         &self,
         module: &str,
@@ -396,39 +377,33 @@ pub trait AuthAxis: Send + Sync {
     ) -> Result<Arc<dyn AuthCalls>, String>;
 
     /// The config keys of the auth rows whose Statement states
-
     fn credential_readers(&self) -> Vec<String> {
         Vec::new()
     }
 
     /// THE CREDENTIAL THE HOST ISSUES beside a signed-token key, read from the Statements without
-
     fn issued_credential(&self) -> Option<(String, IssuedShape)> {
         None
     }
 
     /// The inbound carriers the auth row answering `module` states (its Statement's carrier word
-
     fn carriers(&self, module: &str) -> Vec<String> {
         let _ = module;
         Vec::new()
     }
 
     /// The inbound style of an ordinary identity-provider module. The host's Rust convention
-
     fn inbound_style(&self, module: &str) -> Option<InboundStyle> {
         let _ = module;
         None
     }
 
     /// THE HOST'S DEFAULT INBOUND STYLE's carriers: the carrier marks of the one auth row whose
-
     fn default_inbound_style(&self) -> Result<Vec<String>, String> {
         Ok(Vec::new())
     }
 
     /// THE AUTH PLUGIN SERVING THE OUTBOUND `style` for a binding under `settings` (THE DESIGN
-
     fn serving(
         &self,
         style: &str,
@@ -439,7 +414,6 @@ pub trait AuthAxis: Send + Sync {
     }
 
     /// CHECK, NEVER DIAL (the `--validate` dry run): bind `credential` under `settings` on a fresh
-
     fn check_outbound(
         &self,
         style: &str,
@@ -451,7 +425,6 @@ pub trait AuthAxis: Send + Sync {
     }
 
     /// THE OUTBOUND STYLES this build's auth rows declare, as a provider's `auth:` may name them:
-
     fn outbound_styles(&self) -> Vec<DeclaredStyle> {
         Vec::new()
     }
@@ -479,7 +452,6 @@ pub struct DeclaredStyle {
 }
 
 /// THE ONE ORDER the host lists outbound styles in: `declared` (every row's styles, linked rows
-
 #[must_use]
 pub fn listed_styles(declared: impl IntoIterator<Item = DeclaredStyle>) -> Vec<DeclaredStyle> {
     let mut out: Vec<DeclaredStyle> = Vec::new();
@@ -518,7 +490,6 @@ impl std::fmt::Debug for OutboundServing {
 }
 
 /// One attempt's fixed facts at one AUTH POINT, as the kernel hands them to `fields` (THE
-
 pub struct FieldsRequest {
     /// The point the call is made at: one of the style's `StyleDecl::points`.
     pub point: AuthPoint,
@@ -613,7 +584,6 @@ pub struct AuthField {
 }
 
 /// Every auth field's value is withheld, whatever its `sensitive` bit says: a field whose
-
 impl std::fmt::Debug for AuthField {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AuthField")
@@ -685,24 +655,20 @@ pub enum Fields {
 }
 
 /// One `fields` in flight: PENDING while the plugin's cached token refreshes, bounded by the
-
 pub trait Fielding: Future<Output = Fields> + Send + Unpin {
     /// The answer, if it has arrived; never waits.
     fn settled(&mut self) -> Option<Fields>;
 }
 
 /// A BINDING WHOSE CREDENTIAL IS REFRESHED OFF THE REQUEST PATH (a registration's own credential):
-
 pub trait PerRequestHandle: Send + Sync {
     /// The handle this request's auth call is made on, as the last refresh left it: a load, never a
-
     fn handle_now(&self) -> Option<u64>;
 }
 
 /// ONE AUTH INSTANCE'S OUTBOUND CALLS, as the kernel's egress walk makes them.
 pub trait OutboundAuth: Send + Sync {
     /// Bind `style` to its resolved `credential` (secret; empty for a passthrough-only binding)
-
     fn open_outbound(
         &self,
         style: &str,
@@ -711,15 +677,12 @@ pub trait OutboundAuth: Send + Sync {
     ) -> Result<u64, String>;
 
     /// `fields` ON THE SPOT: one ticket-less crossing on the caller's thread. `Some` only for a
-
     fn fields_now(&self, handle: u64, request: &FieldsRequest) -> Option<Fields>;
 
     /// Submit `fields` on a dispatcher worker; its answer is a future, so no thread is parked.
-
     fn fields(&self, handle: u64, request: FieldsRequest, deadline_ns: u64) -> Box<dyn Fielding>;
 
     /// `outbound_ready`: whether `fields` would answer with a credential now (`false` before a
-
     fn ready(&self, handle: u64) -> bool {
         let _ = handle;
         true

@@ -111,11 +111,9 @@ use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 pub const ABI_VERSION: u32 = 3;
 
 /// The store kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
-
 pub const LAYOUT_FINGERPRINT: u64 = 0x56bdc8a89ba6e6e0;
 
 /// The store kind's shapes, in fold order ([`crate::layout_shape!`]): every `#[repr(C)]` struct
-
 pub const LAYOUT_SHAPES: &[&[u64]] = &[
     HostBuf::LAYOUT,
     HostBlobs::LAYOUT,
@@ -227,7 +225,6 @@ abi_struct! {
 /// [`HostBytesOut::found`]: the record exists and was written.
 pub const FOUND: u32 = 1;
 /// [`HostBytesOut::found`] / [`LeasedBlobOut::found`]: no such record. `0`, so an `out` nobody
-
 pub const ABSENT: u32 = 0;
 
 abi_struct! {
@@ -320,7 +317,6 @@ abi_struct! {
 
 impl StoreTail {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-
     pub const ZERO: Self = Self {
         head: KindTailHead::ZERO,
         durable_plane: 0,
@@ -330,19 +326,15 @@ impl StoreTail {
 }
 
 /// [`CancelOut::disposition`](crate::abi::mechanism::lifecycle::CancelOut::disposition): the store
-
 pub const CANCEL_UNKNOWN: u32 = 0;
 /// The cancelled op applied nothing.
 pub const CANCEL_NOT_APPLIED: u32 = 1;
 /// The cancelled op had committed; its original `out` is kept under its `op_id`, so a replay
-
 pub const CANCEL_APPLIED: u32 = 2;
 
 /// The diagnostic id a store answers with REFUSED for an `op_id` replayed with a different body
-
 pub const DIAG_OPID_CONFLICT: &str = "STORE_OPID_CONFLICT";
 /// How long a store remembers an `op_id`, at least (m3-inputs "store v3 money slots", DEDUPE:
-
 pub const OP_ID_RETENTION_SECS: u64 = 24 * 60 * 60;
 
 /// Declares the kind slot indices, the table, [`OPS`], [`NAMES`] and [`MAX_PAYLOAD`] from ONE

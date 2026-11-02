@@ -13,7 +13,6 @@ use crate::operation::OpVerb;
 use std::sync::Arc;
 
 /// The request payload is held behind an `Arc` because `facts()` must hand back an OWNED
-
 pub struct InvokeReqHandle(pub Arc<InvokeReq>);
 pub struct InvokeRespHandle(pub InvokeResp);
 /// Shared for the same reason as [`InvokeReqHandle`].

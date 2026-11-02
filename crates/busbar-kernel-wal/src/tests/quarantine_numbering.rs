@@ -13,7 +13,6 @@ use crate::wal::{Mode, Wal};
 const NODE: u64 = 3;
 
 /// Lay four single-frame records of `NODE`, numbered 1 to 4, into segment 0 of `factory` as one
-
 fn lay_down_with_altered_seq(factory: &MemoryFactory, seq: u64) {
     let mut bytes = Vec::new();
     for n in 1..=4u64 {
@@ -41,7 +40,6 @@ fn reopen(factory: &MemoryFactory) -> Wal {
 }
 
 /// RED before the fix: the altered number became the node's mark, so the next free number was
-
 #[test]
 fn an_altered_sequence_number_in_a_set_aside_frame_does_not_move_the_numbering() {
     let factory = MemoryFactory::retaining();
@@ -74,7 +72,6 @@ fn an_altered_sequence_number_in_a_set_aside_frame_does_not_move_the_numbering()
 }
 
 /// A header altered somewhere other than the number keeps the number it carried, and that number
-
 #[test]
 fn a_set_aside_frame_whose_number_is_in_reach_keeps_it_taken() {
     let factory = MemoryFactory::retaining();

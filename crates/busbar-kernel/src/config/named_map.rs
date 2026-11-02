@@ -269,7 +269,6 @@ fn unknown_section(key: &str) -> String {
 
 /// Which of the three generic route SHAPES a path is. The error taxonomy declares ONE error set per
 /// shape (not per section), which is what keeps a new section from needing a new taxonomy arm.
-
 #[cfg_attr(not(any(test, feature = "openapi-schema")), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NamedMapShape {

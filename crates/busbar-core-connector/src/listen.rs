@@ -24,7 +24,6 @@ use crate::hostio::{Admission, HostListener};
 pub const DEFAULT_MAX_CONNS: usize = 1024;
 
 /// A TLS handshake's bound when its settings name none: 1.5.5's `limits.tls_handshake_timeout_secs`
-
 pub const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The first accept-error backoff (1.5.5).
@@ -71,7 +70,6 @@ pub struct Handed {
 }
 
 /// ONE CONNECTION AN INBOUND LISTENER ADMITTED: the accepted socket, not yet on any worker's reactor
-
 pub struct Admitted {
     /// The accepted socket, non-blocking.
     pub stream: std::net::TcpStream,
@@ -82,14 +80,12 @@ pub struct Admitted {
 }
 
 /// AN INBOUND LISTENER, as the accept loop drains it: the next admitted connection. Accept errors,
-
 pub trait Admits: Send {
     /// The next admitted connection.
     fn admit(&mut self) -> impl Future<Output = Admitted> + Send + '_;
 }
 
 /// The root's stream listener as the root's accept source (`busbar::root::listener`): each
-
 impl Admits for Listening {
     async fn admit(&mut self) -> Admitted {
         let h = futures::future::poll_fn(|cx| self.poll_accept_stream(cx)).await;
@@ -125,7 +121,6 @@ enum Source {
 }
 
 /// One listener: bound for one inbound need (framed, or the carrier carried as itself), or for one
-
 pub struct Listening {
     mode: Mode,
     source: Source,
@@ -155,11 +150,9 @@ fn other(t: String) -> std::io::Error {
 }
 
 /// What a carrier's `listen` came to: its listener token, the side its accepts run on, the host's
-
 pub(crate) type Bound = (u64, Driven, Option<u64>, SocketAddr);
 
 /// The carrier's `listen` on `bind`, the host admitting exactly it: the listener, the host's
-
 pub(crate) fn listen_through(via: &Via, bind: &str) -> std::io::Result<Bound> {
     let mut side = Driven::of(via.door.as_ref())
         .ok_or_else(|| other("the transport is no carrier the host drives".into()))?;
@@ -203,7 +196,6 @@ pub(crate) fn listen_through(via: &Via, bind: &str) -> std::io::Result<Bound> {
 
 impl Listening {
     /// Bind `bind` (`ip:port`) through the carrier `via`, framing every connection through `door`
-
     pub fn bind(
         door: Option<Arc<dyn FramerDoor>>,
         via: &Via,
@@ -235,7 +227,6 @@ impl Listening {
     }
 
     /// A STREAM LISTENER, for the root's own, NON-PLANE binds only (its data door and its admin
-
     pub fn bind_stream(
         via: Option<&Via>,
         bind: &str,
@@ -289,7 +280,6 @@ impl Listening {
     }
 
     /// The next admitted connection: `Pending` with `cx`'s waker on the carrier's accept (or on
-
     pub fn poll_accept(&mut self, cx: &mut Context<'_>) -> Poll<Result<Accepted, Failure>> {
         let door = match &self.mode {
             Mode::Framed(d) => Some(Arc::clone(d)),
@@ -313,7 +303,6 @@ impl Listening {
     }
 
     /// The next admitted socket of a STREAM listener ([`Listening::bind_stream`]), as it arrived:
-
     pub fn poll_accept_stream(&mut self, cx: &mut Context<'_>) -> Poll<Handed> {
         loop {
             let (got, peer, slot) = std::task::ready!(self.poll_conn(cx));
@@ -328,7 +317,6 @@ impl Listening {
     }
 
     /// The next connection under the cap: one past it is accepted and closed at once, no byte
-
     fn poll_conn(&mut self, cx: &mut Context<'_>) -> Poll<(Got, SocketAddr, Slot)> {
         loop {
             if let Some(sleep) = self.sleep.as_mut() {
@@ -368,7 +356,6 @@ impl Listening {
 }
 
 /// A RETIRED LISTENER STOPS ACCEPTING AT ONCE (T1): the host's listening handle its carrier's
-
 impl Drop for Listening {
     fn drop(&mut self) {
         if let Source::Carrier {
@@ -389,7 +376,6 @@ impl Drop for Listening {
 
 impl Listening {
     /// 1.5.5's accept backoff: `None` = retry now. An aborted or interrupted accept is the far
-
     fn next_delay(&mut self, e: &std::io::Error) -> Option<Duration> {
         if matches!(
             e.kind(),

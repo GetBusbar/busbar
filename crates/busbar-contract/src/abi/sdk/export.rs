@@ -21,7 +21,6 @@ pub const NO_EXPOSITION: &str = "this sink carries no metrics stream, so it rend
 pub const NO_ROUTE: &str = "this sink declares no route, so it serves no request";
 
 /// The export kind's Statement tail: `streams` (as [`ExportStream`](crate::abi::export::ExportStream)
-
 #[must_use]
 pub const fn tail(streams: &'static [u8], routes: &'static [Route]) -> Tail {
     Tail {
@@ -98,7 +97,6 @@ pub fn instance_names(input: Lent<'_, CheckIn>) -> Vec<String> {
 }
 
 /// THE `one_instance` LIMITS CHECK: with more than one instance of the sink configured (`names`,
-
 #[must_use]
 pub fn one_instance_reason(names: &[String], why: &str) -> Vec<String> {
     if names.len() > 1 {
@@ -109,7 +107,6 @@ pub fn one_instance_reason(names: &[String], why: &str) -> Vec<String> {
 }
 
 /// THE `one_instance` LIMITS CHECK WORDED BY THE SINK (deprecated: the host words the refusal
-
 #[must_use]
 pub fn second_instances(names: &[String], alias: &str, why: &str) -> Vec<String> {
     let Some((first, rest)) = names.split_first() else {

@@ -13,7 +13,6 @@ use crate::cost::{
 const LANE: &str = "lane-p";
 
 /// A composed card: a flat card (fee 5), plane `p` with a PRESENT card (one lane, `calls` priced)
-
 fn card() -> RateCard {
     use std::collections::BTreeMap;
     let flat = BTreeMap::from([(
@@ -82,7 +81,6 @@ fn tallied(card: &RateCard, p: &Posting) -> Result<u128, crate::cost::MoneyError
 }
 
 /// A present plane card: four request units and one session on `p`'s fee lane are 4 × 3 + 1 × 40
-
 #[test]
 fn a_fee_lane_on_a_present_plane_card_prices_the_same_on_settlement_and_on_every_read() {
     let card = card();
@@ -122,7 +120,6 @@ fn a_fee_lane_on_a_present_plane_card_prices_the_same_on_settlement_and_on_every
 }
 
 /// An absent plane card: plane `s` bills its fee units at its own fee, and the lookup's line says
-
 #[test]
 fn a_fee_lane_on_an_absent_plane_card_shows_the_fee_it_bills() {
     let card = card();
@@ -142,7 +139,6 @@ fn a_fee_lane_on_an_absent_plane_card_shows_the_fee_it_bills() {
 }
 
 /// A class that is not a fee class on a present card's fee lane stays a refusal on both paths, and
-
 #[test]
 fn a_stray_class_on_a_fee_lane_still_refuses_and_an_ordinary_lane_is_untouched() {
     let card = card();

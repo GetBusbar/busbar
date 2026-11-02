@@ -10,7 +10,6 @@ fn payload() -> serde_json::Value {
 }
 
 /// A `Data` item renders its payload EVERY time it is asked for its screenable text — that is the
-
 #[test]
 fn asking_a_data_item_for_its_text_renders_the_payload_every_time() {
     let value = payload();
@@ -32,7 +31,6 @@ fn asking_a_data_item_for_its_text_renders_the_payload_every_time() {
 }
 
 /// THE MEMO. A screening pass reads each item's text many times — the size sum, the cleared-set
-
 #[test]
 fn a_screening_pass_renders_each_data_payload_exactly_once() {
     let value = payload();
@@ -71,7 +69,6 @@ fn a_screening_pass_renders_each_data_payload_exactly_once() {
 }
 
 /// The memo is a COST fix, not a behaviour fix: what it hands out is byte-identical to asking the
-
 #[test]
 fn the_memo_answers_exactly_what_the_item_answers() {
     let value = payload();
@@ -117,7 +114,6 @@ fn the_memo_answers_exactly_what_the_item_answers() {
 }
 
 /// A filtered subset (the incremental scan's not-yet-cleared pieces) keeps its rendered text: the
-
 #[test]
 fn selecting_a_subset_carries_the_rendered_text_across() {
     let value = payload();

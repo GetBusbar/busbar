@@ -10,7 +10,6 @@ use busbar_contract::transport::{
 };
 
 /// The six spellings, written out here rather than read off the constants.
-
 const SPELLINGS: [(&str, &str); 6] = [
     ("PATH", "path"),
     ("METHOD", "method"),
@@ -119,7 +118,6 @@ fn a_composition_refusal_says_which_transport_and_which_layer() {
 }
 
 /// Every transport failure, named one at a time.
-
 fn every_transport_error() -> Vec<(TransportError, &'static str)> {
     use TransportError::*;
     let all = [

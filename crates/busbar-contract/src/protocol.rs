@@ -23,19 +23,15 @@ pub const ERR_TYPE_SERVER_ERROR: &str = "server_error";
 /// Error `type` for a billing-quota exhaustion (HTTP 429).
 pub const ERR_TYPE_INSUFFICIENT_QUOTA: &str = "insufficient_quota";
 /// Internal kind for an overloaded upstream; a dialect whose wire has no overloaded type maps it to
-
 pub const ERR_TYPE_OVERLOADED: &str = "overloaded_error";
 /// Error `type` for a generic upstream/API failure; also the agnostic forward-layer kind
-
 pub const ERR_TYPE_API_ERROR: &str = "api_error";
 /// Error `type` for an oversized request (HTTP 413); shared by the forward KIND bank and the
-
 pub const ERR_TYPE_REQUEST_TOO_LARGE: &str = "request_too_large";
 
 /// Agnostic forward kind for a generic upstream/API failure.
 pub const KIND_API_ERROR: &str = ERR_TYPE_API_ERROR;
 /// Bare `overloaded` — DELIBERATELY distinct from [`ERR_TYPE_OVERLOADED`] ("overloaded_error", one
-
 pub const KIND_OVERLOADED: &str = "overloaded";
 /// Bare `timeout` — distinct from one dialect's `timeout_error` wire spelling.
 pub const KIND_TIMEOUT: &str = "timeout";
@@ -57,39 +53,30 @@ pub const KIND_INSUFFICIENT_QUOTA: &str = ERR_TYPE_INSUFFICIENT_QUOTA;
 pub const KIND_REQUEST_TOO_LARGE: &str = ERR_TYPE_REQUEST_TOO_LARGE;
 
 /// The failure-DISPOSITION metric-label value for a context-length result — the label a dialect's
-
 pub const DISPOSITION_CONTEXT_LENGTH: &str = crate::upstream::Disposition::ContextLength.label();
 
 /// Provider error-code token emitted when a request exceeds the model's context-window limit.
-
 pub const PROVIDER_CODE_CONTEXT_LENGTH: &str = "context_length_exceeded";
 
 /// The `application/json` media type — the default `Content-Type`/`Accept` for the JSON REST
-
 pub const APPLICATION_JSON: &str = "application/json";
 
 /// Streaming MIME type for event-stream responses — the `Content-Type` value that
-
 pub const TEXT_EVENT_STREAM: &str = "text/event-stream";
 
 /// Unknown/foreign egress protocol default `User-Agent`: a generic-but-present UA still beats
-
 pub const EGRESS_UA_DEFAULT: &str = "okhttp/4.12.0";
 
 /// Busbar-internal `provider_signal` label for an IR-parse failure (the LANE label the breaker/metrics
-
 pub const SIGNAL_IR_PARSE: &str = "ir_parse";
 
 /// An IR-level error, currently an alias for [`CanonicalSignal`](crate::upstream::CanonicalSignal)
-
 pub type IrError = crate::upstream::CanonicalSignal;
 
 /// Client-visible detail string for a mid-stream abort (the upstream connection dropped or a
-
 pub const STREAM_ABORT_DETAIL: &str = "The response stream was interrupted.";
 
 /// The length of the line terminator starting at `i`, or `None` when `i` does not begin one.
-
 fn terminator_len(buf: &[u8], i: usize) -> Option<usize> {
     match buf.get(i)? {
         b'\n' => Some(1),
@@ -103,7 +90,6 @@ fn terminator_len(buf: &[u8], i: usize) -> Option<usize> {
 }
 
 /// Find the first event-stream frame terminator (a blank line) in `buf`, returning `(offset,
-
 pub fn find_frame_terminator(buf: &[u8]) -> Option<(usize, usize)> {
     let mut i = 0;
     loop {
@@ -118,7 +104,6 @@ pub fn find_frame_terminator(buf: &[u8]) -> Option<(usize, usize)> {
 }
 
 /// Split event-stream frame text into lines on the event-stream grammar's own line-terminator rule
-
 pub fn sse_lines(text: &str) -> Vec<&str> {
     sse_line_spans(text.as_bytes())
         .into_iter()
@@ -127,7 +112,6 @@ pub fn sse_lines(text: &str) -> Vec<&str> {
 }
 
 /// The `(start, end)` byte span of each line in `bytes` under the event-stream line-terminator
-
 pub fn sse_line_spans(bytes: &[u8]) -> Vec<(usize, usize)> {
     let mut spans = Vec::new();
     let mut start = 0usize;
@@ -171,7 +155,6 @@ pub struct SseFrames {
 }
 
 /// The longest terminator is four bytes, so a scan resuming three bytes behind the previous end
-
 const TERMINATOR_REWIND: usize = 3;
 
 impl SseFrames {
@@ -213,7 +196,6 @@ impl SseFrames {
     }
 
     /// The span in [`buffer`](Self::buffer) of the next complete frame (its terminator included),
-
     pub fn next_span(&mut self) -> Option<std::ops::Range<usize>> {
         let from = self
             .scanned
@@ -242,14 +224,12 @@ impl SseFrames {
     }
 
     /// The bytes held since the last [`push`](Self::push) dropped the framed prefix: every span
-
     #[must_use]
     pub fn buffer(&self) -> &[u8] {
         &self.buf
     }
 
     /// How many bytes are held that no frame yielded yet. A reader bounds this: a far end that
-
     #[must_use]
     pub fn pending(&self) -> usize {
         self.buf.len() - self.consumed
@@ -274,15 +254,12 @@ impl Drop for SseFrames {
 pub struct ClaimStrength(pub u16);
 
 /// The ROUTER detection predicate a protocol supplies: `(fields, path) -> Option<ClaimStrength>`,
-
 pub type ClaimsFn = fn(HeadFields<'_>, &str) -> Option<ClaimStrength>;
 
 /// A request head as a plane receives it: its fields in order, each name and value as bytes (the
-
 pub type HeadFields<'a> = &'a [(&'a [u8], &'a [u8])];
 
 /// The value of the FIRST field in `fields` named `name` (in any case) whose value is a legal header
-
 #[must_use]
 pub fn head_field<'a>(fields: HeadFields<'a>, name: &str) -> Option<&'a [u8]> {
     fields
@@ -295,31 +272,24 @@ pub fn head_field<'a>(fields: HeadFields<'a>, name: &str) -> Option<&'a [u8]> {
 }
 
 /// The RESIDUAL detection predicate a protocol supplies: `path -> Option<ClaimStrength>`, from the
-
 pub type ResidualClaimsFn = fn(&str) -> Option<ClaimStrength>;
 
 /// A protocol's RESPONSE-side vendor-metadata reporter: given a response body, the vendor-scoped
-
 pub type VendorResponseMetadataFn = fn(&serde_json::Value) -> Vec<&'static str>;
 
 /// A streaming JSON-array reframer: consumes a protocol's event-stream response bytes and re-emits
-
 pub trait ArrayStreamFramer: Send {
     /// Feed a chunk of event-stream bytes; return JSON-array bytes for whatever complete frames are
-
     fn feed(&mut self, chunk: &[u8]) -> Vec<u8>;
 
     /// Close the array at end-of-stream when this framer sits DOWNSTREAM of a cross-protocol
-
     fn finish_for_translate(&mut self, translate_aborted: bool) -> Vec<u8>;
 
     /// Terminate the array with a trailing protocol-shaped SERVER-ERROR element, then the closing `]`.
-
     fn finish_with_server_error(&mut self, message: &str) -> Vec<u8>;
 }
 
 /// **THE 4TH NEUTRAL SEAM.** The per-PROTOCOL computed-codec facade
-
 pub trait DialectCodec: Send + Sync {
     fn probe_body(&self, host: &dyn CodecHost, model: &str) -> Vec<u8>;
     fn apply_rewrite_to_ingress_body(
@@ -355,7 +325,6 @@ pub trait DialectCodec: Send + Sync {
     fn wants_array_stream(&self, body: &serde_json::Value) -> bool;
     fn inject_response_metrics(&self, value: &mut serde_json::Value, elapsed_ms: Option<u64>);
     /// The head fields this dialect's error response carries beside its body, given the built
-
     fn error_response_fields(
         &self,
         host: &dyn CodecHost,
@@ -363,24 +332,18 @@ pub trait DialectCodec: Send + Sync {
         envelope: &serde_json::Value,
     ) -> Vec<(String, Vec<u8>)>;
     /// This protocol's upstream-error vocabulary (the reader's `extract_error`), reached by name so
-
     fn extract_error(&self, status: u16, body: &[u8]) -> crate::upstream::RawUpstreamError;
     /// The dialect's array-stream framer for a JSON-array ingress client, or `None` when this
-
     fn make_array_stream_framer(&self) -> Option<Box<dyn ArrayStreamFramer>>;
     /// The upstream request path for a (streaming) request against this dialect — the health probe's
-
     fn upstream_path_for_stream(&self, model: &str, stream: bool) -> String;
     /// Install the authoritative lane model into a same-protocol passthrough body if the dialect
-
     fn rewrite_model_if_needed(&self, body: &mut serde_json::Value, model: &str) -> bool;
     /// Reshape a path-base (URL-model) lane's body for this dialect (e.g. drop the body `model`,
-
     fn reshape_for_path_base(&self, body: &mut serde_json::Value) -> bool;
 }
 
 /// Per-request signing context. Most protocols' `auth_headers` ignore this; protocols that
-
 pub struct SigningContext<'a> {
     /// Upstream host (no scheme), e.g. `runtime.region-1.example.com`. Borrowed from the lane's
     pub host: &'a str,
@@ -408,7 +371,6 @@ pub enum IngressAuth {
 }
 
 /// A protocol's declared egress credential-header builder: the resolved per-request credential
-
 pub type EgressAuthHeaders = fn(&str, &SigningContext) -> Vec<(String, Vec<u8>)>;
 
 /// HOW ONE CREDENTIAL IS PRESENTED on an egress request — which header carries it and in what
@@ -501,7 +463,6 @@ impl EgressScheme {
 }
 
 /// EVERYTHING CORE KNOWS ABOUT A PROTOCOL, declared once by the protocol itself.
-
 pub struct ProtocolDecl {
     /// The registry key, and the metrics label. **OPERATOR-VISIBLE:** a protocol name appears in
     pub name: &'static str,
@@ -626,7 +587,6 @@ pub struct ProtocolDecl {
 
 impl ProtocolDecl {
     /// This dialect's router claim on `(path, fields)`: [`ProtocolDecl::claims`] over a request's
-
     #[must_use]
     pub fn claim_over(&self, path: &str, fields: HeadFields<'_>) -> Option<ClaimStrength> {
         (self.claims?)(fields, path)
@@ -694,13 +654,11 @@ impl ProtocolDecl {
     }
 
     /// True when this protocol authenticates INBOUND requests with SigV4 rather than a bearer
-
     pub fn uses_sigv4_ingress_auth(&self) -> bool {
         matches!(self.ingress_auth, IngressAuth::SigV4)
     }
 
     /// This protocol's neutral computed-codec facade ([`DialectCodec`]) — the 4th seam the
-
     pub fn dialect(&self) -> Option<&'static dyn DialectCodec> {
         self.codec
     }

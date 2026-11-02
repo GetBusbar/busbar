@@ -27,7 +27,6 @@ use busbar_contract::secret_ref::SecretRef;
 /// The built-in `keys` (data-plane signed-key verifier) and the operator credential
 /// are referenced BARE with no definition at all; a definition entry exists only when the provider
 /// needs config (e.g. the operator credential carrying its `token:` secret ref).
-
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct IdentityProviderCfg {
@@ -332,7 +331,6 @@ pub struct AuthPolicyCfg {
 /// plugin is lent at `open` for its own code→token exchange (the host keeps none of it; see
 /// `client_secret`). `deny_unknown_fields`: a typo here (e.g. `client_secrets:`) must fail boot, not
 /// silently disable the button.
-
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct BrowserLoginCfg {

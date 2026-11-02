@@ -157,7 +157,6 @@ fn records(buf: &[RecordWrite], n: u64, arena: u64, b: &Bounds) -> Result<(), Fa
 }
 
 /// `arrive`: the expected units under the short-buffer rule and valid against the tail; on READY the indices name
-
 pub fn check_arrive(
     outcome: Outcome,
     out: &ArriveOut,
@@ -279,7 +278,6 @@ pub fn check_arrive(
 }
 
 /// `arrive`'s trust facts are bounded text; a
-
 fn trust_facts(outcome: Outcome, out: &ArriveOut) -> Result<(), Fault> {
     let stated = |s: AbiStr| s.len != 0 || !s.ptr.is_null();
     let facts = [
@@ -309,7 +307,6 @@ fn trust_facts(outcome: Outcome, out: &ArriveOut) -> Result<(), Fault> {
 }
 
 /// A PIECE'S FLAGS, as the kernel hands them to `on_piece`: [`super::PIECE_CUT`] only on the far
-
 pub fn check_piece_in(from: u32, flags: u32) -> Result<(), Fault> {
     use super::{FROM_FAR_END, PIECE_CUT, PIECE_FINAL, PIECE_HAS_STATUS, PIECE_LAST};
     let far = from == FROM_FAR_END;
@@ -323,7 +320,6 @@ pub fn check_piece_in(from: u32, flags: u32) -> Result<(), Fault> {
 }
 
 /// (`arrive` above: a REFUSED answer names the plane's own refusal code and a 4xx status; any other
-
 pub fn check_on_piece(
     outcome: Outcome,
     out: &OnPieceOut,
@@ -441,7 +437,6 @@ pub fn check_on_piece(
 }
 
 /// `on_piece`'s message boundary and final status: a boundary ends a message toward the caller,
-
 fn final_status(out: &OnPieceOut) -> Result<(), Fault> {
     if out.flags & EMIT_MESSAGE_END != 0 && out.flags & EMIT_TO_FAR_END != 0 {
         return Err(fault(
@@ -488,7 +483,6 @@ fn verdict(outcome: Outcome, v: u32) -> Result<(), Fault> {
 }
 
 /// `on_piece`'s breaker fault reading: a known `FAULT_*` (the transport kind's one vocabulary), none
-
 fn fault_reading(outcome: Outcome, out: &OnPieceOut) -> Result<(), Fault> {
     use crate::abi::transport::{FAULT_HEALTHY, FAULT_NONE};
     code(
@@ -510,7 +504,6 @@ fn fault_reading(outcome: Outcome, out: &OnPieceOut) -> Result<(), Fault> {
 }
 
 /// `on_piece`'s request for the far end: verb and target in the arena, both or neither, and only
-
 fn request(out: &OnPieceOut) -> Result<(), Fault> {
     span(
         out.verb.offset,
@@ -542,7 +535,6 @@ fn request(out: &OnPieceOut) -> Result<(), Fault> {
 }
 
 /// A string the plugin wrote into the host arena: empty, or inside the first `written` bytes that
-
 fn in_arena(s: AbiStr, arena: *const u8, written: u64, field: &'static str) -> Result<(), Fault> {
     if s.len == 0 {
         return Ok(());
@@ -556,7 +548,6 @@ fn in_arena(s: AbiStr, arena: *const u8, written: u64, field: &'static str) -> R
 }
 
 /// `project`'s session ([`RequestView::session`](crate::abi::hook::RequestView::session)): absent
-
 fn session(b: Blob, arena: *const u8, written: u64) -> Result<(), Fault> {
     const FIELD: &str = "project.view.session";
     if b.fmt == BLOB_ABSENT {
@@ -737,7 +728,6 @@ pub unsafe fn check_project(
 }
 
 /// The plane's `drive`: the ready sessions under the short-buffer rule.
-
 pub fn check_drive(outcome: Outcome, out: &PlaneDriveOut, sessions_cap: u64) -> Result<(), Fault> {
     result(
         outcome,
@@ -751,7 +741,6 @@ pub fn check_drive(outcome: Outcome, out: &PlaneDriveOut, sessions_cap: u64) -> 
 }
 
 /// A reply is one short answer over body, fields, arena and records. Judge every dimension
-
 fn reply(
     outcome: Outcome,
     op: [&'static str; 5],
@@ -776,7 +765,6 @@ fn reply(
 }
 
 /// `refusal`: the marker is `0` (the kernel sets [`super::MARK_GATE_REJECTED`], never a
-
 pub fn check_refusal(
     outcome: Outcome,
     out: &RefusalOut,
@@ -812,7 +800,6 @@ pub fn check_refusal(
 }
 
 /// `serve`: a known `AUDIT_*`; body, fields, arena and records obey one short-buffer rule and
-
 pub fn check_serve(
     outcome: Outcome,
     out: &ServeOut,
@@ -853,7 +840,6 @@ pub fn check_serve(
 }
 
 /// `catalog`: the reply is valid. This operation has no record buffer.
-
 pub fn check_catalog(
     outcome: Outcome,
     out: &CatalogOut,
@@ -884,7 +870,6 @@ pub fn check_catalog(
 }
 
 /// The lifecycle `cancel`'s disposition: on READY, one of the plane's three (`0` = unwritten is
-
 pub const fn check_cancel(outcome: Outcome, disposition: u32) -> Result<(), Fault> {
     if !matches!(outcome, Outcome::Ready) {
         if disposition != 0 {
@@ -901,7 +886,6 @@ pub const fn check_cancel(outcome: Outcome, disposition: u32) -> Result<(), Faul
 }
 
 /// `cancel`'s record writes (SEAM-L(r)): `cancel` is never re-called, so the writes and the arena
-
 pub fn check_cancel_records(
     outcome: Outcome,
     out: &super::PlaneCancelOut,
@@ -923,7 +907,6 @@ pub fn check_cancel_records(
 }
 
 /// A generation snapshot (`open`/`refresh`): its own size, the generation asked for, lists within
-
 pub fn check_snapshot(s: &PlaneSnapshot, generation: u64) -> Result<(), Fault> {
     let size = s.size as usize;
     if size != core::mem::size_of::<PlaneSnapshot>()
@@ -966,7 +949,6 @@ pub fn check_snapshot(s: &PlaneSnapshot, generation: u64) -> Result<(), Fault> {
 }
 
 /// Every arrival span a snapshot states ([`PlaneSnapshot::arrival_spans`]): empty (that claim opens
-
 pub fn check_arrival_spans(names: &[AbiStr]) -> Result<(), Fault> {
     for n in names {
         text(*n, "snapshot.arrival_spans")?;
@@ -978,7 +960,6 @@ pub fn check_arrival_spans(names: &[AbiStr]) -> Result<(), Fault> {
 }
 
 /// Every name a snapshot lists: non-empty text. Its UTF-8 is judged by the host when it copies it.
-
 pub fn check_listed(names: &[AbiStr]) -> Result<(), Fault> {
     for n in names {
         named(*n, "snapshot.listed")?;
@@ -987,7 +968,6 @@ pub fn check_listed(names: &[AbiStr]) -> Result<(), Fault> {
 }
 
 /// Every snapshot claim: a verb, a target, a carrier, known flags, never EXACT with PATTERN, and a
-
 pub fn check_claims(claims: &[Claim], dialects_len: u64) -> Result<(), Fault> {
     for c in claims {
         named(c.verb, "claim.verb")?;
@@ -1025,7 +1005,6 @@ pub fn check_claims(claims: &[Claim], dialects_len: u64) -> Result<(), Fault> {
 }
 
 /// THE PATTERN GRAMMAR, once: the target starts with `/`, and each `/`-separated segment is a
-
 fn pattern_shape(target: &str) -> Result<(), Fault> {
     let bad = || fault(Rule::Contradiction, "claim.pattern");
     let rest = target.strip_prefix('/').ok_or_else(bad)?;
@@ -1055,7 +1034,6 @@ fn pattern_shape(target: &str) -> Result<(), Fault> {
 }
 
 /// ONE CLAIM'S TARGET, judged at bind once the host has read it out of the snapshot: the flag pair
-
 pub fn check_claim_target(target: &str, flags: u32) -> Result<(), Fault> {
     if flags & CLAIM_EXACT != 0 && flags & CLAIM_PATTERN != 0 {
         return Err(fault(Rule::Contradiction, "claim.flags"));
@@ -1094,7 +1072,6 @@ pub enum EntryPredicate<'a> {
 }
 
 /// A [`CLAIM_ENTRY`] target's predicates, in order, or `None` when it is not one: at least one
-
 #[must_use]
 pub fn entry_fact(target: &str) -> Option<Vec<EntryPredicate<'_>>> {
     let out: Vec<EntryPredicate<'_>> = target
@@ -1127,7 +1104,6 @@ fn entry_predicate(token: &str) -> Option<EntryPredicate<'_>> {
 }
 
 /// An entry path pattern's shape: it starts with `/` or `*`, and each `{` opens a whole segment
-
 fn entry_pattern_shape(pattern: &str) -> bool {
     let b = pattern.as_bytes();
     if !matches!(b.first(), Some(b'/' | b'*')) {
@@ -1158,7 +1134,6 @@ fn entry_pattern_shape(pattern: &str) -> bool {
 }
 
 /// Whether the raw, undecoded request `path` matches the entry path `pattern`: its bytes, `*` any
-
 #[must_use]
 pub fn entry_path_matches<'p, 'q>(
     pattern: &'p str,
@@ -1207,7 +1182,6 @@ pub fn entry_path_matches<'p, 'q>(
 }
 
 /// A [`CLAIM_RAW_AFFIX`] target's two affixes, `(prefix, suffix)`, or `None` when it is not one:
-
 #[must_use]
 pub fn raw_affix(target: &str) -> Option<(&str, &str)> {
     let (prefix, suffix) = target.split_once('*')?;
@@ -1216,7 +1190,6 @@ pub fn raw_affix(target: &str) -> Option<(&str, &str)> {
 }
 
 /// Whether the raw, undecoded request `path` matches the [`CLAIM_RAW_AFFIX`] target `target`: it
-
 #[must_use]
 pub fn raw_affix_matches(target: &str, path: &str) -> bool {
     raw_affix(target)
@@ -1224,7 +1197,6 @@ pub fn raw_affix_matches(target: &str, path: &str) -> bool {
 }
 
 /// A [`CLAIM_PATTERN`] target read as its segment pattern, by the one grammar
-
 pub fn claim_pattern(target: &'static str) -> Result<Vec<PathSeg>, Fault> {
     pattern_shape(target)?;
     Ok(target[1..]
@@ -1242,7 +1214,6 @@ pub fn claim_pattern(target: &'static str) -> Result<Vec<PathSeg>, Fault> {
 }
 
 /// THE HOST'S READING OF ONE PLANE CLAIM as the claim grammar's selector: [`CLAIM_EXACT`] is
-
 pub fn claim_selector(
     target: &'static str,
     flags: u32,
@@ -1257,7 +1228,6 @@ pub fn claim_selector(
 }
 
 /// Every snapshot admin route: a verb, a target and known flags; [`ROUTE_CARRIES_OWN_TOKEN`] only
-
 pub fn check_admin_routes(routes: &[AdminRoute]) -> Result<(), Fault> {
     for r in routes {
         named(r.verb, "admin_route.verb")?;
@@ -1276,7 +1246,6 @@ pub fn check_admin_routes(routes: &[AdminRoute]) -> Result<(), Fault> {
 }
 
 /// The Statement tail, at load: known flags, ingress bits and dispatch shape; at least one ingress
-
 pub fn check_tail(t: &PlaneTail) -> Result<(), Fault> {
     bits(
         u64::from(t.flags),
@@ -1372,7 +1341,6 @@ pub fn check_tail(t: &PlaneTail) -> Result<(), Fault> {
 }
 
 /// A plane's Statement sections: each named, known flags, and EXACTLY ONE is the declaring
-
 pub fn check_sections(sections: &[Section]) -> Result<(), Fault> {
     let known = SECTION_DECLARING | SECTION_REQUIRED | SECTION_CONSUMED | SECTION_SELECTS;
     for s in sections {
@@ -1394,7 +1362,6 @@ pub fn check_sections(sections: &[Section]) -> Result<(), Fault> {
 }
 
 /// The dialects' default auth styles: each names a dialect and a style.
-
 pub fn check_dialect_auth(entries: &[DialectAuth], dialects_len: u64) -> Result<(), Fault> {
     for d in entries {
         index(d.dialect, dialects_len, "dialect_auth.dialect")?;
@@ -1417,7 +1384,6 @@ pub fn check_dialect_auth(entries: &[DialectAuth], dialects_len: u64) -> Result<
 }
 
 /// The route cost: each term names a billable class and has a finite, non-negative weight.
-
 pub fn check_route_cost(terms: &[RouteCost], billable_classes_len: u64) -> Result<(), Fault> {
     for r in terms {
         index(r.class, billable_classes_len, "route_cost.class")?;
@@ -1427,7 +1393,6 @@ pub fn check_route_cost(terms: &[RouteCost], billable_classes_len: u64) -> Resul
 }
 
 /// The billable classes: each names its class and family.
-
 pub fn check_billable_classes(classes: &[BillableClass]) -> Result<(), Fault> {
     for c in classes {
         named(c.class, "billable_class.class")?;
@@ -1517,7 +1482,6 @@ pub unsafe fn check_metric_lanes(lanes: &[AbiStr]) -> Result<(), Fault> {
 }
 
 /// The chained record kinds: each names a record kind at most once, with a known framing and
-
 pub fn check_record_chains(chains: &[RecordChain], record_kinds_len: u64) -> Result<(), Fault> {
     for (i, c) in chains.iter().enumerate() {
         index(c.kind, record_kinds_len, "record_chain.kind")?;
@@ -1540,7 +1504,6 @@ pub fn check_record_chains(chains: &[RecordChain], record_kinds_len: u64) -> Res
 }
 
 /// The record kinds' retention rules ([`PlaneTail::record_retentions`]): each names a record kind
-
 pub fn check_record_retentions(
     retentions: &[RecordRetention],
     record_kinds_len: u64,
@@ -1561,7 +1524,6 @@ pub fn check_record_retentions(
 }
 
 /// The kernel-owned trust keys: each named, with a known role at most once; a pin names its
-
 pub fn check_trust_keys(keys: &[TrustKey]) -> Result<(), Fault> {
     for (i, k) in keys.iter().enumerate() {
         named(k.key, "trust_key.key")?;
@@ -1606,7 +1568,6 @@ pub fn check_trust_keys(keys: &[TrustKey]) -> Result<(), Fault> {
 }
 
 /// The refusal statuses: each names a dialect the tail declares (or every dialect), a reason the
-
 pub fn check_refusal_statuses(rows: &[RefusalStatus], dialects_len: u64) -> Result<(), Fault> {
     for (i, r) in rows.iter().enumerate() {
         if r.dialect != REFUSAL_ANY_DIALECT {
@@ -1627,7 +1588,6 @@ pub fn check_refusal_statuses(rows: &[RefusalStatus], dialects_len: u64) -> Resu
 }
 
 /// A pin's mechanisms: each named, with known flags.
-
 pub fn check_pin_mechanisms(mechanisms: &[PinMechanism]) -> Result<(), Fault> {
     for m in mechanisms {
         named(m.token, "pin_mechanism.token")?;

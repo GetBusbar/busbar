@@ -77,7 +77,6 @@ pub enum QuantitySource {
 
 impl QuantitySource {
     /// Whether the kernel derived this figure itself, rather than reading it from something
-
     pub fn is_kernel_derived(&self) -> bool {
         matches!(
             self,
@@ -89,13 +88,11 @@ impl QuantitySource {
     }
 
     /// Whether this figure was reported by somebody other than the kernel, and therefore wants a
-
     pub fn is_reported(&self) -> bool {
         !self.is_kernel_derived()
     }
 
     /// Whether a figure from this source is a floor rather than an exact count. Only the byte
-
     pub fn is_floor(&self) -> bool {
         matches!(self, QuantitySource::KernelBytes { .. })
     }
@@ -169,7 +166,6 @@ impl Usage {
     }
 
     /// The sum across every line, in no unit.
-
     pub fn total(&self) -> u64 {
         self.lines
             .iter()

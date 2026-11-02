@@ -110,7 +110,6 @@ fn a_mirrored_outcome_that_differs_from_the_return_value_is_fault() {
 }
 
 /// These two answer checks read no raw data. Even stale nested pointers do not become readable
-
 #[test]
 fn metadata_only_validators_do_not_read_nested_pointers() {
     let stale = core::ptr::dangling::<u8>();
@@ -536,7 +535,6 @@ impl ItemSpan {
 }
 
 /// THE SLOT ORDER, pinned: each service's field sits at the table index its `op` constant names,
-
 #[test]
 fn every_service_field_sits_at_its_op_index() {
     use core::mem::{offset_of, size_of};
@@ -592,7 +590,6 @@ fn every_service_field_sits_at_its_op_index() {
 }
 
 /// RED ARM (`service.rs` `answer`, the `service.out.size` arm): an `out` whose `size` is not this
-
 #[test]
 fn red_an_out_of_a_foreign_size_names_service_out_size() {
     let i = judge_in(TICKET);
@@ -605,7 +602,6 @@ fn red_an_out_of_a_foreign_size_names_service_out_size() {
 }
 
 /// RED ARM (`check_clock_now`, the `clock_now.reading` arm): a READY answer with a NULL reading slot
-
 #[test]
 fn red_a_ready_clock_answer_with_no_reading_names_clock_now_reading() {
     let o = out(Outcome::Ready);
@@ -620,7 +616,6 @@ fn red_a_ready_clock_answer_with_no_reading_names_clock_now_reading() {
 }
 
 /// RED ARM (`check_clock_now`, the `clock_now.reading.size` arm): a READY answer whose reading is
-
 #[test]
 fn red_a_ready_clock_answer_of_a_foreign_reading_names_clock_now_reading_size() {
     let o = out(Outcome::Ready);
@@ -641,7 +636,6 @@ fn red_a_ready_clock_answer_of_a_foreign_reading_names_clock_now_reading_size() 
 }
 
 /// `need.admit` never pends (on a ticket or not), READY carries no value, and REFUSED is its
-
 #[test]
 fn need_admit_never_pends_and_answers_admitted_or_refused() {
     let at = |ticket| NeedAdmitIn {
@@ -686,7 +680,6 @@ fn verify_in(into: ServiceBufs) -> TrustVerifyIn {
 }
 
 /// `check_trust_verify`: a verdict that names what it refused carries its bytes; every verdict in
-
 #[test]
 fn a_trust_verify_verdict_naming_its_refusal_carries_bytes() {
     let mut buf = [0u8; 8];
@@ -706,7 +699,6 @@ fn a_trust_verify_verdict_naming_its_refusal_carries_bytes() {
 }
 
 /// RED ARM (`check_trust_verify`, the `trust_verify.out.len` arm): bytes with a verdict that names
-
 #[test]
 fn red_trust_verify_bytes_with_a_verdict_that_names_nothing_name_trust_verify_out_len() {
     let mut buf = [0u8; 8];
@@ -732,7 +724,6 @@ fn red_trust_verify_bytes_with_a_verdict_that_names_nothing_name_trust_verify_ou
 }
 
 /// `trust.verify` never pends: a PENDING answer, even on a ticket, is FAULT; a verdict past the
-
 #[test]
 fn trust_verify_never_pends_and_its_verdicts_end_at_the_root_key() {
     let mut i = verify_in(bufs(&mut [], &mut []));
@@ -748,7 +739,6 @@ fn trust_verify_never_pends_and_its_verdicts_end_at_the_root_key() {
 }
 
 /// `records.secret`: a live or not-live secret in span `0` is legal; a value outside
-
 #[test]
 fn records_secret_answers_live_or_not_live() {
     let (mut b, mut s) = ([0u8; 4], [ItemSpan::default_absent(); 1]);
@@ -938,7 +928,6 @@ fn written(rotated: u8, faults: u8, written: u64) -> DiskWritten {
 }
 
 /// THE HOST'S CHECK OF A `disk.append` `in` (`check_disk_append_in`), one RED per arm: no key, a key
-
 #[test]
 fn the_host_refuses_a_disk_append_in_with_no_key_a_null_range_or_no_result() {
     let mut w = written(0, 0, 0);
@@ -976,7 +965,6 @@ fn the_host_refuses_a_disk_append_in_with_no_key_a_null_range_or_no_result() {
 }
 
 /// `disk.append`'s ANSWER (`check_disk_append`): READY writes the whole of `bytes`, a known
-
 #[test]
 fn a_disk_append_answer_lands_whole_or_names_its_failed_step() {
     let bytes = b"one line\n";
@@ -1075,7 +1063,6 @@ fn trust_decide_answers_a_verdict_or_an_undecided_code_and_never_pends() {
 }
 
 /// `snapshot.read`'s buffer alignment is the scrape layout's: every record the host lays out in
-
 #[test]
 fn the_snapshot_alignment_is_the_scrape_layouts() {
     use crate::abi::export::{ScrapeFamily, ScrapeLabel, ScrapeSample};
@@ -1210,7 +1197,6 @@ fn in_rule(r: Result<(), Fault>) -> Fault {
 }
 
 /// RED (exact sizes): an `in` whose stated size is one field short, or longer, is refused; another
-
 #[test]
 fn red_an_exact_size_in_one_field_short_or_long_is_refused() {
     let exact = core::mem::size_of::<UnitRefuseIn>();
@@ -1368,7 +1354,6 @@ fn red_unit_hand_in_in_refuses_each_break() {
 }
 
 /// RED: each arm of the host's check of a `unit.refuse` `in`: an unknown cause, a line that
-
 #[test]
 fn red_unit_refuse_in_refuses_each_break() {
     let mut a = refusal(0);
@@ -1425,7 +1410,6 @@ fn red_unit_refuse_in_refuses_each_break() {
 }
 
 /// RED: the caller's check of an `auth.call` answer: the flow, the unit, the answer's exact size,
-
 #[test]
 fn red_an_auth_call_whose_view_declares_no_scheme_is_refused() {
     use crate::abi::auth::{POINT_HEAD, POINT_HEAD_BODY, POINT_PEER};
@@ -1587,7 +1571,6 @@ fn red_auth_call_answer_refuses_each_break() {
 }
 
 /// RED: at the peer point an `auth.call` answers ONLY continue or stop. An outbound binding's
-
 #[test]
 fn red_a_peer_answer_that_carries_fields_or_bytes_is_refused() {
     use crate::abi::auth::{FIELD_SENSITIVE, POINT_PEER};
@@ -1663,7 +1646,6 @@ fn red_unit_hand_in_answer_refuses_each_break() {
 }
 
 /// RED: the caller's check of a `unit.refuse` answer: the exact size, a status in range, no list or
-
 #[test]
 fn red_unit_refuse_answer_refuses_each_break() {
     let mut a = refusal(404);
@@ -1713,7 +1695,6 @@ fn mint_in(ttl_secs: u64, into: ServiceBufs) -> TicketMintIn {
 }
 
 /// A mint asks a lifetime and a record within the cap; anything else is refused before the host
-
 #[test]
 fn a_mint_asks_a_lifetime_and_a_record_within_the_cap() {
     let mut buf = [0u8; 8];

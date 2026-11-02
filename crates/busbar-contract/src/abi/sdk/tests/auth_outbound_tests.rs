@@ -472,7 +472,6 @@ fn check(o: Outcome, out: &FieldsOut, input: &FieldsIn, host: &Host) {
 }
 
 /// (a) A binding answers its handle, and its `ready` fact is 1; a style it does not serve is
-
 #[test]
 fn a_binding_answers_a_handle_and_is_ready() {
     let t = ops();
@@ -491,7 +490,6 @@ fn a_binding_answers_a_handle_and_is_ready() {
 }
 
 /// (b) `fields` answers READY with one field, written into the host's buffers, and the kind's
-
 #[test]
 fn fields_answers_ready_with_one_field() {
     let t = ops();
@@ -664,7 +662,6 @@ fn sealed_fields_pending_resume_and_cancel_do_not_publish_staged_material() {
 }
 
 /// (c) RED, THE SHORT-BUFFER RULE: twenty fields into a sixteen-field array is the short answer
-
 #[test]
 fn red_fields_that_do_not_fit_are_the_short_answer_and_write_nothing() {
     let t = ops();
@@ -750,7 +747,6 @@ fn verify_on_an_outbound_only_door_is_refused() {
 }
 
 /// (f) A `fields` that pends answers PENDING on its ticket, writing nothing, and the host's
-
 #[test]
 fn a_pending_fields_answers_pending_and_the_redrive_answers_ready() {
     let t = ops();
@@ -789,7 +785,6 @@ fn a_pending_fields_answers_pending_and_the_redrive_answers_ready() {
 }
 
 /// The view reads every fact the host lent: the method, authority, path, query, timestamp, point,
-
 #[test]
 fn the_view_reads_the_requests_facts() {
     let t = ops();
@@ -847,7 +842,6 @@ mod stray {
 }
 
 /// A flag outside `FIELD_SENSITIVE | FIELD_QUERY` is the plugin's bug: the call is FAULT, and
-
 #[test]
 fn a_stray_field_flag_is_fault() {
     let t = ops_of(stray::door);
@@ -975,7 +969,6 @@ fn combined_door_leases_instance_carriers_on_open_and_refresh() {
 }
 
 /// THE COMBINED DOOR (`auth_door!(verify_and_outbound: ..)`): one instance verifies inbound and
-
 #[test]
 fn a_verify_and_outbound_door_serves_both_families() {
     let t = ops_of(both::door);
@@ -1020,7 +1013,6 @@ fn a_verify_and_outbound_door_serves_both_families() {
 }
 
 /// The declared diagnostics a reply's envelope carries, as the host reads them: `(id, severity,
-
 fn reported(head: &OutHead) -> Vec<(u32, u8, String)> {
     let e = &head.envelope;
     if e.diags_len == 0 {
@@ -1044,7 +1036,6 @@ fn reported(head: &OutHead) -> Vec<(u32, u8, String)> {
 }
 
 /// RED, THE DECLARED DIAGNOSTICS: what `open_outbound` notes rides its reply's envelope, READY or
-
 #[test]
 fn red_open_outbound_reports_its_diagnostics_ready_or_failed() {
     let t = ops();
@@ -1073,7 +1064,6 @@ fn red_open_outbound_reports_its_diagnostics_ready_or_failed() {
 }
 
 /// RED, THE DECLARED DIAGNOSTICS ON THE REQUEST: what `fields` notes rides that request's reply,
-
 #[test]
 fn red_fields_reports_its_diagnostics_with_its_answer() {
     let t = ops();
@@ -1099,7 +1089,6 @@ fn red_fields_reports_its_diagnostics_with_its_answer() {
 }
 
 /// Mints on its driver ticket: `tick` notes the ticket it ran on and whether it was handed host
-
 struct Minter;
 
 /// The call ticket [`Minter`] has a mint running for.
@@ -1216,7 +1205,6 @@ fn cancel(t: &Ops, inst: *mut std::ffi::c_void, ticket: Ticket) -> (Outcome, u32
 }
 
 /// THE DRIVER TICKET: `tick` runs the plugin on the instance's driver ticket with the host tables
-
 #[test]
 fn a_minting_plugin_runs_on_its_driver_ticket() {
     let t = ops_of(minter::door);
@@ -1250,7 +1238,6 @@ fn a_minting_plugin_runs_on_its_driver_ticket() {
 }
 
 /// A plugin that holds no driver ticket keeps the kit's defaults: `tick` wants none, `drive` is
-
 #[test]
 fn a_plugin_without_a_driver_ticket_keeps_the_defaults() {
     let t = ops();
@@ -1266,7 +1253,6 @@ fn a_plugin_without_a_driver_ticket_keeps_the_defaults() {
 }
 
 /// Judges its settings (`{"bad":true}` is refused, in its own words) and answers each binding's
-
 struct Generational(AtomicU64);
 
 /// The settings [`Generational`] refuses.
@@ -1327,7 +1313,6 @@ fn error_text(head: &OutHead) -> String {
 }
 
 /// A HANDLE IS GENERATION DATA: `open` and `refresh` hand the plugin the generation, so the
-
 #[test]
 fn open_and_refresh_hand_the_plugin_its_generation_and_its_refusals() {
     let t = ops_of(generational::door);
@@ -1395,7 +1380,6 @@ fn staged_diagnostics_read_back_in_order() {
 }
 
 /// RED (open160 A9, "every refusal says why"): an outbound door's REFUSED answers named no text,
-
 #[test]
 fn red_every_outbound_refusal_says_why() {
     let t = ops();

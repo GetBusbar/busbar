@@ -71,11 +71,9 @@ pub use tail::{read_auth_tail, read_plane_cli_help, ReadAuthTail, ReadStyle};
 pub const RENDERING_MAGIC: &[u8; 8] = b"BBSTMT03";
 
 /// The rendering before a need's response-header retention policy was rendered: its signed facts
-
 pub const RENDERING_MAGIC_WITHOUT_NEED_RETENTION: &[u8; 8] = b"BBSTMT02";
 
 /// The first eight bytes of the rendering before the kind tail was rendered whole: a manifest that
-
 pub const RENDERING_MAGIC_TAIL_SIZE_ONLY: &[u8; 8] = b"BBSTMT01";
 
 /// Why a Statement does not render.
@@ -387,7 +385,6 @@ pub struct Read {
 
 impl Read {
     /// Its reference-capable, not-secret settings paths: what its extensions state under
-
     pub fn reference_fields(&self) -> Result<Vec<String>, String> {
         super::extensions::reference_fields(&self.extensions.bytes)
     }
@@ -459,7 +456,6 @@ impl In<'_> {
 }
 
 /// THE RENDERING READ BACK: the inverse of [`render`], for a reader that must not open the plugin.
-
 pub fn read(bytes: &[u8]) -> Result<Read, Unreadable> {
     let mut i = In { b: bytes, at: 0 };
     let magic = i.take(RENDERING_MAGIC.len(), "the magic")?;

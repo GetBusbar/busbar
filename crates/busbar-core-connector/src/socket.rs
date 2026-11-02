@@ -17,7 +17,6 @@ use crate::io::{Direction, Registered};
 const BACKLOG: i32 = 1024;
 
 /// An authority this host dials without resolving a name: an IP literal with its port, or
-
 #[must_use]
 pub fn address_of(authority: &str) -> Option<SocketAddr> {
     if let Ok(addr) = authority.parse::<SocketAddr>() {
@@ -33,11 +32,9 @@ pub fn address_of(authority: &str) -> Option<SocketAddr> {
 pub const KEEPALIVE_IDLE: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// The prefix of a UNIX-DOMAIN target (the
-
 pub const UNIX_TARGET: &str = "unix:";
 
 /// The socket path a unix-domain target names: `unix:` then an absolute path (one leading `/`;
-
 #[must_use]
 pub fn unix_path(target: &str) -> Option<&str> {
     let path = target.strip_prefix(UNIX_TARGET)?;
@@ -90,7 +87,6 @@ impl Write for &Sock {
 
 impl Sock {
     /// Shut down `how`.
-
     pub fn shutdown(&self, how: Shutdown) -> io::Result<()> {
         match self {
             Self::Tcp(s) => s.shutdown(how),
@@ -102,10 +98,8 @@ impl Sock {
 /// A connecting stream socket whose connect [`poll_connected`] can settle.
 pub trait Connecting: AsFd {
     /// The socket's pending error (`SO_ERROR`).
-
     fn pending_error(&self) -> io::Result<Option<io::Error>>;
     /// `Ok` once connected; `NotConnected` while the connect is in flight.
-
     fn connected(&self) -> io::Result<()>;
 }
 
@@ -134,7 +128,6 @@ impl Connecting for Sock {
 }
 
 /// Begin a non-blocking connect to the unix-domain socket at `path`: the socket comes back at once,
-
 pub fn connect_unix(path: &str) -> io::Result<UnixStream> {
     let socket = Socket::new(Domain::UNIX, Type::STREAM, None)?;
     socket.set_nonblocking(true)?;
@@ -147,7 +140,6 @@ pub fn connect_unix(path: &str) -> io::Result<UnixStream> {
 }
 
 /// Begin a non-blocking connect to `addr`: the socket comes back at once, the connect in flight.
-
 pub fn connect(addr: SocketAddr) -> io::Result<TcpStream> {
     let socket = Socket::new(Domain::for_address(addr), Type::STREAM, Some(Protocol::TCP))?;
     socket.set_nonblocking(true)?;
@@ -167,7 +159,6 @@ fn in_progress(e: &io::Error) -> bool {
 }
 
 /// Whether the connect [`connect`] began has completed: Ready(Ok) connected, Ready(Err) refused,
-
 pub fn poll_connected<T: Connecting>(
     sock: &Registered<T>,
     cx: &mut Context<'_>,
@@ -186,7 +177,6 @@ pub fn poll_connected<T: Connecting>(
 }
 
 /// A non-blocking listener on `bind`, with address and port reuse: every acceptor (one per worker)
-
 pub fn listen(bind: &str) -> io::Result<TcpListener> {
     let addr: SocketAddr = bind
         .parse()

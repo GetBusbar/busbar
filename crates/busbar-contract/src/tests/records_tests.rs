@@ -6,7 +6,6 @@
 use super::*;
 
 /// A name-keyed reserved-four unit map (test helper) — the M1b replacement for the old
-
 fn units<T: Copy + Default + PartialEq>(
     input: T,
     output: T,
@@ -65,7 +64,6 @@ fn sample_credential() -> CredentialSecret {
 }
 
 /// Pool-grant semantics on the runtime encoding: omitted (`None`) = ALL pools; an explicit
-
 #[test]
 fn scope_allowed_pool_kind_c6_semantics() {
     let mut k = sample_key();
@@ -82,7 +80,6 @@ fn scope_allowed_pool_kind_c6_semantics() {
 }
 
 /// CROSS-KIND `scope_allowed` is FAIL-CLOSED, and that is frozen.
-
 #[test]
 fn scope_allowed_cross_kind_is_fail_closed() {
     let mut k = sample_key();
@@ -114,7 +111,6 @@ fn scope_allowed_cross_kind_is_fail_closed() {
 }
 
 /// A DIFFERENT kind never matches a `pool`-kind grant, and vice versa - `ScopeRef` is
-
 #[test]
 fn scope_allowed_is_kind_specific() {
     let mut k = sample_key();
@@ -127,7 +123,6 @@ fn scope_allowed_is_kind_specific() {
 }
 
 /// THE contract test: a config using only `allowed_pools` (bare strings, no `kind` wrapper)
-
 #[test]
 fn allowed_pools_wire_shape_is_byte_identical_to_pre_generalization() {
     let mut k = sample_key();
@@ -171,7 +166,6 @@ fn allowed_pools_wire_shape_is_byte_identical_to_pre_generalization() {
 }
 
 /// The 1.6.0 attribution/provenance fields (`idp_subject`, `binding_mode`, `minted_by`) survive a
-
 #[test]
 fn attribution_fields_round_trip_and_are_backward_compatible() {
     let bare = sample_key();
@@ -207,7 +201,6 @@ fn attribution_fields_round_trip_and_are_backward_compatible() {
 }
 
 /// Scope KINDS survive a store wire round-trip (1.6.0).
-
 #[test]
 fn scope_kinds_survive_store_round_trip() {
     let mut k = sample_key();
@@ -237,7 +230,6 @@ fn scope_kinds_survive_store_round_trip() {
 }
 
 /// Any scope kind round-trips VERBATIM under its own `allowed_{kind}s` field (1.6.0
-
 #[test]
 fn unregistered_scope_kind_round_trips_verbatim_under_its_own_field() {
     let kind = "sdk_scopekinds_never_registered";
@@ -266,7 +258,6 @@ fn unregistered_scope_kind_round_trips_verbatim_under_its_own_field() {
 }
 
 /// The GRID wire fields are ADDITIVE: absent from a pool-only key's wire shape (so the
-
 #[test]
 fn grid_scope_wire_fields_are_additive() {
     let pool_only = sample_key();
@@ -301,7 +292,6 @@ fn grid_scope_wire_fields_are_additive() {
 }
 
 /// The redacting `Debug` - the guard for the structured-logging surface, since
-
 #[test]
 fn debug_redacts_secret_equivalents() {
     let key = sample_key();
@@ -323,7 +313,6 @@ fn debug_redacts_secret_equivalents() {
 }
 
 /// The `Serialize`/`Deserialize` on `VirtualKey` is a load-bearing PERSISTENCE contract (a
-
 #[test]
 fn serialize_roundtrip_is_faithful_for_persistence() {
     let key = sample_key();
@@ -346,7 +335,6 @@ fn serialize_roundtrip_is_faithful_for_persistence() {
 }
 
 /// The minimal pure-auth JSON round-trips, and the optional fields default: a row with no
-
 #[test]
 fn virtual_key_minimal_json_defaults_optionals() {
     let minimal = r#"{"id":"vk_1","generation_hash":"h","name":"n","enabled":true,"created_at":1}"#;
@@ -360,7 +348,6 @@ fn virtual_key_minimal_json_defaults_optionals() {
 }
 
 /// `CredentialMeta::is_live` is the exact predicate the signed-request admit path consults (in
-
 #[test]
 fn credential_meta_is_live_checks_revocation_and_expiry() {
     let mut m = sample_credential().meta;
@@ -378,7 +365,6 @@ fn credential_meta_is_live_checks_revocation_and_expiry() {
 }
 
 /// The ledger's additive delta application: model rows materialize on first sight, tiers
-
 #[test]
 fn usage_ledger_applies_deltas_and_floors_at_zero() {
     let mut l = UsageLedger::default();
@@ -428,7 +414,6 @@ fn usage_ledger_applies_deltas_and_floors_at_zero() {
 }
 
 /// The default trait `add_usage` (read-modify-write fallback) accumulates through
-
 #[test]
 fn default_add_usage_accumulates_via_get_put() {
     use std::sync::Mutex;
@@ -613,7 +598,6 @@ fn audit_record(seq: u64) -> AuditRecord {
 }
 
 /// The DEFAULTED `list_keys_since` fallback: `revision > since`, exclusive of `since` itself
-
 #[test]
 fn default_list_keys_since_excludes_the_watermark_itself() {
     let mut a = sample_key();
@@ -635,7 +619,6 @@ fn default_list_keys_since_excludes_the_watermark_itself() {
 }
 
 /// A row a backend never stamped with a real revision (`revision == 0`, per [`VirtualKey::revision`]'s
-
 #[test]
 fn default_list_keys_since_always_includes_a_never_revisioned_row() {
     let mut never_revisioned = sample_key();
@@ -655,7 +638,6 @@ fn default_list_keys_since_always_includes_a_never_revisioned_row() {
 }
 
 /// **`redeem_plane_token`'s default is FAIL-CLOSED.** A backend that keeps no real ledger must
-
 #[test]
 fn default_redeem_plane_token_refuses_every_redemption_including_the_first() {
     let s = AuditDouble(Vec::new(), Vec::new());
@@ -672,7 +654,6 @@ fn default_redeem_plane_token_refuses_every_redemption_including_the_first() {
 }
 
 /// The DEFAULTED `list_audit_tail` fallback: keep only the last `limit` records (drain the
-
 #[test]
 fn default_list_audit_tail_keeps_exactly_the_last_limit_records() {
     let records: Vec<_> = (1..=5).map(audit_record).collect();
@@ -693,11 +674,9 @@ fn default_list_audit_tail_keeps_exactly_the_last_limit_records() {
 }
 
 /// THE NEUTRAL PLANE-VERB DEFAULTS ARE BACKWARD-COMPATIBLE AND SILENT, and both halves matter.
-
 #[test]
 fn the_plane_record_verbs_default_to_accepting_and_keeping_nothing() {
     /// A backend that keeps no durable plane state: it implements the six REQUIRED methods and
-
     struct PreTaskBackend;
     impl RecordStore for PreTaskBackend {
         fn put_key(&self, _: &VirtualKey) -> RecordStoreResult<()> {
@@ -773,7 +752,6 @@ fn the_plane_record_verbs_default_to_accepting_and_keeping_nothing() {
 }
 
 /// The neutral `PlaneRecord` ENVELOPE round-trips through serde unchanged — the one contract this
-
 #[test]
 fn plane_record_envelope_round_trips_through_the_store_seam_encoding() {
     let record = PlaneRecord {
@@ -798,7 +776,6 @@ fn plane_record_envelope_round_trips_through_the_store_seam_encoding() {
 }
 
 /// An all-empty `ModelTokens` serializes to just `{"model":…}` (skip-if-empty), and an old row with
-
 #[test]
 fn model_tokens_usage_units_is_the_sole_representation() {
     let reserved = ModelTokens {
@@ -825,7 +802,6 @@ fn model_tokens_usage_units_is_the_sole_representation() {
 }
 
 /// `apply_model_delta` folds every signed unit delta (reserved four AND opens, one map) flooring each
-
 #[test]
 fn apply_model_delta_folds_usage_units_flooring_at_zero() {
     let mut ledger = UsageLedger::default();
@@ -847,7 +823,6 @@ fn apply_model_delta_folds_usage_units_flooring_at_zero() {
 }
 
 /// A store that implements only the old age purge, and records each call to it: the named-retention
-
 struct AgePurgeOnly(std::sync::Mutex<Vec<(String, u64)>>);
 
 impl RecordStore for AgePurgeOnly {

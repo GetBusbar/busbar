@@ -4,7 +4,6 @@
 //! Who is calling — and the one caller who is nobody.
 
 /// The literal an unauthenticated caller renders as, on every surface that names an actor: the
-
 pub const ANONYMOUS: &str = "anonymous";
 
 /// The caller a module identified.
@@ -47,14 +46,12 @@ impl Principal {
     }
 
     /// The actor id every surface writes. Identical to `id`, and stated as its own method so the
-
     pub fn actor_id(&self) -> &str {
         &self.id
     }
 }
 
 /// The conversion the loop performs when it seals this step's answer.
-
 impl From<&Principal> for busbar_contract::PrincipalId {
     fn from(p: &Principal) -> Self {
         busbar_contract::PrincipalId::new(p.actor_id())

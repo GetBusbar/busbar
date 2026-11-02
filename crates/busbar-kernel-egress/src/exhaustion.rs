@@ -10,11 +10,9 @@ use crate::ports::{Breaker, Permit};
 use crate::walk::WalkPorts;
 
 /// The wait a shed advertises when nothing else justifies a longer one, in whole seconds.
-
 pub const AT_CAPACITY_RETRY_AFTER_SECS: u64 = 2;
 
 /// The wait a shed advertises, reflecting the actual reason the pool had nowhere to send.
-
 pub fn retry_after_secs(
     breaker: &dyn Breaker,
     members: &[Member],
@@ -33,7 +31,6 @@ pub fn retry_after_secs(
 }
 
 /// THE LAST RESORT: the member with the soonest cooldown and a free slot, even though it is
-
 pub fn least_bad(
     ports: &WalkPorts<'_>,
     pool: &Pool,

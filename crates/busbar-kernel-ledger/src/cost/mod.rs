@@ -103,14 +103,12 @@ pub use view::{
 };
 
 /// **THE ONE SCALE.** Nano-units in one minor unit: ten million.
-
 pub const NANOS_PER_CENT: u128 = 10_000_000;
 
 /// Nano-units in one micro-unit, for the finer of the two read projections.
 pub const NANOS_PER_MICRO: u128 = 1_000;
 
 /// Micro-units in one minor unit — [`NANOS_PER_CENT`] over [`NANOS_PER_MICRO`] — the factor the
-
 pub const MICROS_PER_CENT: i64 = 10_000;
 
 #[cfg(test)]

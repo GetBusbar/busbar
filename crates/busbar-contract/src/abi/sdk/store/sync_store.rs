@@ -14,7 +14,6 @@ use crate::records::{
 };
 
 /// What a never-pending store states beyond its [`RecordStore`]: the [`StoreSlots`] items the
-
 pub trait SyncStore: RecordStore + Sized + Send + Sync + 'static {
     /// [`StoreSlots::TAIL`].
     const TAIL: Tail;
@@ -26,7 +25,6 @@ pub trait SyncStore: RecordStore + Sized + Send + Sync + 'static {
     const USAGE_CORRECTION: bool = false;
 
     /// [`StoreSlots::apply_usage_correction`], answered synchronously.
-
     fn apply_usage_correction(
         &self,
         request: &super::correction::Request,
@@ -38,7 +36,6 @@ pub trait SyncStore: RecordStore + Sized + Send + Sync + 'static {
     }
 
     /// [`StoreSlots::record_transaction`], answered synchronously.
-
     fn record_transaction(
         &self,
         request: &super::conditional::Request,
@@ -50,15 +47,12 @@ pub trait SyncStore: RecordStore + Sized + Send + Sync + 'static {
     }
 
     /// [`StoreSlots::validate`].
-
     fn validate(settings: &[u8]) -> Result<(), String>;
 
     /// [`StoreSlots::open`].
-
     fn open(settings: &[u8], host: Option<Host>) -> Result<Self, String>;
 
     /// [`StoreSlots::open_with_secrets`], defaulting to opening without declared secrets.
-
     fn open_with_secrets(
         settings: &[u8],
         secrets: &[&[u8]],
@@ -69,7 +63,6 @@ pub trait SyncStore: RecordStore + Sized + Send + Sync + 'static {
     }
 
     /// [`StoreSlots::purge_usage_before`], refused when the backend does not implement it.
-
     fn purge_usage_before(&self, before: u64) -> RecordStoreResult<u64> {
         let _ = before;
         Err(crate::records::RecordStoreError(
@@ -78,27 +71,21 @@ pub trait SyncStore: RecordStore + Sized + Send + Sync + 'static {
     }
 
     /// [`StoreSlots::append_plane_record_op`].
-
     fn append_plane_record_op(&self, op: OpId, record: PlaneRecordRef<'_>) -> OpResult<()>;
 
     /// [`StoreSlots::record_put`].
-
     fn record_put(&self, schema: &str, key: &[u8], value: &[u8]) -> Result<(), String>;
 
     /// [`StoreSlots::record_get`].
-
     fn record_get(&self, schema: &str, key: &[u8]) -> Result<Option<RecordBytes>, String>;
 
     /// [`StoreSlots::record_scan`].
-
     fn record_scan(&self, schema: &str, prefix: &[u8], limit: u32) -> Result<Scanned, String>;
 
     /// [`StoreSlots::add_usage_batch`].
-
     fn add_usage_batch(&self, op: OpId, cells: &[(&str, u64, UsageDelta)]) -> OpResult<()>;
 
     /// [`StoreSlots::add_metering_batch`].
-
     fn add_metering_batch(&self, op: OpId, deltas: &[MeteringDelta]) -> OpResult<()>;
 }
 

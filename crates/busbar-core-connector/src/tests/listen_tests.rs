@@ -319,7 +319,6 @@ fn plain(door: Arc<TestDoor>, limits: AcceptLimits) -> Listening {
 }
 
 /// A client's bytes reach the framer begun on `SIDE_ACCEPT`, and the answer the host emits on the
-
 #[test]
 fn an_accepted_connection_is_framed_on_the_accept_side_and_answered() {
     worker().block_on(async {
@@ -367,7 +366,6 @@ fn server(leaf: Vec<u8>, key: Vec<u8>) -> Arc<rustls::ServerConfig> {
 }
 
 /// TLS on an inbound need is the connector's server: the client's handshake completes, the
-
 #[test]
 fn tls_on_a_listener_is_the_connectors_server_with_the_framers_offer() {
     crate::tls::install_crypto_provider();
@@ -441,7 +439,6 @@ fn tls_on_a_listener_is_the_connectors_server_with_the_framers_offer() {
 }
 
 /// RED: the connection past the cap is accepted and closed at once, no byte written, while the
-
 #[test]
 fn the_connection_past_the_cap_is_closed_without_a_byte() {
     worker().block_on(async {
@@ -489,7 +486,6 @@ fn the_connection_past_the_cap_is_closed_without_a_byte() {
 }
 
 /// RED: a TLS client that never speaks is dropped at the handshake deadline (1.5.5's handshake
-
 #[test]
 fn a_silent_tls_client_is_dropped_at_the_handshake_deadline() {
     crate::tls::install_crypto_provider();
@@ -530,7 +526,6 @@ fn a_silent_tls_client_is_dropped_at_the_handshake_deadline() {
 }
 
 /// 1.5.5's accept backoff: an aborted or interrupted accept retries at once; anything else backs
-
 #[test]
 fn accept_errors_back_off_as_1_5_5s_did() {
     worker().block_on(async {
@@ -551,7 +546,6 @@ fn accept_errors_back_off_as_1_5_5s_did() {
 }
 
 /// A STREAM listener (the root's own binds) hands each admitted socket up as it arrived, bytes
-
 #[test]
 fn a_stream_listener_hands_up_the_socket_as_it_arrived_under_the_cap() {
     use crate::listen::Admits;
@@ -600,7 +594,6 @@ fn a_stream_listener_hands_up_the_socket_as_it_arrived_under_the_cap() {
 }
 
 /// RED (`BUSBAR-1.6.0.md` l.477-478): THE LISTENER'S PROTOCOL OFFER IS THE ENTRY'S
-
 #[test]
 fn a_listener_offers_the_entrys_accept_offer_not_its_dial_offer() {
     let door = TestDoor::new(
@@ -633,7 +626,6 @@ fn a_listener_offers_the_entrys_accept_offer_not_its_dial_offer() {
 }
 
 /// RED (`BUSBAR-1.6.0.md` l.477-478): AN ENTRY THAT STATES NO ACCEPT OFFER
-
 #[test]
 fn a_listener_whose_entry_states_no_accept_offer_offers_the_transports_list() {
     let door = TestDoor::new(
@@ -658,7 +650,6 @@ fn a_listener_whose_entry_states_no_accept_offer_offers_the_transports_list() {
 }
 
 /// What a TLS client offering `x-two, x-one` agrees with the listener the connector binds for an
-
 fn agreed_on_the_listener(door: TestDoor, registered: Vec<Vec<u8>>) -> Option<Vec<u8>> {
     use busbar_contract::conn::{ConnError, Conns as _, InstanceId, NeedId};
     const OWNER: InstanceId = InstanceId(1);
@@ -787,7 +778,6 @@ fn an_accepting_framers_agreed_protocol_is_read_back_against_the_listeners_offer
 }
 
 /// RED (T1, tcp TT1): A RETIRED LISTENER IS UNBOUND WHEN IT IS DROPPED. A listener bound through a
-
 #[test]
 fn a_dropped_listener_stops_accepting_at_once() {
     worker().block_on(async {

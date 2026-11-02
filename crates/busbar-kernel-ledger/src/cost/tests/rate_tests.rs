@@ -7,7 +7,6 @@ use super::*;
 use crate::cost::{nano_rate, History, LaneClass, RateCard, STANDARD_TIER_BP};
 
 /// $ RED (OWNER rule 21, #81): THE CONVERSION NEVER ROUNDS. The card holds integer nano-units, so
-
 #[test]
 fn nano_rate_refuses_a_rate_that_is_not_a_whole_number_of_nano_units() {
     for refused in [0.0015, 0.0014, 0.0005, 0.5005, 0.5015, 0.1 + 0.2, 1.0001] {
@@ -39,7 +38,6 @@ fn nano_rate_refuses_a_rate_that_is_not_a_whole_number_of_nano_units() {
 }
 
 /// The clamp is "finite AND positive", not "finite OR positive". An infinite rate — reachable from
-
 #[test]
 fn nano_rate_clamps_a_non_finite_positive_rate_to_zero_not_the_maximum() {
     assert_eq!(nano_rate(f64::INFINITY), 0);
@@ -48,7 +46,6 @@ fn nano_rate_clamps_a_non_finite_positive_rate_to_zero_not_the_maximum() {
 }
 
 /// A finite value can still be too large for a `u64` to hold — a config typo with too many zeros,
-
 #[test]
 fn nano_rate_clamps_a_finite_but_overflowing_rate_to_zero_not_the_maximum() {
     assert_eq!(nano_rate(1e18), 0);
@@ -57,7 +54,6 @@ fn nano_rate_clamps_a_finite_but_overflowing_rate_to_zero_not_the_maximum() {
 }
 
 /// **THE CEILING IS THE INTEGER'S, CHECKED — NOT A FLOAT CAST'S.**
-
 #[test]
 fn nano_rate_ceiling_is_a_checked_integer_multiply() {
     assert_eq!(
@@ -94,7 +90,6 @@ fn card_carries_integer_rates_per_class() {
 }
 
 /// The three outcomes of a rate lookup, which are the whole pricing posture: no card is a
-
 #[test]
 fn lane_lookup_has_exactly_three_outcomes() {
     let none = RateCard::absent(3);
@@ -114,7 +109,6 @@ fn lane_lookup_has_exactly_three_outcomes() {
 }
 
 /// The fee's unit price is its cents lifted to nano-units — an exact multiple of ten million,
-
 #[test]
 fn fee_line_unit_price_is_cents_lifted_to_nano_units() {
     let c = RateCard::absent(3);
@@ -123,7 +117,6 @@ fn fee_line_unit_price_is_cents_lifted_to_nano_units() {
 }
 
 /// ITEM 22: A RATE THE CARD CANNOT HOLD IS NOT A RATE OF ZERO.
-
 #[test]
 fn a_sub_quantum_rate_is_unpriced_on_the_card_and_refuses_never_priced_at_zero() {
     let per_byte = 0.10 * 1_000_000.0 / 1_073_741_824.0;
@@ -174,7 +167,6 @@ fn a_sub_quantum_rate_is_unpriced_on_the_card_and_refuses_never_priced_at_zero()
 }
 
 /// A LANE'S RATES PRICE NO USAGE REPORT: a report is a spend, and every spend is `Tally`'s.
-
 #[test]
 fn a_report_is_priced_by_the_spend_fold_and_a_silent_class_refuses() {
     let card = RateCard::from_micro_rates([(LaneClass::new("m", "input"), 2.5)], 0);
@@ -211,7 +203,6 @@ fn a_report_is_priced_by_the_spend_fold_and_a_silent_class_refuses() {
 }
 
 /// **A CORRECTED CARD IS THE CARD WITH THE NAMED CELLS SET** (#79): every other lane,
-
 #[test]
 fn a_corrected_card_keeps_everything_it_does_not_name() {
     use crate::cost::TierRates;
@@ -293,7 +284,6 @@ fn a_corrected_card_keeps_everything_it_does_not_name() {
 }
 
 /// **A CORRECTED CELL IS NO LONGER A REFUSED ONE** (#79, #42). A card that could not represent
-
 #[test]
 fn a_correction_that_prices_a_refused_cell_takes_it_off_the_refused_list() {
     use crate::cost::TierRates;

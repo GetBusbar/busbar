@@ -11,7 +11,6 @@ use crate::kinds::RecordBytes;
 use crate::records::{MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta};
 
 /// THE NODE'S ONE `op_id` ALLOCATOR, as a store handle is handed it: every `op_id` a handle mints
-
 pub type OpIdMint = fn() -> OpId;
 
 /// One store call in flight.
@@ -57,7 +56,6 @@ pub trait StoreCalls: Send + Sync {
     }
 
     /// Submit one immutable correction. Retain this exact id and body after an unknown outcome;
-
     fn apply_usage_correction<'a>(
         &'a self,
         request: &'a crate::records::correction::Request,
@@ -74,7 +72,6 @@ pub trait StoreCalls: Send + Sync {
     }
 
     /// Submit one immutable atomic conditional-record candidate asynchronously. Unknown outcomes
-
     fn record_transaction<'a>(
         &'a self,
         request: &'a crate::abi::sdk::store::conditional::Request,
@@ -219,19 +216,16 @@ pub trait StoreCalls: Send + Sync {
         now: u64,
     ) -> StoreCall<'a, bool>;
     /// `list_plane_record_parents`: every distinct parent `kind`'s records name. An implementation
-
     fn list_plane_record_parents<'a>(&'a self, kind: &'a str) -> StoreCall<'a, Vec<String>> {
         let _ = kind;
         not_served("list_plane_record_parents")
     }
     /// `purge_plane_records_before`: `kind`'s records older than `before` removed, as the store's
-
     fn purge_plane_records_before<'a>(&'a self, kind: &'a str, before: u64) -> StoreCall<'a, u64> {
         let _ = (kind, before);
         not_served("purge_plane_records_before")
     }
     /// The usage ledger's purge: every usage window whose start is nonzero and earlier than
-
     fn purge_usage_before(&self, before: u64) -> StoreCall<'_, u64> {
         let _ = before;
         not_served("purge_usage_before")
@@ -246,7 +240,6 @@ fn not_served<'a, T: Send + 'a>(op: &'static str) -> StoreCall<'a, T> {
 }
 
 /// Where one store's door comes from: a compiled-in row's door, or a dropped-in plugin's verified
-
 pub enum StoreDoor {
     /// A compiled-in row's door.
     Linked(crate::abi::mechanism::door::DoorFn),
@@ -274,7 +267,6 @@ impl std::fmt::Debug for StoreDoor {
 }
 
 /// ONE OPENED STORE, as the axis hands it to the kernel (WIRE-STORE Q9): the 1.5.5 op set
-
 pub struct OpenedStore {
     /// The 1.5.5 op set.
     pub records: std::sync::Arc<dyn crate::records::RecordStore>,
@@ -291,10 +283,8 @@ impl std::fmt::Debug for OpenedStore {
 }
 
 /// THE STORE AXIS, as the composition root installs it in the kernel: every store, compiled in or
-
 pub trait StoreAxis: Send + Sync {
     /// Load `door` under the host's instance `label` and OPEN it on `settings` (the store section's
-
     fn open(&self, door: StoreDoor, label: &str, settings: &[u8]) -> Result<OpenedStore, String>;
 }
 

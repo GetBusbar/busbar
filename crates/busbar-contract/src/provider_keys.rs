@@ -37,7 +37,6 @@
 use serde_json::{Map, Value};
 
 /// THE STATEMENT-EXTENSIONS KEY a plane states its provider-key descriptor under
-
 pub const EXT_PROVIDER_KEYS: &str = "provider_keys";
 
 /// The shape word of [`Shape::Str`].
@@ -132,7 +131,6 @@ pub fn encode(keys: &ProviderKeys) -> Vec<u8> {
 }
 
 /// The descriptor `bytes` state.
-
 pub fn decode(bytes: &[u8]) -> Result<ProviderKeys, String> {
     let doc: Value = serde_json::from_slice(bytes)
         .map_err(|e| format!("the provider keys are not JSON: {e}"))?;
@@ -149,7 +147,6 @@ pub fn decode(bytes: &[u8]) -> Result<ProviderKeys, String> {
 }
 
 /// The descriptor a Statement's extensions blob states under [`EXT_PROVIDER_KEYS`]; `None` when it
-
 pub fn stated(extensions: &[u8]) -> Result<Option<ProviderKeys>, String> {
     crate::abi::mechanism::extensions::get(extensions, EXT_PROVIDER_KEYS)
         .map(decode)

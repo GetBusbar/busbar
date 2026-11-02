@@ -6,7 +6,6 @@
 use crate::record::Record;
 
 /// What a shipper may know of one record: its identity, the pair a re-appended batch is
-
 pub trait ShippedRecord {
     /// Which node wrote it, and that node's own sequence number for it.
     fn identity(&self) -> (u64, u64);
@@ -33,7 +32,6 @@ impl std::error::Error for ShipError {}
 /// Where records go once they are committed locally.
 pub trait Shipper<R>: Send {
     /// Offer one batch. Returning `Ok` is the acknowledgement; returning an error means the batch
-
     fn ship(&mut self, records: &[R]) -> Result<(), ShipError>;
 }
 

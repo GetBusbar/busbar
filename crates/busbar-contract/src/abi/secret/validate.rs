@@ -26,7 +26,6 @@ abi_op! {
 }
 
 /// `resolve`'s cross-field rules, after its per-field ones: the outcome against `error_kind`, the
-
 fn resolved(out: &ResolveOut, buf: usize, cap: u64) -> Result<(), Fault> {
     let outcome = out.head.outcome.outcome();
     let ready = matches!(outcome, Outcome::Ready);

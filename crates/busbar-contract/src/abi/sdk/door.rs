@@ -86,7 +86,6 @@ pub unsafe trait KindOps: Copy + 'static {
     /// The kind this table belongs to; the door's `kind` and `kind_abi` follow from it.
     const KIND: KindCode;
     /// The `in`/`out` of each of the nine LIFECYCLE slots, stated as [`KindSlot`]s at the slot's
-
     type Lifecycle: 'static;
 }
 
@@ -323,7 +322,6 @@ pub unsafe trait Entry {
     /// The slot's `out`.
     type Out: AbiOut;
     /// Whether this entry reads the instance as the SDK's typed state
-
     const SAFE: bool = false;
     /// The body.
     ///
@@ -353,7 +351,6 @@ unsafe impl<S: RawSlot> Entry for S {
 }
 
 /// The deprecated raw slot spelling. Its body requires the same explicit caller proof as
-
 #[deprecated(note = "implement `RawSlot` (`unsafe fn call`, same body) or `SafeSlot`")]
 pub trait Slot {
     /// The slot's `in`.
@@ -525,7 +522,6 @@ unsafe fn enter<S: Entry, H: CaptureHome>(
 }
 
 /// A `T` table with every kind-op slot NULL (its head is the caller's to replace): the base
-
 #[must_use]
 pub const fn absent_table<T: KindOps>() -> T {
     // SAFETY: `T: KindOps` is `#[repr(C)]` with `head: OpsHead` first and only `Option<Op>` slots
@@ -544,7 +540,6 @@ unsafe fn write_fault(head: *mut OutHead) {
 }
 
 /// The index of the table slot at byte `offset` of a [`KindOps`] table (the mechanism's SLOT
-
 #[must_use]
 pub const fn slot_at(offset: usize) -> u32 {
     ((offset - offset_of!(OpsHead, validate)) / size_of::<Option<Op>>()) as u32
@@ -557,7 +552,6 @@ pub const fn slot_count<T: KindOps>() -> u32 {
 }
 
 /// A table entry: the `trampoline` over `S` at `INDEX` under the call capture `H` keeps, refusing
-
 #[must_use]
 pub const fn kind_op<T, S, H, const INDEX: u32>() -> Option<Op>
 where
@@ -569,7 +563,6 @@ where
 }
 
 /// The [`OpsHead`] of a `T` table: its `size` and `slots` stamped from `T`, the nine lifecycle
-
 #[must_use]
 #[allow(clippy::too_many_arguments)]
 pub const fn ops_head<T: KindOps>(
@@ -608,7 +601,6 @@ pub const fn abi_str(s: &'static str) -> AbiStr {
 }
 
 /// The module name `from` an operator may write for the plugin, as the Statement's
-
 #[must_use]
 pub const fn alias(from: &'static str) -> Rewrite {
     Rewrite {
@@ -619,7 +611,6 @@ pub const fn alias(from: &'static str) -> Rewrite {
 }
 
 /// A Statement naming the plugin, with no families, no diagnostic ids, no kind tail, no
-
 #[must_use]
 pub const fn statement(name: &'static str, version: &'static str, max_inflight: u32) -> Statement {
     Statement {
@@ -648,7 +639,6 @@ pub const fn statement(name: &'static str, version: &'static str, max_inflight: 
 const ABSENT: AbiStr = AbiStr::ZERO;
 
 /// `statement` with `size`, `kind` and `kind_abi` stamped from `T`, so the Statement and the door
-
 #[must_use]
 pub const fn stamp<T: KindOps>(statement: Statement) -> Statement {
     Statement {

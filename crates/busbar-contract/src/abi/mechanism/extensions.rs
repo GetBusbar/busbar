@@ -4,7 +4,6 @@
 //! THE EXTENSIONS BLOB'S BYTES (THE DESIGN, the shared mechanism: "every operation carries the
 
 /// The entries `entries` encode to, in order. An entry whose key or value is past its length
-
 #[must_use]
 pub fn encode(entries: &[(&str, &[u8])]) -> Vec<u8> {
     let mut out = Vec::new();
@@ -27,7 +26,6 @@ pub const fn entry_len(key: &str, value: &[u8]) -> usize {
 }
 
 /// ONE ENTRY, built at compile time: the bytes [`encode`] writes for `[(key, value)]`, as an array a
-
 #[must_use]
 pub const fn entry<const N: usize>(key: &str, value: &[u8]) -> [u8; N] {
     assert!(N == entry_len(key, value), "N is not entry_len(key, value)");
@@ -82,15 +80,12 @@ pub fn get<'a>(blob: &'a [u8], key: &str) -> Option<&'a [u8]> {
 }
 
 /// THE `declares` DOCUMENT'S KEY in a door's `Statement::extensions` (ARCHITECT ruling 2026-10-21
-
 pub const EXT_DECLARES: &str = "declares";
 
 /// THE REFERENCE-CAPABLE, NOT-SECRET SETTINGS FIELDS' KEY in a door's `Statement::extensions` (lead
-
 pub const EXT_REFERENCE_FIELDS: &str = "reference_fields";
 
 /// The reference-capable paths a Statement's extensions state under [`EXT_REFERENCE_FIELDS`];
-
 pub fn reference_fields(extensions: &[u8]) -> Result<Vec<String>, String> {
     let Some(value) = get(extensions, EXT_REFERENCE_FIELDS) else {
         return Ok(Vec::new());
@@ -107,13 +102,11 @@ pub fn reference_fields(extensions: &[u8]) -> Result<Vec<String>, String> {
 }
 
 /// THE FULL SPAN RECORDS' KEY in an export door's `Statement::extensions` (status row 173). Its
-
 pub const EXT_SPAN_RECORDS: &str = "span_records";
 
 pub use crate::export_calls::{EXT_PERSISTENT_ROUTES, EXT_PUBLIC_ROUTES};
 
 /// Read a route-path list from Statement extensions. An absent entry declares none.
-
 pub fn route_paths(extensions: &[u8], key: &str) -> Result<Vec<String>, String> {
     let Some(value) = get(extensions, key) else {
         return Ok(Vec::new());
@@ -131,7 +124,6 @@ pub fn route_paths(extensions: &[u8], key: &str) -> Result<Vec<String>, String> 
 }
 
 /// Whether a Statement's extensions state the door takes full span records
-
 pub fn span_records(extensions: &[u8]) -> Result<bool, String> {
     get(extensions, EXT_SPAN_RECORDS).map_or(Ok(false), |value| {
         serde_json::from_slice(value)
@@ -152,7 +144,6 @@ pub const fn entries_len(entries: &[(&str, &[u8])]) -> usize {
 }
 
 /// EVERY ENTRY, built at compile time: the bytes [`encode`] writes for `entries`, in order, as an
-
 #[must_use]
 pub const fn concat<const N: usize>(entries: &[(&str, &[u8])]) -> [u8; N] {
     assert!(N == entries_len(entries), "N is not entries_len(entries)");
@@ -232,7 +223,6 @@ pub const fn statement_blob(bytes: &'static [u8]) -> super::call::Blob {
 }
 
 /// The `declares` document a Statement's extensions state under [`EXT_DECLARES`]; `None` when they
-
 #[must_use]
 pub fn declares(extensions: &[u8]) -> Option<&[u8]> {
     get(extensions, EXT_DECLARES)

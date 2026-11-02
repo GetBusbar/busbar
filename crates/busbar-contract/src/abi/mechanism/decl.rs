@@ -20,7 +20,6 @@ pub struct AbiField {
 }
 
 /// One RED case of an `abi_op!` validator: `red` breaks exactly one declared rule of a GREEN
-
 pub struct RedCase<T> {
     /// The rule the broken answer faults under.
     pub rule: Rule,

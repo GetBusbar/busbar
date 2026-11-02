@@ -46,7 +46,6 @@ pub mod test_support {
     use crate::{AuditRecord, HeadHistory};
 
     /// Take the head as it stands after one sealed record: delegates to the crate-private
-
     pub fn observe(history: &mut HeadHistory, record: &AuditRecord) {
         history.observe(record);
     }

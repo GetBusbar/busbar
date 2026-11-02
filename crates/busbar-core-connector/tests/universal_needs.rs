@@ -37,7 +37,6 @@ fn libraries_beside_the_test() -> Vec<std::path::PathBuf> {
 }
 
 /// THE SOCKET FRAMER these tests drive alone: the neutral frame door (the plugin loader's
-
 fn socket_framer_door() -> Option<std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor>> {
     let file = busbar_plugin_loader::plugin_library_filename("neutral_frame_door");
     libraries_beside_the_test()
@@ -47,7 +46,6 @@ fn socket_framer_door() -> Option<std::sync::Arc<dyn busbar_core_connector::fram
 }
 
 /// `path` admitted and opened through the one dispatcher as a transport door; `None` when it is
-
 fn open_door(
     path: &std::path::Path,
 ) -> Option<std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor>> {
@@ -89,7 +87,6 @@ fn open_stated(
 }
 
 /// THE CONNECTOR DRIVES THE DROPPED-IN HTTP DOOR AGAINST A REAL SERVER: the connector dials the
-
 #[test]
 fn the_connector_drives_the_dropped_in_http_door_against_a_real_server() {
     use busbar_core_connector::compose::{Connection, Dial};
@@ -157,7 +154,6 @@ fn the_connector_drives_the_dropped_in_http_door_against_a_real_server() {
 }
 
 /// A BODIED REQUEST GOES OUT THROUGH THE DROPPED-IN HTTP DOOR, its length stated once: whichever
-
 #[test]
 fn a_bodied_request_goes_out_through_the_dropped_in_http_door_with_its_length() {
     use busbar_core_connector::compose::{Connection, Dial};
@@ -221,7 +217,6 @@ fn a_bodied_request_goes_out_through_the_dropped_in_http_door_with_its_length() 
 }
 
 /// THE CONNECTOR DRIVES A DROPPED-IN DOOR THAT FRAMES THE HOST'S SOCKET against a real far end: the
-
 #[test]
 fn the_connector_drives_a_dropped_in_socket_framer_against_a_real_far_end() {
     use busbar_core_connector::compose::{Connection, Dial};
@@ -285,7 +280,6 @@ fn the_connector_drives_a_dropped_in_socket_framer_against_a_real_far_end() {
 }
 
 /// Every piece one need's exchange answers through the connection table, from a server that
-
 fn pieces_through_the_table(response: &'static str) -> Vec<(PieceKind, Option<u32>, Vec<u8>)> {
     head_through_the_table(response).0
 }
@@ -369,7 +363,6 @@ fn head_through_the_table(response: &'static str) -> (Pieces, Option<Vec<u8>>) {
 }
 
 /// RED: THE CONNECTOR YIELDS THE FAR END'S HEAD. A response with head fields reads, through the
-
 #[test]
 fn a_response_with_head_fields_yields_fields_then_body() {
     let got = pieces_through_the_table(
@@ -394,7 +387,6 @@ fn a_response_with_head_fields_yields_fields_then_body() {
 }
 
 /// RED: AN EMPTY HEAD STILL COMES FIRST. A head with no field left after the hop-by-hop drop reads
-
 #[test]
 fn an_empty_head_yields_one_empty_fields_piece() {
     let got = pieces_through_the_table("{V} 204 No Content\r\nConnection: close\r\n\r\n");
@@ -413,7 +405,6 @@ fn an_empty_head_yields_one_empty_fields_piece() {
 }
 
 /// RED: the reply's head crosses whole: its fields as the field block and its reason phrase exactly
-
 #[test]
 fn the_reply_head_carries_its_reason_phrase_exactly_as_sent() {
     let (got, reason) =
@@ -428,7 +419,6 @@ fn the_reply_head_carries_its_reason_phrase_exactly_as_sent() {
 }
 
 /// RED: a request's head words reach the framer byte for byte and ARE its request line; a framer
-
 #[test]
 fn the_head_words_reach_the_framer_byte_for_byte() {
     use busbar_core_connector::framer::{encode, encode_head};
@@ -457,7 +447,6 @@ fn the_head_words_reach_the_framer_byte_for_byte() {
 }
 
 /// The actual dropped request framer's sealed opening crosses host wire ownership and TLS with
-
 #[test]
 fn a_dropped_framers_sealed_opening_keeps_its_exact_wire_bytes_through_tls() {
     use busbar_contract::conn::SEALED_FIELDS_FIELD;
@@ -592,7 +581,6 @@ fn a_dropped_framers_sealed_opening_keeps_its_exact_wire_bytes_through_tls() {
 }
 
 /// THE REQUEST/RESPONSE FRAMER the head tests drive: of the libraries beside this test binary, the
-
 fn composing_door() -> std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor> {
     use busbar_contract::abi::transport::ROLE_FRAMER;
     libraries_beside_the_test()
@@ -604,7 +592,6 @@ fn composing_door() -> std::sync::Arc<dyn busbar_core_connector::framer::FramerD
 }
 
 /// A response template with its version written as the door's own scheme, upper-cased (`{V}`), so
-
 fn respond(scheme: &str, template: &str) -> Vec<u8> {
     template
         .replace("{V}", &format!("{}/1.1", scheme.to_ascii_uppercase()))
@@ -612,7 +599,6 @@ fn respond(scheme: &str, template: &str) -> Vec<u8> {
 }
 
 /// A loopback far end that reads one request head and answers `response`: its address, and the
-
 async fn serve_once(
     response: Vec<u8>,
 ) -> (std::net::SocketAddr, tokio::sync::oneshot::Receiver<String>) {
@@ -636,7 +622,6 @@ async fn serve_once(
 }
 
 /// RED: A FRAMED REQUEST'S HEAD WORDS GO OUT THROUGH THE CONNECTION TABLE. An open whose
-
 #[test]
 fn an_opening_messages_head_words_reach_the_far_end_through_the_table() {
     use busbar_contract::conn::{Conns, DeclaredConns, InstanceId, NeedId, OpenDesc};
@@ -720,7 +705,6 @@ fn an_opening_messages_head_words_reach_the_far_end_through_the_table() {
 }
 
 /// The download's table over a connector serving the composing door beside the test carrier, every
-
 fn fetch_table() -> (&'static str, busbar_core_connector::fetch::Table) {
     use busbar_core_connector::Judged;
     let judge = |dest: &str, _: u32, _: Judged| {
@@ -730,7 +714,6 @@ fn fetch_table() -> (&'static str, busbar_core_connector::fetch::Table) {
 }
 
 /// The download's table over a connector serving the composing door beside the test carrier, its
-
 fn fetch_table_judged(
     judge: std::sync::Arc<dyn busbar_core_connector::DialJudge>,
 ) -> (&'static str, busbar_core_connector::fetch::Table) {
@@ -769,7 +752,6 @@ fn fetch_table_judged(
 }
 
 /// One download of `path` from a far end answering `response` (a [`respond`] template), off the
-
 fn fetch_once(path: &str, response: &str, cap: usize) -> (Result<Vec<u8>, String>, String) {
     fetch_once_over(fetch_table(), path, response, cap)
 }
@@ -805,7 +787,6 @@ fn fetch_once_over(
 }
 
 /// THE DOWNLOAD'S WIRE IS 1.5.5's: `GET <path>` with the client defaults the transport owns,
-
 #[test]
 fn the_plugins_fetch_download_sends_1_5_5s_request_through_the_table() {
     let (got, head) = fetch_once(
@@ -833,7 +814,6 @@ fn the_plugins_fetch_download_sends_1_5_5s_request_through_the_table() {
 }
 
 /// An oversized body is refused under the cap, from an honest `Content-Length` (before a body
-
 #[test]
 fn the_plugins_fetch_download_refuses_an_oversized_body_and_keeps_a_small_one() {
     let big = "x".repeat(256);
@@ -891,7 +871,6 @@ fn the_plugins_fetch_download_refuses_to_follow_a_redirect() {
 }
 
 /// The deployment's own dial judge: the one destination guard over `destinations`, the owner's
-
 fn guarded(blocked: &[&str]) -> std::sync::Arc<dyn busbar_core_connector::DialJudge> {
     let destinations = busbar_kernel::config::Destinations {
         block_private_addresses: true,
@@ -905,7 +884,6 @@ fn guarded(blocked: &[&str]) -> std::sync::Arc<dyn busbar_core_connector::DialJu
 }
 
 /// RED (a plaintext private plugin registry): 1.5.5's download took plaintext http to a loopback or
-
 #[test]
 fn a_plaintext_private_registry_downloads_under_the_default_guard() {
     let (got, _) = fetch_once_over(
@@ -918,7 +896,6 @@ fn a_plaintext_private_registry_downloads_under_the_default_guard() {
 }
 
 /// GREEN twin: the download is still judged by the one guard: an address the operator's extra
-
 #[test]
 fn a_download_the_guard_refuses_never_reaches_the_registry() {
     let (got, head) = fetch_once_over(

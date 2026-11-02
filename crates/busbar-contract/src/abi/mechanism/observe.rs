@@ -44,7 +44,6 @@ pub struct Envelope<R> {
 
 impl<R> Envelope<R> {
     /// The envelope for a plugin with nothing to report — the overwhelmingly common case, and the
-
     pub fn bare(result: R) -> Envelope<R> {
         Envelope {
             result,
@@ -125,7 +124,6 @@ pub struct PluginMetric {
 
 impl PluginMetric {
     /// A counter sample — the shape nearly every plugin reports and the one an author should reach
-
     pub fn counter(name: impl Into<String>, value: f64) -> PluginMetric {
         PluginMetric::new(name, "counter", value)
     }
@@ -136,7 +134,6 @@ impl PluginMetric {
     }
 
     /// A sample of an explicitly-named type. Prefer [`counter`](PluginMetric::counter) /
-
     pub fn new(name: impl Into<String>, kind: impl Into<String>, value: f64) -> PluginMetric {
         PluginMetric {
             name: name.into(),
@@ -157,7 +154,6 @@ impl PluginMetric {
     }
 
     /// Attach one Prometheus-style dimension. The host drops a key outside the metric-name charset
-
     #[must_use]
     pub fn label(mut self, key: impl Into<String>, value: impl Into<String>) -> PluginMetric {
         self.labels
@@ -192,7 +188,6 @@ pub enum DiagLevel {
 
 impl DiagLevel {
     /// The stable snake_case wire token — the SAME spelling serde emits, rendered without a JSON
-
     pub const fn as_token(self) -> &'static str {
         match self {
             DiagLevel::Error => "error",
@@ -244,7 +239,6 @@ pub struct PluginDiagnostic {
 }
 
 /// The level an entry that omits `level` is read at. A free function because `#[serde(default = …)]`
-
 fn default_level() -> DiagLevel {
     DiagLevel::Warn
 }
@@ -288,7 +282,6 @@ impl PluginDiagnostic {
     }
 
     /// The fields in the order they were attached ([`PluginDiagnostic::order`]), then any the
-
     pub fn ordered_fields(&self) -> Vec<(String, String)> {
         let named = self
             .order
@@ -318,7 +311,6 @@ pub struct Observations {
 
 impl Observations {
     /// Nothing to report — what a plugin with no back-channel returns, and the default every kind's
-
     pub fn none() -> Observations {
         Observations::default()
     }

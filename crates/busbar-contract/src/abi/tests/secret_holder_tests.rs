@@ -7,7 +7,6 @@ use crate::plugin::TestKernelSeal;
 use crate::redacted::{NotText, Secret};
 
 /// TYPE LEVEL: the holder the loader and kernel keep resolved bytes in wipes itself on drop
-
 #[test]
 fn the_byte_holder_is_zeroize_on_drop_and_prints_nothing() {
     fn zeroize_on_drop<T: zeroize::ZeroizeOnDrop>() {}
@@ -25,7 +24,6 @@ fn the_byte_holder_is_zeroize_on_drop_and_prints_nothing() {
 }
 
 /// The holder a host lends a plugin starts zeroed, and `keep` wipes what lies past the value
-
 #[test]
 fn keep_wipes_the_tail_in_place() {
     let mut held = Secret::<Vec<u8>>::zeroed(6);
@@ -42,7 +40,6 @@ fn keep_wipes_the_tail_in_place() {
 }
 
 /// A text secret is the same bytes, MOVED into a `Secret<String>` (one allocation, never a
-
 #[test]
 fn into_text_moves_and_trims() {
     let mut held = Secret::<Vec<u8>>::zeroed(8);

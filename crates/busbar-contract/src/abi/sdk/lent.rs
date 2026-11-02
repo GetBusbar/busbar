@@ -42,7 +42,6 @@ impl<'a, T> Lent<'a, T> {
     }
 
     /// One field of the lent struct, still lent: `input.field(|i| &i.settings).bytes()`.
-
     #[must_use]
     pub fn field<F>(self, pick: impl FnOnce(&'a T) -> &'a F) -> Lent<'a, F> {
         let f = pick(self.lent);
@@ -60,7 +59,6 @@ impl<'a, T> Lent<'a, T> {
 
 impl<'a, T: Scalar> Lent<'a, T> {
     /// The value, copied: a type with no pointer in it (a [`Scalar`]), so the copy names nothing
-
     #[must_use]
     pub fn copied(self) -> T {
         *self.lent
@@ -128,13 +126,11 @@ impl<'a> Lent<'a, AbiStr> {
     }
 
     /// The string as UTF-8; `""` when it is absent.
-
     pub fn as_str(self) -> Result<&'a str, Utf8Error> {
         std::str::from_utf8(self.bytes())
     }
 
     /// The string, owned, when the host states one: UTF-8 and not empty. An absent string, an
-
     #[must_use]
     pub fn stated(self) -> Option<String> {
         self.as_str()
@@ -224,7 +220,6 @@ pub struct HostBuf<'a, T> {
 
 impl<'a, T: Copy> HostBuf<'a, T> {
     /// Write `v` at the next index while there is room; count it either way. Answers its index.
-
     pub(crate) fn push_row(&mut self, v: T) -> usize {
         let at = self.asked;
         if at < self.cap {
@@ -254,7 +249,6 @@ impl<'a, T: Copy> HostBuf<'a, T> {
     }
 
     /// The room left, as the raw parts a HOST call writes into (`abi::sdk::io`: a carrier reads
-
     pub(crate) fn room(&mut self) -> (*mut T, usize) {
         let left = self.cap.saturating_sub(self.asked);
         if left == 0 {
@@ -314,7 +308,6 @@ impl<'a, T: Copy> HostBuf<'a, T> {
 }
 
 /// Writing a host buffer: only pointer-free values ([`Scalar`]) go in by the plugin's hand, so no
-
 impl<T: Scalar> HostBuf<'_, T> {
     /// Write `v` at the next index while there is room; count it either way. Answers its index.
     pub fn push(&mut self, v: T) -> usize {
@@ -322,7 +315,6 @@ impl<T: Scalar> HostBuf<'_, T> {
     }
 
     /// Write `vs` from the next index while there is room; count all of them either way. Answers
-
     pub fn extend(&mut self, vs: &[T]) -> usize {
         let at = self.asked;
         let room = self.cap.saturating_sub(at).min(vs.len());
@@ -336,7 +328,6 @@ impl<T: Scalar> HostBuf<'_, T> {
     }
 
     /// Write as much of `vs` as there is room for and count only that: a streamed buffer with no
-
     pub fn stream(&mut self, vs: &[T]) -> usize {
         let room = self.cap.saturating_sub(self.asked).min(vs.len());
         self.extend(&vs[..room]);
@@ -346,7 +337,6 @@ impl<T: Scalar> HostBuf<'_, T> {
 
 impl HostBuf<'_, crate::abi::hook::MessageView> {
     /// Write one prompt turn at the next index while there is room; count it either way. Answers
-
     pub fn push_turn(&mut self, arena: &HostBuf<'_, u8>, role: Span, text: Span) -> usize {
         self.push_row(crate::abi::hook::MessageView {
             role: arena.str_at(role),
@@ -370,7 +360,6 @@ pub enum SignalScalar {
 
 impl HostBuf<'_, crate::abi::hook::SignalEntry> {
     /// Write the signal `id` = `value` at the next index while there is room; count it either way.
-
     pub fn push_signal(&mut self, id: u32, value: SignalScalar) -> usize {
         use crate::abi::hook::{
             SignalEntry, SignalValue, SIGNAL_TAG_BOOL, SIGNAL_TAG_F64, SIGNAL_TAG_I64,
@@ -404,7 +393,6 @@ impl HostBuf<'_, crate::abi::hook::SignalEntry> {
 
 impl HostBuf<'_, u8> {
     /// Copy `bytes` into this ARENA and answer their [`Span`](Span): the
-
     pub fn span(&mut self, bytes: &[u8]) -> Span {
         let at = self.extend(bytes);
         Span {
@@ -414,7 +402,6 @@ impl HostBuf<'_, u8> {
     }
 
     /// The [`AbiStr`] naming `span` inside this ARENA, for a struct that points into it (a
-
     #[must_use]
     pub(crate) fn str_at(&self, span: Span) -> AbiStr {
         AbiStr {
@@ -433,7 +420,6 @@ impl<T> HostBuf<'_, T> {
 }
 
 /// ANSWER A FAILED `open` WITH ITS REASON, for any kind: `text` goes into the host's lent reason
-
 pub fn open_failed<T: AbiOut>(
     input: Lent<'_, OpenIn>,
     out: &mut Out<'_, T>,
@@ -1635,7 +1621,6 @@ mod tests;
 
 impl<'a> Lent<'a, LineEntry> {
     /// The line's route as the route vocabulary reads it ([`RouteView`]): what an accepting
-
     #[must_use]
     pub fn route_view(self) -> Option<RouteView<'a>> {
         let route = self.field(|l| &l.route);

@@ -68,7 +68,6 @@ pub(crate) use write::confirm_secure;
 pub use write::{Parts, SealedWrite};
 
 /// Zeroizing material with no way out of this crate: no getter, no `Debug`, no `Display`, no
-
 #[allow(missing_debug_implementations)]
 pub struct Held<T: Zeroize>(T);
 
@@ -122,11 +121,9 @@ pub struct Cred {
 }
 
 /// The URL schemes whose connection is secured from the first byte: a credential the operator
-
 const SECURE_SCHEMES: &[&str] = &["https", "wss", "rediss", "ldaps", "grpcs", "mqtts", "amqps"];
 
 /// Whether a framed request's `target` is secured by its scheme ([`SECURE_SCHEMES`]); a target
-
 pub(crate) fn secure_target(target: &str) -> bool {
     !target.contains("://") || secure_scheme(target)
 }
@@ -142,7 +139,6 @@ pub(crate) fn secure_scheme(url: &str) -> bool {
 
 impl Cred {
     /// A credential this plugin captured itself (a token from a reply it decoded), taken by value so
-
     pub fn captured(bytes: Zeroizing<Vec<u8>>) -> Self {
         Self {
             held: std::sync::Arc::new(Held::new(bytes)),
@@ -152,14 +148,12 @@ impl Cred {
     }
 
     /// SECURE_REQUIRED (CHIP-DESIGN v4.1 change 4): this credential goes out only on a connection
-
     #[must_use]
     pub fn secure_required(&self) -> bool {
         self.secure
     }
 
     /// This credential, required to go out secured when the operator's `url` names a secure
-
     #[must_use]
     pub fn secure_for(mut self, url: &str) -> Self {
         self.secure |= secure_scheme(url);
@@ -167,7 +161,6 @@ impl Cred {
     }
 
     /// THE AUTH FLOOR (rulings S4, S5): the auth methods weaker than a protocol's best that the
-
     #[must_use]
     pub fn floor(&self) -> AuthFloor {
         self.floor
@@ -194,7 +187,6 @@ impl Cred {
     }
 
     /// Take a credential setting out of a parsed settings document, wiping the string where it
-
     pub fn take(v: &mut serde_json::Value) -> Option<Self> {
         let serde_json::Value::String(s) = v else {
             return None;
@@ -233,7 +225,6 @@ impl Cred {
     }
 
     /// Whether it may stand as a header field value: tab, space, visible ASCII and non-ASCII bytes,
-
     pub fn is_field_value(&self) -> bool {
         self.wire()
             .iter()
@@ -242,7 +233,6 @@ impl Cred {
 }
 
 /// Equality is constant-time over the bytes and answers only whether they match: a reload compares
-
 impl PartialEq for Cred {
     fn eq(&self, other: &Self) -> bool {
         *self.held == *other.held
@@ -279,7 +269,6 @@ impl Seal {
     }
 
     /// This seal, required to go out secured (a recipe whose output the operator did not allow in
-
     pub(crate) fn require_secure(mut self) -> Self {
         self.secure = true;
         self

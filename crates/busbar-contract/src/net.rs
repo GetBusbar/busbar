@@ -11,7 +11,6 @@ pub use std::net::{
 };
 
 /// Well-known cloud-metadata / internal DNS names that resolve, at connect time, to the IMDS family
-
 pub const METADATA_HOSTS: &[&str] = &[
     "metadata.google.internal",
     "metadata.internal",
@@ -22,7 +21,6 @@ pub const METADATA_HOSTS: &[&str] = &[
 ];
 
 /// TRUE for an IPv4 literal no busbar guard may connect to: loopback, link-local (which is where the
-
 pub fn ipv4_is_internal(v4: &Ipv4Addr) -> bool {
     const AZURE_WIRESERVER: Ipv4Addr = Ipv4Addr::new(168, 63, 129, 16);
     let o = v4.octets();
@@ -41,7 +39,6 @@ pub fn ipv4_is_internal(v4: &Ipv4Addr) -> bool {
 }
 
 /// TRUE for an IPv6 literal no busbar guard may connect to.
-
 pub fn ipv6_is_internal(v6: &Ipv6Addr) -> bool {
     if v6.is_loopback() {
         return true;
@@ -53,7 +50,6 @@ pub fn ipv6_is_internal(v6: &Ipv6Addr) -> bool {
 }
 
 /// TRUE for an address that is a CLOUD-METADATA endpoint.
-
 pub fn ip_is_cloud_metadata(addr: &IpAddr) -> bool {
     const NON_LINK_LOCAL_V4: &[Ipv4Addr] = &[
         Ipv4Addr::new(100, 100, 100, 200),
@@ -85,7 +81,6 @@ pub fn ip_is_internal(addr: &IpAddr) -> bool {
 }
 
 /// TRUE for a DNS NAME that is internal by definition rather than by resolution: the cloud-metadata
-
 pub fn dns_name_is_internal(host: &str) -> bool {
     let host = host.strip_suffix('.').unwrap_or(host);
     if METADATA_HOSTS.iter().any(|m| host.eq_ignore_ascii_case(m)) {
@@ -108,14 +103,12 @@ pub fn is_link_local_v6(addr: &Ipv6Addr) -> bool {
 }
 
 /// RFC 6598 Shared Address Space `100.64.0.0/10` (CGNAT). Not covered by `is_private()`, yet it
-
 pub fn is_cgnat_shared_v4(v4: &Ipv4Addr) -> bool {
     let o = v4.octets();
     o[0] == 100 && (o[1] & 0xC0) == 64
 }
 
 /// Unwrap an embedded IPv4 target from an IPv6 literal, covering EVERY form a connecting stack
-
 pub fn embedded_ipv4(v6: &Ipv6Addr) -> Option<Ipv4Addr> {
     if let Some(v4) = v6.to_ipv4() {
         return Some(v4);
@@ -150,7 +143,6 @@ pub fn embedded_ipv4(v6: &Ipv6Addr) -> Option<Ipv4Addr> {
 }
 
 /// True when `host` is an alternate (non-dotted-quad) IPv4 encoding that `IpAddr::from_str` rejects
-
 pub fn is_alternate_ipv4_encoding(host: &str) -> bool {
     if host.is_empty() {
         return false;
@@ -185,7 +177,6 @@ pub fn is_alternate_ipv4_encoding(host: &str) -> bool {
 }
 
 /// Expand an alternate (non-dotted-quad) IPv4 encoding to the address the name resolver would
-
 pub fn expand_alternate_ipv4(host: &str) -> Option<Ipv4Addr> {
     if host.is_empty() {
         return None;
@@ -256,21 +247,18 @@ pub fn expand_alternate_ipv4(host: &str) -> Option<Ipv4Addr> {
 }
 
 /// Whether `s` is a SOCKET LITERAL: `v4:port` or `[v6]:port`, exactly the grammar
-
 #[must_use]
 pub fn is_socket_literal(s: &str) -> bool {
     s.parse::<std::net::SocketAddr>().is_ok()
 }
 
 /// Whether `s` is a bare IP LITERAL, v4 or v6: exactly the grammar `std::net::IpAddr`'s parser
-
 #[must_use]
 pub fn is_ip_literal(s: &str) -> bool {
     s.parse::<std::net::IpAddr>().is_ok()
 }
 
 /// The address a normalized host names, in any spelling the resolver accepts as a literal: a
-
 pub fn host_ip(host: &str) -> Option<IpAddr> {
     let literal = if host.contains(':') {
         host.split('%').next().unwrap_or(host)
@@ -284,7 +272,6 @@ pub fn host_ip(host: &str) -> Option<IpAddr> {
 }
 
 /// TRUE when a normalized host is a cloud-metadata endpoint by NAME ([`METADATA_HOSTS`], case-blind,
-
 pub fn host_is_cloud_metadata(host: &str) -> bool {
     let name = host.strip_suffix('.').unwrap_or(host);
     METADATA_HOSTS.iter().any(|m| name.eq_ignore_ascii_case(m))
@@ -292,13 +279,11 @@ pub fn host_is_cloud_metadata(host: &str) -> bool {
 }
 
 /// TRUE when a normalized host is an IPv6 link-local literal (fe80::/10, [`is_link_local_v6`]) in
-
 pub fn host_is_link_local_v6(host: &str) -> bool {
     matches!(host_ip(host), Some(IpAddr::V6(v6)) if is_link_local_v6(&v6))
 }
 
 /// True when `host` (already normalized) is a private, loopback, link-local, unspecified or CGNAT
-
 pub fn host_is_private_or_loopback(host: &str) -> bool {
     let host_lc = host.to_ascii_lowercase();
     if host_lc == "localhost"
@@ -344,14 +329,12 @@ pub fn scheme_is(url: &str, scheme: &str) -> bool {
 }
 
 /// Strip a web scheme (`https` or its plaintext twin) case-insensitively, returning the
-
 fn strip_scheme(url: &str) -> Option<&str> {
     let (scheme, rest) = url.split_once("://")?;
     (scheme.eq_ignore_ascii_case("https") || scheme.eq_ignore_ascii_case("http")).then_some(rest)
 }
 
 /// Percent-decode a host string (`%XX` → byte). An invalid escape is left verbatim, so a malformed
-
 fn percent_decode_host(host: &str) -> Cow<'_, str> {
     if !host.contains('%') {
         return Cow::Borrowed(host);
@@ -379,7 +362,6 @@ fn percent_decode_host(host: &str) -> Cow<'_, str> {
 }
 
 /// The WHATWG basic URL parser's first step, both halves, in its order: trim leading and trailing C0
-
 fn strip_whatwg_removed(s: &str) -> Cow<'_, str> {
     let s = s.trim_matches(|c: char| c <= '\u{1f}' || c == ' ');
     if s.contains(['\t', '\n', '\r']) {
@@ -390,7 +372,6 @@ fn strip_whatwg_removed(s: &str) -> Cow<'_, str> {
 }
 
 /// THE HOST NORMALIZATION every reader here shares: percent-decoded, then one trailing FQDN-root dot
-
 pub fn normalize_host(raw: &str) -> String {
     let decoded = percent_decode_host(raw);
     let decoded = decoded.as_ref();
@@ -398,7 +379,6 @@ pub fn normalize_host(raw: &str) -> String {
 }
 
 /// The host a dialling stack would read out of an `https://` (or plaintext) URL, after every
-
 pub fn extract_normalized_host(url: &str) -> Option<String> {
     let url = strip_whatwg_removed(url);
     let rest = strip_scheme(url.as_ref())?;
@@ -406,7 +386,6 @@ pub fn extract_normalized_host(url: &str) -> Option<String> {
 }
 
 /// The same host extraction over an authority that names no scheme at all (`host:port`). Anything
-
 pub fn extract_normalized_authority_host(authority: &str) -> Option<String> {
     let authority = strip_whatwg_removed(authority);
     if authority.contains("://") {
@@ -416,7 +395,6 @@ pub fn extract_normalized_authority_host(authority: &str) -> Option<String> {
 }
 
 /// Everything [`extract_normalized_host`] does once the scheme is out of the way, shared by both
-
 fn normalize_authority(rest: &str) -> Option<String> {
     let rest: Cow<'_, str> = if rest.contains('\\') {
         Cow::Owned(rest.replace('\\', "/"))
@@ -538,7 +516,6 @@ fn forbidden_in_host(c: char) -> bool {
 }
 
 /// A code point `url` 2.5.8 refuses in an opaque host, checked on the spelling itself, before any
-
 fn forbidden_in_opaque_host(c: char) -> bool {
     matches!(
         c,
@@ -562,7 +539,6 @@ fn forbidden_in_opaque_host(c: char) -> bool {
 }
 
 /// A decoded host read as the ASCII name a dialling stack dials: an ASCII host as it is, a non-ASCII
-
 pub fn url_host_to_ascii(host: &str) -> Result<Cow<'_, str>, UrlRefusal> {
     if host.is_ascii() {
         return Ok(Cow::Borrowed(host));
@@ -572,7 +548,6 @@ pub fn url_host_to_ascii(host: &str) -> Result<Cow<'_, str>, UrlRefusal> {
 }
 
 /// `url` 2.5.8's IPv4 READING of a host already mapped to ASCII ([`url_host_to_ascii`]), the step
-
 pub fn url_host_ipv4(host: &str) -> Result<Option<Ipv4Addr>, UrlRefusal> {
     if !ends_in_a_number(host) {
         return Ok(None);
@@ -581,7 +556,6 @@ pub fn url_host_ipv4(host: &str) -> Result<Option<Ipv4Addr>, UrlRefusal> {
 }
 
 /// THE HOST A DESTINATION JUDGE COMPARES, read as the name or address a URL client dials: the
-
 pub fn judged_host(host: &str) -> Result<String, UrlRefusal> {
     let h = host.trim_start_matches('[').trim_end_matches(']');
     if let Some(at) = h.find('%') {
@@ -607,13 +581,11 @@ pub fn judged_host(host: &str) -> Result<String, UrlRefusal> {
 }
 
 /// READ A URL OF ANY SCHEME, by its family's rules (see [`UrlFamily`]).
-
 pub fn parse_url(url: &str) -> Result<UrlParts, UrlRefusal> {
     parse_url_raw(url).map(|(parts, _)| parts)
 }
 
 /// [`parse_url`], and the host exactly as the authority spelled it (the IPv6 literal without its
-
 fn parse_url_raw(url: &str) -> Result<(UrlParts, String), UrlRefusal> {
     let cleaned = strip_whatwg_removed(url);
     let s = cleaned.as_ref();
@@ -710,14 +682,12 @@ fn parse_url_raw(url: &str) -> Result<(UrlParts, String), UrlRefusal> {
 }
 
 /// One of `url`'s SPECIAL schemes with a dialled host (WHATWG: the four web schemes and `ftp`), whose
-
 #[must_use]
 pub fn is_special_scheme(scheme: &str) -> bool {
     UrlFamily::of(scheme) == UrlFamily::Web || scheme == "ftp"
 }
 
 /// `url`'s opaque host serialisation (`Host::parse_opaque`): every byte outside printable ASCII
-
 fn opaque_host(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     for b in raw.bytes() {
@@ -731,7 +701,6 @@ fn opaque_host(raw: &str) -> String {
 }
 
 /// `url`'s ends-in-a-number check (WHATWG): the last label, or the one before an empty last label,
-
 fn ends_in_a_number(host: &str) -> bool {
     let mut labels = host.rsplit('.');
     let last = match labels.next() {
@@ -746,7 +715,6 @@ fn ends_in_a_number(host: &str) -> bool {
 }
 
 /// `url`'s IPv4 number parser (WHATWG): `0x` hex, a leading-`0` octal, or decimal; `Some(None)`
-
 fn ipv4_number(mut part: &str) -> Option<Option<u32>> {
     if part.is_empty() {
         return None;
@@ -774,7 +742,6 @@ fn ipv4_number(mut part: &str) -> Option<Option<u32>> {
 }
 
 /// `url`'s IPv4 parser (WHATWG): up to four numbers, one trailing empty label ignored, the last
-
 fn url_ipv4(host: &str) -> Option<Ipv4Addr> {
     let mut parts: Vec<&str> = host.split('.').collect();
     if parts.last() == Some(&"") {
@@ -807,7 +774,6 @@ pub fn url_host(url: &str) -> Option<String> {
 }
 
 /// The host of a URL of any scheme as SPELLED, read as [`parse_url`] reads the authority but not
-
 #[must_use]
 pub fn url_host_verbatim(url: &str) -> Option<String> {
     let (_, spelled) = parse_url_raw(url).ok()?;
@@ -819,7 +785,6 @@ pub fn url_host_verbatim(url: &str) -> Option<String> {
 }
 
 /// The host of a DIAL TARGET, which may be spelled as a URL or as a bare `host`, `host:port`,
-
 #[must_use]
 pub fn target_host(target: &str) -> Option<String> {
     let trimmed = strip_whatwg_removed(target);
@@ -854,7 +819,6 @@ pub struct Authority<'a> {
 }
 
 /// THE ONE AUTHORITY SPLIT: every caller that reads a URL's host, strips its userinfo or masks it
-
 #[must_use]
 pub fn url_authority(url: &str) -> Authority<'_> {
     let (scheme, rest) = match url.split_once("://") {

@@ -71,7 +71,6 @@ pub enum Decision {
 
 impl Request {
     /// Check immutable selectors and exact canonical rows before backend effects.
-
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.version != VERSION {
             return Err("unsupported usage correction version");
@@ -102,7 +101,6 @@ impl Request {
     }
 
     /// Encode the complete immutable request within the existing ABI byte bound.
-
     pub fn encode(&self) -> Result<Vec<u8>, &'static str> {
         self.validate()?;
         let bytes = serde_json::to_vec(self).map_err(|_| "invalid usage correction encoding")?;
@@ -115,7 +113,6 @@ impl Request {
     }
 
     /// Decode one complete bounded request; integer counters remain exact `u64` values.
-
     pub fn decode(bytes: &[u8]) -> Result<Self, &'static str> {
         if bytes.len() as u64 > crate::abi::mechanism::check::HARD_MAX_BYTES {
             return Err("usage correction exceeds ABI byte bound");
@@ -136,7 +133,6 @@ impl Request {
 }
 
 /// Canonicalize one complete raw ledger, rejecting duplicate model identities.
-
 pub fn canonical_ledger(row: &mut UsageLedger) -> Result<(), &'static str> {
     row.models.sort_by(|a, b| a.model.cmp(&b.model));
     if row

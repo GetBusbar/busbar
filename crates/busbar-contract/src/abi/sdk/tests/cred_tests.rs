@@ -245,7 +245,6 @@ fn a_form_body_encodes_as_serde_urlencoded_and_seals_its_credential() {
 }
 
 /// RED (type level): a form body's public values (an authorization code, a PKCE verifier) travel
-
 #[test]
 fn a_form_body_wipes_on_drop() {
     fn wipes<T: zeroize::ZeroizeOnDrop>(_: &T) {}
@@ -413,7 +412,6 @@ fn jws_preserves_pkcs8_algorithm_and_optional_attribute_rules() {
 }
 
 /// SECURE_REQUIRED (CHIP-DESIGN v4.1 change 4): the operator's URL decides. A secure scheme or a
-
 #[test]
 fn the_operators_url_decides_whether_the_password_goes_out_secured() {
     let required = |text: &str| {

@@ -11,7 +11,6 @@ fn offered(n: u64) -> Vec<(DestinationId, u32)> {
 }
 
 /// And the rotation itself is unchanged: the pick ORDER is the previous release's behaviour and is
-
 #[test]
 fn the_rotation_order_is_byte_identical_across_the_restructure() {
     let floor = WeightedFloor::new();
@@ -37,7 +36,6 @@ fn the_rotation_order_is_byte_identical_across_the_restructure() {
 }
 
 /// A pool the floor has never seen still rotates from a clean slate, and seeing it does not disturb
-
 #[test]
 fn a_new_pool_starts_its_own_rotation_without_touching_an_existing_one() {
     let (a, b) = (WeightedFloor::new(), WeightedFloor::new());
@@ -57,7 +55,6 @@ fn a_new_pool_starts_its_own_rotation_without_touching_an_existing_one() {
 }
 
 /// The membership with the blocklist applied is read on every hop of every walk, and the pool that
-
 #[test]
 fn an_unblocked_pools_membership_is_borrowed_not_copied() {
     use crate::pool::{Member, Pool};

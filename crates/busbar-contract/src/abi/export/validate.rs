@@ -16,13 +16,11 @@ use crate::abi::mechanism::check::{
 pub const HARD_MAX_HEADERS_OUT_LEN: u64 = 128;
 
 /// Validates `deliver`'s `out` (the shared [`OutHead`]; `deliver` reads nothing back beyond it).
-
 pub fn check_deliver(out: &OutHead) -> Result<(), Fault> {
     failed_error(out, "deliver.error")
 }
 
 /// Validates `scrape`'s `out` against the capacity [`super::ScrapeIn::cap`] gave the plugin.
-
 pub fn check_scrape(out: &ScrapeOut, cap: usize) -> Result<(), Fault> {
     result(
         out.head.outcome.outcome(),
@@ -36,19 +34,16 @@ pub fn check_scrape(out: &ScrapeOut, cap: usize) -> Result<(), Fault> {
 }
 
 /// Validates `status`'s `out`.
-
 pub fn check_status(out: &StatusOut) -> Result<(), Fault> {
     leased_blob!(out, "status", status)
 }
 
 /// Validates `check`'s `out`.
-
 pub fn check_check(out: &CheckOut) -> Result<(), Fault> {
     leased_blob!(out, "check", findings)
 }
 
 /// Validates `serve`'s `out`.
-
 pub fn check_serve(out: &ServeOut) -> Result<(), Fault> {
     let (h, n) = (out.headers_out, out.headers_out_len);
     served(&out.head, h, n, HARD_MAX_HEADERS_OUT_LEN, &out.body)
@@ -58,7 +53,6 @@ pub fn check_serve(out: &ServeOut) -> Result<(), Fault> {
 pub const HARD_MAX_ROUTES: u64 = 64;
 
 /// Validates the export Statement tail's lists, before any entry is read: a count never comes
-
 pub fn check_tail(t: &Tail) -> Result<(), Fault> {
     listed(t.streams, t.streams_len, "tail.streams")?;
     if t.streams_len as u64 > ExportStream::ALL.len() as u64 {

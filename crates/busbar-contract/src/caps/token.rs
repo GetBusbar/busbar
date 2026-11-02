@@ -80,7 +80,6 @@ use crate::caps::step::Step;
 use std::marker::PhantomData;
 
 /// The proof that the caller is the kernel.
-
 pub struct KernelSeal(());
 
 impl KernelSeal {
@@ -147,11 +146,9 @@ pub struct CallId(u64);
 
 impl CallId {
     /// The sentinel a proof minted by the plain [`mint`](Pass::mint) carries: not bound to any
-
     pub const UNBOUND: CallId = CallId(u64::MAX);
 
     /// Mint a request generation. Kernel only, by way of the seal. The kernel bumps its own counter
-
     pub fn seal(_seal: &KernelSeal, generation: u64) -> Self {
         CallId(generation)
     }
@@ -173,7 +170,6 @@ impl std::fmt::Debug for CallId {
 }
 
 /// A stage-pass: the proof that the loop is running step `S` for the current unit right now (#72).
-
 pub struct Pass<S: Step> {
     call: CallId,
     _step: PhantomData<fn() -> S>,
@@ -189,7 +185,6 @@ impl<S: Step> Pass<S> {
     }
 
     /// Mint the pass bound to one request's generation (#74). Kernel only. A pass minted for one
-
     pub fn mint_bound(_seal: &KernelSeal, call: CallId) -> Self {
         Pass {
             call,
@@ -198,7 +193,6 @@ impl<S: Step> Pass<S> {
     }
 
     /// Whether this pass belongs to `call`. An unbound pass belongs to no request, so it never
-
     pub fn bound_to(&self, call: CallId) -> bool {
         self.call != CallId::UNBOUND && self.call == call
     }
@@ -224,7 +218,6 @@ impl<S: Step> crate::plugin::KernelSeal for Pass<S> {
 }
 
 /// A capability grant: the proof that the caller may perform one privileged action `C` (#72/#73).
-
 pub struct Grant<C: Capability> {
     call: CallId,
     _cap: PhantomData<fn() -> C>,
@@ -240,7 +233,6 @@ impl<C: Capability> Grant<C> {
     }
 
     /// Mint the grant bound to one request's generation (#74). Kernel only. A grant minted for one
-
     pub fn mint_bound(_seal: &KernelSeal, call: CallId) -> Self {
         Grant {
             call,
@@ -249,7 +241,6 @@ impl<C: Capability> Grant<C> {
     }
 
     /// Whether this grant belongs to `call`. An unbound grant belongs to no request, so it never
-
     pub fn bound_to(&self, call: CallId) -> bool {
         self.call != CallId::UNBOUND && self.call == call
     }

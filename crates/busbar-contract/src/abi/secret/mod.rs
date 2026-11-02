@@ -13,11 +13,9 @@ use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 pub const ABI_VERSION: u32 = 2;
 
 /// The secret kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
-
 pub const LAYOUT_FINGERPRINT: u64 = 0x7195caed69bcfcbd;
 
 /// The secret kind's shapes, in fold order: every `#[repr(C)]` struct crossing its table, each
-
 pub const LAYOUT_SHAPES: &[&[u64]] = &[
     Ops::LAYOUT,
     ResolveIn::LAYOUT,
@@ -105,7 +103,6 @@ pub const ERROR_KIND_UNAVAILABLE: u32 = 2;
 /// [`ResolveOut::error_kind`]: the caller is not entitled to it.
 pub const ERROR_KIND_DENIED: u32 = 3;
 /// [`ResolveOut::error_kind`]: the settings blob itself is malformed, or the value is not a
-
 pub const ERROR_KIND_INVALID: u32 = 4;
 /// [`ResolveOut::error_kind`]: an internal fault in the plugin, not classified above.
 pub const ERROR_KIND_INTERNAL: u32 = 5;
@@ -136,7 +133,6 @@ abi_struct! {
 }
 
 /// The host's first secret buffer, in bytes: an API key or a token fits; a larger value (a PEM
-
 pub const FIRST_SECRET_CAP: usize = 4096;
 
 /// The largest secret a resolve may answer, using the shared host-buffer bound.
@@ -163,7 +159,6 @@ abi_struct! {
 }
 
 /// The secret kind's [`super::mechanism::lifecycle::CancelOut::disposition`] vocabulary.
-
 pub mod cancel {
     /// The pending `resolve` was aborted; no lease was granted.
     pub const ABORTED: u32 = 0;

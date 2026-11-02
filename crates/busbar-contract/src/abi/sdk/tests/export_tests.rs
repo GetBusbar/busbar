@@ -193,7 +193,6 @@ fn a_push_sink_refuses_scrape_and_serve_in_the_kinds_words() {
 }
 
 /// The `one_instance` check through the door: with more than one instance, the sink's one finding
-
 #[test]
 fn a_second_instance_is_answered_with_the_sinks_reason() {
     let view = view();
@@ -256,7 +255,6 @@ fn settings_are_refused_in_serdes_words_empty_reading_as_an_object() {
 }
 
 /// The tail states the streams and routes it is given, an empty list NULL; the alias rewrite is
-
 #[test]
 fn the_tail_and_the_alias_state_what_they_are_given() {
     assert_eq!(TAIL.head.size as usize, size_of::<Tail>());
@@ -284,7 +282,6 @@ fn the_tail_and_the_alias_state_what_they_are_given() {
 }
 
 /// RED (the shared test kit, E11): what a reply's envelope carried (its diagnostics and metrics) is
-
 #[test]
 fn a_called_op_keeps_a_copy_of_its_envelope() {
     let view = view();
@@ -319,7 +316,6 @@ fn a_called_op_keeps_a_copy_of_its_envelope() {
 }
 
 /// RED (export ABI defect 17): an op over the open instance answers a call with NO instance in the
-
 #[test]
 fn a_held_op_with_no_instance_answers_in_the_sdks_words() {
     let view = view();
@@ -341,7 +337,6 @@ fn a_held_op_with_no_instance_answers_in_the_sdks_words() {
 }
 
 /// RED (export ABI defect 5): a sink states no `refresh` — the host never refreshes an export
-
 #[test]
 fn a_sink_that_states_no_refresh_is_answered_by_the_sdk() {
     let Err(refused) = Probe.refresh(b"{}", &[], 2) else {

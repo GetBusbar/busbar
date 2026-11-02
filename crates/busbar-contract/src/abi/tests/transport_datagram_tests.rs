@@ -41,7 +41,6 @@ fn route(offset: u64, len: u64, path: u32, lane: u32) -> DatagramRoute {
 }
 
 /// Terms a rendezvous answer carries: four credentials and a 32-byte fingerprint in 64 frame
-
 fn terms() -> RendezvousTerms {
     RendezvousTerms {
         role: HANDSHAKE_ANSWERS,

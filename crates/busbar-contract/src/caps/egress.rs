@@ -19,7 +19,6 @@ pub struct VerifiedDestination {
 
 impl VerifiedDestination {
     /// Seal a destination. Only the trust unit can, and only after its per-kind rule passed.
-
     pub fn seal(_token: &Grant<Dial>, lane: LaneId) -> Self {
         VerifiedDestination { lane }
     }

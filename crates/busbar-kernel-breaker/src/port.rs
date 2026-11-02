@@ -29,7 +29,6 @@ pub struct Classified {
 }
 
 /// The metric label literals, read off the contract's disposition table — the same rows the egress
-
 pub mod label {
     use busbar_contract::upstream::Disposition;
     /// A transient upstream failure.
@@ -39,15 +38,12 @@ pub mod label {
     /// The request was too large for this destination's window.
     pub const CONTEXT_LENGTH: &str = Disposition::ContextLength.label();
     /// The caller's own fault. Never read as a telemetry label by the reference caller (a
-
     pub const CLIENT_FAULT: &str = Disposition::ClientFault.label();
     /// A healthy destination's answer, recorded as a success. Never a failure's label: a
-
     pub const HEALTHY: &str = "healthy";
 }
 
 /// Fold a classified [`Disposition`] into the [`Outcome`] this unit's state machine acts on and the
-
 #[must_use]
 pub fn outcome_and_label(
     disposition: Disposition,
@@ -68,7 +64,6 @@ pub fn outcome_and_label(
 }
 
 /// Classify one upstream answer and fold it straight through to the [`Outcome`] and label a caller
-
 #[must_use]
 pub fn classify_upstream(status: UpstreamStatus) -> Classified {
     let disposition = classify::classify(status.reading);

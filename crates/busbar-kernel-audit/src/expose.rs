@@ -9,7 +9,6 @@ use crate::record::{AuditChain, AuditRecord};
 use crate::sign::{AuditKeySet, SIGNATURE_ALGORITHM, SIGNATURE_DOMAIN};
 
 /// Append one JSON string literal, escaped.
-
 fn push_json_string(out: &mut String, s: &str) {
     out.push('"');
     for c in s.chars() {
@@ -45,7 +44,6 @@ fn member_num(out: &mut String, name: &str, value: u64) {
 }
 
 /// `"name":"value"` or `"name":null` — the shape every optional member takes.
-
 fn member_opt(out: &mut String, name: &str, value: Option<&str>) {
     push_json_string(out, name);
     out.push(':');
@@ -56,7 +54,6 @@ fn member_opt(out: &mut String, name: &str, value: Option<&str>) {
 }
 
 /// The repeated groups, as `(count field, group name)`.
-
 const GROUPS: &[(&str, &str)] = &[
     ("lines_count", "lines"),
     ("hooks_count", "hooks"),
@@ -64,7 +61,6 @@ const GROUPS: &[(&str, &str)] = &[
 ];
 
 /// ONE RECORD, rendered as the fields its digest ate, plus the digest and the signature.
-
 fn push_record(out: &mut String, record: &AuditRecord) {
     out.push('{');
     let fields = digest_fields(record);
@@ -101,7 +97,6 @@ fn push_record(out: &mut String, record: &AuditRecord) {
 }
 
 /// One repeated group as a JSON array, from the flat recipe. Returns where the group ended.
-
 fn push_group(out: &mut String, fields: &[DigestField], mut i: usize, group: &str) -> usize {
     let scalar = format!("{group}[]");
     let member_prefix = format!("{group}[].");
@@ -148,7 +143,6 @@ fn push_group(out: &mut String, fields: &[DigestField], mut i: usize, group: &st
 }
 
 /// One recipe value, as JSON. Text is a string; a number is its canonical decimal text in a string
-
 fn push_value(out: &mut String, value: &DigestValue) {
     match value {
         DigestValue::Text(s) => push_json_string(out, s),
@@ -172,7 +166,6 @@ fn push_head(out: &mut String, head: &SignedHead) {
 }
 
 /// THE HEAD READ: where the chain is now.
-
 #[must_use]
 pub fn head_body(chain: &AuditChain) -> String {
     let mut out = String::new();
@@ -196,7 +189,6 @@ pub fn head_body(chain: &AuditChain) -> String {
 }
 
 /// THE RANGE READ: records by position, `from` through `to` inclusive.
-
 #[must_use]
 pub fn range_body(chain: &AuditChain, records: &[AuditRecord], from: u64, to: u64) -> String {
     let mut out = String::new();
@@ -233,7 +225,6 @@ pub fn range_body(chain: &AuditChain, records: &[AuditRecord], from: u64, to: u6
 }
 
 /// THE KEY-SET READ: the public keys, so nothing is taken on trust out of band.
-
 #[must_use]
 pub fn keys_body(keys: &AuditKeySet) -> String {
     let mut out = String::new();

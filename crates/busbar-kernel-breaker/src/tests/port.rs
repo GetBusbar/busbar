@@ -51,7 +51,6 @@ fn answered(fault: Option<WireFault>, retry_after: Option<u64>) -> Classified {
 }
 
 /// Each fault reading lands on 1.5.5's disposition for the answers its framer reads that way: a
-
 #[test]
 fn every_fault_reading_carries_its_disposition() {
     let hard = answered(Some(WireFault::Hard), Some(9));
@@ -82,7 +81,6 @@ fn every_fault_reading_carries_its_disposition() {
 }
 
 /// THE RED ARM'S RUNTIME HALF: an answer whose framer stated no fault reading (a framer with no
-
 #[test]
 fn an_answer_with_no_fault_reading_is_the_callers() {
     let got = answered(None, Some(30));
@@ -91,7 +89,6 @@ fn an_answer_with_no_fault_reading_is_the_callers() {
 }
 
 /// No answer at all is the kernel's own fact, and a failure OF the destination: transient, so it
-
 #[test]
 fn no_answer_is_a_transient_failure_that_trips() {
     let got = classify_upstream(UpstreamStatus {
@@ -103,7 +100,6 @@ fn no_answer_is_a_transient_failure_that_trips() {
 }
 
 /// The stated wait rides through only where the disposition reads it: a hard-down's cooldown is
-
 #[test]
 fn the_stated_wait_floors_only_a_transient_fault() {
     assert_eq!(
@@ -121,7 +117,6 @@ fn the_stated_wait_floors_only_a_transient_fault() {
 }
 
 /// HEALTHY: the destination answered, whatever the status. Relayed as a
-
 #[test]
 fn a_healthy_reading_is_a_relayed_success() {
     let healthy = answered(Some(WireFault::Healthy), Some(30));

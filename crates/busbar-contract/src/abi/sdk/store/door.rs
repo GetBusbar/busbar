@@ -54,7 +54,6 @@ const DIAG_OPID: &[Diag] = &[Diag {
 }];
 
 /// The Statement tail of a store `B` (`abi::store::StoreTail`), for [`store_door!`](crate::store_door).
-
 #[must_use]
 pub const fn tail<B: StoreSlots>() -> StoreTail {
     StoreTail {
@@ -69,7 +68,6 @@ pub const fn tail<B: StoreSlots>() -> StoreTail {
 }
 
 /// The Statement marks of a store `B`, for [`store_door!`](crate::store_door): an ephemeral store
-
 #[must_use]
 pub const fn marks<B: StoreSlots>() -> u64 {
     if B::TAIL.ephemeral {
@@ -80,7 +78,6 @@ pub const fn marks<B: StoreSlots>() -> u64 {
 }
 
 /// What an off-path answer handed the host, held until `release`. The blobs, strings and heads
-
 struct Leased {
     bytes: Vec<Box<[u8]>>,
 
@@ -106,7 +103,6 @@ impl Drop for Leased {
 }
 
 /// The longest refusal text the door renders itself: a fixed phrase and at most two numbers
-
 const RENDERED: usize = 96;
 
 /// A refusal text rendered into a fixed buffer, so a number in it costs no heap.
@@ -184,7 +180,6 @@ impl ReplyTexts {
 }
 
 /// One store instance as the door serves it: the backend and the error texts it keeps for the
-
 pub struct Served<B> {
     store: B,
     texts: Replies<ReplyTexts>,
@@ -246,7 +241,6 @@ fn reply_text(text: Text, held: &RefCell<ReplyTexts>) -> AbiStr {
 mod reply_tests;
 
 /// THE STORE'S LIFECYCLE is the SDK's one ([`Life`]): `validate` is the store's own parse, a
-
 impl<B: StoreSlots> Life for Served<B> {
     const CANCEL: u32 = CANCEL_UNKNOWN;
 
@@ -272,7 +266,6 @@ impl<B: StoreSlots> Life for Served<B> {
     }
 
     /// The store's connect step ([`StoreSlots::connect`]) as the open's second step: it runs on
-
     fn opening(
         &self,
         host: Option<&Host>,
@@ -307,7 +300,6 @@ impl<B: StoreSlots> Life for Served<B> {
     }
 
     /// REFUSED, naming the restart: the host never refreshes a store (`abi::mechanism::lifecycle`,
-
     fn refresh(&self, _: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
         Err(Refusal::refused(REFRESH_REFUSAL))
     }
@@ -319,7 +311,6 @@ pub const REFRESH_REFUSAL: &str =
      store) to apply them";
 
 /// What a store slot reads its instance through: the backend, its ticket's owned error texts and the
-
 struct Door<'a, B> {
     store: &'a B,
     held: &'a Held<Served<B>>,
@@ -399,7 +390,6 @@ macro_rules! step {
 }
 
 /// The op's context for this entry: fresh, or resuming what it parked. `None` for a RESUME with
-
 fn op_enter<'a, B: StoreSlots>(
     instance: &Instance<'_, Held<Served<B>>>,
     s: &'a Held<Served<B>>,
@@ -417,7 +407,6 @@ fn op_enter<'a, B: StoreSlots>(
 }
 
 /// The op's answer, settled: PENDING parks its context (FAULT when it pends on no ticket, or on the
-
 fn op_finish<B: StoreSlots>(
     instance: &Instance<'_, Held<Served<B>>>,
     cx: Op<'_>,
@@ -493,7 +482,6 @@ fn opt_text(l: Lent<'_, AbiStr>) -> Result<Option<&str>, Text> {
 }
 
 /// A record blob decoded. Its refusal carries the decoder's own words, so it is an owned text;
-
 fn json<T: DeserializeOwned>(l: Lent<'_, Blob>) -> Result<T, Text> {
     serde_json::from_slice(l.bytes())
         .map_err(|e| Text::Owned(format!("a record blob does not decode: {e}")))
@@ -625,7 +613,6 @@ fn bytes_into(out: &mut HostBytesOut, mut buf: HostBuf<'_, u8>, value: Option<&[
 }
 
 /// A list into host buffers: `items` rows and one byte buffer they point into. Each row has `N`
-
 fn list_into<'r, T: Copy, const N: usize>(
     out: &mut HostListOut,
     mut items: HostBuf<'_, T>,

@@ -6,7 +6,6 @@
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 /// Run `f` under the MANDATORY `catch_unwind` every export boundary shares, answering `None` for a
-
 pub fn caught<T>(f: impl FnOnce() -> T) -> Option<T> {
     catch_unwind(AssertUnwindSafe(f)).ok()
 }

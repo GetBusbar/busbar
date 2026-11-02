@@ -176,7 +176,6 @@ fn ends_answers_the_local_port_and_the_peer_bytes() {
 }
 
 /// `io.ends` on a program's handle reads the program's own exit from `exited`: the code once it
-
 #[test]
 fn program_exit_reads_the_exited_byte_and_the_code() {
     assert_eq!(io(Ticket::NONE).program_exit(7), Ok(Some(3)));
@@ -185,7 +184,6 @@ fn program_exit_reads_the_exited_byte_and_the_code() {
 }
 
 /// The public safe entry receives only borrowed Rust strings, including nested arguments and
-
 #[test]
 fn spawn_lends_owned_strings_and_nested_lists_until_the_slot_returns() {
     let table = IoSlots {

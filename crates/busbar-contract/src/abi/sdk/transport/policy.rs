@@ -38,7 +38,6 @@ impl Loans {
     }
 
     /// Decode the initial full policy once. `None` means the host did not advertise this
-
     pub fn from_initial(extensions: &[u8]) -> Result<Option<Self>, &'static str> {
         if extensions::get(extensions, EXT_GUEST_CURRENT).is_some() {
             return Err("the initial policy must be a full loan");
@@ -54,7 +53,6 @@ impl Loans {
     }
 
     /// Open a stream against the host's selected generation. Pin `Some(policy)` in the stream
-
     pub fn open(
         &mut self,
         ticket: Ticket,

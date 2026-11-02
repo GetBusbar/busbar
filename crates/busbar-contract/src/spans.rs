@@ -5,7 +5,6 @@ pub use crate::json_grammar::{resolve_pointer, scan_frontier, Resolved, Span, MA
 use crate::bounded::{PlaneAlloc, PlaneAllocBudget, MAX_KEYS};
 
 /// Resolve a plane's declared pointers over a body, into a table the unit can hold.
-
 pub fn resolve<'a>(
     body: &[u8],
     pointers: &[&'a str],
@@ -23,7 +22,6 @@ pub fn resolve<'a>(
 }
 
 /// THE JSON NESTING-DEPTH GUARD: does `bytes` nest `{`/`[` deeper than `max`?
-
 #[must_use]
 pub fn exceeds_max_depth(bytes: &[u8], max: usize) -> bool {
     let mut depth: usize = 0;
@@ -66,7 +64,6 @@ fn past_ws(b: &[u8], mut i: usize) -> usize {
 }
 
 /// One past the closing quote of the JSON string whose opening quote is at `open_quote`, honouring
-
 #[must_use]
 pub fn string_end(b: &[u8], open_quote: usize) -> Option<usize> {
     if b.get(open_quote) != Some(&b'"') {
@@ -84,7 +81,6 @@ pub fn string_end(b: &[u8], open_quote: usize) -> Option<usize> {
 }
 
 /// One past the JSON value that starts at `start` (whitespace before it allowed), respecting nested
-
 #[must_use]
 pub fn value_end(b: &[u8], start: usize) -> Option<usize> {
     let mut i = past_ws(b, start);
@@ -174,7 +170,6 @@ impl RawMember<'_> {
 }
 
 /// SCAN the object whose opening brace is the first significant byte at or after `at`, meeting
-
 pub fn scan<'a>(
     b: &'a [u8],
     at: usize,
@@ -260,7 +255,6 @@ impl Object {
 }
 
 /// The MEMBERS of the object whose opening brace is the first significant byte at or after `at`.
-
 #[must_use]
 pub fn members(b: &[u8], at: usize) -> Option<Object> {
     let mut members = Vec::new();
@@ -316,14 +310,12 @@ fn same_value(a: &[u8], b: &[u8]) -> bool {
 type Cut<'a> = (usize, usize, Cow<'a, [u8]>);
 
 /// APPLY `edits` to the object `obj` of `b` (a later edit of a key overrides an earlier one).
-
 #[must_use]
 pub fn apply(b: &[u8], obj: &Object, edits: &[Edit<'_>]) -> Option<Vec<u8>> {
     render(b, edit_cuts(b, obj, edits)?)
 }
 
 /// APPLY `edits` to the top-level object of `b`. `None` when `b` is not an object or nothing
-
 #[must_use]
 pub fn apply_top(b: &[u8], edits: &[Edit<'_>]) -> Option<Vec<u8>> {
     apply(b, &members(b, 0)?, edits)

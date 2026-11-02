@@ -112,7 +112,6 @@ fn a_references_settings_are_an_object() {
 }
 
 /// A source that takes no settings opens on empty bytes or `{}`, and refuses a setting naming it,
-
 #[test]
 fn a_source_that_takes_no_settings_refuses_one_naming_it() {
     assert_eq!(takes_no_settings(b"", "env", NAMES), Ok(()));
@@ -132,7 +131,6 @@ fn a_source_that_takes_no_settings_refuses_one_naming_it() {
 }
 
 /// Through the door: instance settings refused FAILED in the words above; a resolve that fails is
-
 #[test]
 fn a_failed_resolve_answers_its_code_and_text_through_the_door() {
     let view = DoorView::of(plugin::MACRO_DOOR);

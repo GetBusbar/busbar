@@ -133,7 +133,6 @@ fn every_rung_of_the_ladder_routes() {
 }
 
 /// Every rung is a well-formed claim, and every claim's selector overlaps itself (whether two CLAIMS
-
 #[test]
 fn every_rung_is_a_claim_that_a_boot_would_check() {
     for rung in ladder() {
@@ -153,7 +152,6 @@ fn every_rung_is_a_claim_that_a_boot_would_check() {
 }
 
 /// Two rungs of the path family that share a prefix are still told apart.
-
 #[test]
 fn overlapping_rungs_within_one_plane_are_an_ordering_question_not_a_refusal() {
     let general = Selector::PathPattern(&[PathSeg::Var, PathSeg::Lit("v1"), PathSeg::Tail]);
@@ -171,7 +169,6 @@ fn overlapping_rungs_within_one_plane_are_an_ordering_question_not_a_refusal() {
 }
 
 /// Registration refuses a transport that publishes a reserved fact key it did not declare.
-
 #[test]
 fn a_transport_must_declare_every_reserved_key_it_publishes() {
     use busbar_contract::transport::facts;

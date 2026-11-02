@@ -360,7 +360,6 @@ fn open_holds_the_kinds_state_and_a_refused_open_answers_its_text() {
 }
 
 /// THE DRAIN: `close` runs the kind's [`Life::close`] on the instance it closes, with the host
-
 #[test]
 fn close_runs_the_kinds_close_on_its_instance() {
     let (_, inst, _) = open(b"closing-probe", &[]);
@@ -423,7 +422,6 @@ fn every_lifecycle_slot_answers_the_kinds_value() {
 }
 
 /// RED (secret ABI defect 13, transport 9): a release of a lease the instance does not hold, or
-
 #[test]
 fn an_unknown_lease_is_refused_in_words() {
     let said = |inst: *mut c_void| {
@@ -466,7 +464,6 @@ fn a_resolved_secret_takes_no_lease_and_a_leased_answer_is_held_until_release() 
 }
 
 /// RED: a leased string outlives the call and a refresh generation, and lives until its release;
-
 #[test]
 fn a_leased_string_is_read_back_across_a_refresh_generation_until_its_release() {
     let (_, inst, _) = open(b"str", &[]);
@@ -542,7 +539,6 @@ fn metrics(out: &ResolveOut) -> Vec<(u32, f64)> {
 }
 
 /// RED on a per-thread slot: TWO INSTANCES OF ONE PLUGIN, INTERLEAVED ON ONE THREAD, each read
-
 #[test]
 fn red_two_instances_interleaved_on_one_thread_never_see_each_others_answers() {
     let (_, alpha, _) = open(b"probe:alpha", &[]);
@@ -626,7 +622,6 @@ fn open_lent(settings: &[u8], buf: Option<&mut [u8]>) -> (Outcome, OpenOut) {
 }
 
 /// An instance-less failure (`validate`, a failed `open`) has no instance to keep an owned text:
-
 #[test]
 fn an_instance_less_owned_text_rides_the_hosts_lent_buffer_and_only_else_a_fixed_text() {
     let mut vbuf = [0_u8; 64];
@@ -982,7 +977,6 @@ fn raised(head: &OutHead) -> Vec<(u32, u8, String)> {
 }
 
 /// RED (BIND-AUDIT): what the instance an `open` or `refresh` built raises ([`Life::flagged`])
-
 #[test]
 fn an_open_and_a_refresh_carry_what_the_instance_raises() {
     let warn = crate::abi::mechanism::call::SEVERITY_WARN;

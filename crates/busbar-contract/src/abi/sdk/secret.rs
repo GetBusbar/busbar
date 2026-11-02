@@ -25,7 +25,6 @@ pub const fn error_kind(kind: SecretErrorKind) -> u32 {
 }
 
 /// A resolve's settings bytes as the JSON object they must be (empty = none).
-
 pub fn settings_of(bytes: &[u8]) -> SecretResult<serde_json::Map<String, serde_json::Value>> {
     if bytes.is_empty() {
         return Ok(serde_json::Map::new());
@@ -36,7 +35,6 @@ pub fn settings_of(bytes: &[u8]) -> SecretResult<serde_json::Map<String, serde_j
 }
 
 /// The instance settings of the source `module`, which takes none: empty bytes or an empty object.
-
 pub fn takes_no_settings(bytes: &[u8], module: &str, names: &str) -> Result<(), String> {
     if bytes.is_empty() {
         return Ok(());

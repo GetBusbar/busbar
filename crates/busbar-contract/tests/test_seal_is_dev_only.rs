@@ -47,7 +47,6 @@ fn section_of(lines: &[&str], idx: usize) -> String {
 }
 
 /// A section that is dev-only: `[dev-dependencies]`, `[dev-dependencies.x]`, and the
-
 fn is_dev_section(section: &str) -> bool {
     let inner = section.trim_start_matches('[').trim_end_matches(']');
     inner
@@ -56,7 +55,6 @@ fn is_dev_section(section: &str) -> bool {
 }
 
 /// Every line of one manifest's `text` naming `feature` outside a dev-only table, and how many dev
-
 fn offenders_in(feature: &str, text: &str, own: bool, label: &str) -> (Vec<String>, usize) {
     let mut offenders = Vec::new();
     let mut dev_edges = 0usize;
@@ -145,7 +143,6 @@ fn the_test_seal_feature_is_named_only_on_dev_dependency_edges() {
 }
 
 /// RED PLANTS for the dev-edge scan the rules above run: each manifest below turns `test-seal` on
-
 #[test]
 fn the_dev_edge_scan_refuses_every_non_dev_edge() {
     const F: &str = "test-seal";

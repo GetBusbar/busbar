@@ -492,7 +492,6 @@ fn complete_login_checks_its_own_vocabulary() {
 }
 
 /// M-SB REFINEMENT: one dimension short with the other reporting a fitting full size is a legal
-
 #[test]
 fn a_short_identify_reports_every_dimension_full_size() {
     let mut o: IdentifyOut = zeroed();
@@ -582,7 +581,6 @@ fn a_style_decl_flag_outside_the_vocabulary_is_fault() {
 }
 
 /// RED (arch-audit u29 F1): a style STATES where its token endpoint is — the provider entry's
-
 #[test]
 fn a_style_decl_states_its_token_endpoint_and_its_list_rank() {
     let head = POINT_HEAD;
@@ -606,7 +604,6 @@ fn a_style_decl_states_its_token_endpoint_and_its_list_rank() {
 }
 
 /// RED (arch-audit u29 F1): a style takes its token endpoint from ONE place: both endpoint bits
-
 #[test]
 fn a_style_decl_stating_both_token_endpoints_is_fault() {
     assert_eq!(
@@ -619,7 +616,6 @@ fn a_style_decl_stating_both_token_endpoints_is_fault() {
 }
 
 /// RED: a style needs at least one point, and a valid set (THE DESIGN, "Auth points and guest
-
 #[test]
 fn a_style_decl_needs_a_valid_non_empty_point_set() {
     assert_eq!(check_style_decl(0, 0), red(Rule::Missing, "points.missing"));
@@ -638,7 +634,6 @@ fn a_style_decl_needs_a_valid_non_empty_point_set() {
 }
 
 /// THE POINT SET RULES, one RED each: an unknown bit, the reserved `Frame`, `Head` with `HeadBody`,
-
 #[test]
 fn check_points_refuses_each_broken_set() {
     assert_eq!(
@@ -791,7 +786,6 @@ fn a_decision_outside_the_vocabulary_is_fault() {
 }
 
 /// RED: each strip rule — the count over the capacity, a count that disagrees with the slice, an
-
 #[test]
 fn each_broken_strip_is_fault() {
     let mut o = stripped(VERDICT_REJECT);
@@ -849,7 +843,6 @@ fn a_credential_rides_only_an_identity() {
 }
 
 /// THE STRIP ARRAY'S SHORT ANSWER, and its REDs: a strip need past the hard maximum, a strip need
-
 #[test]
 fn the_strip_array_has_the_short_buffer_rules() {
     let mut o: IdentifyOut = zeroed();
@@ -957,7 +950,6 @@ fn a_target_is_a_span_in_the_buffer_or_absent() {
 }
 
 /// RED (arch-audit u29 F1): THE ONE ORDER the host lists the outbound styles a provider's `auth:`
-
 #[test]
 fn the_declared_styles_list_ranked_first_then_in_registration_order() {
     use busbar_contract::auth_calls::{listed_styles, DeclaredStyle};

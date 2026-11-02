@@ -168,7 +168,6 @@ pub enum Abort {
 
 impl Abort {
     /// The reason this abort is recorded under. Every abort has one, and no two shapes share one,
-
     pub fn reason(self) -> ReasonCode {
         match self {
             Abort::Kernel { reason } => reason,

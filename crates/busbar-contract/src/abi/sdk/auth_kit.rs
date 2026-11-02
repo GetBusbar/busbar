@@ -15,7 +15,6 @@ use crate::abi::sdk::out::Out;
 use crate::auth::Principal;
 
 /// The `map_err` for a decode of `what` whose input may carry a secret: `<what>: <serde's words>`
-
 pub fn json_error(what: &'static str) -> impl FnOnce(serde_json::Error) -> String {
     move |e: serde_json::Error| {
         let text = e.to_string();
@@ -36,7 +35,6 @@ pub fn json_error(what: &'static str) -> impl FnOnce(serde_json::Error) -> Strin
 }
 
 /// `complete_login`'s answer that is not an identity: `verdict`
-
 pub fn login_declined(
     verdict: u32,
     why: impl Into<Cow<'static, str>>,
@@ -54,7 +52,6 @@ const ABSENT: Span = Span {
 };
 
 /// `complete_login`'s identity answer for `p`, written into the host's `buf`: its id as the
-
 pub fn login_identity(
     p: &Principal,
     buf: Lent<'_, IdentityBuf>,
@@ -98,7 +95,6 @@ pub fn login_identity(
 }
 
 /// `complete_login`'s answer for an IdP that could not answer (connect, TLS, a timeout, a 5xx or
-
 pub fn login_outage(
     retry_after_secs: Option<u64>,
     buf: Lent<'_, IdentityBuf>,

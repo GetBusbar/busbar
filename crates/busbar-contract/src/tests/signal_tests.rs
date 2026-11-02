@@ -50,7 +50,6 @@ fn populated_bag_serializes_flat_scalars() {
 }
 
 /// A populated bag is NOT empty — the other half of `is_empty`'s contract (only the empty case was
-
 #[test]
 fn populated_bag_is_not_empty() {
     let mut bag = SignalBag::new();
@@ -60,7 +59,6 @@ fn populated_bag_is_not_empty() {
 }
 
 /// `SignalBag::get` finds a previously-pushed value BY KEY (not by position, not the first/last
-
 #[test]
 fn get_finds_by_signal_key_and_none_when_absent() {
     let mut bag = SignalBag::new();
@@ -100,7 +98,6 @@ fn iter_yields_every_pushed_entry_in_order() {
 }
 
 /// `spilled` is `false` for the empty bag and for a bag within the inline `SmallVec` capacity (4);
-
 #[test]
 fn spilled_reflects_heap_overflow_of_the_inline_capacity() {
     let mut bag = SignalBag::new();
@@ -117,7 +114,6 @@ fn spilled_reflects_heap_overflow_of_the_inline_capacity() {
 }
 
 /// LEGACY the retired engine crate's `src/engine/tests/signal_catalog_tests.rs::default_path_allocates_no_signals_container`.
-
 #[test]
 fn a_bag_of_up_to_four_signals_never_spills_onto_the_heap() {
     let mut bag = SignalBag::new();

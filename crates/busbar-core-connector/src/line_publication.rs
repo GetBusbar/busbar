@@ -252,7 +252,6 @@ impl Pairing {
         drop(retired);
     }
     /// Register a synchronous reader/driver for genuine storage retirement. `false` explicitly
-
     pub fn wait_storage(&self, waker: &std::task::Waker, generation: u64) -> bool {
         self.memory.register(waker);
         let progress = {
@@ -284,7 +283,6 @@ impl Pairing {
         }
     }
     /// Reserve before growing accepted input. `capacity` is requested capacity, rather than
-
     pub fn reserve_input(&self, capacity: usize) -> Result<Custody, SubmitError> {
         self.reserve_input_from(None, capacity)
     }
@@ -339,7 +337,6 @@ impl Pairing {
     }
 
     /// Queue already charged application input without copying or claiming delivery. The
-
     pub fn submit_owned(
         self: &Arc<Self>,
         leg: Leg,
@@ -351,7 +348,6 @@ impl Pairing {
     }
 
     /// As [`Self::submit_owned`], retaining the source's bounded admission guard until actual
-
     pub fn submit_owned_guarded(
         self: &Arc<Self>,
         leg: Leg,
@@ -364,7 +360,6 @@ impl Pairing {
     }
 
     /// Transfer early/gathered bytes into their producer job. `preaccepted` has already been
-
     pub fn submit_preaccepted_owned(
         self: &Arc<Self>,
         leg: Leg,
@@ -406,7 +401,6 @@ impl Pairing {
     }
 
     /// Borrowed application write: wait before copying when live publication can free credit,
-
     pub async fn send(self: &Arc<Self>, leg: Leg, stream: u64, bytes: &[u8], text: bool) -> bool {
         let Ok(custody) = self.input_credit_for(leg, bytes.len()).await else {
             return false;
@@ -435,7 +429,6 @@ impl Pairing {
     }
 
     /// Wait for fresh input credit without copying or accepting its bytes. Cancellation while
-
     pub async fn input_credit(&self, capacity: usize) -> Result<Custody, SubmitError> {
         self.input_credit_from(None, capacity).await
     }
@@ -489,7 +482,6 @@ impl Pairing {
     }
 
     /// Queue checked output in FIFO order. No framer callback runs before this method returns;
-
     pub fn publish(self: &Arc<Self>, leg: Leg, mut yielded: Yielded, now: Instant) -> SessionBatch {
         let owns_storage = yielded.pieces.capacity() != 0
             || yielded.heads.capacity() != 0
@@ -622,14 +614,12 @@ impl Pairing {
     }
 
     /// Completed or partial publication counters for this connection. A successful ABI Emit
-
     #[must_use]
     pub fn publication_outcome(&self) -> PublicationOutcome {
         self.lock().publications.outcome.clone()
     }
 
     /// Await actual publication quiescence, or explicit terminal failure. Channel ownership
-
     pub async fn published(&self) -> PublicationOutcome {
         loop {
             let changed = self.published.notified();

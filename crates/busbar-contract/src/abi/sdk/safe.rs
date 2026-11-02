@@ -19,7 +19,6 @@ use crate::abi::sdk::lent::Lent;
 use crate::abi::sdk::out::{holders_live, Holders, Kept, Out, Reason, ReplyKey, Reporting};
 
 /// One op's parked continuation, its type erased: an `Option<S>` kept boxed in its slot. When the
-
 trait Continuation: Send + Sync {
     /// Drop what is held, keeping the allocation.
     fn clear(&mut self);
@@ -38,14 +37,12 @@ impl<S: Send + Sync + 'static> Continuation for Option<S> {
 }
 
 /// How many slots each segment of an instance's parked table holds. The trampoline is not handed
-
 const SEGMENT: usize = 16;
 
 /// A free slot's key.
 const FREE: u64 = 0;
 
 /// A ticket as a slot's key: its two words side by side, compared, never decoded (the encoding is
-
 fn key(ticket: Ticket) -> u64 {
     (u64::from(ticket.slot) << 32) | u64::from(ticket.generation)
 }
@@ -74,7 +71,6 @@ impl Slot {
     }
 
     /// The slot, locked. Only parties on the slot's own ticket meet here (its entry and a `cancel`
-
     fn hold(&self) -> Held<'_> {
         while self
             .lock
@@ -106,7 +102,6 @@ impl Slot {
 }
 
 /// A slot, locked; dropping it frees the slot's key when `free` says so, then lets go of the lock
-
 struct Held<'a> {
     slot: &'a Slot,
     free: bool,
@@ -184,7 +179,6 @@ impl Drop for Segment {
 }
 
 /// What the SDK keeps in every instance box whatever the state's type: the tag, then the parked
-
 #[repr(C)]
 struct Head {
     tag: TypeId,
@@ -207,7 +201,6 @@ impl Head {
     }
 
     /// The slot `ticket`'s op is parked in, locked; `None` when nothing is parked on it, without
-
     fn find(&self, ticket: Ticket) -> Option<Held<'_>> {
         if ticket.is_none() {
             return None;
@@ -226,7 +219,6 @@ impl Head {
     }
 
     /// A free slot claimed for `ticket` by compare-and-swap, locked: first one whose pooled
-
     fn claim<S: Send + Sync + 'static>(&self, ticket: Ticket) -> Held<'_> {
         let key = key(ticket);
         for any in [false, true] {
@@ -248,7 +240,6 @@ impl Head {
     }
 
     /// `slot` claimed for `key`, locked, when it is free and (unless `any`) pools an `S` or
-
     fn claim_free<S: 'static>(slot: &Slot, key: u64, any: bool) -> Option<Held<'_>> {
         if slot.key.load(Ordering::Relaxed) != FREE {
             return None;
@@ -273,7 +264,6 @@ impl Head {
     }
 
     /// Park `state` on `ticket`, replacing what was parked there, in the slot's pooled allocation
-
     fn park<S: Send + Sync + 'static>(&self, ticket: Ticket, state: S) {
         if ticket.is_none() {
             return;
@@ -299,7 +289,6 @@ impl Head {
     }
 
     /// Take back what `ticket` parked as an `S`, freeing its slot (the allocation stays, pooled);
-
     fn take<S: Send + Sync + 'static>(&self, ticket: Ticket) -> Option<S> {
         let mut held = self.find(ticket)?;
         let taken = held
@@ -313,7 +302,6 @@ impl Head {
     }
 
     /// Retire `ticket` before dropping its state outside the slot lock. Return the emptied pooled
-
     fn forget(&self, ticket: Ticket) {
         let Some(mut held) = self.find(ticket) else {
             return;
@@ -348,7 +336,6 @@ impl Head {
 }
 
 /// The box an instance pointer points to: the [`Head`] at offset `0` whatever `T` is
-
 #[repr(C)]
 struct Tagged<T> {
     head: Head,
@@ -366,7 +353,6 @@ unsafe fn head<'a>(instance: *mut c_void) -> Option<&'a Head> {
 }
 
 /// The plugin's instance state, as a slot body is handed it. Only the SDK makes one; it lives for
-
 pub struct Instance<'call, T> {
     ptr: *mut c_void,
     index: u32,
@@ -390,7 +376,6 @@ impl<T> std::fmt::Debug for Instance<'_, T> {
 
 impl<'call, T: Send + Sync + 'static> Instance<'call, T> {
     /// The state `open` installed; `None` before `open` (in `validate` and `open` itself) or when
-
     #[must_use]
     pub fn get(&self) -> Option<&'call T> {
         if self.ptr.is_null() {
@@ -409,7 +394,6 @@ impl<'call, T: Send + Sync + 'static> Instance<'call, T> {
     }
 
     /// Install the state, in `open`. It becomes the instance only if `open` answers READY; a
-
     pub fn open(&self, state: T) {
         assert!(
             self.index == slot::OPEN,
@@ -422,7 +406,6 @@ impl<'call, T: Send + Sync + 'static> Instance<'call, T> {
     }
 
     /// Install the state in `open`, PRE-PARKING `parked` on this call's ticket — for an `open`
-
     pub fn open_parking<S: Send + Sync + 'static>(&self, state: T, parked: S) {
         assert!(
             self.index == slot::OPEN,
@@ -480,7 +463,6 @@ impl<'call, T: Send + Sync + 'static> Instance<'call, T> {
     }
 
     /// PARK `state` on this call's ticket across its PENDING answer: the op's own continuation
-
     pub fn park<S: Send + Sync + 'static>(&self, state: S) {
         if let Some(h) = self.head() {
             h.park(self.ticket, state);
@@ -488,7 +470,6 @@ impl<'call, T: Send + Sync + 'static> Instance<'call, T> {
     }
 
     /// Take back what [`Instance::park`] parked on this call's ticket, in the op's RESUME, by
-
     #[must_use]
     pub fn resume_value<S: Send + Sync + 'static>(&self) -> Option<S> {
         if !self.resuming {
@@ -498,7 +479,6 @@ impl<'call, T: Send + Sync + 'static> Instance<'call, T> {
     }
 
     /// [`Instance::resume_value`], boxed. The box is a fresh allocation: a body on the request path
-
     #[must_use]
     pub fn resume<S: Send + Sync + 'static>(&self) -> Option<Box<S>> {
         self.resume_value().map(Box::new)
@@ -524,7 +504,6 @@ impl<'call, T: Send + Sync + 'static> Instance<'call, T> {
 }
 
 /// A slot body with no `unsafe`: [`RawSlot`](crate::abi::sdk::door::RawSlot)'s safe form, named in
-
 pub trait SafeSlot {
     /// The slot's `in`.
     type In: AbiIn;
@@ -533,7 +512,6 @@ pub trait SafeSlot {
     /// The plugin's instance state: one type for every slot of the plugin.
     type State: Send + Sync + 'static;
     /// The body. `input` is the host's `in`, lent for the call; `out` a private copy of the
-
     fn call(
         instance: Instance<'_, Self::State>,
         input: Lent<'_, Self::In>,

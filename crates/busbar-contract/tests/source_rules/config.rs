@@ -13,7 +13,6 @@ use crate::walk;
 const SNAPSHOT: &str = "crates/busbar-kernel/src/config/config-schema.snapshot.json";
 
 /// The 1.5.x top-level sections whose grammar a plane owns: each is accepted at boot by the linked
-
 const PLANE_SECTIONS: &[(&str, &str)] = &[
     ("DeployCfg", "agent_push"),
     ("DeployCfg", "agents"),
@@ -118,7 +117,6 @@ fn accepted_keys(sources: &[walk::Source]) -> BTreeMap<String, BTreeSet<String>>
 }
 
 /// Match the plane's actual descriptor against the frozen field's type, recursively.
-
 fn descriptor_shape_matches(
     shape: &busbar_contract::provider_keys::Shape,
     rust: &str,
@@ -172,7 +170,6 @@ fn descriptor_shape_matches(
 }
 
 /// The fixture is the actual exported plane descriptor, bound to source provenance and
-
 fn descriptor_provider_entries(
     sources: &[walk::Source],
     types: &serde_json::Map<String, serde_json::Value>,

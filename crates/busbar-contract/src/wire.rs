@@ -49,7 +49,6 @@ impl<'u> FrameCursor<'u> {
     }
 
     /// The next unconsumed frame, without consuming it.
-
     #[must_use]
     pub fn peek(&self) -> Option<&'u Frame> {
         let frame = self.frames.get(self.position)?;
@@ -57,7 +56,6 @@ impl<'u> FrameCursor<'u> {
     }
 
     /// Consume and return the next frame, or nothing once the ceiling is reached.
-
     pub fn next_frame(&mut self) -> Option<&'u Frame> {
         let frame = self.frames.get(self.position)?;
         if !self.within_ceiling(frame) {

@@ -63,10 +63,8 @@ const OPEN_DROP_PANICS: usize = 6;
 /// `close` with these `in.flags` answers FAILED.
 const CLOSE_FAILS: u32 = 7;
 /// `close` with these `in.flags` answers READY naming a reason leased from the state's own table
-
 const CLOSE_LEASES_ERROR: u32 = 8;
 /// `drive` with these `in.flags` answers FAILED with a reason leased from a table the body made
-
 const DRIVE_LOCAL_LEASE: u32 = 0x100;
 /// `drive` with these `in.flags` answers FAILED with a reason leased from the instance's table.
 const DRIVE_STATE_LEASE: u32 = 0x200;
@@ -433,7 +431,6 @@ fn red_an_answer_leased_from_a_table_the_body_dropped_is_fault() {
 }
 
 /// THE REQUEST PATH TAKES NO SHARED LOCK WHEN NOTHING IS PARKED (THE DESIGN, the plugin ABI: "no allocation
-
 #[test]
 fn an_entry_with_nothing_parked_takes_no_parked_lock() {
     let (o, inst, _drops) = open(OPEN_READY);
@@ -458,7 +455,6 @@ fn an_entry_with_nothing_parked_takes_no_parked_lock() {
 }
 
 /// A CROSSING ALLOCATES NOTHING, ITS PER-CALL LOG SCOPE INCLUDED (THE DESIGN, the plugin ABI: "no
-
 #[test]
 fn a_crossing_with_its_scoped_capture_allocates_nothing() {
     let (o, inst, _drops) = open(OPEN_READY);
@@ -508,7 +504,6 @@ fn cancel_ticket(instance: *mut c_void, ticket: Ticket) -> Outcome {
 }
 
 /// A continuation's destructor may call back into the same instance. Probe the existing slot
-
 #[test]
 fn cancelled_and_replaced_continuations_drop_unlocked_and_preserve_reentrant_work() {
     use std::sync::Arc;
@@ -603,7 +598,6 @@ fn cancelled_and_replaced_continuations_drop_unlocked_and_preserve_reentrant_wor
 }
 
 /// A NOT-READY CONTINUATION COMES FROM A RECYCLED POOL (BUSBAR-1.6.0.md A.8, decision #30: "no
-
 #[test]
 fn red_a_warm_pending_resume_ready_cycle_on_a_recycled_ticket_allocates_nothing() {
     let (o, inst, _drops) = open(OPEN_READY);
@@ -634,7 +628,6 @@ fn red_a_warm_pending_resume_ready_cycle_on_a_recycled_ticket_allocates_nothing(
 }
 
 /// A CROSSING ON ONE TICKET NEVER WAITS ON ANOTHER TICKET'S CONTINUATION (decision #30: no
-
 #[test]
 fn red_a_ready_crossing_completes_while_another_ticket_is_parked_and_held() {
     let (o, inst, _drops) = open(OPEN_READY);
@@ -688,7 +681,6 @@ fn warm_cycle_allocations(instance: *mut c_void, slot: u32) -> u64 {
 }
 
 /// The GREEN twin: a RESUME that takes its continuation back by value leaves its allocation in the
-
 #[test]
 fn a_warm_cycle_that_takes_its_continuation_back_allocates_nothing() {
     let (o, inst, _drops) = open(OPEN_READY);
@@ -698,7 +690,6 @@ fn a_warm_cycle_that_takes_its_continuation_back_allocates_nothing() {
 }
 
 /// The control: the counter sees an allocation when one happens. A RESUME that takes its
-
 #[test]
 fn the_counter_sees_the_box_a_boxed_resume_hands_back() {
     let (o, inst, _drops) = open(OPEN_READY);
@@ -708,7 +699,6 @@ fn the_counter_sees_the_box_a_boxed_resume_hands_back() {
 }
 
 /// More tickets parked at once than one segment holds: the table grows, and every ticket resumes
-
 #[test]
 fn the_parked_table_grows_past_a_segment_and_every_ticket_resumes_its_own() {
     let (o, inst, _drops) = open(OPEN_READY);

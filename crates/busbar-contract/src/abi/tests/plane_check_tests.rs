@@ -97,7 +97,6 @@ fn arrive_units_follow_m_sb() {
 }
 
 /// RED: a refused arrival names the plane's own code and a 4xx status; any other answer names
-
 #[test]
 fn a_refused_arrival_names_its_code_and_a_caller_status() {
     let refused = |refusal, refusal_status| {
@@ -166,7 +165,6 @@ fn an_arrival_index_past_its_list_or_unknown_need_is_fault() {
 }
 
 /// One cumulative count per class and source: a second count of one class is a contradiction,
-
 #[test]
 fn a_class_counted_twice_is_fault() {
     let mut o: ArriveOut = z();
@@ -198,7 +196,6 @@ fn a_class_counted_twice_is_fault() {
 }
 
 /// THE USAGE FLOOR (Q24/Q28): a floor count is a known source and bills like a reported one; an
-
 #[test]
 fn a_floor_count_is_a_known_source_that_bills() {
     let mut o: ArriveOut = z();
@@ -215,7 +212,6 @@ fn a_floor_count_is_a_known_source_that_bills() {
 }
 
 /// THE CANCEL RULE's shape: an arrival is either a cancellable unit (`correlation`) or a cancel
-
 #[test]
 fn an_arrival_that_cancels_carries_no_correlation_of_its_own() {
     let mut o: ArriveOut = z();
@@ -279,7 +275,6 @@ fn an_arrival_names_its_pool_only_when_ready_and_only_with_bytes() {
 }
 
 /// A REFUSED ARRIVAL'S WORDS are carried whole or not at all: up to `MAX_REFUSAL_TEXT` bytes pass,
-
 #[test]
 fn a_refused_arrivals_text_is_bounded_and_never_cut() {
     let at_cap = "x".repeat(MAX_REFUSAL_TEXT as usize);
@@ -325,7 +320,6 @@ fn a_refused_arrivals_text_is_bounded_and_never_cut() {
 }
 
 /// Words that echo the largest field line a transport admits fit: an echoed field never overflows
-
 #[test]
 fn a_refusal_echoing_the_largest_admitted_field_line_fits() {
     let echoed = format!(
@@ -347,7 +341,6 @@ fn a_refusal_echoing_the_largest_admitted_field_line_fits() {
 }
 
 /// The ABI distinguishes refusal causes and accepts a rendering that leaves status unspecified.
-
 #[test]
 fn the_refusal_causes_are_distinct_and_zero_status_is_accepted() {
     assert_eq!(
@@ -411,7 +404,6 @@ fn on_piece_unknown_flags_or_more_are_fault() {
 }
 
 /// A text message is a whole message of at least one byte: PIECE_OUT_TEXT on an answer that
-
 #[test]
 fn a_text_message_is_whole_and_not_empty() {
     let mut o: OnPieceOut = z();
@@ -430,7 +422,6 @@ fn a_text_message_is_whole_and_not_empty() {
 }
 
 /// RED (SEAM-4l additions): THE MESSAGE BOUNDARY is a known bit, valid on an answer toward the
-
 #[test]
 fn a_message_boundary_ends_a_message_toward_the_caller_only() {
     let mut o: OnPieceOut = z();
@@ -450,7 +441,6 @@ fn a_message_boundary_ends_a_message_toward_the_caller_only() {
 }
 
 /// RED (SEAM-4l additions): THE FINAL STATUS closes the reply (`EMIT_DONE`), its message and details
-
 #[test]
 fn a_final_status_closes_the_reply_inside_the_arena() {
     let at = |offset: u32, len: u32| crate::abi::mechanism::call::Span { offset, len };
@@ -488,7 +478,6 @@ fn a_final_status_closes_the_reply_inside_the_arena() {
 }
 
 /// THE CATALOGUE WATCH: `EMIT_WATCH_CATALOGUE` and `EMIT_UNWATCH_CATALOGUE` are known bits, each
-
 #[test]
 fn a_catalogue_watch_and_its_drop_are_known_and_never_together() {
     for flag in [EMIT_WATCH_CATALOGUE, EMIT_UNWATCH_CATALOGUE] {
@@ -505,7 +494,6 @@ fn a_catalogue_watch_and_its_drop_are_known_and_never_together() {
 }
 
 /// The catalogue-moved tick is its own `OnPieceIn::flags` bit, distinct from every other piece bit,
-
 #[test]
 fn the_catalogue_bits_share_no_bit_with_their_neighbours() {
     let piece_bits = [
@@ -665,7 +653,6 @@ fn a_record_write_with_an_unknown_kind_is_fault() {
 }
 
 /// A record write is a put: the retired delete code (2) and every other is FAULT, never a write
-
 #[test]
 fn a_record_write_that_is_not_a_put_is_fault() {
     let mut o: OnPieceOut = z();
@@ -678,7 +665,6 @@ fn a_record_write_that_is_not_a_put_is_fault() {
 }
 
 /// SEAM-L(k), THE UNIT'S AUDIT RECORD: a [`RECORD_AUDIT`] write names the row's outcome where a
-
 #[test]
 fn an_audit_record_names_its_outcome_and_action() {
     let mut o: OnPieceOut = z();
@@ -727,7 +713,6 @@ fn an_audit_record_names_its_outcome_and_action() {
 }
 
 /// SEAM-L(j), THE UNIT'S LEDGER LANE: an answer may name the lane its units are priced under, in
-
 #[test]
 fn a_ledger_lane_rides_the_arena() {
     let mut o: OnPieceOut = z();
@@ -789,7 +774,6 @@ fn serve_records(
 }
 
 /// SEAM-L(o), A REFUSAL'S RECORD WRITES: judged as an `on_piece` answer's, under the short-buffer
-
 #[test]
 fn a_refusals_record_writes_are_judged_as_an_answers() {
     let mut o: RefusalOut = z();
@@ -822,7 +806,6 @@ fn a_refusals_record_writes_are_judged_as_an_answers() {
 }
 
 /// SEAM-L(t), A SERVED REQUEST'S RECORD WRITES: judged as an answer's: a put of a declared kind
-
 #[test]
 fn a_served_requests_record_writes_are_judged_as_an_answers() {
     let mut o: ServeOut = z();
@@ -849,7 +832,6 @@ fn a_served_requests_record_writes_are_judged_as_an_answers() {
 }
 
 /// SEAM-L(r), A CANCEL'S RECORD WRITES: never re-called, so they fit the host's buffers or the
-
 #[test]
 fn a_cancels_record_writes_fit_and_are_judged_as_an_answers() {
     let mut o: PlaneCancelOut = z();
@@ -1045,7 +1027,6 @@ fn a_snapshot_list_counted_with_a_null_pointer_or_too_long_is_fault() {
 }
 
 /// THE APPEND RULE ON THE SNAPSHOT: a snapshot published before `listed` was appended states the
-
 #[test]
 fn a_snapshot_from_before_listed_is_read_and_its_list_is_judged() {
     let mut sn = snapshot();
@@ -1227,7 +1208,6 @@ fn a_pattern_target_parses_into_literals_and_one_level_placeholders() {
 }
 
 /// RED: a malformed pattern is refused AT BIND, by the same grammar the selector reads, so a bad
-
 #[test]
 fn a_malformed_pattern_is_refused_at_bind_by_the_selectors_grammar() {
     for bad in [
@@ -1317,7 +1297,6 @@ fn a_plus_placeholder_spans_one_or_more_segments() {
 }
 
 /// RED: a pattern names at most one `{name+}` (two cannot be split deterministically), and the
-
 #[test]
 fn a_pattern_with_two_plus_placeholders_is_refused_at_registration() {
     assert_eq!(
@@ -1332,7 +1311,6 @@ fn a_pattern_with_two_plus_placeholders_is_refused_at_registration() {
 }
 
 /// Two patterns that differ only after a `{name+}` are disjoint, so the two signed bedrock claims
-
 #[test]
 fn plus_patterns_overlap_exactly() {
     use crate::grammar::Selector;
@@ -1444,7 +1422,6 @@ fn exactly_one_section_is_the_declaring_one() {
 }
 
 /// A plane's section may select it without being its verb (`SECTION_SELECTS`, Law 7), never as
-
 #[test]
 fn a_selecting_section_is_not_the_declaring_one() {
     assert_eq!(
@@ -1559,7 +1536,6 @@ fn billable_classes_are_named() {
 }
 
 /// Every fee unit is also a billable class, so the plane can report it as a count. RED: a fee
-
 #[test]
 fn fee_units_are_billable_classes() {
     let c = BillableClass {
@@ -1639,7 +1615,6 @@ fn needs_have_a_known_direction_and_a_transport() {
 }
 
 /// A need's kept response head fields: lower-case tokens, bounded; a hop-by-hop or credential
-
 #[test]
 fn a_need_keeps_only_declarable_response_fields() {
     let mut n: Need = z();
@@ -1713,7 +1688,6 @@ fn a_need_keeps_only_declarable_response_fields() {
 }
 
 /// RED for the keep mode (OWNER ruling 2026-10-02, dialect fidelity F2): a need keeps either the
-
 #[test]
 fn a_need_keeps_named_fields_or_all_but_denied_ones_and_nothing_else() {
     let mut n: Need = z();
@@ -1820,7 +1794,6 @@ fn a_need_keeps_named_fields_or_all_but_denied_ones_and_nothing_else() {
 }
 
 /// What crosses under each mode: the named fields (never a `NEVER_KEPT` one), or every field but
-
 #[test]
 fn a_response_field_crosses_by_the_needs_mode() {
     use crate::abi::host::conn::connector::keeps_response_field as keeps;
@@ -2107,7 +2080,6 @@ fn a_tail_may_declare_probes() {
 }
 
 /// A tail may state the gate-first hook order (`TAIL_HOOKS_GATED`); a flag past the known ones is
-
 #[test]
 fn a_tail_may_declare_the_gate_first_hook_order() {
     let mut t = tail();
@@ -2118,7 +2090,6 @@ fn a_tail_may_declare_the_gate_first_hook_order() {
 }
 
 /// A tail may state that the plane takes a credential refusal as a piece first
-
 #[test]
 fn a_tail_may_take_a_credential_refusal_as_a_piece() {
     let mut t = tail();
@@ -2153,7 +2124,6 @@ fn an_admin_route_flag_is_known() {
 }
 
 /// RED (`BUSBAR-1.6.0.md` l.4882, a callback route the plane addresses by its own token): a
-
 #[test]
 fn only_a_public_route_carries_its_own_token() {
     let mut r = AdminRoute {
@@ -2383,7 +2353,6 @@ fn well_formed_trust_keys_pass() {
 }
 
 /// RED (SEAM-4f): a registration's private reach is a trust key of its own role: a boolean the
-
 #[test]
 fn a_private_reach_key_carries_no_default_flags_or_mechanisms() {
     let reach = TrustKey {
@@ -2647,7 +2616,6 @@ fn a_dialect_and_reason_are_stated_at_most_once() {
 }
 
 /// THE WIRE CODE TABLE, pinned whole: every number to its code and its word. Renumbering one
-
 const PINNED: &[(u32, RefusalCode, &str)] = &[
     (0, RefusalCode::InFlightCap, "in_flight_cap"),
     (1, RefusalCode::CursorBudget, "cursor_budget"),
@@ -2909,7 +2877,6 @@ fn projected_view_flags_are_known() {
 }
 
 /// A READY `project` that carried a rewrite and applied none may state
-
 #[test]
 fn a_projected_view_may_state_the_rewrite_not_applicable_mark() {
     let h = host();
@@ -3489,7 +3456,6 @@ fn an_arrivals_route_class_is_pool_or_direct() {
 }
 
 /// A UNIT ANSWERED BY THE PLANE AT ITS SCOPE'S ONE ENTRY (`ROUTE_SCOPE_LOCAL`, COORDINATOR ruling
-
 #[test]
 fn a_unit_answered_at_its_scopes_one_entry_is_a_route_of_its_own() {
     let mut o: ArriveOut = z();
@@ -3558,7 +3524,6 @@ fn a_refused_arrival_may_name_the_entry_it_is_about() {
 }
 
 /// A REFUSAL RENDERED AFTER ADMISSION (abi/plane "A refused arrival", rule 6, the
-
 #[test]
 fn a_refusal_after_admission_names_its_entry_and_only_refuses() {
     let about = |route: u8, flags: u32| {
@@ -3646,7 +3611,6 @@ fn an_attempts_stated_counter_labels_sit_inside_the_arena() {
 }
 
 /// THE TAIL'S COUNTER LANE WORDS: a closed vocabulary, declared once. Each word named, a label
-
 #[test]
 fn a_tails_counter_lane_words_are_a_small_closed_vocabulary() {
     assert_eq!(
@@ -3702,7 +3666,6 @@ fn a_tails_counter_lane_words_are_a_small_closed_vocabulary() {
 }
 
 /// THE MEMBER WHOSE WAIT A REFUSAL ANSWERS (`OnPieceOut::wait_member`, a tail addition) lies inside
-
 #[test]
 fn a_stated_wait_member_lies_inside_the_arena() {
     let mut o: OnPieceOut = z();
@@ -3717,7 +3680,6 @@ fn a_stated_wait_member_lies_inside_the_arena() {
 }
 
 /// A CUT ANSWER AND A FINAL ANSWER ARE STATED ON THE FAR END'S PIECES ALONE (`PIECE_CUT`,
-
 #[test]
 fn a_cut_and_a_final_mark_ride_only_the_far_ends_own_pieces() {
     use crate::abi::plane::check::check_piece_in;
@@ -3803,7 +3765,6 @@ fn a_raw_affix_target_is_a_prefix_a_star_and_a_suffix() {
 }
 
 /// A RAW AFFIX MATCHES THE RAW PATH AS BYTES, so the previous release's rule (`starts_with` the
-
 #[test]
 fn a_raw_affix_matches_the_previous_releases_paths_byte_for_byte() {
     let claims = ["/model/*/converse", "/model/*/converse-stream"];
@@ -3907,7 +3868,6 @@ fn a_signed_claim_is_a_raw_affix_and_a_raw_affix_is_no_catalog() {
 }
 
 /// Every shortage participates in ONE reply/fields/arena/records answer. Fitting dimensions
-
 #[test]
 fn serve_and_refusal_recall_all_four_buffers_atomically() {
     let cap = caps();

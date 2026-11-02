@@ -22,7 +22,6 @@ fn answering(name: &'static str, outcome: AuthOutcome) -> Box<dyn AuthModule> {
 }
 
 /// A `Reject` ANYWHERE in the chain denies, whatever is behind it.
-
 #[test]
 fn a_reject_at_any_position_denies_whatever_would_have_admitted_behind_it() {
     const TOKEN: &str = "the-token";
@@ -59,7 +58,6 @@ fn a_reject_at_any_position_denies_whatever_would_have_admitted_behind_it() {
 }
 
 /// A `Reject` is re-asked every time: an invalid credential re-runs its module on every call, so
-
 #[test]
 fn a_rejection_is_re_asked_every_time() {
     let rejecting = Canned::new("m", AuthOutcome::Reject);
@@ -80,7 +78,6 @@ fn a_rejection_is_re_asked_every_time() {
 }
 
 /// A chain that only ever passes ends DENIED, never open.
-
 #[test]
 fn an_all_pass_chain_denies_and_only_an_unconfigured_chain_opens() {
     for len in 1..=4usize {

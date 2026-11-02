@@ -3,7 +3,6 @@
 use std::sync::atomic::{AtomicI64, Ordering};
 
 /// A destination's lifetime request budget. `-1` (or any negative value) means unlimited — spend
-
 pub struct LifetimeBudget {
     remaining: AtomicI64,
     limited: bool,
@@ -19,7 +18,6 @@ impl LifetimeBudget {
     }
 
     /// A budget capped at `max_requests`. A negative cap is the unlimited sentinel (1.5.5's `-1`,
-
     pub fn limited(max_requests: i64) -> Self {
         if max_requests < 0 {
             return Self::unlimited();
@@ -40,7 +38,6 @@ impl LifetimeBudget {
     }
 
     /// Carry a remaining figure across a rebuild. A no-op on an unlimited budget, which has no
-
     pub fn restore(&self, remaining: i64) {
         if self.limited {
             self.remaining.store(remaining.max(0), Ordering::Relaxed);
@@ -48,7 +45,6 @@ impl LifetimeBudget {
     }
 
     /// Atomically consume one unit. Returns `false` when the budget was already exhausted (the
-
     #[must_use]
     pub fn spend(&self) -> bool {
         if !self.limited {
@@ -72,7 +68,6 @@ impl LifetimeBudget {
     }
 
     /// Return one previously-spent unit — the inverse of a single [`Self::spend`], used to
-
     pub fn refund(&self) {
         if !self.limited {
             return;

@@ -14,15 +14,12 @@ pub const DIRECTION_OUTBOUND: u32 = 2;
 /// [`Need::egress_class`]: the connector's default class.
 pub const EGRESS_DEFAULT: u32 = 0;
 /// [`Need::egress_class`] `provider`: upstreams a plane reaches — the allow-list, and cloud
-
 pub const EGRESS_PROVIDER: u32 = 1;
 /// [`Need::egress_class`] `operator-infrastructure`: databases, secret services, directories —
-
 pub const EGRESS_OPERATOR_INFRASTRUCTURE: u32 = 2;
 /// [`Need::egress_class`] `open-web`: public destinations over a secure connection only.
 pub const EGRESS_OPEN_WEB: u32 = 3;
 /// [`Need::egress_class`] `loopback-allowed`: a secure connection, or plaintext to loopback; the
-
 pub const EGRESS_LOOPBACK_ALLOWED: u32 = 4;
 
 /// ONE NEED, declared once per direction: which transport claim carries it and which auth style
@@ -78,7 +75,6 @@ pub struct Need {
 
 impl Need {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-
     pub const ZERO: Self = Self {
         direction: 0,
         egress_class: 0,
@@ -98,7 +94,6 @@ impl Need {
 }
 
 /// HOW THE NEED ROW IS MADE: from [`Need::EMPTY`], its plain fields set directly
-
 impl Need {
     /// Nothing stated: every string absent, every list empty, every number zero.
     pub const EMPTY: Need = Need {
@@ -130,15 +125,12 @@ impl Need {
 pub const KEEP_NAMED: u32 = 0;
 
 /// [`Need::keep_mode`]: every response head field crosses but the kernel's [`ALWAYS_DENIED`] and
-
 pub const KEEP_ALL_EXCEPT_DENIED: u32 = 1;
 
 /// What [`KEEP_ALL_EXCEPT_DENIED`] always strips, the kernel's list: every hop-by-hop field
-
 pub const ALWAYS_DENIED: &[&str] = &["content-length", "content-encoding"];
 
 /// Whether the response head field `name` (lower-case) crosses to the plugin under a need's
-
 #[must_use]
 pub fn keeps_response_field<'a>(
     mode: u32,
@@ -162,7 +154,6 @@ pub fn keeps_response_field<'a>(
 pub const KEEP_RESPONSE_HEADERS_MAX: usize = 32;
 
 /// The response head fields no need may keep: hop-by-hop fields (the connection's, not the
-
 pub const NEVER_KEPT: &[&str] = &[
     "connection",
     "keep-alive",
@@ -205,14 +196,12 @@ pub mod service {
     /// Close a stream.
     pub const CLOSE: u32 = 9;
     /// RETIRED: random bytes come from the one random service, the host service `random.fill`
-
     pub const RANDOM: u32 = 10;
     /// The process identity.
     pub const IDENTITY: u32 = 11;
     /// Read the next piece of the far end's reply to what the plugin sent, with its descriptor.
     pub const READ_REPLY: u32 = 12;
     /// Write one piece of a request on a FRAMED stream, with its descriptor: the framer builds its
-
     pub const WRITE_REQUEST: u32 = 13;
 }
 
@@ -253,18 +242,15 @@ pub struct EstablishIn {
 pub const WITHIN_SEPARATOR: &str = ",";
 
 /// THE REQUEST FIELD BY WHICH A PLUGIN PINS A REQUEST'S DIAL (SEC-8F1), the request-path twin of
-
 pub const WITHIN_REQUEST_FIELD: &str = "busbar-dial-within";
 
 /// Whether the request field `name` is [`WITHIN_REQUEST_FIELD`] (a field name compares
-
 #[must_use]
 pub fn is_within_field(name: &[u8]) -> bool {
     name.eq_ignore_ascii_case(WITHIN_REQUEST_FIELD.as_bytes())
 }
 
 /// The address set a [`WITHIN_REQUEST_FIELD`] value states: `None` when an entry is not an IP
-
 #[must_use]
 pub fn within_of(value: &[u8]) -> Option<Vec<std::net::IpAddr>> {
     let text = std::str::from_utf8(value).ok()?;
@@ -290,10 +276,8 @@ pub const CAUSE_FRAMER: u64 = 5;
 /// `ServiceOut::value` on a refusal: the request's credential is unavailable; nothing was sent.
 pub const CAUSE_CREDENTIAL_UNAVAILABLE: u64 = 6;
 /// `ServiceOut::value` on a refusal: the request's auth refused it; nothing was sent.
-
 pub const CAUSE_AUTH_REFUSED: u64 = 7;
 /// `ServiceOut::value` on a failure: the request's auth call failed; nothing was sent.
-
 pub const CAUSE_AUTH_FAILED: u64 = 8;
 
 /// The `in` of [`service::REJECT_ENDPOINT`], [`service::SIDE_STREAM`] and [`service::CLOSE`].
@@ -344,7 +328,6 @@ pub struct UpgradeIn {
 }
 
 /// [`UpgradeIn::flags`]: run the handshake WITHOUT verifying the far end's certificate (1.5.5's
-
 pub const UPGRADE_VERIFY_OFF: u32 = 1;
 
 /// The size of an [`UpgradeIn`] from before [`UpgradeIn::flags`]: the host reads its flags as `0`.
@@ -463,7 +446,6 @@ pub struct IdentityIn {
 }
 
 /// [`ReplyPiece::kind`]: the terminal piece of a reply with no head — what became of what the
-
 pub const REPLY_ACK: u32 = 1;
 /// [`ReplyPiece::kind`]: the reply's head: its code, its reason and its fields.
 pub const REPLY_HEAD: u32 = 2;
@@ -542,7 +524,6 @@ pub struct RequestPiece {
 
 impl RequestPiece {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-
     pub const ZERO: Self = Self {
         kind: 0,
         _reserved: 0,

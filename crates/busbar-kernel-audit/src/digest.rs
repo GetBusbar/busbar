@@ -34,7 +34,6 @@ pub enum Framing {
 }
 
 /// THE ONE CANONICALISER. A record feeds its chained fields in through [`Digest::text`] and
-
 pub struct Digest {
     framing: Framing,
     buf: Vec<u8>,
@@ -85,7 +84,6 @@ impl Digest {
     }
 
     /// Feed ALREADY-FRAMED bytes verbatim — the join primitive the kernel's host-side journal
-
     pub fn raw(&mut self, bytes: &[u8]) -> &mut Self {
         self.buf.extend_from_slice(bytes);
         self.started = true;
@@ -93,7 +91,6 @@ impl Digest {
     }
 
     /// The framed bytes, unhashed — what a prelude framed by one builder is when a second builder
-
     #[must_use]
     pub fn into_framed(self) -> Vec<u8> {
         self.buf

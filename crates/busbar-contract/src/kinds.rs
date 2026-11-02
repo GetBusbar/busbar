@@ -59,7 +59,6 @@ pub struct RecordBytes {
 
 impl RecordBytes {
     /// Take bytes as a record.
-
     pub fn new(bytes: Vec<u8>) -> Result<Self, usize> {
         if bytes.len() > MAX_RECORD_BYTES {
             return Err(bytes.len());

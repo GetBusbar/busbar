@@ -1403,7 +1403,6 @@ fn serve_private_listener(
 }
 
 #[allow(clippy::too_many_arguments)]
-
 async fn serve_listener(
     listener: impl busbar_core_connector::listen::Admits,
     router: Router,

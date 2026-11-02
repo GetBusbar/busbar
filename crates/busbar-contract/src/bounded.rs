@@ -3,7 +3,6 @@
 use core::fmt;
 
 /// The most keys any scratch-backed fact map may carry.
-
 pub const MAX_KEYS: usize = 32;
 
 /// The most usage lines one unit may settle.
@@ -13,11 +12,9 @@ pub const MAX_USAGE_LINES: usize = 16;
 pub const MAX_RECORD_BYTES: usize = 512;
 
 /// The per-connection read cursor ceiling, in bytes, credential slab included.
-
 pub const MAX_CURSOR_BYTES: usize = 64 * 1024;
 
 /// The most consecutive "need more" answers a session-transport handshake may take.
-
 pub const MAX_NEEDMORE_FRAMES: usize = 256;
 
 /// The most upstream connections one session may pair with itself.
@@ -30,11 +27,9 @@ pub const MAX_LEGS: usize = 8;
 pub const MAX_LEG_REPLIES: usize = 2;
 
 /// The most places a plane may say the client's response ceiling could be.
-
 pub const MAX_RESPONSE_PTRS: usize = 2;
 
 /// The per-unit scratch pad's starting size, in bytes.
-
 pub const SCRATCH_BASE_BYTES: usize = 4 * 1024;
 
 /// A fixed-capacity list.
@@ -55,7 +50,6 @@ impl<T, const N: usize> Default for BoundedVec<T, N> {
 
 impl<T, const N: usize> BoundedVec<T, N> {
     /// A new, empty list. Holds no allocation until something is pushed into it.
-
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -64,7 +58,6 @@ impl<T, const N: usize> BoundedVec<T, N> {
     }
 
     /// A new, empty list that has already reserved the whole capacity its type declares.
-
     #[must_use]
     pub fn with_declared_capacity() -> Self {
         Self {
@@ -97,7 +90,6 @@ impl<T, const N: usize> BoundedVec<T, N> {
     }
 
     /// Append an item. Errors with the item handed back unchanged when the list is already full.
-
     pub fn push(&mut self, item: T) -> Result<(), Overflow<T>> {
         if self.is_full() {
             return Err(Overflow { item, capacity: N });
@@ -110,7 +102,6 @@ impl<T, const N: usize> BoundedVec<T, N> {
     }
 
     /// The items, in insertion order.
-
     #[must_use]
     pub fn as_slice(&self) -> &[T] {
         &self.items
@@ -249,7 +240,6 @@ impl Default for SlabBytes {
 }
 
 /// Take an owned buffer as a whole slab. The bytes are moved into one shared allocation (a copy
-
 impl From<Vec<u8>> for SlabBytes {
     fn from(bytes: Vec<u8>) -> Self {
         Self::new(std::sync::Arc::from(bytes))
@@ -271,7 +261,6 @@ impl From<&[u8]> for SlabBytes {
 }
 
 /// The slab reads as the byte slice it windows, so a caller hands `&slab` wherever `&[u8]` is
-
 impl std::ops::Deref for SlabBytes {
     type Target = [u8];
     fn deref(&self) -> &[u8] {
@@ -280,7 +269,6 @@ impl std::ops::Deref for SlabBytes {
 }
 
 /// The slab as a byte slice, for a host that adopts it as the owner of its own buffer type without
-
 impl AsRef<[u8]> for SlabBytes {
     fn as_ref(&self) -> &[u8] {
         self.as_slice()
@@ -288,7 +276,6 @@ impl AsRef<[u8]> for SlabBytes {
 }
 
 /// The one resource handle a plugin is given.
-
 pub trait PlaneAlloc: Send + Sync {
     /// Copy bytes into the allocator.
     fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ScratchBytes<'a>, PlaneAllocBudget>;
@@ -297,7 +284,6 @@ pub trait PlaneAlloc: Send + Sync {
     fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, PlaneAllocBudget>;
 
     /// Copy a resolved span table into the allocator.
-
     fn alloc_spans<'a>(
         &'a self,
         src: &[(&'a str, Span)],
@@ -395,7 +381,6 @@ impl<'u> Facts<'u> {
     }
 
     /// Set a key, replacing any earlier value for it. Errors with [`FactsExhausted`] when the map
-
     pub fn set(&mut self, key: &'u str, value: FactValue<'u>) -> Result<(), FactsExhausted> {
         for (k, v) in self.entries.iter_mut().take(self.len).flatten() {
             if *k == key {
@@ -524,7 +509,6 @@ impl<'u> Ir<'u> {
     }
 
     /// A view over no bytes at all.
-
     #[must_use]
     pub const fn empty() -> Self {
         Self {

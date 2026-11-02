@@ -147,11 +147,9 @@ use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 pub const ABI_VERSION: u32 = 2;
 
 /// The hook kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
-
 pub const LAYOUT_FINGERPRINT: u64 = 0xe66698e71abe2054;
 
 /// The hook kind's shapes, in fold order ([`crate::layout_shape!`]): every `#[repr(C)]` struct
-
 pub const LAYOUT_SHAPES: &[&[u64]] = &[
     crate::layout_shape!(Ops =>
         head, decide, transform, notify, configure, status, describe, serve
@@ -341,7 +339,6 @@ pub union SignalValue {
 
 impl std::fmt::Debug for SignalValue {
     /// A union carries no tag of its own — printing a specific field without first consulting
-
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SignalValue").finish_non_exhaustive()
     }
@@ -559,7 +556,6 @@ pub const VIEW_HAS_PROMPT: u32 = 1 << 0;
 /// [`DecideIn`]'s `present`: the user view is populated.
 pub const VIEW_HAS_USER: u32 = 1 << 1;
 /// [`DecideIn`]'s `present`: `budget_remaining` (the pool's remaining request budget) is
-
 pub const VIEW_HAS_BUDGET_REMAINING: u32 = 1 << 2;
 
 /// `decide`'s and `transform`'s shared `in` (both ops see identical views; only their `out` and
@@ -624,7 +620,6 @@ pub const VERB_REJECT: u32 = 1 << 2;
 /// [`DecideOut::verbs`]: narrow to `restrict_tags`.
 pub const VERB_RESTRICT: u32 = 1 << 3;
 /// [`DecideOut::verbs`]/[`TransformOut::verbs`]: `reject_status` is populated; unset means the
-
 pub const VERB_HAS_REJECT_STATUS: u32 = 1 << 4;
 
 /// `decide`'s `out`. Exactly one of [`VERB_PREFER`], [`VERB_ABSTAIN`], [`VERB_REJECT`],
@@ -693,7 +688,6 @@ pub struct TransformOut {
 }
 
 /// [`StageView::stage_present`]: the stage fields are present at all (a REQUEST-stage tap sets
-
 pub const STAGE_HAS_PROJECTION: u32 = 1 << 0;
 /// [`StageView::stage_present`]: `model` is present.
 pub const STAGE_HAS_MODEL: u32 = 1 << 1;
@@ -917,7 +911,6 @@ pub const PROMPT_NO: u32 = 0;
 /// [`Tail::prompt_access`]: read-only prompt view/body.
 pub const PROMPT_RO: u32 = 1;
 /// [`Tail::prompt_access`]: read-write — the same view/body as `ro`, PLUS the `transform` rewrite
-
 pub const PROMPT_RW: u32 = 2;
 
 /// [`Tail::user_access`]: no user view (the default).
@@ -960,10 +953,8 @@ pub struct Tail {
 }
 
 /// HOW THE HOOK KIND TAIL IS MADE: from [`Tail::EMPTY`], its plain fields set
-
 impl Tail {
     /// Nothing stated: every string absent, every list empty, every number zero; the head
-
     pub const EMPTY: Tail = Tail {
         head: KindTailHead {
             size: core::mem::size_of::<Tail>() as u32,
@@ -981,7 +972,6 @@ impl Tail {
     };
 
     /// This tail with its class and its two grants set: the one constructor a hook plugin's
-
     #[must_use]
     pub const fn with_access(mut self, kind_class: u32, content: u32, user: u32) -> Tail {
         self.kind_class = kind_class;
@@ -998,13 +988,10 @@ impl Tail {
 }
 
 /// The hook kind's [`super::mechanism::lifecycle::CancelOut::disposition`] vocabulary.
-
 pub mod cancel {
     /// The pending op was aborted before it produced a verdict/response; `on_error` runs as
-
     pub const ABORTED: u32 = 0;
     /// The op had already completed when the cancel arrived (a race with the deadline); its
-
     pub const RACED_TO_COMPLETION: u32 = 1;
 }
 

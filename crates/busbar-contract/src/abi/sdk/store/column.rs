@@ -11,7 +11,6 @@ use crate::records::{RecordStoreError, RecordStoreResult, ScopeRef};
 pub type ScopeColumns = (Option<String>, Option<String>);
 
 /// `scopes` as [`ScopeColumns`]. `None` (the grant omitted: every scope) is two NULLs; `Some` always
-
 #[must_use]
 pub fn scope_columns(scopes: Option<&[ScopeRef]>) -> ScopeColumns {
     let Some(list) = scopes else {
@@ -33,7 +32,6 @@ pub fn scope_columns(scopes: Option<&[ScopeRef]>) -> ScopeColumns {
 }
 
 /// The inverse of [`scope_columns`]: pools first, then every other kind in kind order. Both columns
-
 #[must_use]
 pub fn scopes_from_columns(
     pools: Option<String>,
@@ -61,7 +59,6 @@ pub fn scopes_from_columns(
 }
 
 /// `v` as a signed 64-bit column holds it.
-
 pub fn storable_i64(method: &str, field: &str, v: u64) -> RecordStoreResult<i64> {
     i64::try_from(v).map_err(|_| {
         RecordStoreError(format!(
@@ -78,14 +75,12 @@ pub fn clamp(v: u64) -> i64 {
 }
 
 /// A signed 64-bit column read back as a counter: a negative (a corrupt or hand-edited row) reads
-
 #[must_use]
 pub fn read_u64(v: i64) -> u64 {
     u64::try_from(v).unwrap_or(0)
 }
 
 /// The smallest key above every key that starts with `prefix`: the last byte that is not `0xff`
-
 #[must_use]
 pub fn prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
     let i = prefix.iter().rposition(|&b| b != u8::MAX)?;

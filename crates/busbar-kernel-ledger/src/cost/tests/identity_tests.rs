@@ -25,11 +25,9 @@ impl Seq {
 }
 
 /// The exact total above which the micro projection can no longer be SERVED, and therefore the
-
 const MICRO_PROJECTION_CEILING_NANOS: u128 = (i64::MAX as u128) * crate::cost::NANOS_PER_MICRO;
 
 /// The two projections are consistent with each other by construction, up to the point where the
-
 #[test]
 fn the_two_projections_agree_at_every_generated_total_below_the_micro_ceiling() {
     let mut seq = Seq(0x0FF1_CE00_1234_5678);
@@ -50,7 +48,6 @@ fn the_two_projections_agree_at_every_generated_total_below_the_micro_ceiling() 
 }
 
 /// PAST THE MICRO CEILING THE MICRO PROJECTION REFUSES, AND THE MINOR ONE DOES NOT (item 28).
-
 #[test]
 fn past_the_micro_ceiling_the_micro_projection_refuses_and_the_minor_one_does_not() {
     let nanos = 10_000_000_000_000_000_000_000u128;

@@ -37,7 +37,6 @@ fn input(n: u64) -> BTreeMap<String, u64> {
 }
 
 /// **THE WORKED EXAMPLE.** 300,000 tokens before an edit from 20 to 10 micro-units a token, 900,000
-
 #[test]
 fn a_card_edit_mid_window_prices_each_segment_at_the_card_it_was_earned_under() {
     let history = edited(card(20.0, 0), card(10.0, 0));
@@ -79,7 +78,6 @@ fn a_card_edit_mid_window_prices_each_segment_at_the_card_it_was_earned_under() 
 }
 
 /// With no history installed every segment prices at the live card, which is exactly the one
-
 #[test]
 fn with_no_history_the_cell_prices_as_the_undated_derivation() {
     let live = card(3.0, 2);
@@ -128,7 +126,6 @@ fn the_fee_base_splits_by_the_era_each_request_was_admitted_under() {
 }
 
 /// MONEY-AUDIT D-3/F-5: a refund returns the fee of the era its request was CHARGED in, not the
-
 #[test]
 fn a_refund_takes_the_era_its_request_was_charged_in() {
     let (e1, e2) = (EDIT_MS, EDIT_MS + 5);
@@ -150,7 +147,6 @@ fn a_refund_takes_the_era_its_request_was_charged_in() {
 }
 
 /// A segment whose era began before the window resolves at the window's start: the card in force
-
 #[test]
 fn an_era_older_than_the_window_resolves_at_the_window_start() {
     let history = edited(card(20.0, 0), card(10.0, 0));
@@ -171,7 +167,6 @@ fn an_era_older_than_the_window_resolves_at_the_window_start() {
 }
 
 /// The segment in force NOW prices at the caller's live card, which carries the open classes a
-
 #[test]
 fn the_in_force_segment_prices_at_the_live_card_and_an_older_one_at_its_own() {
     let history = edited(card(1.0, 0), card(1.0, 0));
@@ -220,7 +215,6 @@ fn a_segment_no_entry_covers_refuses() {
 }
 
 /// A Store confirmation may arrive after another window begins. The recorded serving identity
-
 #[test]
 fn exact_opening_and_config_counts_keep_their_prices_across_later_windows() {
     use crate::cost::RawRateEra;

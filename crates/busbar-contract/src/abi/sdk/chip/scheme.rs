@@ -9,7 +9,6 @@ use crate::abi::sdk::cred::{Cred, Seal};
 
 impl Cred {
     /// `<scheme> <credential>`, or the bare `<scheme>` when the credential is empty (a scheme that
-
     pub fn scheme(&self, scheme: impl AsRef<[u8]>) -> Seal {
         let scheme = scheme.as_ref();
         let mut v = Zeroizing::new(Vec::with_capacity(scheme.len() + 1 + self.len()));

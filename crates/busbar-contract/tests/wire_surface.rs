@@ -111,7 +111,6 @@ fn the_query_and_the_fragment_are_cut_before_matching() {
 }
 
 /// An EMPTY segment does not fill a capture.
-
 #[test]
 fn an_empty_segment_does_not_fill_a_capture() {
     assert!(match_target("/thing/{id}/part/{part}", "/thing//part/b").is_none());

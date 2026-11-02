@@ -12,7 +12,6 @@ use crate::cost::{
 };
 
 /// ONE METERING ROW, AS ITS READER HOLDS IT: the lane it was metered on, its counts by class, its
-
 pub struct MeteredRow<'r> {
     lane: &'r str,
     counts: BTreeMap<String, u64>,
@@ -22,7 +21,6 @@ pub struct MeteredRow<'r> {
 
 impl<'r> MeteredRow<'r> {
     /// `lane` is the row's configured lane name after alias resolution, or a plane's
-
     pub fn new(
         lane: &'r str,
         counts: BTreeMap<String, u64>,
@@ -38,7 +36,6 @@ impl<'r> MeteredRow<'r> {
     }
 
     /// The row as the lanes the one function prices, with no arithmetic: each lane with its counts
-
     #[allow(clippy::type_complexity)]
     fn lanes(&self) -> (Vec<(String, BTreeMap<String, u64>)>, Option<u64>) {
         let mut counts = self.counts.clone();
@@ -64,7 +61,6 @@ impl<'r> MeteredRow<'r> {
     }
 
     /// What the row cost, in micro-units, against the card in force at `arrived_ms` (#79): the row
-
     pub fn spend_micros_in_view(
         &self,
         arrived_ms: u64,
@@ -74,7 +70,6 @@ impl<'r> MeteredRow<'r> {
     }
 
     /// [`MeteredRow::spend_micros_in_view`] with the final projection WITHHELD: the exact figure
-
     pub fn exact_in_view(
         &self,
         arrived_ms: u64,
@@ -102,13 +97,11 @@ impl<'r> MeteredRow<'r> {
     }
 
     /// What the row cost, in micro-units, at one `card`: the reading when no dated history is
-
     pub fn spend_micros_at_card(&self, card: &RateCard) -> Result<i64, MoneyError> {
         self.spend_micros_at_card_seq(HistorySeq::OPENING, card)
     }
 
     /// The row at an already resolved card and its snapshot sequence. A reader resolving exact
-
     pub fn spend_micros_at_card_seq(
         &self,
         seq: HistorySeq,

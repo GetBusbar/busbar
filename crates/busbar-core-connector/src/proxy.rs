@@ -8,7 +8,6 @@ use std::{ffi::OsString, sync::Arc};
 pub use crate::proxy_route::{ProxyChoice, ProxyHop};
 
 /// The proxy env value as a REFUSAL may render it: userinfo replaced by `***`, everything
-
 fn redact_userinfo(v: &str) -> String {
     let parts = busbar_contract::net::url_authority(v);
     let (host_port, tail) = (parts.host_port, parts.tail);
@@ -26,7 +25,6 @@ fn redact_userinfo(v: &str) -> String {
 }
 
 /// Parse a proxy env value (`http://[user:pass@]host[:port]`; a bare `host:port` is accepted
-
 pub fn parse_proxy(v: &str) -> Result<ProxyHop, String> {
     let shown = redact_userinfo(v);
     let url = if v.contains("://") {
@@ -67,7 +65,6 @@ pub fn parse_proxy(v: &str) -> Result<ProxyHop, String> {
 }
 
 /// `text` with every `%XX` escape decoded to its byte; a `%` not followed by two hex digits is
-
 fn percent_decoded(text: &str) -> Vec<u8> {
     let bytes = text.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -109,7 +106,6 @@ const NO_PROXY_KEYS: [&str; 2] = ["NO_PROXY", "no_proxy"];
 
 impl ProxyEnvValues {
     /// Uppercase read before lowercase, empty values treated as unset — hyper-util
-
     pub fn from_process_env() -> Result<Self, String> {
         Self::from_lookup(|key| std::env::var_os(key))
     }
@@ -141,7 +137,6 @@ impl ProxyEnvValues {
 }
 
 /// Resolve the value bag into the per-scheme slots, reqwest's precedence: scheme-specific
-
 pub fn resolve_config(env: &ProxyEnvValues) -> Result<Option<Arc<ProxyChoice>>, String> {
     let all = env
         .all
@@ -168,20 +163,17 @@ pub fn resolve_config(env: &ProxyEnvValues) -> Result<Option<Arc<ProxyChoice>>, 
 }
 
 /// THE PROCESS'S PROXY CHOICE, read once from its environment: `None` when no proxy variable is
-
 pub fn from_env() -> Result<Option<Arc<ProxyChoice>>, String> {
     resolve_config(&ProxyEnvValues::from_process_env()?)
 }
 
 /// Hard ceiling on the proxy's CONNECT response head; a real response is one status line + a few
-
 pub const CONNECT_HEAD_CAP: usize = 8 * 1024;
 
 /// Wall-clock bound on the CONNECT handshake — the same 10s the socket connect itself carries.
 pub const CONNECT_HANDSHAKE: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// `CONNECT host:port HTTP/1.1` (+ Host, + Proxy-Authorization when configured), the bytes the
-
 #[must_use]
 pub fn connect_request(target: &str, proxy: &ProxyHop) -> Vec<u8> {
     let mut req = format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n");
@@ -195,7 +187,6 @@ pub fn connect_request(target: &str, proxy: &ProxyHop) -> Vec<u8> {
 }
 
 /// What the proxy has answered so far to a CONNECT for `addr` (`host:port`): `Ok(None)` = its head is not
-
 pub fn connect_answer(head: &[u8], addr: &str) -> Result<Option<usize>, String> {
     let Some(at) = head.windows(4).position(|w| w == b"\r\n\r\n") else {
         if head.len() > CONNECT_HEAD_CAP {
@@ -228,7 +219,6 @@ pub fn host_of(target: &str) -> &str {
 }
 
 /// A whole choice whose BOTH slots point at one proxy at `host:port`: what a test wires directly
-
 #[cfg(test)]
 pub(crate) fn test_config(
     host: &str,

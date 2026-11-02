@@ -8,7 +8,6 @@ use super::*;
 use core::marker::PhantomData;
 
 /// A `Probe<T>` used to detect, at compile time, whether `T` implements a serde trait. The inherent
-
 struct Probe<T>(PhantomData<T>);
 
 trait ViaSerDefault {
@@ -26,7 +25,6 @@ impl<T: serde::Serialize> Probe<T> {
 
 trait ViaDeDefault {
     /// Trait default: reports NO `Deserialize` impl. Shadowed by the inherent `de()` when
-
     fn de(&self) -> bool {
         false
     }
@@ -39,7 +37,6 @@ impl<T: serde::de::DeserializeOwned> Probe<T> {
 }
 
 /// THE FENCE: `Secret<String>` implements neither `Serialize` nor `Deserialize`. Either half going
-
 #[test]
 fn redacted_implements_neither_serialize_nor_deserialize() {
     let secret_probe = Probe::<Secret<String>>(PhantomData);

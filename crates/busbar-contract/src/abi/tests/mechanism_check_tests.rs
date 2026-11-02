@@ -272,7 +272,6 @@ fn a_rewrite_moves_a_key_to_a_path_and_an_alias_or_sugar_names_nothing_else() {
 }
 
 /// The secret-sugar rewrites a later contract reads (the sugar's settings key, its shown
-
 #[test]
 fn the_later_sugar_rewrites_are_accepted_and_each_names_its_target() {
     let ok = [
@@ -326,7 +325,6 @@ fn a_statement_has_at_most_one_declaring_section() {
 }
 
 /// THE GENERATED RED TABLES: one RED per (field, rule) each Statement element's declaration states,
-
 #[test]
 fn every_declared_statement_field_rule_is_red() {
     fn reds<T: Copy>(base: T, table: &[RedCase<T>], check: impl Fn(&T) -> Result<(), Fault>) {
@@ -407,7 +405,6 @@ fn the_sdk_statement_states_no_marks_rewrites_sections_needs_paths_or_answers() 
 }
 
 /// CLAIMS ARE A TRANSPORT'S FACT: a Statement of any other kind that states URL schemes is refused
-
 #[test]
 fn a_statement_of_another_kind_stating_claims_is_refused() {
     const CLAIMS: &[AbiStr] = &[abi_str("https")];
@@ -426,7 +423,6 @@ fn a_statement_of_another_kind_stating_claims_is_refused() {
 }
 
 /// THE SELECTING SECTION (Law 7): a section whose presence uses the plane is a known bit beside
-
 #[test]
 fn a_selecting_section_is_known_and_never_beside_the_declaring_one() {
     assert_eq!(
@@ -446,7 +442,6 @@ fn a_selecting_section_is_known_and_never_beside_the_declaring_one() {
 }
 
 /// A SELECTING SECTION IS A PLANE'S FACT: a Statement of any other kind stating one is refused at
-
 #[test]
 fn a_statement_of_another_kind_stating_a_selecting_section_is_refused() {
     const SECTIONS: &[Section] = &[Section {
@@ -514,7 +509,6 @@ fn a_statement_list_is_checked_whole_and_a_null_list_with_a_count_is_fault() {
 const OVER_CAP: &[AbiStr] = &[abi_str("a"); STATEMENT_LIST_MAX + 1];
 
 /// A Statement list above [`STATEMENT_LIST_MAX`] is refused before any entry is read, whichever
-
 #[test]
 fn a_statement_list_above_the_cap_is_refused_before_it_is_read() {
     let at_cap = &OVER_CAP[..STATEMENT_LIST_MAX];
@@ -557,7 +551,6 @@ fn a_statement_list_above_the_cap_is_refused_before_it_is_read() {
 }
 
 /// A Statement list whose pointer is not aligned for its entry type is refused before a slice is
-
 #[test]
 fn a_misaligned_statement_list_is_refused_before_a_slice_is_built() {
     #[repr(C, align(16))]

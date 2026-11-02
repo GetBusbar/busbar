@@ -337,7 +337,6 @@ fn a_finite_pair_can_both_owe_same_op_recalls_before_either_host_batch_is_publis
 }
 
 /// Each real framer crossing answers at most two short pieces and completes immediately. The
-
 #[test]
 fn distinct_finite_emits_outgrow_two_retained_slots_without_using_the_recall_budget() {
     for fifo in [true, false] {

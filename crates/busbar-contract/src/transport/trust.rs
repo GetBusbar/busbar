@@ -22,7 +22,6 @@ pub struct ClientIdentity {
 
 impl core::fmt::Debug for ClientIdentity {
     /// Hand-rolled so the text stays exactly what 1.5.5 printed (log text is customer-visible): the
-
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ClientIdentity")
             .field("cert_chain", &self.cert_chain)
@@ -55,7 +54,6 @@ pub struct EgressTrust {
 
 impl core::fmt::Debug for EgressTrust {
     /// Hand-rolled so the `client_identity`'s private key is redacted through [`ClientIdentity`]'s
-
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("EgressTrust")
             .field("extra_anchors", &self.extra_anchors)
@@ -67,7 +65,6 @@ impl core::fmt::Debug for EgressTrust {
 
 impl EgressTrust {
     /// Whether the host decided nothing extra — no added anchors, no pins, no client identity.
-
     #[must_use]
     pub fn is_unset(&self) -> bool {
         self.extra_anchors.is_empty()
@@ -77,11 +74,9 @@ impl EgressTrust {
 }
 
 /// THE TAG of a key pin's canonical spelling: `sha256/<standard base64>`, the spelling an operator
-
 pub const KEY_PIN_TAG: &str = crate::abi::sdk::digest::SHA256_TAG;
 
 /// THE ONE SPELLING OF A KEY PIN: the SHA-256 of a certificate's whole SubjectPublicKeyInfo (its
-
 #[must_use]
 pub fn key_pin(subject_public_key_info: &[u8]) -> String {
     crate::abi::sdk::digest::sha256_tagged(subject_public_key_info)
@@ -105,7 +100,6 @@ impl std::fmt::Display for BadKeyPin {
 impl std::error::Error for BadKeyPin {}
 
 /// THE ONE READER OF A WRITTEN KEY PIN, to its canonical spelling ([`key_pin`]), surrounding
-
 pub fn canonical_key_pin(written: &str) -> Result<String, BadKeyPin> {
     use base64::Engine as _;
     let decode = |encoded: &str| -> Option<[u8; 32]> {

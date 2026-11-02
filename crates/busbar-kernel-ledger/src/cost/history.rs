@@ -15,7 +15,6 @@ pub struct HistorySeq(pub u64);
 
 impl HistorySeq {
     /// The opening entry's number. A migration seals a single-entry history at this seq, effective
-
     pub const OPENING: HistorySeq = HistorySeq(0);
 
     /// The number as the journal, the marker and the store all spell it.
@@ -31,7 +30,6 @@ impl std::fmt::Display for HistorySeq {
 }
 
 /// The length of an entry's KEY in the store's `busbar.card.v1` schema:
-
 pub const ENTRY_KEY_LEN: usize = 20;
 
 /// **AN ENTRY'S IDENTITY**: its key in the fleet-shared history (MONEY-DESIGN section 3a).
@@ -153,7 +151,6 @@ impl EntryId {
     }
 
     /// Parse an exact metering identity. `None` denotes a legacy name; `Some(None)` denotes a
-
     pub fn parse_metering_version(version: &str) -> Option<Option<Self>> {
         version
             .strip_prefix(Self::METERING_VERSION_PREFIX)
@@ -185,7 +182,6 @@ impl EntryId {
     }
 
     /// The pseudo-model prefix `"<24hex>\u{1f}"`: alone it keys the entry's fee count, followed by
-
     pub fn pseudo_prefix(&self) -> String {
         let mut prefix = self.hex();
         prefix.push(Self::SEPARATOR);
@@ -193,7 +189,6 @@ impl EntryId {
     }
 
     /// Split a pseudo-model key into its entry id and the model name after the separator (empty
-
     pub fn split_pseudo(key: &str) -> Option<(EntryId, &str)> {
         let (id, model) = key.split_once(Self::SEPARATOR)?;
         (id.len() == 2 * ENTRY_ID_LEN)
@@ -294,7 +289,6 @@ impl CardEntry {
     }
 
     /// When the entry was WRITTEN, in wall-clock milliseconds.
-
     pub fn appended_at(&self) -> u64 {
         self.appended_at
     }
@@ -310,7 +304,6 @@ impl CardEntry {
     }
 
     /// Whether a VOID record names this entry: it is never in force, but its id stays KNOWN, so a
-
     pub fn is_voided(&self) -> bool {
         self.voided
     }
@@ -349,7 +342,6 @@ pub struct History {
 
 impl History {
     /// An empty history. Nothing is priceable against it — every instant is a hole — which is the
-
     pub fn new() -> Self {
         History {
             entries: Vec::new(),
@@ -357,7 +349,6 @@ impl History {
     }
 
     /// **A SINGLE-ENTRY HISTORY**: the operator's card, effective from instant zero, open-ended,
-
     pub fn opening(card: RateCard, appended_at: u64) -> Self {
         let mut history = History::new();
         history.append(CardEntryDraft {
@@ -371,7 +362,6 @@ impl History {
     }
 
     /// The newest entry's number, or `None` for a history nothing has been appended to.
-
     pub fn head(&self) -> Option<HistorySeq> {
         self.entries.last().map(CardEntry::seq)
     }
@@ -392,7 +382,6 @@ impl History {
     }
 
     /// **THE REPRODUCIBILITY PRIMITIVE.** Everything with `seq <= at`.
-
     pub fn snapshot(&self, at: HistorySeq) -> HistoryView<'_> {
         let count = self.entries.partition_point(|e| e.seq <= at);
         HistoryView {
@@ -402,7 +391,6 @@ impl History {
     }
 
     /// The whole history as it stands. Equivalent to snapshotting at the head, and naming no
-
     pub fn current(&self) -> HistoryView<'_> {
         HistoryView {
             entries: &self.entries,
@@ -411,7 +399,6 @@ impl History {
     }
 
     /// **THE ONLY MUTATOR.** Append an entry and return its number.
-
     pub fn append(&mut self, draft: CardEntryDraft) -> HistorySeq {
         let seq = HistorySeq(self.entries.len() as u64);
 
@@ -435,7 +422,6 @@ impl History {
 
 impl History {
     /// **ORDERED INSERT** of an entry read from (or written to) the fleet-shared history under its
-
     pub fn insert(&mut self, key: EntryKey, draft: CardEntryDraft) -> HistorySeq {
         match self.entries.binary_search_by(|e| e.key.cmp(&key)) {
             Ok(at) => HistorySeq(at as u64),
@@ -492,7 +478,6 @@ impl History {
     }
 
     /// **THE ANSWER AT `instant`** (seam for the poster): the id and card of the highest-keyed live
-
     pub fn entry_at(&self, instant: u64) -> Option<(EntryId, &RateCard)> {
         self.entries
             .iter()
@@ -502,7 +487,6 @@ impl History {
     }
 
     /// The card of the entry whose id is `id`, voided or not: a count posted under an entry keeps
-
     pub fn card_of(&self, id: &EntryId) -> Option<&RateCard> {
         self.entries
             .iter()
@@ -524,14 +508,12 @@ pub struct HistoryView<'a> {
 
 impl HistoryView<'_> {
     /// Resolve counts served by one exact entry, then apply deliberate later amendments at their
-
     pub fn card_for_entry_era(&self, id: EntryId, wall_at: u64) -> Option<(HistorySeq, &RateCard)> {
         let original = self.entries.iter().find(|entry| entry.id() == id)?;
         Some(self.card_after_amendments(original, wall_at))
     }
 
     /// Resolve a historical timestamp era. Zero retains its undated wall lookup; a nonzero era
-
     pub fn card_for_config_era(&self, era: u64, wall_at: u64) -> Option<(HistorySeq, &RateCard)> {
         if era == 0 {
             return self.card_at(wall_at);
@@ -548,7 +530,6 @@ impl HistoryView<'_> {
     }
 
     /// Resolve raw provenance without losing the distinction between a known opening and legacy
-
     pub fn card_for_raw_era(
         &self,
         era: RawRateEra,
@@ -585,7 +566,6 @@ impl HistoryView<'_> {
     }
 
     /// **THE RESOLUTION RULE.** Among the entries this snapshot can see whose interval covers `t`,
-
     pub fn card_at(&self, t: u64) -> Option<(HistorySeq, &RateCard)> {
         self.entries
             .iter()
@@ -600,7 +580,6 @@ impl HistoryView<'_> {
     }
 
     /// **THE ONE ENTRY THAT PRICES EVERY INSTANT OF `[from, until)`** (`until` `None` is open-ended),
-
     pub fn sole_entry_over(&self, from: u64, until: Option<u64>) -> Option<&CardEntry> {
         let base = self.entry_at(from)?;
         let base_reaches_end = match (base.effective_until, until) {
@@ -619,7 +598,6 @@ impl HistoryView<'_> {
     }
 
     /// **THE BOUNDARY OF A CORRECTION THAT WOULD CUT INSIDE A ROW** (OWNER ruling #32, 2026-09-29),
-
     pub fn correction_cut(
         &self,
         from: u64,
@@ -636,7 +614,6 @@ impl HistoryView<'_> {
     }
 
     /// The snapshot this view is: the seq it was taken at, or `None` for the current view of a
-
     pub fn seq(&self) -> Option<HistorySeq> {
         self.at
     }

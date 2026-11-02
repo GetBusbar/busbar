@@ -12,7 +12,6 @@ fn card_at(micro: f64) -> RateCard {
 }
 
 /// A history with three entries: the opening one, an ordinary edit, and a back-dated amendment that
-
 fn overlapping_history() -> History {
     let mut history = History::opening(card_at(1.0), 0);
     history.append(CardEntryDraft {
@@ -35,7 +34,6 @@ fn overlapping_history() -> History {
 }
 
 /// **THE RESOLUTION RULE.** Among the entries a snapshot can see whose interval covers an instant,
-
 #[test]
 fn card_at_resolves_overlap_by_the_highest_covering_seq() {
     let history = overlapping_history();
@@ -56,7 +54,6 @@ fn card_at_resolves_overlap_by_the_highest_covering_seq() {
 }
 
 /// The opening entry is effective from instant ZERO, which is what makes a hole impossible for a
-
 #[test]
 fn the_opening_entry_covers_every_instant_including_zero() {
     let history = History::opening(card_at(1.0), 1_700_000_000_000);
@@ -78,7 +75,6 @@ fn the_opening_entry_covers_every_instant_including_zero() {
 }
 
 /// A back-dated amendment is visible AS a back-date, because the instant it prices from and the
-
 #[test]
 fn a_back_dated_entry_is_visible_as_one() {
     let history = overlapping_history();
@@ -95,7 +91,6 @@ fn a_back_dated_entry_is_visible_as_one() {
 }
 
 /// A snapshot above the head sees the whole history rather than refusing: the refusal for a seq
-
 #[test]
 fn a_snapshot_above_the_head_sees_the_whole_history() {
     let history = overlapping_history();
@@ -105,7 +100,6 @@ fn a_snapshot_above_the_head_sees_the_whole_history() {
 }
 
 /// The current view of a history nothing has been appended to names no snapshot. Zero is the seq of
-
 #[test]
 fn the_current_view_of_an_empty_history_names_no_snapshot() {
     let empty = History::new();
@@ -127,7 +121,6 @@ fn the_current_view_of_an_empty_history_names_no_snapshot() {
 }
 
 /// **THE ONE CARD A CORRECTION'S WINDOW RESOLVES TO** (#79): the entry pricing every
-
 #[test]
 fn sole_entry_over_names_the_one_entry_pricing_a_whole_window() {
     let mut history = History::opening(card_at(2.0), 0);
@@ -178,7 +171,6 @@ fn sole_entry_over_names_the_one_entry_pricing_a_whole_window() {
 }
 
 /// **WHERE A CORRECTION WOULD CUT INSIDE A ROW** (OWNER ruling #32, 2026-09-29). Rows are
-
 #[test]
 fn correction_cut_names_a_boundary_inside_a_row() {
     let mut history = History::opening(card_at(2.0), 0);
@@ -217,7 +209,6 @@ fn correction_cut_names_a_boundary_inside_a_row() {
 }
 
 /// **AN ENTRY IS NAMED BY ITS KEY'S ID.** The id is the first 12 bytes of SHA-256 of the key, spelled
-
 #[test]
 fn entries_are_named_by_the_id_of_their_key() {
     use crate::cost::{EntryId, EntryKey};

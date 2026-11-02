@@ -178,11 +178,9 @@ pub struct Capture<'t> {
 }
 
 /// The most captures one path template may declare.
-
 pub const MAX_CAPTURES: usize = 8;
 
 /// Match one request target against one path template.
-
 #[must_use]
 pub fn match_target<'t>(template: &'t str, target: &'t str) -> Option<Vec<Capture<'t>>> {
     let path = target.split(['?', '#']).next().unwrap_or(target);
@@ -208,7 +206,6 @@ pub fn match_target<'t>(template: &'t str, target: &'t str) -> Option<Vec<Captur
 }
 
 /// Find the operation a request target and method address, in the surface's own order.
-
 #[must_use]
 pub fn resolve_target<'s>(
     surface: &'s WireSurface,

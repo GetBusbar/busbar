@@ -18,7 +18,6 @@ fn refusal() -> UnitEnd<'static> {
 }
 
 /// The whole mapping, stated as a table. Only the completed ending varies by plane, and it varies
-
 #[test]
 fn every_ending_has_one_answer_and_only_completion_varies() {
     let failed = UnitEnd::Failed {
@@ -57,7 +56,6 @@ fn every_ending_has_one_answer_and_only_completion_varies() {
 }
 
 /// An abort is `Partial` whoever performed it. `Error` is reserved for an upstream that reported
-
 #[test]
 fn a_kernel_abort_is_partial_like_any_other_abort() {
     let kernel = finish_class_of(

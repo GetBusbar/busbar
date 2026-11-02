@@ -37,7 +37,6 @@ impl std::fmt::Debug for Table {
 }
 
 /// Download the `plugins.fetch` artifact at `url` over `table`, under the operator's extra
-
 pub fn download(
     table: &Table,
     url: &str,
@@ -59,7 +58,6 @@ pub fn download(
 }
 
 /// The download's need for the URL's own scheme (`scheme`, lower-cased, as the URL spells it): the
-
 fn need(scheme: &str) -> ReadNeed {
     ReadNeed {
         direction: DIRECTION_OUTBOUND,
@@ -131,7 +129,6 @@ async fn get(table: &Table, url: &str, secured: bool, cap: usize) -> Result<Vec<
 }
 
 /// The answer, read to its completion: the status judged on the head (a redirect refused, never
-
 async fn read_whole(held: &Held<'_>, url: &str, cap: usize) -> Result<Vec<u8>, Option<String>> {
     let (table, conn) = (held.table, held.conn);
     let mut buf = vec![0_u8; 16 * 1024];

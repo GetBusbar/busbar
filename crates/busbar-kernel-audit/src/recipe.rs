@@ -4,11 +4,9 @@
 //! THE DIGEST RECIPE, as published contract rather than as an implementation detail.
 
 /// The recipe's version name. Goes in every published body so a verifier never has to guess which
-
 pub const DIGEST_RECIPE: &str = "busbar.audit.digest.v4";
 
 /// The name of the recipe `v2`: `v3` plus `currency`, so `v4` less `incarnation` and `node`, plus
-
 pub const DIGEST_RECIPE_V2: &str = "busbar.audit.digest.v2";
 
 /// WHICH RECIPE A RECORD WAS SEALED UNDER — and so the rules it verifies by.
@@ -91,7 +89,6 @@ impl DigestField {
 }
 
 /// EVERY FIELD THAT GOES INTO ONE RECORD'S DIGEST, IN ORDER.
-
 #[must_use]
 pub fn digest_fields(record: &crate::record::AuditRecord) -> Vec<DigestField> {
     use crate::record::{finish_tag, outcome_tag, quantity_source_tag, subject_tag, subject_value};
@@ -249,7 +246,6 @@ pub fn digest_fields(record: &crate::record::AuditRecord) -> Vec<DigestField> {
 }
 
 /// Hash one field list under the record chain's framing.
-
 #[must_use]
 pub fn digest_over(fields: &[DigestField]) -> String {
     let mut d = crate::digest::Digest::new(crate::digest::Framing::LengthPrefixed);

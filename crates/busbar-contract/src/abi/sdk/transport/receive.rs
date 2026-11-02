@@ -14,7 +14,6 @@ pub fn encode(bytes: u64) -> Vec<u8> {
 }
 
 /// Copy a counter from a reply while its lease is still live. An absent key leaves the previous
-
 pub fn decode(blob: &[u8]) -> Result<Option<u64>, &'static str> {
     extensions::get(blob, KEY)
         .map(|bytes| {

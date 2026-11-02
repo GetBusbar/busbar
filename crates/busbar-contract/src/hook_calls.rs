@@ -13,7 +13,6 @@ use crate::abi::host::hook::{DecideFrame, NotifyFrame};
 use crate::abi::mechanism::call::Outcome;
 
 /// A call in flight: the caller's task awaits it; no thread is parked. Dropping it is a client
-
 pub type Pending<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
 /// How one `decide`/`transform` ended.
@@ -50,7 +49,6 @@ pub trait HookCalls: Send + Sync {
     }
 
     /// Serve an owned, already authenticated request on the dispatcher. The request remains
-
     fn serve(
         &self,
         _request: crate::abi::mechanism::endpoint::EndpointRequest,
@@ -73,7 +71,6 @@ pub trait HookCalls: Send + Sync {
     fn notify(&self, frame: Arc<NotifyFrame>, budget: Duration) -> Pending<()>;
 
     /// `configure`: push `settings` (a JSON object) at `version` for the instance `name`; `Ok`
-
     fn configure(
         &self,
         name: &str,
@@ -107,11 +104,9 @@ pub struct HookFacts {
 }
 
 /// What [`HookAxis::probe`] answers of a module: the facts its Statement states (`None` when it
-
 pub type Probed = (Option<HookFacts>, Vec<String>);
 
 /// THE HOOK AXIS, as the kernel asks it (the opener seam; the
-
 pub trait HookAxis: Send + Sync {
     /// Validated routes stated by this module, without opening an instance. Legacy axes serve none.
     fn routes(
@@ -124,11 +119,9 @@ pub trait HookAxis: Send + Sync {
     }
 
     /// `None` when no `kind: hook` row names `module`; else what [`Probed`] states, asked while the
-
     fn probe(&self, module: &str, instance: &str, settings: &serde_json::Value) -> Option<Probed>;
 
     /// OPEN one instance of `module` with `settings` (the operator's section, secrets resolved),
-
     fn open(
         &self,
         module: &str,
@@ -141,7 +134,6 @@ pub trait HookAxis: Send + Sync {
     fn linked(&self, module: &str) -> bool;
 
     /// The dispatcher's Call class budget: the deadline of a call no operator `timeout_ms` bounds
-
     fn call_budget(&self) -> Duration;
 
     /// Whether `module` names a FIRST-PARTY row: linked, or dropped in signed by the release key.

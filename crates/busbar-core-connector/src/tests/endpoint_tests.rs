@@ -79,7 +79,6 @@ fn a_neighbour_of_a_metadata_host_passes() {
 }
 
 /// RED: a URL-shaped target is judged on its HOST, not its scheme, and the one shared metadata list
-
 #[test]
 fn a_url_target_and_every_shared_metadata_host_is_refused() {
     for target in [
@@ -97,7 +96,6 @@ fn a_url_target_and_every_shared_metadata_host_is_refused() {
 }
 
 /// RED: IPv6 link-local, fe80::/10, is refused in every spelling, as predev's private list refused
-
 #[test]
 fn ipv6_link_local_is_refused_in_every_spelling() {
     for (target, host) in [
@@ -117,7 +115,6 @@ fn ipv6_link_local_is_refused_in_every_spelling() {
 }
 
 /// A socket-path target (`ldapi://%2Fvar%2Frun%2Fslapd%2Fldapi`) and an opaque host whose spelling
-
 #[test]
 fn a_socket_path_or_opaque_forbidden_host_target_is_refused_as_naming_no_host() {
     for target in [

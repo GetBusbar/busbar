@@ -137,7 +137,6 @@ fn drive(pairing: &Arc<Pairing>, scheduled_on: &Script) -> PublicationOutcome {
 }
 
 /// A recall that a crossing's own `Complete` races with: before the crossing returns, another
-
 #[test]
 fn a_recall_published_while_a_crossing_completes_is_drained_by_the_same_actor() {
     let caller = Arc::new(Script::default());
@@ -220,7 +219,6 @@ fn a_recall_that_completes_without_new_output_crosses_exactly_once() {
 }
 
 /// A crossing that needs storage credit has not finished the recall it was given: the recall is
-
 #[test]
 fn a_credit_crossing_keeps_the_recall_it_did_not_finish() {
     let caller = Arc::new(Script::default());
@@ -263,7 +261,6 @@ impl Drop for Retired {
 }
 
 /// A source job whose crossing does not take its input is held by the actor. If the pairing
-
 #[test]
 fn a_close_during_a_non_accepting_batch_retires_the_held_source_immediately() {
     const SOURCE: &[u8] = b"original";

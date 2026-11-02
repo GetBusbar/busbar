@@ -41,7 +41,6 @@ pub use configure_checkpoint::ConfigureCheckpoint;
 mod projection;
 
 /// A NULL string is absent; a present one is BORROWED from the host's view (lossily UTF-8: a copy
-
 fn text(s: Lent<'_, AbiStr>) -> Option<Cow<'_, str>> {
     (!s.ptr.is_null()).then(|| String::from_utf8_lossy(s.bytes()))
 }
@@ -340,7 +339,6 @@ impl<'a> Decoded<'a> {
     }
 
     /// THE 1.5.5 PROJECTION: the JSON 1.5.5's host handed a hook for `op` (`decide` or
-
     #[must_use]
     pub fn projection_json(&self, op: &'static str) -> serde_json::Value {
         let req = self.request();
@@ -376,7 +374,6 @@ impl<'a> Decoded<'a> {
     }
 
     /// Append the canonical 1.5.5 projection envelope, with `op` last, directly to `out`.
-
     pub fn write_projection(
         &self,
         op: &str,
@@ -484,7 +481,6 @@ impl<'a> DecodedTap<'a> {
     }
 
     /// Append this tap's canonical projection envelope, with `op` last, directly to `out`.
-
     pub fn write_projection(
         &self,
         op: &str,
@@ -537,7 +533,6 @@ pub enum RewriteVerdict {
 }
 
 /// Lower `v` into `out` and the host buffers `input` lends ([`HostBuf`](crate::abi::sdk::HostBuf)). A buffer too small answers
-
 pub fn write_verdict(v: &Verdict, input: Lent<'_, DecideIn>, out: &mut DecideOut) -> Outcome {
     let mut order = input.order_buf();
     let mut reject = input.reject_message_buf();
@@ -621,7 +616,6 @@ pub fn write_rewrite(
 }
 
 /// An owned hook settings/reply tree. Only its initialized owned strings and map keys are
-
 struct JsonValue(serde_json::Value);
 
 impl<'de> serde::Deserialize<'de> for JsonValue {
@@ -670,7 +664,6 @@ struct Reply155 {
 }
 
 /// A reject's status as the hook stated it: an integer that fits a `u16`, else none (the host then
-
 fn reject_of(r: &serde_json::Value) -> (Option<u16>, String) {
     let status = r
         .get("status")
@@ -692,7 +685,6 @@ fn verb(v: &Option<JsonValue>) -> Option<&serde_json::Value> {
 }
 
 /// LOWER A 1.5.5 `decide` REPLY exactly as 1.5.5's host normalized it (v1.5.5
-
 #[must_use]
 pub fn lower_decide_reply(reply: Result<serde_json::Value, String>) -> Verdict {
     let v = match reply {
@@ -723,7 +715,6 @@ pub fn lower_decide_reply(reply: Result<serde_json::Value, String>) -> Verdict {
 }
 
 /// LOWER A 1.5.5 `transform` REPLY exactly as 1.5.5's host normalized it (v1.5.5
-
 #[must_use]
 pub fn lower_transform_reply(reply: Result<serde_json::Value, String>) -> RewriteVerdict {
     let v = match reply {
@@ -748,7 +739,6 @@ pub fn lower_transform_reply(reply: Result<serde_json::Value, String>) -> Rewrit
 }
 
 /// A hook plugin, over typed views: the SDK reads the host's `in` (after the kind's own checks on
-
 pub trait Hook: Send + Sync {
     /// `decide`. Default: abstain.
     fn decide(&self, view: &Decoded<'_>, op: &Op<'_>) -> Poll<Verdict> {
@@ -766,7 +756,6 @@ pub trait Hook: Send + Sync {
         Poll::Ready(())
     }
     /// `configure`: `Ok` acknowledges the version; `Err` refuses it, saying why in the hook's own
-
     fn configure(
         &self,
         settings: &serde_json::Map<String, serde_json::Value>,
@@ -776,7 +765,6 @@ pub trait Hook: Send + Sync {
         Ok(())
     }
     /// Apply a push and return its complete effective configuration under the same plugin lock.
-
     fn configure_checkpoint(
         &self,
         settings: &serde_json::Map<String, serde_json::Value>,
@@ -820,21 +808,17 @@ impl std::fmt::Debug for Opening<'_> {
 }
 
 /// How a plugin opens: its settings, the operator's section exactly as the host lent it (empty when
-
 pub trait HookOpen: 'static {
     /// Open an instance over its settings.
-
     fn open(settings: &str) -> Result<Box<dyn Hook>, String>;
 
     /// Open an instance over its settings, its secrets and its generation. The SDK opens every
-
     fn open_with(opening: &Opening<'_>) -> Result<Box<dyn Hook>, String> {
         Self::open(opening.settings)
     }
 }
 
 /// The hook kind's Statement tail, for a plugin's `const`. A plugin's hook words are Statement
-
 #[must_use]
 pub const fn tail(kind_class: u32, content_access: u32, user_access: u32) -> Tail {
     Tail::EMPTY.with_access(kind_class, content_access, user_access)
@@ -857,7 +841,6 @@ pub struct HookLife<P> {
 }
 
 /// One operation's hook and exchange travel together. Safe owns this continuation, so cancel,
-
 struct PendingHook {
     hook: Arc<dyn Hook>,
     exchange: Option<Exchange>,
@@ -943,7 +926,6 @@ struct Shorted {
 
 impl Shorted {
     /// The verdict `ticket`'s short answer lowered, if this entry is its re-call (the same ticket,
-
     fn take(&self, ticket: Ticket, decide: bool) -> Option<Lowered> {
         if ticket == Ticket::NONE || self.count.load(Ordering::Acquire) == 0 {
             return None;
@@ -985,7 +967,6 @@ impl<P> HookLife<P> {
 }
 
 /// [`HookOpen::open_with`] over `settings`, verbatim (an empty blob stays empty, so the plugin
-
 fn opened<P: HookOpen>(
     settings: &[u8],
     secrets: &[&[u8]],
@@ -1005,7 +986,6 @@ impl<P: HookOpen> Life for HookLife<P> {
     const CANCEL: u32 = cancel::ABORTED;
 
     /// The settings are a JSON object that [`HookOpen::open`] opens: the instance it opens is
-
     fn validate(settings: &[u8]) -> Result<(), Refusal> {
         settings_object(settings)?;
         opened::<P>(settings, &[], 0).map(drop)
@@ -1062,7 +1042,6 @@ macro_rules! hook_op {
 }
 
 /// The host's `decide`/`transform` `in` breaks the kind's own reading of it: a present prompt view
-
 fn decide_in_breaks_a_rule(input: &DecideIn) -> bool {
     input.present & VIEW_HAS_PROMPT != 0 && check_prompt_view(&input.prompt).is_err()
 }

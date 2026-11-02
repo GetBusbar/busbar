@@ -15,7 +15,6 @@ use crate::select::{pick_among, PickInput, RequestCtx};
 use crate::wire::Shed;
 
 /// Everything the walk reads, borrowed for one step. Shared across every unit of the generation;
-
 pub struct WalkPorts<'p> {
     /// The breaker unit.
     pub breaker: &'p dyn Breaker,
@@ -30,10 +29,8 @@ pub struct WalkPorts<'p> {
 }
 
 /// THE SHAPE A UNIT'S HOOKS PUT ON ITS PICKS (the design's route pump, "Hooks": the routing-stage policy
-
 pub trait Shape {
     /// `members` of a pick, as the unit's hooks leave them: the walk's own pool (`primary`) or a
-
     fn shape(
         &self,
         members: Vec<Member>,
@@ -42,7 +39,6 @@ pub trait Shape {
 }
 
 /// The walk's whole budget over `pool`, seconds: the pool's request timeout, `0` for a pool that is
-
 #[must_use]
 pub fn budget_secs(pools: &HashMap<String, Pool>, pool: &str) -> u64 {
     pools.get(pool).map_or(0, |p| p.failover.timeout_secs)
@@ -106,7 +102,6 @@ pub enum Step {
 }
 
 /// A parked wait: the members passed over AT CAPACITY on the last pick, the bound, and when it
-
 pub struct Parked<'p> {
     /// The pool's name, as the walk keys it.
     name: String,
@@ -119,7 +114,6 @@ pub struct Parked<'p> {
 }
 
 /// What a wait came back with: the member that freed a slot, its permit and the probe its breaker
-
 pub struct Waited<'p> {
     name: String,
     pool: &'p Pool,
@@ -155,7 +149,6 @@ impl Walk {
     }
 
     /// A walk with no pool to walk, bounded by `budget_secs` from now: one health probe's. Its one
-
     #[must_use]
     pub fn pinned(ports: &WalkPorts<'_>, budget_secs: u64) -> Self {
         Self {
@@ -177,7 +170,6 @@ impl Walk {
     }
 
     /// The pool the walk is in and whether it is the walk's own (`true`) rather than a spill;
-
     #[must_use]
     pub fn walking(&self) -> Option<(&str, bool)> {
         match &self.phase {
@@ -193,7 +185,6 @@ impl Walk {
     }
 
     /// A refusal for size from `failed` of `pool`: every ADMISSIBLE member whose window is at or
-
     pub fn refused_for_size(&mut self, ports: &WalkPorts<'_>, pool: &str, failed: &Member) {
         if let Some(pool) = ports.pools.get(pool) {
             exclude_smaller_windows(&pool.admissible_members(), failed, &mut self.ctx);
@@ -318,7 +309,6 @@ impl Walk {
     }
 
     /// THE ONE PICK, over `pool`'s members this unit has not tried: the walk's own pool
-
     fn pick(
         &mut self,
         ports: &WalkPorts<'_>,
@@ -364,7 +354,6 @@ impl Walk {
     }
 
     /// `pool`'s admissible members as the unit's hooks `shape` them for a pick of the walk's own
-
     fn shaped(
         &mut self,
         pool: &Pool,
@@ -404,7 +393,6 @@ impl Walk {
     }
 
     /// Park the queue terminal's wait: the members the last pick passed over AT CAPACITY (a held
-
     pub fn park<'p>(
         &mut self,
         ports: &WalkPorts<'p>,
@@ -437,7 +425,6 @@ impl Walk {
     }
 
     /// The wait is over: a member it won is taken (degraded), and from here every step
-
     pub fn waited(
         &mut self,
         ports: &WalkPorts<'_>,
@@ -455,7 +442,6 @@ impl Walk {
 
 impl<'p> Parked<'p> {
     /// THE BOUNDED WAIT for a slot on a member passed over AT CAPACITY, then the breaker re-asked
-
     pub async fn wait(mut self, ports: &WalkPorts<'_>) -> Waited<'p> {
         let pool = self.pool;
         let members = pool.admissible_members();
@@ -502,7 +488,6 @@ impl<'p> Parked<'p> {
 }
 
 /// One parked waiter's place in the depth gauge, given back on drop. The increment and the
-
 struct QueuedGuard<'a> {
     telemetry: &'a dyn Telemetry,
     pool: &'a str,
@@ -523,7 +508,6 @@ impl Drop for QueuedGuard<'_> {
 }
 
 /// The shed for `pool`: refuse, with the wait its `members` justify (the ones the unit's hooks
-
 fn pool_shed(ports: &WalkPorts<'_>, pool: &str, members: &[Member], token: &Pass<Route>) -> Shed {
     Shed::overloaded(retry_after_secs(
         ports.breaker,
@@ -535,7 +519,6 @@ fn pool_shed(ports: &WalkPorts<'_>, pool: &str, members: &[Member], token: &Pass
 }
 
 /// Exclude every member of `members` (the pool's ADMISSIBLE members) whose window is at or below
-
 pub fn exclude_smaller_windows(members: &[Member], failed: &Member, ctx: &mut RequestCtx) {
     let Some(failed_limit) = failed.context_max else {
         return;

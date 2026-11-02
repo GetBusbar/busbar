@@ -155,7 +155,6 @@ thread_local! {
 }
 
 /// `fill` as a framer calls it: from a slot body on the SDK's safe surface, over the sink the host
-
 struct FillSlot;
 
 impl SafeSlot for FillSlot {
@@ -275,7 +274,6 @@ fn fill_splits_what_does_not_fit_and_says_more() {
 }
 
 /// A PIECE MAY STATE ITS OWN FAULT READING. A framer that maps an answer into its claim's numbering
-
 #[test]
 fn fill_writes_a_pieces_own_fault_reading_over_the_tables() {
     let mut o = Owes {
@@ -304,7 +302,6 @@ fn fill_writes_a_pieces_own_fault_reading_over_the_tables() {
 }
 
 /// RED (the stream-end ruling): the SDK SAYS a stream's end (`Piece::end` -> `PIECE_END` on an
-
 #[test]
 fn fill_says_the_stream_end_and_an_empty_frame_is_not_it() {
     let mut o = Owes {
@@ -323,7 +320,6 @@ fn fill_says_the_stream_end_and_an_empty_frame_is_not_it() {
 }
 
 /// A STREAM'S OWN BACKPRESSURE through the SDK: an `emit` that left its stream full says so beside
-
 #[test]
 fn an_emit_says_its_stream_is_full_and_a_writable_piece_ends_nothing() {
     let mut o = Owes {
@@ -365,7 +361,6 @@ fn fill_states_the_next_deadline() {
 }
 
 /// A stream's head words ride its head slots, in the answer that carries the head's first piece,
-
 #[test]
 fn fill_hands_the_head_words_in_the_slots_and_cuts_a_field_block_inside_a_value() {
     let mut o = Owes {
@@ -427,7 +422,6 @@ fn fill_drops_the_head_words_for_a_host_that_takes_no_slots() {
 }
 
 /// A head's declared body length rides its field block's piece as `PIECE_HAS_DECLARED_LEN` and
-
 #[test]
 fn fill_states_a_heads_declared_length_where_it_declared_one() {
     let mut o = Owes {
@@ -457,7 +451,6 @@ fn fill_states_a_heads_declared_length_where_it_declared_one() {
 }
 
 /// A child spawned while the executor polls its parent must write during the same host drive.
-
 #[test]
 fn a_spawned_child_runs_before_the_host_drive_returns() {
     use hyper::rt::Executor;

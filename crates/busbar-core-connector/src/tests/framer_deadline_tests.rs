@@ -59,7 +59,6 @@ fn mapped_future_readings_keep_their_exact_nanosecond_delta() {
 }
 
 /// A datagram framer that states one deadline at `begin` (the host's reading then, plus `ahead`
-
 struct Deadlined {
     facts: DoorFacts,
     ahead: u64,
@@ -128,7 +127,6 @@ fn framing(door: &Arc<Deadlined>) -> DatagramFraming {
 }
 
 /// Run one `timeout_step` and every same-op continuation it owes to completion; the number of
-
 fn step_to_completion(framing: &mut DatagramFraming, now: Instant) -> usize {
     let mut batches = 0;
     let mut step = framing.timeout_step(now).expect("the clock step");

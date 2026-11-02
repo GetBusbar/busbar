@@ -41,7 +41,6 @@ impl<T: AsFd> AsRawFd for Owned<T> {
 }
 
 /// One direction's observed readiness, from [`Registered::poll_ready`]. Dropping it keeps the
-
 pub struct Ready<'a, T: AsFd>(AsyncFdReadyGuard<'a, Owned<T>>);
 
 impl<T: AsFd> Ready<'_, T> {
@@ -52,7 +51,6 @@ impl<T: AsFd> Ready<'_, T> {
 }
 
 /// `io.register`: put the non-blocking `io` on the calling worker's reactor.
-
 pub fn register<T: AsFd>(io: T) -> io::Result<Registered<T>> {
     let _entered = enter_process_runtime();
     if tokio::runtime::Handle::try_current().is_err() {
@@ -79,13 +77,11 @@ pub fn register<T: AsFd>(io: T) -> io::Result<Registered<T>> {
 static PROCESS_REACTOR: std::sync::OnceLock<tokio::runtime::Handle> = std::sync::OnceLock::new();
 
 /// Install the process's one runtime: a socket registered off a runtime thread goes on its
-
 pub fn install_process_reactor(handle: tokio::runtime::Handle) {
     let _ = PROCESS_REACTOR.set(handle);
 }
 
 /// Off a runtime's task, the process's one runtime entered for the guard's life — its reactor for a
-
 pub(crate) fn enter_process_runtime() -> Option<tokio::runtime::EnterGuard<'static>> {
     if tokio::runtime::Handle::try_current().is_ok() && tokio::task::try_id().is_some() {
         return None;
@@ -95,7 +91,6 @@ pub(crate) fn enter_process_runtime() -> Option<tokio::runtime::EnterGuard<'stat
 
 impl<T: AsFd> Registered<T> {
     /// `io.poll_ready`: Ready once `dir` may make progress; Pending with `cx`'s waker registered.
-
     pub fn poll_ready(
         &self,
         dir: Direction,
@@ -121,7 +116,6 @@ impl<T: AsFd> Registered<T> {
     }
 
     /// One non-blocking attempt of `op` in `dir`, repeated across fresh edges: `WouldBlock` clears
-
     pub fn poll_io<R>(
         &self,
         dir: Direction,

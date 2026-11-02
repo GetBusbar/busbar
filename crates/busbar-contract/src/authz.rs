@@ -26,7 +26,6 @@ impl Scope {
     }
 
     /// Parse a scope token (`"read-only"` / `"full"`). `None` = unknown token; callers fail
-
     pub fn parse(token: &str) -> Option<Self> {
         match token {
             "read-only" => Some(Scope::ReadOnly),
@@ -36,7 +35,6 @@ impl Scope {
     }
 
     /// Whether a principal holding `self` may call an endpoint requiring `needed`. A strict
-
     pub fn allows(self, needed: Scope) -> bool {
         match needed {
             Scope::ReadOnly => true,
@@ -46,11 +44,9 @@ impl Scope {
     }
 
     /// Every scope, for the closure operations below. Adding a variant means adding it here too
-
     pub const ALL: [Scope; 2] = [Scope::ReadOnly, Scope::Full];
 
     /// This scope's bit in a [`Grants`] bitset — its position in `ALL`. Never exposed: callers
-
     fn bit(self) -> u8 {
         1u8 << Scope::ALL
             .iter()
@@ -59,7 +55,6 @@ impl Scope {
     }
 
     /// Does holding `self` confer everything holding `other` confers? DERIVED from `allows`
-
     pub fn dominates(self, other: Scope) -> bool {
         Scope::ALL
             .iter()
@@ -67,7 +62,6 @@ impl Scope {
     }
 
     /// The greatest scope conferring no more than EITHER operand — the ceiling operator (the
-
     pub fn meet(self, other: Scope) -> Scope {
         if self.dominates(other) {
             other
@@ -98,7 +92,6 @@ impl Grants {
     }
 
     /// Pointwise `meet` against a ceiling — replaces `std::cmp::min`. Each held scope is capped
-
     pub fn capped_by(self, cap: Scope) -> Self {
         Scope::ALL
             .iter()
@@ -107,7 +100,6 @@ impl Grants {
     }
 
     /// The authorization check: does ANY held scope satisfy `needed`? This is the disjunction
-
     pub fn allows(self, needed: Scope) -> bool {
         Scope::ALL
             .iter()
@@ -115,7 +107,6 @@ impl Grants {
     }
 
     /// Exact membership — for the few callers that must name one specific scope, not "does this
-
     pub fn contains(self, s: Scope) -> bool {
         self.0 & s.bit() != 0
     }

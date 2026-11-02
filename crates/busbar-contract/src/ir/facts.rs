@@ -8,15 +8,12 @@ use serde_json::Value;
 use std::borrow::Cow;
 
 /// Fixed non-content marker substituted for content busbar cannot read. Busbar cannot decrypt
-
 pub const OPAQUE_CONTENT_MARKER: &str = "[busbar:redacted_reasoning]";
 
 /// Label for an opaque reasoning item. A stable, protocol-blind noun: three wire shapes across three
-
 pub const LABEL_REASONING: &str = "reasoning";
 
 /// Label for a structured, non-prose content member — the shape a tool result carries when it
-
 pub const LABEL_JSON: &str = "json";
 
 /// WHERE a piece of content came from — the protocol dimension, carried as provenance.
@@ -46,7 +43,6 @@ pub enum Slot {
 
 impl Slot {
     /// The conversation turn this slot belongs to, or `None` for the system slot. The one place the
-
     pub fn turn_index(self) -> Option<usize> {
         match self {
             Slot::System => None,
@@ -96,7 +92,6 @@ pub enum ContentItem<'a> {
 
 impl ContentItem<'_> {
     /// Who authored this content — an OPAQUE label the producing walk chose, never a core enum. The
-
     pub fn author(&self) -> &'static str {
         match self {
             ContentItem::Text { author, .. }
@@ -115,7 +110,6 @@ impl ContentItem<'_> {
     }
 
     /// The text a screening consumer is shown for this item — and, by construction, the text the
-
     pub fn screenable_text(&self) -> Cow<'_, str> {
         match self {
             ContentItem::Text { text, .. } => Cow::Borrowed(text.as_ref()),
@@ -129,13 +123,11 @@ impl ContentItem<'_> {
     }
 
     /// A collision-resistant identity for "have I screened this exact piece before" — over the author
-
     pub fn screening_digest(&self) -> String {
         self.digest_of(&self.screenable_text())
     }
 
     /// [`Self::screening_digest`] over an ALREADY-RENDERED text — the body of the digest, so a
-
     pub fn digest_of(&self, text: &str) -> String {
         fn framed(buf: &mut Vec<u8>, bytes: &[u8]) {
             buf.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
@@ -177,7 +169,6 @@ pub(crate) fn take_data_renders() -> usize {
 }
 
 /// A content projection with EVERY item's screenable text rendered ONCE, up front.
-
 pub struct ScreenedContent<'a> {
     entries: Vec<(&'a ContentItem<'a>, Cow<'a, str>)>,
 }
@@ -221,7 +212,6 @@ impl<'a> ScreenedContent<'a> {
     }
 
     /// The `text_chars` / `system_chars` size signals, summed over exactly these items — the same
-
     pub fn counts(&self) -> (usize, usize) {
         let mut text_chars = 0usize;
         let mut system_chars = 0usize;
@@ -278,7 +268,6 @@ pub struct Shape {
 
 impl Shape {
     /// Sum the `text_chars` / `system_chars` size signals over an ALREADY-BUILT content projection —
-
     pub fn counts_over(items: &[ContentItem<'_>]) -> (usize, usize) {
         let mut text_chars = 0usize;
         let mut system_chars = 0usize;
@@ -315,7 +304,6 @@ impl Shape {
     }
 
     /// The shape of a request that carries no readable conversation facts at all — a multipart or
-
     pub const EMPTY: Shape = Shape {
         turn_count: 0,
         has_tools: false,
@@ -327,10 +315,8 @@ impl Shape {
 }
 
 /// Everything the SHARED pipeline needs to know about any request on any protocol.
-
 pub trait IrFacts {
     /// The semantic operation — the same closed vocabulary the metrics label and the `paths:` config
-
     #[cfg_attr(not(test), allow(dead_code))]
     fn verb(&self) -> OpVerb;
 
@@ -338,19 +324,16 @@ pub trait IrFacts {
     fn wants_stream(&self) -> bool;
 
     /// End-user identifier for provider-side abuse tracking, normalized by the reader from whichever
-
     fn end_user(&self) -> Option<&str>;
 
     /// Counts and sizes. No content.
     fn shape(&self) -> Shape;
 
     /// The content projection, in request order. Grant-gated at the seam that CALLS this, never
-
     fn content(&self) -> Vec<ContentItem<'_>>;
 }
 
 /// A SHARED projection is still a projection. `facts()` must hand back an OWNED
-
 impl<T: IrFacts + ?Sized> IrFacts for std::sync::Arc<T> {
     fn verb(&self) -> OpVerb {
         (**self).verb()
@@ -370,7 +353,6 @@ impl<T: IrFacts + ?Sized> IrFacts for std::sync::Arc<T> {
 }
 
 /// The empty projection over a bare [`OpVerb`] — the [`IrFacts`] a RESPONSE-side `IrHandle`
-
 pub struct NeutralFacts(pub OpVerb);
 
 impl IrFacts for NeutralFacts {

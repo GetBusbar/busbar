@@ -6,7 +6,6 @@
 use super::*;
 
 /// The method tokens are the stable UPPERCASE wire spellings a non-Rust author matches on, and
-
 #[test]
 fn method_wire_spellings_are_pinned() {
     for (m, tok) in [

@@ -336,7 +336,6 @@ pub struct AuditChain {
 }
 
 /// HAND-WRITTEN for the reason the retired admin chain writes its own: a DERIVED default gives
-
 impl Default for AuditChain {
     fn default() -> Self {
         AuditChain::new()
@@ -357,7 +356,6 @@ impl AuditChain {
     }
 
     /// CONTINUE FROM THE RECORDS A PREDECESSOR SEALED, oldest first from the genesis, as the
-
     pub fn resume(sealed: &[AuditRecord]) -> Self {
         let mut chain = AuditChain::new();
         for record in sealed {
@@ -371,7 +369,6 @@ impl AuditChain {
     }
 
     /// Restore the independently retained anchors after reading the journal's remaining records.
-
     pub fn retaining_heads(
         mut self,
         heads: crate::heads::HeadHistory,
@@ -396,7 +393,6 @@ impl AuditChain {
     }
 
     /// SIGN FROM HERE ON, with this key.
-
     #[must_use]
     pub fn signing_with(mut self, key: crate::sign::AuditSigningKey) -> Self {
         self.signer = Some(key);
@@ -404,14 +400,12 @@ impl AuditChain {
     }
 
     /// A secret derived from the key this chain signs with, under `label`
-
     #[must_use]
     pub fn derived_secret(&self, label: &[u8]) -> Option<[u8; 32]> {
         self.signer.as_ref().map(|k| k.derived_secret(label))
     }
 
     /// SEAL AS THIS NODE from here on: every record names `node` ([`AuditRecord::node`]).
-
     #[must_use]
     pub fn sealing_as(mut self, node: u64) -> Self {
         self.node = node;
@@ -425,7 +419,6 @@ impl AuditChain {
     }
 
     /// Which key this chain signs with, by identifier. `None` on a node that seals unsigned.
-
     pub fn signing_key_id(&self) -> Option<&str> {
         self.signer.as_ref().map(|k| k.key_id())
     }
@@ -436,7 +429,6 @@ impl AuditChain {
     }
 
     /// Sign one ledger checkpoint's body with THIS chain's key — the one keyset.
-
     pub fn sign_checkpoint_body(&self, body: &[u8]) -> Option<Vec<u8>> {
         self.signer.as_ref().map(|k| k.sign_checkpoint_body(body))
     }
@@ -447,7 +439,6 @@ impl AuditChain {
     }
 
     /// Check one record's signature against one key.
-
     pub fn verify_signature(
         record: &AuditRecord,
         key: &crate::sign::AuditVerifyingKey,
@@ -478,19 +469,16 @@ impl AuditChain {
     }
 
     /// Recompute one record's digest from its own fields — the verification primitive.
-
     pub fn digest_of(record: &AuditRecord) -> String {
         crate::recipe::digest_over(&crate::recipe::digest_fields(record))
     }
 
     /// VERIFY A WHOLE CHAIN: `records` is oldest-first and starts at the chain's genesis, so the
-
     pub fn verify_chain(records: &[AuditRecord]) -> Result<(), AuditBreak> {
         Self::walk(records, Anchor::Genesis)
     }
 
     /// VERIFY A WINDOW of a chain: the same walk, but the first record's position and link are
-
     pub fn verify_window(records: &[AuditRecord]) -> Result<(), AuditBreak> {
         Self::walk(records, Anchor::Window)
     }
@@ -526,7 +514,6 @@ impl AuditChain {
 }
 
 /// THE LINK AND THE POSITION, judged in that order and reported apart.
-
 pub(crate) fn link_break(
     prev_hash: &str,
     seq: u64,
@@ -666,7 +653,6 @@ pub(crate) fn step_tag(step: StepName) -> &'static str {
 }
 
 /// The frozen text for one reason code: its wire name in upper camel case, which is exactly what the
-
 pub(crate) fn reason_tag(reason: ReasonCode) -> String {
     let mut out = String::with_capacity(reason.as_str().len());
     let mut start_of_word = true;
@@ -728,7 +714,6 @@ pub(crate) fn direction_tag(direction: busbar_contract::ClassDirection) -> &'sta
 }
 
 /// The frozen text for where one reported quantity came from.
-
 pub(crate) fn quantity_source_tag(source: &QuantitySource) -> String {
     match source {
         QuantitySource::Locator { direction, ptr } => format!(
@@ -758,7 +743,6 @@ pub(crate) fn subject_tag(subject: &Subject) -> &'static str {
 }
 
 /// The subject's own identifier, as one text field.
-
 pub(crate) fn subject_value(subject: &Subject) -> String {
     match subject {
         Subject::PrincipalId(p) => p.clone(),

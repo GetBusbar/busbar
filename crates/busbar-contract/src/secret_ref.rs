@@ -48,20 +48,17 @@ pub const SECRET_MODULE_ENV: &str = "env";
 /// The built-in `file` secret module name (settings: `{ path: <FILE> }`).
 pub const SECRET_MODULE_FILE: &str = "file";
 /// The DECLARED-KEYLESS module name: `api_key: none` (a plain scalar — the only spelling) says
-
 pub const SECRET_MODULE_NONE: &str = "none";
 /// The `env` module's settings key naming the environment variable.
 pub const SECRET_ENV_SETTING_KEY: &str = "key";
 /// The `file` module's settings key naming the file path.
 pub const SECRET_FILE_SETTING_PATH: &str = "path";
 /// The TEMPLATE reference's module name: a credential value `${VAR}` filled only in part
-
 pub const SECRET_MODULE_TEMPLATE: &str = "env-template";
 /// The template module's settings key holding the value as written.
 pub const SECRET_TEMPLATE_SETTING_TEXT: &str = "text";
 
 /// "At least one non-whitespace character", as [`oneof_schema`] states the non-empty rule. The
-
 const NON_BLANK: &str = r"\S";
 
 /// A reference to a secret, resolved through a secret MODULE. See the module docs for the accepted
@@ -104,7 +101,6 @@ impl SecretRef {
     }
 
     /// A TEMPLATE reference over `text`, a value as written whose every `${VAR}` names an
-
     pub fn template(text: impl Into<String>) -> Self {
         let mut settings = serde_json::Map::new();
         settings.insert(
@@ -129,7 +125,6 @@ impl SecretRef {
     }
 
     /// THE VALUE THIS REFERENCE NAMES, resolved through `resolve`: a template's text with each
-
     pub fn resolve_template(
         &self,
         resolve: &dyn Fn(&SecretRef) -> Result<String, String>,
@@ -161,7 +156,6 @@ impl SecretRef {
     }
 
     /// The `none` reference: an EXPLICIT declaration that there is no credential. See
-
     pub fn none() -> Self {
         Self {
             module: SECRET_MODULE_NONE.to_string(),
@@ -197,7 +191,6 @@ impl SecretRef {
     }
 
     /// A short display form for error messages: `none`, `env:VAR`, `file:/path`, or
-
     pub fn describe(&self) -> String {
         if self.is_none() {
             SECRET_MODULE_NONE.to_string()
@@ -212,7 +205,6 @@ impl SecretRef {
 }
 
 /// THE REFUSAL OF A SECRET WRITTEN INLINE, the one sentence every secret field answers a literal
-
 pub const INLINE_LITERAL_REFUSAL: &str = "a secret value must be a REFERENCE, never an inline \
      literal (the value is not echoed): use { env: <VAR> }, { file: <path> }, \
      { module: <secret-module>, settings: {…} }, or the bare scalar `none` to declare an upstream \
@@ -227,7 +219,6 @@ impl<'de> Deserialize<'de> for SecretRef {
 
         impl RefVisitor {
             /// The one refusal message every inline-scalar spelling shares. Names the accepted
-
             fn inline_literal<E: de::Error>() -> E {
                 E::custom(INLINE_LITERAL_REFUSAL)
             }
@@ -405,7 +396,6 @@ impl<'de> Deserialize<'de> for SecretRef {
 }
 
 /// Derive the `x-busbar-secret` field's `oneOf` JSON Schema (2020-12) fragment DIRECTLY from
-
 pub fn oneof_schema() -> serde_json::Value {
     serde_json::json!({
         "oneOf": [
@@ -439,7 +429,6 @@ pub fn oneof_schema() -> serde_json::Value {
 }
 
 /// The reference keys that are core secret-reference grammar, which no plugin may declare as its
-
 const CORE_WORDS: [&str; 4] = ["module", "settings", SECRET_MODULE_NONE, "literal"];
 
 /// ONE DECLARED SUGAR, as a secret plugin's Statement states it (its `REWRITE_SUGAR*` rewrites):
@@ -472,7 +461,6 @@ pub struct Sugars {
 
 impl Sugars {
     /// Declare every sugar `plugin`'s Statement rewrites state (`(class, from, to)`, as a Statement
-
     pub fn declare(
         &mut self,
         plugin: &str,
@@ -584,7 +572,6 @@ impl Sugars {
     }
 
     /// The sugar the core grammar's `role` names ([`SUGAR_ROLE_FILL`], [`SUGAR_ROLE_PATH`]).
-
     pub fn with_role(&self, role: &str) -> Option<&Sugar> {
         self.roles
             .iter()

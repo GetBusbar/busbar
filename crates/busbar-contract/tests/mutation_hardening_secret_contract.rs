@@ -39,7 +39,6 @@ fn secret_error_display_carries_kind_and_message() {
 }
 
 /// Every error constructed before the taxonomy existed (a bare-string `?`-conversion) becomes
-
 #[test]
 fn secret_error_from_string_and_str_are_internal_kind() {
     let from_string: SecretModuleError = "boom".to_string().into();

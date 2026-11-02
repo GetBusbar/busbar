@@ -65,7 +65,6 @@ pub enum WireFault {
 
 impl WireFault {
     /// The reading a piece's `FAULT_*` byte states; `None` for `FAULT_NONE` or a byte no reading
-
     #[must_use]
     pub const fn from_code(code: u8) -> Option<Self> {
         match code {
@@ -150,7 +149,6 @@ impl WireStatus {
     }
 
     /// The number, when this status is in the numbering asked for. `None` otherwise — never a
-
     #[must_use]
     pub fn in_namespace(self, namespace: &str) -> Option<u32> {
         (self.namespace == namespace).then_some(self.code)
@@ -440,25 +438,20 @@ impl fmt::Debug for Conn {
 }
 
 /// A duplex byte stream, as one transport layer hands it to the layer above.
-
 pub trait RawIo: futures::io::AsyncRead + futures::io::AsyncWrite + Send + Unpin {}
 impl<T: futures::io::AsyncRead + futures::io::AsyncWrite + Send + Unpin> RawIo for T {}
 
 /// The core↔transport connection-security seam (DECISIONS #40): an opaque wrap a binding's
-
 pub trait ConnectionSecurity: Send + Sync {
     /// Apply this binding's connection security to a freshly accepted/dialled raw stream, handing
-
     fn wrap<'a>(&'a self, io: Box<dyn RawIo>) -> SecuredIoFut<'a>;
 }
 
 /// The one boxed future [`ConnectionSecurity::wrap`] returns — named for the same reason
-
 pub type SecuredIoFut<'a> =
     Pin<Box<dyn Future<Output = std::io::Result<Box<dyn RawIo>>> + Send + 'a>>;
 
 /// The byte stream under a connection, detached from the layer that owned it.
-
 pub struct RawStream {
     io: Box<dyn RawIo>,
     from: &'static str,
@@ -479,7 +472,6 @@ impl RawStream {
     }
 
     /// The peer's source address, carried across the handoff so the adopting layer does not have to
-
     #[must_use]
     pub fn peer(&self) -> &str {
         &self.peer

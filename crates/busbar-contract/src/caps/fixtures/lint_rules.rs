@@ -77,13 +77,11 @@ fn list(name: &str) -> Vec<LintRule> {
 }
 
 /// The ways a hold could be made to disappear without a posting. Every one of them compiles; none
-
 pub fn hold_escapes() -> Vec<LintRule> {
     list("hold-escape")
 }
 
 /// The symbols that decide who may build a capability at all. Each is a crate boundary Rust cannot
-
 pub fn seal_sites() -> Vec<LintRule> {
     list("seal-site")
 }

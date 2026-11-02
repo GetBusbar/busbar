@@ -506,7 +506,6 @@ struct Measured {
 }
 
 /// Call once to warm this thread (the door's per-thread capture is made on first use), then
-
 fn measure<I: Copy, O: Copy>(
     case: &'static str,
     op: Option<Op>,
@@ -893,7 +892,6 @@ fn list_keys(instance: *mut c_void) -> Outcome {
 }
 
 /// A STORE OP'S READ BUFFER IS REUSED, NOT MADE PER OP (THE DESIGN, the plugin ABI: "no
-
 #[test]
 fn two_consecutive_wire_ops_allocate_one_read_buffer() {
     let instance = open();
@@ -916,7 +914,6 @@ fn release(instance: *mut c_void, lease: u64) -> Outcome {
 }
 
 /// RELEASING AN UNKNOWN LEASE IS REFUSED (THE DESIGN §11, KIND-SHARE: "releasing an unknown lease
-
 #[test]
 fn the_store_door_refuses_a_release_of_a_lease_it_does_not_hold() {
     let instance = open();

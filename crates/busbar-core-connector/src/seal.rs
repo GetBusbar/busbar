@@ -9,7 +9,6 @@ use zeroize::Zeroizing;
 use crate::compose::Opening;
 
 /// The refusal of an open whose sealed values would cross a connection the host does not secure:
-
 pub const SEALED_IN_CLEAR: &str = "a sealed credential is never written in the clear: the open's \
      connection is not secured by the host, so its carrier would read the credential";
 
@@ -38,7 +37,6 @@ impl std::fmt::Debug for Seals {
 }
 
 /// The names the opener's [`busbar_contract::conn::SEALED_FIELDS_FIELD`] states, taken out of
-
 pub(crate) fn take_sealed_names(fields: &mut Vec<(String, Vec<u8>)>) -> Vec<String> {
     let mut names = Vec::new();
     fields.retain(|(n, v)| {
@@ -153,7 +151,6 @@ impl Seals {
     }
 
     /// SEAL `opening`: the sealed-fields field is taken out; when `sealing` (the framer renders
-
     #[cfg(test)]
     pub(crate) fn seal(
         &mut self,
@@ -226,7 +223,6 @@ impl Seals {
     }
 
     /// SPLICE every pending seal whose filler `wire` holds: the real bytes over the filler, in
-
     pub(crate) fn splice(&mut self, wire: &mut [u8]) -> Result<(), &'static str> {
         let mut positions = Vec::with_capacity(self.0.len());
         for s in &self.0 {

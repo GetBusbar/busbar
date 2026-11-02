@@ -20,7 +20,6 @@ pub const DETAIL_INTERNAL_ERROR: &str =
     "We received an unexpected internal error. Please try again.";
 
 /// The words a spill says when a gate's restriction left no eligible member in the pool it spilled
-
 pub const DETAIL_RESTRICT_NO_LANE: &str =
     "No upstream satisfies a required gate's restriction. Please retry shortly.";
 
@@ -77,7 +76,6 @@ impl Shed {
     }
 
     /// The walk deadline passed. No wait is advertised: the previous release sent this one with no
-
     #[must_use]
     pub fn request_timeout() -> Self {
         Self::of(
@@ -89,7 +87,6 @@ impl Shed {
     }
 
     /// The pool has no members at all. Same words as an exhausted pool and, like the previous
-
     #[must_use]
     pub fn empty_pool() -> Self {
         Self::of(
@@ -112,7 +109,6 @@ impl Shed {
     }
 
     /// Nothing could be sent and nothing was recorded against the member: the dispatch could not
-
     #[must_use]
     pub fn internal() -> Self {
         Self::of(

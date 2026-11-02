@@ -29,7 +29,6 @@ fn span_len_and_is_empty_are_pinned_to_independent_values() {
 }
 
 /// A byte that is neither a container opener, a string quote, a literal's first letter, nor a
-
 #[test]
 fn a_lone_garbage_byte_is_malformed_not_an_empty_number() {
     assert_eq!(resolve_pointer(b"x", ""), Resolved::Malformed);
@@ -38,7 +37,6 @@ fn a_lone_garbage_byte_is_malformed_not_an_empty_number() {
 }
 
 /// `skip_container` must skip a STRING it encounters while walking PAST a container it is not
-
 #[test]
 fn skip_container_steps_over_a_string_holding_bracket_characters() {
     let body = br#"{"decoy":["}{[]"],"lane":"gold"}"#;
@@ -49,7 +47,6 @@ fn skip_container_steps_over_a_string_holding_bracket_characters() {
 }
 
 /// Every one of the nine escape letters `next_json_char` recognizes decodes to its own distinct
-
 #[test]
 fn every_recognized_escape_letter_decodes_to_its_own_character() {
     assert_eq!(
@@ -90,7 +87,6 @@ fn every_recognized_escape_letter_decodes_to_its_own_character() {
 }
 
 /// A surrogate pair's second escape must have BOTH the backslash and the `u` in the right place —
-
 #[test]
 fn a_surrogate_pairs_second_escape_needs_both_the_backslash_and_the_u() {
     assert_eq!(
@@ -101,7 +97,6 @@ fn a_surrogate_pairs_second_escape_needs_both_the_backslash_and_the_u() {
 }
 
 /// The position after decoding a full surrogate-pair character must land exactly on the byte that
-
 #[test]
 fn a_character_after_a_surrogate_pair_decodes_from_the_right_position() {
     let body = "{\"\\uD83D\\uDE00Z\": 1}".as_bytes();
@@ -109,7 +104,6 @@ fn a_character_after_a_surrogate_pair_decodes_from_the_right_position() {
 }
 
 /// A 3-byte-lead UTF-8 character (U+0800..U+FFFF), embedded literally (unescaped) in a key, must
-
 #[test]
 fn a_three_byte_utf8_character_decodes_in_a_key() {
     let body = "{\"a\u{20ac}b\": 1}".as_bytes();
@@ -117,7 +111,6 @@ fn a_three_byte_utf8_character_decodes_in_a_key() {
 }
 
 /// `literal` must compare every byte of the candidate word, not merely its length — a same-length
-
 #[test]
 fn a_same_length_impostor_literal_is_malformed() {
     assert_eq!(resolve_pointer(b"toue", ""), Resolved::Malformed);

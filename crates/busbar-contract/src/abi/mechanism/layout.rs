@@ -15,7 +15,6 @@ pub const fn fold(state: u64, word: u64) -> u64 {
 }
 
 /// THE FINGERPRINT of a kind's shapes: per shape, its word count, then its words, folded in order
-
 #[must_use]
 pub const fn fingerprint(shapes: &[&[u64]]) -> u64 {
     let mut state = FOLD_BASIS;

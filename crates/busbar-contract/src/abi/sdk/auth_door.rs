@@ -213,7 +213,6 @@ pub struct Answer {
 
 impl From<Verdict> for Answer {
     /// The verdict with no strips and its default decision: [`Decision::Continue`] for an
-
     fn from(verdict: Verdict) -> Self {
         let decision = match verdict {
             Verdict::Identity(_) | Verdict::Pass => Decision::Continue,
@@ -229,7 +228,6 @@ impl From<Verdict> for Answer {
 }
 
 /// The field line `name` to strip, as a `const` ([`Strip::field`] for a name known only at run
-
 #[must_use]
 pub const fn strip_field(name: &'static str) -> Strip {
     Strip {
@@ -239,7 +237,6 @@ pub const fn strip_field(name: &'static str) -> Strip {
 }
 
 /// `VerifyOp` over the host services supplied by the instance's `open`; a plugin can use this alias where it names the operation type.
-
 pub type StaticVerifyOp = VerifyOp;
 
 /// ONE `verify`'S HOST CALLS, on its ticket: what [`VerifyPlugin::verify_ticketed`] is handed. Each
@@ -257,7 +254,6 @@ pub struct VerifyOp {
 
 impl VerifyOp {
     /// The op on `ticket` over `services` (`None`: the host offers none, and every service is
-
     #[must_use]
     pub const fn new(services: Option<Services>, ticket: Ticket) -> Self {
         Self {
@@ -269,7 +265,6 @@ impl VerifyOp {
     }
 
     /// Report the declared diagnostic `id_idx` (its index in the Statement's `diag_ids`) at
-
     pub fn diag(&self, id_idx: u32, severity: u8, text: impl Into<Box<str>>) {
         self.diags.borrow_mut().push(id_idx, severity, text);
     }
@@ -286,7 +281,6 @@ impl VerifyOp {
     }
 
     /// The host services the instance was opened with, for a service this op has no call of its
-
     #[must_use]
     pub const fn services(&self) -> Option<&Services> {
         self.services.as_ref()
@@ -305,7 +299,6 @@ impl VerifyOp {
     }
 
     /// [`Services::records_secret`] of credential `id` of `kind` on the call's next handle: the
-
     pub fn records_secret(&self, kind: &str, id: &str) -> Pend<CredentialSecret> {
         if self.ticket.is_none() {
             return Poll::Pending;
@@ -319,60 +312,50 @@ impl VerifyOp {
 }
 
 /// AN AUTH PLUGIN THAT VERIFIES ON THE SPOT, or on its ticket over the host's services, in safe
-
 pub trait VerifyPlugin: Send + Sync + Sized + 'static {
     /// The index, in the plugin's Statement `families`, of its
-
     const CACHE_FAMILY: Option<u32> = None;
 
     /// The carrier fields this configured instance reads, selected from its Statement's carrier
-
     fn carriers(&self) -> Option<Vec<String>> {
         None
     }
 
     /// `validate`: whether `settings` (one JSON document) are this plugin's, refused in the words
-
     fn validate(settings: &[u8]) -> Result<(), Refusal> {
         let _ = settings;
         Ok(())
     }
 
     /// Build the plugin from its settings blob (one JSON document) and its resolved secrets (one
-
     fn open_refusing(settings: &[u8], secrets: &[&[u8]]) -> Result<Self, Refusal> {
         Self::open(settings, secrets).map_err(Refusal::failed)
     }
 
     /// [`VerifyPlugin::open_refusing`] with a fixed text, answered FAILED: the earlier kit's form,
-
     fn open(settings: &[u8], secrets: &[&[u8]]) -> Result<Self, &'static str> {
         let _ = (settings, secrets);
         Err(OPENS_NOTHING)
     }
 
     /// Judge the request at one point: the verdict, the decision and the lines to strip (a bare
-
     fn verify(&self, request: &VerifyView<'_>) -> Answer {
         let _ = request;
         Verdict::reject("the plugin implements no on-the-spot verify").into()
     }
 
     /// Judge the request at one point, over `op`: the call's ticket and the host services, so the
-
     fn verify_ticketed(&self, request: &VerifyView<'_>, op: &VerifyOp) -> Poll<Answer> {
         let _ = op;
         Poll::Ready(self.verify(request))
     }
 
     /// A reload (the admin cache flush is one with unchanged settings): drop the inbound cache and
-
     fn reload(&self, settings: &[u8], secrets: &[&[u8]]) -> Result<u64, Refusal> {
         Ok(self.refresh(settings, secrets))
     }
 
     /// [`VerifyPlugin::reload`] that cannot refuse: the earlier kit's form, kept so a plugin built
-
     fn refresh(&self, settings: &[u8], secrets: &[&[u8]]) -> u64 {
         let _ = (settings, secrets);
         0
@@ -380,7 +363,6 @@ pub trait VerifyPlugin: Send + Sync + Sized + 'static {
 }
 
 /// [`VerifyPlugin::validate`] for a plugin whose `open` needs no secret: open over `settings` with
-
 pub fn validate_by_opening<T: VerifyPlugin>(settings: &[u8]) -> Result<(), Refusal> {
     T::open_refusing(settings, &[]).map(drop)
 }
@@ -397,7 +379,6 @@ pub const OPENS_NOTHING: &str =
     "the auth plugin implements neither `open` nor `open_refusing`: it cannot open";
 
 /// THE AUTH KIND'S [`Life`] over a [`VerifyPlugin`] `T`: the instance state the shared lifecycle
-
 pub struct Verifier<T>(T);
 
 impl<T> std::fmt::Debug for Verifier<T> {
@@ -476,7 +457,6 @@ pub(crate) fn verify_op<T: Send + Sync + 'static>(
 }
 
 /// `verify` over `plugin` on `op`: [`VerifyPlugin::verify_ticketed`], its identity written into
-
 pub(crate) fn verify_answer<T: VerifyPlugin>(
     plugin: &T,
     op: &VerifyOp,
@@ -536,7 +516,6 @@ struct RetainedVerify {
 }
 
 /// The SDK/host reference to an immutable SHORT verdict, carried by the existing extensions
-
 pub mod short_reply {
     use crate::abi::mechanism::extensions;
     const KEY: &str = "busbar.sdk.short-reply";
@@ -549,7 +528,6 @@ pub mod short_reply {
     }
 
     /// Read a reference without interpreting any other extension.
-
     pub fn decode(bytes: &[u8]) -> Result<Option<u64>, &'static str> {
         const INVALID: &str = "invalid verify recall";
         let Some(value) = extensions::get(bytes, KEY) else {
@@ -600,7 +578,6 @@ fn write_answer(
 }
 
 /// Write `id` into the host's identity buffer under `verdict` (`VERDICT_IDENTITY` for `verify`,
-
 pub fn write_identity(
     id: &VerifiedIdentity,
     buf: Lent<'_, IdentityBuf>,
@@ -614,7 +591,6 @@ pub fn write_identity(
 type Strips<'a> = [&'a [Strip]; 2];
 
 /// Write the identity `id` (if any) and, for `verify`, the strip names into the host's strip array
-
 fn write(
     id: Option<&VerifiedIdentity>,
     strip: Option<(Strips<'_>, HostBuf<'_, StripName>, u32)>,
@@ -789,7 +765,6 @@ macro_rules! auth_verify_door {
 }
 
 /// An [`AuthTail`] for a verify-only plugin, with `facts` (`FACT_*`), called at the inbound `points`
-
 #[must_use]
 pub const fn verify_tail(facts: u32, points: AuthPoints) -> AuthTail {
     AuthTail {
@@ -807,7 +782,6 @@ pub const fn verify_tail(facts: u32, points: AuthPoints) -> AuthTail {
 }
 
 /// `tail` as THE OPERATOR CREDENTIAL's: it states [`FACT_OPERATOR`](crate::abi::auth::FACT_OPERATOR)
-
 #[must_use]
 pub const fn with_operator(tail: AuthTail, principal: &'static str) -> AuthTail {
     AuthTail {
@@ -818,7 +792,6 @@ pub const fn with_operator(tail: AuthTail, principal: &'static str) -> AuthTail 
 }
 
 /// `tail` as a verifier that reads host-held credentials of `kinds` through `records.secret`: it
-
 #[must_use]
 pub const fn with_credential_kinds(tail: AuthTail, kinds: &'static [AbiStr]) -> AuthTail {
     AuthTail {
@@ -830,7 +803,6 @@ pub const fn with_credential_kinds(tail: AuthTail, kinds: &'static [AbiStr]) -> 
 }
 
 /// One inbound carrier `verify` reads (a field line's name), as the Statement states it: a
-
 #[must_use]
 pub const fn carrier(name: &'static str) -> MarkWord {
     MarkWord {

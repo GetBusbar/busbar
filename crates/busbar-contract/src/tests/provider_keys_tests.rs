@@ -60,7 +60,6 @@ fn every_shape() -> ProviderKeys {
 }
 
 /// THE DESCRIPTOR ROUND-TRIPS: what is encoded decodes to the same descriptor, every shape, every
-
 #[test]
 fn a_descriptor_round_trips_through_its_encoding() {
     let keys = every_shape();
@@ -92,7 +91,6 @@ fn a_descriptor_round_trips_through_its_encoding() {
 }
 
 /// A STATEMENT'S EXTENSIONS carry the descriptor under the one key, beside keys the reader passes
-
 #[test]
 fn the_descriptor_is_read_off_the_one_extensions_key() {
     let keys = every_shape();
@@ -106,7 +104,6 @@ fn the_descriptor_is_read_off_the_one_extensions_key() {
 }
 
 /// RED: A DESCRIPTOR NAMING A SHAPE OUTSIDE THE NEUTRAL VOCABULARY IS REFUSED, as a word and as a
-
 #[test]
 fn a_non_neutral_shape_word_is_refused() {
     let with_shape = |shape: &str| {
@@ -147,7 +144,6 @@ fn a_non_neutral_shape_word_is_refused() {
 }
 
 /// THE ENCODING IS CLOSED: an unstated member, a missing member, a key named twice in one table and
-
 #[test]
 fn the_encoding_states_exactly_its_members() {
     let tables = |catalog: &str| {

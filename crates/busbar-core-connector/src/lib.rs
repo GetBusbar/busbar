@@ -32,7 +32,6 @@ pub(crate) mod seal;
 pub mod socket;
 pub mod spawn_env;
 /// The TLS test kit (far ends, the recording TLS fixture server, a private test CA) for this crate's
-
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 pub mod tls;
@@ -73,29 +72,23 @@ use crate::pool::{PoolKey, PoolPosture, Pools, Same};
 use crate::registry::Transports;
 
 /// How the host wakes a caller's ticket, naming the caller that handed it the ticket: the supplier
-
 pub type WakeTicket = busbar_contract::conn::ConnWake;
 
 /// A `DEST_*` verdict (`busbar_contract::abi::host::service`) refusing a dial.
 pub type Verdict = u64;
 
 /// Where a pended judgement goes: the address to dial, or the verdict refusing it. Called once,
-
 pub type Judged = Box<dyn FnOnce(Result<SocketAddr, Verdict>) + Send>;
 
 /// Where a pended judgement goes with the name's OTHER admitted addresses, in the resolver's order:
-
 pub type JudgedAll = Box<dyn FnOnce(Result<SocketAddr, Verdict>, Vec<SocketAddr>) + Send>;
 
 /// A need's `egress_class` `0`: the connector's default class (`busbar_contract::abi::host::conn::
-
 pub const DEFAULT_CLASS: u32 = 0;
 
 /// THE KERNEL'S DESTINATION JUDGE, as a dial reaches it (`dest.judge`, R-K): every authority the
-
 pub trait DialJudge: Send + Sync {
     /// Replace the bootstrap listener-port metadata before the effective plugins open.
-
     fn own_ports_applied(&self, _ports: &[u16]) {}
 
     /// Judge `dest` (`host:port`) under egress class `class`.
@@ -107,7 +100,6 @@ pub trait DialJudge: Send + Sync {
     ) -> Option<Result<SocketAddr, Verdict>>;
 
     /// [`DialJudge::judge_dial`] for a destination the dialling need holds a PRIVATE REACH to (the
-
     fn judge_dial_reaching(
         &self,
         dest: &str,
@@ -118,7 +110,6 @@ pub trait DialJudge: Send + Sync {
     }
 
     /// [`DialJudge::judge_dial`] (with the need's private reach when `reach`) whose pended answer
-
     fn judge_dial_all(
         &self,
         dest: &str,
@@ -135,7 +126,6 @@ pub trait DialJudge: Send + Sync {
     }
 
     /// THE STATIC ARM ALONE: the refusal `dest` (`host:port`) meets under class `class` before any
-
     fn judge_static(&self, dest: &str, class: u32) -> Option<Verdict> {
         let _ = (dest, class);
         None
@@ -143,7 +133,6 @@ pub trait DialJudge: Send + Sync {
 }
 
 /// Any function of the judge's shape is a judge: [`process::judge`] joins the deployment's one
-
 impl<F> DialJudge for F
 where
     F: Fn(&str, u32, Judged) -> Option<Result<SocketAddr, Verdict>> + Send + Sync,
@@ -159,7 +148,6 @@ where
 }
 
 /// The judge a connector built with none holds: an IP literal is its own address, judged by the
-
 pub(crate) struct LiteralsOnly(pub(crate) guard::Guard);
 
 impl DialJudge for LiteralsOnly {
@@ -194,7 +182,6 @@ impl DialJudge for LiteralsOnly {
 }
 
 /// THE SCHEME RULE OF A NEED'S EGRESS CLASS (`abi::host::conn::connector`, `EGRESS_*`), held
-
 fn scheme_admits(egress_class: u32, secure: bool) -> bool {
     egress_class != EGRESS_OPEN_WEB || secure
 }
@@ -215,7 +202,6 @@ fn class_admits(
 }
 
 /// WHAT A JUDGEMENT THAT PENDED ON A RESOLUTION ANSWERS THE CONNECTION'S CALLER. A name that did
-
 fn pended_verdict(v: Verdict) -> ConnError {
     match v {
         DEST_UNRESOLVABLE | DEST_NO_ADDRESSES => ConnError::Fault,
@@ -224,7 +210,6 @@ fn pended_verdict(v: Verdict) -> ConnError {
 }
 
 /// THE HEAD A PLUGIN WROTE, held to 1.5.5's rule for a plugin-described request (v1.5.5
-
 fn head_is_refused(desc: &OpenDesc<'_>, authority_held: bool) -> bool {
     const FRAMING: [&str; 2] = ["content-length", "transfer-encoding"];
     const AUTHORITY: &str = "host";
@@ -264,7 +249,6 @@ struct DeclaredNeed {
 }
 
 /// A judgement's answer once it came, and the waker of the read or wait that found none.
-
 type Answer = Arc<
     Mutex<(
         Option<Result<SocketAddr, Verdict>>,
@@ -274,7 +258,6 @@ type Answer = Arc<
 >;
 
 /// The trust anchors sealed per destination (the transport pin), by the need's owner, the need and
-
 type Anchored = Mutex<HashMap<(InstanceId, NeedId, String), Arc<tls::client::Sealed>>>;
 
 /// THE REGISTRATIONS' SEALS AT ONE DESTINATION: each registration's seal at its authority, by name
@@ -289,7 +272,6 @@ struct Registered {
 
 impl Registered {
     /// What an open naming no registration is held to, with the destination's `own` seal: the one
-
     fn held(
         &self,
         own: Option<&Arc<tls::client::Sealed>>,
@@ -310,7 +292,6 @@ impl Registered {
 }
 
 /// Whether two seals hold a connection to the same: the same key pin and the same client identity
-
 fn same_anchors(
     a: Option<&Arc<tls::client::Sealed>>,
     b: Option<&Arc<tls::client::Sealed>>,
@@ -328,12 +309,10 @@ fn same_anchors(
 }
 
 /// The trust anchors sealed per REGISTRATION, by the need's owner, the need and the registration's
-
 type MemberAnchored =
     Mutex<HashMap<(InstanceId, NeedId, String), (String, Option<Arc<tls::client::Sealed>>)>>;
 
 /// What a member's auth binding is held under: the need's owner, the need, the registration's
-
 type AuthKey = (InstanceId, NeedId, String, String);
 
 /// The listeners, one per inbound need, by the need's owner and need.
@@ -388,7 +367,6 @@ impl Drop for AcceptingOut<'_> {
 }
 
 /// A dial whose judgement pended, retained until its accepted writes reach the line. `planned`
-
 struct Judging {
     planned: Option<Planned>,
     /// A spent dial or replay's terminal error, retained for every poll until close.
@@ -405,7 +383,6 @@ struct Judging {
 }
 
 /// A dial through a proxy, judged in two steps: the target (its name arm, and its own resolution
-
 struct Proxied {
     spec: Arc<proxy::ProxyHop>,
     judged_class: u32,
@@ -413,13 +390,11 @@ struct Proxied {
 }
 
 /// Whether a target judgement's refusal is only that the name does not resolve HERE: behind a
-
 fn unresolved_here(verdict: Verdict) -> bool {
     verdict == DEST_UNRESOLVABLE || verdict == DEST_NO_ADDRESSES
 }
 
 /// What an exchange lent a pooled line keeps to redial it ONCE on a fresh connection when that line
-
 struct Redial {
     door: Arc<dyn FramerDoor>,
     dial: Dial,
@@ -433,7 +408,6 @@ struct Redial {
 }
 
 /// A HELD CONNECTION'S DIAL OR REPLAY, CROSSING WITH NO LOCK HELD (`BUSBAR-1.6.0.md` §11: no plugin code
-
 struct Crossing<'h> {
     held: &'h Held,
 }
@@ -447,7 +421,6 @@ impl<'h> Crossing<'h> {
     }
 
     /// Keep the crossing's failure before releasing its callers to read it. A consumed plan
-
     fn finish(self, result: Result<bool, ConnError>) -> Result<bool, ConnError> {
         if let Err(error) = result {
             if error != ConnError::Pending {
@@ -490,7 +463,6 @@ struct Rest {
 }
 
 /// ONE READ HAS THE REST (`BUSBAR-1.6.0.md` §11: no plugin code runs under a host lock): taken
-
 struct Reading<'h> {
     rest: &'h Mutex<Rest>,
     /// The end was answered.
@@ -501,7 +473,6 @@ struct Reading<'h> {
 
 impl<'h> Reading<'h> {
     /// Take the rest for one read: what a short buffer left, and whether the end was answered.
-
     fn begin(rest: &'h Mutex<Rest>, waker: &Waker) -> Option<(Self, Option<Left>)> {
         let incoming = waker.clone();
         let mut r = rest.lock().expect("rest");
@@ -546,7 +517,6 @@ impl Drop for Reading<'_> {
 }
 
 /// One connection the connector holds for its owner: the line it rides and the stream it reads
-
 struct Held {
     line: Mutex<Option<(Arc<Line>, u64)>>,
     /// Closed while a dial or replay may still have this state out. Published with `line` locked.
@@ -576,7 +546,6 @@ struct Held {
 }
 
 /// The instant a request's `timeout_ms` (the plugin's own number, unclamped: `RequestPiece` and
-
 fn due_at(now: std::time::Instant, timeout_ms: u64) -> Option<std::time::Instant> {
     if timeout_ms == 0 {
         return None;
@@ -761,7 +730,6 @@ impl Held {
     }
 
     /// Bounded by `timeout_ms` from now until its answer begins; `0`, or a bound no instant can
-
     fn bounded(self, timeout_ms: u64) -> Self {
         if let Some(at) = due_at(std::time::Instant::now(), timeout_ms) {
             *self.due.lock().expect("due") = Some(Due::new(at));
@@ -816,7 +784,6 @@ impl Held {
     }
 
     /// A terminal judgement, dial or replay spends the bound too: a later deadline cannot
-
     fn fail(
         &self,
         mut judging: std::sync::MutexGuard<'_, Option<Judging>>,
@@ -833,7 +800,6 @@ impl Held {
 
 impl Drop for Held {
     /// A lease no one closed (its owner dropped it) is closed as it goes: the member's program does
-
     fn drop(&mut self) {
         if let Some((member, lease)) = self.lease.take() {
             member.close(lease);
@@ -967,7 +933,6 @@ impl Connector {
     }
 
     /// The same connector serving `transports`, judging every dial's address through `judge`,
-
     #[must_use]
     pub fn serving(
         transports: Transports,
@@ -985,7 +950,6 @@ impl Connector {
     }
 
     /// The same connector resolving its programs' environment references through `secrets`, at
-
     #[must_use]
     pub fn resolving_spawn_secrets(mut self, secrets: spawn_env::SpawnSecretFn) -> Self {
         self.spawn_secrets = Some(secrets);
@@ -999,7 +963,6 @@ impl Connector {
     }
 
     /// THE CARRIER OF A NETWORK ADDRESS, as a connection rides it: the first loaded carrier whose
-
     #[must_use]
     pub fn address_via(&self) -> Option<Via> {
         let view = self.transports.read().expect("transports");
@@ -1010,7 +973,6 @@ impl Connector {
     }
 
     /// What a need served by `door` rides: a CARRIER is carried as itself (no framer); a FRAMER
-
     fn ride_on(&self, door: &Arc<dyn FramerDoor>) -> Option<(Option<Arc<dyn FramerDoor>>, Via)> {
         if door.facts().role == ROLE_CARRIER {
             return Some((
@@ -1025,7 +987,6 @@ impl Connector {
     }
 
     /// A dial of `dial` over the entry `door` serves, located: the framer's `locate`, or a carrier
-
     fn plan(&self, door: &Arc<dyn FramerDoor>, dial: Dial) -> Result<Planned, Failure> {
         match self.ride_on(door) {
             Some((Some(framer), via)) => Planned::locate(framer, via, dial),
@@ -1037,7 +998,6 @@ impl Connector {
     }
 
     /// The framer `owner`'s `need` rides, located at `target` (empty = the need's own, as an open
-
     fn framer_head(&self, owner: InstanceId, need: NeedId, target: &str) -> HeadDefaults {
         let need = self
             .over
@@ -1068,7 +1028,6 @@ impl Connector {
     }
 
     /// The same connector dialling every framed connection through the proxy `config` selects for
-
     #[must_use]
     pub fn proxying(mut self, config: Option<Arc<proxy::ProxyChoice>>) -> Self {
         self.proxy = config;
@@ -1076,7 +1035,6 @@ impl Connector {
     }
 
     /// Publish the effective boot's validated transport view, listener ports and pool posture
-
     pub fn finalize_boot_metadata(
         &self,
         transports: Transports,
@@ -1093,7 +1051,6 @@ impl Connector {
     }
 
     /// The proxy a dial of `planned` goes through: a framed dial (never a carrier carried as
-
     fn tunnel_for(&self, planned: &Planned, within: &[IpAddr]) -> Option<Arc<proxy::ProxyHop>> {
         if !planned.framed() || !within.is_empty() {
             return None;
@@ -1104,7 +1061,6 @@ impl Connector {
     }
 
     /// Judge `dest` under `class` (with the need's private reach when `reach`), the pended answer
-
     fn judge_into(
         &self,
         dest: &str,
@@ -1128,7 +1084,6 @@ impl Connector {
     }
 
     /// The same connector keeping dialled connections under `posture` (the deployment's
-
     #[must_use]
     pub fn pooling(mut self, posture: PoolPosture) -> Self {
         self.pools = Pools::new(posture);
@@ -1143,7 +1098,6 @@ impl Connector {
     }
 
     /// Record that `owner` declared `need` — the only needs it may open. A need declared without a
-
     pub fn declare(&self, owner: InstanceId, need: NeedId) {
         self.slab.declare(owner, need);
     }
@@ -1159,7 +1113,6 @@ impl Connector {
     }
 
     /// The framer entry that answers `scheme`, where a loaded one does: what frames a stream that
-
     #[must_use]
     pub fn framer_for(&self, scheme: &str) -> Option<Arc<dyn framer::FramerDoor>> {
         self.transports
@@ -1170,7 +1123,6 @@ impl Connector {
     }
 
     /// Record that `owner` declared `need` over `transport` (a scheme the registry view serves), in
-
     pub fn declare_over(
         &self,
         owner: InstanceId,
@@ -1181,7 +1133,6 @@ impl Connector {
     }
 
     /// Record that `owner` declared `need` over `transport`, its dials judged under the need's own
-
     pub fn declare_need(
         &self,
         owner: InstanceId,
@@ -1193,7 +1144,6 @@ impl Connector {
     }
 
     /// Record that `owner` declared `need` over `transport` in `egress_class`, its target named by
-
     pub fn declare_need_to(
         &self,
         owner: InstanceId,
@@ -1213,7 +1163,6 @@ impl Connector {
     }
 
     /// THE SCHEME MATCH: the need is recorded over the entry serving `transport`, resolved here
-
     fn record(
         &self,
         owner: InstanceId,
@@ -1250,7 +1199,6 @@ impl Connector {
     }
 
     /// THE ADMISSION OF A PINNED TARGET (FAIL-CLOSED: the verdict `need_admit` reports is the one
-
     fn admits_pinned(
         &self,
         owner: InstanceId,
@@ -1300,7 +1248,6 @@ impl Connector {
     }
 
     /// Record (or, with `None`, drop) what the connector holds for `owner`'s `need`: a member of an
-
     fn set_need(&self, owner: InstanceId, need: NeedId, record: Option<DeclaredNeed>) {
         let kept = record.as_ref().and_then(|r| r.members.clone());
         let before = {
@@ -1322,7 +1269,6 @@ impl Connector {
     }
 
     /// THE MEMBER-PROGRAM NEED (`busbar_contract::section::MEMBER_PROGRAM`): `owner`'s outbound
-
     fn record_members(
         &self,
         owner: InstanceId,
@@ -1399,7 +1345,6 @@ impl Connector {
     }
 
     /// THE PROGRAM NEED: `owner`'s outbound `need` dials `program` (its pipes, framed by the entry
-
     fn record_program(
         &self,
         owner: InstanceId,
@@ -1443,7 +1388,6 @@ impl Connector {
     }
 
     /// Bind the one listener for `owner`'s INBOUND `need` on `bind` (`ip:port`), over the transport
-
     pub fn listen(
         &self,
         owner: InstanceId,
@@ -1521,7 +1465,6 @@ impl Connector {
     }
 
     /// The next connection `owner`'s inbound `need` admitted, held for `owner` like one it
-
     pub fn accept(
         &self,
         owner: InstanceId,
@@ -1564,7 +1507,6 @@ impl Connector {
     }
 
     /// Offer `bytes` on `stream` of `caller`'s connection `conn` (`end` = the stream's message is
-
     pub fn emit(
         &self,
         caller: InstanceId,
@@ -1583,7 +1525,6 @@ impl Connector {
     }
 
     /// Dial a held connection whose judgement has answered and replay its accepted writes.
-
     fn settle(&self, held: &Held, waker: Option<&Waker>) -> Result<bool, ConnError> {
         let ready = self.settle_dial(held, waker)?;
 
@@ -1749,7 +1690,6 @@ impl Connector {
     }
 
     /// Replay accepted writes in order, retaining each unaccepted suffix across backpressure.
-
     fn replay_early(&self, held: &Held, waker: Option<&Waker>) -> Result<bool, ConnError> {
         let (line, stream) = held.line().ok_or(ConnError::Closed)?;
         let mut remaining = held
@@ -1815,7 +1755,6 @@ impl Connector {
     }
 
     /// `held` rides `conn`, just dialled, as its first exchange; a pooled exchange's line is held
-
     fn ride(&self, held: &Held, mut conn: Connection) -> Result<Arc<Line>, ConnError> {
         let at = held
             .dial_due
@@ -1841,7 +1780,6 @@ impl Connector {
     }
 
     /// Judge `planned`'s authority under `judged_class` and dial the pinned address, held to the
-
     fn dial_judged(
         &self,
         planned: Planned,
@@ -1943,7 +1881,6 @@ impl Connector {
     }
 
     /// THE ONE REDIAL: `held` was lent a pooled line that failed before any byte of its exchange
-
     fn redial(&self, held: &Held) -> Result<bool, ConnError> {
         let mut kept = held.redial.lock().expect("redial");
         let mut home = held.line.lock().expect("line");
@@ -1986,7 +1923,6 @@ impl Connector {
     }
 
     /// `held`'s exchange leaves `line` (`whole` = its answer was read to its end): the line goes
-
     fn let_go(&self, held: &Held, line: &Arc<Line>, stream: u64, whole: bool) {
         let left = line.leave(stream, whole);
         if left > 0 {
@@ -2000,7 +1936,6 @@ impl Connector {
     }
 
     /// One read of `conn`, waking `waker` when nothing is ready yet: the body [`Conns::read`] (a
-
     fn read_waking(
         &self,
         caller: InstanceId,
@@ -2035,7 +1970,6 @@ impl Connector {
     }
 
     /// A read may finish the connect before any reply arrives. Retire its dial bound then,
-
     fn observe_landing(&self, held: &Held, waker: &Waker) -> Result<bool, ConnError> {
         if held.dial_due.lock().expect("dial due").is_none() {
             return Ok(false);
@@ -2057,7 +1991,6 @@ impl Connector {
     }
 
     /// One read of a held session's upstream leg: its exchange's pieces, judged (the far end's
-
     fn read_dialled(
         &self,
         held: &Held,
@@ -2214,7 +2147,6 @@ fn completion(stream: u64) -> Piece {
 }
 
 /// Whether a dial target carries a userinfo (`user:pass@`): a URL by the contract's one reader, a
-
 fn carries_userinfo(target: &str) -> bool {
     match busbar_contract::net::parse_url(target) {
         Ok(parts) => parts.userinfo,
@@ -2226,7 +2158,6 @@ fn carries_userinfo(target: &str) -> bool {
 }
 
 /// Whether a need's `target_from` reads its target from the plugin's OWN settings: one
-
 fn settings_derived(target_from: &str) -> bool {
     target_from
         .strip_prefix("settings.")
@@ -2234,7 +2165,6 @@ fn settings_derived(target_from: &str) -> bool {
 }
 
 /// `target` without its userinfo: the authority's text up to and including its last `@` left out,
-
 fn without_userinfo(target: &str) -> Option<String> {
     let parts = busbar_contract::net::url_authority(target);
     parts.userinfo?;
@@ -2326,7 +2256,6 @@ impl DeclaredConns for Connector {
     }
 
     /// THE MID-STREAM UPGRADE: the connection, once dialled, is secured with the need's own client
-
     fn upgrade_secure(
         &self,
         caller: InstanceId,
@@ -2401,7 +2330,6 @@ impl DeclaredConns for Connector {
     }
 
     /// THE DIAL HAS LANDED: its judgement answered and the far end took the connect (a name's
-
     fn landed(&self, caller: InstanceId, conn: ConnId, ticket: Ticket) -> Result<(), ConnError> {
         let (_, held) = self.slab.get(caller, conn)?;
         if held.lease.is_some() || held.dialled.is_some() {
@@ -2424,7 +2352,6 @@ impl DeclaredConns for Connector {
     }
 
     /// A need is framed when the entry serving its transport is a FRAMER (http's kind, over the
-
     fn request_head(&self, owner: InstanceId, need: NeedId, target: &str) -> HeadDefaults {
         self.framer_head(owner, need, target)
     }
@@ -2512,7 +2439,6 @@ impl DeclaredConns for Connector {
     }
 
     /// THE INSTANCE IS GONE: its connections close (a member lease among them ends), then every
-
     fn forget(&self, owner: InstanceId) {
         for conn in self.slab.forget(owner) {
             let _ = self.close(owner, conn);
@@ -2573,7 +2499,6 @@ impl DeclaredConns for Connector {
 
 impl Connector {
     /// Register a held session's `pairing` under its kernel-minted `unit` key, before the session
-
     pub fn pair(&self, unit: u64, pairing: Arc<datagram::Pairing>) -> Result<(), ConnError> {
         if unit == 0 {
             return Err(ConnError::Refused);
@@ -2587,7 +2512,6 @@ impl Connector {
     }
 
     /// THE SESSION'S CLEANUP (once): its pairing leaves the book and closes, both legs with it, so
-
     pub fn unpair(&self, unit: u64) {
         let gone = self.pairs.lock().expect("pairs").remove(&unit);
         if let Some(p) = gone {
@@ -2596,7 +2520,6 @@ impl Connector {
     }
 
     /// THE COMPOSED OPEN of a held session's upstream leg over a datagram framer's need ([`dialled`]):
-
     #[allow(clippy::too_many_arguments)]
     fn open_dialled(
         &self,
@@ -2679,7 +2602,6 @@ impl Connector {
     }
 
     /// THE DIALLED EXCHANGE over `door` (a framer of a stream, or a carrier carried as itself):
-
     #[allow(clippy::too_many_arguments)]
     fn dial_exchange(
         &self,
@@ -3067,7 +2989,6 @@ impl Conns for Connector {
     }
 
     /// A write is taken whole, short, or (no room under
-
     fn write(
         &self,
         caller: InstanceId,
@@ -3239,7 +3160,6 @@ impl Conns for Connector {
 
 impl PollConns for Connector {
     /// The framer the need rides, located at `target`: its own head lines, and whether its head
-
     fn head_defaults(&self, owner: InstanceId, need: NeedId, target: &str) -> HeadDefaults {
         self.framer_head(owner, need, target)
     }
@@ -3258,7 +3178,6 @@ impl PollConns for Connector {
     }
 
     /// The anchors are sealed against the authority the need's own entry locates `target` at, the
-
     fn anchor(
         &self,
         owner: InstanceId,
@@ -3326,7 +3245,6 @@ impl PollConns for Connector {
     }
 
     /// The registration's own target's authority is read by the need's entry, as a dial reads it;
-
     fn seal_reach(
         &self,
         owner: InstanceId,

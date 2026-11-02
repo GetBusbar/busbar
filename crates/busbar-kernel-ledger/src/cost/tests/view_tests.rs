@@ -16,7 +16,6 @@ use super::{CACHE_READ, INPUT, OUTPUT};
 const LANE: &str = "lane-4o";
 
 /// **CARD A**, in force from instant zero: input at 3 micro-units a token, output at 16, a flat fee
-
 fn card_a() -> RateCard {
     RateCard::from_micro_rates(
         [
@@ -39,7 +38,6 @@ fn card_b() -> RateCard {
 }
 
 /// **THE KNOWN CARD HISTORY**: card A from zero, card B appended from instant 1,000,000.
-
 fn known_history() -> History {
     let mut history = History::opening(card_a(), 0);
     history.append(CardEntryDraft {
@@ -53,7 +51,6 @@ fn known_history() -> History {
 }
 
 /// **THE KNOWN LEDGER SLICE**: two rows of identical consumption, one on each side of the edit.
-
 fn known_ledger() -> Vec<LedgerEntry> {
     vec![
         LedgerEntry::new(LANE, 500_000)
@@ -103,7 +100,6 @@ fn publishing_a_card_leaves_every_prior_posting_byte_identical() {
 }
 
 /// THE CARD IN EFFECT AT THE LEDGERED ITEM'S TIME (owner ruling 2026-10-27), at the edge: card B
-
 #[test]
 fn an_item_costs_the_card_in_effect_at_its_own_instant_on_either_side_of_a_price_change() {
     const T: u64 = 1_000_000;
@@ -245,7 +241,6 @@ fn a_hole_in_the_history_refuses_rather_than_costing_nothing() {
 }
 
 /// **THE ONE FUNCTION TAKES NO DENOMINATION, SO NO READ CAN ASK FOR A SECOND SCALE.**
-
 #[test]
 fn the_same_slice_against_the_same_history_is_one_figure_with_no_scale_to_choose() {
     let history = History::opening(card_a(), 0);
@@ -262,7 +257,6 @@ fn the_same_slice_against_the_same_history_is_one_figure_with_no_scale_to_choose
 }
 
 /// The conditions under which every implementation in the tree is supposed to answer the same
-
 #[test]
 fn a_single_entry_history_prices_micro_units_and_fees_exactly() {
     let card = super::card4(LANE, [3.0, 16.0, 0.5, 4.0], 2);
@@ -382,13 +376,11 @@ fn money_spells_itself_without_a_float() {
 }
 
 /// A composed card: the flat card prices `lane-4o` input at 3; the plane `p` prices its own
-
 fn per_plane_card(flat: bool, plane: bool) -> RateCard {
     per_plane_card_with_fee(flat, plane, 0)
 }
 
 /// [`per_plane_card`] with the flat card's `per_request_fee:` configured at `fee` — the card is
-
 fn per_plane_card_with_fee(flat: bool, plane: bool, fee: i64) -> RateCard {
     use crate::cost::{compose_plane_cards, TierRates};
     use std::collections::BTreeMap;
@@ -490,7 +482,6 @@ fn each_plane_card_is_its_own_switch() {
 type TierPair = (crate::cost::TierRates, Option<u64>);
 
 /// With no plane card the composed map IS the flat map, byte-identical (1.5.5 `rate_card:` loads as
-
 #[test]
 fn a_flat_card_alone_composes_to_itself() {
     use std::collections::BTreeMap;
@@ -517,7 +508,6 @@ fn a_flat_card_alone_composes_to_itself() {
 }
 
 /// The composed card with fees: the flat card's `per_request_fee:` is 5; plane `t` charges
-
 fn fee_card() -> RateCard {
     use crate::cost::PlaneFees;
     let card = per_plane_card_with_fee(true, true, 5);

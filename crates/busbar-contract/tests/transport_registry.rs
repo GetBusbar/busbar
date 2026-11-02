@@ -89,7 +89,6 @@ fn the_transport_kind_has_one_abi_generation() {
 }
 
 /// THE RUST FACE'S GENERATION IS THE KIND'S. `TRANSPORT_ABI` is the transport kind's
-
 #[test]
 fn the_transport_generation_is_the_abi_kind_version() {
     assert_eq!(

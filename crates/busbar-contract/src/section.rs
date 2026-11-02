@@ -6,15 +6,12 @@
 use serde::Deserialize as _;
 
 /// THE TWO WORDS RESERVED AT EVERY PLANE SECTION'S TOP LEVEL: the all-plane `hooks:` attach list and
-
 pub const RESERVED_SECTION_KEYS: &[&str] = &["hooks", UPSTREAM_CREDENTIALS_KEY];
 
 /// The reserved `upstream_credentials:` word: how a member is credentialed (`own` or
-
 pub const UPSTREAM_CREDENTIALS_KEY: &str = "upstream_credentials";
 
 /// A registration's RFC 8693 `token_exchange:` block: busbar's
-
 pub const TOKEN_EXCHANGE_KEY: &str = "token_exchange";
 
 /// Inside [`TOKEN_EXCHANGE_KEY`]: the authorization server's token endpoint.
@@ -24,22 +21,18 @@ pub const TOKEN_URL_KEY: &str = "token_url";
 pub const SUBJECT_TOKEN_KEY: &str = "subject_token";
 
 /// Inside [`TOKEN_EXCHANGE_KEY`]: RFC 8693 section 2.1 `subject_token_type`; absent =
-
 pub const SUBJECT_TOKEN_TYPE_KEY: &str = "subject_token_type";
 
 /// The `subject_token_type` a [`TOKEN_EXCHANGE_KEY`] block that states none exchanges: an access
-
 pub const DEFAULT_SUBJECT_TOKEN_TYPE: &str = "urn:ietf:params:oauth:token-type:access_token";
 
 /// A registration's LEASED OUTBOUND CREDENTIAL block: busbar's own credential for the member,
-
 pub const UPSTREAM_CREDENTIAL_KEY: &str = "upstream_credential";
 
 /// Inside [`UPSTREAM_CREDENTIAL_KEY`]: the credential, a secret reference.
 pub const CREDENTIAL_SECRET_KEY: &str = "secret";
 
 /// Inside [`UPSTREAM_CREDENTIAL_KEY`]: where the credential is presented: [`PLACEMENT_BEARER`]
-
 pub const CREDENTIAL_PLACEMENT_KEY: &str = "placement";
 
 /// The [`CREDENTIAL_PLACEMENT_KEY`] word that presents `authorization: Bearer <credential>`.
@@ -55,19 +48,15 @@ pub const CREDENTIAL_LEASE_TTL_KEY: &str = "lease_ttl_ms";
 pub const AUDIENCE_KEY: &str = "aud";
 
 /// THE RESERVED `pools` SUB-KEY of a plane's section (#47, POOLS-VERBS): its named pools, each a list
-
 pub const RESERVED_POOLS_KEY: &str = "pools";
 
 /// The operations a pool may perform twice, inside its [`RESERVED_POOLS_KEY`] entry: an operation
-
 pub const POOL_REPEATABLE_KEY: &str = "repeatable";
 
 /// A pool whose members are each admitted on their OWN grant by the plane (a pool of named
-
 pub const POOL_MEMBER_GRANTED_KEY: &str = "member_granted";
 
 /// THE RESERVED `work` SUB-KEY of a plane's section (POOLS-VERBS, lifted as `pools` is): the bounds
-
 pub const RESERVED_WORK_KEY: &str = "work";
 
 /// The most live work handles one instance holds, inside [`RESERVED_WORK_KEY`].
@@ -77,26 +66,21 @@ pub const WORK_MAX_LIVE_KEY: &str = "max_live";
 pub const WORK_RETAIN_S_KEY: &str = "retain_s";
 
 /// THE RESERVED PER-ENTRY `timeout:` of any plane's section: an entry's wall-clock bound on ONE attempt to reach it,
-
 pub const ENTRY_TIMEOUT_KEY: &str = "timeout";
 
 /// THE CORE'S DEFAULT [`ENTRY_TIMEOUT_KEY`] OF A TOOL CALL, in milliseconds: the attempt bound of a
-
 pub const DEFAULT_ENTRY_TIMEOUT_MS: u64 = 30_000;
 
 /// THE DECLARING SECTION OF THE PLANE THAT RELAYS TOOL CALLS (`tools:`, one registration per tool
-
 pub const TOOL_CALL_SECTION_KEY: &str = "tools";
 
 /// The core's default attempt bound, in milliseconds, of an entry that writes no
-
 #[must_use]
 pub fn default_entry_timeout_ms(declared: &str) -> Option<u64> {
     (declared == TOOL_CALL_SECTION_KEY).then_some(DEFAULT_ENTRY_TIMEOUT_MS)
 }
 
 /// [`ENTRY_TIMEOUT_KEY`] as written, in milliseconds: THE ONE READING of the value, the kernel's
-
 pub fn entry_timeout_ms(written: &str) -> Result<u64, String> {
     let secs = crate::duration::parse_duration_secs(written)
         .map_err(|e| format!("`{ENTRY_TIMEOUT_KEY}:` {e}"))?;
@@ -111,15 +95,12 @@ pub fn entry_timeout_ms(written: &str) -> Result<u64, String> {
 }
 
 /// THE RESERVED `models` MAP of a model-serving plane's section (the uniform model-serving map,
-
 pub const RESERVED_MODELS_KEY: &str = "models";
 
 /// THE PROVIDER an entry of a [`RESERVED_MODELS_KEY`] map names (#49's uniform schema
-
 pub const MODEL_PROVIDER_KEY: &str = "provider";
 
 /// THE WIRE-PROTOCOL OVERRIDE of a [`RESERVED_MODELS_KEY`] entry, in the order read (#51: the
-
 pub const MODEL_PROTOCOL_KEYS: &[&str] = &["protocol", "dialect"];
 
 /// A pool's member list, inside its [`RESERVED_POOLS_KEY`] entry.
@@ -129,15 +110,12 @@ pub const POOL_MEMBERS_KEY: &str = "members";
 pub const POOL_MEMBER_NAME_KEY: &str = "name";
 
 /// A member's TIER inside a pool's [`POOL_MEMBERS_KEY`] list (`{name, tier}`), the core-owned
-
 pub const POOL_MEMBER_TIER_KEY: &str = "tier";
 
 /// THE MEMBER-TARGET PATH of a need's `target_from` (a door plane's member
-
 pub const MEMBER_TARGET_PREFIX: &str = "settings.*.";
 
 /// The registration key a member-target path names ([`MEMBER_TARGET_PREFIX`]); `None` for any
-
 #[must_use]
 pub fn member_target(target_from: &str) -> Option<&str> {
     target_from
@@ -146,7 +124,6 @@ pub fn member_target(target_from: &str) -> Option<&str> {
 }
 
 /// THE MEMBER-PROGRAM PATH of a need's `target_from`: `settings.*`, where `*` stands for EACH registration of the section, names
-
 pub const MEMBER_PROGRAM: &str = "settings.*";
 
 /// Whether `target_from` is the member-program path ([`MEMBER_PROGRAM`]).
@@ -156,11 +133,9 @@ pub fn member_program(target_from: &str) -> bool {
 }
 
 /// THE OWNED-SECTION PATH of a need's `trust_from`: `owned.<section>.<key>[...]` names a value in one of the plane's OTHER OWNED
-
 pub const OWNED_PATH_PREFIX: &str = "owned.";
 
 /// The path inside the owned sections an owned-section path names ([`OWNED_PATH_PREFIX`]):
-
 #[must_use]
 pub fn owned_path(path: &str) -> Option<&str> {
     path.strip_prefix(OWNED_PATH_PREFIX)
@@ -182,7 +157,6 @@ pub struct Section<T> {
 }
 
 /// THE SECTION-MAP SPLIT: read one plane's top-level section into its two reserved knobs and its
-
 pub fn split_section<'de, D, T>(
     deserializer: D,
     section: &'static str,
@@ -249,7 +223,6 @@ where
 }
 
 /// THE SENTENCE an operator reads when they name a registration with a reserved word, written once
-
 #[must_use]
 pub fn reserved_name_refusal(section: &str, noun: &str, name: &str) -> String {
     if RESERVED_SECTION_KEYS.contains(&name) {

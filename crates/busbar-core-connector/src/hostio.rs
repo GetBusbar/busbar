@@ -84,7 +84,6 @@ const SLOTS: u64 = (FIRST as u64) * ((1 << SEGMENTS) - 1);
 const GENERATION: u64 = 1 << 32;
 
 /// THE HANDLE TABLE: a slot per live handle, read by every `io.*` call WITHOUT A LOCK (one atomic
-
 struct Table {
     segments: [OnceLock<Box<[ArcSwapOption<Entry>]>>; SEGMENTS],
     free: Mutex<Free>,
@@ -165,7 +164,6 @@ impl Table {
     }
 
     /// Release every handle `owner` holds, as [`Table::release`] releases one: each names nothing
-
     fn reap(&self, owner: u64) -> Vec<Arc<Entry>> {
         let mut free = self.free.lock().unwrap_or_else(PoisonError::into_inner);
         let mut gone = Vec::new();
@@ -215,7 +213,6 @@ fn polled<T>(p: Poll<io::Result<T>>) -> Poll<IoResult<T>> {
 }
 
 /// The process's one host I/O: every connector, carrier and wire of the process is served from it
-
 static PROCESS: std::sync::OnceLock<Arc<HostIo>> = std::sync::OnceLock::new();
 
 /// The process's one host I/O ([`PROCESS`]).
@@ -242,7 +239,6 @@ impl HostIo {
     }
 
     /// ADMIT `what` for the op about to run on `ticket` (the destination guard's pinned address, the
-
     pub fn admit(&self, ticket: Ticket, what: Admission) {
         self.admit_for(ticket, what, None);
     }
@@ -263,7 +259,6 @@ impl HostIo {
     }
 
     /// The op on `ticket` is done: its admission is withdrawn, and what it came to answered — the
-
     pub fn settle(&self, ticket: Ticket) -> (Option<u64>, Option<OpenFailure>) {
         let a = self
             .admitted
@@ -320,7 +315,6 @@ impl HostIo {
     }
 
     /// TAKE a stream handle's socket off the host's table, as the byte stream moves on to the
-
     #[must_use]
     pub fn take_stream(&self, id: u64) -> Option<TcpStream> {
         let entry = Arc::into_inner(self.handles.release(id, |_| true)?)?;
@@ -334,7 +328,6 @@ impl HostIo {
     }
 
     /// Whether the program handle `id` runs has exited (without waiting for it); `false` for any
-
     #[must_use]
     pub fn program_exited(&self, id: u64) -> bool {
         let Some(e) = self.handles.get(id) else {
@@ -363,7 +356,6 @@ impl HostIo {
     }
 
     /// RETIRE the listening handle `id` (the one a carrier's `listen` made, [`HostIo::settle`]): it
-
     pub fn retire_listener(&self, id: u64) {
         if let Some(e) = self
             .handles
@@ -420,7 +412,6 @@ pub struct HostListener {
 
 impl HostListener {
     /// Bind `bind` (`ip:port`) on the calling worker's reactor, address and port reused.
-
     pub fn bind(bind: &str) -> io::Result<Self> {
         let l = socket::listen(bind)?;
         let local = l.local_addr()?;
@@ -437,7 +428,6 @@ impl HostListener {
     }
 
     /// The next socket and its far end; an aborted or interrupted accept is retried at once (1.5.5).
-
     pub fn poll_accept(
         &mut self,
         cx: &mut Context<'_>,

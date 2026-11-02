@@ -11,11 +11,9 @@ use busbar_contract::redacted::Secret;
 use busbar_contract::secret_ref::SecretRef;
 
 /// How a program's environment REFERENCE turns into its value: a string secret resolved through
-
 pub type SpawnSecretFn = fn(&SecretRef, &ConfigScope) -> Result<Secret<String>, String>;
 
 /// THE LINKED SPAWN RESOLVER: one member program's `env` reference, resolved at config time through
-
 pub fn linked_spawn_secret(
     secret: &SecretRef,
     scope: &ConfigScope,
@@ -27,12 +25,10 @@ pub fn linked_spawn_secret(
 pub const SPAWN_ENV_LEASE: Duration = Duration::from_secs(60);
 
 /// What a program's spawn hands its child now: every reference's value, name and value in the
-
 pub struct Resolved(Result<Vec<(String, Secret<String>)>, String>);
 
 impl Resolved {
     /// The values, or the refusal.
-
     pub fn env(&self) -> Result<&[(String, Secret<String>)], &str> {
         self.0.as_deref().map_err(String::as_str)
     }
@@ -62,7 +58,6 @@ impl PartialEq for HeldEnv {
 impl Eq for HeldEnv {}
 
 /// A held environment NAMES NO VALUE in a debug line: its references' sources and whether they
-
 impl std::fmt::Debug for HeldEnv {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let refs: Vec<String> = self
@@ -128,7 +123,6 @@ impl HeldEnv {
     }
 
     /// `refs` RESOLVED NOW through `secrets` (the resolver the connector was handed; `None`
-
     #[must_use]
     pub fn load(
         refs: &[(String, SecretRef)],
@@ -149,7 +143,6 @@ impl HeldEnv {
     }
 
     /// RE-RESOLVE every reference, at config time, and swap what is held whole: a spawn sees the
-
     pub fn reload(&self, scope: &ConfigScope) {
         self.0.reload(scope);
     }
@@ -181,7 +174,6 @@ impl SpawnEnv {
 }
 
 /// THE HOST'S ENVIRONMENT REFRESHER, as the host's credential refresher keeps a served credential:
-
 mod refresher {
     use super::{SpawnEnv, SPAWN_ENV_LEASE};
     use std::sync::{Arc, Condvar, Mutex, Once, PoisonError, Weak};
@@ -203,7 +195,6 @@ mod refresher {
     };
 
     /// The process's one book, its thread started the first time it is reached. A thread the
-
     fn book() -> &'static Book {
         static STARTED: Once = Once::new();
         STARTED.call_once(|| {
@@ -228,7 +219,6 @@ mod refresher {
     }
 
     /// The thread: refresh every held environment that is due, forget every one dropped, sleep to
-
     fn run(book: &'static Book) {
         let mut kept = book.kept.lock().unwrap_or_else(PoisonError::into_inner);
         loop {
@@ -266,7 +256,6 @@ mod refresher {
     }
 
     /// Refresh every live held environment NOW, on the calling thread (a cell that rotates a
-
     #[cfg(test)]
     pub(crate) fn refresh_all() {
         let live: Vec<Arc<SpawnEnv>> = book()
@@ -289,7 +278,6 @@ pub(crate) fn refresh_all() {
 }
 
 /// THE CELLS' RESOLVER: an `env` reference reads its variable (nothing else resolves), and every
-
 #[cfg(test)]
 pub(crate) fn counting_env(r: &SecretRef, _scope: &ConfigScope) -> Result<Secret<String>, String> {
     let var = r

@@ -130,7 +130,6 @@ pub enum OpShape {
 
 impl OpShape {
     /// Every shape, so a site that must cover all of them cannot silently cover some. The same role
-
     #[cfg_attr(not(test), allow(dead_code))]
     pub const ALL: &'static [OpShape] = &[
         OpShape::Invoke,
@@ -142,7 +141,6 @@ impl OpShape {
     ];
 
     /// MAY AN EXCHANGE OF THIS SHAPE BE ANSWERED INCREMENTALLY? The core's floor under
-
     pub const fn may_stream(self) -> bool {
         match self {
             OpShape::Invoke => true,
@@ -156,7 +154,6 @@ impl OpShape {
     }
 
     /// The shape's own stable word, used as the `name` of the verb a protocol-surface shape carries
-
     pub const fn as_str(self) -> &'static str {
         match self {
             OpShape::Invoke => "invoke",
@@ -209,7 +206,6 @@ impl OpVerb {
     pub const CONTROL: OpVerb = OpVerb::of(OpShape::Control);
 
     /// EVERY OPERATION THE CORE ITSELF OWNS — the six protocol-surface verbs, one per shape. This
-
     #[cfg_attr(not(test), allow(dead_code))]
     pub const ALL: &'static [OpVerb] = &[
         OpVerb::INVOKE,
@@ -221,7 +217,6 @@ impl OpVerb {
     ];
 
     /// A NAMED `Invoke` verb: one shape, an explicit wire word. Private, `const`, and the only way
-
     const fn named_invoke(name: &'static str) -> OpVerb {
         OpVerb::Verb {
             op: OpShape::Invoke,
@@ -230,7 +225,6 @@ impl OpVerb {
     }
 
     /// The verb a shape carries when the shape's own word is the name. Private for the same reason
-
     const fn of(op: OpShape) -> OpVerb {
         OpVerb::Verb {
             op,
@@ -246,7 +240,6 @@ impl OpVerb {
     }
 
     /// Stable identifier — the metrics label and the `paths:` config key.
-
     pub const fn name(self) -> &'static str {
         match self {
             OpVerb::Verb { name, .. } => name,

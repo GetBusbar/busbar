@@ -58,11 +58,9 @@ pub struct RequireAuth(u8);
 
 impl RequireAuth {
     /// No `require_auth` written: busbar 1.6.0 allows SCRAM-SHA-256 and a server that asks for no
-
     pub const DEFAULT: Self = Self(PgAuth::ScramSha256.bit() | PgAuth::None.bit());
 
     /// Parse a `require_auth` value as libpq 16 does: a comma-separated list of method names, or a
-
     pub fn parse(value: &str) -> Result<Self, &'static str> {
         const MIXED: &str = "require_auth mixes negated (`!`) and plain methods";
         let mut negated = None;
@@ -127,7 +125,6 @@ impl AuthFloor {
     };
 
     /// The floor the operator's connection string `public` (its password already taken out) sets.
-
     #[must_use]
     pub fn of(public: &str) -> Self {
         let mut f = Self::STRICT;

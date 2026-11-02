@@ -64,7 +64,6 @@ fn four_class_card() -> RateCard {
 }
 
 /// A RATE LOOKUP ALLOCATES NOTHING.
-
 #[test]
 fn a_rate_lookup_allocates_nothing() {
     let card = four_class_card();
@@ -93,7 +92,6 @@ fn a_rate_lookup_allocates_nothing() {
 }
 
 /// Resolving the lane itself allocates nothing either, so a whole priced line — lane, then class —
-
 #[test]
 fn resolving_a_lane_allocates_nothing() {
     let card = four_class_card();

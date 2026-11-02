@@ -15,7 +15,6 @@ fn a_percent_escape_decodes_only_with_two_hex_digits() {
 }
 
 /// export-otlp's userinfo (RFC 7617 octets): both halves, the password alone, the user alone,
-
 #[test]
 fn a_userinfo_read_as_octets_is_sent_as_it_decodes() {
     for (username, password, sent) in [
@@ -36,7 +35,6 @@ fn a_userinfo_read_as_octets_is_sent_as_it_decodes() {
 }
 
 /// export-webhook's and hook-webrequest's userinfo, as reqwest 0.12 sent it for 1.5.5: a user
-
 #[test]
 fn a_userinfo_read_as_text_is_sent_as_1_5_5_sent_it() {
     for (username, password, sent) in [
@@ -183,7 +181,6 @@ fn malformed_and_ambiguous_credentials_are_cut_through_the_last_at() {
 }
 
 /// export-otlp and export-webhook (owner ruling 2026-10-24): a url whose `@` comes after its host
-
 #[test]
 fn an_ambiguous_url_is_refused_without_its_credential() {
     for (url, from_path, secret) in [
@@ -224,7 +221,6 @@ fn an_ambiguous_url_is_refused_without_its_credential() {
 }
 
 /// export-otlp: the cut reaches the LAST `@`, so a password holding an unescaped delimiter (or an
-
 #[test]
 fn the_userinfo_cut_reaches_the_last_at() {
     for (url, secret) in [
@@ -256,7 +252,6 @@ fn the_userinfo_cut_reaches_the_last_at() {
 }
 
 /// export-webhook H3 and hook-webrequest: a host's failure text that quotes the target, or names
-
 #[test]
 fn a_scrubbed_text_keeps_no_part_of_the_url() {
     let url = "https://ops:hunt%40er@hooks.example/s/SECRET?k=Q%2B1";
@@ -280,7 +275,6 @@ fn a_scrubbed_text_keeps_no_part_of_the_url() {
 }
 
 /// export-webhook `replace_all`: a setting's credential quoted by serde (`{:?}` escapes it) is cut
-
 #[test]
 fn a_quoted_credential_is_cut_in_its_escaped_spelling_too() {
     let text = r#"settings: unknown value "tok\"en", expected a header"#;

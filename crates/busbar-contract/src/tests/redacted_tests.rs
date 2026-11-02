@@ -19,7 +19,6 @@ fn debug_and_display_never_reveal_the_secret() {
 }
 
 /// RED (Part 2 #54, coordinator ruling 2026-10-14): `Debug`, `Display` and `to_string` render the
-
 #[test]
 fn debug_display_and_to_string_are_the_1_5_5_bytes() {
     let text = Secret::new("sk-live-0001".to_string());
@@ -37,7 +36,6 @@ fn debug_display_and_to_string_are_the_1_5_5_bytes() {
 }
 
 /// A struct that embeds a `Secret` field and derives `Debug` inherits the redaction — proving
-
 #[test]
 fn embedded_in_a_derived_debug_struct_is_redacted() {
     #[derive(Debug)]
@@ -71,7 +69,6 @@ fn clone_and_eq_operate_on_the_secret() {
 }
 
 /// Equality is CONSTANT-TIME: it routes through the crate's `constant_time_eq` over the secret
-
 #[test]
 fn eq_is_constant_time_and_correct() {
     assert_eq!(
@@ -93,7 +90,6 @@ fn eq_is_constant_time_and_correct() {
 }
 
 /// `Drop` for `Secret<T>` MUST actually call `T::zeroize` — the whole point of the wrapper is
-
 #[test]
 fn drop_actually_calls_zeroize() {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -132,7 +128,6 @@ fn sha256_hex_is_lowercase_64() {
 }
 
 /// KNOWN-ANSWER VECTORS. The shape assertions above -- 64 chars, lower-case -- are satisfied by a
-
 #[test]
 fn sha256_hex_matches_the_published_test_vectors() {
     assert_eq!(
@@ -148,7 +143,6 @@ fn sha256_hex_matches_the_published_test_vectors() {
 crate::own_seal!(Own);
 
 /// A PLUGIN'S OWN SECRET (Part 2 #54, coordinator ruling on #1192): the same `Secret`, under the
-
 #[test]
 fn a_secret_the_crate_holds_reads_back_only_under_its_own_seal_and_stays_redacted() {
     let held: Secret<String, Own> = Secret::held("sk-own-0001".to_string());

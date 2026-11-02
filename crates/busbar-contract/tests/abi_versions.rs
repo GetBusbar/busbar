@@ -15,7 +15,6 @@ use busbar_contract::abi::{auth, export, hook, plane, secret, store, transport};
 /// `git show v1.5.5:crates/plugin-abi/src/lib.rs` line 71: `pub const TRANSPORT_VERSION: u32 = 1;`
 const V155_TRANSPORT_VERSION: u32 = 1;
 /// `git show v1.5.5:crates/plugin-abi/src/lib.rs` line 128: `pub const ABI_VERSION: u32 = 2;`
-
 const V155_STORE_ABI_VERSION: u32 = 2;
 /// `git show v1.5.5:crates/plugin-abi/src/lib.rs` line 379: `pub const SECRET_ABI_VERSION: u32 = 1;`
 const V155_SECRET_ABI_VERSION: u32 = 1;
@@ -26,10 +25,8 @@ const V155_HOOK_ABI_VERSION: u32 = 1;
 /// `git show v1.5.5:crates/plugin-abi/src/export.rs` line 36: `pub const EXPORT_ABI_VERSION: u32 = 2;`
 const V155_EXPORT_ABI_VERSION: u32 = 2;
 /// v1.5.5 had no plane ABI: `git grep -nE 'const [A-Z_]+: u32' v1.5.5 -- 'crates/*.rs'` names the
-
 const V155_PLANE_ABI_VERSION: u32 = 0;
 /// v1.5.5 had no transport kind ABI: the same command names none (`TRANSPORT_VERSION` was the
-
 const V155_TRANSPORT_KIND_ABI_VERSION: u32 = 0;
 
 #[test]

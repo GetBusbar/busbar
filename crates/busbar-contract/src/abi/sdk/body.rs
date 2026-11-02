@@ -7,7 +7,6 @@ use crate::bounded::{Ir, PlaneAlloc};
 use crate::wire::Decode;
 
 /// The span view of a body, built from the pointers a plane declared: one scan of one closed
-
 pub fn view_with_arena<'u>(
     body: &'u [u8],
     pointers: &[&'u str],

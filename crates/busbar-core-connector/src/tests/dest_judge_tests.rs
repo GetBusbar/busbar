@@ -62,7 +62,6 @@ fn recorder() -> (Arc<Mutex<Option<Stored>>>, Later) {
 }
 
 /// 1.5.5 REFUSAL TIMING: a refusal the name decides answers at once, before any resolution, with the
-
 #[test]
 fn dest_judge_refuses_what_the_name_decides_at_once() {
     let r = Arc::new(HandResolver::default());
@@ -91,7 +90,6 @@ fn dest_judge_refuses_what_the_name_decides_at_once() {
 }
 
 /// Every loopback and private SPELLING is refused without resolving, for a class without private
-
 #[test]
 fn dest_judge_refuses_every_loopback_spelling_without_resolving() {
     let r = Arc::new(HandResolver::default());
@@ -115,7 +113,6 @@ fn dest_judge_refuses_every_loopback_spelling_without_resolving() {
 }
 
 /// Asked to resolve, a name pends and the address judgement decides the answer; not asked, the
-
 #[test]
 fn dest_judge_resolves_only_when_asked_and_judges_what_answered() {
     let r = Arc::new(HandResolver::default());
@@ -173,7 +170,6 @@ fn addresses(s: &Stored) -> Vec<String> {
 }
 
 /// THE JUDGED ADDRESSES: asked to resolve and admitted, `dest.judge`
-
 #[test]
 fn dest_judge_writes_the_addresses_it_judged() {
     let r = Arc::new(HandResolver::default());
@@ -245,7 +241,6 @@ fn an_egress_class_the_guard_does_not_know_is_refused() {
 }
 
 /// THE JUDGE A DIAL READS: the address it answers is exactly the one the judgement pinned. A name
-
 #[test]
 fn judge_dial_answers_the_pinned_address_the_verdict_judged() {
     let r = Arc::new(HandResolver::default());
@@ -304,7 +299,6 @@ fn judge_dial_answers_the_pinned_address_the_verdict_judged() {
 }
 
 /// 1.5.5's OVERRIDES, ON THE ONE JUDGE: under `security.allow_all_metadata` the metadata guard is
-
 #[test]
 fn allow_all_metadata_admits_metadata_on_the_dial_and_on_dest_judge() {
     let r = Arc::new(HandResolver::default());
@@ -351,7 +345,6 @@ fn allow_all_metadata_admits_metadata_on_the_dial_and_on_dest_judge() {
 }
 
 /// A CARVE-OUT lifts exactly what it names: `allow_metadata_hosts: [169.254.169.254]` admits that
-
 #[test]
 fn a_metadata_carve_out_admits_only_what_it_names() {
     let r = Arc::new(HandResolver::default());
@@ -412,7 +405,6 @@ fn without_an_override_metadata_stays_refused_on_the_dial() {
 }
 
 /// ON THE DIAL: every resolved address is judged by the same lists the configuration check
-
 #[test]
 fn an_operator_blocked_answer_is_refused_on_the_dial() {
     let r = Arc::new(HandResolver::default());
@@ -442,7 +434,6 @@ fn an_operator_blocked_answer_is_refused_on_the_dial() {
 }
 
 /// ASKED TO REFUSE PRIVATE REACH AND TO EXPLAIN: under a
-
 #[test]
 fn dest_judge_refuses_private_reach_when_asked_and_names_what_decided_it() {
     let r = Arc::new(HandResolver::default());
@@ -512,7 +503,6 @@ fn dest_judge_refuses_private_reach_when_asked_and_names_what_decided_it() {
 }
 
 /// RED: the deployment's one judge, asked for a dial a need holds a PRIVATE REACH to
-
 #[test]
 fn a_private_reach_admits_a_private_address_in_its_class_and_never_metadata() {
     use busbar_kernel::host_services::DestJudge;
@@ -562,7 +552,6 @@ fn a_private_reach_admits_a_private_address_in_its_class_and_never_metadata() {
 }
 
 /// RED, the SSRF guard bypass through a plugin's argument guard: `dest.judge` asked
-
 #[test]
 fn dest_judge_answers_an_odd_spelling_as_the_ascii_host_it_maps_to() {
     let r = Arc::new(HandResolver::default());
@@ -639,7 +628,6 @@ fn dest_judge_answers_an_odd_spelling_as_the_ascii_host_it_maps_to() {
 }
 
 /// RED, the percent-escape the guard did not decode: `dest.judge` asked about a bare host
-
 #[test]
 fn dest_judge_refuses_a_bare_host_holding_a_percent_escape() {
     let r = Arc::new(HandResolver::default());

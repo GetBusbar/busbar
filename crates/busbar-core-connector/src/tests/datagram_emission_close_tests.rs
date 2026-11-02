@@ -30,7 +30,6 @@ fn woken(w: &Woken) -> usize {
 }
 
 /// A port with association `a` (a framer that fails its first clear-lane datagram when
-
 fn port_with(fail_clear: bool) -> (Arc<PortAssociations>, Arc<Scripted>, u64, u64) {
     let da = scripted(Knobs {
         fail_clear,
@@ -52,7 +51,6 @@ fn port_with(fail_clear: bool) -> (Arc<PortAssociations>, Arc<Scripted>, u64, u6
 }
 
 /// Hold association `a` out in a framer crossing on its own thread: its incremental producer
-
 fn produce(
     port: &Arc<PortAssociations>,
     door: &Scripted,

@@ -21,7 +21,6 @@ const SECRET_WORDS: &[&str] = &[
 ];
 
 /// `url` with its userinfo and every secret-looking query or fragment value masked (the module
-
 #[must_use]
 pub fn mask_url(url: &str) -> String {
     let Some((scheme, rest)) = url.split_once("://") else {
@@ -37,7 +36,6 @@ pub fn mask_url(url: &str) -> String {
 }
 
 /// `s` with the secret-looking pair values masked: from its first `?` or `#`, or from its start
-
 fn mask_pairs(s: &str, open: bool) -> String {
     let start = if open {
         0

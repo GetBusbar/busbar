@@ -12,7 +12,6 @@ pub mod handle_impl {
     use crate::operation::OpVerb;
 
     /// The type-erased request/response an `OperationHandler` yields, now that the `IrReq`/`IrResp`
-
     pub trait IrHandle: sealed::Sealed + Send {
         /// The semantic operation this handle carries — the closed registry vocabulary / metric label.
         fn verb(&self) -> OpVerb;
@@ -23,13 +22,11 @@ pub mod handle_impl {
         }
 
         /// The neutral projection the shared pipeline (hooks/governance/taps) reads (request-side).
-
         fn facts(&self) -> Box<dyn IrFacts + Send + Sync> {
             Box::new(crate::ir::facts::NeutralFacts(self.verb()))
         }
 
         /// Apply an implementation-owned preparation context synchronously. The contract never
-
         fn prepare_for_egress(&mut self, _context: &dyn std::any::Any) -> Result<(), CodecError> {
             Ok(())
         }
@@ -38,7 +35,6 @@ pub mod handle_impl {
         fn set_model(&mut self, _model: &str) {}
 
         /// Fail-closed guard: `Err(reason)` rejects a request the `egress_proto` dialect cannot
-
         fn egress_representable(&self, _egress_proto: &str) -> Result<(), String> {
             Ok(())
         }
@@ -49,7 +45,6 @@ pub mod handle_impl {
         }
 
         /// JSON egress path: value-first (a JSON body the router post-shapes) else `set_model` + final
-
         fn write_egress_request(
             &mut self,
             _host: &dyn CodecHost,
@@ -70,13 +65,11 @@ pub mod handle_impl {
         }
 
         /// The billable item this response produces. Default `None`; chat/leaf override; the neutral
-
         fn billing(&self) -> Option<Billing> {
             None
         }
 
         /// The token usage if this response is token-metered (the `Billing::Tokens` unwrap). Default
-
         fn token_usage(&self) -> Option<TokenUsage> {
             match self.billing() {
                 Some(Billing::Tokens(t)) => Some(t),
@@ -85,23 +78,18 @@ pub mod handle_impl {
         }
 
         /// Fill the serving MODEL when the upstream body carried none. On a cross-protocol hop where
-
         fn fill_response_model_if_absent(&mut self, _model: &str) {}
 
         /// Hand this response the TRANSLATION CAP its plane enforces (the one the kernel handed the
-
         fn apply_translate_cap(&mut self, _cap: usize) {}
 
         /// CROSS-PROTOCOL ingress preparation — reshape this response for delivery in the caller's
-
         fn prepare_for_ingress(&mut self, _ingress_protocol: &str, _now_epoch: u64) {}
 
         /// Capture the ORIGINAL ingress request body — called once (when the caller has a
-
         fn apply_request_echo(&mut self, _ingress_request_body: &serde_json::Value) {}
 
         /// Re-emit a buffered response as the `ingress_protocol` dialect's native STREAM bytes (an
-
         fn wrap_buffered_as_stream(
             &self,
             _host: &dyn CodecHost,
@@ -112,7 +100,6 @@ pub mod handle_impl {
         }
 
         /// JSON ingress path: write this response onto the `ingress_protocol` dialect
-
         fn write_ingress_response(
             &self,
             _host: &dyn CodecHost,

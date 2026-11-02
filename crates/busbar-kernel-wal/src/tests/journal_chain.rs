@@ -6,7 +6,6 @@
 use crate::journal::{Journal, RecordClass, MEMORY_BUFFER_RECORDS};
 
 /// Fourteen classes, each pinned to its byte. The set is the contract's, so a test says the set did
-
 #[test]
 fn every_class_is_pinned_to_its_byte() {
     assert_eq!(RecordClass::all().len(), 14);
@@ -23,7 +22,6 @@ fn every_class_is_pinned_to_its_byte() {
 }
 
 /// The bound is pinned, and it is the one an operator cannot raise. Stated as a test because a
-
 #[test]
 fn the_bound_is_pinned() {
     assert_eq!(MEMORY_BUFFER_RECORDS, 8192);
@@ -39,7 +37,6 @@ fn the_bound_is_pinned() {
 }
 
 /// The reading half of a body gives back exactly what the writing half put down, field by field, and
-
 #[test]
 fn a_body_reads_back_what_was_written() {
     let mut body = crate::BodyWriter::new();
@@ -118,7 +115,6 @@ fn chained_run(node: u64, n: u64) -> Vec<crate::Record> {
 }
 
 /// A MEMORY JOURNAL RESUMED FROM THE STORE'S CHAIN reads that chain back and continues it: the
-
 #[test]
 fn a_resumed_memory_journal_reads_back_and_continues_the_stored_chain() {
     let run = chained_run(5, 40);
@@ -149,7 +145,6 @@ fn a_resumed_memory_journal_reads_back_and_continues_the_stored_chain() {
 }
 
 /// An empty retaining journal starts below its bound. Append-past-bound and replay witnesses live
-
 #[test]
 fn an_empty_retaining_journal_starts_below_its_bound() {
     let journal = Journal::memory_buffered_to(

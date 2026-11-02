@@ -58,7 +58,6 @@ fn one_class_has_one_server() {
 }
 
 /// A plane keeps exactly the record kinds it declares — the verdict the
-
 #[test]
 fn a_plane_declares_the_record_kinds_it_keeps_and_no_other() {
     let keeps = PlaneDeclaration {

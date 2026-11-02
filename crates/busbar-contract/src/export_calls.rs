@@ -6,18 +6,15 @@
 use zeroize::Zeroize;
 
 /// JSON list of declared route paths requesting a first-party snapshot consumer's
-
 pub const EXT_PUBLIC_ROUTES: &str = "listener.public_routes";
 
 /// JSON list of public route paths retained by the boot instance after config removal.
 pub const EXT_PERSISTENT_ROUTES: &str = "listener.persistent_routes";
 
 /// The settings key that states an export instance's in-flight bound: how many deliveries the host
-
 pub const INFLIGHT_KEY: &str = "max_inflight_deliveries";
 
 /// The in-flight bound of an export instance whose settings state none: 1.5.5's default for its
-
 pub const DEFAULT_INFLIGHT: u32 = 64;
 
 /// One metric family of a host recorder's snapshot, in the recorder's render order. The loader
@@ -108,7 +105,6 @@ pub fn kind_of(word: &str) -> Option<u8> {
 }
 
 /// THE RECORDER SNAPSHOT (K9a S6): a host recorder's text exposition — each family's `# HELP`
-
 pub fn parse_families(exposition: &str) -> Result<Vec<Family>, String> {
     if !exposition.is_empty() && !exposition.ends_with('\n') {
         return Err("the exposition does not end with a newline".into());
@@ -262,22 +258,18 @@ pub enum Delivered {
 /// ONE EXPORT INSTANCE'S CALLS, as the kernel makes them.
 pub trait ExportCalls: Send + Sync {
     /// Apply settings to this instance. A refusal retains its current settings and bindings.
-
     fn refresh(&self, settings: &serde_json::Value, generation: u64) -> Result<(), String> {
         let _ = (settings, generation);
         Err("this export instance does not support refresh".into())
     }
 
     /// The streams this instance carries (its Statement tail's `streams[]`), as
-
     fn streams(&self) -> &[u8];
 
     /// The routes this instance serves (its Statement tail's `routes[]`), in the route vocabulary
-
     fn routes(&self) -> &[crate::abi::mechanism::route::Route];
 
     /// Declared routes outside the instance namespace, granted only to the first-party
-
     fn public_routes(&self) -> &[String] {
         &[]
     }
@@ -288,64 +280,51 @@ pub trait ExportCalls: Send + Sync {
     }
 
     /// Hand one already-projected JSON line for `stream` to the instance, OFF the request path:
-
     fn deliver(&self, stream: u8, line: Vec<u8>, hold: Box<dyn Send>) -> Delivered;
 
     /// Whether this instance takes each `traces` line's full span record as its reserved `span`
-
     fn takes_span_records(&self) -> bool {
         false
     }
 
     /// Render `families` as this instance's exposition text, through `scrape`, on the calling
-
     fn scrape(&self, families: &[Family]) -> Result<Vec<u8>, String>;
 
     /// Render the HOOK `families` (`/metrics/hooks`) as this instance's exposition text, through
-
     fn scrape_hooks(&self, families: &[Family]) -> Result<Vec<u8>, String> {
         let _ = families;
         Err("this instance renders no hook families".to_string())
     }
 
     /// Ask the instance for its `status` (what it reports when the host renders its status
-
     fn status(&self) -> Option<Vec<u8>>;
 
     /// Dispatch one request to the instance's own routes, through `serve`. The host enforced
-
     fn serve(&self, req: &ServeRequest<'_>) -> Result<Served, String>;
 
     /// The admission this instance stated for its deliveries: whether it takes deliveries this run,
-
     fn admission(&self) -> Option<(bool, u64, String)> {
         None
     }
 
     /// START the instance: its door's `ready` (discovery at boot) is awaited HERE, when the host
-
     fn start(&self) -> Result<(), String> {
         Ok(())
     }
 
     /// The host shed a line for this instance before handing it over: an instance that declared a
-
     fn shed(&self) {}
 }
 
 /// What [`ExportAxis::probe`] answers of a module: the streams its sink declares (`None` when it
-
 pub type Probed = (Option<Vec<u8>>, Vec<String>);
 
 /// THE EXPORT AXIS, as the kernel asks it: every `kind: export` row the composition root admitted
-
 pub trait ExportAxis: Send + Sync {
     /// `None` when no `kind: export` row names `module`; else what [`Probed`] states, asked while
-
     fn probe(&self, module: &str, instance: &str, settings: &serde_json::Value) -> Option<Probed>;
 
     /// The sink's own checks across every configured `instances` of `module`, at `phase`
-
     fn check(
         &self,
         module: &str,
@@ -354,7 +333,6 @@ pub trait ExportAxis: Send + Sync {
     ) -> Option<Vec<String>>;
 
     /// OPEN one instance of `module` with `settings`, under the host's instance `label` (unique per
-
     fn open(
         &self,
         module: &str,
@@ -369,14 +347,12 @@ pub trait ExportAxis: Send + Sync {
     fn first_party(&self, module: &str) -> bool;
 
     /// Whether `module`'s row states the `one_instance` mark
-
     fn one_instance(&self, module: &str) -> bool {
         let _ = module;
         false
     }
 
     /// The routes `module`'s row declares (its Statement's `routes`), read without opening an
-
     fn routes(&self, module: &str) -> Vec<crate::abi::mechanism::route::Route> {
         let _ = module;
         Vec::new()
@@ -395,20 +371,17 @@ pub trait ExportAxis: Send + Sync {
     }
 
     /// The `module:` words of the export rows this build LINKS, in the order the composition root
-
     fn linked_modules(&self) -> Vec<String> {
         Vec::new()
     }
 
     /// The settings paths `module`'s Statement declares secret (its `secret_refs`, `.`-separated,
-
     fn secret_refs(&self, module: &str) -> Vec<String> {
         let _ = module;
         Vec::new()
     }
 
     /// The REFERENCE-CAPABLE, NOT-SECRET settings paths `module`'s Statement states (its
-
     fn reference_fields(&self, module: &str) -> Vec<String> {
         let _ = module;
         Vec::new()

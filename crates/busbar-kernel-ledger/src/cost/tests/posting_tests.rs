@@ -11,7 +11,6 @@ use crate::cost::{
 use super::{card, INPUT};
 
 /// **THE NEUTRAL TIER IS THE IDENTITY, AT EVERY MAGNITUDE INCLUDING THE CEILING.**
-
 #[test]
 fn the_neutral_tier_is_the_identity_at_every_magnitude() {
     assert_eq!(
@@ -25,7 +24,6 @@ fn the_neutral_tier_is_the_identity_at_every_magnitude() {
 }
 
 /// A tiered amount that genuinely does not fit is refused; one that does is exact.
-
 #[test]
 fn only_a_genuinely_unrepresentable_tiered_amount_is_refused() {
     assert_eq!(checked_apply_tier(u128::MAX, 20_000), None);
@@ -43,7 +41,6 @@ fn only_a_genuinely_unrepresentable_tiered_amount_is_refused() {
 }
 
 /// **#44 AT THE EXACT HALF.**
-
 #[test]
 fn a_tier_that_lands_on_an_exact_half_rounds_to_even() {
     assert_eq!(checked_apply_tier(5, 5_000), Some(2));
@@ -90,7 +87,6 @@ fn a_tier_that_lands_on_an_exact_half_rounds_to_even() {
 }
 
 /// **BYTE-NEUTRALITY AT THE ONLY TIER THIS TREE EVER ASKS FOR.**
-
 #[test]
 fn the_neutral_tier_moves_no_ordinary_amount() {
     let mut cases: Vec<u128> = Vec::new();
@@ -127,7 +123,6 @@ fn the_neutral_tier_moves_no_ordinary_amount() {
 }
 
 /// The tier is #44's per-N-units division term and rounds half-to-even, but it rounds at the scale
-
 #[test]
 fn fifteen_nano_units_at_half_price_bill_seven() {
     let card = card("m", 0.015, 0.0, 0);

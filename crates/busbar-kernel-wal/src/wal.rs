@@ -15,11 +15,9 @@ use crate::segment::{Segment, SegmentError, SEGMENT_BYTES};
 use crate::ship::{NullShipper, ShipError, Shipper};
 
 /// How many skipped numbers the idempotence check remembers below a node's mark.
-
 const RECENT_HOLES: usize = 8192;
 
 /// How many records an on-disk log will hold for a store that has not taken them yet.
-
 pub const STORE_BACKLOG_RECORDS: usize = 8192;
 
 /// Where a log keeps its bytes.
@@ -77,7 +75,6 @@ impl From<io::Error> for OpenError {
 }
 
 /// THE WALL CLOCK a log is handed, in unix milliseconds. The composition root owns the clock and
-
 pub type Clock = fn() -> u64;
 
 /// The write-ahead log.
@@ -126,7 +123,6 @@ impl std::fmt::Debug for Wal {
 
 impl Wal {
     /// A memory-buffered log shipping to `shipper`: the default, and the shape a deployment that
-
     pub fn memory_buffered_to(shipper: Box<dyn Shipper<Record>>, clock: Clock) -> Self {
         Wal::with_parts(
             Box::new(MemoryFactory::new()),
@@ -139,7 +135,6 @@ impl Wal {
     }
 
     /// A memory-buffered log that already HOLDS `records`: the chain the configured store kept for a
-
     pub fn memory_seeded(
         records: &[Record],
         shipper: Box<dyn Shipper<Record>>,
@@ -158,7 +153,6 @@ impl Wal {
     }
 
     /// Write `records` into the buffer, rolling at a full segment, and mark each one taken. Nothing
-
     fn seed(&mut self, records: &[Record]) -> io::Result<()> {
         /// How many records one seeding write carries.
         const SEED_BATCH: usize = 256;
@@ -178,7 +172,6 @@ impl Wal {
     }
 
     /// A log whose segments are files under `dir`, recovering whatever is already there.
-
     pub fn in_directory(
         dir: impl AsRef<std::path::Path>,
         shipper: Box<dyn Shipper<Record>>,
@@ -195,7 +188,6 @@ impl Wal {
     }
 
     /// Build a log over any factory and shipper. The seam the batteries drive: a factory that fails
-
     pub fn with_parts(
         mut factory: Box<dyn SegmentFactory>,
         shipper: Box<dyn Shipper<Record>>,
@@ -251,13 +243,11 @@ impl Wal {
     }
 
     /// Every corrupt remainder recovery set aside — at open, and at any roll since — oldest first.
-
     pub fn quarantined(&self) -> &[Quarantine] {
         &self.quarantined
     }
 
     /// Hold on to a quarantine, and mark every identity in the set-aside bytes as taken.
-
     fn take_quarantine(&mut self, quarantine: Quarantine) {
         for &(node, node_seq) in &quarantine.identities {
             if !quarantine.unverified.contains(&(node, node_seq)) {
@@ -288,7 +278,6 @@ impl Wal {
     }
 
     /// The records that were on the tail when the log was opened, in order.
-
     pub fn recovered(&self) -> &[Record] {
         &self.recovered
     }
@@ -304,25 +293,21 @@ impl Wal {
     }
 
     /// The records the store has not acknowledged and is still owed, oldest first.
-
     pub fn owed_to_store(&self) -> &[Record] {
         &self.owed_to_store
     }
 
     /// How many records, in total since open, the store's catch-up queue has left on the medium at
-
     pub fn store_debt_on_medium(&self) -> u64 {
         self.store_debt_on_medium
     }
 
     /// Whether the store is owed records the queue does not hold, to be read back off the medium:
-
     pub fn owes_store_from_medium(&self) -> bool {
         self.store_owed_from.is_some()
     }
 
     /// Give up on the `count` oldest records the log still owes, and hand them back.
-
     pub fn forget_owed(&mut self, count: usize) -> Vec<Record> {
         let count = usize::min(count, self.lost_batch.len());
         self.lost_batch.drain(0..count).collect()
@@ -334,7 +319,6 @@ impl Wal {
     }
 
     /// Whether `(node, node_seq)` is already in the log.
-
     pub fn holds(&self, node: u64, node_seq: u64) -> bool {
         match self.high_water.get(&node) {
             Some(&mark) => node_seq <= mark && !self.gaps.contains(&(node, node_seq)),
@@ -343,7 +327,6 @@ impl Wal {
     }
 
     /// The lowest number `node` can still take without colliding with something the log already
-
     pub fn next_free_seq(&self, node: u64) -> u64 {
         match self.high_water.get(&node) {
             Some(&mark) => mark.saturating_add(1),
@@ -352,7 +335,6 @@ impl Wal {
     }
 
     /// Record that `(node, node_seq)` is now in the log: move that node's mark, and remember any
-
     fn mark_written(&mut self, node: u64, node_seq: u64) {
         match self.high_water.get(&node).copied() {
             Some(mark) if node_seq <= mark => {
@@ -378,7 +360,6 @@ impl Wal {
     }
 
     /// How many identities the idempotence check is holding in memory right now.
-
     pub fn tracked_identities(&self) -> usize {
         self.high_water.len() + self.gaps.len()
     }
@@ -389,7 +370,6 @@ impl Wal {
     }
 
     /// Commit one batch: one write, one sync, and — in memory-buffered mode — one synchronous ship.
-
     pub fn append_batch(
         &mut self,
         token: &Grant<DurableWrite>,
@@ -487,7 +467,6 @@ impl Wal {
     }
 
     /// Read every record the log holds, OLDEST SEGMENT FIRST, verifying as it goes.
-
     pub fn read_back(&self) -> io::Result<Recovered> {
         let mut seen: HashSet<(u64, u64)> = HashSet::new();
         let mut records = Vec::new();
@@ -507,7 +486,6 @@ impl Wal {
     }
 
     /// Offer the store what it is owed: whatever a refusal retained, then `batch`, as one batch in
-
     fn offer_store_debt(&mut self, batch: &[Record], batch_at: (u64, u64)) {
         let mut queued = 0;
         if self.store_owed_from.is_none() {
@@ -539,7 +517,6 @@ impl Wal {
     }
 
     /// Read the next run of what the store is owed off the medium into the queue, from where the
-
     fn refill_store_debt(&mut self) -> bool {
         let Some((mut index, mut from)) = self.store_owed_from else {
             return false;
@@ -602,7 +579,6 @@ impl Wal {
 }
 
 /// Open the segment a restart appends to, and hand back the records on the log's tail.
-
 fn open_tail(
     factory: &mut dyn SegmentFactory,
     ceiling: u64,
@@ -630,11 +606,9 @@ fn open_tail(
 }
 
 /// Scan every segment below the one the tail was read from, set aside what acknowledged damage
-
 type KeptSegment = (u64, (u64, u64), (u64, u64));
 
 /// A scan names the records on either side of a hole only inside its own segment. A hole at the
-
 fn quarantine_below(
     factory: &mut dyn SegmentFactory,
     ceiling: u64,

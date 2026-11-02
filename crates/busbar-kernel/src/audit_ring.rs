@@ -43,7 +43,6 @@ pub struct AuditEntry {
     /// both are stated on `hash`. A record is sealed under 1 when its `action`, `resource` and
     /// `outcome` carry no `|`, and under 2 otherwise, so its fields always read back exactly. A
     /// record without this field is scheme 1. A verifier checks each record under its own scheme.
-
     #[serde(default = "audit_scheme_default")]
     pub scheme: u8,
     /// TRUE only for entries THIS process appended live (the seam's live emit). Seeded entries — restored from the durable store — are FALSE. `#[serde(skip)]` gives

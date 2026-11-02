@@ -76,20 +76,17 @@ pub struct InvokeResp {
 }
 
 /// THE INVOCATION FAMILY'S WALK — this IR's answer to [`crate::ir::facts::IrFacts`], the
-
 impl crate::ir::facts::IrFacts for InvokeReq {
     fn verb(&self) -> OpVerb {
         OpVerb::INVOKE
     }
 
     /// An invocation is one exchange. The streaming question belongs to the operations that can
-
     fn wants_stream(&self) -> bool {
         false
     }
 
     /// NO END-USER IDENTIFIER, and this is a statement about the protocol rather than an omission:
-
     fn end_user(&self) -> Option<&str> {
         None
     }

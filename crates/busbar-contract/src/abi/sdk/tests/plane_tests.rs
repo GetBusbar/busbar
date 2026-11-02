@@ -70,7 +70,6 @@ fn mcp(mut m: Table, t: Ticket, unit: u64) -> (bool, Table) {
 }
 
 /// plane-a2a `agent_door.rs` `Cancel`: the named unit when held, else every unit on the ticket,
-
 fn a2a(mut m: Table, t: Ticket, unit: u64) -> (bool, Table) {
     let mut answered = false;
     if let Some(u) = m.get_mut(&unit).filter(|_| unit != 0) {
@@ -104,7 +103,6 @@ fn bindings(m: &Table) -> std::collections::HashMap<Ticket, u64> {
 }
 
 /// plane-llm `UnitBook::cancel` (its PARTIAL/ABORTED half): the named unit, else the one bound to
-
 fn llm(mut m: Table, t: Ticket, unit: u64) -> (bool, Table) {
     let unit = if unit == 0 {
         match bindings(&m).get(&t) {
@@ -119,7 +117,6 @@ fn llm(mut m: Table, t: Ticket, unit: u64) -> (bool, Table) {
 }
 
 /// plane-streaming `Units::far_answered` then `Units::cancel`: the unit bound to the ticket and
-
 fn streaming(mut m: Table, t: Ticket, unit: u64) -> (bool, Table) {
     let by_ticket = bindings(&m).get(&t).copied();
     let named = || by_ticket.into_iter().chain((unit != 0).then_some(unit));
@@ -180,7 +177,6 @@ fn tables() -> Vec<Table> {
 }
 
 /// Whether the table and cancel are ones the host makes: a ticket is unique per instance, so no two
-
 fn in_contract(m: &Table, t: Ticket, unit: u64) -> bool {
     let mut tickets: Vec<u32> = m
         .values()

@@ -17,7 +17,6 @@ use crate::wal::{Mode, Wal};
 const EIO: i32 = 5;
 
 /// A scratch path under the system temp directory, removed on drop. Not created: a test that wants
-
 struct Scratch(PathBuf);
 
 impl Scratch {
@@ -49,7 +48,6 @@ impl Drop for Scratch {
 }
 
 /// **A SEGMENT WHOSE DIRECTORY FSYNC FAILS IS NOT HANDED OUT, AND NOT LEFT BEHIND.** RED before the
-
 #[test]
 fn a_segment_whose_directory_fsync_fails_is_not_handed_out() {
     let scratch = Scratch::new("segment");
@@ -78,7 +76,6 @@ fn a_segment_whose_directory_fsync_fails_is_not_handed_out() {
 }
 
 /// **A QUARANTINE COPY WHOSE DIRECTORY FSYNC FAILS IS NOT KEPT, SO THE SEGMENT IS NOT CUT.** RED
-
 #[test]
 fn a_quarantine_whose_directory_fsync_fails_leaves_the_segment_uncut() {
     let scratch = Scratch::made("quarantine");
@@ -123,7 +120,6 @@ fn a_quarantine_whose_directory_fsync_fails_leaves_the_segment_uncut() {
 }
 
 /// **A DATA DIRECTORY CREATED SEVERAL LEVELS DEEP HAS EVERY NEW DIRECTORY'S ENTRY FSYNCED.** RED
-
 #[test]
 fn a_deep_data_directory_has_every_directory_it_creates_fsynced() {
     let scratch = Scratch::made("deep");
@@ -138,7 +134,6 @@ fn a_deep_data_directory_has_every_directory_it_creates_fsynced() {
 }
 
 /// **CREATING A SEGMENT FSYNCS THE DIRECTORY THAT HOLDS IT; OPENING ONE THAT EXISTS DOES NOT.**
-
 #[test]
 fn a_created_segment_has_its_holding_directory_fsynced_and_a_reopened_one_does_not() {
     let scratch = Scratch::new("segdir");

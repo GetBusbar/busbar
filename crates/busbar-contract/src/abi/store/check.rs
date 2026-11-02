@@ -19,7 +19,6 @@ use crate::bounded::MAX_RECORD_BYTES;
 pub use crate::abi::mechanism::check::Fault;
 
 /// The hard maximum of any store list's item count (`needed_items`, a leased list's length):
-
 pub const LIST_ITEMS_HARD_MAX: u64 = 1 << 20;
 /// The hard maximum of any `needed_bytes` (`needed_bytes <= u32::MAX`).
 pub const NEEDED_BYTES_HARD_MAX: u64 = u32::MAX as u64;
@@ -135,7 +134,6 @@ fn needed_only_on_failed(outcome: Outcome, any_needed: bool) -> Result<(), Fault
 }
 
 /// A short FAILED's `needed_*`: within the hard maxima, and `0` or above the capacity given. `faults` is
-
 fn short(needed: u64, cap: u64, hard: u64, faults: (Fault, Fault)) -> Result<(), Fault> {
     let (too_large, within_cap) = faults;
     if needed > hard {
@@ -148,7 +146,6 @@ fn short(needed: u64, cap: u64, hard: u64, faults: (Fault, Fault)) -> Result<(),
 }
 
 /// A single-value read into a host buffer of `cap` bytes, whose value is at most `hard` bytes.
-
 fn check_bytes(outcome: Outcome, out: &HostBytesOut, cap: u64, hard: u64) -> Result<(), Fault> {
     needed_only_on_failed(outcome, out.needed != 0)?;
     match outcome {
@@ -274,7 +271,6 @@ fn blob_fmt(b: &Blob) -> Result<(), Fault> {
 }
 
 /// `list_plane_records`' answer. `host` is the [`HostBlobs`] the host handed in, `items` the first
-
 pub fn check_list_plane_records(
     outcome: Outcome,
     out: &HostListOut,
@@ -295,7 +291,6 @@ pub fn check_list_plane_records(
 }
 
 /// `record_scan`'s answer. `host` is the [`HostRecords`] the host handed in, `entries` the first
-
 pub fn check_record_scan(
     outcome: Outcome,
     out: &HostListOut,
@@ -371,7 +366,6 @@ pub fn check_leased_blob(outcome: Outcome, out: &LeasedBlobOut) -> Result<(), Fa
 }
 
 /// An off-path list of records under a lease. `items` is `out.items[..out.items_len]` as the host
-
 pub fn check_leased_list(
     outcome: Outcome,
     out: &LeasedListOut,
@@ -409,7 +403,6 @@ pub fn check_verdict(outcome: Outcome, out: &VerdictOut) -> Result<(), Fault> {
 }
 
 /// A purge's answer (`purge_plane_records_before`): the rows removed. The host reads `count` on READY only, where
-
 pub fn check_count(outcome: Outcome, out: &CountOut) -> Result<(), Fault> {
     if outcome == Outcome::Failed && out.count != 0 {
         return Err(COUNT_FAILED_WRITTEN);
@@ -418,7 +411,6 @@ pub fn check_count(outcome: Outcome, out: &CountOut) -> Result<(), Fault> {
 }
 
 /// `purge_plane_records_before`' `in`: its `retention` is [`RETENTION_AGE`],
-
 pub fn check_kind_before(input: &KindBeforeIn) -> Result<(), Fault> {
     if ![
         RETENTION_AGE,

@@ -170,7 +170,6 @@ pub enum MaskKind {
 
 impl MaskKind {
     /// Every kind, in one place: the closed set the arrival gate switches on.
-
     pub const ALL: [MaskKind; 4] = [
         MaskKind::SameLengthFill,
         MaskKind::Nothing,
@@ -250,7 +249,6 @@ impl ArrivalLocation {
     }
 
     /// Whether resolving this location requires the whole body to have been spooled.
-
     #[must_use]
     pub const fn needs_whole_body(&self) -> bool {
         matches!(
@@ -386,7 +384,6 @@ impl Selector {
     }
 
     /// Whether two selectors could ever match the same arriving bytes.
-
     #[must_use]
     pub fn overlaps(&self, other: &Selector) -> bool {
         let (a, b) = (self.form().family(), other.form().family());
@@ -482,7 +479,6 @@ impl Selector {
 }
 
 /// Whether a path is exactly one segment under a prefix.
-
 #[must_use]
 pub fn one_level_under(prefix: &str, path: &str) -> bool {
     let Some(rest) = path.strip_prefix(prefix).and_then(|r| r.strip_prefix('/')) else {
@@ -497,14 +493,12 @@ fn segments(path: &str) -> impl Iterator<Item = &str> {
 }
 
 /// Whether a pattern matches a concrete path.
-
 #[must_use]
 pub fn pattern_matches(pattern: &[PathSeg], path: &str) -> bool {
     segs_match(pattern.iter().map(PathSeg::seg_ref), path)
 }
 
 /// [`pattern_matches`] over borrowed segments: the one body both read. Allocation-free: a
-
 #[must_use]
 pub fn segs_match<'a, I>(pattern: I, path: &str) -> bool
 where
@@ -560,7 +554,6 @@ fn walk<'a>(mut pattern: impl Iterator<Item = SegRef<'a>> + Clone, mut path: &st
 }
 
 /// Whether two patterns can match one path.
-
 fn patterns_overlap(a: &[PathSeg], b: &[PathSeg]) -> bool {
     tokens_overlap(&tokens(a), &tokens(b))
 }
@@ -610,7 +603,6 @@ fn tokens_overlap(a: &[Tok], b: &[Tok]) -> bool {
 }
 
 /// Whether a one-level prefix and a pattern can both match one path.
-
 fn prefix_overlaps_pattern(prefix: &str, pattern: &[PathSeg]) -> bool {
     if pattern.iter().any(|s| matches!(s, PathSeg::Plus)) {
         return true;
@@ -635,7 +627,6 @@ fn prefix_overlaps_pattern(prefix: &str, pattern: &[PathSeg]) -> bool {
 }
 
 /// Whether a path matching this pattern can carry this literal — anywhere in it, or, when `at_end`,
-
 fn fragment_overlaps_pattern(literal: &str, pattern: &[PathSeg], at_end: bool) -> bool {
     if pattern
         .iter()

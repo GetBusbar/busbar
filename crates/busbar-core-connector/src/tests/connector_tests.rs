@@ -26,7 +26,6 @@ mod final_insert_retirement_tests;
 mod declared_timeout_tests;
 
 /// The literal judge over a guard that allowlists the loopback far ends these tests dial, and the
-
 pub(crate) fn loopback_literals() -> std::sync::Arc<dyn crate::DialJudge> {
     let allow = ["127.0.0.1", "::1", "10.1.2.3"].map(str::to_owned).to_vec();
     std::sync::Arc::new(crate::LiteralsOnly(
@@ -47,7 +46,6 @@ async fn far_end() -> (tokio::net::TcpListener, String) {
 }
 
 /// A need declared without a transport (an inbound need) dials nothing: its open is refused; an
-
 #[test]
 fn a_need_declared_without_a_transport_dials_nothing() {
     let c = Connector::new();
@@ -68,7 +66,6 @@ fn a_need_declared_without_a_transport_dials_nothing() {
 }
 
 /// A need over a scheme no loaded transport serves is refused when it is declared, by the inherent
-
 #[test]
 fn a_need_over_an_unserved_scheme_is_refused_at_declare_and_a_served_one_opens() {
     worker().block_on(async {
@@ -181,7 +178,6 @@ fn serving(wakes: Arc<AtomicU64>) -> Connector {
 }
 
 /// A declared need over a served transport opens a real connection: the opening body goes out,
-
 #[test]
 fn a_need_over_a_served_transport_reaches_a_real_far_end() {
     worker().block_on(async {
@@ -234,7 +230,6 @@ fn a_need_over_a_served_transport_reaches_a_real_far_end() {
 }
 
 /// The connector's wake names the caller the read registered its ticket for, never only the ticket:
-
 #[test]
 fn a_parked_reads_wake_names_the_caller_it_parked_for() {
     worker().block_on(async {
@@ -286,7 +281,6 @@ fn a_parked_reads_wake_names_the_caller_it_parked_for() {
 }
 
 /// A write through the table stated as text reaches the framer as a text emit (`EMIT_TEXT`), held
-
 #[test]
 fn a_text_write_through_the_table_reaches_the_framer_as_text() {
     worker().block_on(async {
@@ -337,7 +331,6 @@ fn a_text_write_through_the_table_reaches_the_framer_as_text() {
 }
 
 /// The table's head piece from a framer whose head field block states `declared` as its declared
-
 fn head_through_the_table(declared: Option<u64>) -> Piece {
     head_through_the_table_with(crate::support::Knobs {
         fields: true,
@@ -403,7 +396,6 @@ fn head_through_the_table_with(knobs: crate::support::Knobs) -> Piece {
 }
 
 /// RED (1.5.5 parity, the pre-body download cap): the declared body length a framer states on its
-
 #[test]
 fn a_framers_declared_body_length_reaches_the_tables_head_piece() {
     assert_eq!(
@@ -414,7 +406,6 @@ fn a_framers_declared_body_length_reaches_the_tables_head_piece() {
 }
 
 /// A head whose code the framer states in the HANDSHAKE's numbering (`PIECE_CODE_HANDOFF`: an upgrade's
-
 #[test]
 fn a_handshake_code_reaches_the_tables_head_piece_in_the_handshakes_numbering() {
     let head = |flags| {
@@ -465,7 +456,6 @@ fn a_metadata_target_is_refused_even_over_a_served_transport() {
 const RESTRICTED: u32 = 7;
 
 /// RED: each need's dial is judged under the need's OWN egress class. A judge that refuses internal
-
 #[test]
 fn a_need_in_a_restricted_class_is_refused_a_target_that_class_forbids() {
     worker().block_on(async {
@@ -507,7 +497,6 @@ fn a_need_in_a_restricted_class_is_refused_a_target_that_class_forbids() {
 }
 
 /// RED: writes made while a dial's judgement is pending are held under the same cap: a write past
-
 #[test]
 fn writes_held_for_a_pending_judgement_are_capped() {
     let view = Transports::new(vec![Entry {
@@ -555,7 +544,6 @@ fn writes_held_for_a_pending_judgement_are_capped() {
 }
 
 /// An empty pending write keeps its message flags; a blocked writer waits for judgement and
-
 #[test]
 fn a_pending_empty_write_backpressures_until_judgement_and_preserves_frames() {
     use crate::framer::{Call, Crossed, DoorFacts};
@@ -733,7 +721,6 @@ fn a_pending_empty_write_wakes_on_refusal_and_closes() {
 }
 
 /// A need dials a hostname through the kernel's one judge, over the plugin's own table. Its one
-
 #[allow(unsafe_code)]
 #[path = "name_dial_tests.rs"]
 mod name_dial;
@@ -749,7 +736,6 @@ fn literal_connector() -> Connector {
 }
 
 /// RED: a need whose config names its target (`target_from`) dials that target and no other: an
-
 #[test]
 fn a_config_targeted_need_dialing_elsewhere_is_refused() {
     worker().block_on(async {
@@ -800,7 +786,6 @@ fn config_targeted_need(target_from: &str) -> ReadNeed {
 }
 
 /// A need the loader's conns fill declares with the target its `target_from` resolved to is pinned
-
 #[test]
 fn a_fill_declared_need_is_pinned_to_its_resolved_target() {
     worker().block_on(async {
@@ -840,7 +825,6 @@ fn a_fill_declared_need_is_pinned_to_its_resolved_target() {
 }
 
 /// RED: a need whose `target_from` resolved to nothing is refused, its answer kept, and nothing
-
 #[test]
 fn a_fill_declared_need_whose_target_resolved_to_nothing_is_refused() {
     worker().block_on(async {
@@ -870,7 +854,6 @@ fn a_fill_declared_need_whose_target_resolved_to_nothing_is_refused() {
 }
 
 /// A need whose target the plugin names (no `target_from`) is judged by its egress class only: any
-
 #[test]
 fn a_plugin_named_need_to_a_class_legal_host_is_allowed() {
     worker().block_on(async {
@@ -893,7 +876,6 @@ fn a_plugin_named_need_to_a_class_legal_host_is_allowed() {
 }
 
 /// RED: a plugin-named need to a cloud metadata or link-local address is refused, whatever its
-
 #[test]
 fn a_plugin_named_need_to_the_metadata_address_is_refused() {
     worker().block_on(async {
@@ -918,7 +900,6 @@ fn a_plugin_named_need_to_the_metadata_address_is_refused() {
 }
 
 /// A provider need whose 1.5.5 carve-out (`allow_metadata_hosts: ["169.254.169.254"]`, as 1.5.5
-
 #[test]
 fn a_provider_carve_out_reaches_its_metadata_address_on_the_dial() {
     worker().block_on(async {
@@ -971,7 +952,6 @@ fn a_provider_carve_out_reaches_its_metadata_address_on_the_dial() {
 }
 
 /// THE CONNECTOR NEVER FOLLOWS AN ANSWER. A far end answering a `302` whose `Location` names
-
 #[test]
 fn an_answer_naming_another_place_is_handed_up_and_never_dialled() {
     worker().block_on(async {
@@ -1019,7 +999,6 @@ fn an_answer_naming_another_place_is_handed_up_and_never_dialled() {
 }
 
 /// A plugin's exchange whose head carries a NUL (or a CR or LF) in its target, its request target,
-
 #[test]
 fn a_head_carrying_nul_or_its_own_framing_is_refused_before_any_dial() {
     worker().block_on(async {
@@ -1159,7 +1138,6 @@ fn a_head_carrying_nul_or_its_own_framing_is_refused_before_any_dial() {
 }
 
 /// Where the host writes an instance's authority ([`DeclaredConns::hold_authority`], held by the
-
 #[test]
 fn an_auth_instances_own_host_field_is_refused_before_any_dial() {
     worker().block_on(async {
@@ -1232,7 +1210,6 @@ fn an_auth_instances_own_host_field_is_refused_before_any_dial() {
 }
 
 /// A HOST-SIDE READER awaits a connection through `poll_read`: nothing ready is `Pending` with the
-
 #[test]
 fn a_host_side_reader_is_woken_through_its_own_waker() {
     worker().block_on(async {
@@ -1277,7 +1254,6 @@ fn a_host_side_reader_is_woken_through_its_own_waker() {
 }
 
 /// A far end that takes the opening and then holds the connection open, answering nothing, until
-
 fn stalled_far_end(
     l: tokio::net::TcpListener,
     answer: Option<(
@@ -1304,7 +1280,6 @@ fn stalled_far_end(
 }
 
 /// RED (BUSBAR-1.6.0.md:4890): `timeout_ms` bounds the WHOLE request until its answer, not only the
-
 #[test]
 fn a_request_bound_times_out_a_far_end_that_never_answers() {
     worker().block_on(async {
@@ -1345,7 +1320,6 @@ fn a_request_bound_times_out_a_far_end_that_never_answers() {
 }
 
 /// RED: a plugin reader (a ticket, as WRITE_REQUEST's exchange reads) waiting on a request past
-
 #[test]
 fn a_request_bound_wakes_a_plugin_ticket_with_the_timeout() {
     worker().block_on(async {
@@ -1390,7 +1364,6 @@ fn a_request_bound_wakes_a_plugin_ticket_with_the_timeout() {
 }
 
 /// The bound ends where the answer begins: an answer whose first piece arrived inside the bound is
-
 #[test]
 fn a_request_bound_is_spent_once_the_answer_begins() {
     worker().block_on(async {
@@ -1441,7 +1414,6 @@ fn last_instant(now: std::time::Instant) -> std::time::Instant {
 }
 
 /// RED: a request's `timeout_ms` is the plugin's own number, any `u64` (a secret-vault
-
 #[test]
 fn a_request_bound_past_the_clock_is_no_bound_of_its_own() {
     let now = std::time::Instant::now();
@@ -1463,7 +1435,6 @@ fn a_request_bound_past_the_clock_is_no_bound_of_its_own() {
 }
 
 /// A request whose `timeout_ms` is `u64::MAX` opens and reads its answer whole: the bound does not
-
 #[test]
 fn a_request_with_the_largest_timeout_reads_its_answer() {
     worker().block_on(async {
@@ -1502,7 +1473,6 @@ use busbar_contract::abi::host::conn::connector::{
 };
 
 /// A connector serving a plaintext door (`plain`) and a door whose targets ask for connection
-
 fn scheme_connector() -> Connector {
     let view = Transports::new(vec![
         Entry {
@@ -1544,7 +1514,6 @@ fn open_in(c: &Connector, need: u32, target: &str) -> Result<ConnId, ConnError> 
 }
 
 /// RED: open-web dials over connection security only: a plaintext target, public or not, is
-
 #[test]
 fn http_to_a_public_host_under_open_web_is_refused() {
     worker().block_on(async {
@@ -1562,7 +1531,6 @@ fn http_to_a_public_host_under_open_web_is_refused() {
 }
 
 /// Operator-infrastructure takes the operator's configured plaintext private target (1.5.5's
-
 #[test]
 fn the_operator_infrastructure_http_private_target_is_allowed() {
     worker().block_on(async {
@@ -1576,7 +1544,6 @@ fn the_operator_infrastructure_http_private_target_is_allowed() {
 }
 
 /// RED: loopback-allowed dials plaintext to loopback only: a plaintext private (non-loopback)
-
 #[test]
 fn loopback_allowed_refuses_plaintext_off_loopback() {
     worker().block_on(async {
@@ -1591,7 +1558,6 @@ fn loopback_allowed_refuses_plaintext_off_loopback() {
 }
 
 /// A mint endpoint's need, its target the binding's own setting, in the `loopback-allowed` class,
-
 #[test]
 fn a_configured_mint_endpoint_takes_loopback_plaintext_and_nothing_else_in_plaintext() {
     worker().block_on(async {
@@ -1759,7 +1725,6 @@ fn a_carrier_bind_failure_identifies_the_need_without_printing_its_failure_text(
 }
 
 /// An inbound need listens through the table: the listener is bound for the need's owner, an
-
 #[test]
 fn an_inbound_need_listens_and_its_connections_are_its_owners() {
     worker().block_on(async {
@@ -1849,7 +1814,6 @@ fn an_inbound_need_listens_and_its_connections_are_its_owners() {
 }
 
 /// The test carrier, with an `accept` that HANGS once armed: it says it is inside the crossing,
-
 struct HangingAccept {
     inner: TestDoor,
     gate: std::sync::Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
@@ -1886,7 +1850,6 @@ impl FramerDoor for HangingAccept {
 }
 
 /// RED before a listener was driven under no lock (`BUSBAR-1.6.0.md` §11: no plugin code runs
-
 #[test]
 fn an_accept_beside_a_hung_carrier_accept_never_waits_and_is_woken_once_it_is_back() {
     let rt = worker();
@@ -1986,7 +1949,6 @@ fn userinfo_connector() -> Connector {
 }
 
 /// The refusal of a userinfo in a need's target STAYS for every target the need's own
-
 #[test]
 fn a_target_not_from_its_own_settings_carrying_a_userinfo_is_still_refused() {
     worker().block_on(async {
@@ -2048,7 +2010,6 @@ fn a_target_not_from_its_own_settings_carrying_a_userinfo_is_still_refused() {
 }
 
 /// USERINFO IS NOT PART OF A
-
 #[test]
 fn a_settings_derived_target_is_declared_without_its_userinfo() {
     const USER: &str = "the-user";
@@ -2166,7 +2127,6 @@ fn gone(pid: &str) -> bool {
 }
 
 /// A need whose `target_from` resolved to a PROGRAM is carried in the
-
 #[test]
 fn a_program_need_spawns_its_program_and_kills_it_on_close() {
     use busbar_contract::abi::host::conn::connector::EGRESS_OPERATOR_INFRASTRUCTURE;
@@ -2217,7 +2177,6 @@ fn a_program_inherits_no_environment_but_its_own() {
 }
 
 /// RED: a program need is refused outside the operator-infrastructure class, with an auth style,
-
 #[test]
 fn a_program_need_is_refused_unless_the_operator_declared_it_as_written() {
     use busbar_contract::abi::host::conn::connector::{
@@ -2271,7 +2230,6 @@ fn a_program_need_is_refused_unless_the_operator_declared_it_as_written() {
 }
 
 /// A dialled exchange's EMPTY answers, binary and text, reach the caller as body pieces; the
-
 #[test]
 fn a_dialled_exchange_relays_empty_messages_and_completes_only_on_the_end_flag() {
     worker().block_on(async {
@@ -2345,7 +2303,6 @@ fn a_dialled_exchange_relays_empty_messages_and_completes_only_on_the_end_flag()
 }
 
 /// THE TRANSPORT PIN (the transport pin): a destination's sealed trust anchors are enforced by the
-
 mod transport_pin {
     use std::sync::{Arc, Mutex};
 
@@ -2365,7 +2322,6 @@ mod transport_pin {
     }
 
     /// One issued leaf: its DER, its key's PKCS#8 DER, and its key's pin, taken off the key pair
-
     struct Leaf {
         der: Vec<u8>,
         key: Vec<u8>,
@@ -2374,7 +2330,6 @@ mod transport_pin {
 
     impl Pki {
         /// A fresh root under a subject no other root of this process carries: two roots sharing
-
         fn new() -> Self {
             static ROOTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
             let n = ROOTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -2408,11 +2363,9 @@ mod transport_pin {
     }
 
     /// What the far end saw on one connection: the bytes it read, and whether the dialler
-
     type Seen = Arc<Mutex<Option<(Vec<u8>, bool)>>>;
 
     /// A TLS far end on loopback serving `leaf` (asking for a client certificate under `pki`'s
-
     async fn tls_far_end(pki: &Pki, leaf: &Leaf, mutual: bool) -> (String, Seen) {
         crate::tls::install_crypto_provider();
         let chain = vec![rustls_pki_types::CertificateDer::from(leaf.der.clone())];
@@ -2457,7 +2410,6 @@ mod transport_pin {
     }
 
     /// A connector serving a door whose targets ask for connection security under the name
-
     fn trusting(pki: &Pki) -> Connector {
         let view = Transports::new(vec![
             Entry {
@@ -2495,7 +2447,6 @@ mod transport_pin {
     }
 
     /// Open need 0 at `far` with a five-byte opening body and read to its first answer: the
-
     async fn exchange(c: &Connector, far: &str) -> (ConnId, Result<Vec<u8>, ConnError>) {
         let desc = OpenDesc {
             target: far,
@@ -2517,7 +2468,6 @@ mod transport_pin {
     }
 
     /// A far end serving the pinned key is reached, and the connection's facts carry the key it
-
     #[test]
     fn a_far_end_serving_the_pinned_key_is_reached_and_its_key_is_the_facts() {
         worker().block_on(async {
@@ -2545,7 +2495,6 @@ mod transport_pin {
     }
 
     /// RED: a far end serving ANOTHER key (a valid chain, the right name) is refused after its
-
     #[test]
     fn a_far_end_serving_another_key_is_refused_before_any_request_byte() {
         worker().block_on(async {
@@ -2583,7 +2532,6 @@ mod transport_pin {
     }
 
     /// A far end that asks for a client certificate is presented the sealed identity, and the
-
     #[test]
     fn a_sealed_client_identity_is_presented_to_a_mutual_far_end() {
         worker().block_on(async {
@@ -2639,7 +2587,6 @@ mod transport_pin {
     }
 
     /// RED: two REGISTRATIONS at one authority hold their own anchors. The first seals a client
-
     #[test]
     fn two_registrations_at_one_authority_each_present_their_own_identity() {
         worker().block_on(async {
@@ -2673,7 +2620,6 @@ mod transport_pin {
     }
 
     /// RED: a pinned destination reached without connection security has no key to hold, and is
-
     #[test]
     fn a_pinned_destination_over_plaintext_is_refused_and_a_bad_identity_refuses_the_seal() {
         worker().block_on(async {
@@ -2710,7 +2656,6 @@ mod transport_pin {
     }
 
     /// A TLS far end on loopback serving `leaf`, answering every five bytes it reads with one
-
     async fn keeping_tls_far_end(leaf: &Leaf) -> String {
         crate::tls::install_crypto_provider();
         let chain = vec![rustls_pki_types::CertificateDer::from(leaf.der.clone())];
@@ -2742,7 +2687,6 @@ mod transport_pin {
     }
 
     /// [`trusting`]'s connector, its secure entry answering the scripted messages, keeping every
-
     fn pooled_trusting(pki: &Pki) -> Connector {
         let view = Transports::new(vec![
             Entry {
@@ -2784,7 +2728,6 @@ mod transport_pin {
     }
 
     /// RED (THE DESIGN §8, the connector holds every destination's trust; the transport pin): a
-
     #[test]
     fn a_pooled_line_is_never_lent_once_its_destination_is_sealed_again() {
         worker().block_on(async {
@@ -2851,7 +2794,6 @@ mod transport_pin {
     }
 
     /// A connector whose own trust is the public roots alone, its secure entry (riding the plain
-
     fn pooled_public_roots() -> Connector {
         let view = Transports::new(vec![
             Entry {
@@ -2909,7 +2851,6 @@ mod transport_pin {
     }
 
     /// RED (THE DESIGN §5, the host connector: a need's `trust_from` is "an extra trusted root
-
     #[test]
     fn a_pooled_line_is_never_lent_once_its_need_trusts_another_operator_ca() {
         worker().block_on(async {
@@ -2939,7 +2880,6 @@ mod transport_pin {
     }
 
     /// GREEN twin: a need declared once under its operator CA keeps pooling: its next open rides
-
     #[test]
     fn a_need_under_its_operator_ca_rides_its_own_pooled_line() {
         worker().block_on(async {
@@ -3028,7 +2968,6 @@ mod transport_pin {
     }
 
     /// A reload replaces an instance with one under a new id and the gone one is forgotten. Over
-
     #[test]
     fn a_forgotten_instance_leaves_no_record_however_many_reloads() {
         worker().block_on(async {
@@ -3132,7 +3071,6 @@ mod transport_pin {
     }
 
     /// RED (`PollConns::anchor`: "an open naming it, to its own target's authority, is held to its
-
     #[test]
     fn a_registration_holding_no_anchors_never_borrows_one_sealed_after_it() {
         worker().block_on(async {
@@ -3166,7 +3104,6 @@ mod transport_pin {
     }
 
     /// RED (`PollConns::anchor`; "a pin nobody enforces is refused, never dropped"): an open naming
-
     #[test]
     fn an_open_naming_no_registration_is_refused_where_the_registrations_at_its_authority_disagree()
     {
@@ -3212,11 +3149,9 @@ mod transport_pin {
     }
 
     /// What a splicing proxy saw, one entry per tunnel in the order they were asked: the CONNECT
-
     type ProxySeen = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
 
     /// A CONNECT proxy on loopback, as a corporate egress proxy is: it reads the CONNECT head,
-
     async fn splicing_proxy() -> (u16, ProxySeen) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3313,7 +3248,6 @@ mod transport_pin {
     }
 
     /// THE KERNEL ENGINE'S PROXIED mTLS HOP, THROUGH THE CONNECTOR (the CONNECT proxy and
-
     #[test]
     fn a_proxied_dial_tunnels_first_then_presents_the_sealed_identity_over_tls() {
         worker().block_on(async {
@@ -3375,7 +3309,6 @@ mod transport_pin {
     }
 
     /// A TLS far end on loopback serving `leaf`, answering `answer` once it read five bytes: its
-
     async fn reporting_tls_far_end(
         leaf: &Leaf,
     ) -> (String, tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>) {
@@ -3418,7 +3351,6 @@ mod transport_pin {
     }
 
     /// Open need 0 at `far` with a five-byte opening body and read to its first answer, waking on
-
     async fn exchange_awaited(c: &Connector, far: &str) -> (ConnId, Result<Vec<u8>, ConnError>) {
         let desc = OpenDesc {
             target: far,
@@ -3445,7 +3377,6 @@ mod transport_pin {
     }
 
     /// RED (the operator docs: a pin is written `sha256/<base64>`): a pin written in
-
     #[test]
     fn a_pin_in_either_spelling_reaches_its_key_and_refuses_another_before_any_request_byte() {
         worker().block_on(async {
@@ -3505,7 +3436,6 @@ mod transport_pin {
     }
 
     /// A pin that names no SHA-256 digest (a stand-in such as `sha256/BASE=`, another tag, a digest
-
     #[test]
     fn a_pin_that_names_no_digest_refuses_the_seal() {
         worker().block_on(async {
@@ -3535,14 +3465,12 @@ mod transport_pin {
     }
 
     /// What one connection told a [`naming_far_end`]: the server name its ClientHello offered, and
-
     type Named = tokio::sync::mpsc::UnboundedReceiver<(Option<String>, bool)>;
 
     /// How many connections a [`naming_far_end`] accepted.
     type Accepted = Arc<std::sync::atomic::AtomicUsize>;
 
     /// A TLS far end on loopback serving `leaf`, answering `answer` once it read five bytes. Per
-
     async fn naming_far_end(leaf: &Leaf) -> (String, Named, Accepted) {
         crate::tls::install_crypto_provider();
         let chain = vec![rustls_pki_types::CertificateDer::from(leaf.der.clone())];
@@ -3588,7 +3516,6 @@ mod transport_pin {
     }
 
     /// The next report off a [`naming_far_end`], bounded so a far end that never reports fails the
-
     async fn next_report(named: &mut Named) -> (Option<String>, bool) {
         tokio::time::timeout(std::time::Duration::from_secs(10), named.recv())
             .await
@@ -3597,7 +3524,6 @@ mod transport_pin {
     }
 
     /// A connector serving one door whose targets ask for connection security under `name`,
-
     fn naming(
         name: &'static str,
         anchor: &[u8],
@@ -3640,7 +3566,6 @@ mod transport_pin {
     }
 
     /// Open need 0 at `target` within `judged` (empty: no set stated) with a five-byte opening
-
     async fn exchange_woken(
         c: &Connector,
         woken: &tokio::sync::Notify,
@@ -3671,7 +3596,6 @@ mod transport_pin {
     }
 
     /// THE REAL WRAP OFFERS THE CONFIGURED NAME AND HOLDS THE CERTIFICATE TO IT (the twin the
-
     #[test]
     fn the_real_wrap_offers_the_configured_name_and_refuses_a_certificate_for_another() {
         use busbar_contract::abi::host::conn::connector::CAUSE_SECURITY;
@@ -3739,7 +3663,6 @@ mod transport_pin {
     }
 
     /// A JUDGED SECURE DIAL GOES ONLY WHERE THE GUARD JUDGED, AND KEEPS THE NAME (the twin the
-
     #[test]
     fn a_judged_secure_dial_lands_only_where_the_guard_judged_and_keeps_the_name() {
         worker().block_on(async {
@@ -3789,7 +3712,6 @@ mod transport_pin {
     }
 
     /// A TRUST REFUSAL NAMES THE SECURITY STACK'S OWN CAUSE, AND THE TRUSTED TWIN IS REACHED (the
-
     #[test]
     fn a_trust_refusal_names_its_cause_and_the_trusted_twin_is_reached() {
         use busbar_contract::abi::host::conn::connector::CAUSE_SECURITY;
@@ -3834,7 +3756,6 @@ mod transport_pin {
 }
 
 /// RED (a registration's private reach, `abi::plane::TRUST_PRIVATE_REACH`, sealed per
-
 #[test]
 fn a_registrations_private_reach_admits_its_own_opens_and_nothing_else() {
     worker().block_on(async {
@@ -3919,7 +3840,6 @@ fn a_registrations_private_reach_admits_its_own_opens_and_nothing_else() {
 }
 
 /// A connector serving `plain` (an entry that locates a target in plaintext) and `sec` (one that
-
 fn plain_and_secure_connector() -> Connector {
     let view = Transports::new(vec![
         Entry {
@@ -4030,7 +3950,6 @@ fn a_pinned_carrier_need_uses_the_same_authority_as_its_dial() {
 }
 
 /// RED (1.5.5: a request-log webhook target that is not `https://` was refused when the sink was
-
 #[test]
 fn an_open_web_need_pinned_to_a_plaintext_target_is_refused_at_declare() {
     let c = plain_and_secure_connector();
@@ -4060,7 +3979,6 @@ fn an_open_web_need_pinned_to_a_plaintext_target_is_refused_at_declare() {
 }
 
 /// GREEN: the admission judges only what the dial would. An open-web need pinned to a secure target
-
 #[test]
 fn a_pinned_target_every_dial_would_admit_is_admitted_at_declare() {
     let c = plain_and_secure_connector();
@@ -4089,7 +4007,6 @@ fn a_pinned_target_every_dial_would_admit_is_admitted_at_declare() {
 }
 
 /// RED (THE DESIGN §5: `open-web` is "public https only"; v1.5.5 refused a private open-web target
-
 #[test]
 fn an_open_web_need_pinned_to_a_private_literal_is_refused_at_declare() {
     let c = plain_and_secure_connector();
@@ -4105,7 +4022,6 @@ fn an_open_web_need_pinned_to_a_private_literal_is_refused_at_declare() {
 }
 
 /// RED: a pinned literal the guard refuses (a cloud metadata address, which no class and no
-
 #[test]
 fn a_pinned_metadata_literal_is_refused_at_declare() {
     let c = plain_and_secure_connector();
@@ -4165,7 +4081,6 @@ fn bound_as(handle: u64) -> busbar_contract::conn::ConnAuth {
 }
 
 /// EACH MEMBER'S BINDING IS ITS OWN, even at an origin it shares (predev `creds.rs`
-
 #[test]
 fn members_sharing_an_origin_each_answer_their_own_binding_and_never_a_neighbours() {
     let c = Connector::default();
@@ -4204,7 +4119,6 @@ fn members_sharing_an_origin_each_answer_their_own_binding_and_never_a_neighbour
 }
 
 /// A REQUEST NAMING NO MEMBER GETS NO BINDING, even where EXACTLY ONE member is bound at its origin
-
 #[test]
 fn a_request_naming_no_member_gets_no_binding_even_from_the_one_member_at_its_origin() {
     let c = Connector::default();
@@ -4230,7 +4144,6 @@ fn a_request_naming_no_member_gets_no_binding_even_from_the_one_member_at_its_or
 }
 
 /// THE POOL IS KEYED BY WHO DIALLED AND WHAT THE DIAL TRUSTED (THE DESIGN §5, §8: the connector is
-
 async fn keeping_far_end() -> (
     String,
     Arc<std::sync::atomic::AtomicUsize>,
@@ -4260,7 +4173,6 @@ async fn keeping_far_end() -> (
 }
 
 /// A connector serving the scripted `messages` framer over a `carrier`, keeping finished lines idle
-
 fn pooled_messages(idle: std::time::Duration) -> Connector {
     let view = Transports::new(vec![
         Entry {
@@ -4291,11 +4203,9 @@ fn pooled_messages(idle: std::time::Duration) -> Connector {
 }
 
 /// What one pooled exchange read: its bytes, whether it completed (its line goes back to the pool
-
 type Exchanged = (Vec<u8>, bool, Option<ConnError>);
 
 /// Open `owner`'s `need` at `far` with `body`, read its answer (to the exchange's end where
-
 async fn pooled_exchange(
     c: &Connector,
     (owner, need): (InstanceId, u32),
@@ -4345,7 +4255,6 @@ async fn pooled_exchange(
 }
 
 /// RED (THE DESIGN §5 "a `ConnId` belongs to the plugin instance that opened it"; §8 the connector
-
 #[test]
 fn a_pooled_line_is_never_lent_to_another_need_or_instance() {
     worker().block_on(async {
@@ -4390,7 +4299,6 @@ fn a_pooled_line_is_never_lent_to_another_need_or_instance() {
 }
 
 /// A forgotten instance's lines and listener go with it. The idle line its exchange finished on is
-
 #[test]
 fn a_forgotten_instances_pooled_line_and_listener_go_and_a_neighbours_line_is_kept() {
     worker().block_on(async {
@@ -4450,7 +4358,6 @@ fn a_forgotten_instances_pooled_line_and_listener_go_and_a_neighbours_line_is_ke
 }
 
 /// RED (`limits.pool_idle_timeout_secs`, the pool's own contract: "an idle connection reaped once
-
 #[test]
 fn an_idle_pooled_line_is_closed_once_its_idle_time_passes_whatever_is_opened_next() {
     worker().block_on(async {
@@ -4483,7 +4390,6 @@ fn an_idle_pooled_line_is_closed_once_its_idle_time_passes_whatever_is_opened_ne
 }
 
 /// The test carrier, with a `dial` that HANGS once armed: it says it is inside the crossing, then
-
 struct HangingDial {
     inner: TestDoor,
     gate: std::sync::Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
@@ -4520,7 +4426,6 @@ impl FramerDoor for HangingDial {
 }
 
 /// RED before a held connection's dial crossed with its judgement's lock let go (`BUSBAR-1.6.0.md`
-
 #[test]
 fn a_write_and_a_wait_beside_a_hung_carrier_dial_never_wait() {
     let rt = worker();
@@ -4618,7 +4523,6 @@ fn a_write_and_a_wait_beside_a_hung_carrier_dial_never_wait() {
 }
 
 /// The test carrier, with a `read` that HANGS once armed: it says it is inside the crossing, then
-
 struct HangingRead {
     inner: TestDoor,
     gate: std::sync::Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
@@ -4655,7 +4559,6 @@ impl FramerDoor for HangingRead {
 }
 
 /// RED before a read had the connection's rest out of its lock (`BUSBAR-1.6.0.md` §11: no plugin
-
 #[test]
 fn a_read_beside_a_hung_carrier_read_never_waits_and_is_woken_once_it_is_back() {
     let rt = worker();

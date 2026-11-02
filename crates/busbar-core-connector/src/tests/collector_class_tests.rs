@@ -70,7 +70,6 @@ fn dial_judge() -> Arc<dyn DialJudge> {
 }
 
 /// The connector's dial judge over a guard whose `advanced.allow_destinations` is `allow`
-
 fn allowing(allow: &[&str]) -> Arc<dyn DialJudge> {
     let guard = Guard::from_config(&Destinations {
         block_private_addresses: true,
@@ -82,7 +81,6 @@ fn allowing(allow: &[&str]) -> Arc<dyn DialJudge> {
 }
 
 /// `authority` (`host:port`, as the http framer locates it out of the collector URL), dialled
-
 fn open(
     j: &Arc<dyn DialJudge>,
     authority: &str,
@@ -115,7 +113,6 @@ fn open(
 }
 
 /// RED (ports `test_validate_otlp_endpoint_allows_loopback_collectors`, the external half of
-
 #[test]
 fn a_collector_is_reached_in_plaintext_on_loopback_and_over_a_secure_connection_elsewhere() {
     let j = dial_judge();
@@ -162,7 +159,6 @@ fn a_collector_is_reached_in_plaintext_on_loopback_and_over_a_secure_connection_
 }
 
 /// RED (ports the cloud-metadata rows of
-
 #[test]
 fn cloud_metadata_never_reaches_a_collector_in_any_spelling() {
     let j = dial_judge();
@@ -197,7 +193,6 @@ fn cloud_metadata_never_reaches_a_collector_in_any_spelling() {
 }
 
 /// RED (ports
-
 #[test]
 fn an_alternate_ipv4_spelling_of_loopback_reaches_a_collector_as_in_1_5_5() {
     let j = dial_judge();
@@ -246,7 +241,6 @@ fn an_alternate_ipv4_spelling_of_loopback_reaches_a_collector_as_in_1_5_5() {
 }
 
 /// RED (ports the private rows of
-
 #[test]
 fn a_private_collector_is_refused_by_default_and_reached_when_allowlisted() {
     let strict = dial_judge();
@@ -294,7 +288,6 @@ fn a_private_collector_is_refused_by_default_and_reached_when_allowlisted() {
 }
 
 /// RED (ports `otlp_resolved_and_literal_verdicts_agree`): one address gets one verdict, written as
-
 #[test]
 fn an_address_is_judged_the_same_named_or_written() {
     let j = dial_judge();
@@ -333,7 +326,6 @@ fn an_address_is_judged_the_same_named_or_written() {
 }
 
 /// RED (ports `test_validate_otlp_endpoint_rejects_bad_scheme`,
-
 #[test]
 fn only_an_http_or_https_url_names_a_collector() {
     let j = dest_judge();
@@ -394,7 +386,6 @@ fn only_an_http_or_https_url_names_a_collector() {
 }
 
 /// RED (ports the plaintext rule of 1.5.5's collector guard,
-
 #[test]
 fn plaintext_reaches_a_collector_only_where_its_url_writes_loopback() {
     let j = dial_judge();
@@ -459,7 +450,6 @@ fn plaintext_reaches_a_collector_only_where_its_url_writes_loopback() {
 }
 
 /// RED (1.5.5's collector guard read an alternate IPv4 spelling as the
-
 #[test]
 fn a_spelling_of_a_public_address_is_the_collector_it_spells() {
     let j = dial_judge();

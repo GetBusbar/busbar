@@ -180,7 +180,6 @@ impl<'h> Io<'h> {
     }
 
     /// `io.open`: begin reaching `addr` (`ip:port`, or `unix:` and an absolute path); its handle,
-
     pub fn open(&mut self, addr: &str) -> IoAnswer<u64> {
         let i = OpenIn {
             head: head(),
@@ -190,7 +189,6 @@ impl<'h> Io<'h> {
     }
 
     /// `io.listen`: bind `bind` (`ip:port`); the listener's handle and how many bytes of `addr`
-
     pub fn listen(&mut self, bind: &str, addr: &mut [u8]) -> IoAnswer<(u64, usize)> {
         let i = ListenIn {
             head: head(),
@@ -203,7 +201,6 @@ impl<'h> Io<'h> {
     }
 
     /// `io.accept`: the next connection off `listener` — its handle and how many bytes of `peer`
-
     pub fn accept(&mut self, listener: u64, peer: &mut [u8]) -> Poll<IoAnswer<(u64, usize)>> {
         let i = AddrIn {
             head: head(),
@@ -230,7 +227,6 @@ impl<'h> Io<'h> {
     }
 
     /// `io.read` STRAIGHT INTO THE HOST'S BUFFER (a carrier's `read` answering the host's own
-
     pub fn read_host(&mut self, handle: u64, buf: &mut HostBuf<'_, u8>) -> Poll<IoAnswer<usize>> {
         let (ptr, cap) = buf.room();
         let i = ReadIn {
@@ -249,7 +245,6 @@ impl<'h> Io<'h> {
     }
 
     /// The address-writing slots, into a HOST buffer (a carrier's `listen`/`accept`/`arrival`
-
     fn addr_in(handle: u64, addr: &mut HostBuf<'_, u8>) -> (AddrIn, usize) {
         let (ptr, cap) = addr.room();
         (
@@ -264,7 +259,6 @@ impl<'h> Io<'h> {
     }
 
     /// [`Io::listen`], the address bound written into the host's buffer `addr`; the handle.
-
     pub fn listen_host(&mut self, bind: &str, addr: &mut HostBuf<'_, u8>) -> IoAnswer<u64> {
         let (ptr, cap) = addr.room();
         let i = ListenIn {
@@ -309,7 +303,6 @@ impl<'h> Io<'h> {
     }
 
     /// `io.ready`: `Ready` once `handle` may make progress in `dir` ([`DIR_READ`] | [`DIR_WRITE`];
-
     pub fn ready(&mut self, handle: u64, dir: u32) -> Poll<IoAnswer<()>> {
         let i = ReadyIn {
             head: head(),
@@ -321,7 +314,6 @@ impl<'h> Io<'h> {
     }
 
     /// `io.shut`: shut `how` ([`DIR_READ`] | [`DIR_WRITE`] | [`DIR_BOTH`]) of `handle` down.
-
     pub fn shut(&mut self, handle: u64, how: u32) -> IoAnswer<()> {
         let i = ShutIn {
             head: head(),
@@ -333,7 +325,6 @@ impl<'h> Io<'h> {
     }
 
     /// `io.close`: release `handle` (a spawned program is killed with it).
-
     pub fn close(&mut self, handle: u64) -> IoAnswer<()> {
         let i = HandleIn {
             head: head(),
@@ -391,7 +382,6 @@ impl<'h> Io<'h> {
     }
 
     /// [`Io::spawn`] of the program a carrier's `dial` was lent (`abi::transport::Destination`,
-
     pub fn spawn_dest(
         &mut self,
         dest: crate::abi::sdk::Lent<'_, crate::abi::transport::Destination>,
@@ -409,7 +399,6 @@ impl<'h> Io<'h> {
     }
 
     /// `io.ends`: `handle`'s local port and how many bytes of `peer` (at least [`MAX_ADDR`]) its
-
     pub fn ends(&mut self, handle: u64, peer: &mut [u8]) -> IoAnswer<(u32, usize)> {
         let i = AddrIn {
             head: head(),
@@ -424,7 +413,6 @@ impl<'h> Io<'h> {
     }
 
     /// `io.ends` on a spawned program's handle: its exit code once the program ITSELF has exited,
-
     pub fn program_exit(&mut self, handle: u64) -> IoAnswer<Option<u32>> {
         let mut peer = [0_u8; MAX_ADDR];
         let i = AddrIn {

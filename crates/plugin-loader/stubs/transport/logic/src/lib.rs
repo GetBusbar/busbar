@@ -12,7 +12,6 @@ mod meta;
 mod transport;
 
 /// THE TRANSPORT AXIS ENTRY: what the composition root folds for this transport: its key, the
-
 pub mod linked {
     /// The row's registry key.
     pub const KEY: &str = crate::door::KEY;

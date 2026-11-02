@@ -148,7 +148,6 @@ use crate::root::loader::dispatch::{
 use crate::root::plane_node::{Node, NodeEndPost};
 
 #[cfg(feature = "plane-decisions")]
-
 static CARD: std::sync::LazyLock<crate::root::kernel::RootHistory> =
     std::sync::LazyLock::new(|| {
         let holder = crate::root::kernel::RootHistory::default();
@@ -164,23 +163,18 @@ static CARD: std::sync::LazyLock<crate::root::kernel::RootHistory> =
     });
 
 #[cfg(feature = "plane-decisions")]
-
 pub(super) const CLAIMED: &str = "/v1/systemone";
 
 #[cfg(feature = "plane-decisions")]
-
 const CREDENTIAL: &str = "sk-door-test";
 
 #[cfg(feature = "plane-decisions")]
-
 const ANSWER: &str = r#"{"id":"d-1","decision":"approve","usage":{"units":1}}"#;
 
 #[cfg(feature = "plane-decisions")]
-
 const UNAVAILABLE: &str = r#"{"error":"unavailable"}"#;
 
 #[cfg(feature = "plane-decisions")]
-
 pub(super) async fn send(
     router: &axum::Router,
     path: &str,
@@ -202,13 +196,11 @@ pub(super) async fn send(
 }
 
 #[cfg(feature = "plane-decisions")]
-
 pub(super) async fn far_end() -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
     far_end_failing_first(0).await
 }
 
 #[cfg(feature = "plane-decisions")]
-
 async fn far_end_failing_first(
     failures: usize,
 ) -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
@@ -233,11 +225,9 @@ enum Answer {
 }
 
 #[cfg(feature = "plane-decisions")]
-
 type Script = Arc<dyn Fn(usize) -> Answer + Send + Sync>;
 
 #[cfg(feature = "plane-decisions")]
-
 async fn far_end_answering(script: Script) -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -4733,7 +4723,6 @@ mod tools_door {
 }
 
 #[cfg(feature = "plane-decisions")]
-
 pub(super) struct Serving {
     pub(super) router: axum::Router,
     pub(super) token: String,
@@ -4807,11 +4796,9 @@ impl Serving {
 }
 
 #[cfg(feature = "plane-decisions")]
-
 const MEMBER: busbar_contract::DestinationId = busbar_contract::DestinationId::new(0);
 
 #[cfg(feature = "plane-decisions")]
-
 fn counted(exposition: &str, family: &str, lane: &str) -> f64 {
     let lane = format!("lane=\"{lane}\"");
     exposition
@@ -4822,13 +4809,11 @@ fn counted(exposition: &str, family: &str, lane: &str) -> f64 {
 }
 
 #[cfg(feature = "plane-decisions")]
-
 async fn serve_over(linked: &crate::root::linked::Linked, instance: &str, port: u16) -> Serving {
     serve_limited(linked, instance, port, Vec::new()).await
 }
 
 #[cfg(feature = "plane-decisions")]
-
 async fn serve_limited(
     linked: &crate::root::linked::Linked,
     instance: &str,
@@ -4839,7 +4824,6 @@ async fn serve_limited(
 }
 
 #[cfg(feature = "plane-decisions")]
-
 async fn serve_governed(
     linked: &crate::root::linked::Linked,
     instance: &str,
@@ -4862,7 +4846,6 @@ async fn serve_governed(
 }
 
 #[cfg(linked_section_decisions)]
-
 pub(super) async fn serve_keyed(
     linked: &crate::root::linked::Linked,
     instance: &str,
@@ -4873,7 +4856,6 @@ pub(super) async fn serve_keyed(
 }
 
 #[cfg(linked_section_decisions)]
-
 async fn serve_configured(
     linked: &crate::root::linked::Linked,
     instance: &str,
@@ -5077,11 +5059,9 @@ async fn serve_configured(
 }
 
 #[cfg(feature = "plane-decisions")]
-
 const STATES_NO_BENCH: &str = r#"{"breaker":{"bench_below_trip_threshold":false}}"#;
 
 #[cfg(feature = "plane-decisions")]
-
 fn declaring(declares: &'static str) -> crate::root::linked::Linked {
     crate::root::linked::Linked {
         plane_door_declares: vec![(
@@ -5095,7 +5075,6 @@ fn declaring(declares: &'static str) -> crate::root::linked::Linked {
 }
 
 #[cfg(feature = "plane-decisions")]
-
 pub(super) fn decisions_name() -> String {
     let row = LinkedRow::of(decisions_door).expect("the door states its Statement");
     busbar_contract::abi::mechanism::rendering::read(&row.statement)
@@ -5104,7 +5083,6 @@ pub(super) fn decisions_name() -> String {
 }
 
 #[cfg(feature = "plane-decisions")]
-
 async fn call_once(
     serving: &Serving,
     heard: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
@@ -9989,15 +9967,12 @@ mod pools_door_counts_and_routes {
 }
 
 #[cfg(feature = "plane-decisions")]
-
 const MAX_FAILURES: usize = 8;
 
 #[cfg(feature = "plane-decisions")]
-
 const CALLER_FAULT: &str = r#"{"error":"the state names no amount"}"#;
 
 #[cfg(feature = "plane-decisions")]
-
 async fn trip(
     serving: &Serving,
     heard: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
@@ -10328,7 +10303,6 @@ async fn a_decisions_provider_is_handed_the_planned_credential_and_never_the_cal
 }
 
 #[cfg(feature = "plane-decisions")]
-
 fn budget_of(
     amount: u64,
     per: busbar_kernel::config::groups::LimitWindow,
@@ -10346,7 +10320,6 @@ fn budget_of(
 }
 
 #[cfg(feature = "plane-decisions")]
-
 async fn call_through(
     serving: &Serving,
     heard: &mut tokio::sync::mpsc::UnboundedReceiver<String>,

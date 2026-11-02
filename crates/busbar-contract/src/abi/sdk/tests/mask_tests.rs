@@ -63,7 +63,6 @@ fn secret_looking_query_and_fragment_values_are_masked() {
 }
 
 /// An `@` in the query is over-cut, and what follows it is still read as pairs, so no value that
-
 #[test]
 fn an_at_in_the_query_is_over_cut_never_a_leak() {
     let masked = mask_url("https://h/p?email=a@b.c&token=T");

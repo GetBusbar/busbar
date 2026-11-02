@@ -14,7 +14,6 @@ pub const MAX_BYTES: usize = HARD_MAX_BYTES as usize;
 const HEADER: usize = 16;
 
 /// A normalized complete settings object accepted by this hook's `configure` method on a fresh
-
 pub struct ConfigureCheckpoint {
     /// Strictly increasing successful configuration sequence within one physical instance.
     pub revision: u64,
@@ -26,7 +25,6 @@ pub struct ConfigureCheckpoint {
 
 impl ConfigureCheckpoint {
     /// Own a complete, normalized JSON settings object. Its semantics belong to the plugin; the
-
     pub fn new(revision: u64, settings_version: u64, settings: Vec<u8>) -> Result<Self, String> {
         let settings = Zeroizing::new(settings);
         if revision == 0
@@ -64,7 +62,6 @@ impl ConfigureCheckpoint {
     }
 
     /// Copy one checkpoint out of a still-leased extensions blob. Unknown entries are ignored;
-
     pub fn decode(bytes: &[u8]) -> Result<Option<Self>, &'static str> {
         const INVALID: &str = "invalid hook configuration checkpoint reply";
         if bytes.len() > MAX_BYTES {

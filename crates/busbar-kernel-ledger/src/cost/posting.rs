@@ -12,7 +12,6 @@ use crate::cost::rate::{ClassPrice, RateCard};
 pub const STANDARD_TIER_BP: u32 = 10_000;
 
 /// The meter class the flat per-request fee posts under. It is a usage line like any other, which
-
 pub const FEE_CLASS: &str = "fee";
 
 /// One quantity against one declared class. No money in it.
@@ -59,7 +58,6 @@ pub struct Posting {
 
 impl Posting {
     /// Build a posting from a usage report: the quantities, the lane and the instant.
-
     pub fn from_usage(
         lane: impl Into<String>,
         usage: &Usage,
@@ -84,7 +82,6 @@ impl Posting {
     }
 
     /// **THE FIGURE A READER MUST USE**: the lookup's, always.
-
     pub fn priced_nanos(&self, view: &HistoryView<'_>) -> Result<u128, Unpriceable> {
         price(view, self).map(|p| p.priced_nanos)
     }
@@ -133,7 +130,6 @@ pub struct Priced {
 
 impl Priced {
     /// Every class the card was present for but silent about. The flat fee is never among them:
-
     pub fn unpriced_classes(&self) -> Vec<&str> {
         self.lines
             .iter()
@@ -176,7 +172,6 @@ pub enum Unpriceable {
 }
 
 /// **THE TIER ARITHMETIC — the one implementation in the tree.**
-
 pub fn checked_apply_tier(pre_tier_amount: u128, tier_bp: u32) -> Option<u128> {
     let n = u128::from(STANDARD_TIER_BP);
     let bp = u128::from(tier_bp);
@@ -200,7 +195,6 @@ pub fn checked_apply_tier(pre_tier_amount: u128, tier_bp: u32) -> Option<u128> {
 }
 
 /// **THE LOOKUP** — the whole of layer two, and the only place money is computed.
-
 pub fn price(view: &HistoryView<'_>, posting: &Posting) -> Result<Priced, Unpriceable> {
     let (card_seq, card) = view
         .card_at(posting.arrived_ms)
@@ -211,7 +205,6 @@ pub fn price(view: &HistoryView<'_>, posting: &Posting) -> Result<Priced, Unpric
 }
 
 /// The lookup with the resolution already done — the same arithmetic, reached by a caller that
-
 pub fn price_at_card(
     card_seq: HistorySeq,
     card: &RateCard,
@@ -295,7 +288,6 @@ pub fn price_at_card(
 }
 
 /// The settlement posture: [`price`], and a lane a present card is silent about is a REFUSAL rather
-
 pub fn price_fail_closed(view: &HistoryView<'_>, posting: &Posting) -> Result<Priced, Unpriceable> {
     let priced = price(view, posting)?;
     if priced.lane_unpriced {

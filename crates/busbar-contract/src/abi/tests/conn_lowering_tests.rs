@@ -123,7 +123,6 @@ fn two() -> (Box<ConnHost>, Box<ConnHost>, HostConns, HostConns) {
 }
 
 /// Every operation crosses and comes back as itself: the open's fields and body, a write, the piece
-
 #[test]
 fn every_operation_crosses_the_lowering() {
     let (_a, _b, pa, _) = two();
@@ -194,7 +193,6 @@ fn every_operation_crosses_the_lowering() {
 }
 
 /// RED ARM — CROSS-INSTANCE: a connection one instance opened is refused to another on every
-
 #[test]
 fn another_instances_connection_is_refused_across_the_lowering() {
     let (_a, _b, pa, pb) = two();
@@ -254,7 +252,6 @@ fn an_undeclared_need_opens_nothing_across_the_lowering() {
 }
 
 /// Every outcome byte decodes, and only the twelve stated ones decode to themselves: an unknown byte
-
 #[test]
 fn every_outcome_byte_decodes_and_the_unknown_ones_are_faults() {
     for e in [
@@ -294,7 +291,6 @@ fn a_null_context_is_a_fault() {
 }
 
 /// A request whose credential is unavailable is refused by its own outcome byte and its own text,
-
 #[test]
 fn an_unavailable_credential_is_refused_by_name() {
     assert_eq!(
@@ -316,7 +312,6 @@ fn an_unavailable_credential_is_refused_by_name() {
 }
 
 /// An auth's refusal and an auth call's failure each cross the ABI by their own outcome byte and
-
 #[test]
 fn an_auth_outcome_crosses_by_name_and_is_never_the_destinations() {
     assert_eq!(RawConnOutcome::of(Err(ConnError::AuthRefused)).0, 10);
@@ -338,7 +333,6 @@ fn an_auth_outcome_crosses_by_name_and_is_never_the_destinations() {
 }
 
 /// An instance its host handed no table answers [`ConnError::Unarmed`], by its own refusal text and
-
 #[test]
 fn an_unarmed_instance_is_refused_by_name() {
     assert_eq!(RawConnOutcome::of(Err(ConnError::Unarmed)).0, 8);
@@ -350,7 +344,6 @@ fn an_unarmed_instance_is_refused_by_name() {
 }
 
 /// NOTHING BLOCKS: a read with nothing ready answers pending at once, and the caller's wake ticket
-
 #[test]
 fn a_read_with_nothing_ready_is_pending_and_hands_the_host_its_ticket() {
     let echo = Arc::new(Echo::default());
@@ -379,7 +372,6 @@ fn a_read_with_nothing_ready_is_pending_and_hands_the_host_its_ticket() {
 }
 
 /// A host minted with its state behind it, then MOVED (returned by value, pushed into a vector)
-
 fn minted() -> (ConnHost, ConnCtx) {
     let echo = Arc::new(Echo::default());
     echo.0.declare(InstanceId(1), NEED);
@@ -389,7 +381,6 @@ fn minted() -> (ConnHost, ConnCtx) {
 }
 
 /// RED: moving a `ConnHost` after minting its context leaves every call through that context
-
 #[test]
 fn a_host_moved_after_minting_its_context_still_serves_the_table() {
     let (host, ctx) = minted();
@@ -416,7 +407,6 @@ fn a_host_moved_after_minting_its_context_still_serves_the_table() {
 }
 
 /// RED: the opening message's head words cross the lowering as the plugin stated them (appended
-
 #[test]
 fn the_head_words_cross_the_lowering() {
     let (_a, _b, pa, _) = two();
@@ -437,7 +427,6 @@ fn the_head_words_cross_the_lowering() {
 }
 
 /// RED: a descriptor whose size ends before the appended head words is read without them, never
-
 #[test]
 fn a_descriptor_without_the_head_words_states_none() {
     let echo = Echo::default();
@@ -528,7 +517,6 @@ impl Conns for Panics {
 }
 
 /// RED (THE DESIGN, the signed kind-ABI design's finding M3, `BUSBAR-1.6.0.md` l.1515): every slot
-
 #[test]
 fn a_panicking_slot_answers_fault_without_unwinding() {
     let slots = host_slots();

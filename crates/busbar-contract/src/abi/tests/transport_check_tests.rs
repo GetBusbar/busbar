@@ -183,7 +183,6 @@ fn locate_is_one_multi_dimension_short_answer() {
 }
 
 /// The framer's protocol offer is the handshake's ProtocolNameList: it partitions exactly into
-
 #[test]
 fn locate_answers_an_alpn_offer_the_connector_can_trust() {
     let offer = b"\x02h2\x08http/1.1";
@@ -294,7 +293,6 @@ fn a_failed_framer_answer_that_wrote_is_fault() {
 }
 
 /// A stream ends with a PIECE_END piece, and a failed stream with a STREAM_FAILED piece; each is
-
 #[test]
 fn a_stream_end_or_failure_without_end_of_frame_is_fault() {
     let mut o: FramerOut = z();
@@ -322,7 +320,6 @@ fn a_stream_end_or_failure_without_end_of_frame_is_fault() {
 }
 
 /// A STREAM'S OWN BACKPRESSURE is two known signals: an `emit` answering the stream full, and the
-
 #[test]
 fn a_full_stream_and_its_writable_piece_are_known_and_the_piece_is_empty_and_alone() {
     let mut o: FramerOut = z();
@@ -354,7 +351,6 @@ fn a_full_stream_and_its_writable_piece_are_known_and_the_piece_is_empty_and_alo
 }
 
 /// A head is a FIELDS frame, framed even when empty (an empty fields piece is an empty head, not
-
 #[test]
 fn a_fields_piece_is_a_head_never_a_failure() {
     let mut o: FramerOut = z();
@@ -374,7 +370,6 @@ fn a_fields_piece_is_a_head_never_a_failure() {
 }
 
 /// The field block reads back line by line, in order, a repeated name on its own lines; a
-
 #[test]
 fn a_field_block_reads_back_in_order() {
     let block = b"x-b: 1\r\nx-b: 2\r\nx-a: v: w\r\nbroken";
@@ -404,7 +399,6 @@ fn hop_by_hop_is_the_list_and_what_connection_names() {
 }
 
 /// RED: a pseudo-field never enters a field block, wherever its line starts: at a piece that starts
-
 #[test]
 fn a_pseudo_field_in_a_field_block_is_fault() {
     let frame = b":path: /\r\nx: 1\r\n:authority: a\r\n\n:m";
@@ -447,7 +441,6 @@ fn a_continued_piece_outside_a_field_block_is_fault() {
 }
 
 /// PIECE_TEXT is a fact about a message (C19-TAIL U5): on a payload piece it passes, and on an
-
 #[test]
 fn text_rides_a_message_piece_only() {
     let mut o: FramerOut = z();
@@ -479,7 +472,6 @@ fn text_rides_a_message_piece_only() {
 }
 
 /// A declared body length is a head's statement: on a field block it passes; on a payload piece it
-
 #[test]
 fn a_declared_length_rides_a_field_block_only() {
     let mut o: FramerOut = z();
@@ -497,7 +489,6 @@ fn a_declared_length_rides_a_field_block_only() {
 }
 
 /// A field a flag says is present is set only with that flag: a nonzero `code` without
-
 #[test]
 fn a_field_set_without_its_flag_is_fault() {
     let mut o: FramerOut = z();
@@ -545,7 +536,6 @@ fn a_field_set_without_its_flag_is_fault() {
 }
 
 /// An interim head is a field block with its code, never the end or a declared length; a code in
-
 #[test]
 fn an_interim_head_and_a_handshake_code_are_heads_with_codes() {
     let mut o: FramerOut = z();
@@ -644,7 +634,6 @@ fn an_empty_piece_is_a_message_and_the_end_is_its_own_flag() {
 }
 
 /// A stream's head slots: within the capacity, one per stream, every slot inside the frame bytes
-
 #[test]
 fn head_slots_lie_in_the_frame_and_pair_method_with_target() {
     let mut o: FramerOut = z();
@@ -837,7 +826,6 @@ fn a_tail_without_claims_or_with_unknown_codes_is_fault() {
 }
 
 /// The ops a transport declares (accept, dial, detach, adopt) are facts its tail states; each is
-
 #[test]
 fn a_tail_states_the_ops_it_declares() {
     for op in [FACT_ACCEPTS, FACT_DIALS, FACT_DETACHES, FACT_ADOPTS] {
@@ -860,7 +848,6 @@ fn claim() -> Claim {
 }
 
 /// THE ONE SOURCE OF CLAIM NAMES: a transport's tail carries exactly one row per scheme its
-
 #[test]
 fn a_tail_has_exactly_one_row_per_claim_the_statement_names() {
     let t = tail();
@@ -960,7 +947,6 @@ fn route(methods: u32, path_form: u32, path: &'static str) -> route::RouteMatch 
 }
 
 /// RED: a route's shape — a method set inside the vocabulary and not empty, a known path form, a
-
 #[test]
 fn a_route_shape_is_checked() {
     use route::*;
@@ -979,7 +965,6 @@ fn a_route_shape_is_checked() {
 }
 
 /// RED: a route's content — a rooted path for the exact, pattern and prefix forms, a pattern that
-
 #[test]
 fn a_route_content_is_checked() {
     use route::*;
@@ -1037,7 +1022,6 @@ fn a_route_content_is_checked() {
 }
 
 /// RED (audit contract-src #11): a read route no request can match by its method set or its path
-
 #[test]
 fn a_route_view_with_no_method_or_no_known_form_is_refused() {
     use route::*;
@@ -1138,7 +1122,6 @@ fn a_streams_final_status_is_judged_against_its_claims_numbering() {
 }
 
 /// THE OPENING BODY'S LENGTH ON AN EMIT: a length rides only with `body_len_known` `1`; a
-
 #[test]
 fn an_emit_states_a_body_length_only_when_it_is_known() {
     let mut i: EmitIn = z();
@@ -1169,7 +1152,6 @@ fn an_emit_states_a_body_length_only_when_it_is_known() {
 }
 
 /// THE ANSWER'S STATUS ON AN EMIT (INBOUND-LISTEN, l.4913): stated on the emit that carries an
-
 #[test]
 fn an_emit_states_a_status_only_on_an_accepted_streams_answer_head() {
     let mut i: EmitIn = z();
@@ -1222,7 +1204,6 @@ fn every_fault_row_is_checked() {
 }
 
 /// THE RED ARM AT LOAD: a claim that states status rows states fault rows too. A framer with status
-
 #[test]
 fn a_claim_with_status_rows_and_no_fault_rows_is_refused() {
     let status = [row(0, 200, 299, 1), row(1, 200, 299, 1)];
@@ -1274,7 +1255,6 @@ fn a_pieces_fault_reading_is_known_and_reads_its_code() {
 }
 
 /// The offered-points record: unstated is `{Head, HeadBody}`; a stated set reads back; a record of
-
 #[test]
 fn the_offered_points_record_reads_or_refuses() {
     use crate::abi::mechanism::extensions::encode;
@@ -1299,7 +1279,6 @@ fn the_offered_points_record_reads_or_refuses() {
 }
 
 /// THE GENERATED RED TABLES: one RED per (field, rule) each transport declaration states
-
 #[test]
 fn every_declared_transport_field_rule_is_red() {
     use crate::abi::mechanism::decl::RedCase;
@@ -1379,7 +1358,6 @@ fn answer<I, O>(
 }
 
 /// THE KIND'S ANSWER CHECK: `listen` reads its `out` first, `locate` and every framer op their
-
 #[test]
 fn check_answer_reads_the_frames_in_the_loaders_order_then_judges_the_op() {
     use std::mem::size_of;
@@ -1468,7 +1446,6 @@ fn begin_with(side: u32, lines: &[LineEntry]) -> BeginIn {
 }
 
 /// RED: a `begin`'s guest list, one break at a time: lines on the dial side, a count behind NULL,
-
 #[test]
 fn a_begin_line_table_is_checked() {
     use crate::abi::host::service::{AuthRef, LINE_NONE};
@@ -1540,7 +1517,6 @@ fn a_begin_line_table_is_checked() {
 }
 
 /// RED: a `begin`'s binding: on the dial side a valid point set with a handle exactly when it is
-
 #[test]
 fn a_begin_binding_is_checked() {
     use crate::abi::host::service::AuthRef;
@@ -1573,7 +1549,6 @@ fn a_begin_binding_is_checked() {
 }
 
 /// RED: a `begin`'s scheme, on every side: an undeclared scheme (a zeroed `in`) is refused, never
-
 #[test]
 fn a_begin_scheme_is_declared() {
     use crate::abi::host::service::{SCHEME_PLAIN, SCHEME_SECURE, SCHEME_UNDECLARED};
@@ -1616,7 +1591,6 @@ fn an_agreed_protocol_past_the_offer_is_refused() {
 }
 
 /// An actual framer answer with each reason immediately before its own field piece, as the SDK
-
 fn response_heads(rows: &[(u64, u16, bool)]) -> (Vec<u8>, Vec<FramePiece>, Vec<HeadSlots>) {
     let mut frame = Vec::new();
     let mut pieces = Vec::new();

@@ -320,14 +320,12 @@ impl Refusal {
     }
 
     /// Whether the refusal was raised while a hold was open. False until a step is stamped: an
-
     pub fn under_hold(&self) -> bool {
         self.at.is_some_and(StepName::under_hold)
     }
 }
 
 /// A step's answer: proceed with the facts the next step reads, or refuse.
-
 #[must_use = "a decision that is not returned to the loop silently skips the step"]
 pub struct SeatVerdict<S: Step>(Inner<S>);
 

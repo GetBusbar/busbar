@@ -10,14 +10,12 @@ use crate::abi::host::service::LINE_NONE;
 use std::collections::HashSet;
 
 /// A framer reply asks the host to open this stream before route matching or auth.
-
 pub const EXT_GUEST_OPEN: &str = "guest.open";
 /// The following call lends the selected generation's policy to the requesting operation.
 pub const EXT_GUEST_POLICY: &str = "guest.policy";
 const VERSION: u32 = 1;
 
 /// A reply confirming that the stream may use a previously decoded policy identity.
-
 pub const EXT_GUEST_CURRENT: &str = "guest.current";
 
 /// A stream opening, with the policy generation already cached by its framer.
@@ -41,7 +39,6 @@ impl Open {
     }
 
     /// Decode an entire opening value.
-
     pub fn decode(bytes: &[u8]) -> Result<Self, &'static str> {
         let mut reader = Reader(bytes);
         if reader.u32()? != VERSION {
@@ -69,7 +66,6 @@ pub struct Identity {
 
 impl Identity {
     /// Encode an acknowledgement without allocation.
-
     pub fn encode(self) -> Result<[u8; size_of::<u32>() + 2 * size_of::<u64>()], &'static str> {
         if self.listener == 0 || self.generation == 0 {
             return Err("the policy has no listener or generation");
@@ -82,7 +78,6 @@ impl Identity {
     }
 
     /// Decode a whole acknowledgement; the caller still checks it against its cached policy.
-
     pub fn decode(bytes: &[u8]) -> Result<Self, &'static str> {
         let open = Open::decode(bytes)?;
         let identity = Self {
@@ -178,7 +173,6 @@ fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), &'static str> {
 }
 
 /// Encode an extension value once for this listener and generation.
-
 pub fn encode(
     listener: u64,
     generation: u64,
@@ -244,7 +238,6 @@ impl<'a> Reader<'a> {
 }
 
 /// Decode a whole policy value. Lengths are checked against the actual input before allocation.
-
 pub fn decode(bytes: &[u8]) -> Result<Policy, &'static str> {
     let mut reader = Reader(bytes);
     if reader.u32()? != VERSION {

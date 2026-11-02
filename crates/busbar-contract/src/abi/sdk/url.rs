@@ -11,7 +11,6 @@ use zeroize::{Zeroize, Zeroizing};
 const CUT: &str = "***";
 
 /// `%XX` (two hex digits, either case) decoded to its octet; any other byte, a `%` not followed by
-
 #[must_use]
 pub fn percent_decode(s: &[u8]) -> Vec<u8> {
     let hex = |c: u8| match c {
@@ -53,7 +52,6 @@ pub enum Userinfo {
 }
 
 /// THE USERINFO AS A BASIC CREDENTIAL: `Basic ` and the padded standard base64 (RFC 4648 section 4)
-
 #[must_use]
 pub fn basic_authorization(
     username: &str,
@@ -93,7 +91,6 @@ pub fn basic_authorization(
 }
 
 /// `url` with its credential-bearing prefix through the LAST `@` replaced by `with` (`with`
-
 #[must_use]
 pub fn cut_userinfo(url: &str, with: &str) -> String {
     let Some(at) = url.rfind('@') else {
@@ -116,7 +113,6 @@ pub fn cut_userinfo(url: &str, with: &str) -> String {
 }
 
 /// THE AMBIGUOUS-URL REFUSAL (owner ruling 2026-10-24): `Some(the refusal)` when the parsed `url`
-
 #[must_use]
 pub fn ambiguous_url(url: &str, from_path: &str) -> Option<String> {
     if !from_path.contains('@') {
@@ -132,7 +128,6 @@ pub fn ambiguous_url(url: &str, from_path: &str) -> Option<String> {
 }
 
 /// `parts` followed by each of them percent-decoded (lossily read as text), in the same order: the
-
 #[must_use]
 pub fn and_decoded(mut parts: Vec<String>) -> Vec<String> {
     let decoded: Vec<String> = parts
@@ -147,7 +142,6 @@ pub fn and_decoded(mut parts: Vec<String>) -> Vec<String> {
 }
 
 /// `text` (a host's failure words, say, which may quote a URL or a setting) with each of `parts`
-
 #[must_use]
 pub fn scrub(text: &str, parts: Vec<String>, quoted: bool) -> String {
     let mut parts = Zeroizing::new(parts);

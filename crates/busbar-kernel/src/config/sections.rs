@@ -14,7 +14,6 @@ use super::limits::{DEFAULT_RATE_SWEEP_INTERVAL, DEFAULT_USAGE_FLUSH_INTERVAL_MS
 /// All three values are SECRET REFERENCES (`{ file: … }` / `{ env: … }` / a secret module)
 /// resolving to PEM bytes; they are resolved once at startup and any resolve/parse error is fatal
 /// (`die`). Key bytes are never logged.
-
 #[derive(Deserialize, Serialize, Clone, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct TlsCfg {

@@ -65,7 +65,6 @@ impl PlaneLife for Echo {
     }
 
     /// THE APPLIED OWNED SECTIONS (`EXT_OWNED`): a refresh whose document writes an owned section
-
     fn refresh_in(&self, input: &Lent<'_, RefreshIn>) -> Result<Published<Vec<u8>>, Refusal> {
         let owned = crate::abi::mechanism::extensions::get(
             input.head().extensions().bytes(),
@@ -131,7 +130,6 @@ mod migrating {
 }
 
 /// `lifecycle: plane_life(P)` takes `migrate:` as the other lifecycle forms do: the door states it
-
 #[test]
 fn a_plane_life_door_states_migrate_when_it_names_one() {
     use crate::abi::mechanism::call::{BLOB_JSON, BLOB_OCTETS};
@@ -242,7 +240,6 @@ fn text(s: AbiStr) -> String {
 }
 
 /// `open` with `settings` at generation `1`: the outcome, the instance, the published snapshot's
-
 fn open(settings: &[u8]) -> (Outcome, *mut c_void, u64, String) {
     let mut input: PlaneOpenIn = zeroed();
     input.open.head = in_head::<PlaneOpenIn>(slot::OPEN);
@@ -391,7 +388,6 @@ fn validate_tick_drive_cancel_and_release_answer_the_defaults_and_the_planes_can
 }
 
 /// RED (a2a's PlaneLife adoption, ruled 2026-10-29): a PlaneLife plane sees the applied owned
-
 #[test]
 fn a_plane_life_plane_sees_the_owned_sections_at_refresh_and_a_malformed_one_is_refused() {
     let (_, inst, _, _) = open(b"{}");

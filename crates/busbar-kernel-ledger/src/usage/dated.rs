@@ -23,7 +23,6 @@ pub struct FeeEras<E = u64>(Vec<(E, u64)>);
 
 impl<E: Copy + Eq + Into<RawRateEra> + From<u64>> FeeEras<E> {
     /// One request admitted under `era`. Legacy zero is the implicit remainder; a known opening
-
     pub fn charge(&mut self, era: E) {
         if era.into() == RawRateEra::legacy(0) {
             return;
@@ -35,7 +34,6 @@ impl<E: Copy + Eq + Into<RawRateEra> + From<u64>> FeeEras<E> {
     }
 
     /// One billable request refunded from the era it was ADMITTED under: `era` is the admission's
-
     pub fn refund(&mut self, era: E) {
         if let Some((_, n)) = self.0.iter_mut().find(|(e, n)| *e == era && *n > 0) {
             *n -= 1;
@@ -59,7 +57,6 @@ impl<E: Copy + Eq + Into<RawRateEra> + From<u64>> FeeEras<E> {
     }
 
     /// The fee base per era, given the bucket's billable total: every dated era, then the undated
-
     pub fn split(&self, billable_total: u64) -> impl Iterator<Item = (E, u64)> + '_ {
         let dated = self
             .0
@@ -98,7 +95,6 @@ impl<'h> DatedHistory<'h> {
 }
 
 /// **A DATED BUDGET CELL, PRICED.** `money = f(ledger counts, dated ratecard)` over one bucket.
-
 pub fn price_dated<'r>(
     rows: impl IntoIterator<Item = (&'r str, u64, &'r BTreeMap<String, u64>)>,
     fees: impl IntoIterator<Item = (u64, u64)>,
@@ -119,7 +115,6 @@ pub fn price_dated<'r>(
 }
 
 /// Price counts carrying exact serving-entry provenance, while preserving legacy timestamp rows.
-
 pub fn price_dated_raw<'r>(
     rows: impl IntoIterator<Item = (&'r str, RawRateEra, &'r BTreeMap<String, u64>)>,
     fees: impl IntoIterator<Item = (RawRateEra, u64)>,
@@ -204,7 +199,6 @@ fn price_dated_at<'r>(
 }
 
 /// A dated cell's segments folded back to ONE count map per lane, in first-seen order, with `add`
-
 pub fn by_lane<'r, V: Copy>(
     segments: impl IntoIterator<Item = (&'r str, BTreeMap<String, V>)>,
     add: impl Fn(V, V) -> V,

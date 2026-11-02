@@ -14,7 +14,6 @@ pub const REGENERATE: &str =
 pub const ABI: &str = "crates/busbar-contract/src/abi";
 
 /// `(kind, golden alias prefix, path under abi/, is a folder)`. The order is the order of the
-
 pub const SOURCES: &[(&str, &str, &str, bool)] = &[
     ("mech", "Mech", "mechanism", true),
     ("store", "Store", "store", true),
@@ -30,7 +29,6 @@ pub const SOURCES: &[(&str, &str, &str, bool)] = &[
 ];
 
 /// `(kind, Rust name, golden key)`: a struct the layout golden records under an alias of its own,
-
 const GOLDEN_ALIASES: &[(&str, &str, &str)] = &[("mech", "AbiStr", "MechStr")];
 
 /// One source file handed to [`render_sources`].
@@ -163,7 +161,6 @@ fn qualified(q: bool, base: &str, inner: &str) -> String {
 }
 
 /// The C declaration of `inner` (a name, possibly already wrapped in declarator syntax) having type
-
 fn decl(ty: &Ty, inner: String, q: bool) -> String {
     match ty {
         Ty::Void => qualified(q, "void", &inner),
@@ -396,7 +393,6 @@ fn const_kind(t: &syn::Type) -> ConstKind {
 }
 
 /// The glue macros whose expansion is Rust-side only: they build a contract table or an SDK marker
-
 const GLUE_MACROS: &[&str] = &[
     "kind_slots",
     "slot_structs",
@@ -1082,13 +1078,11 @@ fn comment(doc: &Option<String>) -> String {
 }
 
 /// Render the header from source texts and the layout golden. The pure core of the gate. A struct
-
 pub fn render_sources(srcs: &[Src<'_>], golden: &str) -> Result<String, String> {
     render_with(srcs, golden, false)
 }
 
 /// [`render_sources`], and every emitted struct is pinned by the golden: one it does not record
-
 pub fn render_sources_pinned(srcs: &[Src<'_>], golden: &str) -> Result<String, String> {
     render_with(srcs, golden, true)
 }

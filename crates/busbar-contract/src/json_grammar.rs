@@ -38,7 +38,6 @@ impl Span {
     }
 
     /// The bytes themselves, from the buffer the span was found in.
-
     #[must_use]
     pub fn of(self, buf: &[u8]) -> &[u8] {
         let end = self.end.min(buf.len());
@@ -47,7 +46,6 @@ impl Span {
 }
 
 /// How deep the scanner will descend before it calls the document malformed.
-
 pub const MAX_JSON_DEPTH: usize = 128;
 
 /// What resolving a pointer found.
@@ -74,7 +72,6 @@ enum ScanErr {
 }
 
 /// Resolve a JSON pointer over a scanned prefix, without allocating and without copying.
-
 pub fn resolve_pointer(input: &[u8], pointer: &str) -> Resolved {
     let start = skip_ws(input, 0);
     if start >= input.len() {
@@ -122,7 +119,6 @@ fn descend(b: &[u8], at: usize, tokens: &str, depth: usize) -> Result<Option<Spa
 }
 
 /// Find `key` in the object that starts at `at`.
-
 fn member(b: &[u8], at: usize, key: &str, depth: usize) -> Result<Option<Span>, ScanErr> {
     let mut i = skip_ws(b, at + 1);
     if b.get(i) == Some(&b'}') {
@@ -239,7 +235,6 @@ fn skip_value(b: &[u8], i: usize, depth: usize) -> Result<usize, ScanErr> {
 }
 
 /// Skip a whole object or array, matching brackets and stepping over strings so a brace inside a
-
 fn skip_container(b: &[u8], start: usize, depth: usize) -> Result<usize, ScanErr> {
     let mut stack = [0u8; MAX_JSON_DEPTH];
     let mut level = 0usize;
@@ -330,7 +325,6 @@ enum Decoded {
 }
 
 /// Compare a raw JSON key against a pointer token, decoding both sides as it goes.
-
 fn key_eq(raw: &[u8], token: &str) -> bool {
     let mut r = 0usize;
     let mut t = token.as_bytes();
@@ -409,7 +403,6 @@ fn next_json_char(raw: &[u8], at: &mut usize) -> Decoded {
 }
 
 /// How many bytes the character starting with this byte occupies, or nothing if it is not a
-
 fn utf8_width(lead: u8) -> Option<usize> {
     match lead {
         0x00..=0x7F => Some(1),
@@ -461,7 +454,6 @@ fn next_token_char(token: &mut &[u8]) -> Decoded {
 }
 
 /// One past the last byte of the document that starts the input, or the whole input if there is no
-
 pub fn scan_frontier(input: &[u8]) -> usize {
     let start = skip_ws(input, 0);
     match skip_value(input, start, 0) {

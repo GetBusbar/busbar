@@ -40,7 +40,6 @@ impl fmt::Display for EndpointRefusal {
 impl std::error::Error for EndpointRefusal {}
 
 /// Check an open's `target` before any dial: `host`, `host:port`, `[v6]`, `[v6]:port`, or a URL.
-
 pub fn check(target: &str) -> Result<(), EndpointRefusal> {
     let host = host_of(target)?;
     if host_is_cloud_metadata(&host) || host_is_link_local_v6(&host) {
@@ -50,7 +49,6 @@ pub fn check(target: &str) -> Result<(), EndpointRefusal> {
 }
 
 /// Check that an open's `target` names a host, read by the one shared reader ([`target_host`]):
-
 pub fn named(target: &str) -> Result<(), EndpointRefusal> {
     host_of(target).map(drop)
 }

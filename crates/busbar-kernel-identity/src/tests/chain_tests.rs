@@ -59,7 +59,6 @@ fn test_reject_stops_the_chain() {
 }
 
 /// "First identify wins" is only proven by TWO modules that would both identify: if the second
-
 #[test]
 fn test_first_identify_wins_among_two_modules_that_would_both_identify() {
     let first = Canned::new(

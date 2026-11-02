@@ -6,7 +6,6 @@
 use crate::caps::*;
 
 /// Every source, with the three answers each one owes.
-
 fn every_source() -> Vec<(QuantitySource, bool, bool)> {
     let all = [
         QuantitySource::Locator {

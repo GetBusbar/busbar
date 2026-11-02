@@ -74,7 +74,6 @@ impl RawConnOutcome {
     }
 
     /// The result the byte states.
-
     pub const fn result(self) -> Result<(), ConnError> {
         match self.0 {
             0 => Ok(()),
@@ -162,7 +161,6 @@ impl Headless {
 const _: () = assert!(core::mem::size_of::<Headless>() == OPEN_DESC_HEADLESS);
 
 /// How much of a [`WireOpenDesc`] a sized descriptor must state: everything before the appended
-
 pub const OPEN_DESC_HEADLESS: usize = core::mem::offset_of!(WireOpenDesc, method);
 
 /// [`Piece`], written by the host into the caller's slot.
@@ -233,7 +231,6 @@ pub struct ConnSlots lowers Conns -> RawConnOutcome {
 }
 
 /// What a host keeps for one plugin instance, behind the [`ConnCtx`] it hands that instance: its
-
 pub struct ConnHost {
     state: Box<HostState>,
 }
@@ -271,7 +268,6 @@ struct Held {
 
 impl Held {
     /// `s` as an exposed range that stays valid until this connection's close: the interned copy
-
     fn keep(&mut self, s: &str) -> DeclStr {
         if let Some(kept) = self.retention.get(s) {
             return range(kept);
@@ -283,7 +279,6 @@ impl Held {
     }
 
     /// [`Self::keep`] where the string is stated; an absent one is the NULL range and touches
-
     fn keep_opt(&mut self, s: Option<&str>) -> DeclStr {
         s.map_or(DeclStr::NONE, |s| self.keep(s))
     }
@@ -311,7 +306,6 @@ impl ConnHost {
     }
 
     /// The context the host hands `self`'s instance: a pointer to the heap-stable state, valid
-
     #[must_use]
     pub fn ctx(&self) -> ConnCtx {
         ConnCtx {
@@ -328,7 +322,6 @@ impl HostState {
     }
 
     /// Begin a `read`/`facts` operation on `conn`: capture the epoch of its retention (an empty
-
     fn begin(&self, conn: ConnId) -> Operation<'_> {
         let epoch = Arc::clone(&self.held().entry(conn).or_default().epoch);
         Operation {
@@ -340,7 +333,6 @@ impl HostState {
 }
 
 /// One in-flight `read`/`facts` operation on a connection: the retention epoch it captured before
-
 struct Operation<'h> {
     host: &'h HostState,
     conn: ConnId,
@@ -349,7 +341,6 @@ struct Operation<'h> {
 
 impl Operation<'_> {
     /// Run `publish` over the connection's retention and, under the SAME table guard, let it write
-
     fn publish(
         &self,
         publish: impl FnOnce(&mut Held) -> Result<(), ConnError>,
@@ -406,7 +397,6 @@ pub const fn host_slots() -> ConnSlots {
 }
 
 /// Run a host slot body over the instance's state, answering the fault byte for a panic or a null
-
 fn hosted(ctx: ConnCtx, body: impl FnOnce(&HostState) -> Result<(), ConnError>) -> RawConnOutcome {
     RawConnOutcome::of(
         crate::abi::sdk::boundary::caught(|| {
@@ -736,7 +726,6 @@ impl HostConns {
     }
 
     /// [`Conns::open`], for this instance.
-
     pub fn open(&self, need: NeedId, desc: &OpenDesc<'_>) -> Result<ConnId, ConnError> {
         let f = self.slots.open.ok_or(ConnError::Fault)?;
         let fields: Vec<WireField> = desc
@@ -776,7 +765,6 @@ impl HostConns {
     }
 
     /// [`Conns::write`], for this instance.
-
     pub fn write(
         &self,
         conn: ConnId,
@@ -803,7 +791,6 @@ impl HostConns {
     }
 
     /// [`Conns::read`], for this instance.
-
     pub fn read(&self, conn: ConnId, ticket: Ticket, buf: &mut [u8]) -> Result<Piece, ConnError> {
         let f = self.slots.read.ok_or(ConnError::Fault)?;
         let mut p = core::mem::MaybeUninit::<WirePiece>::zeroed();
@@ -853,7 +840,6 @@ impl HostConns {
     }
 
     /// [`Conns::wait`], for this instance.
-
     pub fn wait(&self, set: &[ConnId], ticket: Ticket) -> Result<usize, ConnError> {
         let f = self.slots.wait.ok_or(ConnError::Fault)?;
         let ids: Vec<u64> = set.iter().map(|c| c.0).collect();
@@ -865,7 +851,6 @@ impl HostConns {
     }
 
     /// [`Conns::facts`], for this instance.
-
     pub fn facts(&self, conn: ConnId) -> Result<ConnFacts, ConnError> {
         let f = self.slots.facts.ok_or(ConnError::Fault)?;
         let mut w = core::mem::MaybeUninit::<WireConnFacts>::zeroed();
@@ -896,7 +881,6 @@ impl HostConns {
     }
 
     /// [`Conns::close`], for this instance.
-
     pub fn close(&self, conn: ConnId) -> Result<(), ConnError> {
         let f = self.slots.close.ok_or(ConnError::Fault)?;
         // SAFETY: new() proves this copied table and its host context live for every call.

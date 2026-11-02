@@ -7,7 +7,6 @@ use crate::module::{AuthModule, AuthOutcome};
 use crate::principal::Principal;
 
 /// One resolved chain position: the provider NAME the config referenced, and the module behind it.
-
 pub struct ChainEntry {
     /// The provider name from the configuration.
     pub provider: String,
@@ -18,7 +17,6 @@ pub struct ChainEntry {
 /// The enforced key the built-in signed-key arm resolves.
 ///
 /// Opaque here on purpose: this unit needs to carry it, never to read it.
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedKey {
     /// The key's stable id — the principal's id.
@@ -28,7 +26,6 @@ pub struct ResolvedKey {
 }
 
 /// The built-in signed-key verifier, as the chain reaches it.
-
 pub trait KeyVerifier: Send + Sync {
     /// Verify a signed key. `None` for unknown, expired, rotated, revoked or disabled.
     fn verify_token(
@@ -40,7 +37,6 @@ pub trait KeyVerifier: Send + Sync {
 }
 
 /// The revocation set, as the kernel derives it from the journal tail.
-
 pub trait RevocationView: Send + Sync {
     /// Whether this credential is revoked as of the current policy epoch.
     fn is_revoked(&self, credential: &str) -> bool;
@@ -96,7 +92,6 @@ impl AuthChain {
     }
 
     /// The ordered module names, for the plugin catalogue. A module name is an identifier, never a
-
     pub fn chain_names(&self) -> Vec<&'static str> {
         self.chain.iter().map(|e| e.module.name()).collect()
     }
@@ -112,13 +107,11 @@ impl AuthChain {
     }
 
     /// Run the chain with no key verifier — the thin form for callers that only need the shape of
-
     pub fn run_chain(&self, candidate: Option<&str>) -> ChainVerdict {
         self.run_chain_with(candidate, None, 0, None)
     }
 
     /// Run the chain: config order, the first module to identify admits, a reject stops the walk, a
-
     pub fn run_chain_with(
         &self,
         candidate: Option<&str>,
@@ -156,7 +149,6 @@ impl AuthChain {
 }
 
 /// The built-in signed-key arm's verdict for one unit.
-
 fn keys_arm_verdict(
     keys: Option<&dyn KeyVerifier>,
     candidate: Option<&str>,
@@ -180,7 +172,6 @@ fn keys_arm_verdict(
 }
 
 /// The principal for a resolved key: the stable key id, its label as the name, and no roles — a key
-
 fn principal_from_key(key: &ResolvedKey) -> Principal {
     Principal {
         id: key.id.clone(),

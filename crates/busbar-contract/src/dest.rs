@@ -155,7 +155,6 @@ impl VerifiedDestination {
     }
 
     /// The priced lane the trust unit sealed.
-
     #[must_use]
     pub const fn lane(&self) -> Option<LaneId> {
         self.facts.lane()
@@ -168,7 +167,6 @@ impl VerifiedDestination {
     }
 
     /// The same sealed destination, re-addressed for the layer underneath this one.
-
     #[must_use]
     pub fn beneath(&self, transport: &'static str, address: UpstreamAddress) -> Option<Self> {
         let DestinationFacts::Upstream { lane, .. } = self.facts else {
@@ -186,7 +184,6 @@ impl VerifiedDestination {
     }
 
     /// The destination's remaining lifetime request budget, where it declares one.
-
     #[must_use]
     pub fn budget_remaining(&self) -> Option<i64> {
         self.budget_remaining
@@ -296,7 +293,6 @@ impl fmt::Debug for SecretOnce {
 
 impl SecretOnce {
     /// Mint a placeholder for `unit`, to appear once at `target`. Verbs-unit-only; the seal is what
-
     #[must_use]
     pub fn mint(_seal: &dyn KernelSeal, nonce: u128, unit: UnitKey, target: &'static str) -> Self {
         Self {
@@ -344,7 +340,6 @@ pub struct TransportKeyHandle {
 
 impl TransportKeyHandle {
     /// Hand out a handle for resolved key material. Transport-key-unit-only.
-
     #[must_use]
     pub fn issue(_token: &dyn KernelSeal, slot: u64, fingerprint: &'static str) -> Self {
         Self { slot, fingerprint }
@@ -365,7 +360,6 @@ impl TransportKeyHandle {
 
 impl fmt::Debug for TransportKeyHandle {
     /// Says what the handle is and what it is not. A handle is a registry entry, never bytes, and
-
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,

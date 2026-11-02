@@ -4,7 +4,6 @@
 //! Civil-date math for the plane crates that render an epoch timestamp without pulling a date-time
 
 /// Days since the Unix epoch → (year, month, day). Hinnant's algorithm, shifted to an era beginning
-
 pub fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719_468;
     let era = z.div_euclid(146_097);
@@ -19,7 +18,6 @@ pub fn civil_from_days(z: i64) -> (i64, u32, u32) {
 }
 
 /// Whole seconds since the Unix epoch → an RFC3339 UTC instant, `YYYY-MM-DDTHH:MM:SSZ`.
-
 pub fn rfc3339_from_secs(secs: u64) -> String {
     let secs = secs as i64;
     let days = secs.div_euclid(86_400);

@@ -44,7 +44,6 @@ fn every_spec_line_terminator_pairing_ends_a_frame() {
 }
 
 /// A terminator split across a chunk boundary still ends the frame: the scan resumes three bytes
-
 #[test]
 fn a_terminator_split_across_chunks_still_frames() {
     for (head, tail, framed, leftover) in [
@@ -78,7 +77,6 @@ fn a_terminator_split_across_chunks_still_frames() {
 }
 
 /// An unterminated frame trickled a byte at a time is scanned once: each scan resumes where the
-
 #[test]
 fn a_frame_trickled_byte_by_byte_is_scanned_once() {
     const N: usize = 8192;
@@ -99,7 +97,6 @@ fn a_frame_trickled_byte_by_byte_is_scanned_once() {
 }
 
 /// One chunk of many small frames frames them all without moving the buffer once per frame: the
-
 #[test]
 fn many_frames_in_one_chunk_are_dropped_once() {
     const N: usize = 4096;

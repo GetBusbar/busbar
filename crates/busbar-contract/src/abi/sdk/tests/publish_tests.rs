@@ -102,7 +102,6 @@ fn generations_are_instance_state() {
 }
 
 /// The payload a generation was published with is the newest live one's until a newer generation
-
 #[test]
 fn the_current_payload_is_the_newest_live_generations_and_retire_drops_it() {
     let gens: Generations<PlaneSnapshot, String> = Generations::new();
@@ -146,7 +145,6 @@ fn keyed_state_belongs_to_its_instance() {
 }
 
 /// Units' state is held by unit: every unit put in is found, counted once, and a unit's op answers
-
 #[test]
 fn keyed_units_are_found_counted_and_swept_across_shards() {
     let units: Keyed<u64, u32> = Keyed::sharded();
@@ -181,7 +179,6 @@ fn keyed_units_are_found_counted_and_swept_across_shards() {
 }
 
 /// A unit's entry is held while its piece runs; another unit's op, in another shard, is answered
-
 #[test]
 fn keyed_one_unit_held_never_holds_another() {
     let units: Keyed<u64, u32> = Keyed::sharded();
@@ -200,7 +197,6 @@ fn keyed_one_unit_held_never_holds_another() {
 }
 
 /// An arrival keeps its unit only while fewer than the bound are live: a live unit is never
-
 #[test]
 fn keyed_arrivals_keep_their_unit_within_the_bound() {
     const MAX_UNITS: usize = 8;
@@ -234,7 +230,6 @@ fn keyed_arrivals_keep_their_unit_within_the_bound() {
 }
 
 /// Two instances' generations are two holds: what one publishes, retires or answers as current is
-
 #[test]
 fn generations_belong_to_their_instance() {
     let first: Generations<PlaneSnapshot, String> = Generations::new();
@@ -258,7 +253,6 @@ fn generations_belong_to_their_instance() {
 }
 
 /// A claim's arrival span is published as the snapshot's parallel list, one per claim, empty where
-
 #[test]
 fn a_claims_arrival_span_is_published_one_per_claim() {
     let gens: Generations<PlaneSnapshot> = Generations::new();
@@ -287,7 +281,6 @@ fn a_claims_arrival_span_is_published_one_per_claim() {
 }
 
 /// A plane's `const` retention table lowers each rule to its ABI code, and the table passes the
-
 #[test]
 fn a_record_retention_table_lowers_to_the_tail_codes() {
     use crate::abi::plane::check::check_record_retentions;

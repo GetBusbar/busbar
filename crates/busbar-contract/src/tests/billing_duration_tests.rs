@@ -6,7 +6,6 @@
 use super::{duration_seconds_to_wire, Billing, Count};
 
 /// A 64-bit xorshift, so the sweep draws from integers and the proof of exactness does not itself
-
 struct Xorshift(u64);
 
 impl Xorshift {
@@ -26,7 +25,6 @@ fn decimal_text(micros: i128) -> String {
 }
 
 /// THE BYTE-IDENTITY CLAIM, SWEPT.
-
 #[test]
 fn the_wire_rendering_is_the_same_double_the_text_used_to_parse_to() {
     let mut checked = 0usize;
@@ -74,7 +72,6 @@ fn the_wire_rendering_is_the_same_double_the_text_used_to_parse_to() {
 }
 
 /// THE MONEY DAMAGE A DOUBLE DOES, shown rather than described.
-
 #[test]
 fn a_double_cannot_hold_a_billable_duration_and_an_exact_decimal_can() {
     let exact = Count::parse("12.1").expect("12.1 is an exact decimal");

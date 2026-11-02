@@ -6,7 +6,6 @@
 use std::collections::BTreeMap;
 
 /// Convert one configured rate — micro-units per unit of quantity — into the integer nano-unit
-
 pub fn nano_rate(micro_per_unit: f64) -> u64 {
     if !micro_per_unit.is_finite() || micro_per_unit <= 0.0 {
         return 0;
@@ -26,7 +25,6 @@ pub fn nano_rate(micro_per_unit: f64) -> u64 {
 }
 
 /// **THE CARD-BUILD QUESTION**: can the card hold this configured rate as what it says it is?
-
 pub fn representable_nano_rate(micro_per_unit: f64) -> Option<u64> {
     if micro_per_unit == 0.0 {
         return Some(0);
@@ -192,7 +190,6 @@ pub struct RateCard {
 }
 
 /// The card a plane with no card of its own resolves to: ABSENT, so its every class reads 0 (#42),
-
 static NO_CARD: RateCard = RateCard {
     present: false,
     prices: BTreeMap::new(),
@@ -203,14 +200,11 @@ static NO_CARD: RateCard = RateCard {
 };
 
 /// The reserved class a plane's REQUEST fee units are counted under, on its fee lane
-
 pub const PER_REQUEST: &str = "per_request";
 /// The reserved class a plane's SESSION fee units are counted under — one per opened session (#44
-
 pub const PER_SESSION: &str = "per_session";
 
 /// **A PLANE'S FEE LANE**, `"<plane>\u{1f}"`: the lane its fee units ([`PER_REQUEST`],
-
 pub fn plane_fee_lane(plane: &str) -> String {
     format!("{plane}{}", crate::cost::PLANE_LANE_SEP)
 }
@@ -225,14 +219,12 @@ pub struct PlaneFees {
 }
 
 /// Split a card key (or a ledger row's lane) into `(plane key, lane)`. An unqualified key is the
-
 pub fn split_plane_lane(key: &str) -> (&str, &str) {
     key.split_once(crate::cost::PLANE_LANE_SEP)
         .unwrap_or(("", key))
 }
 
 /// Whether the flat card is present, given the PLANE KEY of every key in a composed card map (see
-
 pub fn flat_card_present<'k>(mut planes: impl Iterator<Item = &'k str>) -> bool {
     let mut none = true;
     planes.any(|plane| {
@@ -242,7 +234,6 @@ pub fn flat_card_present<'k>(mut planes: impl Iterator<Item = &'k str>) -> bool 
 }
 
 /// COMPOSE one card map from the flat card and each plane's own card: a plane's lanes are qualified
-
 pub fn compose_plane_cards<E: Clone + Default>(
     flat: Option<&BTreeMap<String, E>>,
     planes: &BTreeMap<String, BTreeMap<String, E>>,
@@ -267,7 +258,6 @@ pub fn compose_plane_cards<E: Clone + Default>(
 
 impl RateCard {
     /// A card that is not there: every class prices at zero, the flat fee still posts.
-
     pub fn absent(per_request_fee: i64) -> Self {
         RateCard {
             present: false,
@@ -281,7 +271,6 @@ impl RateCard {
     }
 
     /// Resolve a card from configured micro-unit rates. Each rate converts to nano-units once, by
-
     pub fn from_micro_rates(
         entries: impl IntoIterator<Item = (LaneClass, f64)>,
         per_request_fee: i64,
@@ -295,7 +284,6 @@ impl RateCard {
     }
 
     /// A present card from cells ALREADY converted at the intake: `Some` an integer nano-unit rate,
-
     fn from_cells(
         entries: impl IntoIterator<Item = (LaneClass, Option<u64>)>,
         per_request_fee: i64,
@@ -315,7 +303,6 @@ impl RateCard {
     }
 
     /// Resolve a card from rates ALREADY in integer nano-units per unit — for a holder whose rates
-
     pub fn from_nano_rates(
         entries: impl IntoIterator<Item = (LaneClass, u64)>,
         per_request_fee: i64,
@@ -340,14 +327,12 @@ impl RateCard {
     }
 
     /// Every configured cell this card could not represent, in the order it was configured. Empty
-
     #[cfg(test)]
     pub fn refused_cells(&self) -> &[LaneClass] {
         &self.refused
     }
 
     /// **THE CARD A DEPLOYMENT CONFIGURED**, built here and nowhere else.
-
     pub fn from_config<'a>(
         lanes: Option<impl IntoIterator<Item = (&'a str, TierRates)>>,
         per_request_fee: i64,
@@ -382,7 +367,6 @@ impl RateCard {
     }
 
     /// **THE OPEN CLASSES a deployment configured** (item 123): each `(lane, class)` cell set to an
-
     pub fn with_unit_rates(mut self, cells: impl IntoIterator<Item = (LaneClass, u64)>) -> Self {
         for (cell, nanos) in cells {
             let (plane, lane) = split_plane_lane(&cell.lane);
@@ -406,7 +390,6 @@ impl RateCard {
     }
 
     /// **EACH PLANE'S OWN FEES** (#47), by plane key: set on that plane's card, or on an ABSENT card
-
     pub fn with_plane_fees<'p>(
         mut self,
         fees: impl IntoIterator<Item = (&'p str, PlaneFees)>,
@@ -423,7 +406,6 @@ impl RateCard {
     }
 
     /// **A SIGNED CORRECTION OF THIS CARD** (#79): this card with the named cells set to the
-
     pub fn corrected(
         &self,
         cells: impl IntoIterator<Item = (LaneClass, u64)>,
@@ -461,7 +443,6 @@ impl RateCard {
     }
 
     /// **THE CARD'S DIGEST**: `sha256` over every figure the card prices with, in one fixed order.
-
     #[must_use]
     pub fn digest(&self) -> [u8; 32] {
         let mut bytes = b"busbar/rate-card-digest/v1\0".to_vec();
@@ -504,7 +485,6 @@ impl RateCard {
     }
 
     /// The fee a reserved fee class ([`PER_REQUEST`], [`PER_SESSION`]) prices at on this card, in
-
     pub fn fee_of(&self, class: &str) -> Option<i64> {
         match class {
             PER_REQUEST => Some(self.fee),
@@ -514,7 +494,6 @@ impl RateCard {
     }
 
     /// **THE CARD A LANE IS PRICED BY, and the lane as that card keys it** (#42 "scoped per plane",
-
     pub fn plane_lane<'l>(&self, lane: &'l str) -> (&RateCard, &'l str) {
         match split_plane_lane(lane) {
             ("", _) => (self, lane),
@@ -523,7 +502,6 @@ impl RateCard {
     }
 
     /// The one placement of a configured rate into a cell, used by the constructor alone. A card is
-
     fn place_rate(&mut self, cell: LaneClass, nanos_per_unit: Option<u64>) {
         self.present = true;
         let slot = self
@@ -552,13 +530,11 @@ impl RateCard {
     }
 
     /// **THE FLAT PER-REQUEST FEE**, in MINOR units, clamped at resolve so it is never negative.
-
     pub fn fee(&self) -> i64 {
         self.fee
     }
 
     /// The flat fee as the unit price of its own usage line: minor units lifted to nano-units.
-
     pub fn fee_unit_price_nanos(&self) -> u128 {
         u128::try_from(self.fee)
             .unwrap_or(0)
@@ -566,14 +542,12 @@ impl RateCard {
     }
 
     /// Whether a request on this lane must be refused because a card is present and has no entry
-
     pub fn lane_unpriced(&self, lane: &str) -> bool {
         let (card, lane) = self.plane_lane(lane);
         card.present && !card.prices.contains_key(lane)
     }
 
     /// The rates for one lane. Three outcomes, and they are the whole of the pricing posture:
-
     pub fn lane_rates(&self, lane: &str) -> Option<LaneRates<'_>> {
         let (card, lane) = self.plane_lane(lane);
         if !card.present {
@@ -585,7 +559,6 @@ impl RateCard {
     }
 
     /// **HOW A LANE PRICES ON THIS CARD — THE ONE RESOLUTION** (#42, #44, #47). Both the settlement
-
     pub fn lane_pricing(&self, lane: &str) -> LanePricing<'_> {
         let (card, key) = self.plane_lane(lane);
         let rule = if key.is_empty() && lane.ends_with(crate::cost::PLANE_LANE_SEP) {
@@ -666,7 +639,6 @@ pub struct LaneRates<'a> {
 
 impl LaneRates<'_> {
     /// The nano-unit rate for one meter class on this lane. Zero when there is no card at all, and
-
     pub fn nanos_per_unit(&self, class: &str) -> u64 {
         match self.classes {
             None => 0,
@@ -678,7 +650,6 @@ impl LaneRates<'_> {
     }
 
     /// Whether this class is priced by name. With no card nothing is unpriced — every class is
-
     pub fn class_priced(&self, class: &str) -> bool {
         match self.classes {
             None => true,

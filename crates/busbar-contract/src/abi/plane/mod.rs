@@ -236,11 +236,9 @@ use crate::caps::ReasonCode;
 pub const ABI_VERSION: u32 = 1;
 
 /// The plane kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
-
 pub const LAYOUT_FINGERPRINT: u64 = 0xded167218e200fce;
 
 /// The plane kind's shapes, in fold order ([`crate::layout_shape!`]): every `#[repr(C)]` struct
-
 pub const LAYOUT_SHAPES: &[&[u64]] = &[
     crate::layout_shape!(Ops =>
         head, arrive, on_piece, refusal, serve, hydrate, start, project, catalog
@@ -342,7 +340,6 @@ pub const LAYOUT_SHAPES: &[&[u64]] = &[
 ];
 
 /// [`crate::abi::mechanism::call::InHead::op`] of each plane op, in table order: kind op `k` is
-
 pub mod slot {
     use super::LIFECYCLE_SLOTS;
 
@@ -413,7 +410,6 @@ pub const CONTRACTS: [OpContract; KIND_SLOTS as usize] = [
 ];
 
 /// [`crate::abi::mechanism::lifecycle::CancelOut::disposition`]: the unit was cut after the far end
-
 pub const CANCEL_OK_PARTIAL: u32 = 1;
 /// The unit failed; nothing is billed.
 pub const CANCEL_FAILED: u32 = 2;
@@ -421,7 +417,6 @@ pub const CANCEL_FAILED: u32 = 2;
 pub const CANCEL_ABORTED: u32 = 3;
 
 /// THE CANCEL BILLING RULE (the four 1.5.5 rules, this module's doc): whether the kernel bills the
-
 #[must_use]
 pub const fn cancel_bills_reported_units(disposition: u32, streamed: bool) -> bool {
     disposition == CANCEL_OK_PARTIAL && streamed
@@ -430,46 +425,33 @@ pub const fn cancel_bills_reported_units(disposition: u32, streamed: bool) -> bo
 /// [`PlaneTail::flags`]: the one plane that is the fallback catch-all.
 pub const TAIL_FALLBACK: u32 = 1;
 /// [`PlaneTail::flags`]: the plane answers health probes. A probe is a kernel-originated unit
-
 pub const TAIL_PROBES: u32 = 1 << 1;
 /// [`PlaneTail::flags`]: the plane's request-stage hooks run GATE-FIRST (spec Part 3 section 12
-
 pub const TAIL_HOOKS_GATED: u32 = 1 << 2;
 /// [`PlaneTail::flags`]: the plane takes a unit's refusal as a piece first where the unit's hop
-
 pub const TAIL_REFUSED_PIECE: u32 = 1 << 3;
 
 /// [`DialectAuth::flags`]: a provider's `protocol` may name this dialect.
-
 pub const DIALECT_PROVIDER: u32 = 1;
 
 /// [`Claim::flags`]: the route takes no inbound credential; the kernel admits an arrival on it
-
 pub const CLAIM_OPEN: u32 = 1;
 /// [`Claim::flags`]: the target matches exactly. Without it (and without [`CLAIM_PATTERN`]), the
-
 pub const CLAIM_EXACT: u32 = 1 << 1;
 /// [`Claim::flags`]: the target is a path pattern. Each `/`-separated segment is a literal, or a
-
 pub const CLAIM_PATTERN: u32 = 1 << 2;
 /// [`Claim::flags`]: the route is a CATALOG listing, answered with no unit.
-
 pub const CLAIM_CATALOG: u32 = 1 << 3;
 /// [`Claim::flags`]: callers sign a request to this route's path (its inbound auth point).
-
 pub const CLAIM_SIGNED_INGRESS: u32 = 1 << 4;
 /// [`Claim::flags`]: the target is a RAW AFFIX, spelled `<prefix>*<suffix>`. It matches a request
-
 pub const CLAIM_RAW_AFFIX: u32 = 1 << 5;
 /// [`Claim::flags`]: the target is an ENTRY FACT, the request shape whose arrival opens the entry
-
 pub const CLAIM_ENTRY: u32 = 1 << 6;
 /// [`Claim::flags`]: the route's inbound credential may be a TICKET the host minted for the plane
-
 pub const CLAIM_TICKET: u32 = 1 << 7;
 
 /// [`ArriveIn::claim`]: the arrival is a health probe, not a snapshot claim. Only a plane whose
-
 pub const CLAIM_PROBE: u32 = u32::MAX;
 
 /// [`PlaneTail::ingress`]: a request expecting one reply.
@@ -484,14 +466,11 @@ pub const INGRESS_SUBSCRIPTION: u32 = 1 << 3;
 pub const INGRESS_ACCEPT_LOOP: u32 = 1 << 4;
 
 /// [`PlaneTail::dispatch_shape`]: the kernel gathers the caller's whole body and pushes it as one
-
 pub const SHAPE_WHOLE: u32 = 0;
 /// [`PlaneTail::dispatch_shape`]: the kernel pushes the caller's bytes piece by piece as they
-
 pub const SHAPE_PIECEWISE: u32 = 1;
 
 /// The layout of this kind's answers, as one number: the revision of every plane `out` struct the
-
 pub const ANSWER_LAYOUT: u32 = 1;
 
 const _: () = {
@@ -517,7 +496,6 @@ pub const UNITS_ESTIMATED: u32 = 0;
 /// [`UnitCount::source`]: the far end reported it; it bills.
 pub const UNITS_REPORTED: u32 = 1;
 /// [`UnitCount::source`]: the plane's floor for a delivered reply whose far-end usage could not be
-
 pub const UNITS_FLOOR: u32 = 2;
 
 /// [`OnPieceOut::tap_fault`]: no usage-tap fault.
@@ -527,11 +505,9 @@ pub const TAP_FAULT_DECODE: u8 = 1;
 /// [`OnPieceOut::tap_fault`]: the body is not JSON (`reason="bad_json"`).
 pub const TAP_FAULT_BAD_JSON: u8 = 2;
 /// [`OnPieceOut::tap_fault`]: the caller's dialect is not one the tap reads
-
 pub const TAP_FAULT_UNKNOWN_PROTOCOL: u8 = 3;
 
 /// THE ONE BILLING RULE ON A COUNT'S SOURCE: [`UNITS_REPORTED`] and [`UNITS_FLOOR`] bill;
-
 pub const fn units_bill(source: u32) -> bool {
     matches!(source, UNITS_REPORTED | UNITS_FLOOR)
 }
@@ -544,45 +520,34 @@ pub const PRINCIPAL_REQUIRED: u32 = 1;
 pub const PRINCIPAL_OPTIONAL: u32 = 2;
 
 /// [`ArriveOut::route`]: the entry names a POOL of the plane's section; the walk keys its state by
-
 pub const ROUTE_POOL: u8 = 0;
 /// [`ArriveOut::route`]: the entry names one MODEL entry, routed directly; the walk keys its state by
-
 pub const ROUTE_DIRECT: u8 = 1;
 /// [`ArriveOut::route`]: the plane ANSWERS THIS UNIT ITSELF and names no entry
-
 pub const ROUTE_LOCAL: u8 = 2;
 /// [`ArriveOut::route`]: the unit names no entry and is ROUTED BY THE PRINCIPAL'S SCOPE
-
 pub const ROUTE_SCOPE: u8 = 3;
 /// What joins the reachable entries a [`ROUTE_SCOPE`] refusal's [`RefusalIn::text`] names.
 pub const ROUTE_SCOPE_SEPARATOR: &str = ", ";
 /// [`ArriveOut::route`]: the plane ANSWERS THIS UNIT ITSELF at the ONE entry the principal's grant
-
 pub const ROUTE_SCOPE_LOCAL: u8 = 4;
 
 /// [`ArriveOut::route_flags`]: the unit's operation is performed AT MOST ONCE (ARCHITECT round 4
-
 pub const ROUTE_ONCE: u8 = 1;
 
 /// [`ArriveOut::route_flags`]: the unit is served as a DUPLEX SESSION (K6; ARCHITECT round 5
-
 pub const ROUTE_SESSION: u8 = 2;
 
 /// [`ArriveOut::route_flags`]: the caller asked for its answer STREAMED (ARCHITECT Q1 ArriveOut,
-
 pub const ROUTE_STREAM: u8 = 4;
 
 /// [`ArriveOut::route_flags`], on a unit the plane answers itself ([`ROUTE_LOCAL`] or
-
 pub const ROUTE_COUNTED: u8 = 8;
 
 /// [`ArriveOut::refusal_flags`]: the arrival names an ACTION THE PLANE'S PROTOCOL HAS BUT THE PLANE
-
 pub const REFUSED_UNSUPPORTED_ACTION: u32 = 1;
 
 /// [`ArriveOut::refusal_flags`]: the refusal about an entry is rendered AFTER ADMISSION, not before
-
 pub const REFUSED_AFTER_ADMISSION: u32 = 2;
 
 /// [`OnPieceIn::from`]: the piece is the caller's.
@@ -590,7 +555,6 @@ pub const FROM_CALLER: u32 = 0;
 /// [`OnPieceIn::from`]: the piece is the far end's.
 pub const FROM_FAR_END: u32 = 1;
 /// [`OnPieceIn::from`]: the piece is the kernel's. With [`OnPieceIn::attempt_no`] above `0` it
-
 pub const FROM_KERNEL: u32 = 2;
 
 /// [`OnPieceIn::flags`]: the piece completes its frame.
@@ -600,19 +564,14 @@ pub const PIECE_LAST: u32 = 1 << 1;
 /// [`OnPieceIn::flags`]: `status_code`/`status_class` are set.
 pub const PIECE_HAS_STATUS: u32 = 1 << 2;
 /// [`OnPieceIn::flags`], [`FROM_FAR_END`]: the bytes are a head of the far end's fields that
-
 pub const PIECE_FIELDS: u32 = 1 << 3;
 /// [`OnPieceIn::flags`]: the CATALOGUE-MOVED TICK. With [`FROM_KERNEL`], `attempt_no == 0` and no
-
 pub const PIECE_CATALOGUE_MOVED: u32 = 1 << 4;
 /// [`OnPieceIn::flags`]: the REFUSED PIECE. With [`FROM_KERNEL`], [`PIECE_LAST`],
-
 pub const PIECE_REFUSED: u32 = 1 << 5;
 /// [`OnPieceIn::flags`], [`FROM_FAR_END`] with [`PIECE_LAST`]: the far end's answer ended without
-
 pub const PIECE_CUT: u32 = 1 << 6;
 /// [`OnPieceIn::flags`], [`FROM_FAR_END`] with [`PIECE_HAS_STATUS`] (the answer's first piece): the
-
 pub const PIECE_FINAL: u32 = 1 << 7;
 
 /// [`OnPieceOut::flags`]: the emitted bytes go to the far end (else to the caller).
@@ -620,24 +579,18 @@ pub const EMIT_TO_FAR_END: u32 = 1;
 /// [`OnPieceOut::flags`]: the unit's reply is complete.
 pub const EMIT_DONE: u32 = 1 << 1;
 /// [`OnPieceOut::flags`]: the bytes this answer emits are ONE text message (a carrier with text and
-
 pub const PIECE_OUT_TEXT: u32 = 1 << 2;
 /// [`OnPieceOut::flags`]: WATCH. From now on, this piece's session is given a
-
 pub const EMIT_WATCH_CATALOGUE: u32 = 1 << 3;
 /// [`OnPieceOut::flags`]: DROP the watch [`EMIT_WATCH_CATALOGUE`] set for this piece's session. The
-
 pub const EMIT_UNWATCH_CATALOGUE: u32 = 1 << 4;
 
 /// [`OnPieceOut::flags`]: MESSAGE BOUNDARY. The bytes this answer emits toward the caller END one
-
 pub const EMIT_MESSAGE_END: u32 = 1 << 5;
 /// [`OnPieceOut::flags`]: FINAL STATUS. On the closing answer ([`EMIT_DONE`]): the reply ends with
-
 pub const EMIT_FINAL_STATUS: u32 = 1 << 6;
 
 /// Whether every flag in `flags` is one bit and no two share it. Each flag set below is asserted
-
 const fn one_bit_each(flags: &[u32]) -> bool {
     let mut seen = 0u32;
     let mut i = 0;
@@ -673,7 +626,6 @@ pub const VERDICT_NONE: u32 = 0;
 /// [`OnPieceOut::verdict`]: the far end's answer is a success.
 pub const VERDICT_OK: u32 = 1;
 /// [`OnPieceOut::verdict`]: the far end's answer is a failure another member may not share. The
-
 pub const VERDICT_RETRY: u32 = 2;
 /// [`OnPieceOut::verdict`]: the far end's answer is a failure no other member would change.
 pub const VERDICT_HARD: u32 = 3;
@@ -683,31 +635,23 @@ pub const REFUSAL_KERNEL: u32 = 0;
 /// [`RefusalIn::cause`]: a gate refused.
 pub const REFUSAL_GATE: u32 = 1;
 /// [`RefusalIn::cause`]: the plane refused its own arrival; [`RefusalIn::text`] is that arrival's
-
 pub const REFUSAL_ARRIVE: u32 = 2;
 /// The most bytes of text a REFUSED `arrive` may carry in its `head.error`. More is a FAULT of
-
 pub const MAX_REFUSAL_TEXT: u64 = 512 * 1024;
 /// The largest field line a transport admits: a textual head is read into at most 8 KiB plus
-
 pub const LARGEST_ADMITTED_FIELD_LINE: u64 = 8192 + 4096 * 100;
 const _: () = assert!(MAX_REFUSAL_TEXT >= LARGEST_ADMITTED_FIELD_LINE);
 /// The gate-rejected audit marker (the `GateRejected` marker the kernel keeps). The kernel sets it
-
 pub const MARK_GATE_REJECTED: u32 = 1;
 
 /// [`RecordWrite::op`]: put, the one write to a record kind of the plane's own. A put of an EMPTY
-
 pub const RECORD_PUT: u32 = 1;
 /// [`RecordWrite::op`]: THE UNIT'S AUDIT RECORD, a row on the kernel's own audit chain (the one
-
 pub const RECORD_AUDIT: u32 = 3;
 
 /// [`AdminRoute::flags`]: a public route. [`slot::SERVE`] serves it to an unauthenticated caller;
-
 pub const ROUTE_PUBLIC: u32 = 1;
 /// [`AdminRoute::flags`], on a [`ROUTE_PUBLIC`] route only: the route is addressed by the plane's
-
 pub const ROUTE_CARRIES_OWN_TOKEN: u32 = 1 << 1;
 
 /// [`ServeOut::audit`]: no audit row.
@@ -715,10 +659,8 @@ pub const AUDIT_NONE: u32 = 0;
 /// [`ServeOut::audit`]: the request applied; the row's outcome is `applied`.
 pub const AUDIT_APPLIED: u32 = 1;
 /// [`ServeOut::audit`]: the request was rejected after it was judged; the row's outcome is
-
 pub const AUDIT_REJECTED: u32 = 2;
 /// A [`RECORD_AUDIT`] write's outcome only (never [`ServeOut::audit`]): the unit was served with
-
 pub const AUDIT_DEGRADED: u32 = 3;
 
 /// [`RecordChain::framing`]: each field of the record's digest is length-prefixed.
@@ -916,7 +858,6 @@ impl RefusalCode {
     ];
 
     /// Whether the code is one of the `Unsent*` codes: the walk's exhaustion with no attempt's
-
     #[must_use]
     pub const fn unsent(self) -> bool {
         matches!(
@@ -970,7 +911,6 @@ pub const fn wire_code(reason: ReasonCode) -> RefusalCode {
 }
 
 /// The kernel reason a wire code names, for a reason a plane can state: `None` for a number the
-
 #[must_use]
 pub const fn reason_of(code: u32) -> Option<ReasonCode> {
     let Some(c) = RefusalCode::of(code) else {
@@ -983,7 +923,6 @@ pub const fn reason_of(code: u32) -> Option<ReasonCode> {
 }
 
 /// WHETHER THE REFUSED PIECE'S REASON (`OnPieceIn::reason`) SAYS NOTHING LEFT for the unit: the
-
 #[must_use]
 pub const fn nothing_sent(reason: u32) -> bool {
     match RefusalCode::of(reason) {
@@ -1068,7 +1007,6 @@ impl RefusalClass {
     ];
 
     /// Whether the class is a fault of this node, the one family a plane may render as its
-
     #[must_use]
     pub const fn is_node_fault(self) -> bool {
         matches!(self, RefusalClass::PlaneFault | RefusalClass::NodeFault)
@@ -1077,7 +1015,6 @@ impl RefusalClass {
 
 impl RefusalCode {
     /// THE class of this code: its reason's row of the one reason table (`caps::ReasonCode`); the
-
     #[must_use]
     pub const fn class(self) -> RefusalClass {
         match ReasonCode::of_wire(self) {
@@ -1088,7 +1025,6 @@ impl RefusalCode {
 }
 
 /// The class of a kernel refusal reason: its row of the reason table, which [`RefusalCode::class`]
-
 #[must_use]
 pub const fn class_of(reason: ReasonCode) -> RefusalClass {
     reason.class()
@@ -1101,7 +1037,6 @@ pub fn class_of_refusal(reason: crate::unit::RefusalReason) -> RefusalClass {
 }
 
 /// The class of a reason by its spelling on the journal and the wire (`ReasonCode::as_str`), for
-
 #[must_use]
 pub fn class_of_word(word: &str) -> Option<RefusalClass> {
     RefusalCode::ALL
@@ -1135,7 +1070,6 @@ pub struct DialectAuth {
 
 impl DialectAuth {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-
     pub const ZERO: Self = Self {
         dialect: 0,
         flags: 0,
@@ -1157,7 +1091,6 @@ pub struct OpClass {
 
 impl OpClass {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-
     pub const ZERO: Self = Self {
         op: AbiStr::ZERO,
         name: AbiStr::ZERO,
@@ -1176,7 +1109,6 @@ pub struct BillableClass {
 
 impl BillableClass {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-
     pub const ZERO: Self = Self {
         class: AbiStr::ZERO,
         family: AbiStr::ZERO,
@@ -1230,7 +1162,6 @@ pub struct RecordChain {
 
 impl RecordChain {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-
     pub const ZERO: Self = Self {
         kind: 0,
         framing: 0,
@@ -1255,32 +1186,24 @@ pub struct RecordRetention {
 
 impl RecordRetention {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-
     pub const ZERO: Self = Self { kind: 0, rule: 0 };
 }
 
 /// [`TrustKey::role`]: the key holds the registration's pin object, `{mechanism, key?,
-
 pub const TRUST_PIN: u32 = 1;
 /// [`TrustKey::role`]: the key holds the longest a verification may be reused before the
-
 pub const TRUST_REVERIFY_TTL: u32 = 2;
 /// [`TrustKey::role`]: the key holds how long after a drift a clean answer is disbelieved, a
-
 pub const TRUST_RECOVERY_BACKOFF: u32 = 3;
 /// [`TrustKey::role`]: the key holds a boolean, the registration's PRIVATE REACH: `true` admits a
-
 pub const TRUST_PRIVATE_REACH: u32 = 4;
 /// [`TrustKey::role`]: the key holds the registration's CONFIGURED ITEM APPROVALS, a map of item to
-
 pub const TRUST_ITEM_APPROVALS: u32 = 5;
 /// [`TrustKey::flags`], on a [`TRUST_PIN`] key only: the pin object may also carry `fingerprint`.
 pub const PIN_FINGERPRINT: u32 = 1;
 /// [`PinMechanism::flags`]: the mechanism is an authenticity root, so a pin naming it needs key
-
 pub const MECHANISM_ROOT: u32 = 1;
 /// [`PinMechanism::flags`], on a root only: the mechanism's key material is the FAR END'S KEY, a pin
-
 pub const MECHANISM_PEER_KEY: u32 = 2;
 
 /// One pin mechanism a [`TRUST_PIN`] key accepts, as the operator spells it.
@@ -1298,7 +1221,6 @@ pub struct PinMechanism {
 
 impl PinMechanism {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-
     pub const ZERO: Self = Self {
         token: AbiStr::ZERO,
         flags: 0,
@@ -1347,7 +1269,6 @@ pub struct TrustKey {
 
 impl TrustKey {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-
     pub const ZERO: Self = Self {
         key: AbiStr::ZERO,
         role: 0,
@@ -1359,7 +1280,6 @@ impl TrustKey {
 }
 
 /// HOW THE TRUST KEY ROW IS MADE: from [`TrustKey::EMPTY`], its plain fields set
-
 impl TrustKey {
     /// Nothing stated: every string absent, every list empty, every number zero.
     pub const EMPTY: TrustKey = TrustKey {
@@ -1378,7 +1298,6 @@ impl TrustKey {
 }
 
 /// THE GRAMMAR OF [`PlaneTail::cli_help`]: the plane's rows of the host's command-line help, each
-
 pub mod cli_help {
     /// Opens a row (ASCII record separator).
     pub const MARK: &str = "\u{1e}";
@@ -1532,7 +1451,6 @@ pub struct PlaneTail {
 
 impl PlaneTail {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-
     pub const ZERO: Self = Self {
         head: KindTailHead::ZERO,
         flags: 0,
@@ -1586,10 +1504,8 @@ impl PlaneTail {
 }
 
 /// HOW THE PLANE KIND TAIL IS MADE: from [`PlaneTail::EMPTY`], its plain fields
-
 impl PlaneTail {
     /// Nothing stated: every string absent, every list empty, every number zero; the head
-
     pub const EMPTY: PlaneTail = PlaneTail {
         head: KindTailHead {
             size: core::mem::size_of::<PlaneTail>() as u32,
@@ -1679,7 +1595,6 @@ impl PlaneTail {
 pub const MAX_METRIC_LANES: usize = 16;
 
 /// A plane `refresh`'s EXTENSIONS KEY ([`crate::abi::mechanism::extensions`], carried in
-
 pub const EXT_OWNED: &str = "owned";
 
 /// One path the built plane answers on. One route — a verb, a target and whether the target is
@@ -1707,7 +1622,6 @@ pub struct Claim {
 
 impl Claim {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-
     pub const ZERO: Self = Self {
         verb: AbiStr::ZERO,
         target: AbiStr::ZERO,
@@ -1918,7 +1832,6 @@ pub struct OutField {
 
 impl OutField {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-
     pub const ZERO: Self = Self {
         name: Span::ZERO,
         value: Span::ZERO,
@@ -1939,7 +1852,6 @@ pub struct UnitCount {
 
 impl UnitCount {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-
     pub const ZERO: Self = Self {
         class: 0,
         source: 0,
@@ -1969,7 +1881,6 @@ pub struct RecordWrite {
 
 impl RecordWrite {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-
     pub const ZERO: Self = Self {
         kind: 0,
         op: 0,
@@ -2555,7 +2466,6 @@ pub struct PlaneCancelOut {
 }
 
 /// The status a FAULT `project` answers the caller with (1.5.5 `proxy/engine/mod.rs`: the rewrite
-
 pub const PROJECT_FAULT_STATUS: u16 = 500;
 
 /// The words a FAULT `project` answers the caller with, byte for byte 1.5.5's.
@@ -2598,11 +2508,9 @@ pub const fn project_faults(outcome: super::mechanism::call::Outcome, faultable:
 }
 
 /// THE UNPARSEABLE-BODY MARK, in `ProjectOut::view.flags` of a FAULT `project`: the plane parsed
-
 pub const PROJECT_FAULT_UNPARSEABLE: u32 = 1 << 31;
 
 /// WHETHER A `project` IS THE PLANE'S OWN FAULT OVER AN UNPARSEABLE BODY: [`Outcome::Fault`], the
-
 #[must_use]
 pub const fn project_fault_unparseable(
     outcome: super::mechanism::call::Outcome,
@@ -2615,7 +2523,6 @@ pub const fn project_fault_unparseable(
 }
 
 /// THE REWRITE-NOT-APPLICABLE MARK, in `ProjectOut::view.flags` of a READY `project` that carried
-
 pub const PROJECT_REWRITE_NOT_APPLICABLE: u32 = 1 << 30;
 
 const _: () = assert!(one_bit_each(&[

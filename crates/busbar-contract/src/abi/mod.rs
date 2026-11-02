@@ -194,7 +194,6 @@ extern "Rust" {
 }
 
 /// Hand `seal` to the kernel's root symbol; [`crate::caps::KernelSeal::deliver`] is the only
-
 #[inline]
 pub(crate) fn kernel_root(seal: crate::caps::KernelSeal) -> Box<dyn std::any::Any + Send + Sync> {
     // SAFETY: `__busbar_kernel_root` is defined exactly once, by `busbar-kernel`
@@ -206,15 +205,12 @@ pub(crate) fn kernel_root(seal: crate::caps::KernelSeal) -> Box<dyn std::any::An
 }
 
 /// The magic value every plugin-ABI peer stamps into [`AbiPreamble::magic`]. A wrong magic means the
-
 pub const ABI_MAGIC: u64 = u64::from_le_bytes(*b"BUSPLANE");
 
 /// The MAJOR airlock version. Bumping this is a no-turning-back linker event: a reorder/resize/
-
 pub const ABI_MAJOR: u32 = 2;
 
 /// The MINOR airlock version. Bumped for every APPEND-ONLY addition (a new trailing struct field, a
-
 pub const ABI_MINOR: u32 = 34;
 
 /// The FROZEN-FOR-ALL-TIME ABI header. This exact layout — `magic` at offset 0, `abi_major` at 8,
@@ -249,7 +245,6 @@ impl Default for AbiPreamble {
 }
 
 /// True iff a sender who advertised `advertised_size` bytes definitely WROTE the field that ends at
-
 #[inline]
 #[must_use]
 pub const fn field_present(advertised_size: u32, field_end: usize) -> bool {
@@ -257,7 +252,6 @@ pub const fn field_present(advertised_size: u32, field_end: usize) -> bool {
 }
 
 /// The UPPER half of the sized-struct guard: the largest peer-attested `size` this build will honour
-
 #[inline]
 #[must_use]
 pub const fn honoured_size(advertised_size: u32, struct_size: usize) -> u32 {
@@ -274,7 +268,6 @@ pub const fn honoured_size(advertised_size: u32, struct_size: usize) -> u32 {
 }
 
 /// The byte size of whatever `p` points at — the type-level companion to [`field_present`], used to
-
 #[inline]
 #[must_use]
 pub const fn pointee_size<T>(_p: *const T) -> usize {

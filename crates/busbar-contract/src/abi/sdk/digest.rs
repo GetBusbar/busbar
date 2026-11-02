@@ -23,14 +23,12 @@ pub fn sha256_tagged(data: &[u8]) -> String {
 }
 
 /// A SHA-256 `digest`, tagged: `sha256/<standard base64, padded>`. The ONE place a tagged digest is
-
 #[must_use]
 pub fn tagged(digest: &[u8; 32]) -> String {
     format!("{SHA256_TAG}{}", STANDARD.encode(digest))
 }
 
 /// `bytes` as lower-case hex, two digits a byte: the one spelling a plugin renders a digest or a
-
 #[must_use]
 pub fn lower_hex(bytes: &[u8]) -> String {
     hex::encode(bytes)

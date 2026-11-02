@@ -35,7 +35,6 @@ pub fn supported(extensions: &[u8]) -> bool {
 }
 
 /// Decode recognized intent before reaching any legacy batch implementation.
-
 pub fn intent(extensions: &[u8]) -> Result<Option<Request>, &'static str> {
     let mut reader = Reader::new(extensions)?;
     let mut recognized = false;
@@ -76,7 +75,6 @@ pub fn encode_result(request: &Request, decision: Decision) -> Vec<u8> {
 }
 
 /// Read only a complete leased READY result for this exact immutable candidate.
-
 pub fn read_result(
     outcome: Outcome,
     leased: bool,

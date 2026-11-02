@@ -43,7 +43,6 @@ fn secure_door() -> Arc<TestDoor> {
 }
 
 /// The body is consumed before the peer closes, so an abrupt end cannot be mistaken for a
-
 #[test]
 fn tls_eof_requires_close_notify_and_fresh_retains_the_failure() {
     crate::tls::install_crypto_provider();
@@ -149,7 +148,6 @@ fn through(
 }
 
 /// Neither waiting for CONNECT nor the subsequent TLS handshake may extend a short overall
-
 #[test]
 fn the_overall_open_deadline_survives_connect_and_the_tls_transition() {
     crate::tls::install_crypto_provider();
@@ -201,7 +199,6 @@ fn the_overall_open_deadline_survives_connect_and_the_tls_transition() {
 }
 
 /// A completed CONNECT no longer owns a timer. A real TLS handshake begun after its ten-second
-
 #[test]
 fn tls_after_connect_keeps_the_remaining_long_overall_budget() {
     crate::tls::install_crypto_provider();
@@ -327,7 +324,6 @@ fn an_untrusted_midstream_upgrade_records_the_security_cause() {
 }
 
 /// The proxy has already buffered a valid 200, but the caller resumes after CONNECT's bound.
-
 #[test]
 fn a_buffered_connect_reply_cannot_erase_an_expired_stage_bound() {
     crate::tls::install_crypto_provider();
@@ -372,7 +368,6 @@ fn a_buffered_connect_reply_cannot_erase_an_expired_stage_bound() {
 }
 
 /// A TLS 1.3 server's first flight contains its Finished. Drive until that real flight is
-
 #[test]
 fn a_buffered_tls_finished_cannot_erase_an_expired_overall_bound() {
     crate::tls::install_crypto_provider();
@@ -463,7 +458,6 @@ fn a_buffered_tls_finished_cannot_erase_an_expired_overall_bound() {
 }
 
 /// A synchronous feed-loop spin cannot be interrupted by a Tokio timeout. Run this real TLS
-
 #[test]
 fn tls_close_notify_ignores_later_carrier_bytes_without_spinning() {
     const CHILD: &str = "BUSBAR_CONNECTOR_CLOSE_TAIL_CHILD";
