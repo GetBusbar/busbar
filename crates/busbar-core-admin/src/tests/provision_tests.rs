@@ -259,20 +259,6 @@ async fn mint_failure_after_the_provision_commit_still_records_the_committed_gro
 /// refused mint in the binary (they all share the `key:-` resource).
 const CEILING_ACTOR: &str = "test:ceiling-audit";
 
-/// `key.create`/rejected rows written by [`CEILING_ACTOR`] — this test's refusals and no others.
-fn ceiling_refusal_rows() -> usize {
-    busbar_kernel::audit::auditlog::AUDIT_LOG
-        .list_filtered(
-            0,
-            audit_ring::MAX_AUDIT_ENTRIES,
-            Some("key.create"),
-            Some(crate::keys::KEY_RESOURCE_NONE),
-        )
-        .iter()
-        .filter(|e| e.outcome == audit_ring::OUTCOME_REJECTED && e.principal == CEILING_ACTOR)
-        .count()
-}
-
 /// Auto-provision-on-mint had NO ceiling on the NUMBER of groups, so a `mint`-scope credential
 /// could grow the limit tree without bound — every leaf is a new enforcement bucket, version-log
 /// entry and persisted overlay row. `limits.max_auto_provisioned_groups` caps it; explicitly
@@ -302,7 +288,11 @@ async fn auto_provision_stops_at_the_group_ceiling() {
     let ceiling_actor = busbar_kernel::auth::AuthPrincipal(Some(
         busbar_contract::auth::Principal::from_id(CEILING_ACTOR),
     ));
-    let rejected_before = ceiling_refusal_rows();
+    let audit = busbar_kernel::audit::auditlog::observe_accepted_admin_entry(
+        "key.create",
+        crate::keys::KEY_RESOURCE_NONE,
+        CEILING_ACTOR,
+    );
     let status = mint_as(&handle, ceiling_actor, "k2", "user:bob", "team").await;
     assert_eq!(
         status,
@@ -313,11 +303,14 @@ async fn auto_provision_stops_at_the_group_ceiling() {
         !handle.load().groups_registry.contains_key("user:bob"),
         "and nothing was provisioned"
     );
-    let rejected_after = ceiling_refusal_rows();
-    assert!(
-        rejected_after > rejected_before,
-        "the ceiling refusal must write a `key.create`/rejected audit row \
-         (before={rejected_before}, after={rejected_after})"
+    let recorded = tokio::time::timeout(std::time::Duration::from_secs(5), audit.accepted())
+        .await
+        .expect("the ceiling refusal audit must be published")
+        .expect("the accepted audit observer remains registered");
+    assert_eq!(
+        recorded.outcome,
+        audit_ring::OUTCOME_REJECTED,
+        "the ceiling refusal must write its own `key.create`/rejected audit row"
     );
 
     // Binding to an EXISTING group still works at the ceiling — only auto-provisioning is gated.

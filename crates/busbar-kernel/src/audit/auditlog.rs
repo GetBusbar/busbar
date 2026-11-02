@@ -344,6 +344,97 @@ pub struct PlaneAuditLog {
 pub static AUDIT_LOG: std::sync::LazyLock<PlaneAuditLog> =
     std::sync::LazyLock::new(PlaneAuditLog::new);
 
+// A test observes the accepted publication, rather than assuming a concurrent drain has finished
+// when its mutation returns. This mount and every notification are absent from production builds.
+#[cfg(any(test, feature = "test-support"))]
+mod accepted_entry_observers {
+    use super::*;
+    use std::collections::BTreeMap;
+    use tokio::sync::oneshot;
+
+    struct Observer {
+        action: String,
+        resource: String,
+        principal: String,
+        send: oneshot::Sender<AuditEntry>,
+    }
+
+    static OBSERVERS: std::sync::LazyLock<Mutex<BTreeMap<u64, Observer>>> =
+        std::sync::LazyLock::new(|| Mutex::new(BTreeMap::new()));
+    static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
+    /// A scoped observation of one accepted live admin-audit entry. Dropping it cancels the
+    /// registration, including when its awaiting test is cancelled or reaches a liveness bound.
+    #[derive(Debug)]
+    pub struct AcceptedAdminAudit {
+        id: u64,
+        receive: oneshot::Receiver<AuditEntry>,
+    }
+
+    impl AcceptedAdminAudit {
+        /// Wait for the actual accepted row matching the registered action/resource/principal.
+        /// Its outcome is deliberately not filtered: the caller must judge the real outcome.
+        pub async fn accepted(mut self) -> Result<AuditEntry, oneshot::error::RecvError> {
+            (&mut self.receive).await
+        }
+    }
+
+    impl Drop for AcceptedAdminAudit {
+        fn drop(&mut self) {
+            OBSERVERS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&self.id);
+        }
+    }
+
+    /// Register BEFORE the mutation. Only a live row accepted by the journal seam and pushed to
+    /// the process-wide AUDIT_LOG fulfills this observation; restore and other logs cannot do so.
+    pub fn observe_accepted_admin_entry(
+        action: &str,
+        resource: &str,
+        principal: &str,
+    ) -> AcceptedAdminAudit {
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let (send, receive) = oneshot::channel();
+        OBSERVERS.lock().unwrap_or_else(|e| e.into_inner()).insert(
+            id,
+            Observer {
+                action: action.into(),
+                resource: resource.into(),
+                principal: principal.into(),
+                send,
+            },
+        );
+        AcceptedAdminAudit { id, receive }
+    }
+
+    pub(super) fn published(entry: &AuditEntry) {
+        let ready = {
+            let mut observers = OBSERVERS.lock().unwrap_or_else(|e| e.into_inner());
+            let ids: Vec<_> = observers
+                .iter()
+                .filter(|(_, observer)| {
+                    observer.action == entry.action
+                        && observer.resource == entry.resource
+                        && observer.principal == entry.principal
+                })
+                .map(|(id, _)| *id)
+                .collect();
+            ids.into_iter()
+                .filter_map(|id| observers.remove(&id).map(|observer| observer.send))
+                .collect::<Vec<_>>()
+        };
+        // Notify outside both observer and read-model locks. A receiver may resume immediately.
+        for send in ready {
+            let _ = send.send(entry.clone());
+        }
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub use accepted_entry_observers::{observe_accepted_admin_entry, AcceptedAdminAudit};
+
 impl Default for PlaneAuditLog {
     fn default() -> Self {
         Self::new()
@@ -375,11 +466,20 @@ impl PlaneAuditLog {
     /// by-seq insert restores order so [`list_filtered`](PlaneAuditLog::list_filtered)'s `rev()`
     /// newest-first holds.
     pub(crate) fn push_entry(&self, entry: AuditEntry) {
+        #[cfg(any(test, feature = "test-support"))]
+        let observed = entry.recorded_here.then(|| entry.clone());
         let mut q = self.ring.lock().unwrap_or_else(|e| e.into_inner());
         let pos = q.iter().position(|e| e.seq > entry.seq).unwrap_or(q.len());
         q.insert(pos, entry);
         while q.len() > MAX_AUDIT_ENTRIES {
             q.pop_front();
+        }
+        drop(q);
+        #[cfg(any(test, feature = "test-support"))]
+        if core::ptr::eq(self, &*AUDIT_LOG) {
+            if let Some(entry) = observed {
+                accepted_entry_observers::published(&entry);
+            }
         }
     }
 
