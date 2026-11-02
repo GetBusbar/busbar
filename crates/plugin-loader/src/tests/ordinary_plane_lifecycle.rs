@@ -209,3 +209,56 @@ mod wrong_lifecycle_shape {
         assert_eq!(green.call(life::CLOSE, &mut e).outcome, Outcome::Ready);
     }
 }
+
+#[test]
+fn a_door_states_its_actual_registry_facts_and_judges_its_section() {
+    let check = |make: fn() -> Plugin<Plane>| {
+        let facts = make();
+        let served = facts.served();
+        let declared = facts.declared();
+        let reg = crate::dispatch::kinds::plane::registration(Arc::new(move || Ok(make())))
+            .expect("actual image registration");
+        assert_eq!(reg.key, "mcp");
+        assert_eq!(reg.section, "tools");
+        assert_eq!(
+            (reg.label, reg.subject_noun, reg.admin_noun, reg.audit_kind),
+            ("MCP", "MCP server", "mcp-server", "mcp_server")
+        );
+        assert_eq!(reg.dialects, vec!["jsonrpc"]);
+        assert_eq!(reg.record_kinds, declared.record_kinds);
+        assert_eq!(reg.scope_kinds, declared.scope_kinds);
+        assert_eq!(reg.trust_keys, declared.trust_keys);
+        assert_eq!(reg.signing, declared.signing);
+        assert!(
+            reg.signing.is_some(),
+            "actual MCP declares its signing domain"
+        );
+        assert_eq!(
+            reg.billable_classes,
+            served
+                .billable_classes
+                .iter()
+                .copied()
+                .zip(served.billable_families.iter().copied())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            reg.caller_credential_refusal,
+            Some(served.caller_credential_refusal)
+        );
+        assert_eq!((reg.validate)(b"{}"), Ok(()));
+        assert!(
+            (reg.validate)(b"{").is_err(),
+            "actual product refuses malformed settings"
+        );
+        let faced = (reg.facing)(b"{}", b"", None, &[]).expect("actual product facesworld");
+        let again = (reg.facing)(b"{}", b"", None, &[]).expect("same actual input facesagain");
+        assert_eq!(again, faced);
+        format!("{reg:?}")
+    };
+    assert_eq!(
+        check(linked),
+        check(dropped),
+        "same actual declaredfacts whicheverloadingpath"
+    );
+}
