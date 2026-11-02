@@ -4,8 +4,8 @@
 use std::collections::BTreeMap;
 
 use busbar_kernel_ledger::cost::{
-    self as ledger_cost, Author, CardEntryDraft, History, HistorySeq, LaneClass, LedgerEntry,
-    MoneyError, RateCard,
+    self as ledger_cost, Author, CardEntryDraft, History, LaneClass, LedgerEntry, MoneyError,
+    RateCard,
 };
 
 const LANE: &str = "gpt-4o";
@@ -318,10 +318,8 @@ fn d5_an_unpriced_class_on_a_priced_lane_refuses_everywhere() {
         0,
     );
     let counts: [(&str, u64); 3] = [(INPUT, 1_000), (OUTPUT, 250), (CACHE_READ, 10_000_000)];
-    let one = ledger_cost::price_ledger(
-        &[one_entry(LANE, &counts, 0, 0)],
-        &History::opening(card.clone(), 0),
-    );
+    let history = History::opening(card.clone(), 0);
+    let one = ledger_cost::price_ledger(&[one_entry(LANE, &counts, 0, 0)], &history);
     let derived =
         ledger_cost::MeteredRow::new(LANE, enforcement_units(&counts), 0, &BTreeMap::new())
             .spend_micros_at_card(&card);
@@ -333,7 +331,7 @@ fn d5_an_unpriced_class_on_a_priced_lane_refuses_everywhere() {
         0,
         0,
     );
-    let settled = ledger_cost::price_fail_closed(&History::opening(card, 0).current(), &posting);
+    let settled = ledger_cost::price_fail_closed(&history.current(), &posting);
 
     rule("D5  a priced lane, a class the card is silent about (#42)");
     row("THE ONE FUNCTION", &one);
@@ -343,7 +341,7 @@ fn d5_an_unpriced_class_on_a_priced_lane_refuses_everywhere() {
         settled.as_ref().err(),
     );
     let refusal = MoneyError::ClassUnpriced {
-        card_seq: HistorySeq::OPENING,
+        card_seq: history.head_key(),
         lane: LANE.to_string(),
         class: CACHE_READ.to_string(),
     };
@@ -354,8 +352,12 @@ fn d5_an_unpriced_class_on_a_priced_lane_refuses_everywhere() {
     );
     assert_eq!(
         derived,
-        Err(refusal),
-        "the read-time derivation refuses too — never 7,000"
+        Err(MoneyError::ClassUnpriced {
+            card_seq: None,
+            lane: LANE.to_string(),
+            class: CACHE_READ.to_string(),
+        }),
+        "the undated read-time derivation refuses too — never 7,000"
     );
     assert!(
         matches!(settled, Err(ledger_cost::Unpriceable::ClassUnpriced { ref class, .. }) if class == CACHE_READ),
@@ -727,16 +729,23 @@ fn accrued_on_the_book(
     units: &[(&str, u64)],
 ) -> (Result<i64, String>, BTreeMap<String, u64>) {
     let gov = busbar_kernel::governance::GovState::new(crate::root::real_store::records(), None)
-        .expect("a governance book over a memory store");
+        .expect("a governance book over the actual product store");
     let card: Option<BTreeMap<String, busbar_kernel::config::RateEntryCfg>> =
         card_yaml.map(|yaml| serde_yaml::from_str(yaml).expect("the card parses"));
     let cost = busbar_kernel::cost::CostModel::resolve_parts(card.as_ref(), 0, &BTreeMap::new());
+    gov.set_signing_key(Some(
+        busbar_kernel::governance::signing::TokenSigner::generate(
+            busbar_kernel::governance::signing::DEFAULT_KID,
+        )
+        .expect("the product signing key is generated"),
+    ));
     let (key, _secret) = gov
-        .create_key(
+        .mint_signed(
             busbar_kernel::governance::NewKeySpec {
                 name: "open-class".to_string(),
                 ..Default::default()
             },
+            u64::MAX,
             OPEN_AT,
         )
         .expect("create key");
