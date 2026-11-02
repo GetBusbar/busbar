@@ -507,7 +507,6 @@ dependencies = [
  "busbar-secret-env",
  "busbar-secret-file",
  "busbar-store-memory",
- "busbar-test-kit",
  "busbar-transport-grpc",
  "busbar-transport-http",
  "busbar-transport-stdio",
@@ -872,26 +871,6 @@ source = "git+https://git.getbusbar.dev/GetBusbar/busbar-store-memory?rev=22fd86
 dependencies = [
  "busbar-contract",
  "serde_json",
- "zeroize",
-]
-
-[[package]]
-name = "busbar-test-kit"
-version = "1.6.0"
-dependencies = [
- "base64 0.22.1",
- "busbar-contract",
- "busbar-core-connector",
- "busbar-kernel",
- "busbar-plugin-loader",
- "hex",
- "libc",
- "ring",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "windows-sys 0.61.2",
  "zeroize",
 ]
 

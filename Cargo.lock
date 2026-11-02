@@ -50,12 +50,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000"
 
 [[package]]
-name = "anyhow"
-version = "1.0.104"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
-
-[[package]]
 name = "arc-swap"
 version = "1.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -374,8 +368,6 @@ dependencies = [
  "busbar-kernel",
  "busbar-kernel-egress",
  "busbar-plugin-loader",
- "busbar-stub-transport-plugin",
- "busbar-test-kit",
  "crc32fast",
  "dimpl",
  "futures",
@@ -405,6 +397,7 @@ dependencies = [
  "base64 0.22.1",
  "busbar-contract",
  "busbar-kernel",
+ "busbar-plugin-loader",
  "bytes",
  "futures",
  "http",
@@ -545,20 +538,6 @@ dependencies = [
  "base64 0.22.1",
  "busbar-contract",
  "busbar-kernel-seams",
- "busbar-stub-auth-verify",
- "busbar-stub-auth-verify-plugin",
- "busbar-stub-export",
- "busbar-stub-export-carried",
- "busbar-stub-export-carried-plugin",
- "busbar-stub-export-plugin",
- "busbar-stub-export-scrape",
- "busbar-stub-export-scrape-plugin",
- "busbar-stub-export-trace",
- "busbar-stub-export-trace-plugin",
- "busbar-stub-secret",
- "busbar-stub-store",
- "busbar-stub-transport",
- "busbar-stub-transport-plugin",
  "ed25519-dalek",
  "flate2",
  "futures",
@@ -576,165 +555,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tungstenite",
- "windows-sys 0.61.2",
- "zeroize",
-]
-
-[[package]]
-name = "busbar-stub-auth-verify"
-version = "1.5.0"
-dependencies = [
- "busbar-contract",
- "serde_json",
-]
-
-[[package]]
-name = "busbar-stub-auth-verify-plugin"
-version = "1.5.0"
-dependencies = [
- "busbar-contract",
- "busbar-stub-auth-verify",
-]
-
-[[package]]
-name = "busbar-stub-export"
-version = "1.5.0"
-dependencies = [
- "busbar-contract",
- "serde",
- "serde_json",
- "tracing",
-]
-
-[[package]]
-name = "busbar-stub-export-carried"
-version = "1.5.0"
-dependencies = [
- "busbar-contract",
- "serde",
- "serde_json",
- "tracing",
- "url",
-]
-
-[[package]]
-name = "busbar-stub-export-carried-plugin"
-version = "1.5.0"
-dependencies = [
- "busbar-contract",
- "busbar-stub-export-carried",
-]
-
-[[package]]
-name = "busbar-stub-export-plugin"
-version = "1.5.0"
-dependencies = [
- "busbar-contract",
- "busbar-stub-export",
-]
-
-[[package]]
-name = "busbar-stub-export-scrape"
-version = "1.5.0"
-dependencies = [
- "busbar-contract",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "busbar-stub-export-scrape-plugin"
-version = "1.5.0"
-dependencies = [
- "busbar-contract",
- "busbar-stub-export-scrape",
-]
-
-[[package]]
-name = "busbar-stub-export-trace"
-version = "1.6.0"
-dependencies = [
- "busbar-contract",
- "opentelemetry-proto",
- "prost",
- "serde",
- "serde_json",
- "tracing",
- "url",
-]
-
-[[package]]
-name = "busbar-stub-export-trace-plugin"
-version = "1.6.0"
-dependencies = [
- "busbar-contract",
- "busbar-stub-export-trace",
-]
-
-[[package]]
-name = "busbar-stub-secret"
-version = "1.0.0"
-dependencies = [
- "busbar-contract",
- "serde_json",
-]
-
-[[package]]
-name = "busbar-stub-secret-plugin"
-version = "1.0.0"
-dependencies = [
- "busbar-contract",
- "busbar-stub-secret",
-]
-
-[[package]]
-name = "busbar-stub-store"
-version = "1.5.0"
-dependencies = [
- "busbar-contract",
- "serde",
- "serde_json",
- "sha2",
-]
-
-[[package]]
-name = "busbar-stub-store-plugin"
-version = "1.5.0"
-dependencies = [
- "busbar-stub-store",
-]
-
-[[package]]
-name = "busbar-stub-transport"
-version = "1.6.0"
-dependencies = [
- "busbar-contract",
-]
-
-[[package]]
-name = "busbar-stub-transport-plugin"
-version = "1.6.0"
-dependencies = [
- "busbar-contract",
- "busbar-stub-transport",
-]
-
-[[package]]
-name = "busbar-test-kit"
-version = "1.6.0"
-dependencies = [
- "base64 0.22.1",
- "busbar-contract",
- "busbar-core-connector",
- "busbar-kernel",
- "busbar-plugin-loader",
- "hex",
- "libc",
- "ring",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
  "windows-sys 0.61.2",
  "zeroize",
 ]
@@ -908,7 +728,7 @@ dependencies = [
  "ciborium",
  "clap",
  "criterion-plot",
- "itertools 0.13.0",
+ "itertools",
  "num-traits",
  "oorandom",
  "regex",
@@ -925,7 +745,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b1bcc0dc7dfae599d84ad0b1a55f80cde8af3725da8313b528da95ef783e338"
 dependencies = [
  "cast",
- "itertools 0.13.0",
+ "itertools",
 ]
 
 [[package]]
@@ -1629,15 +1449,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "itertools"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b192c782037fadd9cfa75548310488aabdbf3d2da73885b31bd0abd03351285"
-dependencies = [
- "either",
-]
-
-[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2065,46 +1876,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
 
 [[package]]
-name = "opentelemetry"
-version = "0.32.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b0142c63252a9e054e68a4c61a5778f7b14f576274d593f8ce883d191a099682"
-dependencies = [
- "futures-core",
- "futures-sink",
- "js-sys",
- "pin-project-lite",
- "thiserror",
-]
-
-[[package]]
-name = "opentelemetry-proto"
-version = "0.32.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "56d658ba1faf63f7b9c492cfbe6e0ec365440a16132d3270c1065f7b33f1b638"
-dependencies = [
- "opentelemetry",
- "opentelemetry_sdk",
- "prost",
-]
-
-[[package]]
-name = "opentelemetry_sdk"
-version = "0.32.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9b59f80e1ac4d5ff7a2db8fb6c80badb7f0f3f858211fba08dd9aaec750894f9"
-dependencies = [
- "futures-channel",
- "futures-executor",
- "futures-util",
- "opentelemetry",
- "percent-encoding",
- "portable-atomic",
- "rand 0.9.4",
- "thiserror",
-]
-
-[[package]]
 name = "outref"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2205,29 +1976,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
  "unicode-ident",
-]
-
-[[package]]
-name = "prost"
-version = "0.14.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d2ea70524a2f82d518bce41317d0fae74151505651af45faf1ffbd6fd33f0568"
-dependencies = [
- "bytes",
- "prost-derive",
-]
-
-[[package]]
-name = "prost-derive"
-version = "0.14.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27c6023962132f4b30eb4c172c91ce92d933da334c59c23cddee82358ddafb0b"
-dependencies = [
- "anyhow",
- "itertools 0.14.0",
- "proc-macro2",
- "quote",
- "syn 2.0.117",
 ]
 
 [[package]]
