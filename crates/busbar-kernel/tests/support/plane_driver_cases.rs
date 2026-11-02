@@ -987,12 +987,48 @@ async fn a_failed_over_unit_names_the_member_that_answered() {
 async fn a_served_unit_writes_exactly_one_metering_row() {
     use busbar_kernel::governance::{metering_bucket, GovState};
     use busbar_kernel::plane_driver::{EndPost, FeeRefund, PlaneMoney, UnitMoney};
-    use busbar_kernel_testkit::test_support::store_double::MemoryStore;
     struct NoPost;
     impl EndPost for NoPost {
         fn post(&self, _: &UnitCtx, _: Ended) {}
     }
-    let gov = Arc::new(GovState::new(Arc::new(MemoryStore::new()), None).expect("gov"));
+    let path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
+    );
+    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&path)
+        .expect("the actual store statement reads")
+        .expect("the actual store exports its statement");
+    let dispatcher = Arc::new(busbar_plugin_loader::dispatch::Dispatcher::new(
+        busbar_plugin_loader::dispatch::DispatchConfig::default(),
+    ));
+    let plugin = busbar_plugin_loader::dispatch::load_dropped::<
+        busbar_plugin_loader::dispatch::kinds::store::Store,
+    >(
+        &path,
+        &statement,
+        busbar_plugin_loader::dispatch::Bind {
+            instance: format!("plane-metering-{}", busbar_kernel::door::op_id().counter()).into(),
+            max_inflight_cap: 1024,
+            sink: Arc::new(busbar_plugin_loader::dispatch::NoSink),
+            dispatcher: dispatcher.adopter(),
+            conns: busbar_plugin_loader::dispatch::ConnTable::NoNeeds,
+        },
+    )
+    .expect("the actual store loads through the memory ABI");
+    let settings =
+        std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".to_string());
+    let _: serde_json::Value =
+        serde_json::from_str(&settings).expect("the actual store settings are JSON");
+    let store = Arc::new(
+        busbar_plugin_loader::store_v3::LoadedStore::open(
+            plugin,
+            dispatcher,
+            settings.as_bytes(),
+            busbar_kernel::door::op_id,
+        )
+        .expect("the actual store opens"),
+    );
+    let gov = Arc::new(GovState::new(store, None).expect("gov"));
     let money = Arc::new(PlaneMoney::new(gov.clone(), Arc::new(NoPost)));
     let at = 1_700_000_000;
     let unit = ctx(7);
