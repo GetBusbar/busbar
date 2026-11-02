@@ -1002,8 +1002,17 @@ fn downgrade_book(
 ) {
     let governance_store = crate::root::real_store::store();
     let gov = std::sync::Arc::new(
-        busbar_kernel::governance::GovState::new_with_signer(governance_store.clone(), None, None)
-            .expect("the real store opens governance"),
+        busbar_kernel::governance::GovState::new_with_signer(
+            governance_store.clone(),
+            None,
+            Some(
+                busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
+                    &[7u8; 32],
+                    busbar_kernel::governance::signing::DEFAULT_KID,
+                ),
+            ),
+        )
+        .expect("the real store opens governance"),
     );
     assert!(
         gov.attach_store_calls(governance_store),
@@ -1020,13 +1029,14 @@ fn downgrade_book(
     )]);
     let cost = busbar_kernel::cost::CostModel::resolve_parts(None, 10, &groups);
     let (key, _secret) = gov
-        .create_key(
+        .mint_signed(
             busbar_kernel::governance::NewKeySpec {
                 name: "dev".to_string(),
                 allowed_pools,
                 group: Some("team".to_string()),
                 ..Default::default()
             },
+            4_000_000_000,
             1_700_000_000,
         )
         .expect("a key");
@@ -1107,14 +1117,19 @@ fn downgrade_book(
         }
         app
     };
-    app.auth = std::sync::Arc::new(busbar_kernel::auth::AuthMiddleware::new_builtin(
-        &busbar_kernel::config::AuthCfg {
-            chain: vec![busbar_kernel::config::AuthChainEntry::bare(
-                busbar_kernel::config::KEYS_MODULE,
-            )],
-            ..busbar_kernel::config::AuthCfg::default_none()
-        },
-    ));
+    app.auth = std::sync::Arc::new(
+        busbar_kernel::auth::AuthMiddleware::new(
+            &busbar_kernel::config::AuthCfg {
+                chain: vec![busbar_kernel::config::AuthChainEntry::bare(
+                    busbar_kernel::config::KEYS_MODULE,
+                )],
+                ..busbar_kernel::config::AuthCfg::default_none()
+            },
+            &app.hook_env.registry,
+            &app.secret_resolver,
+        )
+        .expect("the actual root constructs the keys middleware"),
+    );
     gov.hydrate_budgets(&cost, 0)
         .expect("the real governance hydrates its budget");
     app.governance = Some(gov);
@@ -3112,13 +3127,18 @@ pub(crate) mod tool_door {
             .expect("the guard");
 
             let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
+            let governance_store = crate::root::real_store::store();
             let gov = Arc::new(
                 GovState::new_with_signer(
-                    crate::root::real_store::records(),
+                    governance_store.clone(),
                     Some(ADMIN_TOKEN.to_string()),
                     Some(signer),
                 )
                 .expect("governance"),
+            );
+            assert!(
+                gov.attach_store_calls(governance_store),
+                "attach the actual governance store calls",
             );
 
             let (gov, key, token) = match footing.book {
@@ -3403,14 +3423,19 @@ pub(crate) mod tool_door {
             let plane_key = composed.facts.plane.clone();
             let audience = composed.snapshot.audience.clone();
             served.post = Some(Arc::clone(&post));
-            app.auth = Arc::new(busbar_kernel::auth::AuthMiddleware::new_builtin(
-                &busbar_kernel::config::AuthCfg {
-                    chain: vec![busbar_kernel::config::AuthChainEntry::bare(
-                        busbar_kernel::config::KEYS_MODULE,
-                    )],
-                    ..busbar_kernel::config::AuthCfg::default_none()
-                },
-            ));
+            app.auth = Arc::new(
+                busbar_kernel::auth::AuthMiddleware::new(
+                    &busbar_kernel::config::AuthCfg {
+                        chain: vec![busbar_kernel::config::AuthChainEntry::bare(
+                            busbar_kernel::config::KEYS_MODULE,
+                        )],
+                        ..busbar_kernel::config::AuthCfg::default_none()
+                    },
+                    &app.hook_env.registry,
+                    &app.secret_resolver,
+                )
+                .expect("the actual root constructs the keys middleware"),
+            );
             app.governance = Some(Arc::clone(&gov));
             app.serve_tables = tables.clone();
             app.cost = Arc::new(CostModel::flat(1));
@@ -9812,8 +9837,17 @@ fn the_doors_admission_check_reads_the_arrival_window_and_not_the_clock() {
     use busbar_kernel::governance::SECS_PER_DAY;
     let governance_store = crate::root::real_store::store();
     let gov = std::sync::Arc::new(
-        busbar_kernel::governance::GovState::new_with_signer(governance_store.clone(), None, None)
-            .expect("the real store opens governance"),
+        busbar_kernel::governance::GovState::new_with_signer(
+            governance_store.clone(),
+            None,
+            Some(
+                busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
+                    &[7u8; 32],
+                    busbar_kernel::governance::signing::DEFAULT_KID,
+                ),
+            ),
+        )
+        .expect("the real store opens governance"),
     );
     assert!(
         gov.attach_store_calls(governance_store),
@@ -9839,12 +9873,13 @@ fn the_doors_admission_check_reads_the_arrival_window_and_not_the_clock() {
     )]);
     let cost = busbar_kernel::cost::CostModel::resolve_parts(None, 1, &groups);
     let (key, _secret) = gov
-        .create_key(
+        .mint_signed(
             busbar_kernel::governance::NewKeySpec {
                 name: "dev".to_string(),
                 group: Some("team".to_string()),
                 ..Default::default()
             },
+            4_000_000_000,
             1_700_000_000,
         )
         .expect("a key");
@@ -9925,14 +9960,19 @@ fn the_doors_admission_check_reads_the_arrival_window_and_not_the_clock() {
         }
         app
     };
-    app.auth = std::sync::Arc::new(busbar_kernel::auth::AuthMiddleware::new_builtin(
-        &busbar_kernel::config::AuthCfg {
-            chain: vec![busbar_kernel::config::AuthChainEntry::bare(
-                busbar_kernel::config::KEYS_MODULE,
-            )],
-            ..busbar_kernel::config::AuthCfg::default_none()
-        },
-    ));
+    app.auth = std::sync::Arc::new(
+        busbar_kernel::auth::AuthMiddleware::new(
+            &busbar_kernel::config::AuthCfg {
+                chain: vec![busbar_kernel::config::AuthChainEntry::bare(
+                    busbar_kernel::config::KEYS_MODULE,
+                )],
+                ..busbar_kernel::config::AuthCfg::default_none()
+            },
+            &app.hook_env.registry,
+            &app.secret_resolver,
+        )
+        .expect("the actual root constructs the keys middleware"),
+    );
     gov.hydrate_budgets(&cost, 0)
         .expect("the real governance hydrates its budget");
     app.governance = Some(gov);
