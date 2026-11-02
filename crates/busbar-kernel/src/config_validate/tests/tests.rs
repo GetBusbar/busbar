@@ -35,7 +35,10 @@ fn make_root_cfg(
         rate_card: None,
         per_request_fee: 0,
         plane_fees: Default::default(),
-        store: Some(crate::test_support::stand_in_store()),
+        store: Some(config::StoreCfg {
+            module: "inert-store-metadata".into(),
+            settings: Default::default(),
+        }),
         secrets: std::collections::BTreeMap::new(),
         global_hooks: Vec::new(),
         blocked_metadata_hosts: Vec::new(),
@@ -176,19 +179,22 @@ fn test_provider_auth_style_is_a_declared_word() {
 
 #[test]
 fn a_token_url_is_judged_for_any_style_declaring_it() {
-    crate::test_support::register_neutral_test_plane();
     let build = |word: &str| -> Vec<String> {
-        let mut providers = HashMap::new();
-        let mut mint = make_provider(proto_b(), "https://api.example.com", "API_KEY");
-        mint.auth = Some(config::ProviderAuth::named(word));
-        providers.insert("mint".to_string(), mint);
-        let mut models = HashMap::new();
-        models.insert("m".to_string(), make_model("mint", 10));
-        let mut pools = HashMap::new();
-        pools.insert("p".to_string(), make_pool(vec![make_member("m")]));
-        validate(&make_root_cfg(providers, models, pools))
-            .err()
-            .unwrap_or_default()
+        let provider: crate::config::providers::ResolvedProvider = make_provider(
+            "inert-dialect-metadata",
+            "https://api.example.com",
+            "API_KEY",
+        )
+        .into();
+        let cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
+        let flags = if word == "x-double-mint" {
+            busbar_contract::abi::auth::STYLE_ENDPOINT_TOKEN_URL
+        } else {
+            0
+        };
+        let mut errors = Vec::new();
+        validate_token_endpoint_fields("mint", &provider, word, flags, &cfg, &[], &mut errors);
+        errors
     };
     let errs = build("x-double-mint");
     for want in [
@@ -5919,55 +5925,48 @@ fn test_validate_refuses_per_lane_durations_past_the_runtime_horizon() {
     );
 }
 
-static CLASS_PLANE: crate::plane_driver::registry::PlaneDecl =
-    crate::plane_driver::registry::PlaneDecl {
-        declaration: crate::plane_driver::registry::PlaneDeclaration {
-            key: "class-plane",
-            fallback: false,
-            config_section: "tools",
-            scope_kinds: &[],
-            subject_noun: "class thing",
-            admin_noun: "class-thing",
-            audit_kind: "class-thing",
-            card_signing_domain: None,
-            card_kid_prefix: None,
-            owned_config_sections: &[],
-            billable_classes: &[bc("calls", "count"), bc("bytes", "byte")],
-            fee_units: &[],
-            metric_families: &[],
-            record_kinds: &[],
-            required_config_sections: &[],
-            trust_keys: &[],
-            served_op_classes: &[],
-            caller_credential_refusal: None,
-        },
-        wire_format_names: |_| &[],
+// These values describe classes and fees; they contain no plugin callbacks or registry.
+fn validate_cost_metadata(
+    cfg: &RootCfg,
+    declarations: &[&crate::plane_driver::registry::PlaneDeclaration],
+) -> Result<(), Vec<String>> {
+    let mut errors = Vec::new();
+    for declaration in declarations {
+        if let Some(card) = &cfg.rate_card {
+            let flat = flat_card_present(card.keys().map(|k| split_plane_lane(k).0));
+            validate_plane_card(declaration, card, flat, &mut errors);
+        }
+        if let Some(fees) = cfg.plane_fees.get(declaration.key) {
+            validate_plane_fees(declaration, fees, &mut errors);
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
 
-        provider_dialects: |_| crate::ingress::protocols::known_protocols(),
-        claims: |_| Vec::new(),
-        admission: |_| None,
-        build: |_, _| None,
-        routes: None,
-        admin_routes: None,
-        openapi: None,
-        hydrate: None,
-        start: None,
-        config_validate: None,
-        named_def_list: None,
-        named_def_get: None,
-        registry_contains: None,
-        reresolve_gates: None,
-        openapi_schemas: None,
-        on_swap: None,
-        parse_section: None,
-        parse_endpoint: None,
-        lower_endpoint: None,
-        build_runtime: None,
-        viewer: None,
-        retain_verify_gates: None,
-        default_section: None,
-        resolve_provider: None,
-        door: None,
+static CLASS_PLANE: crate::plane_driver::registry::PlaneDeclaration =
+    crate::plane_driver::registry::PlaneDeclaration {
+        key: "class-plane",
+        fallback: false,
+        config_section: "tools",
+        scope_kinds: &[],
+        subject_noun: "class thing",
+        admin_noun: "class-thing",
+        audit_kind: "class-thing",
+        card_signing_domain: None,
+        card_kid_prefix: None,
+        owned_config_sections: &[],
+        billable_classes: &[bc("calls", "count"), bc("bytes", "byte")],
+        fee_units: &[],
+        metric_families: &[],
+        record_kinds: &[],
+        required_config_sections: &[],
+        trust_keys: &[],
+        served_op_classes: &[],
+        caller_credential_refusal: None,
     };
 
 const fn bc(
@@ -5977,22 +5976,19 @@ const fn bc(
     crate::plane_driver::registry::BillableClass { class, family }
 }
 
-static FLAT_PLANE: crate::plane_driver::registry::PlaneDecl =
-    crate::plane_driver::registry::PlaneDecl {
-        declaration: crate::plane_driver::registry::PlaneDeclaration {
-            key: "flat-plane",
-            fallback: true,
-            config_section: "pools",
-            billable_classes: &[
-                bc("input", "token"),
-                bc("output", "token"),
-                bc("cache_read", "token"),
-                bc("cache_write", "token"),
-                bc("search_units", "count"),
-                bc("images", "count"),
-            ],
-            ..CLASS_PLANE.declaration
-        },
+static FLAT_PLANE: crate::plane_driver::registry::PlaneDeclaration =
+    crate::plane_driver::registry::PlaneDeclaration {
+        key: "flat-plane",
+        fallback: true,
+        config_section: "pools",
+        billable_classes: &[
+            bc("input", "token"),
+            bc("output", "token"),
+            bc("cache_read", "token"),
+            bc("cache_write", "token"),
+            bc("search_units", "count"),
+            bc("images", "count"),
+        ],
         ..CLASS_PLANE
     };
 
@@ -6014,16 +6010,18 @@ fn plane_card(
 
 #[test]
 fn a_card_missing_a_declared_class_fails_validation_naming_every_missing_class() {
-    let _iso = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[&FLAT_PLANE]);
-    let mut cfg = cost_cfg(&["m"]);
+    let declarations = &[&FLAT_PLANE];
+    let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
     cfg.rate_card = Some(card_yaml("m: { input_utok: 3 }\n"));
-    let errs = validate(&cfg).expect_err("a card silent about declared classes must refuse");
+    let errs = validate_cost_metadata(&cfg, declarations)
+        .expect_err("a card silent about declared classes must refuse");
     let want = "pools.rate_card does not configure billable unit(s) search_units, images declared \
                 by this plane; add them (0 to make them free)";
     assert!(errs.iter().any(|e| e == want), "{errs:?}");
 
     cfg.rate_card = Some(card_yaml("m: { input_utok: 3, units: { images: 7 } }\n"));
-    let errs = validate(&cfg).expect_err("search_units is still unconfigured");
+    let errs =
+        validate_cost_metadata(&cfg, declarations).expect_err("search_units is still unconfigured");
     assert!(
         errs.iter()
             .any(|e| e.contains("billable unit(s) search_units declared")),
@@ -6033,30 +6031,36 @@ fn a_card_missing_a_declared_class_fails_validation_naming_every_missing_class()
 
 #[test]
 fn a_card_configuring_every_declared_class_passes_with_explicit_zero() {
-    let _iso = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[&FLAT_PLANE]);
-    let mut cfg = cost_cfg(&["m", "n"]);
+    let declarations = &[&FLAT_PLANE];
+    let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
     cfg.rate_card = Some(card_yaml(
         "m: { input_utok: 3, units: { search_units: 0 } }\nn: { units: { images: 0 } }\n",
     ));
-    assert!(validate(&cfg).is_ok(), "{:?}", validate(&cfg));
+    assert!(
+        validate_cost_metadata(&cfg, declarations).is_ok(),
+        "{:?}",
+        validate_cost_metadata(&cfg, declarations)
+    );
 }
 
 #[test]
 fn a_non_fallback_planes_card_is_held_to_the_same_rule() {
-    let _iso = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[&CLASS_PLANE]);
-    let mut cfg = cost_cfg(&["m"]);
+    let declarations = &[&CLASS_PLANE];
+    let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
     cfg.rate_card = Some(plane_card(
         "class-plane",
         "srv_read",
         "units: { calls: 10 }",
     ));
-    let errs = validate(&cfg).expect_err("bytes is declared and unconfigured");
+    let errs =
+        validate_cost_metadata(&cfg, declarations).expect_err("bytes is declared and unconfigured");
     let want = "tools.rate_card does not configure billable unit(s) bytes declared by this plane; \
                 add them (0 to make them free)";
     assert!(errs.iter().any(|e| e == want), "{errs:?}");
 
     cfg.rate_card = Some(plane_card("class-plane", "", "{}"));
-    let errs = validate(&cfg).expect_err("an empty present card configures nothing");
+    let errs = validate_cost_metadata(&cfg, declarations)
+        .expect_err("an empty present card configures nothing");
     assert!(
         errs.iter()
             .any(|e| e.contains("billable unit(s) calls, bytes declared")),
@@ -6065,45 +6069,53 @@ fn a_non_fallback_planes_card_is_held_to_the_same_rule() {
 
     let full = "units: { calls: 10, bytes: 0 }";
     cfg.rate_card = Some(plane_card("class-plane", "srv_read", full));
-    assert!(validate(&cfg).is_ok(), "{:?}", validate(&cfg));
+    assert!(
+        validate_cost_metadata(&cfg, declarations).is_ok(),
+        "{:?}",
+        validate_cost_metadata(&cfg, declarations)
+    );
 
     cfg.rate_card = None;
-    assert!(validate(&cfg).is_ok(), "no card = billing off, no refusal");
+    assert!(
+        validate_cost_metadata(&cfg, declarations).is_ok(),
+        "no card = billing off, no refusal"
+    );
 }
 
-static DOOR_FEE_PLANE: crate::plane_driver::registry::PlaneDecl =
-    crate::plane_driver::registry::PlaneDecl {
-        declaration: crate::plane_driver::registry::PlaneDeclaration {
-            key: "door-fee-plane",
-            billable_classes: &[
-                bc("calls", "count"),
-                bc("bytes", "byte"),
-                bc(busbar_contract::plane::PER_REQUEST, "count"),
-            ],
-            fee_units: &[busbar_contract::plane::PER_REQUEST],
-            ..CLASS_PLANE.declaration
-        },
+static DOOR_FEE_PLANE: crate::plane_driver::registry::PlaneDeclaration =
+    crate::plane_driver::registry::PlaneDeclaration {
+        key: "door-fee-plane",
+        billable_classes: &[
+            bc("calls", "count"),
+            bc("bytes", "byte"),
+            bc(busbar_contract::plane::PER_REQUEST, "count"),
+        ],
+        fee_units: &[busbar_contract::plane::PER_REQUEST],
         ..CLASS_PLANE
     };
 
 #[test]
 fn a_door_planes_fee_unit_is_no_class_its_card_must_price() {
-    let _iso =
-        busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[&DOOR_FEE_PLANE]);
-    let mut cfg = cost_cfg(&["m"]);
+    let declarations = &[&DOOR_FEE_PLANE];
+    let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
     cfg.rate_card = Some(plane_card(
         "door-fee-plane",
         "srv_read",
         "units: { calls: 2, bytes: 3 }",
     ));
-    assert!(validate(&cfg).is_ok(), "{:?}", validate(&cfg));
+    assert!(
+        validate_cost_metadata(&cfg, declarations).is_ok(),
+        "{:?}",
+        validate_cost_metadata(&cfg, declarations)
+    );
 
     cfg.rate_card = Some(plane_card(
         "door-fee-plane",
         "srv_read",
         "units: { calls: 2 }",
     ));
-    let errs = validate(&cfg).expect_err("bytes is declared and unpriced");
+    let errs =
+        validate_cost_metadata(&cfg, declarations).expect_err("bytes is declared and unpriced");
     let want = "tools.rate_card does not configure billable unit(s) bytes declared by this plane; \
                 add them (0 to make them free)";
     assert!(errs.iter().any(|e| e == want), "{errs:?}");
@@ -6113,7 +6125,8 @@ fn a_door_planes_fee_unit_is_no_class_its_card_must_price() {
         "srv_read",
         "units: { calls: 2, bytes: 3, per_request: 1 }",
     ));
-    let errs = validate(&cfg).expect_err("a fee unit is no class a card prices");
+    let errs = validate_cost_metadata(&cfg, declarations)
+        .expect_err("a fee unit is no class a card prices");
     let want = "tools.rate_card configures unit(s) per_request not declared by this plane \
                 (declared: calls, bytes); remove them or fix the name";
     assert!(errs.iter().any(|e| e == want), "{errs:?}");
@@ -6126,40 +6139,40 @@ fn a_dropped_in_planes_declared_classes_are_honoured() {
         .into_iter()
         .map(|s| bc(Box::leak(s.into_boxed_str()), "count"))
         .collect();
-    let dropped: &'static crate::plane_driver::registry::PlaneDecl =
-        Box::leak(Box::new(crate::plane_driver::registry::PlaneDecl {
-            declaration: crate::plane_driver::registry::PlaneDeclaration {
-                key: "dropped-plane",
-                config_section: "agents",
-                billable_classes: Box::leak(classes.into_boxed_slice()),
-                ..CLASS_PLANE.declaration
-            },
+    let dropped: &'static crate::plane_driver::registry::PlaneDeclaration =
+        Box::leak(Box::new(crate::plane_driver::registry::PlaneDeclaration {
+            key: "dropped-plane",
+            config_section: "agents",
+            billable_classes: Box::leak(classes.into_boxed_slice()),
             ..CLASS_PLANE
         }));
-    let _iso = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[dropped]);
-    let mut cfg = cost_cfg(&["m"]);
+    let declarations = &[dropped];
+    let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
     cfg.rate_card = Some(plane_card("dropped-plane", "a", "units: { frames: 1 }"));
-    let errs = validate(&cfg).expect_err("widgets is declared by the dropped-in plane");
+    let errs = validate_cost_metadata(&cfg, declarations)
+        .expect_err("widgets is declared by the dropped-in plane");
     let want = "agents.rate_card does not configure billable unit(s) widgets declared by this \
                 plane; add them (0 to make them free)";
     assert!(errs.iter().any(|e| e == want), "{errs:?}");
 
     let full = "units: { frames: 1, widgets: 0 }";
     cfg.rate_card = Some(plane_card("dropped-plane", "a", full));
-    assert!(validate(&cfg).is_ok(), "{:?}", validate(&cfg));
+    assert!(
+        validate_cost_metadata(&cfg, declarations).is_ok(),
+        "{:?}",
+        validate_cost_metadata(&cfg, declarations)
+    );
 }
 
 #[test]
 fn a_card_configuring_an_undeclared_class_fails_naming_it_and_the_declared_list() {
-    let _iso = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[
-        &FLAT_PLANE,
-        &CLASS_PLANE,
-    ]);
-    let mut cfg = cost_cfg(&["m"]);
+    let declarations = &[&FLAT_PLANE, &CLASS_PLANE];
+    let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
     cfg.rate_card = Some(card_yaml(
         "m: { input_utok: 3, units: { search_units: 0, images: 0, typo_class: 1 } }\n",
     ));
-    let errs = validate(&cfg).expect_err("typo_class is declared by no plane");
+    let errs =
+        validate_cost_metadata(&cfg, declarations).expect_err("typo_class is declared by no plane");
     let want = "pools.rate_card configures unit(s) typo_class not declared by this plane \
                 (declared: input, output, cache_read, cache_write, search_units, images); remove \
                 them or fix the name";
@@ -6170,7 +6183,8 @@ fn a_card_configuring_an_undeclared_class_fails_naming_it_and_the_declared_list(
         "srv_read",
         "units: { calls: 1, bytes: 0, byts: 2 }",
     ));
-    let errs = validate(&cfg).expect_err("byts is not a declared tools class");
+    let errs =
+        validate_cost_metadata(&cfg, declarations).expect_err("byts is not a declared tools class");
     let want = "tools.rate_card configures unit(s) byts not declared by this plane (declared: \
                 calls, bytes); remove them or fix the name";
     assert!(errs.iter().any(|e| e == want), "{errs:?}");
@@ -6178,26 +6192,24 @@ fn a_card_configuring_an_undeclared_class_fails_naming_it_and_the_declared_list(
     cfg.rate_card = Some(card_yaml(
         "m: { input_utok: 3, units: { search_units: 0, images: 0 } }\n",
     ));
-    assert!(validate(&cfg).is_ok(), "{:?}", validate(&cfg));
+    assert!(
+        validate_cost_metadata(&cfg, declarations).is_ok(),
+        "{:?}",
+        validate_cost_metadata(&cfg, declarations)
+    );
 }
 
 #[test]
 fn a_fee_the_plane_does_not_count_fails_naming_it_and_the_counted_list() {
     use busbar_kernel_ledger::cost::{PlaneFees, PER_SESSION};
-    let session: &'static crate::plane_driver::registry::PlaneDecl =
-        Box::leak(Box::new(crate::plane_driver::registry::PlaneDecl {
-            declaration: crate::plane_driver::registry::PlaneDeclaration {
-                key: "session-plane",
-                config_section: "streams",
-                fee_units: &[PER_SESSION],
-                ..CLASS_PLANE.declaration
-            },
+    let session: &'static crate::plane_driver::registry::PlaneDeclaration =
+        Box::leak(Box::new(crate::plane_driver::registry::PlaneDeclaration {
+            key: "session-plane",
+            config_section: "streams",
+            fee_units: &[PER_SESSION],
             ..CLASS_PLANE
         }));
-    let _iso = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[
-        session,
-        &CLASS_PLANE,
-    ]);
+    let declarations = &[session, &CLASS_PLANE];
     let fees = |plane: &str, per_request, per_session| {
         let f = PlaneFees {
             per_request,
@@ -6205,20 +6217,26 @@ fn a_fee_the_plane_does_not_count_fails_naming_it_and_the_counted_list() {
         };
         config::PlaneFeesMap::from([(plane.to_string(), f)])
     };
-    let mut cfg = cost_cfg(&["m"]);
+    let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
     cfg.plane_fees = fees("session-plane", 2, 40);
-    let errs = validate(&cfg).expect_err("the session plane counts no request");
+    let errs = validate_cost_metadata(&cfg, declarations)
+        .expect_err("the session plane counts no request");
     let want = "streams.fees.per_request is not counted by this plane (counted: per_session); \
                 remove it";
     assert_eq!(errs, vec![want.to_string()]);
 
     cfg.plane_fees = fees("class-plane", 0, 1);
-    let errs = validate(&cfg).expect_err("the class plane counts no fee unit");
+    let errs =
+        validate_cost_metadata(&cfg, declarations).expect_err("the class plane counts no fee unit");
     let want = "tools.fees.per_session is not counted by this plane (counted: none); remove it";
     assert_eq!(errs, vec![want.to_string()]);
 
     cfg.plane_fees = fees("session-plane", 0, 40);
-    assert!(validate(&cfg).is_ok(), "{:?}", validate(&cfg));
+    assert!(
+        validate_cost_metadata(&cfg, declarations).is_ok(),
+        "{:?}",
+        validate_cost_metadata(&cfg, declarations)
+    );
 }
 
 #[test]
@@ -6226,28 +6244,30 @@ fn a_fee_unit_declared_as_a_class_is_neither_owed_nor_priced_by_the_card() {
     use busbar_kernel_ledger::cost::PER_SESSION;
     const CLASSES: &[crate::plane_driver::registry::BillableClass] =
         &[bc("calls", "count"), bc(PER_SESSION, "count")];
-    let session: &'static crate::plane_driver::registry::PlaneDecl =
-        Box::leak(Box::new(crate::plane_driver::registry::PlaneDecl {
-            declaration: crate::plane_driver::registry::PlaneDeclaration {
-                key: "session-plane",
-                config_section: "live",
-                billable_classes: CLASSES,
-                fee_units: &[PER_SESSION],
-                ..CLASS_PLANE.declaration
-            },
+    let session: &'static crate::plane_driver::registry::PlaneDeclaration =
+        Box::leak(Box::new(crate::plane_driver::registry::PlaneDeclaration {
+            key: "session-plane",
+            config_section: "live",
+            billable_classes: CLASSES,
+            fee_units: &[PER_SESSION],
             ..CLASS_PLANE
         }));
-    let _iso = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[session]);
-    let mut cfg = cost_cfg(&["m"]);
+    let declarations = &[session];
+    let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
     cfg.rate_card = Some(plane_card("session-plane", "a", "units: { calls: 1 }"));
-    assert!(validate(&cfg).is_ok(), "{:?}", validate(&cfg));
+    assert!(
+        validate_cost_metadata(&cfg, declarations).is_ok(),
+        "{:?}",
+        validate_cost_metadata(&cfg, declarations)
+    );
 
     cfg.rate_card = Some(plane_card(
         "session-plane",
         "a",
         "units: { calls: 1, per_session: 5 }",
     ));
-    let errs = validate(&cfg).expect_err("a card does not price the fee unit");
+    let errs =
+        validate_cost_metadata(&cfg, declarations).expect_err("a card does not price the fee unit");
     let want = "live.rate_card configures unit(s) per_session not declared by this plane \
                 (declared: calls); remove them or fix the name";
     assert!(errs.iter().any(|e| e == want), "{errs:?}");
