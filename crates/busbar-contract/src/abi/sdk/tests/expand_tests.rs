@@ -43,7 +43,8 @@ fn bytes_of<T>(v: &T) -> Vec<u8> {
 }
 
 fn lend<T>(v: &T) -> Lent<'_, T> {
-    // SAFETY: nothing reads through a pointer in `v` (the tests compare addresses and values).
+    // SAFETY: each caller keeps its nested backing storage initialized and live for this loan.
+    // Patterned accessor-parity values only copy pointer fields; they never dereference them.
     unsafe { Lent::new(v) }
 }
 
@@ -397,99 +398,150 @@ fn every_row_list_setter_states_the_pointer_and_length_together() {
 }
 
 #[test]
-fn a_test_in_sets_exactly_the_fields_its_builders_name() {
-    use crate::abi::sdk::test_support::test_in::TestIn;
+fn actual_abi_frames_lend_the_owned_fields_their_accessors_name() {
     let settings = br#"{"timeout_ms":5}"#.to_vec();
     let secrets = [Blob::of(b"s")];
     let mut err = [0_u8; 8];
-    let t = TestIn::<OpenIn>::new()
-        .settings(&settings)
-        .set(|i| &i.generation, 7_u64)
-        .list(|i| &i.secrets, |i| &i.secrets_len, &secrets)
-        .buffer(|i| &i.err_buf, |i| &i.err_cap, &mut err);
-    let i = &t.input;
+    let t = OpenIn {
+        settings: Blob {
+            ptr: settings.as_ptr(),
+            len: settings.len(),
+            fmt: BLOB_JSON,
+            flags: 0,
+        },
+        generation: 7,
+        secrets: secrets.as_ptr(),
+        secrets_len: secrets.len(),
+        err_buf: err.as_mut_ptr(),
+        err_cap: err.len(),
+        ..crate::abi::sdk::door::blank_in()
+    };
+    let i = lend(&t);
     assert_eq!(
         (i.settings.ptr, i.settings.len),
         (settings.as_ptr(), settings.len())
     );
     assert_eq!(i.settings.fmt, BLOB_JSON);
-    assert_eq!(i.generation, 7);
+    assert_eq!(i.settings().bytes(), settings);
+    assert_eq!(i.generation(), 7);
     assert_eq!((i.secrets, i.secrets_len), (secrets.as_ptr(), 1));
     assert_eq!(i.err_cap, 8);
     assert!(!i.err_buf.is_null());
-    assert!(i.host.is_null(), "a builder never names host tables");
+    assert!(i.host.is_null(), "this frame names no host tables");
 
     let scope = b"read".to_vec();
-    let login = TestIn::<crate::abi::auth::BeginLoginIn>::new()
-        .string(|i| &i.state, b"st")
-        .strings(|i| &i.scopes, |i| &i.scopes_len, &[scope.as_slice()]);
-    let l = &login.input;
+    let scopes = [AbiStr {
+        ptr: scope.as_ptr(),
+        len: scope.len(),
+    }];
+    let login = crate::abi::auth::BeginLoginIn {
+        state: AbiStr::of("st"),
+        scopes: scopes.as_ptr(),
+        scopes_len: scopes.len(),
+        ..crate::abi::sdk::door::blank_in()
+    };
+    let l = lend(&login);
     assert_eq!((l.state.len, l.scopes_len), (2, 1));
-    // SAFETY: the list is held by `login`, and its string borrows `scope`, both alive here.
-    let first = unsafe { *l.scopes };
+    let first = scopes[0];
     assert_eq!((first.ptr, first.len), (scope.as_ptr(), 4));
+    assert_eq!(l.state().bytes(), b"st");
 
-    let arrive = TestIn::<crate::abi::plane::ArriveIn>::new()
-        .blob(|i| &i.body, b"{}", BLOB_JSON)
-        .fields(|i| &i.fields, |i| &i.fields_len, &[(&b"k"[..], &b"v"[..])]);
-    let a = &arrive.input;
+    let fields = [Field {
+        name: AbiStr::of("k"),
+        value: AbiStr::of("v"),
+    }];
+    let arrive = crate::abi::plane::ArriveIn {
+        body: Blob {
+            fmt: BLOB_JSON,
+            ..Blob::of(b"{}")
+        },
+        fields: fields.as_ptr(),
+        fields_len: fields.len(),
+        ..crate::abi::sdk::door::blank_in()
+    };
+    let a = lend(&arrive);
     assert_eq!((a.body.len, a.body.fmt, a.fields_len), (2, BLOB_JSON, 1));
-    // SAFETY: the list is held by `arrive`.
-    let f: Field = unsafe { *a.fields };
+    let f = fields[0];
     assert_eq!((f.name.len, f.value.len), (1, 1));
+    assert_eq!(a.body().bytes(), b"{}");
 
-    let blobs = TestIn::<crate::abi::store::OpBlobsIn>::new().blobs(
-        |i| &i.records,
-        |i| &i.records_len,
-        &[&b"x"[..], &b"yz"[..]],
-        BLOB_OCTETS,
-    );
-    assert_eq!(blobs.input.records_len, 2);
-    // SAFETY: the list is held by `blobs`.
-    let second = unsafe { *blobs.input.records.add(1) };
+    let records = [Blob::of(b"x"), Blob::of(b"yz")];
+    let blobs = crate::abi::store::OpBlobsIn {
+        records: records.as_ptr(),
+        records_len: records.len(),
+        ..crate::abi::sdk::door::blank_in()
+    };
+    assert_eq!(blobs.records_len, 2);
+    let second = records[1];
     assert_eq!((second.len, second.fmt), (2, BLOB_OCTETS));
 }
 
 #[test]
-fn a_fake_host_lends_its_own_tables() {
+fn sdk_host_handles_read_the_actual_lent_tables() {
+    use crate::abi::host::service::HostSlots;
+    use crate::abi::mechanism::ticket::{HostCtx, HostTables};
     use crate::abi::sdk::conn::Host;
     use crate::abi::sdk::services::{Services, Wake};
-    use crate::abi::sdk::test_support::fake::FakeHost;
-    let fake = FakeHost::new();
-    let tables = fake.lent();
-    assert!(ptr::eq(tables.lent, fake.tables_for_tests()));
+    let mut services: HostSlots = crate::abi::sdk::test_support::zeroed();
+    services.size = size_of::<HostSlots>() as u32;
+    services.slots = crate::abi::host::service::SERVICES;
+    extern "C" fn wake(_: HostCtx, _: crate::abi::mechanism::ticket::Ticket) {}
+    let raw_tables = HostTables {
+        size: size_of::<HostTables>() as u32,
+        _reserved: 0,
+        ctx: HostCtx::NONE,
+        wake: Some(wake),
+        conns: ptr::null(),
+        services: &services,
+        io: ptr::null(),
+    };
+    let tables = lend(&raw_tables);
+    assert!(ptr::eq(tables.get(), &raw_tables));
 
     let host = Host::of(tables);
-    // SAFETY: the fake's own tables, alive while `fake` is.
-    let raw = unsafe { Host::from_raw(fake.tables_for_tests()) };
+    // SAFETY: these actual initialized tables stay live for every handle read here.
+    let raw = unsafe { Host::from_raw(&raw_tables) };
     assert_eq!(format!("{host:?}"), format!("{raw:?}"));
     assert_eq!(
         Services::of(tables).is_some(),
         // SAFETY: as above.
-        unsafe { Services::from_raw(fake.tables_for_tests()) }.is_some()
+        unsafe { Services::from_raw(&raw_tables) }.is_some()
     );
     assert_eq!(
         Wake::of(tables).is_some(),
         // SAFETY: as above.
-        unsafe { Wake::from_raw(fake.tables_for_tests()) }.is_some()
+        unsafe { Wake::from_raw(&raw_tables) }.is_some()
     );
 }
 
 #[test]
 fn a_kept_handle_is_named_by_its_static_alias() {
+    use crate::abi::host::service::HostSlots;
     use crate::abi::mechanism::ticket::Ticket;
+    use crate::abi::mechanism::ticket::{HostCtx, HostTables};
     use crate::abi::sdk::auth_door::{StaticVerifyOp, VerifyOp};
     use crate::abi::sdk::conn::{Host, StaticHost};
     use crate::abi::sdk::services::{StaticServices, StaticWake};
-    use crate::abi::sdk::test_support::fake::FakeHost;
 
     struct Kept {
         host: StaticHost,
         services: Option<StaticServices>,
         wake: Option<StaticWake>,
     }
-    let fake = FakeHost::new();
-    let tables = fake.lent();
+    let mut services: HostSlots = crate::abi::sdk::test_support::zeroed();
+    services.size = size_of::<HostSlots>() as u32;
+    services.slots = crate::abi::host::service::SERVICES;
+    extern "C" fn wake(_: HostCtx, _: crate::abi::mechanism::ticket::Ticket) {}
+    let raw_tables = HostTables {
+        size: size_of::<HostTables>() as u32,
+        _reserved: 0,
+        ctx: HostCtx::NONE,
+        wake: Some(wake),
+        conns: ptr::null(),
+        services: &services,
+        io: ptr::null(),
+    };
+    let tables = lend(&raw_tables);
     let kept = Kept {
         host: Host::of(tables),
         services: Host::of(tables).services(),
@@ -503,7 +555,7 @@ fn a_kept_handle_is_named_by_its_static_alias() {
         kept.services.is_some(),
         Host::of(tables).services().is_some()
     );
-    assert_eq!(kept.wake.is_some(), fake.tables_for_tests().wake.is_some());
+    assert_eq!(kept.wake.is_some(), raw_tables.wake.is_some());
     let op: StaticVerifyOp = VerifyOp::new(kept.services, Ticket::NONE);
     assert_eq!(op.services().is_some(), kept.services.is_some());
 }

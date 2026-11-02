@@ -3,7 +3,7 @@
 
 //! The export kind's shared sink pieces through a real door: a push sink built from them answers
 
-use std::mem::size_of;
+use std::mem::{size_of, size_of_val};
 
 use serde::Deserialize;
 
@@ -18,9 +18,7 @@ use crate::abi::sdk::door::{abi_str, alias, statement};
 use crate::abi::sdk::life::{
     settings_as, settings_value, HeldSlot, Opened, NOT_REFRESHED, NO_INSTANCE,
 };
-use crate::abi::sdk::test_support::reply::{self, Instance as TestInstance};
-use crate::abi::sdk::test_support::test_in::TestIn;
-use crate::abi::sdk::test_support::{zeroed, DoorView};
+use crate::abi::sdk::test_support::zeroed;
 use crate::abi::sdk::Safe;
 
 const STREAMS: &[u8] = &[ExportStream::Logs as u8];
@@ -120,103 +118,203 @@ mod plugin {
     }
 }
 
-fn view() -> DoorView {
-    DoorView::of(plugin::MACRO_DOOR)
+fn ops() -> &'static Ops {
+    // SAFETY: the actual SDK-generated export door declares this complete static table.
+    unsafe { &*plugin::door().ops().cast::<Ops>() }
 }
 
-fn opened(view: &DoorView) -> TestInstance<'static> {
-    let open = view.op::<Ops>(|t| &t.head.open).expect("open");
-    let mut c = reply::call_in(
-        open,
-        None,
-        &TestIn::<OpenIn>::new()
-            .set(|i| &i.head.op, slot::OPEN)
-            .settings(br#"{"path":"/x"}"#),
-        zeroed::<OpenOut>(),
+fn opened(table: &Ops) -> *mut core::ffi::c_void {
+    let mut input: OpenIn = zeroed();
+    input.head.size = size_of::<OpenIn>() as u32;
+    input.head.op = slot::OPEN;
+    input.settings = Blob {
+        fmt: BLOB_JSON,
+        ..Blob::of(br#"{"path":"/x"}"#)
+    };
+    let mut output: OpenOut = zeroed();
+    output.head.size = size_of::<OpenOut>() as u32;
+    // SAFETY: exact initialized frames and static settings; this door creates the sole instance.
+    assert_eq!(
+        unsafe {
+            table.head.open.unwrap()(
+                core::ptr::null_mut(),
+                core::ptr::from_ref(&input).cast(),
+                core::ptr::from_mut(&mut output).cast(),
+            )
+        }
+        .outcome(),
+        Outcome::Ready
     );
-    assert_eq!(c.outcome, Outcome::Ready);
-    c.take_instance().expect("an instance")
+    assert!(!output.instance.is_null(), "an instance");
+    output.instance
 }
 
-fn close(view: &DoorView, instance: TestInstance<'static>) {
-    let close = view.op::<Ops>(|t| &t.head.close).expect("close");
-    let mut h: OutHead = zeroed();
-    h.size = size_of::<OutHead>() as u32;
-    let c = reply::close_in(
-        close,
-        instance,
-        &TestIn::<InHead>::new().set(|i| &i.op, slot::CLOSE),
-        h,
+fn close(table: &Ops, instance: *mut core::ffi::c_void) {
+    let mut input: InHead = zeroed();
+    input.size = size_of::<InHead>() as u32;
+    input.op = slot::CLOSE;
+    let mut output: OutHead = zeroed();
+    output.size = size_of::<OutHead>() as u32;
+    // SAFETY: each test consumes exactly the instance its OPEN created, after its final crossing.
+    assert_eq!(
+        unsafe {
+            table.head.close.unwrap()(
+                instance,
+                core::ptr::from_ref(&input).cast(),
+                core::ptr::from_mut(&mut output).cast(),
+            )
+        }
+        .outcome(),
+        Outcome::Ready
     );
-    assert_eq!(c.outcome, Outcome::Ready);
+}
+
+fn release(table: &Ops, instance: *mut core::ffi::c_void, lease: u64) {
+    if lease == 0 {
+        return;
+    }
+    let mut input: crate::abi::mechanism::lifecycle::ReleaseIn = zeroed();
+    input.head.size = size_of_val(&input) as u32;
+    input.head.op = slot::RELEASE;
+    input.lease = lease;
+    let mut output: OutHead = zeroed();
+    output.size = size_of::<OutHead>() as u32;
+    // SAFETY: return only the actual lease from this live instance's immediately preceding answer.
+    assert_eq!(
+        unsafe {
+            table.head.release.unwrap()(
+                instance,
+                core::ptr::from_ref(&input).cast(),
+                core::ptr::from_mut(&mut output).cast(),
+            )
+        }
+        .outcome(),
+        Outcome::Ready
+    );
+}
+
+fn error_text(head: &OutHead) -> Option<String> {
+    if head.error.len == 0 {
+        return None;
+    }
+    // SAFETY: called while the actual SDK answer still owns its initialized diagnostic bytes.
+    Some(
+        std::str::from_utf8(unsafe { std::slice::from_raw_parts(head.error.ptr, head.error.len) })
+            .unwrap()
+            .to_owned(),
+    )
 }
 
 /// A push sink's `scrape` and `serve` are REFUSED saying why, and its `status` is READY.
 #[test]
 fn a_push_sink_refuses_scrape_and_serve_in_the_kinds_words() {
-    let view = view();
-    let instance = opened(&view);
-
-    let scrape = view.op::<Ops>(|t| &t.scrape).expect("scrape");
-    let c = reply::call_in(
-        scrape,
-        Some(&instance),
-        &TestIn::<ScrapeIn>::new().set(|i| &i.head.op, crate::abi::export::slot::SCRAPE),
-        zeroed::<ScrapeOut>(),
+    let table = ops();
+    let instance = opened(table);
+    let mut scrape: ScrapeIn = zeroed();
+    scrape.head.size = size_of::<ScrapeIn>() as u32;
+    scrape.head.op = crate::abi::export::slot::SCRAPE;
+    let mut output: ScrapeOut = zeroed();
+    output.head.size = size_of::<ScrapeOut>() as u32;
+    // SAFETY: the live export instance and exact initialized SCRAPE frames are held through this call.
+    assert_eq!(
+        unsafe {
+            table.scrape.unwrap()(
+                instance,
+                core::ptr::from_ref(&scrape).cast(),
+                core::ptr::from_mut(&mut output).cast(),
+            )
+        }
+        .outcome(),
+        Outcome::Refused
     );
-    assert_eq!(c.outcome, Outcome::Refused);
-    assert_eq!(c.error.as_deref(), Some(NO_EXPOSITION));
-    assert_eq!(c.out.written, 0);
+    assert_eq!(error_text(&output.head).as_deref(), Some(NO_EXPOSITION));
+    assert_eq!(output.written, 0);
+    release(table, instance, output.head.lease);
 
-    let serve = view.op::<Ops>(|t| &t.serve).expect("serve");
-    let c = reply::call_in(
-        serve,
-        Some(&instance),
-        &TestIn::<ServeIn>::new().set(|i| &i.head.op, crate::abi::export::slot::SERVE),
-        zeroed::<ServeOut>(),
+    let mut serve: ServeIn = zeroed();
+    serve.head.size = size_of::<ServeIn>() as u32;
+    serve.head.op = crate::abi::export::slot::SERVE;
+    let mut output: ServeOut = zeroed();
+    output.head.size = size_of::<ServeOut>() as u32;
+    // SAFETY: the same live instance and exact initialized SERVE frames.
+    assert_eq!(
+        unsafe {
+            table.serve.unwrap()(
+                instance,
+                core::ptr::from_ref(&serve).cast(),
+                core::ptr::from_mut(&mut output).cast(),
+            )
+        }
+        .outcome(),
+        Outcome::Refused
     );
-    assert_eq!(c.outcome, Outcome::Refused);
-    assert_eq!(c.error.as_deref(), Some(NO_ROUTE));
+    assert_eq!(error_text(&output.head).as_deref(), Some(NO_ROUTE));
+    release(table, instance, output.head.lease);
 
-    let status = view.op::<Ops>(|t| &t.status).expect("status");
-    let c = reply::call_in(
-        status,
-        Some(&instance),
-        &TestIn::<InHead>::new().set(|i| &i.op, crate::abi::export::slot::STATUS),
-        zeroed::<StatusOut>(),
+    let mut status: InHead = zeroed();
+    status.size = size_of::<InHead>() as u32;
+    status.op = crate::abi::export::slot::STATUS;
+    let mut output: StatusOut = zeroed();
+    output.head.size = size_of::<StatusOut>() as u32;
+    // SAFETY: the actual STATUS slot accepts this exact head and writes a complete StatusOut.
+    assert_eq!(
+        unsafe {
+            table.status.unwrap()(
+                instance,
+                core::ptr::from_ref(&status).cast(),
+                core::ptr::from_mut(&mut output).cast(),
+            )
+        }
+        .outcome(),
+        Outcome::Ready
     );
-    assert_eq!(c.outcome, Outcome::Ready);
-    assert_eq!(c.error, None);
-    assert!(c.owned.is_empty());
-
-    close(&view, instance);
+    assert_eq!(error_text(&output.head), None);
+    assert_eq!(output.status.len, 0);
+    release(table, instance, output.head.lease);
+    close(table, instance);
 }
 
 /// The `one_instance` check through the door: with more than one instance, the sink's one finding
 #[test]
 fn a_second_instance_is_answered_with_the_sinks_reason() {
-    let view = view();
-    let instance = opened(&view);
-    let check = view.op::<Ops>(|t| &t.check).expect("check");
+    let table = ops();
+    let instance = opened(table);
     let named = |names: &[&'static str]| -> Vec<u8> {
         let list: Vec<CheckInstance> = names
             .iter()
-            .map(|&n| CheckInstance {
-                name: abi_str(n),
+            .map(|&name| CheckInstance {
+                name: abi_str(name),
                 settings: Blob::ABSENT,
             })
             .collect();
-        let c = reply::call_in(
-            check,
-            Some(&instance),
-            &TestIn::<CheckIn>::new()
-                .set(|i| &i.head.op, crate::abi::export::slot::CHECK)
-                .set(|i| &i.phase, CHECK_PHASE_LIMITS)
-                .list(|i| &i.instances, |i| &i.instances_len, &list),
-            zeroed::<CheckOut>(),
+        let mut input: CheckIn = zeroed();
+        input.head.size = size_of::<CheckIn>() as u32;
+        input.head.op = crate::abi::export::slot::CHECK;
+        input.phase = CHECK_PHASE_LIMITS;
+        input.instances = list.as_ptr();
+        input.instances_len = list.len();
+        let mut output: CheckOut = zeroed();
+        output.head.size = size_of::<CheckOut>() as u32;
+        // SAFETY: the owned initialized instance list remains live through the actual CHECK call.
+        assert_eq!(
+            unsafe {
+                table.check.unwrap()(
+                    instance,
+                    core::ptr::from_ref(&input).cast(),
+                    core::ptr::from_mut(&mut output).cast(),
+                )
+            }
+            .outcome(),
+            Outcome::Ready
         );
-        assert_eq!(c.outcome, Outcome::Ready);
-        c.owned
+        let findings = if output.findings.len == 0 {
+            Vec::new()
+        } else {
+            // SAFETY: the actual answer's live lease owns exactly the stated findings bytes.
+            unsafe { std::slice::from_raw_parts(output.findings.ptr, output.findings.len) }.to_vec()
+        };
+        release(table, instance, output.head.lease);
+        findings
     };
     assert!(named(&[]).is_empty());
     assert!(named(&["a"]).is_empty());
@@ -227,7 +325,7 @@ fn a_second_instance_is_answered_with_the_sinks_reason() {
         [WHY],
         "the sink says why; the host words the refusal"
     );
-    close(&view, instance);
+    close(table, instance);
 }
 
 /// Settings are read as their JSON value, empty as `{}`, and refused FAILED in serde's words.
@@ -278,62 +376,99 @@ fn the_tail_and_the_alias_state_what_they_are_given() {
     assert!(!a.from.ptr.is_null());
     assert_eq!(a.from.len, "probe-sink".len());
     assert!(a.to.ptr.is_null() && a.to.len == 0);
-    assert_eq!(view().name(), "probe-sink");
+    // SAFETY: the actual exported static Statement and its static name bytes stay live.
+    let descriptor = unsafe { &*plugin::door().statement() };
+    let name = unsafe { std::slice::from_raw_parts(descriptor.name.ptr, descriptor.name.len) };
+    assert_eq!(std::str::from_utf8(name).unwrap(), "probe-sink");
 }
 
 /// A called op keeps a copy of its envelope.
 #[test]
 fn a_called_op_keeps_a_copy_of_its_envelope() {
-    let view = view();
-    let instance = opened(&view);
-    let deliver = view.op::<Ops>(|t| &t.deliver).expect("deliver");
-    let c = reply::call_in(
-        deliver,
-        Some(&instance),
-        &TestIn::<DeliverIn>::new().set(|i| &i.head.op, crate::abi::export::slot::DELIVER),
-        zeroed::<OutHead>(),
-    );
-    assert_eq!(c.outcome, Outcome::Ready);
+    let table = ops();
+    let instance = opened(table);
+    let mut input: DeliverIn = zeroed();
+    input.head.size = size_of::<DeliverIn>() as u32;
+    input.head.op = crate::abi::export::slot::DELIVER;
+    let mut output: OutHead = zeroed();
+    output.size = size_of::<OutHead>() as u32;
+    // SAFETY: exact initialized DELIVER/OutHead frames on the instance this door opened.
     assert_eq!(
-        c.envelope.diags,
-        vec![reply::DiagCopy {
-            id_idx: crate::abi::mechanism::call::DIAG_LOG,
-            severity: crate::abi::mechanism::call::SEVERITY_INFO,
-            text: DELIVERED.to_owned(),
-        }]
+        unsafe {
+            table.deliver.unwrap()(
+                instance,
+                core::ptr::from_ref(&input).cast(),
+                core::ptr::from_mut(&mut output).cast(),
+            )
+        }
+        .outcome(),
+        Outcome::Ready
+    );
+    // SAFETY: the actual answer's live envelope owns both counted initialized arrays and texts.
+    let diags =
+        unsafe { std::slice::from_raw_parts(output.envelope.diags, output.envelope.diags_len) }
+            .iter()
+            .map(|diag| {
+                let text = unsafe { std::slice::from_raw_parts(diag.text.ptr, diag.text.len) };
+                (
+                    diag.id_idx,
+                    diag.severity,
+                    std::str::from_utf8(text).unwrap().to_owned(),
+                )
+            })
+            .collect::<Vec<_>>();
+    let metrics =
+        unsafe { std::slice::from_raw_parts(output.envelope.metrics, output.envelope.metrics_len) }
+            .iter()
+            .map(|metric| {
+                assert_eq!(metric.label_vals_len, 0);
+                (
+                    metric.family_idx,
+                    metric.kind,
+                    metric.value,
+                    Vec::<String>::new(),
+                )
+            })
+            .collect::<Vec<_>>();
+    release(table, instance, output.lease);
+    assert_eq!(
+        diags,
+        vec![(
+            crate::abi::mechanism::call::DIAG_LOG,
+            crate::abi::mechanism::call::SEVERITY_INFO,
+            DELIVERED.to_owned()
+        )]
     );
     assert_eq!(
-        c.envelope.metrics,
-        vec![reply::MetricCopy {
-            family_idx: 0,
-            kind: crate::abi::mechanism::call::METRIC_ADD,
-            value: 1.0,
-            label_vals: Vec::new(),
-        }]
+        metrics,
+        vec![(0, crate::abi::mechanism::call::METRIC_ADD, 1.0, Vec::new())]
     );
-    assert!(c.out.envelope.diags.is_null(), "the out keeps no pointer");
-    close(&view, instance);
+    close(table, instance);
 }
 
 /// A held operation with no instance returns the SDK's refusal.
 #[test]
 fn a_held_op_with_no_instance_answers_in_the_sdks_words() {
-    let view = view();
-    let check = view.op::<Ops>(|t| &t.check).expect("check");
+    let table = ops();
     let mut input: CheckIn = zeroed();
+    input.head.size = size_of::<CheckIn>() as u32;
     input.head.op = crate::abi::export::slot::CHECK;
     input.phase = CHECK_PHASE_LIMITS;
-
-    let c = unsafe {
-        reply::call(
-            check.parts().0,
-            core::ptr::null_mut(),
-            &input,
-            zeroed::<CheckOut>(),
-        )
-    };
-    assert_eq!(c.outcome, Outcome::Refused);
-    assert_eq!(c.error.as_deref(), Some(NO_INSTANCE));
+    let mut output: CheckOut = zeroed();
+    output.head.size = size_of::<CheckOut>() as u32;
+    // SAFETY: the real SDK CHECK slot accepts NULL to produce its missing-instance refusal.
+    assert_eq!(
+        unsafe {
+            table.check.unwrap()(
+                core::ptr::null_mut(),
+                core::ptr::from_ref(&input).cast(),
+                core::ptr::from_mut(&mut output).cast(),
+            )
+        }
+        .outcome(),
+        Outcome::Refused
+    );
+    assert_eq!(error_text(&output.head).as_deref(), Some(NO_INSTANCE));
 }
 
 /// The SDK handles a sink that declares no refresh operation.

@@ -8,9 +8,7 @@ use crate::abi::mechanism::call::{InHead, OutHead, Outcome};
 use crate::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
 use crate::abi::sdk::door::statement;
 use crate::abi::sdk::life::Refreshed;
-use crate::abi::sdk::test_support::reply;
-use crate::abi::sdk::test_support::test_in::TestIn;
-use crate::abi::sdk::test_support::{zeroed, DoorView};
+use crate::abi::sdk::test_support::zeroed;
 use crate::abi::sdk::{Lent, Out, Safe, SafeSlot};
 use crate::abi::transport::{slot, ConnIn, Ops, ShutIn};
 
@@ -83,58 +81,96 @@ fn out() -> OutHead {
 /// Through the door: the stub is REFUSED in the role's words, and a carrier op on an instance the
 #[test]
 fn a_role_stub_and_a_carrier_op_without_io_answer_in_words() {
-    let view = DoorView::of(plugin::MACRO_DOOR);
-    let open = view.op::<Ops>(|t| &t.head.open).expect("open");
-    let mut opened = reply::call_in(
-        open,
-        None,
-        &TestIn::<OpenIn>::new().set(|i| &i.head.op, life::OPEN),
-        zeroed::<OpenOut>(),
-    );
-    assert_eq!(opened.outcome, Outcome::Ready);
-    let instance = opened.take_instance().expect("an instance");
-
-    let shut = view.op::<Ops>(|t| &t.shut).expect("shut");
-    let c = reply::call_in(
-        shut,
-        Some(&instance),
-        &TestIn::<ShutIn>::new().set(|i| &i.head.op, slot::SHUT),
-        out(),
-    );
-    assert_eq!(c.outcome, Outcome::Refused);
+    // SAFETY: this is the complete transport table exported by the actual SDK-generated door.
+    let table = unsafe { &*plugin::door().ops().cast::<Ops>() };
+    let mut input: OpenIn = zeroed();
+    input.head.size = std::mem::size_of::<OpenIn>() as u32;
+    input.head.op = life::OPEN;
+    let mut opened: OpenOut = zeroed();
+    opened.head.size = std::mem::size_of::<OpenOut>() as u32;
+    // SAFETY: exact initialized OPEN frames; this synchronous call creates the sole instance.
     assert_eq!(
-        c.error.as_deref(),
-        Some("shut: the probe carrier does not serve this op")
+        unsafe {
+            table.head.open.unwrap()(
+                std::ptr::null_mut(),
+                std::ptr::from_ref(&input).cast(),
+                std::ptr::from_mut(&mut opened).cast(),
+            )
+        }
+        .outcome(),
+        Outcome::Ready
     );
+    assert!(!opened.instance.is_null(), "an instance");
 
-    let flush = view.op::<Ops>(|t| &t.flush).expect("flush");
-    let c = reply::call_in(
-        flush,
-        Some(&instance),
-        &TestIn::<ConnIn>::new().set(|i| &i.head.op, slot::FLUSH),
-        out(),
-    );
-    assert_eq!(c.outcome, Outcome::Failed);
+    let mut shut: ShutIn = zeroed();
+    shut.head.size = std::mem::size_of::<ShutIn>() as u32;
+    shut.head.op = slot::SHUT;
+    let mut output = out();
+    // SAFETY: this table's live instance and complete SHUT/OutHead frames, all live for the call.
     assert_eq!(
-        c.error.as_deref(),
-        Some("flush: the host lent this carrier no I/O")
+        unsafe {
+            table.shut.unwrap()(
+                opened.instance,
+                std::ptr::from_ref(&shut).cast(),
+                std::ptr::from_mut(&mut output).cast(),
+            )
+        }
+        .outcome(),
+        Outcome::Refused
+    );
+    // SAFETY: the actual SDK answer lends its initialized diagnostic bytes until next crossing.
+    let error = unsafe { std::slice::from_raw_parts(output.error.ptr, output.error.len) };
+    assert_eq!(
+        std::str::from_utf8(error).unwrap(),
+        "shut: the probe carrier does not serve this op"
     );
 
-    let close = view.op::<Ops>(|t| &t.head.close).expect("close");
-    let c = reply::close_in(
-        close,
-        instance,
-        &TestIn::<InHead>::new().set(|i| &i.op, life::CLOSE),
-        out(),
+    let mut flush: ConnIn = zeroed();
+    flush.head.size = std::mem::size_of::<ConnIn>() as u32;
+    flush.head.op = slot::FLUSH;
+    let mut output = out();
+    // SAFETY: exact FLUSH frames on the still-live instance; no host I/O was installed at OPEN.
+    assert_eq!(
+        unsafe {
+            table.flush.unwrap()(
+                opened.instance,
+                std::ptr::from_ref(&flush).cast(),
+                std::ptr::from_mut(&mut output).cast(),
+            )
+        }
+        .outcome(),
+        Outcome::Failed
     );
-    assert_eq!(c.outcome, Outcome::Ready);
+    // SAFETY: initialized diagnostic bytes lent by this actual SDK answer.
+    let error = unsafe { std::slice::from_raw_parts(output.error.ptr, output.error.len) };
+    assert_eq!(
+        std::str::from_utf8(error).unwrap(),
+        "flush: the host lent this carrier no I/O"
+    );
+
+    let mut close: InHead = zeroed();
+    close.size = std::mem::size_of::<InHead>() as u32;
+    close.op = life::CLOSE;
+    // SAFETY: consume the sole instance created by this table's OPEN, once.
+    assert_eq!(
+        unsafe {
+            table.head.close.unwrap()(
+                opened.instance,
+                std::ptr::from_ref(&close).cast(),
+                std::ptr::from_mut(&mut out()).cast(),
+            )
+        }
+        .outcome(),
+        Outcome::Ready
+    );
 }
 
 /// A carrier op on no open instance is FAILED saying so: the words reach the caller although the
 #[test]
 fn a_carrier_op_on_no_instance_answers_in_words() {
-    let view = DoorView::of(plugin::MACRO_DOOR);
-    let (flush, _, _) = view.op::<Ops>(|t| &t.flush).expect("flush").parts();
+    // SAFETY: the actual macro door exports this complete transport Ops table.
+    let table = unsafe { &*plugin::door().ops().cast::<Ops>() };
+    let flush = table.flush.expect("flush");
     let mut input: ConnIn = zeroed();
     input.head.size = std::mem::size_of::<ConnIn>() as u32;
     input.head.op = slot::FLUSH;
