@@ -276,7 +276,10 @@ fn actual_http_target_and_request_path_reach_the_same_real_peer() {
                 std::thread::sleep(Duration::from_millis(2))
             }
             Ok(piece) => match piece.kind {
-                PieceKind::Fields => heads += 1,
+                PieceKind::Fields => {
+                    heads += 1;
+                    assert_eq!(piece.status_code, Some(201));
+                }
                 PieceKind::Body => body.extend_from_slice(&buffer[..piece.len]),
                 PieceKind::Completion => break,
                 PieceKind::HookReply => panic!("HTTP reply became a hook reply"),
