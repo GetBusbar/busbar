@@ -237,7 +237,7 @@ fn bind_plane(origin: Origin, instance: &str, dispatcher: &Dispatcher) -> Plugin
             // This first-party getter is the reviewed plugin_door! expansion: it returns only
             // promoted static Door/Statement/Ops constants and invokes no host or plugin slot.
             let linked = getter();
-            let dropped = dispatch::door_addresses_of_library(&path)
+            let dropped = dispatch::load::door_addresses_of_library(&path)
                 .expect("the actual dropped descriptor reads")
                 .expect("the actual dropped door exists");
             assert_ne!(
@@ -1157,6 +1157,12 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
             tables.withdraw(&instance);
             continue;
         }
+        gov.flush_budgets();
+        let before_billable = gov
+            .store()
+            .get_usage(&key.id, 0)
+            .expect("the actual Store reads the total fee quantity before the request")
+            .billable_requests;
         let before = gov
             .usage_for(&app.cost, &key.id, busbar_kernel::store::now())
             .unwrap()
@@ -1178,9 +1184,15 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
             before.requests + 1,
             "the actual root counts one completed request"
         );
+        gov.flush_budgets();
+        let after_billable = gov
+            .store()
+            .get_usage(&key.id, 0)
+            .expect("the actual Store reads the settled total fee quantity")
+            .billable_requests;
         assert_eq!(
-            after.billable_requests,
-            before.billable_requests + 1,
+            after_billable,
+            before_billable + 1,
             "the actual root keeps the fee unit exactly once"
         );
 
