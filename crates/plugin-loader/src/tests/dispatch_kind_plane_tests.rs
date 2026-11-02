@@ -731,7 +731,8 @@ fn snapshot_arrival_spans_require_alignment_before_copying() {
     snapshot.arrival_spans = null();
     assert!(crate::dispatch::kinds::plane::copy_snapshot(&snapshot, 0).is_none());
     snapshot.arrival_spans = spans.as_ptr();
-    snapshot.arrival_spans_len = crate::dispatch::validate::MAX_LENT_BYTES / size_of::<AbiStr>() + 1;
+    snapshot.arrival_spans_len =
+        crate::dispatch::validate::MAX_LENT_BYTES / size_of::<AbiStr>() + 1;
     assert!(crate::dispatch::kinds::plane::copy_snapshot(&snapshot, 0).is_none());
 }
 
