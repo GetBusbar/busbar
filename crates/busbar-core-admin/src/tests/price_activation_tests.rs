@@ -274,8 +274,10 @@ async fn settings_refuses_unconfirmed_prices_then_reload_confirms_the_exact_cand
         assert_eq!(handle.load().config_version, before.config_version);
         assert_eq!(scenario.live(), before_price);
         assert_eq!(
-            busbar_kernel::config::limits::installed().request_body_max_bytes,
-            before_limits.request_body_max_bytes
+            busbar_kernel::config::limits::installed().map(|limits| limits.request_body_max_bytes),
+            before_limits
+                .as_ref()
+                .map(|limits| limits.request_body_max_bytes)
         );
         assert_eq!(
             stored_fee(&overlay.backend()),
@@ -328,8 +330,8 @@ async fn settings_refuses_unconfirmed_prices_then_reload_confirms_the_exact_cand
             }
         );
         assert_eq!(
-            busbar_kernel::config::limits::installed().request_body_max_bytes,
-            CANDIDATE_BODY_CAP
+            busbar_kernel::config::limits::installed().map(|limits| limits.request_body_max_bytes),
+            Some(CANDIDATE_BODY_CAP)
         );
         let confirmed = failing.candidates();
         assert_eq!(confirmed.len(), 2);
@@ -356,8 +358,8 @@ async fn settings_refuses_unconfirmed_prices_then_reload_confirms_the_exact_cand
         .await;
         assert_eq!(nonprice.status(), StatusCode::OK);
         assert_eq!(
-            busbar_kernel::config::limits::installed().request_body_max_bytes,
-            NONPRICE_BODY_CAP
+            busbar_kernel::config::limits::installed().map(|limits| limits.request_body_max_bytes),
+            Some(NONPRICE_BODY_CAP)
         );
         assert_eq!(scenario.live().epoch, before_price.epoch + 1);
         assert_eq!(failing.candidates().len(), confirmed.len());
@@ -373,8 +375,8 @@ async fn an_absent_card_and_unchanged_prices_allow_a_successful_settings_handler
     assert!(!Arc::ptr_eq(&handle.load(), &before));
     assert_eq!(stored_fee(&overlay.backend()), Some(BASE_FEE));
     assert_eq!(
-        busbar_kernel::config::limits::installed().request_body_max_bytes,
-        CANDIDATE_BODY_CAP
+        busbar_kernel::config::limits::installed().map(|limits| limits.request_body_max_bytes),
+        Some(CANDIDATE_BODY_CAP)
     );
     let next = handle.load();
     assert_eq!(reload(&handle).await.status(), StatusCode::OK);
@@ -435,8 +437,10 @@ async fn pending_activation_and_canceled_handler_keep_the_old_generation_until_c
         }
     );
     assert_eq!(
-        busbar_kernel::config::limits::installed().request_body_max_bytes,
-        before_limits.request_body_max_bytes
+        busbar_kernel::config::limits::installed().map(|limits| limits.request_body_max_bytes),
+        before_limits
+            .as_ref()
+            .map(|limits| limits.request_body_max_bytes)
     );
     request.abort();
     assert!(request.await.unwrap_err().is_cancelled());
@@ -534,8 +538,10 @@ async fn callback_panics_preserve_one_coherent_published_price_generation() {
         }
     );
     assert_eq!(
-        busbar_kernel::config::limits::installed().request_body_max_bytes,
-        before_limits.request_body_max_bytes
+        busbar_kernel::config::limits::installed().map(|limits| limits.request_body_max_bytes),
+        before_limits
+            .as_ref()
+            .map(|limits| limits.request_body_max_bytes)
     );
     assert!(scenario.candidate.candidates().is_empty());
     assert!(persist_root(Some(&overlay.backend()), &RootSettings::default()).is_err());

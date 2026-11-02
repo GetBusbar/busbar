@@ -3356,9 +3356,10 @@ async fn a_credential_refusal_is_handed_as_a_piece_first_only_to_a_plane_that_ta
         );
         if takes {
             assert_eq!(c.refused, vec![code]);
+            let expected_written = code.to_string().into_bytes();
             assert_eq!(
                 (c.written.value, c.written.bytes.as_slice()),
-                (svc::FOUND, code.to_string().into_bytes()),
+                (svc::FOUND, expected_written.as_slice()),
                 "the refused piece's record write is written"
             );
         } else {
@@ -3379,6 +3380,7 @@ async fn a_walk_that_ends_after_a_request_went_out_is_handed_as_a_piece_first() 
     use busbar_contract::caps::ReasonCode;
     use busbar_kernel::plane_driver::Pick;
     let code = busbar_contract::abi::plane::reason_code(ReasonCode::BreakerOpen);
+    let expected_written = code.to_string().into_bytes();
     let exhausted = || Pick::Exhausted {
         status: 503,
         retry_after: Some(2),
@@ -3410,7 +3412,7 @@ async fn a_walk_that_ends_after_a_request_went_out_is_handed_as_a_piece_first() 
     assert_eq!(taken.refused, vec![code]);
     assert_eq!(
         (taken.written.value, taken.written.bytes.as_slice()),
-        (svc::FOUND, code.to_string().into_bytes()),
+        (svc::FOUND, expected_written.as_slice()),
         "the refused piece's record write is written"
     );
     assert!(!taken.leaked && !without.leaked);
@@ -3434,7 +3436,7 @@ async fn a_walk_that_ends_after_a_request_went_out_is_handed_as_a_piece_first() 
     );
     assert_eq!(
         (unsent.written.value, unsent.written.bytes.as_slice()),
-        (svc::FOUND, code.to_string().into_bytes()),
+        (svc::FOUND, expected_written.as_slice()),
         "the refused piece's record write is written"
     );
     assert!(!unsent.leaked);
@@ -3504,9 +3506,10 @@ async fn a_walk_that_exhausted_with_nothing_sent_names_why_on_its_refused_piece(
             "{code:?}: the piece names why"
         );
         assert!(nothing_sent(code.code()), "{code:?}");
+        let expected_written = code.code().to_string().into_bytes();
         assert_eq!(
             (c.written.value, c.written.bytes.as_slice()),
-            (svc::FOUND, code.code().to_string().into_bytes()),
+            (svc::FOUND, expected_written.as_slice()),
             "{code:?}: the refused piece's record write is written"
         );
         assert_eq!(c.charged, 0, "{code:?}: nothing is charged");
