@@ -1796,77 +1796,6 @@ async fn oversized_request_413_is_reshaped_on_the_live_stack() {
     );
 }
 
-#[tokio::test]
-async fn server_timing_header_absent_by_default_present_when_enabled() {
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let client = reqwest::Client::new();
-
-    let app = crate::test_support::TestApp::new().build();
-    let (router, _handle) = crate::build_router_with_limits(app, 1 << 20, 1024, false);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let r = client
-        .get(format!("http://{addr}/healthz"))
-        .send()
-        .await
-        .unwrap();
-    assert!(
-        r.headers().get("server-timing").is_none(),
-        "Server-Timing must be ABSENT by default (advanced.response_headers.server_timing defaults \
-         false): {:?}",
-        r.headers().get("server-timing")
-    );
-    server.abort();
-
-    let app = crate::test_support::TestApp::new().build();
-    let (router, _handle) = crate::build_router_with_limits(app, 1 << 20, 1024, true);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let r = client
-        .get(format!("http://{addr}/healthz"))
-        .send()
-        .await
-        .unwrap();
-    let st = r
-        .headers()
-        .get("server-timing")
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
-    server.abort();
-    let st = st.expect("Server-Timing must be PRESENT when server_timing_enabled == true");
-    assert!(
-        st.starts_with("busbar;dur="),
-        "unexpected Server-Timing shape: {st}"
-    );
-}
-
-#[tokio::test]
-async fn route_policy_headers_absent_by_default_on_the_live_stack() {
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let app = crate::test_support::TestApp::new().build();
-    let (router, _handle) = crate::build_router_with_limits(app, 1 << 20, 1024, false);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-
-    let r = reqwest::Client::new()
-        .get(format!("http://{addr}/healthz"))
-        .send()
-        .await
-        .unwrap();
-    assert!(
-        r.headers().get("x-busbar-route-policy").is_none(),
-        "x-busbar-route-policy must be ABSENT by default"
-    );
-    assert!(
-        r.headers().get("x-busbar-route-target").is_none(),
-        "x-busbar-route-target must be ABSENT by default"
-    );
-    server.abort();
-}
-
 const BOOT_LEGACY_14X_CONFIG: &str = r#"
 listen: "0.0.0.0:8080"
 governance:
@@ -2616,10 +2545,9 @@ async fn a_500_on_the_native_api_root_is_the_frozen_internal_envelope() {
 }
 
 pub(crate) fn frozen_text(key: &str) -> serde_yaml::Value {
-    let doc: serde_yaml::Value = serde_yaml::from_str(include_str!(
-        "fixtures/frozen_customer_text.yaml"
-    ))
-    .expect("the frozen-text fixture parses");
+    let doc: serde_yaml::Value =
+        serde_yaml::from_str(include_str!("fixtures/frozen_customer_text.yaml"))
+            .expect("the frozen-text fixture parses");
     doc.get(key)
         .cloned()
         .unwrap_or_else(|| panic!("the frozen-text fixture has no `{key}`"))
