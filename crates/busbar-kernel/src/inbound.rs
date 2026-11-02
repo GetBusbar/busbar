@@ -803,6 +803,54 @@ fn position_work(fixed: Option<Fixed>, answer: Option<Judged>) -> PositionWork {
     }
 }
 
+struct InheritedPeerAnswer {
+    index: usize,
+    answer: Option<Judged>,
+    identity: Option<VerifiedIdentity>,
+    replay: Option<Arc<ReplayAdmission>>,
+}
+
+fn inherited_peer_answers<'a>(
+    providers: &'a [String],
+    request_auths: &'a HashSet<String>,
+    answers: &'a [Option<Judged>],
+    identities: &'a [Option<VerifiedIdentity>],
+    replays: &'a [Option<Arc<ReplayAdmission>>],
+) -> impl Iterator<Item = InheritedPeerAnswer> + 'a {
+    answers
+        .iter()
+        .copied()
+        .enumerate()
+        .filter_map(move |(index, answer)| {
+            if request_auths.contains(&providers[index])
+                && matches!(answer, Some(Judged::Identity | Judged::Pass))
+            {
+                return None;
+            }
+            Some(InheritedPeerAnswer {
+                index,
+                answer,
+                identity: identities.get(index).cloned().flatten(),
+                replay: replays.get(index).cloned().flatten(),
+            })
+        })
+}
+
+fn peer_capacity(existing: bool, held: usize) -> Result<(), &'static str> {
+    if !existing && held >= PEER_CONNECTIONS_MAX {
+        Err(PEER_TABLE_FULL)
+    } else {
+        Ok(())
+    }
+}
+
+fn take_framing_peers<T>(peers: &mut HashMap<(u64, u64, u64), T>, framing: u64) -> Vec<T> {
+    peers
+        .extract_if(|(_, _, f), _| *f == framing)
+        .map(|(_, peer)| peer)
+        .collect()
+}
+
 struct Table {
     listener: Listener,
     doors: crate::core_routes::CoreRouteTable,
@@ -1679,11 +1727,7 @@ impl Inbound {
             .extract_if(|_, u| u.binding.framing == Some(framing))
             .map(|(_, u)| u)
             .collect();
-        let retired_peers: Vec<_> = self
-            .peers()
-            .extract_if(|(_, _, f), _| *f == framing)
-            .map(|(_, u)| u)
-            .collect();
+        let retired_peers = take_framing_peers(&mut self.peers(), framing);
         self.framing_conns
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -1789,15 +1833,16 @@ impl Inbound {
                 .get(&(owner, generation, framing))
                 .filter(|p| p.providers == providers)
             {
-                for (index, answer) in peer.answers.iter().copied().enumerate() {
-                    if state.table.request_auths.contains(&providers[index])
-                        && matches!(answer, Some(Judged::Identity | Judged::Pass))
-                    {
-                        continue;
-                    }
-                    state.answers[index] = answer;
-                    state.identities[index] = peer.identities.get(index).cloned().flatten();
-                    state.replays[index] = peer.replays.get(index).cloned().flatten();
+                for inherited in inherited_peer_answers(
+                    providers,
+                    &state.table.request_auths,
+                    &peer.answers,
+                    &peer.identities,
+                    &peer.replays,
+                ) {
+                    state.answers[inherited.index] = inherited.answer;
+                    state.identities[inherited.index] = inherited.identity;
+                    state.replays[inherited.index] = inherited.replay;
                 }
             }
         }
@@ -1955,7 +2000,7 @@ impl Inbound {
             }
             let key = (call.owner, call.generation, call.framing);
             let mut peers = self.peers();
-            if !peers.contains_key(&key) && peers.len() >= PEER_CONNECTIONS_MAX {
+            if peer_capacity(peers.contains_key(&key), peers.len()).is_err() {
                 tracing::error!(
                     owner = call.owner,
                     conn = call.conn,
