@@ -135,3 +135,6 @@ export = "busbar-stub-export"
 export-carried = "busbar-stub-export-carried"
 export-scrape = "busbar-stub-export-scrape"
 export-trace = "busbar-stub-export-trace"
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Networking_WinSock"] }

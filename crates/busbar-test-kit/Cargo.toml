@@ -18,6 +18,7 @@ license = "Apache-2.0"
 test = false
 
 [dependencies]
+libc = { workspace = true }
 busbar-plugin-loader = { path = "../plugin-loader" }
 busbar-contract = { path = "../busbar-contract", features = ["test-support"] }
 # The suite's host connector (`conformance_host`): busbar's connector and its TLS test kit.
@@ -36,3 +37,6 @@ tracing = { workspace = true }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loader_self_tests)"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Networking_WinSock"] }
