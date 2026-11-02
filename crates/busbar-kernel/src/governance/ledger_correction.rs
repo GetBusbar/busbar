@@ -328,6 +328,11 @@ impl GovState {
             if !custody.owns_quarantined_target(bucket, window) {
                 continue;
             }
+            let Some((remaining_plain, remaining_dated)) =
+                custody.absorb_negatives(bucket, window, plain, dated)?
+            else {
+                continue;
+            };
             let pending = self
                 .corrections
                 .lock()
@@ -347,11 +352,6 @@ impl GovState {
                     ));
                 }
             }
-            let Some((remaining_plain, remaining_dated)) =
-                custody.absorb_negatives(bucket, window, plain, dated)?
-            else {
-                continue;
-            };
             let state = if selected.state == RecoveryState::Intent {
                 custody.mark_age_unknown();
                 RecoveryState::LandedUnknown
