@@ -18,15 +18,20 @@ fn test_render_exposes_emitted_counter() {
     )
     .increment(1);
 
-    let out = render();
+    let out = snapshot().expect("the actual recorder is installed");
     assert!(
-        out.contains(REQUESTS_TOTAL),
-        "exposition should contain the emitted counter; got:\n{out}"
+        out.iter().any(|family| family.name == REQUESTS_TOTAL),
+        "exposition should contain the emitted counter; got:\n{out:?}"
     );
 
     assert!(
-        out.contains("outcome=\"ok\""),
-        "label should render; got:\n{out}"
+        out.iter()
+            .flat_map(|family| &family.samples)
+            .any(|sample| sample
+                .labels
+                .iter()
+                .any(|(label, value)| label == "outcome" && value == "ok")),
+        "label should render; got:\n{out:?}"
     );
 }
 
@@ -53,10 +58,11 @@ fn test_enabled_recorder_installed_retaining_and_describe_after_init() {
         "outcome" => "describe_probe"
     )
     .increment(1);
-    let out = render();
+    let out = snapshot().expect("the actual recorder is installed");
     assert!(
-        out.contains("# HELP busbar_requests_total"),
-        "describe() must have registered REQUESTS_TOTAL's HELP text; got:\n{out}"
+        out.iter()
+            .any(|family| family.name == REQUESTS_TOTAL && family.help.is_some()),
+        "describe() must have registered REQUESTS_TOTAL's HELP text; got:\n{out:?}"
     );
 }
 
@@ -72,7 +78,7 @@ fn test_init_is_idempotent_and_does_not_panic() {
     crate::snapshot::init_for_test(Duration::from_secs(3600));
     crate::snapshot::init_for_test(Duration::from_secs(3600));
 
-    let _ = render();
+    let _ = snapshot().expect("the actual recorder is installed");
 }
 
 fn gov_with_key(key: VirtualKey) -> Arc<GovState> {
@@ -197,24 +203,29 @@ fn test_scrape_gauges_uncapped_group_bucket_no_remaining() {
 
     money::refresh_governance_gauges(&gov, &cost, crate::store::now());
 
-    let out = render();
+    let out = snapshot().expect("the actual recorder is installed");
 
-    let remaining_lines: Vec<&str> = out
-        .lines()
-        .filter(|l| l.contains(BUCKET_BUDGET_REMAINING_CENTS))
+    let remaining_lines: Vec<_> = out
+        .iter()
+        .flat_map(|family| &family.samples)
+        .filter(|sample| sample.name.contains(BUCKET_BUDGET_REMAINING_CENTS))
         .collect();
     for line in &remaining_lines {
-        assert!(
-                !line.contains("uncapped-grp"),
-                "a budget-less group bucket must not appear in budget_remaining_cents lines; got:\n{line}"
-            );
+        assert!(!line.labels.iter().any(|(_, value)| value.contains("uncapped-grp")),
+            "a budget-less group bucket must not appear in budget_remaining_cents lines; got:\n{line:?}");
     }
-
     assert!(
-        out.lines().any(|l| l.contains(BUCKET_SPEND_CENTS)
-            && l.contains("group:uncapped-grp@minute")
-            && l.contains("window=\"minute\"")),
-        "the group bucket's spend gauge carries the group/window dimensions; got:\n{out}"
+        out.iter()
+            .flat_map(|family| &family.samples)
+            .any(|sample| sample.name == BUCKET_SPEND_CENTS
+                && sample.labels.iter().any(
+                    |(label, value)| label == "bucket" && value == "group:uncapped-grp@minute"
+                )
+                && sample
+                    .labels
+                    .iter()
+                    .any(|(label, value)| label == "window" && value == "minute")),
+        "the group bucket's spend gauge carries the group/window dimensions; got:\n{out:?}"
     );
 }
 
@@ -264,47 +275,77 @@ fn test_scrape_gauges_bucket_model_tier_and_key_labels() {
 
     let cost = crate::cost::CostModel::resolve_parts(None, 1, &groups);
     money::refresh_governance_gauges(&gov, &cost, crate::store::now());
-    let out = render();
+    let out = snapshot().expect("the actual recorder is installed");
 
     let key_line = out
-        .lines()
-        .find(|l| {
-            l.starts_with("busbar_bucket_tokens")
-                && l.contains("bucket=\"vk_bucket_test1\"")
-                && l.contains("model=\"gpt-5\"")
-                && l.contains("tier=\"input\"")
+        .iter()
+        .flat_map(|family| &family.samples)
+        .find(|sample| {
+            sample.name == BUCKET_TOKENS
+                && sample
+                    .labels
+                    .iter()
+                    .any(|(label, value)| label == "bucket" && value == "vk_bucket_test1")
+                && sample
+                    .labels
+                    .iter()
+                    .any(|(label, value)| label == "model" && value == "gpt-5")
+                && sample
+                    .labels
+                    .iter()
+                    .any(|(label, value)| label == "tier" && value == "input")
         })
-        .unwrap_or_else(|| panic!("key-bucket input-tier series missing: {out}"));
+        .unwrap_or_else(|| panic!("key-bucket input-tier series missing: {out:?}"));
     assert!(
-        key_line.contains("team=\"growth\""),
-        "mint labels echo onto metric series: {key_line}"
+        key_line
+            .labels
+            .iter()
+            .any(|(label, value)| label == "team" && value == "growth"),
+        "mint labels echo onto metric series: {key_line:?}"
+    );
+    assert!(key_line.value == "100", "input tier value: {key_line:?}");
+    assert!(
+        out.iter()
+            .flat_map(|family| &family.samples)
+            .any(|sample| sample.name == BUCKET_TOKENS
+                && sample
+                    .labels
+                    .iter()
+                    .any(|(label, value)| label == "bucket" && value == "group:growth@total")
+                && sample
+                    .labels
+                    .iter()
+                    .any(|(label, value)| label == "group" && value == "growth")
+                && sample
+                    .labels
+                    .iter()
+                    .any(|(label, value)| label == "window" && value == "total")
+                && sample
+                    .labels
+                    .iter()
+                    .any(|(label, value)| label == "tier" && value == "output")),
+        "group-bucket token series missing: {out:?}"
     );
     assert!(
-        key_line.trim_end().ends_with("100"),
-        "input tier value: {key_line}"
-    );
-
-    assert!(
-        out.lines().any(|l| l.starts_with("busbar_bucket_tokens")
-            && l.contains("bucket=\"group:growth@total\"")
-            && l.contains("group=\"growth\"")
-            && l.contains("window=\"total\"")
-            && l.contains("tier=\"output\"")),
-        "group-bucket token series missing: {out}"
-    );
-
-    assert!(
-        out.lines()
-            .any(|l| l.starts_with("busbar_bucket_spend_cents")
-                && l.contains("bucket=\"group:growth@total\"")),
+        out.iter()
+            .flat_map(|family| &family.samples)
+            .any(|sample| sample.name == BUCKET_SPEND_CENTS
+                && sample
+                    .labels
+                    .iter()
+                    .any(|(label, value)| label == "bucket" && value == "group:growth@total")),
         "group spend gauge missing"
     );
     assert!(
-        out.lines()
-            .any(|l| l.starts_with("busbar_bucket_budget_remaining_cents")
-                && l.contains("bucket=\"group:growth@total\"")
-                && l.trim_end().ends_with("1000")),
-        "group remaining gauge = full cap when token spend derives to 0: {out}"
+        out.iter()
+            .flat_map(|family| &family.samples)
+            .any(|sample| sample.name == BUCKET_BUDGET_REMAINING_CENTS
+                && sample.value == "1000"
+                && sample
+                    .labels
+                    .iter()
+                    .any(|(label, value)| label == "bucket" && value == "group:growth@total")),
+        "group remaining gauge = full cap when token spend derives to 0: {out:?}"
     );
 }
 
@@ -364,12 +405,18 @@ fn test_key_gauge_limit_truncation() {
 
     money::refresh_governance_gauges(&gov, &cost, crate::store::now());
 
-    let out = render();
+    let out = snapshot().expect("the actual recorder is installed");
 
     let spend_series_count = out
-        .lines()
-        .filter(|l| !l.starts_with('#') && l.contains(KEY_SPEND_CENTS))
-        .filter(|l| l.contains("vk_limit_"))
+        .iter()
+        .flat_map(|family| &family.samples)
+        .filter(|sample| sample.name == KEY_SPEND_CENTS)
+        .filter(|sample| {
+            sample
+                .labels
+                .iter()
+                .any(|(label, value)| label == "key" && value.starts_with("vk_limit_"))
+        })
         .count();
 
     assert_eq!(
@@ -498,10 +545,11 @@ fn test_cardinality_invariant_no_raw_secret_in_labels() {
 
     money::refresh_governance_gauges(&gov, &cost, crate::store::now());
 
-    let out = render();
+    let out = snapshot().expect("the actual recorder is installed");
     assert!(
-            !out.contains("sk-bb-"),
-            "raw bearer secret prefix must never appear as a label value in the scrape output; got:\n{out}"
+            !out.iter().any(|family| family.name.contains("sk-bb-") || family.help.as_ref().is_some_and(|help| help.contains("sk-bb-"))
+            || family.samples.iter().any(|sample| sample.name.contains("sk-bb-") || sample.value.contains("sk-bb-") || sample.labels.iter().any(|(label, value)| label.contains("sk-bb-") || value.contains("sk-bb-")))),
+            "raw bearer secret prefix must never appear as a label value in the scrape output; got:\n{out:?}"
         );
 }
 
@@ -694,12 +742,19 @@ fn priced_at(input_utok: f64, fee: i64) -> crate::cost::CostModel {
     crate::cost::CostModel::resolve_parts(Some(&card), fee, &Default::default())
 }
 
-fn spend_of(out: &str, key: &str) -> String {
-    let needle = format!("key=\"{key}\"");
-    let line = (out.lines())
-        .find(|l| l.starts_with(KEY_SPEND_CENTS) && l.contains(&needle))
-        .unwrap_or_else(|| panic!("no spend line for {key}; got:\n{out}"));
-    line.rsplit(' ').next().unwrap().to_string()
+fn spend_of(out: &[busbar_contract::export_calls::Family], key: &str) -> String {
+    out.iter()
+        .flat_map(|family| &family.samples)
+        .find(|sample| {
+            sample.name == KEY_SPEND_CENTS
+                && sample
+                    .labels
+                    .iter()
+                    .any(|(label, value)| label == "key" && value == key)
+        })
+        .unwrap_or_else(|| panic!("no spend sample for {key}; got:\n{out:?}"))
+        .value
+        .clone()
 }
 
 /// **A SCRAPE NEVER DRIVES THE PRICING PATH BY ITSELF** (#43/#71; the export kind, property 4).
@@ -760,7 +815,10 @@ fn a_scrape_reprices_only_the_buckets_whose_facts_moved() {
         "a write between two scrapes reprices exactly that one bucket"
     );
 
-    let old = spend_of(&render(), "vk_view_b");
+    let old = spend_of(
+        &snapshot().expect("the actual recorder is installed"),
+        "vk_view_b",
+    );
     let swapped_cost = priced_at(300.0, 0);
     money::refresh_governance_gauges(&gov, &swapped_cost, crate::store::now());
     assert_eq!(
@@ -777,7 +835,10 @@ fn a_scrape_reprices_only_the_buckets_whose_facts_moved() {
     ))
     .expect("the new card prices")
     .spend_cents;
-    let new = spend_of(&render(), "vk_view_b");
+    let new = spend_of(
+        &snapshot().expect("the actual recorder is installed"),
+        "vk_view_b",
+    );
     assert_eq!(
         new,
         want.to_string(),
@@ -882,13 +943,21 @@ gauge_plane!(
     ]
 );
 
-fn lines_of(out: &str, family: &str, needle: &str) -> Vec<String> {
-    let mut lines: Vec<String> = (out.lines())
-        .filter(|l| l.starts_with(&format!("{family}{{")) && l.contains(needle))
-        .map(str::to_string)
+fn samples_of(
+    out: &[busbar_contract::export_calls::Family],
+    family: &str,
+    id: &str,
+) -> Vec<busbar_contract::export_calls::Sample> {
+    let mut samples: Vec<_> = out
+        .iter()
+        .flat_map(|family| &family.samples)
+        .filter(|sample| {
+            sample.name == family && sample.labels.iter().any(|(_, value)| value == id)
+        })
+        .cloned()
         .collect();
-    lines.sort();
-    lines
+    samples.sort_by(|a, b| a.labels.cmp(&b.labels).then_with(|| a.value.cmp(&b.value)));
+    samples
 }
 
 #[test]
@@ -942,27 +1011,67 @@ fn bucket_token_and_spend_gauges_are_the_1_5_5_lines() {
         1_700_000_000,
     );
     money::refresh_governance_gauges(&gov, &cost, crate::store::now());
-    let out = render();
-    let needle = "=\"vk_gauge_bytes\"";
+    let out = snapshot().expect("the actual recorder is installed");
+    let needle = "vk_gauge_bytes";
     assert_eq!(
-        lines_of(&out, BUCKET_TOKENS, needle),
+        samples_of(&out, BUCKET_TOKENS, needle),
         [
-            "busbar_bucket_tokens{bucket=\"vk_gauge_bytes\",model=\"m\",tier=\"cache_read\"} 0",
-            "busbar_bucket_tokens{bucket=\"vk_gauge_bytes\",model=\"m\",tier=\"cache_write\"} 0",
-            "busbar_bucket_tokens{bucket=\"vk_gauge_bytes\",model=\"m\",tier=\"input\"} 10000",
-            "busbar_bucket_tokens{bucket=\"vk_gauge_bytes\",model=\"m\",tier=\"output\"} 7",
+            busbar_contract::export_calls::Sample {
+                name: "busbar_bucket_tokens".to_string(),
+                labels: vec![
+                    ("bucket".to_string(), "vk_gauge_bytes".to_string()),
+                    ("model".to_string(), "m".to_string()),
+                    ("tier".to_string(), "cache_read".to_string())
+                ],
+                value: "0".to_string()
+            },
+            busbar_contract::export_calls::Sample {
+                name: "busbar_bucket_tokens".to_string(),
+                labels: vec![
+                    ("bucket".to_string(), "vk_gauge_bytes".to_string()),
+                    ("model".to_string(), "m".to_string()),
+                    ("tier".to_string(), "cache_write".to_string())
+                ],
+                value: "0".to_string()
+            },
+            busbar_contract::export_calls::Sample {
+                name: "busbar_bucket_tokens".to_string(),
+                labels: vec![
+                    ("bucket".to_string(), "vk_gauge_bytes".to_string()),
+                    ("model".to_string(), "m".to_string()),
+                    ("tier".to_string(), "input".to_string())
+                ],
+                value: "10000".to_string()
+            },
+            busbar_contract::export_calls::Sample {
+                name: "busbar_bucket_tokens".to_string(),
+                labels: vec![
+                    ("bucket".to_string(), "vk_gauge_bytes".to_string()),
+                    ("model".to_string(), "m".to_string()),
+                    ("tier".to_string(), "output".to_string())
+                ],
+                value: "7".to_string()
+            },
         ],
-        "the fallback plane's token series are 1.5.5's, line for line; got:\n{out}"
+        "the fallback plane's token series are 1.5.5's, line for line; got:\n{out:?}"
     );
     assert_eq!(
-        lines_of(&out, KEY_SPEND_CENTS, needle),
-        ["busbar_key_spend_cents{key=\"vk_gauge_bytes\"} 100"],
-        "10,000 input tokens at 100 micro-units each is 100 cents; got:\n{out}"
+        samples_of(&out, KEY_SPEND_CENTS, needle),
+        [busbar_contract::export_calls::Sample {
+            name: "busbar_key_spend_cents".to_string(),
+            labels: vec![("key".to_string(), "vk_gauge_bytes".to_string())],
+            value: "100".to_string()
+        }],
+        "10,000 input tokens at 100 micro-units each is 100 cents; got:\n{out:?}"
     );
     assert_eq!(
-        lines_of(&out, KEY_TOKENS_TOTAL, needle),
-        ["busbar_key_tokens_total{key=\"vk_gauge_bytes\"} 10007"],
-        "the key's token total counts the token family only; got:\n{out}"
+        samples_of(&out, KEY_TOKENS_TOTAL, needle),
+        [busbar_contract::export_calls::Sample {
+            name: "busbar_key_tokens_total".to_string(),
+            labels: vec![("key".to_string(), "vk_gauge_bytes".to_string())],
+            value: "10007".to_string()
+        }],
+        "the key's token total counts the token family only; got:\n{out:?}"
     );
 }
 
@@ -1006,17 +1115,20 @@ fn bucket_token_gauges_follow_the_lane_planes_declared_token_classes() {
         1_700_000_000,
     );
     money::refresh_governance_gauges(&gov, &cost, crate::store::now());
-    let out = render();
-    let tiers: Vec<(String, String)> = lines_of(&out, BUCKET_TOKENS, "=\"vk_gauge_audio\"")
+    let out = snapshot().expect("the actual recorder is installed");
+    let tiers: Vec<(String, String)> = samples_of(&out, BUCKET_TOKENS, "vk_gauge_audio")
         .iter()
-        .map(|l| {
-            let tier = l
-                .split("tier=\"")
-                .nth(1)
-                .and_then(|t| t.split('"').next())
-                .unwrap_or_default()
-                .to_string();
-            (tier, l.rsplit(' ').next().unwrap_or_default().to_string())
+        .map(|sample| {
+            (
+                sample
+                    .labels
+                    .iter()
+                    .find(|(label, _)| label == "tier")
+                    .expect("a tier label")
+                    .1
+                    .clone(),
+                sample.value.clone(),
+            )
         })
         .collect();
     assert_eq!(
@@ -1025,6 +1137,6 @@ fn bucket_token_gauges_follow_the_lane_planes_declared_token_classes() {
             ("audio_tokens_in".to_string(), "9".to_string()),
             ("audio_tokens_out".to_string(), "0".to_string()),
         ],
-        "the lane's plane's token classes, and only those; got:\n{out}"
+        "the lane's plane's token classes, and only those; got:\n{out:?}"
     );
 }
