@@ -53,7 +53,7 @@ on:
         type: string
         default: "none"
       busbar_checkout:
-        description: "Check busbar out at the pin and export BUSBAR_CHECKOUT (the end-to-end tests build and boot a real busbar from it)"
+        description: "Use the nested SDK binary build profile settings; the exact SDK source checkout is always provided"
         required: false
         type: boolean
         default: false
@@ -276,9 +276,9 @@ jobs:
               *) echo "::error::unknown service '$SERVICE'" >&2; exit 1 ;;
             esac
             echo "BUSBAR_GOLDEN_DIR=$GITHUB_WORKSPACE/busbar/testing/shadow-oracle/golden"
+            echo "BUSBAR_CHECKOUT=$GITHUB_WORKSPACE/busbar"
+            echo "BUSBAR_TARGET_DIR=$CARGO_TARGET_DIR"
             if [ "$CHECKOUT" = true ]; then
-              echo "BUSBAR_CHECKOUT=$GITHUB_WORKSPACE/busbar"
-              echo "BUSBAR_TARGET_DIR=$CARGO_TARGET_DIR"
               # The nested busbar build is busbar's release profile; a CI leg needs it fast, not small.
               echo "CARGO_PROFILE_RELEASE_LTO=off"
               echo "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16"
@@ -300,7 +300,13 @@ jobs:
         working-directory: plugin
         # needless_update allowed: `T { .., ..T::ZERO }` is the mandated forward-compat idiom, made
         # safe by the zero-spread gate (coordinator ruling).
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings -A clippy::needless_update
+        env:
+          TEST_FEATURES: ${{ inputs.test_features }}
+        run: |
+          set -euo pipefail
+          features=()
+          [ -z "$TEST_FEATURES" ] || features=(--features "$TEST_FEATURES")
+          cargo clippy --workspace --all-targets --locked "${features[@]}" -- -D warnings -A clippy::needless_update
       - name: build (the rlib a busbar build links, and the cdylib a signed tarball carries)
         if: steps.crates.outputs.present == 'true'
         working-directory: plugin
@@ -459,22 +465,11 @@ jobs:
         with:
           path: plugin
       - name: busbar at the pin
-        if: inputs.busbar_checkout || inputs.plugin_lang == 'c'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: GetBusbar/busbar
           ref: ${{ needs.pin.outputs.sha }}
           path: busbar
-      # The linux job always has busbar at the pin (its golden cells); macOS gets the same cells,
-      # so a plugin test that reads BUSBAR_GOLDEN_DIR passes on both OSes with no per-plugin exception.
-      - name: busbar's golden cells at the pin
-        if: ${{ !(inputs.busbar_checkout || inputs.plugin_lang == 'c') }}
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          repository: GetBusbar/busbar
-          ref: ${{ needs.pin.outputs.sha }}
-          path: busbar
-          sparse-checkout: testing/shadow-oracle/golden
       - name: the backend, natively (macOS runners have no service containers)
         env:
           SERVICE: ${{ inputs.service }}
@@ -498,15 +493,15 @@ jobs:
               echo "VALKEY_URL=redis://127.0.0.1:6379/0" >> "$GITHUB_ENV" ;;
             *) echo "no native $SERVICE on macOS; the macOS test command excludes its live cases" ;;
           esac
-          echo "BUSBAR_GOLDEN_DIR=$GITHUB_WORKSPACE/busbar/testing/shadow-oracle/golden" >> "$GITHUB_ENV"
-          if [ "$CHECKOUT" = true ]; then
-            {
-              echo "BUSBAR_CHECKOUT=$GITHUB_WORKSPACE/busbar"
-              echo "BUSBAR_TARGET_DIR=$CARGO_TARGET_DIR"
+          {
+            echo "BUSBAR_GOLDEN_DIR=$GITHUB_WORKSPACE/busbar/testing/shadow-oracle/golden"
+            echo "BUSBAR_CHECKOUT=$GITHUB_WORKSPACE/busbar"
+            echo "BUSBAR_TARGET_DIR=$CARGO_TARGET_DIR"
+            if [ "$CHECKOUT" = true ]; then
               echo "CARGO_PROFILE_RELEASE_LTO=off"
               echo "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16"
-            } >> "$GITHUB_ENV"
-          fi
+            fi
+          } >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
@@ -592,7 +587,16 @@ jobs:
         working-directory: plugin
         env:
           MACOS_TEST: ${{ inputs.macos_test }}
-        run: bash -c "$MACOS_TEST"
+          TEST_FEATURES: ${{ inputs.test_features }}
+        run: |
+          set -euo pipefail
+          if [ "$MACOS_TEST" = 'cargo test --workspace --locked' ]; then
+            features=()
+            [ -z "$TEST_FEATURES" ] || features=(--features "$TEST_FEATURES")
+            cargo test --workspace --locked "${features[@]}"
+          else
+            bash -c "$MACOS_TEST"
+          fi
       - name: "C ABI: build against the public header and run ordinary loader tests"
         if: inputs.plugin_lang == 'c'
         env:
@@ -649,9 +653,9 @@ jobs:
           set -euo pipefail
           {
             echo "BUSBAR_GOLDEN_DIR=$GITHUB_WORKSPACE/busbar/testing/shadow-oracle/golden"
+            echo "BUSBAR_CHECKOUT=$GITHUB_WORKSPACE/busbar"
+            echo "BUSBAR_TARGET_DIR=$CARGO_TARGET_DIR"
             if [ "$CHECKOUT" = true ]; then
-              echo "BUSBAR_CHECKOUT=$GITHUB_WORKSPACE/busbar"
-              echo "BUSBAR_TARGET_DIR=$CARGO_TARGET_DIR"
               echo "CARGO_PROFILE_RELEASE_LTO=off"
               echo "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16"
             fi
