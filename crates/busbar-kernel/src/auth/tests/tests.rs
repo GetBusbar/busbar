@@ -1356,8 +1356,6 @@ fn the_admin_head_hands_the_request_through_as_presented() {
     assert_eq!(names, ["authorization", X_ADMIN_TOKEN, "host"]);
 }
 
-struct AnswersOnly(busbar_contract::auth_calls::Verified);
-
 struct Answered(Option<busbar_contract::auth_calls::VerifyAnswer>);
 
 impl std::future::Future for Answered {
@@ -1373,30 +1371,6 @@ impl std::future::Future for Answered {
 impl busbar_contract::auth_calls::Verifying for Answered {
     fn settled(&mut self) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
         self.0.take()
-    }
-}
-
-impl busbar_contract::auth_calls::AuthCalls for AnswersOnly {
-    fn name(&self) -> &str {
-        "answers-only"
-    }
-    fn facts(&self) -> u32 {
-        0
-    }
-    fn verify_now(
-        &self,
-        _: &busbar_contract::auth_calls::VerifyRequest,
-    ) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
-        Some(self.0.clone().into())
-    }
-    fn verify(
-        &self,
-        _: busbar_contract::auth_calls::VerifyRequest,
-    ) -> Box<dyn busbar_contract::auth_calls::Verifying> {
-        Box::new(Answered(Some(self.0.clone().into())))
-    }
-    fn refresh(&self) -> Result<u64, String> {
-        Ok(0)
     }
 }
 
@@ -1455,60 +1429,6 @@ fn the_data_plane_walk_hands_an_overloaded_or_verdict_less_door_back_apart() {
         Err(VerifierUnavailable::NoVerdict),
         "a FAULTED door is handed back apart, never admitted on its answer"
     );
-}
-
-struct FaultingDoor;
-
-struct FaultedCall(Option<busbar_contract::auth_calls::VerifyAnswer>);
-
-impl std::future::Future for FaultedCall {
-    type Output = busbar_contract::auth_calls::VerifyAnswer;
-    fn poll(
-        mut self: std::pin::Pin<&mut Self>,
-        _: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        std::task::Poll::Ready(self.0.take().expect("polled once"))
-    }
-}
-
-impl busbar_contract::auth_calls::Verifying for FaultedCall {
-    fn settled(&mut self) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
-        None
-    }
-    fn faulted(&self) -> bool {
-        true
-    }
-}
-
-impl busbar_contract::auth_calls::AuthCalls for FaultingDoor {
-    fn name(&self) -> &str {
-        "faulting-door"
-    }
-    fn facts(&self) -> u32 {
-        0
-    }
-    fn verify_now(
-        &self,
-        _: &busbar_contract::auth_calls::VerifyRequest,
-    ) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
-        None
-    }
-    fn verify(
-        &self,
-        _: busbar_contract::auth_calls::VerifyRequest,
-    ) -> Box<dyn busbar_contract::auth_calls::Verifying> {
-        use busbar_contract::auth_calls::{Verified, VerifiedIdentity};
-        Box::new(FaultedCall(Some(
-            Verified::Identity(VerifiedIdentity {
-                subject: "faulted".into(),
-                ..VerifiedIdentity::default()
-            })
-            .into(),
-        )))
-    }
-    fn refresh(&self) -> Result<u64, String> {
-        Ok(0)
-    }
 }
 
 fn at_capacity_503() -> (u16, Option<String>, Option<String>, String) {
