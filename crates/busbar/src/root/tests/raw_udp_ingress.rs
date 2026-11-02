@@ -250,15 +250,11 @@ async fn closing_a_busy_real_association_cancels_unaccepted_writes_and_retires_i
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn admitted_real_srtp_line_reaches_the_real_upstream_framer_once() {
-    use busbar_contract::conn::{ConnError, Piece, PieceKind};
-    use busbar_contract::ids::StreamId;
+    use busbar_contract::conn::PieceKind;
     use busbar_contract::transport::wire::WireStatusClass;
     use busbar_core_connector::datagram::DatagramFraming;
-    use busbar_core_connector::dtls::SessionCert;
     use busbar_core_connector::framer::{Call, Crossed, DoorFacts, FramerDoor};
-    use busbar_core_connector::test_support::DatagramSession;
     use busbar_transport_webrtc::framing::MEDIA_BASE;
-    use std::task::Poll;
     use tokio::net::UdpSocket;
 
     const OPUS: &[u8] = &[0xF8, 1, 2, 3, 4];
@@ -287,83 +283,142 @@ async fn admitted_real_srtp_line_reaches_the_real_upstream_framer_once() {
         }
     }
 
+    use busbar_contract::conn::{Conns, InstanceId, NeedId, OpenDesc, PollConns};
+    use busbar_contract::transport::TransportSettings;
+    use http_body_util::{BodyExt, Full};
+
     let pair = Pair::with_audio().await;
     assert_eq!(pair.caller.read().await, Some(Vec::new()));
-    let observed = Arc::new(Upstream {
-        inner: super::tests::real::loaded(),
-        emitted: std::sync::Mutex::new(Vec::new()),
-    });
-    let port = ReadyPort::open(bind("127.0.0.1:0").unwrap()).unwrap();
-    let (framing, offer) = DatagramFraming::dial(
-        observed.clone(),
-        Arc::new(SessionCert::mint().unwrap()),
-        port.local_addr(),
-        &[
-            ("channel".into(), b"events".to_vec()),
-            ("media".into(), b"audio".to_vec()),
-        ],
-        Arc::new(super::tests::real::Loopback),
-        0,
+    let mut entries = crate::root::connector::entries(
+        crate::LINKED_TRANSPORT_DOORS,
+        &TransportSettings::default(),
     )
     .unwrap();
-    let description = offer
-        .pieces
-        .iter()
-        .find(|p| p.stream == 0 && !p.fields)
-        .unwrap()
-        .bytes
-        .clone();
-    // A dialling product yields its audio LINE head at Begin, before the
-    // exchange answer. This direct host composition must publish that genuine
-    // batch; keeping only the SDP loses the upstream half of the bridge.
-    assert!(offer
-        .pieces
-        .iter()
-        .any(|piece| piece.stream == MEDIA_BASE && piece.fields));
-    let opening = pair.pairing.publish(
-        busbar_core_connector::datagram::Leg::Upstream,
-        offer,
-        Instant::now(),
-    );
-    assert!(opening.pieces.iter().all(|piece| piece.stream == 0));
-    drop(opening);
+    let entry = entries
+        .iter_mut()
+        .find(|entry| entry.door.facts().datagram)
+        .unwrap();
+    let observed = Arc::new(Upstream {
+        inner: entry.door.clone(),
+        emitted: std::sync::Mutex::new(Vec::new()),
+    });
+    entry.door = observed.clone();
+    let connector = busbar_core_connector::process::build_with_secrets(
+        || Ok(entries),
+        crate::root::connector::guard_for(&busbar_kernel::config::Destinations {
+            block_private_addresses: false,
+            ..Default::default()
+        })
+        .unwrap(),
+        &[],
+        Arc::new(|_, _| {}),
+        busbar_core_connector::pool::PoolPosture::NONE,
+        busbar_core_connector::spawn_env::linked_spawn_secret,
+    )
+    .unwrap();
     let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    let (mut peer, _) =
+    let (peer, _) =
         DatagramFraming::accept_minted(super::tests::real::loaded(), socket.local_addr().unwrap())
             .unwrap();
-    let answer = peer.rendezvous(&description, Instant::now()).unwrap();
-    let answer = answer
-        .pieces
-        .iter()
-        .find(|p| p.stream == 0 && !p.fields)
-        .unwrap()
-        .bytes
-        .clone();
-    let upstream = Arc::new(DatagramSession::new(framing, port, pair.pairing.clone()));
-    for (kind, bytes) in [
-        (PieceKind::Fields, &[][..]),
-        (PieceKind::Body, answer.as_slice()),
-        (PieceKind::Completion, &[][..]),
-    ] {
-        upstream
-            .exchanged(
-                Piece {
-                    kind,
-                    stream: StreamId(0),
-                    len: bytes.len(),
-                    end: true,
-                    status: (kind == PieceKind::Fields).then_some(WireStatusClass::Success),
-                    status_code: None,
-                    status_namespace: None,
-                    retry_after_secs: None,
-                    fault: None,
-                    reason: None,
-                    declared_len: None,
-                },
-                bytes,
-            )
-            .expect("the genuine SDP answer settles the actual upstream");
-    }
+    let signal = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let target = format!("http://{}/session", signal.local_addr().unwrap());
+    let (peer_out, peer_in) = tokio::sync::oneshot::channel();
+    let peer = Arc::new(std::sync::Mutex::new(Some((peer, peer_out))));
+    let signaling = tokio::spawn(async move {
+        let (socket, _) = signal.accept().await.unwrap();
+        let service =
+            hyper::service::service_fn(move |request: hyper::Request<hyper::body::Incoming>| {
+                let peer = peer.clone();
+                async move {
+                    assert_eq!(request.method(), hyper::Method::POST);
+                    assert_eq!(request.uri().path(), "/session");
+                    let description = request.into_body().collect().await.unwrap().to_bytes();
+                    assert!(
+                        description.starts_with(b"v=0\r\n"),
+                        "the actual production HTTP/TCP path carries real SDP"
+                    );
+                    let (mut peer, peer_out) = peer.lock().unwrap().take().unwrap();
+                    let answer = peer.rendezvous(&description, Instant::now()).unwrap();
+                    let answer = answer
+                        .pieces
+                        .iter()
+                        .find(|p| p.stream == 0 && !p.fields)
+                        .unwrap()
+                        .bytes
+                        .clone();
+                    peer_out
+                        .send(peer)
+                        .ok()
+                        .expect("actual far peer remains owned by the test");
+                    Ok::<_, std::convert::Infallible>(
+                        hyper::Response::builder()
+                            .status(201)
+                            .header("content-type", "application/sdp")
+                            .body(Full::new(bytes::Bytes::from(answer)))
+                            .unwrap(),
+                    )
+                }
+            });
+        hyper::server::conn::http1::Builder::new()
+            .serve_connection(hyper_util::rt::TokioIo::new(socket), service)
+            .await
+            .unwrap();
+    });
+    let owner = InstanceId(91);
+    let need = NeedId(1);
+    connector
+        .declare_need_to(
+            owner,
+            need,
+            "webrtc",
+            busbar_contract::abi::host::conn::connector::EGRESS_OPERATOR_INFRASTRUCTURE,
+            &target,
+        )
+        .unwrap();
+    let unit = 27;
+    connector.pair(unit, pair.pairing.clone()).unwrap();
+    let connection = connector
+        .open(
+            owner,
+            need,
+            &OpenDesc {
+                target: &target,
+                fields: &[("content-type", b"application/sdp")],
+                method: b"POST",
+                head_target: b"/session",
+                unit,
+                timeout_ms: 5000,
+                ..Default::default()
+            },
+        )
+        .expect("production Connector::open begins the actual WebRTC-over-HTTP exchange");
+    let heads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let driving = {
+        let connector = connector.clone();
+        let heads = heads.clone();
+        tokio::spawn(async move {
+            let mut bytes = [0_u8; 1024];
+            loop {
+                let piece = std::future::poll_fn(|cx| {
+                    connector.poll_read(owner, connection, cx, &mut bytes)
+                })
+                .await
+                .unwrap();
+                assert_eq!(
+                    piece.kind,
+                    PieceKind::Fields,
+                    "LINE forwarding creates no application channel body"
+                );
+                assert_eq!(piece.status, Some(WireStatusClass::Success));
+                assert_eq!(piece.status_code, Some(201));
+                heads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        })
+    };
+    let mut peer = tokio::time::timeout(WAIT, peer_in)
+        .await
+        .expect("actual production HTTP request reaches the real peer")
+        .unwrap();
     let (opened, ready) = tokio::sync::oneshot::channel();
     let (delivered, mut received) = tokio::sync::mpsc::channel(8);
     let far = tokio::spawn(async move {
@@ -397,20 +452,7 @@ async fn admitted_real_srtp_line_reaches_the_real_upstream_framer_once() {
             }
         }
     });
-    let driving = {
-        let upstream = upstream.clone();
-        tokio::spawn(async move {
-            let mut bytes = [0_u8; 1024];
-            std::future::poll_fn(|cx| match upstream.read(cx.waker(), &mut bytes) {
-                Err(ConnError::Pending) => Poll::<()>::Pending,
-                result => panic!(
-                    "LINE forwarding must not create upstream application output: {result:?}"
-                ),
-            })
-            .await;
-        })
-    };
-    let _tasks = Tasks(vec![far, driving]);
+    let _tasks = Tasks(vec![signaling, far, driving]);
     tokio::time::timeout(WAIT, ready)
         .await
         .expect("actual upstream ICE/DTLS/SCTP opens")
@@ -447,6 +489,17 @@ async fn admitted_real_srtp_line_reaches_the_real_upstream_framer_once() {
         "one accepted SRTP frame is forwarded once"
     );
     assert_eq!(pair.door.assocs.raw_busy_dropped(), 0);
-    upstream.close();
+    assert_eq!(
+        heads.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the actual HTTP response head is observed once while SDP remains internal"
+    );
+    assert!(
+        !_tasks.0[2].is_finished(),
+        "the actual connector reader remains live without application output"
+    );
+    connector.close(owner, connection).unwrap();
+    connector.unpair(unit);
+    assert!(pair.pairing.closed());
     pair.door.close();
 }
