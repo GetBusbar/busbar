@@ -2057,6 +2057,49 @@ extern "C" fn ready_fails_door() -> *const Door {
     READY_FAILS.get()
 }
 
+/// The READY/CLOSE observations belong to the holder of `READY_FAILS`'s restatement lock.
+/// The original CLOSE is kept only for the store branch, whose owned OPEN must be retired when
+/// readiness fails. Never hold this mutex across the original callback.
+#[derive(Default)]
+struct ReadyWitness {
+    ready_calls: u64,
+    close: Option<busbar_contract::abi::mechanism::call::Op>,
+    close_calls: u64,
+    close_answer: Option<Outcome>,
+}
+
+static READY_WITNESS: Mutex<ReadyWitness> = Mutex::new(ReadyWitness {
+    ready_calls: 0,
+    close: None,
+    close_calls: 0,
+    close_answer: None,
+});
+
+/// Forward the store's real CLOSE exactly once, observing the cleanup independently of READY.
+extern "C" fn ready_store_close(
+    instance: *mut std::ffi::c_void,
+    input: *const std::ffi::c_void,
+    out: *mut std::ffi::c_void,
+) -> RawOutcome {
+    let close = {
+        let mut witness = READY_WITNESS.lock().unwrap_or_else(PoisonError::into_inner);
+        witness.close_calls += 1;
+        witness.close
+    };
+    let Some(close) = close else {
+        return RawOutcome::of(Outcome::Fault);
+    };
+    // SAFETY: this wrapper occupies CLOSE in an otherwise unchanged full store table. It forwards
+    // the original live instance and exact complete InHead/OutHead frames unchanged, once, to the
+    // genuine subject's CLOSE, whose static table remains live under the restatement lock.
+    let answer = unsafe { close(instance, input, out) };
+    READY_WITNESS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .close_answer = Some(answer.outcome());
+    answer
+}
+
 /// The text the RED `ready` fails with.
 pub const READY_FAILURE: &str = "conformance: discovery refused";
 
@@ -2066,6 +2109,10 @@ extern "C" fn ready_fails(
     _input: *const std::ffi::c_void,
     out: *mut std::ffi::c_void,
 ) -> RawOutcome {
+    READY_WITNESS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .ready_calls += 1;
     let failed = RawOutcome::of(Outcome::Failed);
     // SAFETY: the host hands `ready` an `OutHead` of its own size; only its head is written.
     unsafe {
@@ -2202,13 +2249,33 @@ pub fn red_kind_abi(s: &Subject) {
 pub fn red_ready(s: &Subject) {
     s.apply_env();
     let real = real_door(s);
-    READY_FAILS.set(DoorParts {
+    let _restated = READY_FAILS.hold(DoorParts {
         size: std::mem::size_of::<Door>() as u32,
         ready: Some(ready_fails),
         ..real
     });
+    *READY_WITNESS.lock().unwrap_or_else(PoisonError::into_inner) = ReadyWitness::default();
     let settings = s.fold_settings("red");
     if s.kind() == KindCode::Store {
+        // SAFETY: the subject is a current store door with its full immutable static Ops table;
+        // copying it preserves all lifecycle/kind slots and their metadata, changing only CLOSE.
+        let mut ops = unsafe {
+            real.ops
+                .cast::<busbar_contract::abi::store::Ops>()
+                .read_unaligned()
+        };
+        READY_WITNESS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .close = Some(ops.head.close.expect("the store has its lifecycle CLOSE"));
+        ops.head.close = Some(ready_store_close);
+        let ops = Box::leak(Box::new(ops));
+        READY_FAILS.set(DoorParts {
+            size: std::mem::size_of::<Door>() as u32,
+            ready: Some(ready_fails),
+            ops: std::ptr::from_ref(ops).cast(),
+            ..real
+        });
         let d = dispatcher();
         let row =
             LinkedRow::of_raw(ready_fails_door).expect("the restated door states its Statement");
@@ -2227,10 +2294,21 @@ pub fn red_ready(s: &Subject) {
             refused,
             format!("plugin '{name}' ready failed: {READY_FAILURE}")
         );
+        let witness = READY_WITNESS.lock().unwrap_or_else(PoisonError::into_inner);
+        assert_eq!(witness.ready_calls, 1, "the failing READY is never retried");
+        assert_eq!(
+            witness.close_calls, 1,
+            "the successful OPEN is closed exactly once"
+        );
+        assert_eq!(
+            witness.close_answer,
+            Some(Outcome::Ready),
+            "the real CLOSE completes"
+        );
         assert_eq!(
             crossings_of(&held).read().0 - before,
-            2,
-            "one open and one ready, first invocations, the ready not retried"
+            3,
+            "one OPEN, the independently observed failing READY, and its real cleanup CLOSE"
         );
         return;
     }
@@ -2248,7 +2326,25 @@ pub fn red_ready(s: &Subject) {
             format!("plugin '{}' ready failed: {READY_FAILURE}", p.name())
         );
         assert_eq!(crossings(&p).read().0 - before, 1, "one crossing, not retried");
+        assert_eq!(
+            READY_WITNESS.lock().unwrap_or_else(PoisonError::into_inner).ready_calls,
+            1,
+            "the failing READY is never retried"
+        );
     });
+}
+
+#[cfg(all(test, loader_self_tests))]
+mod ready_cleanup_tests {
+    #[test]
+    fn failed_store_ready_is_invoked_once_and_closes_its_successful_open() {
+        let subject = super::Subject::new(
+            crate::both_ways::store_fixture::door,
+            "unused",
+            include_str!("../../tests/fixtures/store_conformance.json"),
+        );
+        super::red_ready(&subject);
+    }
 }
 
 /// The real door restated with one outbound need over the stream double's transport
