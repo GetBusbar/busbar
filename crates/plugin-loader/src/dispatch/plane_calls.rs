@@ -14,7 +14,6 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use busbar_contract::abi::mechanism::call::{DeadlineClass, Outcome};
-use busbar_contract::abi::mechanism::lifecycle::slot as life;
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, ProjectIn, ProjectOut, RefusalIn, RefusalOut,
