@@ -263,7 +263,11 @@ fn cross<I, O>(op: Option<RawOp>, instance: *mut std::ffi::c_void, i: &I, o: &mu
     // SAFETY: this fixture keeps the selected auth slot's initialized frames/nested ranges
     // alive and passes NULL for OPEN or its still-live SDK instance.
     unsafe {
-        op.expect("every slot is filled")(instance, ptr::from_ref(i).cast(), ptr::from_mut(o).cast())
+        op.expect("every slot is filled")(
+            instance,
+            ptr::from_ref(i).cast(),
+            ptr::from_mut(o).cast(),
+        )
     }
     .outcome()
 }
