@@ -856,7 +856,7 @@ members = ["."]
 # THE LLM PLANE, pinned from its own repo like every other plane. da2ab5f (stuck3-1427-journal) is
 # e154678 plus its held-cell test reading the rig's node journal (busbar #1427: the node amendment
 # journal is an instance the node owns; `node_recent` is gone).
-busbar-plane-llm = { git = "https://git.getbusbar.dev/GetBusbar/busbar-plane-llm", rev = "675fd9661460da5954963c9e2081de142ba56efa" }
+busbar-plane-llm = { git = "https://git.getbusbar.dev/GetBusbar/busbar-plane-llm", rev = "9f11b668699db3fb4d3f4934fc8541a617f8e108" }
 # ── External plugin crates: ONE pin each (ONE HOME PER FACT); members use `workspace = true` ──
 busbar-auth-admin-tokens = { git = "https://git.getbusbar.dev/GetBusbar/busbar-auth-admin-tokens", rev = "e7b24d8ac7bed190f74d65c155311966a0d4278e" }
 busbar-auth-admin-tokens-plugin = { git = "https://git.getbusbar.dev/GetBusbar/busbar-auth-admin-tokens", rev = "e7b24d8ac7bed190f74d65c155311966a0d4278e" }
@@ -955,7 +955,7 @@ busbar-transport-webrtc = { git = "https://git.getbusbar.dev/GetBusbar/busbar-tr
 # (oracle BOOT-W15). d7a62c4 is 5927d5e plus the upsert-by-id fix (492c728, busbar-store-memory fj#44):
 # a parented upserted plane record is keyed on its own id, so get/delete by (kind, id) reach it.
 # Explicit usage cleanup preserves billing; unsigned expiry cells retain permanent node claims.
-busbar-store-memory = { git = "https://git.getbusbar.dev/GetBusbar/busbar-store-memory", rev = "493d3fb1f2eb5b162edf1d635c6e3bf048144c0a" }
+busbar-store-memory = { git = "https://git.getbusbar.dev/GetBusbar/busbar-store-memory", rev = "ebc983d66dd7f246c9c2a6b0ffe271d3a20a89f1" }
 # THE MCP PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the mcp plane's
 # door row (`plane-mcp-door`, `busbar_plane_mcp::tool_door::door`) and installs in every build's tests.
 # Its dropped-in cdylib twin (`busbar-plane-mcp-plugin`) and its gates live in that repo's plugin CI.
