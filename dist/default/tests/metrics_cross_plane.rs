@@ -28,11 +28,12 @@ use busbar_kernel::governance::{
     GovState, MeteringDelta, MeteringRow, RecordStore, RecordStoreError, RecordStoreResult,
 };
 use busbar_kernel::snapshot::{
-    init, refresh_scrape_gauges, LANE_AVAILABLE, LANE_AVAILABLE_PERMITS, LANE_INFLIGHT,
+    refresh_scrape_gauges, LANE_AVAILABLE, LANE_AVAILABLE_PERMITS, LANE_INFLIGHT,
     LANE_RECOVERY_HINT_MS, LANE_STATE, POOL_QUEUED,
 };
 use busbar_kernel::store::{now, LaneRuntime};
 use busbar_kernel_testkit::test_support::export_axis::render;
+use busbar_kernel_testkit::test_support::metrics::init;
 use busbar_kernel_testkit::test_support::protocols::PROTO_OPENAI;
 use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 use busbar_kernel_testkit::test_support::{LaneSpec, TestApp};

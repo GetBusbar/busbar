@@ -617,7 +617,7 @@ fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_commit() {
         }
     }
     busbar_kernel_testkit::test_support::register_neutral_test_plane();
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     busbar_kernel_testkit::test_support::rate_holders::install_rate_apply(&CardRepricer);
     busbar_kernel_testkit::test_support::rate_holders::install_rate_epoch(&CardRepricer);
     let slots = crate::root::store_double::RecordSlots::new();

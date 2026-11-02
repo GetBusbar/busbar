@@ -219,7 +219,7 @@ fn a_node() -> ANodeWhoseChainThisCellReads {
 /// that reads it filters on a resource only that cell minted.
 #[cfg(feature = "root-admin")]
 fn the_real_surface_bare_and_mounted() -> (axum::Router, axum::Router) {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     busbar_core_admin::install();
     // Governance ON, with a signer, so a key can be minted, renamed, revoked and deleted.
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
@@ -349,7 +349,7 @@ async fn the_mounted_live_admin_door_keeps_no_verdict_apart_from_bad_credentials
         }
     }
 
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     busbar_core_admin::install();
     for (verified, expected_status, expected_code, expected_retry) in [
         (Some(Verified::Failed), 503, "unavailable", Some("1")),
@@ -628,7 +628,7 @@ async fn the_operators_rows_for(router: &axum::Router, resource: &str) -> Vec<(S
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_none() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     busbar_core_admin::install();
     let app = busbar_kernel_testkit::test_support::TestApp::new()
         .admin_chain(vec![])
@@ -704,7 +704,7 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_book() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     busbar_core_admin::install();
     // An App with a governance store: the in-tree memory store, as a config that names none gets,
     // with the record slots the boot book keeps its journal in (H3: a store without them refuses the
@@ -804,7 +804,7 @@ const THE_REMOVED_VERBS: [(&str, &str); 9] = [
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_nothing() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     busbar_core_admin::install();
     let app = busbar_kernel_testkit::test_support::TestApp::new()
         .admin_chain(vec![])
@@ -997,7 +997,7 @@ fn a_q71_node_trusting(
     axum::Router,
     Arc<std::sync::Mutex<Vec<busbar_contract::records::PlaneRecord>>>,
 ) {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     busbar_core_admin::install();
     let app = busbar_kernel_testkit::test_support::TestApp::new()
         .admin_chain(vec![])

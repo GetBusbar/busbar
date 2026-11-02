@@ -609,7 +609,7 @@ fn the_boot_path_keeps_its_journal_in_the_store_with_a_configured_directory() {
     for decls in crate::LINKED.protocols {
         busbar_kernel_testkit::test_support::protocols::register_test_protocols(decls);
     }
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let dir = BookDir::new("real-path");
     assert!(
         dir.entries().is_empty(),
@@ -674,7 +674,7 @@ fn a_store_without_the_record_slots_refuses_the_boot_by_name() {
     for decls in crate::LINKED.protocols {
         busbar_kernel_testkit::test_support::protocols::register_test_protocols(decls);
     }
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let app = busbar_kernel_testkit::app::build_once(
         busbar_kernel_testkit::test_support::cfg_with_provider_api_key(
             busbar_kernel::config::SecretRef::env("BUSBAR_TEST_NO_SUCH_KEY_NO_SLOTS"),
@@ -894,7 +894,7 @@ fn one_seal_after_two_reloads() {
     for decls in crate::LINKED.protocols {
         busbar_kernel_testkit::test_support::protocols::register_test_protocols(decls);
     }
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let dir = BookDir::new("two-reloads");
     let _env = data_dir_env(&dir.0);
     let cfg = || {

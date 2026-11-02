@@ -1131,7 +1131,7 @@ pub(super) mod session_door {
         api_key: &str,
     ) -> Option<Result<SessionDoor, String>> {
         // The scrape's `/metrics` is mounted on a test app built with the recorder installed.
-        busbar_kernel::snapshot::init();
+        busbar_kernel_testkit::test_support::metrics::init();
         let budget = opts.budget;
         let (port, heard) = match (opts.far_end, opts.far) {
             (Some(far_end), _) => far_end,
@@ -2851,7 +2851,7 @@ mod tools_door {
     /// healthy registration on the same door, its own cell, is untouched and still served.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_failing_tool_server_trips_its_breaker_cell_through_the_composed_door() {
-        busbar_kernel::snapshot::init();
+        busbar_kernel_testkit::test_support::metrics::init();
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-trip";
         let (bad, mut bad_heard) = answering_calls_with(503).await;
@@ -3947,7 +3947,7 @@ mod tools_door {
     /// that cross the trip threshold open the cell (one alone benches nothing, 1.5.5).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_client_fault_answer_is_relayed_and_never_penalizes_the_member() {
-        busbar_kernel::snapshot::init();
+        busbar_kernel_testkit::test_support::metrics::init();
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-disposition";
         let (faulted, mut faulted_heard) = answering_calls_with(400).await;
@@ -4030,7 +4030,7 @@ mod tools_door {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_doors_traffic_appears_on_the_metrics_scrape_under_its_plane() {
         use crate::root::door_steps::tests::door_boundary;
-        busbar_kernel::snapshot::init();
+        busbar_kernel_testkit::test_support::metrics::init();
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-metrics";
         let (port, _heard) = tool_server().await;
@@ -5127,7 +5127,7 @@ async fn serve_configured(
     api_key: &str,
 ) -> Result<Serving, String> {
     // The scrape sink's `/metrics` is mounted on a test app built with the recorder installed.
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let judge = crate::root::connector::guard_for(&busbar_kernel::config::Destinations {
         block_private_addresses: false,
         ..Default::default()
@@ -11729,7 +11729,7 @@ fn exposition_metric_name(line: &str) -> Option<&str> {
 fn a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric() {
     use busbar_kernel_testkit::test_support::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let cap = WarnCapture::capturing_debug();
     let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(cap.clone()));
     let mut statuses: Vec<(&str, u16)> = Vec::new();
@@ -12009,7 +12009,7 @@ fn exposition_family<'a>(exposition: &'a str, family: &str) -> Vec<&'a str> {
 async fn a_model_plane_request_is_counted_exactly_once() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-counted-once";
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let rig = rig(
         instance,
         RigOpts {
@@ -12054,7 +12054,7 @@ async fn the_model_plane_families_stay_v1_5_4_shaped_on_a_real_scrape() {
     let instance = "serve-door-model-families";
     let pool = "t065-model-family-pool";
     let far = seat_far_end(200, SERVED_BY_TWIN).await;
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let rig = rig(
         instance,
         RigOpts {

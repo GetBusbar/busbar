@@ -121,7 +121,7 @@ async fn spin_up(
 /// and metered into today's `/usage` bucket. Returns `(path, status, body)` for each read, and
 /// is the witness the declared-error audit drives for the three `unpriced_class` declarations.
 async fn drive_unpriced_usage_reads() -> Vec<(String, u16, serde_json::Value)> {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let card: std::collections::BTreeMap<String, busbar_kernel::config::RateEntryCfg> =
@@ -233,7 +233,7 @@ async fn assert_unpriced_usage_read_is_named(prefix: &str) {
 #[tokio::test]
 async fn config_apply_accepts_a_plane_section_and_moves_that_planes_own_fee() {
     use http_body_util::BodyExt;
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let overlay = std::env::temp_dir().join(format!(
@@ -317,7 +317,7 @@ async fn config_apply_accepts_a_plane_section_and_moves_that_planes_own_fee() {
 /// client was sent the pre-compressed bytes and every answer carried `Vary: accept-encoding`.
 #[tokio::test]
 async fn test_admin_v1_openapi_is_identity_json_for_every_client() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -427,7 +427,7 @@ fn budget_limit(cents: u64) -> busbar_kernel::config::groups::LimitCfg {
 /// It also asserts the audit consequence: every one of these refusals writes a `rejected` row —
 /// a refused mint is an attempt to issue a credential, and it must leave a trace.
 async fn drive_key_cap_and_delegation_errors() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let groups = std::collections::BTreeMap::from([
@@ -611,7 +611,7 @@ async fn key_cap_and_delegation_refusals_are_reachable_declared_and_audited() {
 /// onto "expected one of …" is a customer-visible change no ruling allows.
 #[tokio::test]
 async fn test_admin_v1_overlay_reset_unknown_section_keeps_1_5_5_sentence_shape() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -869,7 +869,7 @@ async fn keys_error_surface_is_byte_stable() {
 /// out of the `#[tokio::test]` so the class-level over-claim test can RUN it (and collect its
 /// emissions) without depending on test ordering.
 async fn drive_keys_error_surface() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     // A 65-character id (the cap is 64) and an id that cannot exist.
     const OVERLONG: &str = "vk_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const MISSING: &str = "vk_0000000000000000";
@@ -1348,7 +1348,7 @@ async fn admin_error_fixture() -> (std::net::SocketAddr, tokio::task::JoinHandle
 
 /// See the test above. Split out so the class-level over-claim test can drive it directly.
 async fn drive_admin_error_surface() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     // A syntactically valid but WRONG config-plane ETag — the stale guard, not the parser.
     const STALE: &str = "\"999999\"";
     const BAD_ETAG: &str = "not-an-etag";
@@ -2121,7 +2121,7 @@ async fn plugin_reload_reports_an_unrebuildable_disk_config() {
 
 /// See the test above. Split out so the class-level over-claim test can drive it directly.
 async fn drive_plugin_reload_errors() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     // `pid` alone collides: this helper is called from TWO `#[tokio::test]`s in the same binary
     // (`plugin_reload_reports_an_unrebuildable_disk_config` and
     // `declared_error_set_is_exactly_what_the_handlers_emit`), which can run concurrently and would
@@ -2168,7 +2168,7 @@ async fn drive_plugin_reload_errors() {
 
 /// See the test above. Split out so the class-level over-claim test can drive it directly.
 async fn drive_plugin_rollback_errors() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     // Same per-call collision as `drive_plugin_reload_errors` above (two callers, same pid) — see
     // that function's comment.
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -2297,7 +2297,7 @@ async fn drive_plugin_rollback_errors() {
 /// `POST /plugins/inspect` with a `tarball_b64` that is not valid base64 is rejected with
 /// `invalid_request`.
 async fn drive_plugin_inspect_errors() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let dir = std::env::temp_dir().join(format!(
         "busbar-admin-inspect-witness-{}-{}",
@@ -2710,7 +2710,7 @@ async fn named_map_app_opts(
     tokio::task::JoinHandle<()>,
 ) {
     linked_export_axis();
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let (dir, config_path, providers_path) =
         write_named_map_fixture(tag, reference_corp_ad, base_export);
     // Disk truth, read back before the paths move into the fixture: the plane sections below are
@@ -4053,7 +4053,7 @@ async fn drive_named_map_errors() {
     // field on `App`, so a fresh fixture is a fresh budget; raising the limit instead would have
     // made the test pass by weakening the thing it shares with production.
     for section in ["identity-providers", "export", "tools", "agents"] {
-        busbar_kernel::snapshot::init();
+        busbar_kernel_testkit::test_support::metrics::init();
         let store = Arc::new(MemoryStore::new());
         let gov = gov_with_signer(store, Some("admintok".to_string()));
         let app = crate::new_test_app().governance(gov).build();

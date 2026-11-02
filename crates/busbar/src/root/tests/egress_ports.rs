@@ -463,7 +463,7 @@ fn scraped(family: &str, labels: &[&str]) -> f64 {
 #[test]
 fn a_label_outside_the_bound_falls_back_and_counts_its_refusal() {
     use busbar_kernel_egress::ports::StatedLabels;
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let attempts = busbar_kernel::telemetry::UPSTREAM_ATTEMPTS_TOTAL;
     let refused = busbar_kernel::snapshot::PLUGIN_LABEL_REFUSED_TOTAL;
     let bound = super::LabelBound::new(["declared-word".to_string()]).reaching(

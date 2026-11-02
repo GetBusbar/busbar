@@ -1089,7 +1089,7 @@ fn pkce_code_challenge_is_s256_of_verifier() {
 /// stays exempt; `/metrics` still 401s; and the bypass is EXACT-MATCH (no `/auth` prefix over-match).
 #[tokio::test]
 async fn auth_token_bypasses_middleware_exact_match() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     // A chain that 401s every un-exempt request: the built-in `keys` verifier with no key presented.
     let mut cfg = busbar_kernel::config::AuthCfg::default_none();
     cfg.chain = vec![busbar_kernel::config::AuthChainEntry::bare("keys")];
@@ -1149,7 +1149,7 @@ async fn auth_token_bypasses_middleware_exact_match() {
 
 #[tokio::test]
 async fn auth_token_absent_from_admin_router() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let app = busbar_kernel_testkit::test_support::TestApp::new()
         .admin_chain(vec![]) // open admin posture so a hit would reach a handler, not 401
         .public_url("https://busbar.example.com")
@@ -1199,7 +1199,7 @@ async fn auth_token_absent_from_admin_router() {
 /// generated at mount time exists to make impossible.
 #[tokio::test]
 async fn auth_token_bypass_does_not_apply_on_the_admin_router() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let app = busbar_kernel_testkit::test_support::TestApp::new()
         .keys_chain() // a CLOSED data-plane posture: no credential ⇒ 401
         .public_url("https://busbar.example.com")
@@ -1253,7 +1253,7 @@ async fn auth_token_bypass_does_not_apply_on_the_admin_router() {
 /// undeclared method on a declared-open path takes the normal bar.
 #[tokio::test]
 async fn core_route_bypass_is_exact_in_path_and_method() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let mut cfg = busbar_kernel::config::AuthCfg::default_none();
     cfg.chain = vec![busbar_kernel::config::AuthChainEntry::bare("keys")];
     let auth =
@@ -1945,7 +1945,7 @@ fn golden_cell(name: &str) -> serde_json::Value {
 /// same path, is a different page, so the comparison is not vacuous.
 #[tokio::test]
 async fn the_hosted_login_page_moved_with_its_1_5_5_bytes() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let golden = golden_cell("http.crosscut__auth-token__GET-none.json");
     let app = busbar_kernel_testkit::test_support::TestApp::new().build();
     let (base, handle) = serve(app).await;

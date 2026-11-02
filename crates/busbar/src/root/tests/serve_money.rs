@@ -718,7 +718,7 @@ async fn node_boot_hooks_arm() {
     );
     // THE CONFIGURATION STEP, before the first app build (main.rs), then the boot build: the card
     // holder's opening entry.
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     // A deployment naming no plane at all (a door-only build links no protocol to name one), over
     // the kernel's stand-in store.
     let cfg = || {

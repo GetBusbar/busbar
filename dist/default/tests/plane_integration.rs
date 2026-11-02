@@ -181,7 +181,7 @@ fn door_served_by_root(decl: &'static PlaneDecl, sections: &str) -> bool {
 /// RED before the merge: the body carried `error.type` and no `jsonrpc` member.
 #[tokio::test]
 async fn oversized_post_to_a_mounted_door_plane_is_refused_in_the_planes_own_dialect() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let sections = door_section_yaml("gateway.example.com");
     let mount = jsonrpc_mount(door_plane(), &sections);
     let app = configured(TestApp::new(), &sections, None).build();
@@ -209,7 +209,7 @@ async fn oversized_post_to_a_mounted_door_plane_is_refused_in_the_planes_own_dia
 /// plane's grants nor its refusals, so `<mount>x` keeps the residual plane's answer.
 #[tokio::test]
 async fn a_mount_claims_its_own_segment_and_not_its_sibling() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let sections = door_section_yaml("gateway.example.com");
     let mount = jsonrpc_mount(door_plane(), &sections);
     let app = configured(TestApp::new(), &sections, None).build();
@@ -247,7 +247,7 @@ async fn a_mount_claims_its_own_segment_and_not_its_sibling() {
 /// claimed paths are served by the plane driver behind the mount table, which is what it is held to.
 #[test]
 fn plane_slot_holds_the_one_built_object_of_each_configured_plane() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let sections = format!("{}{AGENTS_YAML}", door_section_yaml("gw.example.com"));
     let cfg = bootable(&sections);
     let configured: Vec<&'static PlaneDecl> = linked::planes()
@@ -320,7 +320,7 @@ fn plane_slot_holds_the_one_built_object_of_each_configured_plane() {
 /// configured no plane).
 #[test]
 fn plane_slot_is_none_when_the_plane_is_not_configured() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let cfg = resolved("");
     assert!(
         cfg.endpoint_resources.is_empty(),
@@ -410,7 +410,7 @@ mod metrics_scrape {
     /// no plane.
     #[tokio::test]
     async fn mounted_plane_traffic_appears_on_a_real_metrics_scrape() {
-        busbar_kernel::snapshot::init();
+        busbar_kernel_testkit::test_support::metrics::init();
         linked::install();
         let sections = format!("{}{AGENTS_YAML}", door_section_yaml("gateway.example.com"));
         let door_mount = jsonrpc_mount(door_plane(), &sections);
@@ -557,7 +557,7 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
     use busbar_kernel::governance::GovState;
     use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let door = door_plane();
 
     /// The host of the door plane's canonical URI in this test. The canonical URI is BOTH the

@@ -260,7 +260,7 @@ async fn serve_with_store(
     admin_chain: Vec<String>,
     store: Option<Arc<dyn StoreCalls>>,
 ) -> (String, Arc<busbar_kernel::state::App>) {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");

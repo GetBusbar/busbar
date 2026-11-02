@@ -356,7 +356,7 @@ fn message(body: &serde_json::Value) -> &str {
 /// written to disk (an inspect is stateless: no install, no conflict check).
 #[tokio::test]
 async fn inspect_previews_a_trusted_candidate_without_installing() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let dir = tmp_plugins_dir("inspect-ok");
     let mut m = test_manifest("acme-store-preview", "preview", "acme", "1.0.0");
     m.kind = "secret".into();
@@ -404,7 +404,7 @@ async fn inspect_previews_a_trusted_candidate_without_installing() {
 /// plugin would need without ever installing or executing it.
 #[tokio::test]
 async fn inspect_reports_rejected_trust_rather_than_erroring() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let dir = tmp_plugins_dir("inspect-rejected");
     let tarball = unsigned_tarball(
         test_manifest("acme-store-untrusted", "untrusted", "acme", "1.0.0"),
@@ -424,7 +424,7 @@ async fn inspect_reports_rejected_trust_rather_than_erroring() {
 /// structural gate — inspect shares the exact same in-memory unpack path.
 #[tokio::test]
 async fn inspect_rejects_invalid_tarball() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let dir = tmp_plugins_dir("inspect-garbage");
     let (addr, handle) = serve_admission(dir, unsigned_ok_posture(), None).await;
     let (status, b) = inspect(addr, b"not a tarball at all").await;
@@ -438,7 +438,7 @@ async fn inspect_rejects_invalid_tarball() {
 /// Install rejects an upload that is not a valid plugin tarball, and leaves NOTHING behind.
 #[tokio::test]
 async fn install_rejects_invalid_tarball() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let dir = tmp_plugins_dir("nontarball");
     let (addr, handle) = serve_admission(dir.clone(), unsigned_ok_posture(), None).await;
     let (status, b) = install(addr, "x.tar.gz", b"garbage, not a tarball").await;
@@ -454,7 +454,7 @@ async fn install_rejects_invalid_tarball() {
 /// validation is independent of trust.
 #[tokio::test]
 async fn install_rejects_signed_but_malformed_manifest() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let dir = tmp_plugins_dir("malformed");
     let key = SigningKey::from_bytes(&[5u8; 32]);
     let mut m = test_manifest("acme-store-x", "x", "acme", "1.0.0");
@@ -475,7 +475,7 @@ async fn install_rejects_signed_but_malformed_manifest() {
 /// bytes are never executed, so pushing over the API cannot bypass the trust model.
 #[tokio::test]
 async fn install_strict_posture_rejects_unsigned() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let dir = tmp_plugins_dir("strict");
     let lib = b"\x7fELF junk that would crash if ever dlopened";
     let tarball = unsigned_tarball(test_manifest("acme-store-x", "x", "acme", "1.0.0"), lib);
@@ -554,7 +554,7 @@ fn sealed_tarball_expiring(expires: u64) -> Vec<u8> {
 /// nothing is written.
 #[tokio::test]
 async fn install_refuses_a_plugin_whose_release_seal_has_expired() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let dir = tmp_plugins_dir("expired-seal");
     let tarball = sealed_tarball_expiring(1_600_000_000); // 2020
     let (addr, handle) = serve_admission(dir.clone(), strict_posture(), None).await;
@@ -625,7 +625,7 @@ fn unsigned_copy(name: &str, alias: &str, version: &str) -> Vec<u8> {
 /// next boot met the same plugin by both doors.
 #[tokio::test]
 async fn install_of_a_linked_plugin_at_its_version_is_an_accepted_no_op() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let dir = tmp_plugins_dir("linked-same");
     let (addr, handle) = serve_admission(dir.clone(), unsigned_ok_posture(), None).await;
     let (canonical, key, version, _) = linked_store();
@@ -650,7 +650,7 @@ async fn install_of_a_linked_plugin_at_its_version_is_an_accepted_no_op() {
 /// in the words boot refuses the pair with. RED before: published, bricking the next boot.
 #[tokio::test]
 async fn install_of_a_linked_plugin_at_another_version_is_refused() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let dir = tmp_plugins_dir("linked-other");
     let (addr, handle) = serve_admission(dir.clone(), unsigned_ok_posture(), None).await;
     let (canonical, key, version, _) = linked_store();
@@ -674,7 +674,7 @@ async fn install_of_a_linked_plugin_at_another_version_is_refused() {
 /// is written.
 #[tokio::test]
 async fn install_of_a_linked_plugin_stating_no_version_is_refused() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let dir = tmp_plugins_dir("linked-unstated");
     let (addr, handle) = serve_admission(dir.clone(), unsigned_ok_posture(), None).await;
     let (canonical, key, version, _) = linked_store();
@@ -694,7 +694,7 @@ async fn install_of_a_linked_plugin_stating_no_version_is_refused() {
 /// linked plugin at another version is refused by the trust policy, never compared.
 #[tokio::test]
 async fn install_judges_trust_before_the_one_version_rule() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let dir = tmp_plugins_dir("linked-untrusted");
     let (addr, handle) = serve_admission(dir.clone(), strict_posture(), None).await;
     let (canonical, key, _, _) = linked_store();
@@ -778,7 +778,7 @@ fn rollback_is_fail_closed_on_absent_or_untrusted_target() {
 /// path is manifest-only (pure data), so the junk library bytes here can never execute.
 #[tokio::test]
 async fn catalog_does_not_dlopen_an_untrusted_plugin() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let dir = tmp_plugins_dir("untrusted-catalog");
     let lib = b"\x7fELF definitely not a loadable library";
     let tarball = unsigned_tarball(
@@ -810,7 +810,7 @@ async fn catalog_does_not_dlopen_an_untrusted_plugin() {
 /// catalog reports the signed metadata + trusted verdict.
 #[tokio::test]
 async fn install_signed_is_trusted() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let key = SigningKey::from_bytes(&[7u8; 32]);
     let lib = b"signed lib bytes";
     let tarball = signed_tarball(
@@ -848,7 +848,7 @@ async fn install_signed_is_trusted() {
 /// rollback/replay is a `409`, nothing is written. The release at/above the floor installs.
 #[tokio::test]
 async fn install_downgraded_version_is_rejected_by_floor() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let key = SigningKey::from_bytes(&[7u8; 32]);
     let lib = b"lib bytes";
     let mut cfg = publisher_posture("acme", &key);
@@ -890,7 +890,7 @@ async fn install_downgraded_version_is_rejected_by_floor() {
 /// is a conflict (rejected), and nothing is written.
 #[tokio::test]
 async fn install_unknown_publisher_rejected() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let key = SigningKey::from_bytes(&[3u8; 32]);
     let tarball = signed_tarball(
         &key,
@@ -910,7 +910,7 @@ async fn install_unknown_publisher_rejected() {
 /// third-party valkey"); overwriting the SAME plugin (same name, same file) is a legal upgrade.
 #[tokio::test]
 async fn install_alias_conflict_is_rejected() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let key = SigningKey::from_bytes(&[9u8; 32]);
     let dir = tmp_plugins_dir("conflict");
     let (addr, handle) = serve_admission(dir.clone(), publisher_posture("acme", &key), None).await;
@@ -989,7 +989,7 @@ fn the_root_admission_classes_an_upload_and_writes_nothing() {
 /// linked build serves it, and NOTHING is written to the plugins directory.
 #[tokio::test]
 async fn test_admin_v1_plugin_install_of_a_linked_copy_is_a_201_no_op() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let (canonical, key, version, _) = linked_store();
     let tarball = unsigned_copy(canonical, key, &version);
     let file = "linked-copy.tar.gz";
@@ -1037,7 +1037,7 @@ async fn test_admin_v1_plugin_install_of_a_linked_copy_is_a_201_no_op() {
 /// 404. Every mutation is admin-token guarded and audited; the uploaded code is never executed.
 #[tokio::test]
 async fn test_admin_v1_plugin_install_list_reload_remove() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let tarball = admin_test_tarball("acme-store-junk", "junkstore");
     let file = "acme-store-junk.tar.gz";
     let dir = tmp_plugins_dir("http");
@@ -1160,7 +1160,7 @@ async fn test_admin_v1_plugin_install_list_reload_remove() {
 /// before this change).
 #[tokio::test]
 async fn test_admin_v1_plugins_type_secret_lists_secret_kind_only() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let dir = tmp_plugins_dir("secret");
     let (addr, handle) = serve_with_plugins_dir(dir.clone()).await;
     let client = reqwest::Client::new();
@@ -1238,7 +1238,7 @@ async fn test_admin_v1_plugins_type_secret_lists_secret_kind_only() {
 /// `settings_schema` gets `schema_url: null` (absence, not an empty string or omitted field).
 #[tokio::test]
 async fn test_admin_v1_plugins_list_row_carries_schema_url() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let dir = tmp_plugins_dir("schemaurl");
 
     let schema = serde_json::json!({
@@ -1316,7 +1316,7 @@ async fn test_admin_v1_plugins_list_row_carries_schema_url() {
 /// WITHOUT one, and the compiled-in `memory` row (no backing artifact at all).
 #[tokio::test]
 async fn test_admin_v1_plugins_list_row_carries_file_and_has_schema() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let dir = tmp_plugins_dir("file-hasschema");
 
     let schema = serde_json::json!({
@@ -1447,7 +1447,7 @@ async fn test_admin_v1_plugins_list_row_carries_file_and_has_schema() {
 /// steps".
 #[tokio::test]
 async fn test_admin_v1_plugins_inspect_previews_without_installing() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let dir = tmp_plugins_dir("inspect");
     let (addr, handle) = serve_with_plugins_dir(dir.clone()).await;
     let client = reqwest::Client::new();
@@ -1543,7 +1543,7 @@ async fn test_admin_v1_plugins_inspect_previews_without_installing() {
 /// absence is a valid, common state (most plugins today have none), not a fault.
 #[tokio::test]
 async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let schema = serde_json::json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -1675,7 +1675,7 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
 /// exempted this case (`&& existing.manifest.name != manifest.name`).
 #[tokio::test]
 async fn test_admin_v1_plugin_install_same_name_different_file_is_409() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let dir = tmp_plugins_dir("h2");
     let (addr, handle) = serve_with_plugins_dir(dir.clone()).await;
 
@@ -1714,7 +1714,7 @@ async fn test_admin_v1_plugin_install_same_name_different_file_is_409() {
 /// install returns an error (never 201) until the offending tarball is fixed/removed.
 #[tokio::test]
 async fn test_admin_v1_plugin_install_corrupt_existing_tarball_blocks_publish() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let dir = tmp_plugins_dir("m7");
     // Plant a corrupt (non-tarball) *.tar.gz that discover() picks up but examine() cannot parse.
     std::fs::write(
@@ -1746,7 +1746,7 @@ async fn test_admin_v1_plugin_install_corrupt_existing_tarball_blocks_publish() 
 /// published in any case, and the rejects are audited.
 #[tokio::test]
 async fn test_admin_v1_plugin_install_rejections() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let dir = tmp_plugins_dir("rej");
     let (addr, handle) = serve_with_plugins_dir(dir.clone()).await;
     let client = reqwest::Client::new();
@@ -1812,7 +1812,7 @@ fn an_inspect_of_no_tarball_is_refused_as_an_invalid_plugin_tarball() {
 
 #[tokio::test]
 async fn a_bootstrap_archive_upload_and_rollback_refuse_a_changed_base_pin_before_publication() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let dir = tmp_plugins_dir("bootstrap-archive-mutation");
     let key = SigningKey::from_bytes(&[0x38; 32]);
     let first = signed_tarball(

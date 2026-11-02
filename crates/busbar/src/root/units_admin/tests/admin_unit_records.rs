@@ -108,7 +108,7 @@ fn a_refused_admin_unit_seals_a_refused_record() {
 /// through the same calls; governance whose store has no v3 calls keeps nothing and says so.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_live_record_sink_writes_through_the_store_calls() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     use busbar_contract::records::{PlaneDisposition, PlaneRecord};
     use busbar_contract::store_calls::StoreDoor;
     let opened = busbar_kernel_testkit::test_support::store_axis_stand_in()

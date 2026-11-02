@@ -104,7 +104,7 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
         Box::leak(Box::new(Holder(Arc::new(History::opening(card(10), 0)))));
     install_rate_epoch(holder);
 
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     busbar_core_admin::install();
     let bucket = busbar_kernel::governance::metering_bucket(busbar_kernel::store::now())
         - METERING_BUCKET_SECS;

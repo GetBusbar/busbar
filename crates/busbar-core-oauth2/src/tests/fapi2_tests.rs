@@ -304,7 +304,7 @@ struct Subject {
 }
 
 async fn serve(fapi2: bool) -> Subject {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");

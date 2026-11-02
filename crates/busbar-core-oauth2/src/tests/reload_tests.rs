@@ -60,7 +60,7 @@ fn client(id: &str) -> oauth_as::client::Client {
 /// `jti` was claimable again, the client unknown, the session gone and the key another.
 #[test]
 fn a_reload_carries_the_servers_records_sessions_and_key() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let rt = tokio::runtime::Runtime::new().expect("a runtime");
     let until = SystemTime::now() + Duration::from_secs(300);
 

@@ -836,7 +836,7 @@ pub(crate) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
 pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result<DoorRig, String> {
     // The registry rows that own the `pools:`/`models:` sections the deployment writes.
     install_door_seams();
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let judge = crate::root::connector::guard_for(&busbar_kernel::config::Destinations {
         block_private_addresses: opts.refuse_private,
         ..Default::default()

@@ -906,14 +906,20 @@ const SUMMARY_BUCKETS: std::num::NonZeroU32 = match std::num::NonZeroU32::new(3)
 /// [`snapshot`], so every live gauge is re-set microseconds before it is read.
 pub const GAUGE_IDLE_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// Test-only entry point: install the recorder with a retention window long enough that no test's
-/// samples age out mid-assertion. Production ALWAYS goes through [`init_with`] with the operator's
-/// configured `buffer_seconds`; there is deliberately no arg-less initializer outside tests, so no
-/// build path can install metrics without a named retention window.
+/// Install the real recorder for a test-support caller with an explicit retention window.
+/// The external testkit owns fixture defaults; production uses [`init_with`] with the operator's
+/// configured `buffer_seconds`.
 #[cfg(any(test, feature = "test-support"))]
-pub fn init() {
+#[doc(hidden)]
+pub fn init_for_test(buffer: Duration) {
     let _ = ENABLED.set(true);
-    init_with(Duration::from_secs(3600));
+    init_with(buffer);
+}
+
+/// The kernel's unit tests use the same external fixture policy as dependent tests.
+#[cfg(test)]
+pub fn init() {
+    crate::test_support::metrics::init();
 }
 
 // ── SCRAPE-INDEPENDENT MAINTENANCE ───────────────────────────────────────────────────────────────
