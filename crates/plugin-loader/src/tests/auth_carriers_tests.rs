@@ -224,12 +224,9 @@ fn admitted_verify_keeps_its_input_while_refresh_publishes_a_new_selection() {
     let opening = calls.carriers();
     std::thread::scope(|scope| {
         let old = scope.spawn(|| {
-            calls
-                .verify_now(&VerifyRequest {
-                    method: "old-input".into(),
-                    ..VerifyRequest::default()
-                })
-                .unwrap()
+            let mut request = VerifyRequest::default();
+            request.method = "old-input".into();
+            calls.verify_now(&request).unwrap()
         });
         let (lock, changed) = &VERIFY_GATE;
         let mut state = lock.lock().unwrap();

@@ -48,7 +48,9 @@ fn corrupt(
     let Some(call) = ops.put_credential else {
         return RawOutcome::of(Outcome::Fault);
     };
-    let ran = call(instance, input, out);
+    // SAFETY: this wrapper occupies PUT_CREDENTIAL and forwards its original live SDK instance,
+    // exact BlobIn/OutHead frames and nested input loans unchanged until the slot returns.
+    let ran = unsafe { call(instance, input, out) };
     if ran.outcome() == Outcome::Ready {
         // SAFETY: the loader lent this exact live OutHead. Preserve the SDK lease so the
         // real release path still retires its result memory.

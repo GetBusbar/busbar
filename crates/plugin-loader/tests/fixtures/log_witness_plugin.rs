@@ -107,9 +107,29 @@ fn log_outside() {
 
 /// Call plugin [`b`]'s `tick` directly, on this thread, with `mode`.
 fn call_b(mode: &'static [u8]) {
-    // SAFETY: `b::door` answers a `'static` door whose table leads with an `OpsHead`.
-    let tick = unsafe { (*b::door().ops()).tick };
-    let Some(tick) = tick else { return };
+    // SAFETY: `b::door` answers a static complete lifecycle table, immutable for the process.
+    let ops = unsafe { *b::door().ops() };
+    let (Some(open), Some(tick), Some(close)) = (ops.open, ops.tick, ops.close) else {
+        return;
+    };
+    // SAFETY: these ABI frames contain only integer and raw-pointer fields; all-zero is valid.
+    let mut opening: OpenIn = unsafe { MaybeUninit::zeroed().assume_init() };
+    let mut opened: OpenOut = unsafe { MaybeUninit::zeroed().assume_init() };
+    opening.head.size = size_of::<OpenIn>() as u32;
+    opening.head.op = slot::OPEN;
+    opened.head.size = size_of::<OpenOut>() as u32;
+    // SAFETY: this first OPEN permits NULL; exact initialized exclusive frames remain live, and
+    // this known stateless witness neither needs host tables nor retains nested input pointers.
+    let result = unsafe {
+        open(
+            std::ptr::null_mut(),
+            std::ptr::from_ref(&opening).cast(),
+            std::ptr::from_mut(&mut opened).cast(),
+        )
+    };
+    assert_eq!(result.outcome(), Outcome::Ready);
+    assert!(!opened.instance.is_null());
+    let instance = opened.instance;
     // SAFETY: all-zero is a valid `TickIn`/`TickOut` (the mechanism's rule for every `in`/`out`).
     let mut input: TickIn = unsafe { MaybeUninit::zeroed().assume_init() };
     let mut out: TickOut = unsafe { MaybeUninit::zeroed().assume_init() };
@@ -119,14 +139,33 @@ fn call_b(mode: &'static [u8]) {
     input.head.extensions.len = mode.len();
     input.head.extensions.fmt = BLOB_OCTETS;
     out.head.size = size_of::<TickOut>() as u32;
-    let instance = std::ptr::NonNull::<u8>::dangling()
-        .as_ptr()
-        .cast::<c_void>();
-    let _ = tick(
-        instance,
-        std::ptr::from_ref(&input).cast(),
-        std::ptr::from_mut(&mut out).cast(),
-    );
+    // SAFETY: instance is this door's completed OPEN result, not yet closed; the exact TICK
+    // frames and static mode remain live for this same-thread crossing.
+    let _ = unsafe {
+        tick(
+            instance,
+            std::ptr::from_ref(&input).cast(),
+            std::ptr::from_mut(&mut out).cast(),
+        )
+    };
+    // OPEN and CLOSE produce no records in this witness. Their empty scoped captures restore
+    // plugin A's dispatcher on this same thread, preserving its before/after nested-log proof.
+    // SAFETY: the close frames are plain ABI heads with a valid all-zero representation.
+    let mut closing: InHead = unsafe { MaybeUninit::zeroed().assume_init() };
+    let mut closed: OutHead = unsafe { MaybeUninit::zeroed().assume_init() };
+    closing.size = size_of::<InHead>() as u32;
+    closing.op = slot::CLOSE;
+    closed.size = size_of::<OutHead>() as u32;
+    // SAFETY: TICK returned before this sole CLOSE; the original live instance and exact
+    // initialized close frames remain valid until the fixture retires its capture ownership.
+    let result = unsafe {
+        close(
+            instance,
+            std::ptr::from_ref(&closing).cast(),
+            std::ptr::from_mut(&mut closed).cast(),
+        )
+    };
+    assert_eq!(result.outcome(), Outcome::Ready);
 }
 
 macro_rules! ready {

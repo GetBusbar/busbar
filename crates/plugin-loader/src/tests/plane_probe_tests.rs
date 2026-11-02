@@ -250,7 +250,9 @@ extern "C" fn refusing_probe_open(
     }
     // SAFETY: the fixture's immutable table has this plane's exact shape.
     let ops = unsafe { &*crate::plane_door_plugin::door().ops().cast::<plane::Ops>() };
-    ops.head.open.unwrap()(instance, input, out)
+    // SAFETY: forward the same OPEN instance and complete host frames to their original
+    // SDK slot; all nested loans remain live for this same-thread crossing.
+    unsafe { ops.head.open.unwrap()(instance, input, out) }
 }
 
 extern "C" fn refusing_probe_refresh(
@@ -268,7 +270,9 @@ extern "C" fn refusing_probe_refresh(
     }
     // SAFETY: the fixture's immutable table has this plane's exact shape.
     let ops = unsafe { &*crate::plane_door_plugin::door().ops().cast::<plane::Ops>() };
-    ops.head.refresh.unwrap()(instance, input, out)
+    // SAFETY: forward the same REFRESH instance and complete host frames to their original
+    // SDK slot; all nested loans remain live for this same-thread crossing.
+    unsafe { ops.head.refresh.unwrap()(instance, input, out) }
 }
 
 static REFRESH_GATE: std::sync::LazyLock<Gate> = std::sync::LazyLock::new(Gate::default);

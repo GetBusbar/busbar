@@ -1079,12 +1079,16 @@ mod open_faults_on_its_resume {
             let ops = real();
             if !instance.is_null() {
                 let close: Op = ops.close.expect("the test plugin closes");
-                close(instance, input, out);
+                // SAFETY: the resumed OPEN still owns its live half-open fixture instance. CLOSE
+                // reads/writes only the initialized head prefixes of these exclusive OPEN frames.
+                unsafe { close(instance, input, out) };
                 FREED.store(instance as usize, Ordering::SeqCst);
                 return RawOutcome::of(Outcome::Fault);
             }
             let open: Op = ops.open.expect("the test plugin opens");
-            let opened = open(instance, input, out);
+            // SAFETY: forward the original first OPEN's instance and complete host frames to
+            // their original fixture slot; its input loans remain live for the complete crossing.
+            let opened = unsafe { open(instance, input, out) };
             if opened != RawOutcome::of(Outcome::Ready) {
                 return opened;
             }
@@ -1110,7 +1114,9 @@ mod open_faults_on_its_resume {
                 STALE.fetch_add(1, Ordering::SeqCst);
                 return RawOutcome::of(Outcome::Fault);
             }
-            real().close.expect("the test plugin closes")(instance, input, out)
+            // SAFETY: the freed-instance guard passed; these are this live instance's original
+            // CLOSE frames, kept initialized and exclusive until the fixture crossing returns.
+            unsafe { real().close.expect("the test plugin closes")(instance, input, out) }
         }
 
         /// The real `tick`, unless it is handed the freed box.
@@ -1123,7 +1129,9 @@ mod open_faults_on_its_resume {
                 STALE.fetch_add(1, Ordering::SeqCst);
                 return RawOutcome::of(Outcome::Fault);
             }
-            real().tick.expect("the test plugin ticks")(instance, input, out)
+            // SAFETY: the freed-instance guard passed; forward this live instance's exact TICK
+            // frames and their nested loans unchanged through their original fixture slot.
+            unsafe { real().tick.expect("the test plugin ticks")(instance, input, out) }
         }
 
         fn door() -> *const Door {
@@ -1271,7 +1279,9 @@ mod open_left_live_is_closed {
             input: *const c_void,
             out: *mut c_void,
         ) -> RawOutcome {
-            let opened = real().open.expect("the test plugin opens")(instance, input, out);
+            // SAFETY: the dispatcher supplied this first OPEN's permitted instance and complete
+            // exclusive host frames; forward all still-live loans to their original fixture slot.
+            let opened = unsafe { real().open.expect("the test plugin opens")(instance, input, out) };
             if opened != RawOutcome::of(Outcome::Ready) {
                 return opened;
             }
@@ -1303,7 +1313,9 @@ mod open_left_live_is_closed {
             };
             live.swap_remove(at);
             let close: Op = real().close.expect("the test plugin closes");
-            close(instance, input, out)
+            // SAFETY: LIVE admitted this exact fixture instance and retires it only here. Its CLOSE
+            // frames remain initialized and exclusive through the original slot's final access.
+            unsafe { close(instance, input, out) }
         }
 
         fn door() -> *const Door {
