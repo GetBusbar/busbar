@@ -851,6 +851,21 @@ fn take_framing_peers<T>(peers: &mut HashMap<(u64, u64, u64), T>, framing: u64) 
         .collect()
 }
 
+fn peer_payload_empty(unit: UnitRef, head: &Head, body: Option<&[u8]>) -> bool {
+    unit.is_none() && body.is_none() && head.is_empty()
+}
+
+fn inbound_answer(fixed: Option<Fixed>, unit: UnitRef, peer: bool, strips: &[Strip]) -> Answer {
+    Answer {
+        flow: match fixed {
+            Some(Fixed::Denied | Fixed::Overloaded) => FLOW_STOP,
+            Some(Fixed::Admitted(_)) | None => FLOW_CONTINUE,
+        },
+        unit,
+        strips: if peer { Vec::new() } else { strips.to_vec() },
+    }
+}
+
 struct Table {
     listener: Listener,
     doors: crate::core_routes::CoreRouteTable,
@@ -1978,7 +1993,7 @@ impl Inbound {
         let providers = ordered(names);
 
         let peer = point == AuthPoint::Peer;
-        if peer && (!call.unit.is_none() || body.is_some() || !call.head.is_empty()) {
+        if peer && !peer_payload_empty(call.unit, &call.head, body.as_deref()) {
             return Err(PEER_BYTES);
         }
         if body
@@ -2315,13 +2330,8 @@ impl Inbound {
     }
 
     fn answer(&self, target: Target, unit: UnitRef, peer: bool) -> Result<Answer, &'static str> {
-        self.with_state(target, |u| Answer {
-            flow: match u.fixed_at(peer) {
-                Some(Fixed::Denied | Fixed::Overloaded) => FLOW_STOP,
-                Some(Fixed::Admitted(_)) | None => FLOW_CONTINUE,
-            },
-            unit,
-            strips: if peer { Vec::new() } else { u.strips.clone() },
+        self.with_state(target, |u| {
+            inbound_answer(u.fixed_at(peer), unit, peer, &u.strips)
         })
         .ok_or(UNIT_FOREIGN)
     }
