@@ -514,3 +514,39 @@ fn a_usage_batch_cancelled_after_its_write_retries_counted_once() {
     let counted = RecordStore::get_usage(&s, "m", 60).expect("read");
     assert_eq!(counted.requests, 4, "counted once, not twice");
 }
+
+#[test]
+fn a_store_door_without_needs_states_none() {
+    // SAFETY: actual_store retains the validated SQLite descriptor and statement.
+    let no_needs = unsafe { &*actual_store::door().statement() };
+    assert!(no_needs.needs.is_null());
+    assert_eq!(no_needs.needs_len, 0);
+
+    let path = std::env::var_os("BUSBAR_TEST_MYSQL_CDYLIB")
+        .map(std::path::PathBuf::from)
+        .expect("BUSBAR_TEST_MYSQL_CDYLIB names the qualified actual MySQL product");
+    assert!(path.is_absolute() && path.is_file());
+    let library = crate::dlopen_on_worker(path.as_os_str()).expect("load qualified MySQL image");
+    // SAFETY: the qualified image exports the ABI symbol, and library remains live
+    // through every descriptor and statement loan below.
+    let entry = unsafe {
+        *library
+            .get::<busbar_contract::abi::sdk::door::RawDoorFn>(
+                busbar_contract::abi::mechanism::DOOR_SYMBOL,
+            )
+            .expect("MySQL ABI entry")
+    };
+    let raw = crate::dispatch::load::enter_door(entry);
+    crate::dispatch::load::validate_door::<Store>(raw).expect("actual MySQL Store descriptor");
+    // SAFETY: validation established a live descriptor/Statement within retained library.
+    let statement = unsafe { &*(*raw).statement() };
+    let rendering = unsafe { busbar_contract::abi::mechanism::rendering::render(statement) }
+        .expect("MySQL statement renders");
+    let stated = busbar_contract::abi::mechanism::rendering::read(&rendering)
+        .expect("MySQL statement reads");
+    assert_eq!(
+        stated.name, "busbar-store-mysql",
+        "require the actual need-declaring product"
+    );
+    assert_eq!(statement.needs_len, 1);
+}
