@@ -730,7 +730,9 @@ async fn a_provider_named_like_the_operator_but_backed_by_another_module_is_that
         named.admin_modules = Arc::new(AdminAuthChain {
             modules: HashMap::from([(
                 op.to_string(),
-                busbar_kernel::auth::AdminModule::in_process(Box::new(AnyCredential)),
+                busbar_kernel_testkit::test_support::auth_helpers::in_process(Box::new(
+                    AnyCredential,
+                )),
             )]),
             operator,
         });
@@ -966,10 +968,12 @@ async fn a_door_on_the_data_plane_chain_judges_the_request_it_is_lent() {
     let door = crate::root::dispatch::auth_axis(registry)
         .open(op, "data-door", &serde_json::Value::String(digest))
         .expect("the linked door opens through the root's auth axis");
-    let auth = Arc::new(AuthMiddleware::from_doors_for_test(vec![(
-        "data-door".to_string(),
-        door,
-    )]));
+    let auth = Arc::new(
+        busbar_kernel_testkit::test_support::auth_helpers::from_doors_for_test(vec![(
+            "data-door".to_string(),
+            door,
+        )]),
+    );
     let judged = |token: Option<&str>, head: bool| {
         let headers = token.map(bearer).unwrap_or_default();
         let head = match head {
@@ -1051,9 +1055,11 @@ async fn test_role_bound_principal_governed_like_a_virtual_key() {
     );
     let mut role_bindings = config::RoleBindings::new();
     role_bindings.insert(module.to_string(), table);
-    let auth = Arc::new(AuthMiddleware::new_builtin(&AuthCfg::with_chain(vec![
-        AuthChainEntry::bare(module),
-    ])));
+    let auth = Arc::new(
+        busbar_kernel_testkit::test_support::auth_helpers::new_builtin(&AuthCfg::with_chain(vec![
+            AuthChainEntry::bare(module),
+        ])),
+    );
     let app = busbar_kernel_testkit::test_support::TestApp::new()
         .auth(Arc::clone(&auth))
         .role_bindings(role_bindings)

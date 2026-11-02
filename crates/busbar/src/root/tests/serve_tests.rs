@@ -2806,7 +2806,7 @@ mod tools_door {
 
     /// The sum of every `/metrics` sample of `family` whose labels carry every `(key, value)`.
     fn scraped(family: &str, labels: &[(&str, &str)]) -> f64 {
-        busbar_kernel::snapshot::render()
+        busbar_kernel_testkit::test_support::export_axis::render()
             .lines()
             .filter(|l| !l.starts_with('#') && l.starts_with(&format!("{family}{{")))
             .filter(|l| {
@@ -5728,7 +5728,7 @@ async fn the_pools_doors_traffic_appears_on_the_metrics_scrape() {
         after > before,
         "this pool's attempt was counted: {before} -> {after}"
     );
-    let scrape = busbar_kernel::snapshot::render();
+    let scrape = busbar_kernel_testkit::test_support::export_axis::render();
     assert!(
         scrape
             .lines()
@@ -10158,7 +10158,7 @@ mod pools_door_counts_and_routes {
         assert_eq!(status, 404, "an unknown model is a 404");
         let after = unresolved_client_errors();
         assert_eq!(after - before, 1.0, "this unknown request was counted once");
-        let scrape = busbar_kernel::snapshot::render();
+        let scrape = busbar_kernel_testkit::test_support::export_axis::render();
         assert!(
             !scrape.contains(probe),
             "the raw model is never a label:\n{scrape}"
@@ -10310,7 +10310,7 @@ mod pools_door_counts_and_routes {
                 "`{model}` counts under `{label}`: {before} -> {after}"
             );
         }
-        let scrape = busbar_kernel::snapshot::render();
+        let scrape = busbar_kernel_testkit::test_support::export_axis::render();
         assert!(!scrape.contains("pool=\"anything-else\""), "{scrape}");
         assert!(!scrape.contains("pool=\"\""), "{scrape}");
     }
@@ -11813,7 +11813,7 @@ fn a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric() {
     );
 
     // No metric name carries either word.
-    let exposition = busbar_kernel::snapshot::render();
+    let exposition = busbar_kernel_testkit::test_support::export_axis::render();
     let leaked: Vec<&str> = exposition
         .lines()
         .filter_map(exposition_metric_name)
@@ -12099,7 +12099,7 @@ async fn the_model_plane_families_stay_v1_5_4_shaped_on_a_real_scrape() {
         after.1 > before.1,
         "this pool's duration observed: {before:?} -> {after:?}"
     );
-    let exposition = busbar_kernel::snapshot::render();
+    let exposition = busbar_kernel_testkit::test_support::export_axis::render();
     let model_counters = exposition_family(&exposition, busbar_kernel::snapshot::REQUESTS_TOTAL);
     assert!(
         model_counters.iter().any(|line| line.contains("pool=\"t065-model-family-pool\"") && exposition_label_keys(line)

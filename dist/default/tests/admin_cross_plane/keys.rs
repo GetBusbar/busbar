@@ -822,9 +822,9 @@ async fn serve_keys_fixture(
                 ..busbar_kernel::config::AuthCfg::default_none()
             };
             crate::new_test_app()
-                .auth(Arc::new(busbar_kernel::auth::AuthMiddleware::new_builtin(
-                    &cfg,
-                )))
+                .auth(Arc::new(
+                    busbar_kernel_testkit::test_support::auth_helpers::new_builtin(&cfg),
+                ))
                 .admin_chain(Vec::new())
                 .build()
         }

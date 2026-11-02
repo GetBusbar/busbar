@@ -872,7 +872,7 @@ fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
         resolve_provider: None,
         door: None,
     };
-    let ctx = busbar_kernel::plane_driver::registry::BootCtx::stub();
+    let ctx = busbar_kernel_testkit::test_support::planes::empty_boot_context();
 
     let err = busbar_kernel::boot::run_start_hooks(&[&REFUSES_START], &ctx)
         .expect_err("a plane whose start returns Err must refuse boot, not continue");
@@ -988,7 +988,7 @@ fn r2_boot_a_plane_whose_hydrate_errs_refuses_boot() {
         resolve_provider: None,
         door: None,
     };
-    let ctx = busbar_kernel::plane_driver::registry::BootCtx::stub();
+    let ctx = busbar_kernel_testkit::test_support::planes::empty_boot_context();
 
     let err = busbar_kernel::boot::run_hydrate_hooks(&[&REFUSES_HYDRATE], &ctx)
         .expect_err("a plane whose hydrate returns Err must refuse boot");

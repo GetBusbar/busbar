@@ -78,7 +78,7 @@ fn app(provider: &Arc<Provider>) -> Arc<busbar_kernel::state::App> {
     let calls: Arc<dyn AuthCalls> = provider.clone();
     TestApp::new()
         .auth(Arc::new(
-            busbar_kernel::auth::AuthMiddleware::from_doors_for_test(vec![(
+            busbar_kernel_testkit::test_support::auth_helpers::from_doors_for_test(vec![(
                 provider.name.into(),
                 calls,
             )]),

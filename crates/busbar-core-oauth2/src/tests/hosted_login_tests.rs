@@ -1093,7 +1093,8 @@ async fn auth_token_bypasses_middleware_exact_match() {
     // A chain that 401s every un-exempt request: the built-in `keys` verifier with no key presented.
     let mut cfg = busbar_kernel::config::AuthCfg::default_none();
     cfg.chain = vec![busbar_kernel::config::AuthChainEntry::bare("keys")];
-    let auth = std::sync::Arc::new(busbar_kernel::auth::AuthMiddleware::new_builtin(&cfg));
+    let auth =
+        std::sync::Arc::new(busbar_kernel_testkit::test_support::auth_helpers::new_builtin(&cfg));
     let app = busbar_kernel_testkit::test_support::TestApp::new()
         .auth(auth)
         .public_url("https://busbar.example.com")
@@ -1255,7 +1256,8 @@ async fn core_route_bypass_is_exact_in_path_and_method() {
     busbar_kernel::snapshot::init();
     let mut cfg = busbar_kernel::config::AuthCfg::default_none();
     cfg.chain = vec![busbar_kernel::config::AuthChainEntry::bare("keys")];
-    let auth = std::sync::Arc::new(busbar_kernel::auth::AuthMiddleware::new_builtin(&cfg));
+    let auth =
+        std::sync::Arc::new(busbar_kernel_testkit::test_support::auth_helpers::new_builtin(&cfg));
     let app = busbar_kernel_testkit::test_support::TestApp::new()
         .auth(auth)
         .public_url("https://busbar.example.com")

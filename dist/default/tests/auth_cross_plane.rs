@@ -19,7 +19,7 @@
 
 mod linked;
 
-use busbar_kernel::auth::{AuthMiddleware, UpstreamCreds};
+use busbar_kernel::auth::UpstreamCreds;
 use busbar_kernel::config::AuthCfg;
 use busbar_kernel_testkit::test_support::TestApp;
 
@@ -37,7 +37,7 @@ fn test_open_door_regardless_of_upstream_creds() {
     register_planes();
     for uc in [UpstreamCreds::Own, UpstreamCreds::Passthrough] {
         let cfg = AuthCfg::default_none();
-        let mw = AuthMiddleware::new_builtin(&cfg);
+        let mw = busbar_kernel_testkit::test_support::auth_helpers::new_builtin(&cfg);
         assert!(mw.validate_token(None));
         assert!(mw.validate_token(Some("anything")));
         // The mode lives on the App (all-pools default + per-pool override), not on the chain.

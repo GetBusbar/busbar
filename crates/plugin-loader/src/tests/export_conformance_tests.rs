@@ -1210,10 +1210,10 @@ fn the_pre_envelope_path_loses_a_dropped_in_plugins_counters() {
 /// // wherever a metrics recorder legitimately exists (the engine, not the loader):
 /// install_recorder();
 /// run_compiled_in();
-/// let a = busbar_kernel::snapshot::render();
+/// let a = busbar_kernel_testkit::test_support::export_axis::render();
 /// reset_recorder();
 /// run_dropped_in();
-/// let b = busbar_kernel::snapshot::render();
+/// let b = busbar_kernel_testkit::test_support::export_axis::render();
 /// assert_eq!(a, b);   // byte-identical exposition
 /// ```
 ///

@@ -447,7 +447,7 @@ fn latency_reservoir_p95_is_nearest_rank_and_bounded() {
 /// The value of the one exposition line of `family` whose labels hold every one of `labels`, `0`
 /// when there is none.
 fn scraped(family: &str, labels: &[&str]) -> f64 {
-    busbar_kernel::snapshot::render()
+    busbar_kernel_testkit::test_support::export_axis::render()
         .lines()
         .filter(|l| l.starts_with(family) && !l.starts_with('#'))
         .filter(|l| labels.iter().all(|want| l.contains(want)))
@@ -493,7 +493,7 @@ fn a_label_outside_the_bound_falls_back_and_counts_its_refusal() {
             &["pool=\"entry-red-arm\"", "lane=\"own-red-arm\""]
         ) >= 1.0,
         "its lane fell back to the walk's own, its reachable pool was taken: {}",
-        busbar_kernel::snapshot::render()
+        busbar_kernel_testkit::test_support::export_axis::render()
     );
     assert_eq!(
         scraped(attempts, &["lane=\"undeclared-word\""]),
