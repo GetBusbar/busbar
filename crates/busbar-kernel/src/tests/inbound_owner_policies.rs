@@ -399,3 +399,19 @@ fn verifier_projection_lends_the_original_candidate_and_unrewritten_request_valu
         .credential
         .is_none());
 }
+
+#[test]
+fn listener_line_ids_are_nonzero_unique_unbound_and_match_the_exact_line_count() {
+    for ids in [vec![0], vec![BINDING_BIT], vec![1, 1], vec![], vec![1, 2]] {
+        let lines = if ids.len() == 2 && ids[0] != ids[1] {
+            1
+        } else {
+            ids.len().max(1)
+        };
+        assert_eq!(checked_line_ids(&ids, lines), Err(IDS_REFUSED));
+    }
+    let accepted = checked_line_ids(&[1, BINDING_BIT - 1], 2).unwrap();
+    assert_eq!(accepted.get(&1), Some(&0));
+    assert_eq!(accepted.get(&(BINDING_BIT - 1)), Some(&1));
+    assert!(checked_line_ids(&[], 0).unwrap().is_empty());
+}

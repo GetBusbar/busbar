@@ -883,6 +883,14 @@ fn inbound_answer(fixed: Option<Fixed>, unit: UnitRef, peer: bool, strips: &[Str
     }
 }
 
+fn checked_line_ids(ids: &[u64], lines: usize) -> Result<HashMap<u64, u32>, &'static str> {
+    let lines_by_id: HashMap<u64, u32> = ids.iter().copied().zip(0u32..).collect();
+    if ids.len() != lines || lines_by_id.len() != lines || !ids.iter().all(|id| is_line_id(*id)) {
+        return Err(IDS_REFUSED);
+    }
+    Ok(lines_by_id)
+}
+
 struct Table {
     listener: Listener,
     doors: crate::core_routes::CoreRouteTable,
@@ -1228,14 +1236,7 @@ impl Inbound {
         generation: u64,
         listener: Listener,
     ) -> Result<(), &'static str> {
-        let lines = listener.guests.lines().len();
-        let lines_by_id: HashMap<u64, u32> = listener.ids.iter().copied().zip(0u32..).collect();
-        if listener.ids.len() != lines
-            || lines_by_id.len() != lines
-            || !listener.ids.iter().all(|id| is_line_id(*id))
-        {
-            return Err(IDS_REFUSED);
-        }
+        let lines_by_id = checked_line_ids(&listener.ids, listener.guests.lines().len())?;
         let doors = crate::core_routes::CoreRouteTable::default()
             .with_door_refusals(listener.door_refusals.clone());
         let request_auths = listener
