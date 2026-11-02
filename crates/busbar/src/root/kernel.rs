@@ -237,8 +237,8 @@ pub enum CardRefused {
     /// The boot's book has rebuilt the history but its handle is not bound yet: there is no journal
     /// the card could go on.
     Unbound,
-    /// The history is kept in the store, where only `PUT /config/settings` writes it: a build's
-    /// rates are the card in force already.
+    /// The history is Store-owned. Legacy raw-rate notifications cannot append another card;
+    /// generation transactions use the confirmed preparation seam.
     InStore,
 }
 
@@ -281,7 +281,8 @@ impl RootHistory {
     pub fn history(&self) -> Option<Arc<busbar_kernel_ledger::cost::History>> {
         match self.store.get() {
             Some(store) if store.is_loaded() => store.history(),
-            _ => self.history.load_full(),
+            Some(_) => None,
+            None => self.history.load_full(),
         }
     }
 
@@ -473,8 +474,8 @@ impl RootHistory {
     ) -> Result<busbar_kernel_ledger::cost::HistorySeq, CardRefused> {
         let _one_at_a_time = self.applying.lock().unwrap_or_else(|p| p.into_inner());
         register_classes(rates);
-        // THE HISTORY IN THE STORE IS THE ONLY SOURCE OF PRICES once it is kept there (MONEY-DESIGN
-        // section 3a): no build writes it, so an apply's rates are the card in force already.
+        // Store-owned generations use the confirmation seam. A legacy raw notification cannot
+        // append an entry or substitute RAM prices for an unconfirmed Store candidate.
         if self.store.get().is_some() {
             return Err(CardRefused::InStore);
         }
@@ -970,6 +971,24 @@ pub(crate) fn card_from_config<'r>(
 pub struct CardRepricer;
 
 impl busbar_kernel::rate_apply::RateApply for CardRepricer {
+    fn prepare_recovery(
+        &self,
+        card: &busbar_kernel::config::card::CardFields,
+        rates: &busbar_kernel::rate_apply::RawRates<'_>,
+        origin: &str,
+    ) -> Result<Box<dyn busbar_kernel::rate_apply::PreparedRates>, String> {
+        busbar_kernel::rate_apply::RateApply::prepare_recovery(&*ROOT_CARD, card, rates, origin)
+    }
+
+    fn prepare(
+        &self,
+        card: &busbar_kernel::config::card::CardFields,
+        rates: &busbar_kernel::rate_apply::RawRates<'_>,
+        origin: &str,
+    ) -> Result<Box<dyn busbar_kernel::rate_apply::PreparedRates>, String> {
+        busbar_kernel::rate_apply::RateApply::prepare(&*ROOT_CARD, card, rates, origin)
+    }
+
     fn rates_applied(&self, rates: &busbar_kernel::rate_apply::RawRates<'_>) {
         match ROOT_CARD.apply_rates(rates, busbar_kernel::store::now_ms()) {
             // The history is the store's: a build's rates are the card in force already.
@@ -984,6 +1003,67 @@ impl busbar_kernel::rate_apply::RateApply for CardRepricer {
 
     fn card_applied(&self, card: &busbar_kernel::config::card::CardFields, origin: &str) {
         ROOT_CARD.card_applied(card, origin);
+    }
+}
+
+impl busbar_kernel::rate_apply::RateApply for RootHistory {
+    fn prepare_recovery(
+        &self,
+        card: &busbar_kernel::config::card::CardFields,
+        _rates: &busbar_kernel::rate_apply::RawRates<'_>,
+        origin: &str,
+    ) -> Result<Box<dyn busbar_kernel::rate_apply::PreparedRates>, String> {
+        let store = self
+            .store
+            .get()
+            .ok_or("rate recovery requires the configured Store")?;
+        store
+            .prepare_recovery(card, origin)
+            .map(|prepared| Box::new(prepared) as Box<dyn busbar_kernel::rate_apply::PreparedRates>)
+    }
+
+    fn prepare(
+        &self,
+        card: &busbar_kernel::config::card::CardFields,
+        _rates: &busbar_kernel::rate_apply::RawRates<'_>,
+        origin: &str,
+    ) -> Result<Box<dyn busbar_kernel::rate_apply::PreparedRates>, String> {
+        let store = self
+            .store
+            .get()
+            .ok_or("rate activation requires the configured Store; no rate-card Store is bound")?;
+        store
+            .prepare(card, origin)
+            .map(|prepared| Box::new(prepared) as Box<dyn busbar_kernel::rate_apply::PreparedRates>)
+    }
+
+    fn rates_applied(&self, rates: &busbar_kernel::rate_apply::RawRates<'_>) {
+        if let Err(refused) = self.apply_rates(rates, busbar_kernel::store::now_ms()) {
+            tracing::error!(
+                ?refused,
+                "a legacy rate notification could not activate its rates"
+            );
+        }
+    }
+
+    fn card_applied(&self, card: &busbar_kernel::config::card::CardFields, origin: &str) {
+        RootHistory::card_applied(self, card, origin);
+    }
+}
+
+impl busbar_kernel::rate_apply::PreparedRates for crate::root::card_history::PreparedCard {
+    fn confirm_activation(
+        self: Box<Self>,
+    ) -> Result<Box<dyn busbar_kernel::rate_apply::RateCommit>, String> {
+        (*self)
+            .confirm_activation()
+            .map(|confirmed| Box::new(confirmed) as Box<dyn busbar_kernel::rate_apply::RateCommit>)
+    }
+}
+
+impl busbar_kernel::rate_apply::RateCommit for crate::root::card_history::ConfirmedCard {
+    fn commit(self: Box<Self>) {
+        crate::root::card_history::ConfirmedCard::commit(*self);
     }
 }
 
@@ -1729,23 +1809,50 @@ fn journalled_amendment(_body: &[u8]) -> Option<JournalledCard> {
 /// stands then. A back-dated correction appended afterwards does not change when the cell was
 /// earned; it changes what that instant is worth, and the read resolves that.
 impl busbar_kernel::rate_apply::RateEpoch for CardRepricer {
+    fn era_at(&self, at_ms: u64) -> busbar_kernel_ledger::cost::RawRateEra {
+        busbar_kernel::rate_apply::RateEpoch::era_at(&*ROOT_CARD, at_ms)
+    }
+
     fn effective_from_at(&self, at_ms: u64) -> u64 {
-        let Some(history) = ROOT_CARD.history() else {
+        busbar_kernel::rate_apply::RateEpoch::effective_from_at(&*ROOT_CARD, at_ms)
+    }
+
+    fn history(&self) -> Option<Arc<busbar_kernel_ledger::cost::History>> {
+        ROOT_CARD.history()
+    }
+}
+
+impl busbar_kernel::rate_apply::RateEpoch for RootHistory {
+    fn era_at(&self, at_ms: u64) -> busbar_kernel_ledger::cost::RawRateEra {
+        let history = self
+            .card_store()
+            .and_then(|store| store.node_history())
+            .or_else(|| self.history());
+        let Some(history) = history else {
             // No configuration resolved yet: zero, the opening entry's own `effective_from`, so the
             // cell dates to a card that covers it rather than to none at all.
-            return 0;
+            return busbar_kernel_ledger::cost::RawRateEra::legacy(0);
         };
-        history
-            .current()
-            .entry_at(at_ms)
-            .map_or(0, busbar_kernel_ledger::cost::CardEntry::effective_from)
+        history.current().entry_at(at_ms).map_or_else(
+            || busbar_kernel_ledger::cost::RawRateEra::legacy(0),
+            |entry| {
+                busbar_kernel_ledger::cost::RawRateEra::entry(
+                    entry.effective_from(),
+                    entry.key().id(),
+                )
+            },
+        )
+    }
+
+    fn effective_from_at(&self, at_ms: u64) -> u64 {
+        busbar_kernel::rate_apply::RateEpoch::era_at(self, at_ms).effective_from
     }
 
     /// THE SAME HISTORY, handed to the budget ledger (OWNER RULING Q14): its reads and its gate
     /// price each era of a budget cell at the card this history resolves for it, so `/keys` and
     /// `/groups` usage, the `/metrics` spend gauges and the gate agree with `GET /admin/usage`.
     fn history(&self) -> Option<Arc<busbar_kernel_ledger::cost::History>> {
-        ROOT_CARD.history()
+        RootHistory::history(self)
     }
 }
 

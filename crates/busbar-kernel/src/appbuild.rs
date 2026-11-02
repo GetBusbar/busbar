@@ -478,18 +478,20 @@ fn rewrap_at_rest(gs: &governance::GovState) {
 /// So the publication is the CALLER's, and it is the same shape as the governance-credential
 /// rotation beside it: the build hands back an unpublished handle, the swap that installs the
 /// generation publishes its limits (`AppHandle::swap`, so the generation's first reader already
-/// sees them), and the one place that knows the transaction landed calls [`InstalledLimits::keep`]
-/// (the boot generation, which no swap installs, is published there). Dropped unkept — a persist
+/// sees them). The transaction confirms its candidate and activation before publication through
+/// [`InstalledLimits::prepare_rates`] and [`PreparedLimits::confirm_activation`]; only its final
+/// [`ConfirmedLimits::keep`] publishes prices and limits. Dropped unkept — a persist
 /// failure, an early return, a caller that simply lets it drop — nothing was published
 /// and the running generation's limits stand.
 ///
 /// **THE RATE APPLY RIDES THE SAME COMMIT.** The build resolves this configuration's rates, but the
-/// rate-apply seam ([`crate::rate_apply::rates_applied`]) is raised HERE, at `keep`, and not
-/// during the build: its holder appends the rates to the dated rate-card history and journals them
-/// (#79), and neither is a thing a rejected apply may leave behind. Raised during the build, an
+/// rate-apply seam is prepared before App publication, and commits at the same cutover as the App.
+/// The configured Store confirms both the saved candidate and its activation; no failed
+/// preparation can activate a price. Raised during the build, an
 /// apply whose persist then failed kept serving the old `App` while the history and the journal
 /// said its rates were in force — a price the operator was told was never applied, dated as if it
-/// had been. Dropped unkept, the resolved rates are dropped with it and nothing was raised.
+/// had been. A dropped preparation retains durable or unknown candidate custody without
+/// publishing it. The boot-only convenience [`InstalledLimits::keep`] performs the same stages.
 #[must_use = "an unkept InstalledLimits never publishes the generation's limits"]
 pub struct InstalledLimits {
     /// This generation's operational limits, published process-wide at [`InstalledLimits::keep`]
@@ -532,21 +534,99 @@ struct ResolvedRates {
 }
 
 impl InstalledLimits {
-    /// The new generation is live (and durable, where the caller persists): KEEP these limits, and
-    /// raise the rate-apply seam with the rates this build resolved — the one moment the
-    /// configuration they came from is the one in force.
-    pub fn keep(self) {
+    /// Capture the boot configuration before the composition root opens its book.
+    /// This stages fields only; it activates neither rates nor limits.
+    pub fn stage_boot(&self) {
+        crate::rate_apply::card_applied(&self.configured_card);
+    }
+
+    /// Confirm this generation's exact rates before publishing its App or limits.
+    /// A refused or unknown Store result leaves the old generation active.
+    pub fn prepare_rates(self) -> Result<PreparedLimits, String> {
+        let rates = crate::rate_apply::prepare(&self.configured_card, &self.rates.raw())?;
+        Ok(PreparedLimits {
+            installed: self,
+            rates,
+        })
+    }
+
+    /// Prepare an authoritative reload and reconcile exact retained Store effects.
+    pub fn prepare_rates_for_reload(self) -> Result<PreparedLimits, String> {
+        let rates = crate::rate_apply::prepare_recovery(&self.configured_card, &self.rates.raw())?;
+        Ok(PreparedLimits {
+            installed: self,
+            rates,
+        })
+    }
+
+    /// Confirm and commit a boot generation that is not installed through AppSwap.
+    pub fn keep(self) -> Result<(), String> {
+        self.prepare_rates()?.confirm_activation()?.keep().notify();
+        Ok(())
+    }
+}
+
+/// A generation whose rate candidate has been confirmed by its Store.
+/// Dropping it leaves the running generation unchanged and retains candidate custody.
+#[must_use = "a prepared generation must be committed to activate its rates and limits"]
+pub struct PreparedLimits {
+    installed: InstalledLimits,
+    rates: Box<dyn crate::rate_apply::PreparedRates>,
+}
+
+impl PreparedLimits {
+    /// Confirm the authorized activation after desired-state persistence succeeds.
+    /// On failure the old rates remain active and the exact candidate is retained for retry.
+    pub fn confirm_activation(self) -> Result<ConfirmedLimits, String> {
+        let Self { installed, rates } = self;
+        Ok(ConfirmedLimits {
+            installed,
+            rates: rates.confirm_activation()?,
+        })
+    }
+}
+
+/// Both the immutable candidate and its authorized activation are Store-confirmed.
+#[must_use = "confirmed rates must be published with their App generation"]
+pub struct ConfirmedLimits {
+    installed: InstalledLimits,
+    rates: Box<dyn crate::rate_apply::RateCommit>,
+}
+
+impl ConfirmedLimits {
+    /// Activate the confirmed prices and publish this generation's remaining limits.
+    /// Call only at the generation commit, after any desired-state persistence succeeds.
+    pub fn keep(self) -> CommittedLimits {
+        let Self {
+            installed,
+            rates: commit,
+        } = self;
         let InstalledLimits {
             limits,
-            rates,
-            configured_card,
+            rates: _,
+            configured_card: _,
             destinations,
             rules,
-        } = self;
+        } = installed;
+        commit.commit();
         busbar_kernel::config::limits::publish(&limits);
-        rules.destinations_applied(&destinations);
-        crate::rate_apply::card_applied(&configured_card);
-        crate::rate_apply::rates_applied(&rates.raw());
+        CommittedLimits {
+            destinations,
+            rules,
+        }
+    }
+}
+
+/// External notifications deferred until after the App generation has been published.
+pub struct CommittedLimits {
+    destinations: config::Destinations,
+    rules: std::sync::Arc<dyn RootRules>,
+}
+
+impl CommittedLimits {
+    /// Notify callbacks after publication; these cannot interrupt the rate/App cutover.
+    pub fn notify(self) {
+        self.rules.destinations_applied(&self.destinations);
     }
 }
 

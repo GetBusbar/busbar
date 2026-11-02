@@ -4,7 +4,8 @@
 //! Store-owned rate-card history. Legacy `busbar.card.v1` entries remain readable;
 //! new entries use `busbar.card.v2`: original EntryKey, tagged u64 data indices,
 //! then an INTENT and canonical COMMIT with identical version/ownership/count/length/digest
-//! metadata. Only a complete canonical commit confirms a fleet entry. A complete intent
+//! metadata. Existing v2 commits remain active; new own-card metadata version 3 additionally
+//! requires a matching activation intent and commit. A complete candidate intent
 //! preserves the exact original and own-selection for restart retry, without a host file.
 //! Physical durability is the configured Store's responsibility (memory Store is ephemeral).
 
@@ -28,7 +29,18 @@ pub const LEGACY_CARD_SCHEMA: &str = "busbar.card.v1";
 const DATA_TAG: u8 = 0;
 const INTENT_TAG: u8 = 1;
 const COMMIT_TAG: u8 = 2;
+const ACTIVATION_TAG: u8 = 3;
+const ACTIVATION_COMMIT_TAG: u8 = 4;
+const RETIREMENT_TAG: u8 = 5;
+const RETIREMENT_COMMIT_TAG: u8 = 6;
+const RETIREMENT_VERSION: u8 = 1;
 const RECORD_VERSION: u8 = 2;
+/// Own-card candidates require a separate authorized activation. Version two remains readable.
+const PREPARED_RECORD_VERSION: u8 = 3;
+const ACTIVATION_VERSION: u8 = 1;
+const ACTIVATION_TIME_OFFSET: usize = 1;
+const ACTIVATION_DIGEST_OFFSET: usize = ACTIVATION_TIME_OFFSET + std::mem::size_of::<u64>();
+const ACTIVATION_BYTES: usize = ACTIVATION_DIGEST_OFFSET + 32;
 const META_BYTES: usize = 50;
 
 /// The legacy part number of an entry's commit part. New entries use u64 indices.
@@ -271,6 +283,77 @@ pub struct StoredIntent {
     pub records: Arc<Records>,
     /// Whether the canonical commit is complete and valid as well.
     pub committed: bool,
+    /// New own-card candidates require matching activation intent and commit records.
+    pub activation_required: bool,
+    /// The immutable authorized cutover, when present.
+    pub activation: Option<Activation>,
+    /// The activation has its matching canonical confirmation marker.
+    pub activation_confirmed: bool,
+    /// An inert original retired before activation could commit.
+    pub retired: bool,
+    /// Retirement intent custody survives an unknown final marker without authorizing activation.
+    pub retiring: bool,
+}
+
+/// Activation is a raw historical fact, separate from the immutable candidate's authored time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Activation {
+    /// The era this configuration starts pricing. An opening still covers instant zero.
+    pub effective_from: u64,
+}
+
+impl Activation {
+    /// Bounded intent and commit records bind this cutover to the exact original candidate.
+    pub fn records(&self, entry: &StoredEntry) -> Result<Records, String> {
+        let mut value = vec![ACTIVATION_VERSION];
+        value.extend_from_slice(&self.effective_from.to_be_bytes());
+        value.extend_from_slice(&sha256(&entry.value()));
+        let value = RecordBytes::new(value).map_err(|error| error.to_string())?;
+        Ok(vec![
+            (tagged_key(entry.key, ACTIVATION_TAG), value.clone()),
+            (tagged_key(entry.key, ACTIVATION_COMMIT_TAG), value),
+        ])
+    }
+
+    fn read(
+        value: &[u8],
+        entry: &StoredEntry,
+        candidate_digest: &[u8; 32],
+    ) -> Result<Self, &'static str> {
+        if value.len() != ACTIVATION_BYTES
+            || value[0] != ACTIVATION_VERSION
+            || value[ACTIVATION_DIGEST_OFFSET..] != *candidate_digest
+        {
+            return Err("invalid card activation binding");
+        }
+        let effective_from = u64::from_be_bytes(
+            value[ACTIVATION_TIME_OFFSET..ACTIVATION_DIGEST_OFFSET]
+                .try_into()
+                .map_err(|_| "invalid card activation time")?,
+        );
+        if is_opening_author(&entry.author) != (effective_from == 0) {
+            return Err("invalid opening or change activation time");
+        }
+        Ok(Self { effective_from })
+    }
+}
+
+fn is_opening_author(author: &EntryAuthor) -> bool {
+    matches!(
+        author,
+        EntryAuthor::Opening { .. } | EntryAuthor::Migrated { opening: true, .. }
+    )
+}
+
+/// Bind retirement to the exact saved candidate, never an overwrite or deletion of it.
+pub(crate) fn retirement_records(entry: &StoredEntry) -> Result<Records, String> {
+    let mut value = vec![RETIREMENT_VERSION];
+    value.extend_from_slice(&sha256(&entry.value()));
+    let value = RecordBytes::new(value).map_err(|error| error.to_string())?;
+    Ok(vec![
+        (tagged_key(entry.key, RETIREMENT_TAG), value.clone()),
+        (tagged_key(entry.key, RETIREMENT_COMMIT_TAG), value),
+    ])
 }
 
 #[derive(Default)]
@@ -280,16 +363,22 @@ struct Parts {
     data: BTreeMap<u64, Vec<u8>>,
     intent: Option<Vec<u8>>,
     commit: Option<Vec<u8>>,
+    activation: Option<Vec<u8>>,
+    activation_commit: Option<Vec<u8>>,
+    retirement: Option<Vec<u8>>,
+    retirement_commit: Option<Vec<u8>>,
     invalid: bool,
 }
 
 /// What a full scan read. Validation finishes before any caller publishes or replays it.
 #[derive(Debug, Default, Clone)]
 pub struct Scanned {
-    /// Every committed entry, in key order.
+    /// Every active entry confirmed by its protocol, in key order.
     pub entries: Vec<StoredEntry>,
     /// Every validated intent, including already committed ones.
     pub intents: Vec<StoredIntent>,
+    /// Authorized cutovers for the active entries that require one.
+    pub activations: BTreeMap<EntryKey, Activation>,
     /// Every valid VOID.
     pub voids: Vec<VoidRecord>,
     /// Incomplete entries: never confirmation.
@@ -321,7 +410,12 @@ fn value_records(key: EntryKey, value: &[u8], own: bool) -> Result<Records, Stri
             RecordBytes::new(part.to_vec()).map_err(|_| "card chunk length overflow")?,
         ));
     }
-    let mut meta = vec![RECORD_VERSION, u8::from(own)];
+    let version = if own {
+        PREPARED_RECORD_VERSION
+    } else {
+        RECORD_VERSION
+    };
+    let mut meta = vec![version, u8::from(own)];
     meta.extend_from_slice(&count.to_be_bytes());
     meta.extend_from_slice(&length.to_be_bytes());
     meta.extend_from_slice(&sha256(value));
@@ -333,7 +427,11 @@ fn value_records(key: EntryKey, value: &[u8], own: bool) -> Result<Records, Stri
 
 /// Validate all metadata and every chunk, including extra and empty chunks, before decoding.
 fn assemble(parts: &BTreeMap<u64, Vec<u8>>, meta: &[u8]) -> Result<(Vec<u8>, bool), &'static str> {
-    if meta.len() != META_BYTES || meta[0] != RECORD_VERSION || meta[1] > 1 {
+    if meta.len() != META_BYTES
+        || !matches!(meta[0], RECORD_VERSION | PREPARED_RECORD_VERSION)
+        || meta[1] > 1
+        || (meta[0] == PREPARED_RECORD_VERSION && meta[1] != 1)
+    {
         return Err("unsupported or malformed card metadata");
     }
     let count = u64::from_be_bytes(meta[2..10].try_into().map_err(|_| "invalid chunk count")?);
@@ -410,6 +508,10 @@ impl Scanned {
                 }
                 [INTENT_TAG] => slot.intent = Some(value),
                 [COMMIT_TAG] => slot.commit = Some(value),
+                [ACTIVATION_TAG] => slot.activation = Some(value),
+                [ACTIVATION_COMMIT_TAG] => slot.activation_commit = Some(value),
+                [RETIREMENT_TAG] => slot.retirement = Some(value),
+                [RETIREMENT_COMMIT_TAG] => slot.retirement_commit = Some(value),
                 [hi, lo] => {
                     let part = u16::from_be_bytes([*hi, *lo]);
                     if part == COMMIT_PART {
@@ -437,7 +539,14 @@ impl Scanned {
                     .map(|(_, v)| v.clone()),
             );
             let legacy = !parts.legacy.is_empty() || parts.legacy_commit.is_some();
-            let modern = !parts.data.is_empty() || parts.intent.is_some() || parts.commit.is_some();
+            let modern = !parts.data.is_empty()
+                || parts.intent.is_some()
+                || parts.commit.is_some()
+                || parts.activation.is_some();
+            let modern = modern
+                || parts.activation_commit.is_some()
+                || parts.retirement.is_some()
+                || parts.retirement_commit.is_some();
             if legacy && modern {
                 scanned
                     .unreadable
@@ -479,7 +588,12 @@ impl Scanned {
                 }
             } else if modern {
                 let Some(intent) = parts.intent else {
-                    if parts.commit.is_some() {
+                    if parts.commit.is_some()
+                        || parts.activation.is_some()
+                        || parts.activation_commit.is_some()
+                        || parts.retirement.is_some()
+                        || parts.retirement_commit.is_some()
+                    {
                         scanned
                             .unreadable
                             .push((key, "card commit has no intent".into()));
@@ -512,6 +626,7 @@ impl Scanned {
                         continue;
                     }
                 };
+                let candidate_digest = sha256(&value);
                 if own && matches!(entry.author, EntryAuthor::Amend { .. }) {
                     scanned
                         .unreadable
@@ -519,6 +634,62 @@ impl Scanned {
                     continue;
                 }
                 let committed = parts.commit.is_some();
+                let activation_required = intent[0] == PREPARED_RECORD_VERSION;
+                let activation_confirmed = parts.activation_commit.is_some();
+                let retired = parts.retirement_commit.is_some();
+                if parts
+                    .retirement_commit
+                    .as_ref()
+                    .is_some_and(|commit| Some(commit) != parts.retirement.as_ref())
+                {
+                    scanned
+                        .unreadable
+                        .push((key, "card retirement intent and commit disagree".into()));
+                    continue;
+                }
+                if let Some(value) = &parts.retirement {
+                    if !committed
+                        || !activation_required
+                        || (retired && activation_confirmed)
+                        || value.len() != 1 + candidate_digest.len()
+                        || value[0] != RETIREMENT_VERSION
+                        || value[1..] != candidate_digest
+                    {
+                        scanned
+                            .unreadable
+                            .push((key, "invalid or conflicting card retirement".into()));
+                        continue;
+                    }
+                }
+                let retiring = parts.retirement.is_some() && !retired && !activation_confirmed;
+                if parts
+                    .activation_commit
+                    .as_ref()
+                    .is_some_and(|commit| Some(commit) != parts.activation.as_ref())
+                {
+                    scanned
+                        .unreadable
+                        .push((key, "card activation intent and commit disagree".into()));
+                    continue;
+                }
+                let activation = match parts.activation {
+                    Some(value) if committed && activation_required => {
+                        match Activation::read(&value, &entry, &candidate_digest) {
+                            Ok(activation) => Some(activation),
+                            Err(why) => {
+                                scanned.unreadable.push((key, why.into()));
+                                continue;
+                            }
+                        }
+                    }
+                    Some(_) => {
+                        scanned
+                            .unreadable
+                            .push((key, "card activation has no prepared commit".into()));
+                        continue;
+                    }
+                    None => None,
+                };
                 let mut records: Records = parts
                     .data
                     .into_iter()
@@ -532,8 +703,11 @@ impl Scanned {
                 let meta = RecordBytes::new(intent).expect("validated metadata");
                 records.push((tagged_key(key, INTENT_TAG), meta.clone()));
                 records.push((tagged_key(key, COMMIT_TAG), meta));
-                if committed {
+                if !retired && committed && (!activation_required || activation_confirmed) {
                     scanned.entries.push(entry.clone());
+                    if let Some(activation) = &activation {
+                        scanned.activations.insert(key, activation.clone());
+                    }
                 } else {
                     scanned.uncommitted.push(key);
                 }
@@ -542,6 +716,11 @@ impl Scanned {
                     own,
                     records: Arc::new(records),
                     committed,
+                    activation_required,
+                    activation,
+                    activation_confirmed,
+                    retired,
+                    retiring,
                 });
             }
         }
@@ -673,6 +852,12 @@ pub(crate) fn put_from(
         match wait_until(calls.record_get(CARD_SCHEMA, key), deadline) {
             Some(Ok(Some(held))) if held != *value => {
                 return PutOutcome::Doubtful("conflicting immutable rate-card Store record".into());
+            }
+            Some(Ok(Some(_))) => {
+                // An exact immutable readback positively confirms a previously unknown put.
+                // Reissuing an upsert is unnecessary and cannot improve this confirmation.
+                progress.store(i + 1, Ordering::Release);
+                continue;
             }
             Some(Ok(_)) => {}
             Some(Err(_)) => {

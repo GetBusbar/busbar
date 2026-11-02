@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE RATE-APPLY SEAM: the one notification that says "this deployment's configured rates are now
-//! these", raised wherever the engine resolves them and answered by whoever holds a card.
+//! The rate preparation and publication seam between a configuration generation and its holder.
 //!
 //! Rates are resolved from configuration in exactly one place, and that place runs at BOOT and again
 //! on every live apply/reload — which is what makes a rate-card correction reprice the derived spend
@@ -10,7 +9,9 @@
 //! rates the operator has already replaced: the projection and the holder would be two numbers for
 //! one request, and only one of them would be the configuration.
 //!
-//! So the resolution raises this seam and the holder swaps. The seam carries the NEUTRAL raw view of
+//! The generation first confirms its immutable candidate, then its authorized activation, before
+//! publishing the App. A refused or unknown Store result retains the previous rates. The final
+//! commit token publishes without Store calls; callbacks follow App publication. The seam carries the neutral raw view of
 //! the figures ([`RawRates`]) and nothing else — no card, no currency, no ledger — because the shape
 //! of a card is the holder's business and the shape of a config is the engine's, and this is the one
 //! line between them. Nothing in a plane reaches it: a plane reports what it consumed and never what
@@ -54,18 +55,87 @@ pub struct RawRates<'r> {
 /// Implemented by the composition root and by nothing else, because the root is the one place
 /// entitled to hold a deployment's configuration.
 pub trait RateApply: Send + Sync {
-    /// The configured rates are now these. Called on the boot resolution and on every apply/reload,
-    /// with the same figures the engine's own projection was rebuilt from.
+    /// Confirm the exact candidate in the configured Store without activating it.
+    /// Dropping a prepared commit must preserve any durable or unknown candidate for retry.
+    ///
+    /// # Errors
+    /// The holder cannot confirm this candidate. The running prices remain unchanged.
+    fn prepare(
+        &self,
+        _card: &CardFields,
+        _rates: &RawRates<'_>,
+        _origin: &str,
+    ) -> Result<Box<dyn PreparedRates>, String> {
+        Err("the installed rate holder does not support confirmed preparation".into())
+    }
+
+    /// An authoritative reload may reconcile retained effects before preparing its desired card.
+    fn prepare_recovery(
+        &self,
+        card: &CardFields,
+        rates: &RawRates<'_>,
+        origin: &str,
+    ) -> Result<Box<dyn PreparedRates>, String> {
+        self.prepare(card, rates, origin)
+    }
+
+    /// Legacy raw-rate notification, retained for historical journal readers and fixtures.
+    /// Production generation changes use [`Self::prepare`] and its confirmed commit token.
     ///
     /// Must be atomic from a reader's point of view: a request that pinned the previous rates keeps
     /// them for its whole life, and the next request sees these.
     fn rates_applied(&self, rates: &RawRates<'_>);
 
-    /// THE CARD THIS CONFIGURATION RESOLVED, raised at the same commit as
-    /// [`Self::rates_applied`], with who or what changed it (`origin`). When it differs from the
-    /// card in force, the holder appends a dated history entry for it, effective from now
-    /// (MONEY-DESIGN section 3a: the configuration is the source of the card, as in 1.5.5).
+    /// Capture the boot card before its Store book opens. Also retained as a legacy direct
+    /// notification; production mutations use fallible preparation instead.
     fn card_applied(&self, _card: &CardFields, _origin: &str) {}
+}
+
+/// A confirmed price candidate, activated only by its generation's commit.
+pub trait RateCommit: Send {
+    /// Publish the confirmed candidate. No Store calls are made at this step.
+    fn commit(self: Box<Self>);
+}
+
+/// A saved immutable candidate whose activation is still owned by the generation transaction.
+pub trait PreparedRates: Send {
+    /// Confirm the exact authorized activation before the generation can be published.
+    /// Unknown results retain both the candidate and activation for an exact retry.
+    fn confirm_activation(self: Box<Self>) -> Result<Box<dyn RateCommit>, String>;
+}
+
+struct NoRates;
+
+impl RateCommit for NoRates {
+    fn commit(self: Box<Self>) {}
+}
+
+impl PreparedRates for NoRates {
+    fn confirm_activation(self: Box<Self>) -> Result<Box<dyn RateCommit>, String> {
+        Ok(self)
+    }
+}
+
+/// Prepare the holder before a caller publishes its candidate App or limits.
+/// A binary with no installed rate holder has no prices to prepare.
+pub fn prepare(card: &CardFields, rates: &RawRates<'_>) -> Result<Box<dyn PreparedRates>, String> {
+    let origin = crate::config::card::origin::current();
+    match holder() {
+        Some(holder) => holder.prepare(card, rates, &origin),
+        None => Ok(Box::new(NoRates)),
+    }
+}
+
+/// Prepare under the existing reload verb's explicit recovery authority.
+pub fn prepare_recovery(
+    card: &CardFields,
+    rates: &RawRates<'_>,
+) -> Result<Box<dyn PreparedRates>, String> {
+    let origin = crate::config::card::origin::current();
+    match holder() {
+        Some(holder) => holder.prepare_recovery(card, rates, &origin),
+        None => Ok(Box::new(NoRates)),
+    }
 }
 
 /// **THE READ-SIDE TWIN**: a holder that can DATE a price — for an instant, the `effective_from`
@@ -82,6 +152,12 @@ pub trait RateApply: Send + Sync {
 /// never a version, so a back-dated correction can still reach it — is what splits the day at the
 /// edit. The accrual learns no rate and no fee: it learns when the current one began.
 pub trait RateEpoch: Send + Sync {
+    /// The raw era and optional exact card identity from one serving snapshot.
+    /// Legacy holders carry only their existing effective timestamp.
+    fn era_at(&self, at_ms: u64) -> busbar_kernel_ledger::cost::RawRateEra {
+        busbar_kernel_ledger::cost::RawRateEra::legacy(self.effective_from_at(at_ms))
+    }
+
     /// The `effective_from` of the entry in force at `at_ms`, in wall-clock milliseconds.
     ///
     /// `0` when no entry covers the instant, which is the OPENING entry's own `effective_from` and
@@ -120,6 +196,15 @@ fn dater() -> Option<&'static dyn RateEpoch> {
 #[must_use]
 pub fn effective_from_at(at_ms: u64) -> u64 {
     dater().map_or(0, |h| h.effective_from_at(at_ms))
+}
+
+/// The raw price-era provenance from one installed serving snapshot.
+#[must_use]
+pub fn era_at(at_ms: u64) -> busbar_kernel_ledger::cost::RawRateEra {
+    dater().map_or_else(
+        || busbar_kernel_ledger::cost::RawRateEra::legacy(0),
+        |holder| holder.era_at(at_ms),
+    )
 }
 
 /// The installed holder's dated history, if it holds one — see [`RateEpoch::history`].

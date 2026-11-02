@@ -1014,11 +1014,9 @@ async fn run(
             boot_store,
         )
         .unwrap_or_else(|e| die(e));
-    // BOOT KEEPS THEM IMMEDIATELY. The admin applies defer this to after their persist-and-swap,
-    // because a rejected apply must leave the still-serving generation's limits alone. Boot has no
-    // such caller: the config file IS the durable state, this build IS the first generation, and a
-    // build that failed already `die`d above.
-    boot_limits.keep();
+    // Stage the configured card before the book opens. Rates and limits are published only after
+    // the book has loaded and confirmed that card in its configured Store, before any serving.
+    boot_limits.stage_boot();
     let app = Arc::new(boot_app);
 
     // COMPOSE each captured provider: the plugin resolves its credential through the deployment's own
@@ -1088,7 +1086,7 @@ async fn run(
             as Arc<dyn busbar_contract::secret::SecretResolve>,
         auths: std::sync::Arc::clone(&door_auths),
         conns: Arc::clone(root::connector::the()) as Arc<dyn busbar_contract::conn::PollConns>,
-        stream_ceiling_secs: busbar_kernel::config::limits::installed().map_or(
+        stream_ceiling_secs: app.limits.as_ref().map_or(
             busbar_kernel::config::limits::DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS,
             |l| l.upstream_request_timeout_secs,
         ),
@@ -1212,6 +1210,9 @@ async fn run(
         || ROOT_UNITS.iter().any(|u| u.opens_book)
         || !served.planes.is_empty())
     .then(|| root::boot::book(&app, &store_module).unwrap_or_else(|e| die(e)));
+    // The book has loaded and confirmed the configured card. No listener or line carrier may
+    // serve a boot generation before this preparation succeeds.
+    boot_limits.keep().unwrap_or_else(|e| die(e));
     // THE DOOR PLANES' DATA ROUTES (`root::serve::data_routes`): each served plane's claims, as its
     // guest-list lines beside the kernel's own, onto the data router at its construction.
     // Every config apply refreshes each served door plane onto the generation it installed

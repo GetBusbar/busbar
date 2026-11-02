@@ -9,15 +9,18 @@ cannot survive destruction of its Store instance.
 
 Pricing existed in 1.5.5, but the card history and pending machinery are new in
 1.6. The reader retains compatibility with complete busbar.card.v1 Store entries.
-The v2 Store record protocol uses the original EntryKey, 64-bit chunk indices,
-length and count metadata, and a SHA-256 digest. A complete intent records the
-original entry and whether it selects the writer's own card. A separate canonical
-commit confirms the entry for fleet history. An intent alone is never a confirmed
-price. Partial or unknown writes retain the same immutable owner for retry.
+The Store record protocol uses the original EntryKey, 64-bit chunk indices,
+length and count metadata, and a SHA-256 digest. Complete v1 entries and existing
+v2 metadata remain readable as active history. New own-card candidates use metadata
+version 3 within `busbar.card.v2`. Their canonical candidate commit confirms the
+saved original, while a separate activation intent and matching activation commit
+bind its actual pricing cutover to that original's digest. A candidate alone never
+activates prices. Amendments keep their explicit correction windows and remain
+write-before-apply. Partial or unknown writes retain the same immutable owner.
 
 This is a logical Store schema, not a new ABI or a host disk format. Older 1.6
-development binaries do not understand v2 and must not be used to downgrade a
-Store containing it. No compatibility with a published 1.5.5 card-history format
+development binaries that do not understand the current metadata or activation
+records refuse them and must not be used to downgrade such a Store. No compatibility with a published 1.5.5 card-history format
 is claimed, because that format did not exist.
 
 Source inspection of memory, MySQL, PostgreSQL, SQLite and Valkey generic record
@@ -27,13 +30,44 @@ limit (MySQL's existing record key column allows 2048 bytes). No backend fork or
 new admission-size cap is required. Store success carries that backend's own
 durability semantics; a memory Store success is only within that instance's life.
 
-This is an intermediate implementation retaining the existing activation policy:
-configuration generation publication precedes this card notification, and the
-node can serve its RAM-applied pending prices while the Store is unavailable.
-Strict mode reports that this node's card is pending; a peer's pending intent does
-not refuse unrelated admissions. No restart durability is claimed until the
-complete intent is in the configured Store, and no canonical confirmation is
-claimed until the exact canonical commit is complete. The owner's separate choice
-about retaining old prices until Store confirmation remains open. Implementing
-that alternative requires a fallible prepare step before config persist/swap;
-a failure reported by the existing post-swap InstalledLimits::keep is too late.
+Owner approval on 2026-11-02 supersedes the earlier RAM activation policy: new
+prices activate only after the configured Store confirms they were saved.
+Generation transactions prepare the exact candidate and confirm its activation
+before publishing the App. The final commit publishes confirmed prices and limits
+without Store calls; external notifications follow App publication. A refusal,
+Pending timeout, unknown result, callback unwind or dropped preparation retains
+the old effective prices and the exact pending candidate. Background retries can
+confirm custody, but cannot authorize a generation's activation. An exact immutable
+readback is positive confirmation of an earlier unknown write.
+
+Boot refuses if it cannot confirm its card. A prepared-only candidate survives
+restart as pending and is never mistaken for active history. A first boot with no
+confirmed opening serves no prices. Complete Store intents preserve restart
+custody; an outage before an intent is complete leaves RAM custody only. No host
+file, WAL or spool substitutes for Store confirmation. A peer's pending candidate
+does not select this node's card or block unrelated peers.
+
+The config overlay anchor and the governance card Store can be different Store
+instances. There is no cross-Store atomic transaction: a desired config may already
+be saved when card confirmation fails. The old runtime generation stays active,
+and recovery must retain those partial effects and the exact unknown candidate.
+
+Authoritative boot, config reload and plugin reload provide explicit recovery.
+A candidate whose activation was never attempted can be retired using a matching
+Store retirement intent and commit; its original records remain inert in the
+Store. Unknown activation must first be confirmed with its exact metadata. If
+that activation is confirmed but the desired config still names the old card,
+recovery saves a new activation for the desired card and retains both facts.
+Neither background retries nor an ordinary mutation can perform this recovery.
+
+New raw usage eras carry both the effective timestamp and the exact confirmed
+entry identity, captured from one node history snapshot. Counts served while a
+change is pending keep that original card after confirmation, across day/window
+boundaries and equal timestamps. Legacy rows retain their historical fallback;
+signed amendments still resolve their intended wall-time window. No derived
+money is persisted. Activation dates use the writer's existing wall clock; entry
+identity supplies provenance without claiming a new shared-clock authority.
+
+Concurrent openings retain the fleet's lowest-key winner. A node holding another
+confirmed opening prices its local pins and eras with its own card; the fleet
+retains every original card so exact usage identities still resolve correctly.
