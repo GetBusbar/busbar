@@ -202,6 +202,10 @@ pub mod timing;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_hooks;
 #[cfg(test)]
+#[path = "../../busbar-kernel-testkit/src/app.rs"]
+mod app;
+
+#[cfg(test)]
 #[allow(dead_code, unused_imports)]
 #[path = "../../busbar-kernel-testkit/src/test_support/mod.rs"]
 mod test_support;
