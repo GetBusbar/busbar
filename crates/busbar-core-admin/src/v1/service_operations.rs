@@ -398,8 +398,8 @@ impl AdminService {
 
     pub(crate) async fn list_plugins(&self, ptype: &str) -> Result<Page<PluginView>, AdminError> {
         let mut plugins: Vec<PluginView> = Vec::new();
-        match ptype {
-            "auth" => {
+        match plugin_query(ptype)? {
+            PluginQuery::Auth => {
                 let chain = self.app.auth.chain_names();
                 for name in auth_modules_compiled_in() {
                     let active = if name == busbar_kernel::config::KEYS_MODULE {
@@ -440,7 +440,7 @@ impl AdminService {
                     .collect();
                 plugins.append(&mut dynamic_auth);
             }
-            "hooks" => {
+            PluginQuery::Hooks => {
                 plugins.push(PluginView::basic(
                     "weighted".to_string(),
                     "hooks",
@@ -471,27 +471,18 @@ impl AdminService {
                 plugins.append(&mut externals);
             }
 
-            "store" | "db" => {
-                plugins.extend(
-                    self.store_plugin_catalog_async()
-                        .await?
-                        .into_iter()
-                        .filter(|p| p.r#type == "store"),
-                );
+            PluginQuery::Store => {
+                plugins.extend(catalog_rows_of_kind(
+                    self.store_plugin_catalog_async().await?,
+                    "store",
+                ));
             }
 
-            "secret" => {
-                plugins.extend(
-                    self.store_plugin_catalog_async()
-                        .await?
-                        .into_iter()
-                        .filter(|p| p.r#type == "secret"),
-                );
-            }
-            other => {
-                return Err(AdminError::Validation(format!(
-                    "unknown plugin type `{other}`: expected `auth`, `hooks`, `secret`, or `store`"
-                )));
+            PluginQuery::Secret => {
+                plugins.extend(catalog_rows_of_kind(
+                    self.store_plugin_catalog_async().await?,
+                    "secret",
+                ));
             }
         }
         Ok(Page::single(plugins))
@@ -602,54 +593,7 @@ impl AdminService {
             return rows;
         };
         for row in inventory {
-            let trust = if row.status == "ready" {
-                if row.signature == "first-party" || row.signature.starts_with("publisher:") {
-                    Some("trusted")
-                } else {
-                    Some("unverified")
-                }
-            } else if row.stated.is_some() {
-                Some("rejected")
-            } else {
-                None
-            };
-            let name = row
-                .stated
-                .as_ref()
-                .map(|m| m.name.clone())
-                .unwrap_or_else(|| row.file.clone());
-
-            let r#type = match row.stated.as_ref().map(|m| m.kind.as_str()) {
-                Some("secret") => "secret",
-                Some("auth") => "auth",
-                Some("hook") => "hook",
-                Some("export") => "export",
-                Some("transport") => "transport",
-                Some("plane") => "plane",
-                _ => "store",
-            };
-
-            let (schema_url, schema_error) = match row.stated.as_ref() {
-                Some(m) => manifest_schema_url_and_error(&name, m.settings_schema.as_deref()),
-                None => (None, None),
-            };
-            rows.push(PluginView {
-                name,
-                r#type,
-                loader: "dynamic-library",
-                active: None,
-                target: Some(row.file.clone()),
-                file: Some(row.file.clone()),
-                has_schema: schema_url.is_some(),
-                version: row.stated.as_ref().map(|m| m.version.clone()),
-                publisher: row.stated.as_ref().map(|m| m.publisher.clone()),
-                interface_version: row.stated.as_ref().map(|m| m.abi_version),
-                trust,
-                valid: Some(row.status == "ready"),
-                error: (row.status != "ready").then(|| row.status.clone()),
-                schema_url,
-                schema_error,
-            });
+            rows.push(plugin_inventory_view(row));
         }
         rows
     }

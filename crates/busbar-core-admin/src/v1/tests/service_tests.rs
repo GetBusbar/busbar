@@ -468,9 +468,9 @@ fn remove_filesystem_failure_is_internal_error() {
     assert_eq!(std::fs::read(file).unwrap(), b"keep this plugin");
 }
 
-#[tokio::test]
-async fn catalog_preserves_manifest_kinds_and_filters_store_queries() {
-    let dir = tmp_plugins_dir("catalog-kinds");
+#[test]
+fn catalog_preserves_manifest_kinds_and_filters_store_queries() {
+    let mut inventory = Vec::new();
     for kind in [
         "store",
         "auth",
@@ -481,18 +481,28 @@ async fn catalog_preserves_manifest_kinds_and_filters_store_queries() {
         "plane",
         "unknown",
     ] {
-        let mut manifest: serde_json::Value = serde_json::from_slice(
-            &fake_tarball(kind, kind, "1.0.0", "allowed")[FAKE_HEAD.len()..],
-        )
-        .unwrap();
-        manifest["kind"] = kind.into();
-        let mut bytes = FAKE_HEAD.to_vec();
-        bytes.extend_from_slice(&serde_json::to_vec(&manifest).unwrap());
-        std::fs::write(dir.join(format!("{kind}.tar.gz")), bytes).unwrap();
+        inventory.push(Inventoried {
+            file: format!("{kind}.tar.gz"),
+            stated: Some(Stated {
+                name: kind.into(),
+                alias: kind.into(),
+                kind: kind.into(),
+                version: "1.0.0".into(),
+                publisher: "acme".into(),
+                abi_version: 3,
+                settings_schema: None,
+            }),
+            signature: "unsigned (allowed)".into(),
+            status: "ready".into(),
+        });
     }
-    std::fs::write(dir.join("corrupt.tar.gz"), b"invalid manifest").unwrap();
-    let svc = svc_with(dir, unsigned_ok_posture());
-    let reload = svc.reload_store_plugins().unwrap();
+    inventory.push(Inventoried {
+        file: "corrupt.tar.gz".into(),
+        stated: None,
+        signature: "-".into(),
+        status: "INVALID: invalid manifest".into(),
+    });
+    let catalog: Vec<_> = inventory.into_iter().map(plugin_inventory_view).collect();
     for kind in [
         "store",
         "auth",
@@ -505,8 +515,7 @@ async fn catalog_preserves_manifest_kinds_and_filters_store_queries() {
         "corrupt",
     ] {
         let file = format!("{kind}.tar.gz");
-        let row = reload
-            .plugins
+        let row = catalog
             .iter()
             .find(|p| p.file.as_deref() == Some(file.as_str()))
             .unwrap();
@@ -518,23 +527,16 @@ async fn catalog_preserves_manifest_kinds_and_filters_store_queries() {
         assert_eq!(row.r#type, expected, "{file}");
     }
     for query in ["store", "db"] {
-        let mut files: Vec<_> = svc
-            .list_plugins(query)
-            .await
-            .unwrap()
-            .items
-            .into_iter()
-            .filter_map(|p| p.file)
+        assert!(matches!(plugin_query(query), Ok(PluginQuery::Store)));
+        let mut files: Vec<_> = catalog_rows_of_kind(catalog.clone(), "store")
+            .filter_map(|row| row.file)
             .collect();
         files.sort();
         assert_eq!(files, ["corrupt.tar.gz", "store.tar.gz", "unknown.tar.gz"]);
     }
     for query in ["export", "transport", "plane"] {
         assert!(
-            matches!(
-                svc.list_plugins(query).await,
-                Err(AdminError::Validation(_))
-            ),
+            matches!(plugin_query(query), Err(AdminError::Validation(_))),
             "the catalog correction adds no new query type"
         );
     }
@@ -542,16 +544,39 @@ async fn catalog_preserves_manifest_kinds_and_filters_store_queries() {
 
 #[test]
 fn catalog_projects_each_inventory_row_into_the_catalog_vocabulary() {
-    let dir = tmp_plugins_dir("catalog-projection");
-    for (file, name, trust) in [
-        ("a.tar.gz", "acme-store-a", "trusted"),
-        ("b.tar.gz", "acme-store-b", "allowed"),
-        ("c.tar.gz", "acme-store-c", "rejected"),
+    let mut inventory = Vec::new();
+    for (file, name, signature, status) in [
+        ("a.tar.gz", "acme-store-a", "publisher:acme", "ready"),
+        ("b.tar.gz", "acme-store-b", "unsigned (allowed)", "ready"),
+        (
+            "c.tar.gz",
+            "acme-store-c",
+            "unsigned",
+            "SKIPPED: unsigned plugin",
+        ),
     ] {
-        std::fs::write(dir.join(file), fake_tarball(name, name, "2.1.0", trust)).unwrap();
+        inventory.push(Inventoried {
+            file: file.into(),
+            stated: Some(Stated {
+                name: name.into(),
+                alias: name.into(),
+                kind: "store".into(),
+                version: "2.1.0".into(),
+                publisher: "acme".into(),
+                abi_version: 3,
+                settings_schema: None,
+            }),
+            signature: signature.into(),
+            status: status.into(),
+        });
     }
-    std::fs::write(dir.join("d.tar.gz"), b"not a tarball").unwrap();
-    let cat = svc_with(dir, strict_posture()).store_plugin_catalog();
+    inventory.push(Inventoried {
+        file: "d.tar.gz".into(),
+        stated: None,
+        signature: "-".into(),
+        status: "INVALID: not a tarball".into(),
+    });
+    let cat: Vec<_> = inventory.into_iter().map(plugin_inventory_view).collect();
     let row = |file: &str| {
         cat.iter()
             .find(|p| p.target.as_deref() == Some(file))

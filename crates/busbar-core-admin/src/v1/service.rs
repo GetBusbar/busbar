@@ -870,6 +870,83 @@ fn inspect_plugin_view(
     })
 }
 
+fn plugin_inventory_view(row: busbar_kernel::admission::Inventoried) -> PluginView {
+    let trust = if row.status == "ready" {
+        if row.signature == "first-party" || row.signature.starts_with("publisher:") {
+            Some("trusted")
+        } else {
+            Some("unverified")
+        }
+    } else if row.stated.is_some() {
+        Some("rejected")
+    } else {
+        None
+    };
+    let name = row
+        .stated
+        .as_ref()
+        .map(|m| m.name.clone())
+        .unwrap_or_else(|| row.file.clone());
+
+    let r#type = match row.stated.as_ref().map(|m| m.kind.as_str()) {
+        Some("secret") => "secret",
+        Some("auth") => "auth",
+        Some("hook") => "hook",
+        Some("export") => "export",
+        Some("transport") => "transport",
+        Some("plane") => "plane",
+        _ => "store",
+    };
+
+    let (schema_url, schema_error) = match row.stated.as_ref() {
+        Some(m) => manifest_schema_url_and_error(&name, m.settings_schema.as_deref()),
+        None => (None, None),
+    };
+    PluginView {
+        name,
+        r#type,
+        loader: "dynamic-library",
+        active: None,
+        target: Some(row.file.clone()),
+        file: Some(row.file.clone()),
+        has_schema: schema_url.is_some(),
+        version: row.stated.as_ref().map(|m| m.version.clone()),
+        publisher: row.stated.as_ref().map(|m| m.publisher.clone()),
+        interface_version: row.stated.as_ref().map(|m| m.abi_version),
+        trust,
+        valid: Some(row.status == "ready"),
+        error: (row.status != "ready").then(|| row.status.clone()),
+        schema_url,
+        schema_error,
+    }
+}
+
+enum PluginQuery {
+    Auth,
+    Hooks,
+    Store,
+    Secret,
+}
+
+fn plugin_query(ptype: &str) -> Result<PluginQuery, AdminError> {
+    match ptype {
+        "auth" => Ok(PluginQuery::Auth),
+        "hooks" => Ok(PluginQuery::Hooks),
+        "store" | "db" => Ok(PluginQuery::Store),
+        "secret" => Ok(PluginQuery::Secret),
+        other => Err(AdminError::Validation(format!(
+            "unknown plugin type `{other}`: expected `auth`, `hooks`, `secret`, or `store`"
+        ))),
+    }
+}
+
+fn catalog_rows_of_kind(
+    rows: Vec<PluginView>,
+    kind: &'static str,
+) -> impl Iterator<Item = PluginView> {
+    rows.into_iter().filter(move |row| row.r#type == kind)
+}
+
 pub(crate) struct AdminService {
     app: Arc<App>,
 
