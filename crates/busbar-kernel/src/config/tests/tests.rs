@@ -3378,13 +3378,24 @@ fn any_section_a_registered_plane_requires_is_refused_when_absent() {
 #[test]
 fn warn_invalid_floors_keeps_both_warnings_byte_for_byte() {
     use crate::diagnostics::{CONFIG_ANTIDOWNGRADE_FLOOR_INVALID, CONFIG_FIRSTPARTY_FLOOR_INVALID};
-    use crate::test_support::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
     let mut cfg = PluginsCfg::default();
     cfg.min_versions.insert("p".into(), "v1.2.3".into());
     cfg.first_party_floors.insert("q".into(), "1.2".into());
-    let cap = WarnCapture::default();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let path = std::env::temp_dir().join(format!(
+        "busbar-config-floor-warnings-{}-{}",
+        std::process::id(),
+        hex::encode(crate::door::op_id().0)
+    ));
+    let file = std::fs::File::create(&path).expect("warning capture file");
+    let subscriber = tracing_subscriber::registry().with(
+        tracing_subscriber::fmt::layer()
+            .without_time()
+            .with_level(false)
+            .with_target(false)
+            .with_ansi(false)
+            .with_writer(move || file.try_clone().expect("warning capture writer")),
+    );
     tracing::subscriber::with_default(subscriber, || cfg.warn_invalid_floors());
     let min = "anti-downgrade floor is not a valid MAJOR.MINOR.PATCH version (no leading 'v'); it \
                cannot be satisfied, so this plugin will be refused. Fix or remove the entry.";
@@ -3393,7 +3404,9 @@ fn warn_invalid_floors_keeps_both_warnings_byte_for_byte() {
                  cannot be satisfied, so this plugin will be refused — and this pin REPLACES the \
                  binary-version floor, so the plugin is refused unconditionally until this is \
                  fixed. Fix or remove the entry.";
-    let m = cap.messages();
+    let captured = std::fs::read_to_string(&path).expect("captured warnings");
+    let _ = std::fs::remove_file(path);
+    let m: Vec<&str> = captured.lines().collect();
     assert_eq!(m.len(), 2, "{m:?}");
     assert!(
         m[0].starts_with(min)
