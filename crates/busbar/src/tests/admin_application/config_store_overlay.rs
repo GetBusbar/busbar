@@ -666,12 +666,12 @@ async fn settings_preserves_a_large_store_overlay_across_reload() {
     let overlay = busbar_kernel::config::overlay::OverlayStore::new(faults.clone())
         .expect("actual Store overlay");
     app.overlay_path = Some(overlay.clone());
-    let (_data, admin, handle) =
+    let (_data, admin, _handle) =
         busbar_kernel::build_split_routers_with_limits(Arc::new(app), 1 << 20, 0, false);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, admin).await });
-    let client = reqwest::Client::new();
+    let _client = reqwest::Client::new();
     let groups: std::collections::BTreeMap<String, busbar_kernel::config::GroupCfg> = (0..32)
         .map(|index| (format!("persisted-team-{index:04}"), Default::default()))
         .collect();

@@ -115,7 +115,7 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
         };
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+        let (app, rotate, limits) = busbar_kernel::build_app_from_config(
             config,
             plugin_config,
             None,

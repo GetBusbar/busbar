@@ -116,7 +116,7 @@ async fn slow_store_read_does_not_stall_the_executor() {
     };
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
         config,
         plugin_config,
         None,
@@ -171,7 +171,7 @@ async fn slow_store_read_does_not_stall_the_executor() {
         .expect("actual rate history boots");
     app.overlay_path =
         Some(busbar_kernel::config::overlay::OverlayStore::new(calls).expect("actual overlay"));
-    let (_data, admin, handle) =
+    let (_data, admin, _handle) =
         busbar_kernel::build_split_routers_with_limits(Arc::new(app), 1 << 20, 0, false);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -514,7 +514,7 @@ async fn concurrent_mints_never_bind_a_deleted_group() {
             .expect("actual rate history boots");
         app.overlay_path =
             Some(busbar_kernel::config::overlay::OverlayStore::new(calls).expect("actual overlay"));
-        let (_data, admin, handle) =
+        let (_data, admin, _handle) =
             busbar_kernel::build_split_routers_with_limits(Arc::new(app), 1 << 20, 0, false);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
