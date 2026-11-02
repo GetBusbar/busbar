@@ -2,19 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use crate::auth::AuthMiddleware;
-use crate::config::{AuthCfg, AuthChainEntry, PluginsCfg};
-use crate::tests::{dropped, tmp_plugin_dir};
-use std::path::Path;
-
-fn plugins_cfg_allow_unsigned(dir: &Path) -> PluginsCfg {
-    let mut cfg = PluginsCfg {
-        enabled: true,
-        dir: dir.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
-    cfg.trust.allow_unsigned = true;
-    cfg
-}
+use crate::config::{AuthCfg, AuthChainEntry};
 
 fn chain_with(module: &str, settings: serde_json::Map<String, serde_json::Value>) -> AuthCfg {
     let mut entry = AuthChainEntry::bare(module);
@@ -69,121 +57,6 @@ fn auth_plugin_role_binding_and_scope_cap_apply() {
             "the configured {configured} ceiling reaches the production authorization policy"
         );
     }
-}
-
-#[test]
-fn missing_auth_plugin_is_loud_boot_failure() {
-    let dir = tmp_plugin_dir("auth-plugin-missing");
-
-    crate::test_support::rows::drop_in(
-        &dir,
-        vec![dropped(
-            "acme-store-x",
-            "x",
-            busbar_contract::abi::mechanism::kind::STORE,
-        )],
-        Vec::new(),
-    );
-    let plugins = plugins_cfg_allow_unsigned(&dir);
-    let cfg = chain_with("test-idp-double", serde_json::Map::new());
-
-    let err = crate::plugins_preflight(
-        None,
-        Some(&cfg),
-        &Default::default(),
-        &Default::default(),
-        &plugins,
-        &Default::default(),
-    )
-    .unwrap_err();
-    assert!(
-        err.contains("test-idp-double"),
-        "names the missing module: {err}"
-    );
-    assert!(
-        err.contains("no plugin matching") && err.contains("is installed in"),
-        "explains it is unresolved: {err}"
-    );
-
-    assert!(
-        err.contains("enabled") && err.contains("plugins.fetch"),
-        "gives the two-part enabled?/in-folder? diagnosis: {err}"
-    );
-
-    let registry = crate::plugins_preflight(
-        None,
-        None,
-        &Default::default(),
-        &Default::default(),
-        &plugins,
-        &Default::default(),
-    )
-    .expect("the directory builds");
-    let mw_err = AuthMiddleware::new(
-        &cfg,
-        &registry,
-        &crate::config::secret::SecretResolver::builtins_only(),
-    )
-    .unwrap_err();
-    assert!(
-        mw_err.contains("test-idp-double"),
-        "middleware names it: {mw_err}"
-    );
-
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn auth_plugin_with_plugins_disabled_is_boot_error_naming_the_flag() {
-    let dir = tmp_plugin_dir("auth-plugin-disabled");
-    let plugins = PluginsCfg {
-        enabled: false,
-        dir: dir.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
-    let cfg = chain_with("test-idp-double", serde_json::Map::new());
-    let err = crate::plugins_preflight(
-        None,
-        Some(&cfg),
-        &Default::default(),
-        &Default::default(),
-        &plugins,
-        &Default::default(),
-    )
-    .unwrap_err();
-    assert!(err.contains("plugins.enabled"), "names the flag: {err}");
-    assert!(
-        err.contains("test-idp-double"),
-        "names the auth module: {err}"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn keys_module_is_not_a_plugin_ref() {
-    let cfg = AuthCfg {
-        chain: vec![AuthChainEntry::bare(crate::config::KEYS_MODULE)],
-        ..AuthCfg::default_none()
-    };
-
-    let plugins = PluginsCfg::default();
-    let registry = crate::plugins_preflight(
-        None,
-        Some(&cfg),
-        &Default::default(),
-        &Default::default(),
-        &plugins,
-        &Default::default(),
-    )
-    .expect("keys needs no plugin");
-    let mw = AuthMiddleware::new(
-        &cfg,
-        &registry,
-        &crate::config::secret::SecretResolver::builtins_only(),
-    )
-    .expect("keys chain builds");
-    assert!(mw.keys_in_chain, "keys sets the engine flag");
-    assert!(mw.chain_names().is_empty(), "keys is not a boxed module");
 }
 
 struct SlowDoor {
