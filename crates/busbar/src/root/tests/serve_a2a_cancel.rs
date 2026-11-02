@@ -135,7 +135,6 @@ impl Drop for RetireWaiter {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) async fn run(
     data: &axum::Router,
     bearer: &str,
@@ -199,7 +198,8 @@ pub(super) async fn run(
     piece.claim = AGENT_RPC_CLAIM;
     piece.from = FROM_KERNEL;
     piece.member = AbiStr::of("vendor");
-    piece.caller_ref = AbiStr::over(principal.id.as_bytes());
+    // Authority stays in HostUnits. The guest sees only the original opaque caller reference.
+    piece.caller_ref = AbiStr::of("c0ffee01");
     piece.attempt_no = 1;
     piece.bytes = Blob::of(b"");
     piece.reply_buf = reply.as_mut_ptr();
