@@ -4256,7 +4256,10 @@ mod tools_door {
         let rig = port_server.rig(
             instance,
             registration("metered", &port_server, ""),
-            &|app| app.cost(cost()),
+            &|mut app| {
+                app.cost = Arc::new(cost());
+                app
+            },
         );
         let (budgeted, token) = key_on(
             &rig,
@@ -4848,13 +4851,28 @@ mod tools_door {
         .expect("a section");
 
         registry(row());
-        busbar_kernel::preflight::install_linked_auth(
-            crate::LINKED.auths,
-            crate::root::auth_bindings::operator_words(),
-        );
         crate::dist_root_install::install();
         let chain = vec![busbar_kernel::config::operator_provider().to_string()];
-        let rig = port_server.rig(instance, tools, &|app| app.admin_chain(chain.clone()));
+        let rig = port_server.rig(instance, tools, &|mut app| {
+            let auth = busbar_kernel::config::AuthCfg {
+                admin_auth: chain
+                    .iter()
+                    .cloned()
+                    .map(busbar_kernel::config::AuthChainEntry::bare)
+                    .collect(),
+                ..busbar_kernel::config::AuthCfg::default_none()
+            };
+            app.admin_modules = Arc::new(
+                busbar_kernel::auth::AdminAuthChain::build(
+                    &auth,
+                    &app.hook_env.registry,
+                    &app.secret_resolver,
+                )
+                .expect("the real operator admin chain opens"),
+            );
+            app.admin_chain = chain.clone();
+            app
+        });
         let (server, tool) = (grant_field("scope_server"), grant_field("scope_tool"));
 
         let (status, reader) = over_admin(
