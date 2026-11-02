@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 #[path = "../../../../../dist/default/tests/common/mod.rs"]
@@ -36,6 +37,7 @@ fn provider(name: &'static str, units: &Arc<Mutex<Vec<u64>>>) -> Arc<Provider> {
 // every framing lifetime operation stay with the production adapter.
 struct ObserveActual {
     actual: inbound::LoaderSide,
+    calls: Arc<AtomicUsize>,
     units: Arc<Mutex<Vec<u64>>>,
 }
 fn record(units: &Mutex<Vec<u64>>, answer: &Result<AuthCallAnswer, &'static str>) {
@@ -48,6 +50,7 @@ impl AuthHandleHost for ObserveActual {
         self.actual.unit_secret(owner, unit)
     }
     fn auth_call(&self, ask: AuthCallAsk, done: AuthDone) -> AuthRan {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         let units = self.units.clone();
         let ran = self.actual.auth_call(
             ask,
@@ -294,8 +297,10 @@ async fn a_live_listener_reloads_new_requests_and_pins_the_old_requests_app() {
     let _publishing = crate::root::PUBLISHING.lock().await;
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let units = Arc::new(Mutex::new(Vec::new()));
+    let calls = Arc::new(AtomicUsize::new(0));
     assert!(dispatcher.install_auth_handle(Arc::new(ObserveActual {
         actual: inbound::LoaderSide(inbound::host().clone()),
+        calls: calls.clone(),
         units: units.clone()
     })));
     let plugin = crate::root::test_plugins::linked_transport(
@@ -334,7 +339,7 @@ async fn a_live_listener_reloads_new_requests_and_pins_the_old_requests_app() {
     settle(&mut framing).await;
     let before_reload = identities(&before);
     assert_eq!(
-        units.lock().unwrap().len(),
+        calls.load(Ordering::SeqCst),
         1,
         "one actual auth call for the first stream"
     );
@@ -352,7 +357,7 @@ async fn a_live_listener_reloads_new_requests_and_pins_the_old_requests_app() {
     settle(&mut framing).await;
     let after_reload = identities(&after);
     assert_eq!(
-        units.lock().unwrap().len(),
+        calls.load(Ordering::SeqCst),
         2,
         "one actual auth call for each stream"
     );
@@ -387,8 +392,10 @@ async fn a_need_listener_uses_its_selected_policy_across_reload_without_changing
     let _publishing = crate::root::PUBLISHING.lock().await;
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let units = Arc::new(Mutex::new(Vec::new()));
+    let calls = Arc::new(AtomicUsize::new(0));
     assert!(dispatcher.install_auth_handle(Arc::new(ObserveActual {
         actual: inbound::LoaderSide(inbound::host().clone()),
+        calls: calls.clone(),
         units: units.clone()
     })));
     let plugin = crate::root::test_plugins::linked_transport(
@@ -440,7 +447,7 @@ async fn a_need_listener_uses_its_selected_policy_across_reload_without_changing
     settle(&mut framing).await;
     let first = identities(&before);
     assert_eq!(
-        units.lock().unwrap().len(),
+        calls.load(Ordering::SeqCst),
         1,
         "one actual auth call for the selected stream"
     );
@@ -460,7 +467,7 @@ async fn a_need_listener_uses_its_selected_policy_across_reload_without_changing
     settle(&mut framing).await;
     assert_eq!(identities(&after), vec![Some(after.name.into())]);
     assert_eq!(
-        units.lock().unwrap().len(),
+        calls.load(Ordering::SeqCst),
         2,
         "one actual auth call for each selected stream"
     );
@@ -477,7 +484,7 @@ async fn a_need_listener_uses_its_selected_policy_across_reload_without_changing
         data.guests(),
     )
     .unwrap();
-    let before_miss = units.lock().unwrap().len();
+    let before_miss = calls.load(Ordering::SeqCst);
     let yielded = ordinary
         .ingest(
             &authenticated_request(1, "/tickets/data-miss", true, &after),
@@ -486,7 +493,7 @@ async fn a_need_listener_uses_its_selected_policy_across_reload_without_changing
         .unwrap();
     settle(&mut ordinary).await;
     assert_eq!(
-        units.lock().unwrap().len(),
+        calls.load(Ordering::SeqCst),
         before_miss,
         "a route miss never calls actual auth"
     );
