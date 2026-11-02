@@ -59,6 +59,66 @@ impl Drop for Parked {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn raw_output_credit_readiness_drops_before_acceptance_and_resumes_without_replay() {
+    use busbar_core_connector::datagram::Leg;
+    use busbar_core_connector::framer::FRAME_CAP;
+    use busbar_core_connector::test_support::datagram_output_reservation_bytes;
+
+    let limit = 4 * datagram_output_reservation_bytes() + 32 * FRAME_CAP;
+    let pair = Pair::with_limit(limit).await;
+    assert_eq!(pair.caller.read().await, Some(Vec::new()));
+    assert!(pair.pairing.published().await.failure.is_none());
+    let memory = pair.pairing.memory_account();
+    // Retain genuine host storage, leaving less than the next pre-read output
+    // reservation. The actual WebRTC association and UDP path are established.
+    let held = vec![0_u8; limit - memory.used() - 1024];
+    let custody = pair
+        .pairing
+        .reserve_input_for(Leg::Caller, held.capacity())
+        .unwrap();
+    let before = pair.pairing.publication_outcome();
+    let used = memory.used();
+    let ingested = pair.framer.ingested.lock().unwrap().clone();
+    let dropped_before = pair.door.assocs.raw_busy_dropped();
+    pair.input
+        .send(Input::Raw(b"\x80no-output-credit".to_vec()))
+        .await
+        .unwrap();
+    tokio::time::timeout(WAIT, async {
+        while pair.door.assocs.raw_busy_dropped() == dropped_before {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("missing output credit refuses raw input before framer acceptance");
+    assert_eq!(pair.door.assocs.raw_busy_dropped(), dropped_before + 1);
+    assert_eq!(pair.pairing.publication_outcome(), before);
+    assert_eq!(memory.used(), used);
+    assert_eq!(
+        *pair.framer.ingested.lock().unwrap(),
+        ingested,
+        "receive-readiness refusal never crosses the real framer"
+    );
+    assert!(!pair.pairing.closed());
+    assert!(pair.caller.from.try_recv().is_err());
+    drop(held);
+    drop(custody);
+
+    // The discarded malformed RTP is a receive-readiness negative, not an echo
+    // protocol. A fresh genuine SCTP message proves progress after retirement.
+    pair.send(b"credit returned").await;
+    assert_eq!(
+        tokio::time::timeout(WAIT, pair.caller.read()).await.unwrap(),
+        Some(b"credit returned".to_vec())
+    );
+    assert!(pair.pairing.published().await.failure.is_none());
+    assert!(pair.caller.from.try_recv().is_err(), "no discarded input replay");
+    assert_eq!(pair.door.assocs.raw_busy_dropped(), dropped_before + 1);
+    assert!(!pair.pairing.closed());
+    pair.door.close();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn busy_raw_ingress_drops_before_acceptance_and_other_real_associations_progress() {
     let door = ClaimDoor::serve(ReadyPort::open(bind("127.0.0.1:0").unwrap()).unwrap());
     let mut a = Pair::on(door.clone(), &[]).await;

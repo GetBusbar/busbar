@@ -215,6 +215,7 @@ pub(crate) mod real {
     pub(crate) struct Observed {
         inner: Arc<dyn FramerDoor>,
         pub(crate) emitted: Mutex<Vec<usize>>,
+        pub(crate) ingested: Mutex<Vec<usize>>,
         pub(crate) observer: Mutex<Option<Observer>>,
     }
     impl FramerDoor for Observed {
@@ -222,6 +223,9 @@ pub(crate) mod real {
             self.inner.facts()
         }
         fn cross(&self, call: Call<'_>) -> Crossed {
+            if let Call::Ingest(input, _) = &call {
+                self.ingested.lock().unwrap().push(input.len);
+            }
             if let Call::Emit(input, _) = &call {
                 self.emitted.lock().unwrap().push(input.len);
                 let observe = self.observer.lock().unwrap().clone();
@@ -311,6 +315,7 @@ pub(crate) mod real {
             let framer = Arc::new(Observed {
                 inner: inner.unwrap_or_else(loaded),
                 emitted: Mutex::new(Vec::new()),
+                ingested: Mutex::new(Vec::new()),
                 observer: Mutex::new(None),
             });
             let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
