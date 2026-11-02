@@ -230,21 +230,34 @@ fn bind_as(
     needs: &'static [Need],
     conns: crate::dispatch::ConnTable,
 ) -> Result<Plugin<TestKind>, crate::dispatch::LoadError> {
+    bind_as_kind::<TestKind>(needs, conns)
+}
+
+/// The lifecycle fixture under an explicit kind, preserving that kind's connection binding path.
+fn bind_as_kind<K: crate::dispatch::Kind>(
+    needs: &'static [Need],
+    conns: crate::dispatch::ConnTable,
+) -> Result<Plugin<K>, crate::dispatch::LoadError> {
     // SAFETY: the real door and its Statement are `'static`.
     let real: Door = unsafe { *plug::busbar_plugin_door() };
     let st: Statement = unsafe { *real.statement() };
     let st: &'static Statement = Box::leak(Box::new(Statement {
+        kind: K::CODE as u32,
+        kind_abi: K::CODE.abi_version(),
         needs: needs.as_ptr(),
         needs_len: needs.len(),
         ..st
     }));
     let door: &'static Door = Box::leak(Box::new(unsafe {
         Door::__from_parts(busbar_contract::abi::mechanism::door::DoorParts {
+            kind: K::CODE as u32,
+            kind_abi: K::CODE.abi_version(),
+            layout: K::CODE.layout_fingerprint(),
             statement: st,
             ..real.parts()
         })
     }));
-    let v = validate_door::<TestKind>(door).expect("the door validates");
+    let v = validate_door::<K>(door).expect("the door validates");
     Plugin::bind(
         v,
         None,
@@ -367,7 +380,7 @@ fn settings(json: &'static [u8]) -> Blob {
 }
 
 /// `open` with `json` as the instance's settings, ticket-less.
-fn open_with(p: &Plugin<TestKind>, json: &'static [u8]) -> Outcome {
+fn open_with<K: crate::dispatch::Kind>(p: &Plugin<K>, json: &'static [u8]) -> Outcome {
     let mut f = Frame::new(
         OpenIn {
             head: in_head(),
@@ -389,7 +402,7 @@ fn open_with(p: &Plugin<TestKind>, json: &'static [u8]) -> Outcome {
 }
 
 /// `refresh` with `json` as the instance's new settings, ticket-less.
-fn refresh_with(p: &Plugin<TestKind>, json: &'static [u8]) -> Outcome {
+fn refresh_with<K: crate::dispatch::Kind>(p: &Plugin<K>, json: &'static [u8]) -> Outcome {
     let mut f = Frame::new(
         RefreshIn {
             head: in_head(),
@@ -403,6 +416,32 @@ fn refresh_with(p: &Plugin<TestKind>, json: &'static [u8]) -> Outcome {
     p.call(slot::REFRESH, &mut f).outcome
 }
 
+/// Generation identities must resolve to this exact supplier, never a neighbouring instance.
+fn belongs_to<K: crate::dispatch::Kind>(p: &Plugin<K>, owner: InstanceId) -> bool {
+    let supplier = crate::dispatch::handle::supplier_of(p.instance()).unwrap();
+    crate::dispatch::handle::supplier_of(owner).is_some_and(|wake| std::ptr::eq(wake, supplier))
+}
+
+/// An export declaration keeps the original identity at open and mints a distinct one per refresh.
+fn assert_generation_owners(table: &Recording, p: &Plugin<TestKind>, count: usize) {
+    let owners: Vec<_> = table
+        .declared
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(owner, need, ..)| belongs_to(p, *owner) && *need == NeedId(0))
+        .map(|(owner, ..)| *owner)
+        .collect();
+    assert_eq!(owners.len(), count);
+    assert_eq!(owners[0], p.instance());
+    for (index, owner) in owners.iter().enumerate() {
+        assert!(
+            !owners[..index].contains(owner),
+            "each generation owns a distinct authority"
+        );
+    }
+}
+
 /// The targets `table` was last declared with for `p`'s need 0, oldest first.
 fn targets(table: &Recording, p: &Plugin<TestKind>) -> Vec<Option<String>> {
     table
@@ -410,7 +449,7 @@ fn targets(table: &Recording, p: &Plugin<TestKind>) -> Vec<Option<String>> {
         .lock()
         .unwrap()
         .iter()
-        .filter(|(owner, need, ..)| (*owner, *need) == (p.instance(), NeedId(0)))
+        .filter(|(owner, need, ..)| belongs_to(p, *owner) && *need == NeedId(0))
         .map(|(_, _, _, target, _)| target.clone())
         .collect()
 }
@@ -598,6 +637,7 @@ fn a_refresh_re_declares_a_config_targeted_need_at_its_new_target() {
         refresh_with(&p, br#"{"other":"127.0.0.3:9"}"#),
         Outcome::Ready
     );
+    assert_generation_owners(&table, &p, 3);
     assert_eq!(
         targets(&table, &p),
         vec![
@@ -630,10 +670,11 @@ fn a_trust_from_need_is_declared_with_its_settings_ca_at_open_and_every_refresh(
     assert_eq!(open_with(&p, br#"{"ca":"PEM-A"}"#), Outcome::Ready);
     assert_eq!(refresh_with(&p, br#"{"ca":"PEM-B"}"#), Outcome::Ready);
     assert_eq!(refresh_with(&p, br#"{"other":"PEM-C"}"#), Outcome::Ready);
+    assert_generation_owners(&table, &p, 3);
     let declared = table.declared.lock().unwrap().clone();
     let seen: Vec<(Option<String>, Option<String>)> = declared
         .iter()
-        .filter(|(owner, need, ..)| (*owner, *need) == (p.instance(), NeedId(0)))
+        .filter(|(owner, need, ..)| belongs_to(p, *owner) && *need == NeedId(0))
         .map(|(_, _, spec, target, trust)| {
             assert_eq!(
                 spec.trust_from, "settings.ca",
@@ -703,9 +744,30 @@ const OWNED_TRUSTING: [Need; 1] = [Need {
     ..NEEDS[0]
 }];
 
+/// A plane lifecycle skeleton uses the owned-section binding path; retain the fixture's checks.
+struct PlaneShaped;
+impl crate::dispatch::Kind for PlaneShaped {
+    const CODE: busbar_contract::abi::mechanism::KindCode =
+        busbar_contract::abi::mechanism::KindCode::Plane;
+    type Ops = busbar_contract::abi::mechanism::lifecycle::OpsHead;
+    const TIMEOUT: Outcome = Outcome::Failed;
+    fn context(st: &Statement) -> Result<Option<Box<crate::dispatch::Context>>, String> {
+        <TestKind as crate::dispatch::Kind>::context(st)
+    }
+    fn check(
+        answer: &crate::dispatch::Answer,
+    ) -> Result<(), busbar_contract::abi::mechanism::check::Fault> {
+        <TestKind as crate::dispatch::Kind>::check(answer)
+    }
+}
+
 /// `refresh` with `json` as the instance's new settings and `owned` as its owned sections, carried
 /// in the extensions blob under `abi::plane::EXT_OWNED`, ticket-less.
-fn refresh_owning(p: &Plugin<TestKind>, json: &'static [u8], owned: &[u8]) -> Outcome {
+fn refresh_owning<K: crate::dispatch::Kind>(
+    p: &Plugin<K>,
+    json: &'static [u8],
+    owned: &[u8],
+) -> Outcome {
     use busbar_contract::abi::mechanism::call::BLOB_OCTETS;
     let extensions = busbar_contract::abi::mechanism::extensions::encode(&[(
         busbar_contract::abi::plane::EXT_OWNED,
@@ -732,8 +794,8 @@ fn refresh_owning(p: &Plugin<TestKind>, json: &'static [u8], owned: &[u8]) -> Ou
 }
 
 /// RED: a need whose `trust_from` is in the OWNED namespace resolves against the owned sections
-/// alone, never the settings (no fallback between the two): its `open` (no owned sections for a
-/// kind that is no plane) and a refresh carrying none declare it WITHOUT a trust (the public roots
+/// alone, never the settings (no fallback between the two): its `open` with no owned sections
+/// and a refresh carrying none declare it WITHOUT a trust (the public roots
 /// alone, the table's to take as optional), even when the settings hold the same path; a refresh
 /// whose owned sections write the anchor declares it with that PEM.
 /// RED before the fix: the path resolved against the settings only, so an owned anchor never
@@ -741,7 +803,12 @@ fn refresh_owning(p: &Plugin<TestKind>, json: &'static [u8], owned: &[u8]) -> Ou
 #[test]
 fn an_owned_trust_from_resolves_against_the_owned_sections_alone() {
     let table = Arc::new(Recording::default());
-    let p = bound(Box::leak(Box::new(OWNED_TRUSTING)), &table);
+    let conns: Arc<dyn DeclaredConns> = table.clone();
+    let p = bind_as_kind::<PlaneShaped>(
+        Box::leak(Box::new(OWNED_TRUSTING)),
+        crate::dispatch::ConnTable::Host(conns),
+    )
+    .expect("the plane-shaped fixture binds");
     let decoy: &'static [u8] = br#"{"agent_push":{"ca":"PEM-IN-SETTINGS"},"owned":{"agent_push":{"ca":"PEM-IN-SETTINGS"}}}"#;
     assert_eq!(open_with(&p, decoy), Outcome::Ready);
     assert_eq!(
@@ -750,9 +817,16 @@ fn an_owned_trust_from_resolves_against_the_owned_sections_alone() {
     );
     assert_eq!(refresh_with(&p, decoy), Outcome::Ready);
     let declared = table.declared.lock().unwrap().clone();
+    assert_eq!(
+        declared
+            .iter()
+            .map(|(owner, ..)| *owner)
+            .collect::<Vec<_>>(),
+        vec![p.instance(); 3]
+    );
     let seen: Vec<Option<String>> = declared
         .iter()
-        .filter(|(owner, need, ..)| (*owner, *need) == (p.instance(), NeedId(0)))
+        .filter(|(owner, need, ..)| belongs_to(p, *owner) && *need == NeedId(0))
         .map(|(_, _, spec, _, trust)| {
             assert_eq!(spec.trust_from, "owned.agent_push.ca");
             trust.clone()
@@ -859,6 +933,21 @@ fn a_config_program_is_declared_as_a_program() {
         refresh_with(&p, br#"{"upstream":{"command":"server"}}"#),
         Outcome::Ready
     );
+    let owners: Vec<_> = table
+        .programs
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(owner, ..)| *owner)
+        .collect();
+    assert_eq!(
+        owners,
+        vec![p.instance()],
+        "the open owns the program authority"
+    );
+    let refreshed = table.declared.lock().unwrap()[0].0;
+    assert_ne!(refreshed, p.instance(), "refresh mints its own authority");
+    assert!(belongs_to(&p, refreshed));
     assert_eq!(targets(&table, &p), vec![None], "a misspelled program");
     assert_eq!(table.programs.lock().unwrap().len(), 1);
 }
@@ -3522,13 +3611,15 @@ fn an_unwritten_settings_trust_is_refused_but_not_audited() {
         .lock()
         .unwrap()
         .iter()
-        .filter(|(owner, need, ..)| (*owner, *need) == (p.instance(), NeedId(0)))
+        .filter(|(owner, need, ..)| belongs_to(p, *owner) && *need == NeedId(0))
         .map(|(.., trust)| trust.clone())
         .collect();
+    assert_generation_owners(&table, &p, 2);
     assert_eq!(trusts, vec![None, None]);
-    // The table refuses and audits the need. Refresh still returns the existing plugin's
-    // outcome; it does not become a new OPEN or make that refused need available.
-    assert_eq!(refresh_with(&p, br#"{"ca":"junk"}"#), Outcome::Ready);
+    // The table refuses and audits the proposed export generation before entering the plugin.
+    // The failed refresh does not publish that generation or make its refused need available.
+    assert_eq!(refresh_with(&p, br#"{"ca":"junk"}"#), Outcome::Failed);
+    assert_generation_owners(&table, &p, 3);
     assert_eq!(
         refused_for(label),
         vec![format!(
