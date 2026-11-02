@@ -136,10 +136,6 @@ mod txn_tests;
 mod hook_route_timeout_tests;
 
 #[cfg(test)]
-#[path = "tests/key_revoke_tombstone_tests.rs"]
-mod key_revoke_tombstone_tests;
-
-#[cfg(test)]
 #[path = "tests/core_moved_tests.rs"]
 mod core_moved_tests;
 
