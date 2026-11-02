@@ -553,6 +553,19 @@ impl RecoveryAdmin<'_> {
         } else {
             None
         };
+        let known = governance
+            .validate_foreign_known_outcome(&resolution)
+            .and_then(|_| {
+                if adoption.inspection.event.kind == RecoveryKind::Correction {
+                    governance.validate_foreign_correction_verdict(&resolution)
+                } else {
+                    Ok(())
+                }
+            });
+        if let Err(error) = known {
+            governance.clear_unselected_adoption(&resolution);
+            return Err(error);
+        }
         let sink =
             governance.recovery_book.sink.get().ok_or_else(|| {
                 RecoveryError::Unavailable("recovery Store is not attached".into())
@@ -563,18 +576,7 @@ impl RecoveryAdmin<'_> {
                 // Conflict is a definitive refusal of this exact prior head;
                 // an ambiguous Store error retains the immutable candidate.
                 if matches!(error, RecoveryError::Conflict(_)) {
-                    let mut entries = governance
-                        .recovery_book
-                        .entries
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner());
-                    if let Some(entry) = entries.get_mut(&resolution.operation_id) {
-                        if entry.adoption.as_ref().is_some_and(|pending| {
-                            !pending.imported && pending.resolution == resolution
-                        }) {
-                            entry.adoption = None;
-                        }
-                    }
+                    governance.clear_unselected_adoption(&resolution);
                 }
                 return Err(error);
             }
@@ -798,6 +800,50 @@ impl super::GovState {
             .ok_or_else(|| super::RecordStoreError("recovery Store is not attached".into()))?
             .verify_origin(event)
             .map_err(|error| super::RecordStoreError(error.to_string()))
+    }
+
+    fn clear_unselected_adoption(&self, resolution: &RecoveryResolution) {
+        let mut entries = self
+            .recovery_book
+            .entries
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if let Some(entry) = entries.get_mut(&resolution.operation_id) {
+            if entry
+                .adoption
+                .as_ref()
+                .is_some_and(|pending| !pending.imported && pending.resolution == *resolution)
+            {
+                entry.adoption = None;
+            }
+        }
+    }
+
+    fn validate_foreign_known_outcome(
+        &self,
+        resolution: &RecoveryResolution,
+    ) -> Result<(), RecoveryError> {
+        let entries = self
+            .recovery_book
+            .entries
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let Some(entry) = entries.get(&resolution.operation_id) else {
+            return Ok(());
+        };
+        for event in entry.selected.iter().chain(entry.pending.iter()) {
+            let known = match event.state {
+                RecoveryState::Applied => Some(RecoveryVerdict::Landed),
+                RecoveryState::ConditionConflict => Some(RecoveryVerdict::NotLanded),
+                _ => None,
+            };
+            if known.is_some_and(|known| known != resolution.verdict) {
+                return Err(RecoveryError::Conflict(
+                    "foreign verdict contradicts a retained definitive backend result".into(),
+                ));
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn inspect_foreign_recovery(
