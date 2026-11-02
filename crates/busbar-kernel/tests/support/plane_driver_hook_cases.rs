@@ -346,30 +346,7 @@ async fn a_load_bearing_rewrite_that_cannot_answer_refuses_with_the_shared_503()
 }
 
 fn resolved_rewrite(on_error: &str) -> Vec<(Duration, Arc<dyn RoutingPolicy>)> {
-    let env = busbar_kernel_testkit::test_support::test_hook_env(
-        &["test-hook"],
-        busbar_kernel_testkit::test_support::HookNeeds {
-            prompt: busbar_contract::plugin_rows::NeedLevel::Rw,
-            user: busbar_contract::plugin_rows::NeedLevel::Ro,
-        },
-    );
-    let hook: busbar_kernel::config::HookCfg = serde_json::from_value(serde_json::json!({
-        "kind": "gate",
-        "module": "test-hook",
-        "prompt": "rw",
-        "on_error": on_error,
-        "global": true,
-        "timeout_ms": 5000,
-    }))
-    .expect("a prompt: rw gate");
-    let hooks = std::collections::HashMap::from([("rw".to_string(), hook)]);
-    let chain = busbar_kernel::hooks::resolve_rewrite_hooks(&hooks, &["rw".to_string()], &env, 0);
-    assert_eq!(
-        chain.len(),
-        1,
-        "the rw gate resolves into the rewrite chain"
-    );
-    chain
+    super::actual_rewrite(on_error)
 }
 
 #[tokio::test]
