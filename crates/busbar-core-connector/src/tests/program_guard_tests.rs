@@ -208,7 +208,7 @@ fn program_constraint_fields_never_reach_a_network_open() {
             None,
             Arc::new(|_, _| {}),
         );
-        c.declare_need(OWNER, NEED, "bytes", EGRESS_OPEN_WEB)
+        c.declare_need(OWNER, NEED, "bytes", crate::DEFAULT_CLASS)
             .unwrap();
         let server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let at = server.local_addr().unwrap().to_string();
