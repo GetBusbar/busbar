@@ -15,6 +15,9 @@ use crate::dispatch::{
 };
 use crate::store_v3::LoadedStore;
 
+#[path = "actual_store.rs"]
+mod actual_store;
+
 fn bind(d: &Dispatcher) -> Bind {
     Bind {
         instance: Arc::from("the-instance"),
@@ -64,10 +67,14 @@ fn lifecycle_on_permanent_workers_open_and_close_from_a_throwaway_thread() {
         .name("throwaway".into())
         .spawn(|| {
             let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
-            let row = LinkedRow::of(crate::both_ways::store_fixture::door)
-                .expect("the store states its Statement");
+            let row = LinkedRow::of(actual_store::door).expect("the store states its Statement");
             let plugin = load_linked::<Store>(&row, bind(&d)).expect("the door loads");
-            let opened = plugin.call(slot::OPEN, &mut open_frame(b"{}")).outcome;
+            let opened = plugin
+                .call(
+                    slot::OPEN,
+                    &mut open_frame(Box::leak(actual_store::settings().into_boxed_slice())),
+                )
+                .outcome;
             let mut c: Frame<InHead, OutHead> = Frame::new(in_head(), out_head());
             let closed = plugin.call(slot::CLOSE, &mut c).outcome;
             (opened, closed)
@@ -132,9 +139,8 @@ fn key(id: &str) -> VirtualKey {
 fn lifecycle_on_permanent_workers_dropped_store_200_rounds() {
     const ROUNDS: usize = 200;
     const THREADS: usize = 8;
-    let path = Arc::new(crate::both_ways::example_cdylib("store_v3_door"));
-    let stated = rendering_of(crate::both_ways::store_fixture::door)
-        .expect("the store renders its Statement");
+    let path = Arc::new(actual_store::path());
+    let stated = rendering_of(actual_store::door).expect("the store renders its Statement");
     let stated = Arc::new(stated);
     let threads: Vec<_> = (0..THREADS)
         .map(|t| {
@@ -149,7 +155,7 @@ fn lifecycle_on_permanent_workers_dropped_store_200_rounds() {
                         }));
                         let p = load_dropped::<Store>(&path, &stated, bind(&d))
                             .unwrap_or_else(|e| panic!("round {round}: the door loads: {e}"));
-                        let s = LoadedStore::open(p, d, b"{}", mint)
+                        let s = LoadedStore::open(p, d, &actual_store::settings(), mint)
                             .unwrap_or_else(|e| panic!("round {round}: it opens: {e}"));
                         let id = format!("k{round}");
                         s.put_key(&key(&id)).expect("put");

@@ -2,7 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use busbar_contract::records::{PlaneDisposition, PlaneRecord, PlaneSelector, RecordStore};
-use busbar_stub_store::MemoryStore;
+#[path = "actual_store.rs"]
+mod actual_store;
 
 fn child(id: &str, body: &[u8]) -> PlaneRecord {
     PlaneRecord {
@@ -18,7 +19,7 @@ fn child(id: &str, body: &[u8]) -> PlaneRecord {
 
 #[test]
 fn a_parented_upserted_record_reads_back_by_its_own_id() {
-    let s = MemoryStore::new();
+    let s = actual_store::open();
     s.upsert_plane_record(child("t1", b"one").view()).unwrap();
     s.upsert_plane_record(child("t2", b"two").view()).unwrap();
 
