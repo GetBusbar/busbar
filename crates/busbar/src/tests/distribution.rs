@@ -22,3 +22,6 @@ mod kernel_router;
 
 #[path = "../../../../dist/default/tests/product/decisions_hooks.rs"]
 mod decisions_hooks;
+
+#[path = "kernel_application/hooks_pool_admission.rs"]
+mod hooks_pool_admission;
