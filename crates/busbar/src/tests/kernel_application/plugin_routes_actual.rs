@@ -199,17 +199,24 @@ async fn actual_export_dispatch_resolves_the_live_table_on_the_same_listener() {
     let path = "/metrics/hooks";
     assert_eq!(client.get(format!("http://{address}{path}")).header("x-admin-token", "actual-route-operator").send().await.unwrap().status().as_u16(), 404,
         "the plugin auth:admin dispatcher route is physically absent from the data listener even with valid authority");
+    let admin_crossing = client
+        .get(format!("http://{admin_address}{path}"))
+        .header("x-admin-token", "actual-route-operator")
+        .send()
+        .await
+        .unwrap();
     assert_eq!(
-        client
-            .get(format!("http://{admin_address}{path}"))
-            .header("x-admin-token", "actual-route-operator")
-            .send()
-            .await
-            .unwrap()
-            .status()
-            .as_u16(),
+        admin_crossing.status().as_u16(),
         200,
         "the plugin auth:admin dispatcher reaches the actual exporter on the admin listener"
+    );
+    assert_eq!(
+        admin_crossing.headers()["content-type"],
+        "text/plain; version=0.0.4; charset=utf-8"
+    );
+    assert!(
+        admin_crossing.bytes().await.unwrap().is_empty(),
+        "the real exporter renders the empty hook snapshot across plugin dispatch"
     );
     let url = format!("http://{address}/metrics");
     let first = client.get(&url).send().await.unwrap();
