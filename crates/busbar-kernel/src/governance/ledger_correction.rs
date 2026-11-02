@@ -93,6 +93,41 @@ fn address(bucket: &str, window: u64) -> UsageAddress {
 }
 
 impl GovState {
+    pub(in crate::governance) fn validate_foreign_correction_verdict(
+        &self,
+        resolution: &RecoveryResolution,
+    ) -> Result<(), RecoveryError> {
+        resolution.validate_quiescence()?;
+        let pending = self
+            .corrections
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .values()
+            .find(|pending| pending.request.op_id.0 == resolution.operation_id)
+            .cloned();
+        let receipt = pending
+            .as_ref()
+            .and_then(|pending| *pending.receipt.lock().unwrap_or_else(|p| p.into_inner()));
+        let selected = self
+            .recovery_event(resolution.operation_id)
+            .and_then(|event| match event.state {
+                RecoveryState::Applied => Some(Decision::Applied),
+                RecoveryState::ConditionConflict => Some(Decision::ConditionConflict),
+                _ => None,
+            });
+        let expected = if resolution.verdict == RecoveryVerdict::Landed {
+            Decision::Applied
+        } else {
+            Decision::ConditionConflict
+        };
+        if receipt.or(selected).is_some_and(|known| known != expected) {
+            return Err(RecoveryError::Conflict(
+                "requested verdict contradicts a definitive backend correction receipt".into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub(in crate::governance) fn hold_foreign_correction_recovery(
         &self,
         operation_id: [u8; 16],
@@ -445,8 +480,12 @@ impl GovState {
                     .find(|pending| pending.request.op_id.0 == operation_id)
                     .cloned();
                 if let Some(pending) = pending.as_ref().filter(|pending| !pending.quarantined) {
+                    let _running = self.hold_foreign_correction_recovery(operation_id)?;
                     *pending.receipt.lock().unwrap_or_else(|p| p.into_inner()) = Some(decision);
-                    self.decide_usage_correction(pending).map_err(unavailable)?;
+                    self.keep_correction_decision(pending, decision)
+                        .map_err(unavailable)?;
+                    self.settle_usage_correction(pending, decision)
+                        .map_err(unavailable)?;
                     self.remove_correction_owner(pending);
                 } else {
                     custody
@@ -480,6 +519,7 @@ impl GovState {
         resolution: &RecoveryResolution,
     ) -> Result<(), RecoveryError> {
         resolution.validate_quiescence()?;
+        self.validate_foreign_correction_verdict(resolution)?;
         let unavailable = |error: RecordStoreError| RecoveryError::Unavailable(error.to_string());
         self.confirm_pending_recovery(resolution.operation_id)
             .map_err(unavailable)?;
