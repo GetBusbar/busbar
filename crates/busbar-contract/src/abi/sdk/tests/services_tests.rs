@@ -138,7 +138,8 @@ fn services(t: &HostSlots) -> Services {
         services: t,
         io: std::ptr::null(),
     };
-    Services::of(&tables).expect("a table was handed")
+    /* SAFETY: the harness owns these live tables and callback context. */
+    unsafe { Services::from_raw(&tables) }.expect("a table was handed")
 }
 
 fn handle() -> CompletionHandle {
@@ -181,7 +182,10 @@ fn no_table_is_no_services() {
         services: std::ptr::null(),
         io: std::ptr::null(),
     };
-    assert!(Services::of(&tables).is_none());
+    assert!(
+        /* SAFETY: the harness owns these live tables and callback context. */
+        unsafe { Services::from_raw(&tables) }.is_none()
+    );
 }
 
 fn snapshot_answer(input: *const c_void, out: *mut ServiceOut, bad_pointer: bool) -> RawOutcome {
@@ -1497,15 +1501,16 @@ fn hook_call_reads_pass_rewrite_or_stop_and_refuses_a_bad_in_before_the_host() {
         ..table(None)
     };
     let s = services(&t);
-    let msg = |text: &'static str| {
-        [MessageView {
-            role: raw(b"user"),
-            text: raw(text.as_bytes()),
-        }]
-    };
+    let msg = |text: &'static str| [HookMessage { role: "user", text }];
+    let role = String::from("user");
+    let text = String::from("stop");
+    let borrowed = [HookMessage {
+        role: &role,
+        text: &text,
+    }];
     let mut buf = [0u8; 8];
     assert_eq!(
-        s.hook_call(ticketed(0), (HOOK_GATE, 0), None, &msg("stop"), &mut buf),
+        s.hook_call(ticketed(0), (HOOK_GATE, 0), None, &borrowed, &mut buf),
         Poll::Ready(Ok(Hooked::Stop {
             status: 451,
             words: b"no"

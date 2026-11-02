@@ -1630,7 +1630,7 @@ fn list(s: &KernelServices) -> Vec<u8> {
         after: None,
         limit: 0,
     };
-    answer(|l| s.records_list(&instance(), all, l)).bytes
+    std::mem::take(&mut answer(|l| s.records_list(&instance(), all, l)).bytes)
 }
 
 /// One unit whose plane writes `body`'s records and answers locally.
@@ -1974,7 +1974,7 @@ async fn an_uncalled_upstream_is_never_fetched_over_time() {
     let services = stored();
     let section: serde_yaml::Value = serde_yaml::from_str("peer: {reverify: 1h}").unwrap();
     let (_plane, _book, driver) = driven_over(declaring(), 0, services.clone(), &section);
-    let due = |s: &KernelServices| s.trust_due(&instance()).bytes;
+    let due = |s: &KernelServices| std::mem::take(&mut s.trust_due(&instance()).bytes);
     assert!(due(&services).is_empty(), "nothing is due before a tick");
     tokio::time::timeout(Duration::from_secs(5), driver.ticks())
         .await
@@ -3222,7 +3222,7 @@ async fn a_credential_refusal_is_handed_as_a_piece_first_only_to_a_plane_that_ta
         if takes {
             assert_eq!(c.refused, vec![code]);
             assert_eq!(
-                (c.written.value, c.written.bytes),
+                (c.written.value, c.written.bytes.as_slice()),
                 (svc::FOUND, code.to_string().into_bytes()),
                 "the refused piece's record write is written"
             );
@@ -3274,7 +3274,7 @@ async fn a_walk_that_ends_after_a_request_went_out_is_handed_as_a_piece_first() 
     );
     assert_eq!(taken.refused, vec![code]);
     assert_eq!(
-        (taken.written.value, taken.written.bytes),
+        (taken.written.value, taken.written.bytes.as_slice()),
         (svc::FOUND, code.to_string().into_bytes()),
         "the refused piece's record write is written"
     );
@@ -3298,7 +3298,7 @@ async fn a_walk_that_ends_after_a_request_went_out_is_handed_as_a_piece_first() 
         "a walk that exhausted before any request went out is handed the refused piece"
     );
     assert_eq!(
-        (unsent.written.value, unsent.written.bytes),
+        (unsent.written.value, unsent.written.bytes.as_slice()),
         (svc::FOUND, code.to_string().into_bytes()),
         "the refused piece's record write is written"
     );
@@ -3370,7 +3370,7 @@ async fn a_walk_that_exhausted_with_nothing_sent_names_why_on_its_refused_piece(
         );
         assert!(nothing_sent(code.code()), "{code:?}");
         assert_eq!(
-            (c.written.value, c.written.bytes),
+            (c.written.value, c.written.bytes.as_slice()),
             (svc::FOUND, code.code().to_string().into_bytes()),
             "{code:?}: the refused piece's record write is written"
         );

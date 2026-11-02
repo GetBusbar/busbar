@@ -1320,11 +1320,13 @@ async fn the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_the
         )
         .expect("the controlled gate opens");
     let blocked = hook_door_plugin::BlockedCalls::hold();
+    let kept = frame(2);
     let mut inflight = Vec::with_capacity(MAX_INFLIGHT as usize);
-    for _ in 0..MAX_INFLIGHT {
+    for i in 0..MAX_INFLIGHT {
         let wedged = Arc::clone(&wedged);
+        let frame = if i == 0 { Arc::clone(&kept) } else { frame(2) };
         inflight.push(tokio::spawn(async move {
-            let _ = wedged.decide(frame(2), BUDGET).await;
+            let _ = wedged.decide(frame, BUDGET).await;
         }));
     }
     tokio::time::timeout(BUDGET, async {
@@ -1340,10 +1342,31 @@ async fn the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_the
     for h in inflight {
         assert!(h.await.expect_err("the caller is abandoned").is_cancelled());
     }
+    // The abandoned caller's clone cannot read, answer or submit these buffers again while
+    // the original native crossing is still inside the fixture. Cancellation retains its lease.
+    assert!(kept.try_lend().is_none());
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| kept.order(1))).is_err());
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        kept.answer_decide(&busbar_contract::abi::sdk::hook::Verdict::Abstain)
+    }))
+    .is_err());
+    assert!(matches!(
+        wedged.decide(Arc::clone(&kept), BUDGET).await,
+        Answered::Broken(why) if why.contains("buffers are already in use")
+    ));
     let start = std::time::Instant::now();
     let saturated = wedged.decide(frame(2), Duration::from_millis(150)).await;
     let elapsed = start.elapsed();
     blocked.release();
+    tokio::time::timeout(BUDGET, async {
+        while kept.try_lend().is_none() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("cancelled crossing releases its buffers after returning");
+    let (_, out) = kept.answer_decide(&busbar_contract::abi::sdk::hook::Verdict::Prefer(vec![0]));
+    assert_eq!(kept.order(out.order_written), vec![0]);
     assert!(
         matches!(saturated, Answered::TimedOut),
         "with every slot held, a further caller must reach its deadline: {}",

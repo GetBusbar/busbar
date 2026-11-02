@@ -15,6 +15,7 @@
 //!
 //! An absent string is a NULL [`AbiStr`]; a present one — even an empty one — is non-NULL.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::abi::hook::{
@@ -341,7 +342,7 @@ impl DecideView {
     ///
     /// # Panics
     ///
-    /// In a debug build, when `statics` does not match `candidates`.
+    /// When `statics` does not match `candidates`, in every build profile.
     #[must_use]
     pub fn build_with(
         req: &RoutingRequest<'_>,
@@ -349,7 +350,7 @@ impl DecideView {
         candidates: &[Candidate<'_>],
         ctx: &RoutingContext<'_>,
     ) -> Arc<Self> {
-        debug_assert!(
+        assert!(
             statics.matches(candidates),
             "a static half built for other candidates"
         );
@@ -491,13 +492,13 @@ impl<T: Copy + Default> HostBuf<T> {
         }
     }
 
-    /// The first `n` elements (clamped to the capacity). Read only after the op answered.
+    /// The first `n` elements (clamped to capacity). The caller exclusively reserves the buffers.
     fn read(&self, n: usize) -> &[T] {
         if self.cap == 0 {
             return &[];
         }
-        // SAFETY: `ptr` holds `cap` initialized elements (zero-filled at birth); the plugin wrote
-        // through it only during a crossing that has returned.
+        // SAFETY: `ptr` holds `cap` initialized elements (zero-filled at birth); the caller's
+        // exclusive buffer claim prevents local or native writers until the returned slice dies.
         unsafe { std::slice::from_raw_parts(self.ptr, n.min(self.cap)) }
     }
 }
@@ -568,6 +569,7 @@ impl Caps {
 pub struct DecideFrame {
     view: Arc<DecideView>,
     caps: Caps,
+    buffers_busy: AtomicBool,
     order: HostBuf<u32>,
     reject_message: HostBuf<u8>,
     restrict_tags: HostBuf<u8>,
@@ -582,8 +584,9 @@ impl std::fmt::Debug for DecideFrame {
     }
 }
 
-// SAFETY: the host buffers are written only by the plugin during a crossing (the frame is lent to
-// the dispatcher then) and read only after the op answered; the view is `Sync`.
+// SAFETY: every safe buffer access claims `buffers_busy` exclusively. A native crossing owns a
+// `DecideFrameLease` until its last invocation returns, including after client cancellation. Raw
+// pointers require the same exclusivity at the unsafe crossing boundary. The view is immutable.
 unsafe impl Send for DecideFrame {}
 // SAFETY: as above.
 unsafe impl Sync for DecideFrame {}
@@ -595,6 +598,7 @@ impl DecideFrame {
         Arc::new(Self {
             view,
             caps,
+            buffers_busy: AtomicBool::new(false),
             order: HostBuf::new(caps.order),
             reject_message: HostBuf::new(caps.reject_message),
             restrict_tags: HostBuf::new(caps.restrict_tags),
@@ -621,7 +625,37 @@ impl DecideFrame {
         Self::new(self.view.clone(), self.caps.after_transform(out))
     }
 
-    /// The `in` the call crosses with (its head blank; the dispatcher fills it).
+    /// Reserve the answer buffers for one native operation, including its pending invocations.
+    /// Returns `None` if another crossing, local answer or reader currently owns the buffers.
+    /// The dispatcher must retain the lease until the operation's last crossing returns, even
+    /// when the caller times out or drops its future. No mutex is held across plugin code.
+    #[must_use]
+    pub fn try_lend(self: &Arc<Self>) -> Option<DecideFrameLease> {
+        let claim = self.try_buffers()?;
+        let lease = DecideFrameLease {
+            frame: Arc::clone(self),
+            held: AtomicBool::new(true),
+        };
+        // Transfer the reservation to the owned lease, which can outlive this borrow.
+        std::mem::forget(claim);
+        Some(lease)
+    }
+
+    fn try_buffers(&self) -> Option<BufferClaim<'_>> {
+        self.buffers_busy
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .ok()
+            .map(|_| BufferClaim(&self.buffers_busy))
+    }
+
+    fn buffers(&self) -> BufferClaim<'_> {
+        self.try_buffers()
+            .expect("hook answer buffers are already in use")
+    }
+
+    /// The raw `in` (its head blank; the dispatcher fills it). Copying this record does not
+    /// reserve its output buffers. A native operation must hold [`Self::try_lend`]'s lease;
+    /// any other raw-pointer writer must prove exclusive access at its unsafe boundary.
     #[must_use]
     pub fn input(&self) -> DecideIn {
         DecideIn {
@@ -644,8 +678,12 @@ impl DecideFrame {
     }
 
     /// The candidate order a `decide` answer wrote (`order_written` entries, as `idx`es).
+    ///
+    /// # Panics
+    /// When another answer, reader or native operation owns the answer buffers.
     #[must_use]
     pub fn order(&self, written: usize) -> Vec<usize> {
+        let _claim = self.buffers();
         self.order
             .read(written)
             .iter()
@@ -654,14 +692,22 @@ impl DecideFrame {
     }
 
     /// The reject-message bytes an answer wrote (`reject_message_written`), lossily UTF-8.
+    ///
+    /// # Panics
+    /// When another answer, reader or native operation owns the answer buffers.
     #[must_use]
     pub fn reject_message(&self, written: usize) -> String {
+        let _claim = self.buffers();
         String::from_utf8_lossy(self.reject_message.read(written)).into_owned()
     }
 
     /// The restrict tags a `decide` answer wrote: NUL-separated, each lossily UTF-8.
+    ///
+    /// # Panics
+    /// When another answer, reader or native operation owns the answer buffers.
     #[must_use]
     pub fn restrict_tags(&self, written: usize) -> Vec<String> {
+        let _claim = self.buffers();
         let bytes = self.restrict_tags.read(written);
         if bytes.is_empty() {
             return Vec::new();
@@ -673,8 +719,12 @@ impl DecideFrame {
     }
 
     /// The rewrite bytes a `transform` answer wrote (`rewrite_written`).
+    ///
+    /// # Panics
+    /// When another answer, reader or native operation owns the answer buffers.
     #[must_use]
     pub fn rewrite(&self, written: usize) -> Vec<u8> {
+        let _claim = self.buffers();
         self.rewrite.read(written).to_vec()
     }
 
@@ -685,9 +735,9 @@ impl DecideFrame {
     /// [`NotifyFrame::projection_json`]).
     #[must_use]
     pub fn projection_json(&self, op: &'static str) -> serde_json::Value {
-        let input = self.input();
-        // SAFETY: every pointer in `input` names storage this frame owns (its view's store and its
-        // host buffers), live while `self` is borrowed.
+        let input = self.view.base;
+        // SAFETY: all pointers name the immutable view owned by this frame and remain live
+        // while `self` is borrowed. Output buffers are absent from this read-only projection.
         let lent = unsafe { crate::abi::sdk::Lent::new(&input) };
         crate::abi::sdk::hook::Decoded::of(lent).projection_json(op)
     }
@@ -698,9 +748,9 @@ impl DecideFrame {
     /// (an infinity included, which the 1.5.5 JSON of [`Self::projection_json`] cannot carry).
     #[must_use]
     pub fn decoded<R>(&self, read: impl FnOnce(&crate::abi::sdk::hook::Decoded<'_>) -> R) -> R {
-        let input = self.input();
-        // SAFETY: every pointer in `input` names storage this frame owns (its view's store and its
-        // host buffers), live while `self` is borrowed (as `projection_json`).
+        let input = self.view.base;
+        // SAFETY: as `projection_json`, only the owned immutable view is lent. No buffer
+        // reservation is held while the caller's `read` callback runs.
         let lent = unsafe { crate::abi::sdk::Lent::new(&input) };
         read(&crate::abi::sdk::hook::Decoded::of(lent))
     }
@@ -708,13 +758,16 @@ impl DecideFrame {
     /// ANSWER `decide` IN PROCESS: `v` lowered into this frame's own host buffers exactly as the
     /// SDK's door lowers it ([`crate::abi::sdk::hook::write_verdict`], the one short FAILED
     /// included), and the `out` it answers (its head blank: nothing crossed). For an in-process
-    /// [`crate::hook_calls::HookCalls`], the frame's one answerer: nothing reads the answer before
-    /// this returns.
+    /// [`crate::hook_calls::HookCalls`], lowering reserves the buffers until it returns.
+    ///
+    /// # Panics
+    /// When another answer, reader or native operation owns the answer buffers.
     #[must_use]
     pub fn answer_decide(&self, v: &crate::abi::sdk::hook::Verdict) -> (Outcome, DecideOut) {
+        let _claim = self.buffers();
         let input = self.input();
-        // SAFETY: as `projection_json`; the host buffers are writable for their stated capacity
-        // and overlap nothing else.
+        // SAFETY: the view is owned and immutable, and `_claim` exclusively reserves the
+        // initialized, disjoint host buffers for this local write.
         let lent = unsafe { crate::abi::sdk::Lent::new(&input) };
         // SAFETY: `DecideOut` is plain integers and a head of plain integers, raw pointers and
         // blobs, for which the all-zero pattern is valid (the host's own pre-fill).
@@ -724,11 +777,15 @@ impl DecideFrame {
     }
 
     /// [`Self::answer_decide`]'s `transform` twin ([`crate::abi::sdk::hook::write_rewrite`]).
+    ///
+    /// # Panics
+    /// When another answer, reader or native operation owns the answer buffers.
     #[must_use]
     pub fn answer_transform(
         &self,
         v: &crate::abi::sdk::hook::RewriteVerdict,
     ) -> (Outcome, TransformOut) {
+        let _claim = self.buffers();
         let input = self.input();
         // SAFETY: as `answer_decide`.
         let lent = unsafe { crate::abi::sdk::Lent::new(&input) };
@@ -736,6 +793,66 @@ impl DecideFrame {
         let mut out: TransformOut = unsafe { std::mem::zeroed() };
         let outcome = crate::abi::sdk::hook::write_rewrite(v, lent, &mut out);
         (outcome, out)
+    }
+}
+
+/// A native operation's exclusive reservation of a frame's host answer buffers.
+/// Keep this owner with the dispatcher's lent storage through pending, cancellation and timeout.
+/// Dropping its final owner releases the reservation. Read-only projections remain available.
+pub struct DecideFrameLease {
+    frame: Arc<DecideFrame>,
+    held: AtomicBool,
+}
+
+impl DecideFrameLease {
+    /// The raw input for the operation that owns this reservation.
+    ///
+    /// # Panics
+    /// After [`Self::complete`] released the reservation.
+    #[must_use]
+    pub fn input(&self) -> DecideIn {
+        assert!(
+            self.held.load(Ordering::Acquire),
+            "completed hook frame lease"
+        );
+        self.frame.input()
+    }
+
+    /// The frame kept alive by this reservation.
+    #[must_use]
+    pub fn frame(&self) -> &Arc<DecideFrame> {
+        &self.frame
+    }
+
+    /// Release a completed operation before the dispatcher drops its retained owner.
+    ///
+    /// # Safety
+    /// Every invocation that can access this operation's buffers has returned, and no future
+    /// invocation will use this lease or a previously copied input. Merely dropping the client
+    /// future or reaching its deadline does not satisfy this requirement.
+    pub unsafe fn complete(&self) {
+        self.release();
+    }
+
+    fn release(&self) {
+        if self.held.swap(false, Ordering::AcqRel) {
+            self.frame.buffers_busy.store(false, Ordering::Release);
+        }
+    }
+}
+
+impl Drop for DecideFrameLease {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+/// A short local buffer access. It never encloses plugin callbacks, wakers or user destructors.
+struct BufferClaim<'a>(&'a AtomicBool);
+
+impl Drop for BufferClaim<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
     }
 }
 

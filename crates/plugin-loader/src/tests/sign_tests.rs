@@ -1835,3 +1835,46 @@ fn only_a_secret_source_may_declare_a_disk_need() {
         Ok(true)
     );
 }
+
+/// A syntactically numeric component above u64 must not turn the configured floor into zero.
+#[test]
+fn overflowing_min_version_components_refuse_a_real_signed_artifact() {
+    let acme = test_key(2);
+    let artifact = b"older vulnerable build";
+    let mut old = manifest("acme-store-dynamo", "dynamo", "acme");
+    old.version = "1.0.0".into();
+    let old = sign(&acme, old, artifact);
+    for floor in [
+        "18446744073709551616.0.0",
+        "1.18446744073709551616.0",
+        "1.0.18446744073709551616",
+    ] {
+        let mut pol = policy(None, &[("acme", &acme.verifying_key())], false, false);
+        pol.min_versions
+            .insert("acme-store-dynamo".into(), floor.into());
+        let err = evaluate(artifact, &old, &pol).unwrap_err();
+        assert_eq!(err.kind, RejectKind::AntiDowngrade, "{floor}");
+        assert!(err.reason.contains(floor), "{}", err.reason);
+        assert!(!version_at_least("1.0.0", floor), "{floor}");
+        assert!(version_at_least(floor, floor), "{floor}");
+    }
+    assert!(version_at_least(
+        "18446744073709551616.0.0",
+        "18446744073709551615.0.0"
+    ));
+    assert!(!version_at_least(
+        "18446744073709551615.0.0",
+        "18446744073709551616.0.0"
+    ));
+    assert!(version_at_least("1.0.0", "0.18446744073709551616.0"));
+    assert!(version_at_least("0001.0000.0000-rc1+build", "1.0.0"));
+    assert!(version_at_least(
+        "00000000000000000000000000000000000000000000001.0.0",
+        "1.0.0"
+    ));
+    assert!(!version_at_least("not-a-version", "0.0.0"));
+    assert!(
+        version_at_least("not-a-version", ""),
+        "empty means no floor"
+    );
+}

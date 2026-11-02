@@ -157,15 +157,18 @@ fn make_host(security: Security, has_facts: bool, writes: impl IntoIterator<Item
         writes: writes.into_iter().collect(),
         ..Script::default()
     });
-    Host::of(&HostTables {
-        size: std::mem::size_of::<HostTables>() as u32,
-        _reserved: 0,
-        ctx: HostCtx::NONE,
-        wake: None,
-        conns,
-        services: std::ptr::null(),
-        io: std::ptr::null(),
-    })
+    /* SAFETY: these harness tables and callbacks are live for the snapshot. */
+    unsafe {
+        Host::from_raw(&HostTables {
+            size: std::mem::size_of::<HostTables>() as u32,
+            _reserved: 0,
+            ctx: HostCtx::NONE,
+            wake: None,
+            conns,
+            services: std::ptr::null(),
+            io: std::ptr::null(),
+        })
+    }
 }
 
 const TICKET: Ticket = Ticket {

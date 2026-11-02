@@ -45,6 +45,9 @@
 //! The `cargo xtask gate hot-path-perf` gate enforces that this instrument keeps making every one of
 //! the perf-budget claims above; this file is what actually measures them.
 
+//! SAFETY for raw clock service calls below: `ClockCall` owns the initialized frame, reading
+//! and exclusive output, and its boxed allocation stays live through every measured call.
+
 use busbar_contract::abi::host::service::{
     op, ClockNowIn, ClockReading, HostSlots, ServiceFn, ServiceHead, ServiceOut, SERVICES,
 };
@@ -182,7 +185,7 @@ fn assert_hot_path_delta_under_budget() {
         // `black_box` the slot: without it the compiler devirtualises the indirect call back into
         // the direct one and the delta is a measurement of nothing.
         let f = black_box(vt.clock_now).expect("clock_now slot is armed");
-        black_box(f(black_box(null), black_box(input), black_box(out)));
+        black_box(unsafe { f(black_box(null), black_box(input), black_box(out)) });
     });
 
     let p50_delta_nanos = vtable_p50.saturating_sub(direct_p50);
@@ -264,8 +267,11 @@ fn assert_transport_hot_path_delta_under_budget() {
     });
     let (slot_p50, slot_p99) = percentiles(|| {
         let f = read_slot(black_box(ops_ptr));
+        // SAFETY: this live local table contains only carrier_read, which ignores all three
+        // pointers and returns Pending. Its NULL arguments therefore require no pointee storage.
         black_box(
-            f(black_box(instance), black_box(input), black_box(out)).outcome() == Outcome::Pending,
+            unsafe { f(black_box(instance), black_box(input), black_box(out)) }.outcome()
+                == Outcome::Pending,
         );
     });
 
@@ -305,7 +311,7 @@ fn assert_zero_per_token_host_calls() {
         if cross_per_token {
             // The RED shape: a host crossing PER TOKEN, which the budget forbids.
             let f = vt.clock_now.expect("clock_now slot is armed");
-            let answered = f(null, call.input(), call.out());
+            let answered = unsafe { f(null, call.input(), call.out()) };
             sink = sink.wrapping_add(u64::from(answered.outcome() == Outcome::Ready));
         }
     }
@@ -340,7 +346,7 @@ fn hot_path(c: &mut Criterion) {
     c.bench_function("HOT_PATH_VTABLE_CALL", |b| {
         b.iter(|| {
             let f = black_box(vt.clock_now).expect("clock_now slot is armed");
-            black_box(f(black_box(null), black_box(input), black_box(out)))
+            black_box(unsafe { f(black_box(null), black_box(input), black_box(out)) })
         });
     });
 
@@ -359,11 +365,14 @@ fn hot_path(c: &mut Criterion) {
     c.bench_function("TRANSPORT_DOOR_CALL", |b| {
         b.iter(|| {
             let f = read_slot(black_box(ops_ptr));
-            black_box(f(
-                black_box(std::ptr::null_mut()),
-                black_box(std::ptr::null()),
-                black_box(std::ptr::null_mut()),
-            ))
+            // SAFETY: the live table contains carrier_read, a no-dereference Pending stub.
+            black_box(unsafe {
+                f(
+                    black_box(std::ptr::null_mut()),
+                    black_box(std::ptr::null()),
+                    black_box(std::ptr::null_mut()),
+                )
+            })
         });
     });
 

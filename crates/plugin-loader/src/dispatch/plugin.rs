@@ -418,6 +418,146 @@ impl Crossed {
     }
 }
 
+/// A lifecycle reply copied on its actual FFI worker, before that worker can be leased again.
+/// The temporary head points only into these owned allocations while dispatch consumes it.
+/// Restore the plugin's original head before dropping the snapshot: the caller's frame must
+/// never retain pointers into this shorter-lived host storage.
+struct HeadSnapshot {
+    output: *mut OutHead,
+    original: OutHead,
+    bytes: Vec<Box<[u8]>>,
+    labels: Vec<Box<[AbiStr]>>,
+    metrics: Box<[MetricEntry]>,
+    diags: Box<[Diag]>,
+}
+
+impl HeadSnapshot {
+    fn text(&mut self, text: AbiStr) -> AbiStr {
+        let Some(bytes) = str_bytes(text) else {
+            return AbiStr {
+                ptr: std::ptr::null(),
+                len: text.len,
+            };
+        };
+        if text.ptr.is_null() {
+            return text;
+        }
+        let owned: Box<[u8]> = bytes.into();
+        let named = AbiStr {
+            ptr: owned.as_ptr(),
+            len: owned.len(),
+        };
+        self.bytes.push(owned);
+        named
+    }
+
+    /// # Safety
+    /// This is the returning plugin's live output, still on its actual FFI worker. Every
+    /// pointer reached after the existing mechanism and per-entry bounds names live data.
+    unsafe fn capture(
+        instance: &Instance,
+        raw: RawOutcome,
+        output: *mut OutHead,
+        out_size: u32,
+        ticket: Ticket,
+    ) -> Option<Self> {
+        if instance.faulted.load(Ordering::Acquire) {
+            return None;
+        }
+        // SAFETY: the crossing owns the host output frame, which starts with OutHead.
+        let original = unsafe { *output };
+        if judge(raw, &original, ticket, out_size) == Outcome::Fault {
+            return None;
+        }
+        let mut snapshot = Self {
+            output,
+            original,
+            bytes: Vec::new(),
+            labels: Vec::new(),
+            metrics: Box::default(),
+            diags: Box::default(),
+        };
+        let error = if matches!(raw.outcome(), Outcome::Failed | Outcome::Refused) {
+            snapshot.text(original.error)
+        } else {
+            // READY/PENDING error text is not consumed by this lifecycle path.
+            original.error
+        };
+        let mut envelope = original.envelope;
+        // SAFETY: the plugin's arrays remain live on this worker; array checks count and alignment.
+        if let Some(metrics) = unsafe { array(envelope.metrics, envelope.metrics_len) } {
+            let mut metrics = metrics.to_vec();
+            for metric in &mut metrics {
+                // Preserve the existing validation order. Entries rejected before labels are
+                // read must not cause new reads through an otherwise unused raw pointer.
+                let reads_labels = instance
+                    .families
+                    .get(metric.family_idx as usize)
+                    .is_some_and(|family| {
+                        matches!(
+                            (metric.kind, family.kind),
+                            (METRIC_ADD, FAMILY_COUNTER)
+                                | (METRIC_SET, FAMILY_GAUGE)
+                                | (METRIC_OBSERVE, FAMILY_HISTOGRAM)
+                        ) && metric.value.is_finite()
+                            && metric.label_vals_len == family.labels
+                    });
+                if !reads_labels {
+                    continue;
+                }
+                // SAFETY: the same bounded reader metric() uses, while source storage is live.
+                if let Some(labels) = unsafe { array(metric.label_vals, metric.label_vals_len) } {
+                    let labels: Box<[AbiStr]> =
+                        labels.iter().map(|value| snapshot.text(*value)).collect();
+                    metric.label_vals = labels.as_ptr();
+                    snapshot.labels.push(labels);
+                } else {
+                    metric.label_vals = std::ptr::null();
+                }
+            }
+            snapshot.metrics = metrics.into_boxed_slice();
+            envelope.metrics = snapshot.metrics.as_ptr();
+        }
+        // SAFETY: as the metrics array above; diag() uses the same bounded reader.
+        if let Some(diags) = unsafe { array(envelope.diags, envelope.diags_len) } {
+            let mut diags = diags.to_vec();
+            for diag in &mut diags {
+                let reads_text = match diag.id_idx {
+                    DIAG_LOG_DROPPED => true,
+                    DIAG_LOG => diag.severity <= SEVERITY_TRACE,
+                    id => diag.severity <= SEVERITY_ERROR && instance.diag_ids.name(id).is_some(),
+                };
+                if reads_text {
+                    diag.text = snapshot.text(diag.text);
+                }
+            }
+            snapshot.diags = diags.into_boxed_slice();
+            envelope.diags = snapshot.diags.as_ptr();
+        }
+        // SAFETY: this crossing exclusively owns the host head; snapshot owns every substituted
+        // buffer until its Drop restores the original pointers.
+        unsafe {
+            (*output).error = error;
+            (*output).envelope = envelope;
+        }
+        Some(snapshot)
+    }
+}
+
+impl Drop for HeadSnapshot {
+    fn drop(&mut self) {
+        // SAFETY: the snapshot never outlives this crossing's host output frame, and restoration
+        // happens before any of the owned arrays or nested strings are destroyed.
+        unsafe {
+            *self.output = self.original;
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "../tests/head_snapshot_tests.rs"]
+mod head_snapshot_tests;
+
 /// The host tables `open` is handed; immutable after construction.
 struct Tables(Box<HostTables>);
 // SAFETY: the tables are written once at bind and only read after; `ctx` is a plain handle (#74)
@@ -1769,7 +1909,7 @@ impl Instance {
             ptr: (s == slot::OPEN).then_some(&self.ptr),
             live: std::ptr::null_mut(),
         };
-        let raw = if s == slot::VALIDATE || is_lifecycle(s) {
+        let (raw, _head_snapshot) = if s == slot::VALIDATE || is_lifecycle(s) {
             // A LIFECYCLE CROSSING RUNS ON A PERMANENT FFI WORKER (`crate::ffi_thread`), whoever
             // called it: a dispatcher worker that may later exit, or a ticket-less caller thread
             // (a libtest thread, a reload's thread) that will. `open` is where a plugin first
@@ -1791,7 +1931,45 @@ impl Instance {
                 let _ticket = super::services::crossing(ticket);
                 super::export_bindings::crossing(binding.clone(), || {
                     with_crossing(Some(self), || {
-                        enter_lifecycle((self.op_name)(s), op, instance, input, output)
+                        let raw = enter_lifecycle((self.op_name)(s), op, instance, input, output);
+                        // Keep the original validation order: a quarantined instance, malformed
+                        // mechanism head or invalid kind answer never has its telemetry read.
+                        // Kind checks are pure; the caller repeats them to render its usual fault.
+                        let readable = if self.faulted.load(Ordering::Acquire) {
+                            false
+                        } else {
+                            // SAFETY: these are the crossing's own initialized host frames.
+                            let head = unsafe { *output.cast::<OutHead>() };
+                            let outcome = judge(raw, &head, ticket, out_size);
+                            if outcome == Outcome::Fault {
+                                false
+                            } else {
+                                // SAFETY: the host owns both frames and their input buffers; the
+                                // plugin's leased answer ranges remain live on this worker.
+                                let answer = unsafe {
+                                    Answer::new(
+                                        s,
+                                        outcome,
+                                        input.cast(),
+                                        (*input.cast::<InHead>()).size as usize,
+                                        output.cast(),
+                                        out_size as usize,
+                                    )
+                                }
+                                .with_context(self.context.as_deref());
+                                (self.check)(&answer).is_ok()
+                            }
+                        };
+                        let snapshot = if readable {
+                            // SAFETY: the returning plugin's output remains live on its actual
+                            // FFI worker. Copy consumed ranges before releasing that worker.
+                            unsafe {
+                                HeadSnapshot::capture(self, raw, output.cast(), out_size, ticket)
+                            }
+                        } else {
+                            None
+                        };
+                        (raw, snapshot)
                     })
                 })
             });
@@ -1802,11 +1980,12 @@ impl Instance {
                 Err(_) => return Crossed::host(Outcome::Fault),
             }
         } else {
-            super::export_bindings::crossing(binding, || {
+            let raw = super::export_bindings::crossing(binding, || {
                 with_crossing(Some(self), || {
                     op(instance, input.cast_const().cast(), out.cast())
                 })
-            })
+            });
+            (raw, None)
         };
         if s == slot::OPEN
             && (raw == RawOutcome::of(Outcome::Ready) || raw == RawOutcome::of(Outcome::Pending))

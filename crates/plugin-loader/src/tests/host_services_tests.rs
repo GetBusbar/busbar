@@ -5,6 +5,10 @@
 //! handed, over a kind-neutral test double: a route that records its wakes and a provider with a
 //! fixed clock and a `dest.judge` that answers a scripted verdict at once, or pends until the test
 //! answers it by hand. The judgement itself is the kernel's and is tested there.
+//!
+//! SAFETY for raw service and validator calls below: every non-NULL answer slot and every reported
+//! in-cap span read belongs to the test's live initialized locals or to the host call
+//! just completed. Deliberately malformed metadata is rejected before any such read.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -208,6 +212,7 @@ impl crate::services_double::ServicesDouble for Provider {
         self.saw(c, "trust.verify", &[payload, b"|", sigs].concat());
         Stored {
             bytes: cp.as_bytes().to_vec(),
+            spans: Vec::new(),
             ..Stored::ready(payload.len() as u64)
         }
     }
@@ -224,6 +229,7 @@ impl crate::services_double::ServicesDouble for Provider {
         self.saw(c, "ticket.mint", arg.as_bytes());
         Stored {
             bytes: format!("tk_{}", unit.unwrap_or(0)).into_bytes(),
+            spans: Vec::new(),
             ..Stored::ready(1_700_000_000 + ttl_secs)
         }
     }
@@ -234,6 +240,7 @@ impl crate::services_double::ServicesDouble for Provider {
         if unit == Some(7) {
             Stored {
                 bytes: b"rec".to_vec(),
+                spans: Vec::new(),
                 ..Stored::ready(svc::TICKET_TAKEN)
             }
         } else {
@@ -246,6 +253,7 @@ impl crate::services_double::ServicesDouble for Provider {
         let n = self.filled.fetch_add(1, Ordering::SeqCst) + 1;
         Stored {
             bytes: vec![n as u8; len as usize],
+            spans: Vec::new(),
             ..Stored::ready(0)
         }
     }
@@ -368,6 +376,7 @@ impl crate::services_double::ServicesDouble for Provider {
         self.saw(c, "hook.call", arg.as_bytes());
         Ran::Now(Stored {
             bytes: b"rw".to_vec(),
+            spans: Vec::new(),
             ..Stored::ready(1 + u64::from(ask.from))
         })
     }
@@ -525,7 +534,7 @@ fn admitted(addrs: &[&str]) -> Stored {
 fn call_judge(d: &Double, i: &DestJudgeIn) -> (RawOutcome, ServiceOut) {
     let mut o = blank();
     let f = HOST_SLOTS.dest_judge.unwrap();
-    let ret = f(d.ctx, std::ptr::from_ref(i).cast(), &mut o);
+    let ret = unsafe { f(d.ctx, std::ptr::from_ref(i).cast(), &mut o) };
     (ret, o)
 }
 
@@ -549,9 +558,10 @@ fn clock_now_reads_the_one_clock_without_a_ticket() {
         reading: &mut reading,
     };
     let mut o = blank();
-    let ret = HOST_SLOTS.clock_now.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+    let ret =
+        unsafe { HOST_SLOTS.clock_now.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o) };
     assert_eq!(ret.outcome(), Outcome::Ready);
-    assert_eq!(check_clock_now(&i, ret, &o), Ok(Filled::Written));
+    assert_eq!(unsafe { check_clock_now(&i, ret, &o) }, Ok(Filled::Written));
     assert_eq!(
         (reading.wall_ns, reading.mono_ns),
         (1_700_000_000_000_000_000, 42)
@@ -570,7 +580,7 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
     assert_eq!(ret.outcome(), Outcome::Refused);
     assert_eq!(error(&o), UNTICKETED);
     assert_eq!(d.route.provider.judged.load(Ordering::SeqCst), 0);
-    assert!(check_dest_judge(&judge_in("", Ticket::NONE, 0, 0), ret, &o).is_ok());
+    assert!(unsafe { check_dest_judge(&judge_in("", Ticket::NONE, 0, 0), ret, &o) }.is_ok());
 
     let slots = [
         HOST_SLOTS.clock_now,
@@ -634,7 +644,9 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
             };
         }
         let mut o = blank();
-        let ret = f.unwrap()(d.ctx, raw.as_ptr().cast(), &mut o);
+        // SAFETY: the zeroed raw frame covers each selected input and every nonempty range
+        // is the live buffer installed above; the slot rejects malformed metadata before use.
+        let ret = unsafe { f.unwrap()(d.ctx, raw.as_ptr().cast(), &mut o) };
         if may_pend(service) {
             assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");
             assert_eq!(error(&o), UNTICKETED, "service {service}");
@@ -736,11 +748,12 @@ fn verify_lookup_answers_the_callers_cache_and_refuses_an_empty_key() {
         into: bufs(&mut buf, &mut spans),
     };
     let mut o = blank();
-    let ret = HOST_SLOTS.verify_lookup.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+    let ret =
+        unsafe { HOST_SLOTS.verify_lookup.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o) };
     assert_eq!(ret.outcome(), Outcome::Ready);
     assert_eq!(o.value, svc::VERIFY_HIT);
     assert_eq!(&buf[..o.len as usize], b"entry");
-    assert!(check_verify_lookup(&i, ret, &o).is_ok());
+    assert!(unsafe { check_verify_lookup(&i, ret, &o) }.is_ok());
     assert_eq!(
         d.route.provider.scoped.lock().unwrap().last().cloned(),
         Some(("double".to_string(), "verify.lookup", b"card:a".to_vec()))
@@ -750,7 +763,8 @@ fn verify_lookup_answers_the_callers_cache_and_refuses_an_empty_key() {
     i.head = head(op::VERIFY_LOOKUP, TICKET, 1, size_of::<VerifyLookupIn>());
     let before = d.route.provider.scoped.lock().unwrap().len();
     let mut o = blank();
-    let ret = HOST_SLOTS.verify_lookup.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+    let ret =
+        unsafe { HOST_SLOTS.verify_lookup.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o) };
     assert_eq!(ret.outcome(), Outcome::Refused);
     assert_eq!(error(&o), NO_VERIFY_KEY);
     assert_eq!(d.route.provider.scoped.lock().unwrap().len(), before);
@@ -773,7 +787,8 @@ fn verify_store_is_served_without_a_ticket_and_refuses_an_empty_key() {
         ttl_ms: 9,
     };
     let mut o = blank();
-    let ret = HOST_SLOTS.verify_store.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+    let ret =
+        unsafe { HOST_SLOTS.verify_store.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o) };
     assert_eq!(ret.outcome(), Outcome::Ready);
     assert!(check_verify_store(&i, ret, &o).is_ok());
     assert_eq!(
@@ -782,7 +797,8 @@ fn verify_store_is_served_without_a_ticket_and_refuses_an_empty_key() {
     );
     i.key = over(b"");
     let mut o = blank();
-    let ret = HOST_SLOTS.verify_store.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+    let ret =
+        unsafe { HOST_SLOTS.verify_store.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o) };
     assert_eq!(ret.outcome(), Outcome::Refused);
     assert_eq!(error(&o), NO_VERIFY_KEY);
 }
@@ -801,11 +817,11 @@ fn content_scan_scans_for_the_unit_the_crossing_serves() {
     let mut o = blank();
     let ret = {
         let _unit = serving(Some(7));
-        HOST_SLOTS.content_scan.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o)
+        unsafe { HOST_SLOTS.content_scan.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o) }
     };
     assert_eq!(ret.outcome(), Outcome::Ready);
     assert_eq!(o.value, svc::CONTENT_BLOCK);
-    assert!(check_content_scan(&i, ret, &o).is_ok());
+    assert!(unsafe { check_content_scan(&i, ret, &o) }.is_ok());
     assert_eq!(
         d.route.provider.scoped.lock().unwrap().last().cloned(),
         Some((
@@ -822,7 +838,8 @@ fn content_scan_scans_for_the_unit_the_crossing_serves() {
     );
     let before = d.route.provider.scoped.lock().unwrap().len();
     let mut o = blank();
-    let ret = HOST_SLOTS.content_scan.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+    let ret =
+        unsafe { HOST_SLOTS.content_scan.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o) };
     assert_eq!(ret.outcome(), Outcome::Refused);
     assert_eq!(error(&o), UNTICKETED);
     assert_eq!(d.route.provider.scoped.lock().unwrap().len(), before);
@@ -866,11 +883,11 @@ fn hook_call_runs_the_stage_over_the_copied_prompt() {
     let mut o = blank();
     let ret = {
         let _unit = serving(Some(4));
-        HOST_SLOTS.hook_call.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o)
+        unsafe { HOST_SLOTS.hook_call.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o) }
     };
     assert_eq!(ret.outcome(), Outcome::Ready);
     assert_eq!((o.value, &buf[..o.len as usize]), (3, &b"rw"[..]));
-    assert!(check_hook_call(&i, ret, &o).is_ok());
+    assert!(unsafe { check_hook_call(&i, ret, &o) }.is_ok());
     assert_eq!(
         d.route.provider.scoped.lock().unwrap().last().cloned(),
         Some((
@@ -935,7 +952,8 @@ fn hook_call_refuses_each_malformed_in_before_any_hook_runs() {
     ];
     for (i, outcome, why) in cases {
         let mut o = blank();
-        let ret = HOST_SLOTS.hook_call.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+        let ret =
+            unsafe { HOST_SLOTS.hook_call.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o) };
         assert_eq!(ret.outcome(), outcome, "{why}");
         if outcome == Outcome::Refused {
             assert_eq!(error(&o), why);
@@ -968,7 +986,7 @@ fn dest_judge_answers_at_once_what_the_kernel_decides_at_once() {
     let i = judge_in("now:https://169.254.169.254/", TICKET, 0, DEST_RESOLVE);
     let (ret, o) = call_judge(&d, &i);
     assert_eq!((ret.outcome(), o.value), (Outcome::Ready, DEST_METADATA));
-    assert!(check_dest_judge(&i, ret, &o).is_ok());
+    assert!(unsafe { check_dest_judge(&i, ret, &o) }.is_ok());
     assert!(d.route.wakes.lock().unwrap().is_empty());
 }
 
@@ -980,7 +998,7 @@ fn dest_judge_pends_on_the_ticket_and_the_recall_reads_the_verdict() {
     let i = judge_in("https://api.example.com/v1", TICKET, 5, DEST_RESOLVE);
     let (ret, o) = call_judge(&d, &i);
     assert_eq!(ret.outcome(), Outcome::Pending);
-    assert!(check_dest_judge(&i, ret, &o).is_ok());
+    assert!(unsafe { check_dest_judge(&i, ret, &o) }.is_ok());
     assert_eq!(
         call_judge(&d, &i).0.outcome(),
         Outcome::Pending,
@@ -1009,7 +1027,7 @@ fn dest_judge_writes_the_judged_addresses_under_the_short_buffer_rule() {
         (ret.outcome(), o.needed_bytes, o.needed_items),
         (Outcome::Failed, 23, 2)
     );
-    assert!(check_dest_judge(&i, ret, &o).is_ok());
+    assert!(unsafe { check_dest_judge(&i, ret, &o) }.is_ok());
     let (mut buf, mut spans) = ([0u8; 23], [NO_SPAN; 2]);
     i.into = bufs(&mut buf, &mut spans);
     let (ret, o) = call_judge(&d, &i);
@@ -1017,7 +1035,7 @@ fn dest_judge_writes_the_judged_addresses_under_the_short_buffer_rule() {
         (ret.outcome(), o.value, o.len, o.items),
         (Outcome::Ready, DEST_ALLOWED, 23, 2)
     );
-    assert!(check_dest_judge(&i, ret, &o).is_ok());
+    assert!(unsafe { check_dest_judge(&i, ret, &o) }.is_ok());
     assert_eq!(&buf[..12], b"198.51.100.7");
     assert_eq!(d.route.provider.judged.load(Ordering::SeqCst), 1);
 }
@@ -1062,7 +1080,8 @@ fn sdk(d: &Double) -> busbar_contract::abi::sdk::Services {
         services: &HOST_SLOTS,
         io: std::ptr::null(),
     };
-    busbar_contract::abi::sdk::Services::of(&tables).expect("the table is handed")
+    /* SAFETY: the harness owns these live tables and callback context. */
+    unsafe { busbar_contract::abi::sdk::Services::from_raw(&tables) }.expect("the table is handed")
 }
 
 /// The handle of a ticketed op's `seq`th service call.
@@ -1267,7 +1286,8 @@ fn claim_in(ttl_ms: u64) -> RecordsClaimIn {
 
 fn call_claim(d: &Double, i: &RecordsClaimIn) -> (RawOutcome, ServiceOut) {
     let mut o = blank();
-    let ret = HOST_SLOTS.records_claim.unwrap()(d.ctx, std::ptr::from_ref(i).cast(), &mut o);
+    let ret =
+        unsafe { HOST_SLOTS.records_claim.unwrap()(d.ctx, std::ptr::from_ref(i).cast(), &mut o) };
     (ret, o)
 }
 
@@ -1282,7 +1302,8 @@ fn a_caller_scoped_service_with_no_caller_is_refused() {
     let anon = crate::dispatch::handle::mint(wake).expect("the host mints a handle");
     let i = claim_in(1);
     let mut o = blank();
-    let ret = HOST_SLOTS.records_claim.unwrap()(anon, std::ptr::from_ref(&i).cast(), &mut o);
+    let ret =
+        unsafe { HOST_SLOTS.records_claim.unwrap()(anon, std::ptr::from_ref(&i).cast(), &mut o) };
     assert_eq!(ret.outcome(), Outcome::Refused);
     assert_eq!(error(&o), NO_CALLER);
     assert!(d.route.provider.scoped.lock().unwrap().is_empty());
@@ -1319,11 +1340,12 @@ fn records_get_reaches_the_kernel_as_its_caller_and_delivers_the_record() {
         into: bufs(&mut buf, &mut spans),
     };
     let mut o = blank();
-    let ret = HOST_SLOTS.records_get.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+    let ret =
+        unsafe { HOST_SLOTS.records_get.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o) };
     assert_eq!(ret.outcome(), Outcome::Ready);
     assert_eq!(o.value, svc::FOUND);
     assert_eq!(&buf[..4], b"k1=v");
-    assert!(svc::check_records_get(&i, ret, &o).is_ok());
+    assert!(unsafe { svc::check_records_get(&i, ret, &o) }.is_ok());
     assert_eq!(
         d.route.provider.scoped.lock().unwrap().as_slice(),
         &[("double".to_string(), "records.get", b"approval".to_vec())]
@@ -1346,13 +1368,14 @@ fn sign_and_trust_due_reach_the_kernel_without_a_ticket() {
         into: bufs(&mut [], &mut []),
     };
     let mut o = blank();
-    let ret = HOST_SLOTS.sign.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+    let ret = unsafe { HOST_SLOTS.sign.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o) };
     assert_eq!(ret.outcome(), Outcome::Ready);
     let due = TrustDueIn {
         head: head(op::TRUST_DUE, Ticket::NONE, 0, size_of::<TrustDueIn>()),
         into: bufs(&mut [], &mut []),
     };
-    let ret = HOST_SLOTS.trust_due.unwrap()(d.ctx, std::ptr::from_ref(&due).cast(), &mut o);
+    let ret =
+        unsafe { HOST_SLOTS.trust_due.unwrap()(d.ctx, std::ptr::from_ref(&due).cast(), &mut o) };
     assert_eq!(ret.outcome(), Outcome::Ready);
     let seen = d.route.provider.scoped.lock().unwrap().clone();
     assert_eq!(
@@ -1392,7 +1415,8 @@ fn trust_verify_reaches_the_kernel_without_a_ticket_and_answers_into_the_callers
         into: bufs(&mut buf, &mut []),
     };
     let mut o = blank();
-    let ret = HOST_SLOTS.trust_verify.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+    let ret =
+        unsafe { HOST_SLOTS.trust_verify.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o) };
     assert_eq!(ret.outcome(), Outcome::Ready);
     assert_eq!((o.value, o.len), (3, 4));
     assert_eq!(&buf[..4], b"peer");
@@ -1421,7 +1445,8 @@ fn trust_verify_with_a_null_blob_of_a_length_is_fault() {
     i.signatures.ptr = std::ptr::null();
     i.signatures.len = 2;
     let mut o = blank();
-    let ret = HOST_SLOTS.trust_verify.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+    let ret =
+        unsafe { HOST_SLOTS.trust_verify.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o) };
     assert_eq!(ret.outcome(), Outcome::Fault);
     assert!(d.route.provider.scoped.lock().unwrap().is_empty());
 }
@@ -1444,8 +1469,9 @@ fn entitlement_check_reaches_the_kernel_with_the_unit_its_crossing_serves() {
     let ask = |target| {
         let i = entitlement_in(target);
         let mut o = blank();
-        let ret =
-            HOST_SLOTS.entitlement_check.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+        let ret = unsafe {
+            HOST_SLOTS.entitlement_check.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o)
+        };
         (ret.outcome(), o.value)
     };
     // Outside any crossing: no unit.
@@ -1497,8 +1523,10 @@ fn random_fill_writes_the_kernels_bytes_and_refuses_outside_its_cap_before_the_k
     let fill = |len: u64, buf: &mut [u8]| {
         let i = fill_in(len, buf);
         let mut o = blank();
-        let ret = HOST_SLOTS.random_fill.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
-        (check_random_fill(&i, ret, &o), ret.outcome(), o)
+        let ret = unsafe {
+            HOST_SLOTS.random_fill.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o)
+        };
+        (unsafe { check_random_fill(&i, ret, &o) }, ret.outcome(), o)
     };
     let (mut a, mut b) = ([0u8; 16], [0u8; 16]);
     let (checked, outcome, o) = fill(16, &mut a[..]);
@@ -1552,14 +1580,18 @@ fn tickets_reach_the_kernel_with_the_unit_their_crossing_serves() {
     let mint = |ttl: u64, record: &[u8], buf: &mut [u8]| {
         let i = mint_in(ttl, record, buf);
         let mut o = blank();
-        let ret = HOST_SLOTS.ticket_mint.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
-        (check_ticket_mint(&i, ret, &o), ret.outcome(), o)
+        let ret = unsafe {
+            HOST_SLOTS.ticket_mint.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o)
+        };
+        (unsafe { check_ticket_mint(&i, ret, &o) }, ret.outcome(), o)
     };
     let take = |buf: &mut [u8]| {
         let i = take_in(buf);
         let mut o = blank();
-        let ret = HOST_SLOTS.ticket_take.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
-        (check_ticket_take(&i, ret, &o), ret.outcome(), o)
+        let ret = unsafe {
+            HOST_SLOTS.ticket_take.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o)
+        };
+        (unsafe { check_ticket_take(&i, ret, &o) }, ret.outcome(), o)
     };
     let mut buf = [0u8; 16];
     {
@@ -1746,7 +1778,8 @@ fn secret_in(
 
 fn call_secret(ctx: HostCtx, i: &RecordsSecretIn) -> (RawOutcome, ServiceOut) {
     let mut o = blank();
-    let ret = HOST_SLOTS.records_secret.unwrap()(ctx, std::ptr::from_ref(i).cast(), &mut o);
+    let ret =
+        unsafe { HOST_SLOTS.records_secret.unwrap()(ctx, std::ptr::from_ref(i).cast(), &mut o) };
     (ret, o)
 }
 
@@ -1798,7 +1831,7 @@ fn records_secret_serves_only_a_declared_kind() {
     let (ret, o) = call_secret(reader, &i);
     assert_eq!(ret.outcome(), Outcome::Ready);
     assert_eq!(o.value, svc::SECRET_LIVE);
-    assert!(svc::check_records_secret(&i, ret, &o).is_ok());
+    assert!(unsafe { svc::check_records_secret(&i, ret, &o) }.is_ok());
     assert_eq!(&buf[..6], b"s3cr3t");
     assert_eq!(
         d.route.provider.secrets.lock().unwrap().as_slice(),
@@ -1826,11 +1859,11 @@ fn the_work_family_reaches_the_kernel_with_the_unit_its_crossing_serves() {
     let mut o = blank();
     let ret = {
         let _unit = serving(Some(7));
-        HOST_SLOTS.work_open.unwrap()(d.ctx, std::ptr::from_ref(&open).cast(), &mut o)
+        unsafe { HOST_SLOTS.work_open.unwrap()(d.ctx, std::ptr::from_ref(&open).cast(), &mut o) }
     };
     assert_eq!((ret.outcome(), o.value), (Outcome::Ready, 5));
     assert_eq!(&buf[..3], b"ref");
-    assert!(svc::check_work_open(&open, ret, &o).is_ok());
+    assert!(unsafe { svc::check_work_open(&open, ret, &o) }.is_ok());
 
     let long = vec![0u8; svc::MAX_WORK_RECORD + 1];
     let too_long = svc::WorkOpenIn {
@@ -1839,7 +1872,9 @@ fn the_work_family_reaches_the_kernel_with_the_unit_its_crossing_serves() {
         ..open
     };
     let mut o = blank();
-    let ret = HOST_SLOTS.work_open.unwrap()(d.ctx, std::ptr::from_ref(&too_long).cast(), &mut o);
+    let ret = unsafe {
+        HOST_SLOTS.work_open.unwrap()(d.ctx, std::ptr::from_ref(&too_long).cast(), &mut o)
+    };
     assert_eq!(ret.outcome(), Outcome::Refused);
     assert_eq!(error(&o), WORK_RECORD_TOO_LONG);
 
@@ -1851,10 +1886,10 @@ fn the_work_family_reaches_the_kernel_with_the_unit_its_crossing_serves() {
     let mut o = blank();
     let ret = {
         let _unit = serving(Some(8));
-        HOST_SLOTS.work_find.unwrap()(d.ctx, std::ptr::from_ref(&find).cast(), &mut o)
+        unsafe { HOST_SLOTS.work_find.unwrap()(d.ctx, std::ptr::from_ref(&find).cast(), &mut o) }
     };
     assert_eq!((ret.outcome(), o.value), (Outcome::Ready, svc::ABSENT));
-    assert!(svc::check_work_find(&find, ret, &o).is_ok());
+    assert!(unsafe { svc::check_work_find(&find, ret, &o) }.is_ok());
 
     let settle = svc::WorkSettleIn {
         head: head(op::WORK_SETTLE, TICKET, 3, size_of::<svc::WorkSettleIn>()),
@@ -1864,7 +1899,9 @@ fn the_work_family_reaches_the_kernel_with_the_unit_its_crossing_serves() {
     let mut o = blank();
     let ret = {
         let _unit = serving(Some(6));
-        HOST_SLOTS.work_settle.unwrap()(d.ctx, std::ptr::from_ref(&settle).cast(), &mut o)
+        unsafe {
+            HOST_SLOTS.work_settle.unwrap()(d.ctx, std::ptr::from_ref(&settle).cast(), &mut o)
+        }
     };
     assert_eq!(ret.outcome(), Outcome::Ready);
 
@@ -1876,7 +1913,9 @@ fn the_work_family_reaches_the_kernel_with_the_unit_its_crossing_serves() {
     let mut o = blank();
     let ret = {
         let _unit = serving(Some(9));
-        HOST_SLOTS.work_resume.unwrap()(d.ctx, std::ptr::from_ref(&resume).cast(), &mut o)
+        unsafe {
+            HOST_SLOTS.work_resume.unwrap()(d.ctx, std::ptr::from_ref(&resume).cast(), &mut o)
+        }
     };
     assert_eq!(ret.outcome(), Outcome::Ready);
 
@@ -1924,11 +1963,11 @@ fn unit_nest_reaches_the_kernel_with_the_unit_its_crossing_serves() {
     let mut o = blank();
     let ret = {
         let _unit = serving(Some(11));
-        HOST_SLOTS.unit_nest.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o)
+        unsafe { HOST_SLOTS.unit_nest.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o) }
     };
     assert_eq!((ret.outcome(), o.value, o.items), (Outcome::Ready, 201, 1));
     assert_eq!(&buf[..5], b"child");
-    assert!(svc::check_unit_nest(&i, ret, &o).is_ok());
+    assert!(unsafe { svc::check_unit_nest(&i, ret, &o) }.is_ok());
     assert_eq!(
         d.route.provider.scoped.lock().unwrap().as_slice(),
         &[(
@@ -1964,7 +2003,7 @@ fn disk_in(
 
 fn call_disk(ctx: HostCtx, i: &svc::DiskAppendIn) -> (RawOutcome, ServiceOut) {
     let mut o = blank();
-    let ret = HOST_SLOTS.disk_append.unwrap()(ctx, std::ptr::from_ref(i).cast(), &mut o);
+    let ret = unsafe { HOST_SLOTS.disk_append.unwrap()(ctx, std::ptr::from_ref(i).cast(), &mut o) };
     (ret, o)
 }
 
@@ -1997,7 +2036,7 @@ fn disk_append_writes_only_to_a_granted_bound_destination() {
     assert_eq!(o.value, svc::DISK_OPEN_FAILED);
     assert_eq!(error(&o), NO_DESTINATION);
     assert!(
-        svc::check_disk_append(&i, ret, &o).is_ok(),
+        unsafe { svc::check_disk_append(&i, ret, &o) }.is_ok(),
         "the open-step failure is a well-formed FAILED answer"
     );
     assert!(d.route.provider.appended.lock().unwrap().is_empty());
@@ -2030,7 +2069,7 @@ fn disk_append_writes_only_to_a_granted_bound_destination() {
     let i = disk_in("path", b"line\n", 0, &mut w);
     let (ret, o) = call_disk(ctx, &i);
     assert_eq!(ret.outcome(), Outcome::Ready);
-    assert!(svc::check_disk_append(&i, ret, &o).is_ok());
+    assert!(unsafe { svc::check_disk_append(&i, ret, &o) }.is_ok());
     assert_eq!((w.rotated, w.faults, w.written), (svc::DISK_ROTATED, 0, 5));
     assert_eq!(
         d.route.provider.appended.lock().unwrap().as_slice(),
@@ -2045,7 +2084,7 @@ fn disk_append_writes_only_to_a_granted_bound_destination() {
     assert_eq!(ret.outcome(), Outcome::Failed);
     assert_eq!(o.value, svc::DISK_OPEN_FAILED);
     assert_eq!(error(&o), "No such file or directory");
-    assert!(svc::check_disk_append(&i, ret, &o).is_ok());
+    assert!(unsafe { svc::check_disk_append(&i, ret, &o) }.is_ok());
     assert_eq!((w.rotated, w.written), (svc::DISK_ROTATED, 0));
 }
 
@@ -2064,7 +2103,8 @@ fn an_unreachable_sighting_reaches_the_last_verdict_and_an_unknown_outcome_is_fa
     };
     let call = |i: &svc::TrustSightIn| {
         let mut o = blank();
-        let ret = HOST_SLOTS.trust_sight.unwrap()(d.ctx, std::ptr::from_ref(i).cast(), &mut o);
+        let ret =
+            unsafe { HOST_SLOTS.trust_sight.unwrap()(d.ctx, std::ptr::from_ref(i).cast(), &mut o) };
         (ret, o)
     };
     let unreached = sight(svc::TRUST_UNREACHABLE);
@@ -2118,7 +2158,8 @@ fn trust_decide_reaches_the_kernel_and_an_unknown_decision_is_fault() {
         _reserved: 0,
     };
     let mut o = blank();
-    let ret = HOST_SLOTS.trust_decide.unwrap()(d.ctx, std::ptr::from_ref(&bad).cast(), &mut o);
+    let ret =
+        unsafe { HOST_SLOTS.trust_decide.unwrap()(d.ctx, std::ptr::from_ref(&bad).cast(), &mut o) };
     assert_eq!(ret.outcome(), Outcome::Fault);
     let seen = d.route.provider.scoped.lock().unwrap().clone();
     assert_eq!(
@@ -2182,7 +2223,7 @@ fn an_all_zero_trust_state_in_is_a_short_answer() {
     // SAFETY: the head fits the buffer's start.
     unsafe { raw.as_mut_ptr().cast::<ServiceHead>().write_unaligned(h) };
     let mut o = blank();
-    let ret = HOST_SLOTS.trust_state.unwrap()(d.ctx, raw.as_ptr().cast(), &mut o);
+    let ret = unsafe { HOST_SLOTS.trust_state.unwrap()(d.ctx, raw.as_ptr().cast(), &mut o) };
     assert_eq!(ret.outcome(), Outcome::Failed);
     assert!(
         o.needed_bytes > 0 && o.needed_items == 1,
@@ -2318,7 +2359,8 @@ fn snapshot_read_refuses_an_unknown_scope_or_a_misaligned_buffer() {
             },
         };
         let mut o = blank();
-        HOST_SLOTS.snapshot_read.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o).outcome()
+        unsafe { HOST_SLOTS.snapshot_read.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o) }
+            .outcome()
     };
     assert_eq!(call(SNAPSHOT_SCOPES, at, 4096), Outcome::Fault);
     assert_eq!(call(0, at.wrapping_add(1), 4095), Outcome::Fault);
@@ -2366,7 +2408,8 @@ fn a_forged_context_is_refused_before_it_names_an_instance() {
         },
     ] {
         let mut o = blank();
-        let ret = HOST_SLOTS.clock_now.unwrap()(forged, std::ptr::from_ref(&i).cast(), &mut o);
+        let ret =
+            unsafe { HOST_SLOTS.clock_now.unwrap()(forged, std::ptr::from_ref(&i).cast(), &mut o) };
         assert_eq!(ret.outcome(), Outcome::Refused, "{forged:?}");
         crate::dispatch::ticket::host_wake(forged, woken);
         assert!(
@@ -2375,7 +2418,8 @@ fn a_forged_context_is_refused_before_it_names_an_instance() {
         );
     }
     let mut o = blank();
-    let ret = HOST_SLOTS.clock_now.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+    let ret =
+        unsafe { HOST_SLOTS.clock_now.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o) };
     assert_eq!(ret.outcome(), Outcome::Ready);
     crate::dispatch::ticket::host_wake(d.ctx, woken);
     assert_eq!(*d.route.wakes.lock().unwrap(), vec![woken]);
@@ -2533,7 +2577,7 @@ fn auth_call_in(auth: AuthRef, answer: &mut AuthAnswer) -> AuthCallIn {
 
 fn call_auth(ctx: HostCtx, i: &AuthCallIn) -> (RawOutcome, ServiceOut) {
     let mut o = blank();
-    let ret = HOST_SLOTS.auth_call.unwrap()(ctx, std::ptr::from_ref(i).cast(), &mut o);
+    let ret = unsafe { HOST_SLOTS.auth_call.unwrap()(ctx, std::ptr::from_ref(i).cast(), &mut o) };
     (ret, o)
 }
 
@@ -2654,13 +2698,13 @@ fn an_auth_handle_in_one_field_short_is_refused() {
     let mut o = blank();
     let f = HOST_SLOTS.unit_hand_in.unwrap();
     assert_eq!(
-        f(d.ctx, std::ptr::from_ref(&hand).cast(), &mut o).outcome(),
+        unsafe { f(d.ctx, std::ptr::from_ref(&hand).cast(), &mut o) }.outcome(),
         Outcome::Refused
     );
     assert_eq!(error(&o), NOT_EXACT);
     hand.head.size = size_of::<UnitHandInIn>() as u32;
     let mut o = blank();
-    f(d.ctx, std::ptr::from_ref(&hand).cast(), &mut o);
+    unsafe { f(d.ctx, std::ptr::from_ref(&hand).cast(), &mut o) };
     assert_eq!(error(&o), AUTH_HANDLE_NOT_SERVED, "the exact size passes");
 
     let mut refusal = RefusalAnswer {
@@ -2688,24 +2732,24 @@ fn an_auth_handle_in_one_field_short_is_refused() {
     };
     let f = HOST_SLOTS.unit_refuse.unwrap();
     let mut o = blank();
-    f(d.ctx, std::ptr::from_ref(&refuse).cast(), &mut o);
+    unsafe { f(d.ctx, std::ptr::from_ref(&refuse).cast(), &mut o) };
     assert_eq!(error(&o), NOT_EXACT);
     refuse.head.size = size_of::<UnitRefuseIn>() as u32;
     let mut o = blank();
-    f(d.ctx, std::ptr::from_ref(&refuse).cast(), &mut o);
+    unsafe { f(d.ctx, std::ptr::from_ref(&refuse).cast(), &mut o) };
     assert_eq!(error(&o), AUTH_HANDLE_NOT_SERVED, "the exact size passes");
     // A unit the host cannot verify is refused, fail closed.
     refuse.cause = svc::REFUSE_STOPPED;
     refuse.line = 1;
     refuse.unit = UnitRef { id: 3, mac: 9 };
     let mut o = blank();
-    f(d.ctx, std::ptr::from_ref(&refuse).cast(), &mut o);
+    unsafe { f(d.ctx, std::ptr::from_ref(&refuse).cast(), &mut o) };
     assert_eq!(error(&o), UNIT_UNVERIFIED);
     // A malformed `in` of the exact size is refused after its refs.
     refuse.unit = UnitRef::NONE;
     refuse.cause = 0;
     let mut o = blank();
-    f(d.ctx, std::ptr::from_ref(&refuse).cast(), &mut o);
+    unsafe { f(d.ctx, std::ptr::from_ref(&refuse).cast(), &mut o) };
     assert_eq!(error(&o), AUTH_IN_MALFORMED);
 }
 
@@ -2789,7 +2833,7 @@ fn still_served(d: &Double) -> bool {
         reading: &mut reading,
     };
     let mut o = blank();
-    HOST_SLOTS.clock_now.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o).outcome()
+    unsafe { HOST_SLOTS.clock_now.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o) }.outcome()
         == Outcome::Ready
 }
 
@@ -2817,8 +2861,9 @@ fn a_handle_reused_for_another_service_is_fault_and_quarantines_never_the_stale_
         target: text("item:card"),
     };
     let mut o = blank();
-    let ret =
-        HOST_SLOTS.entitlement_check.unwrap()(d.ctx, std::ptr::from_ref(&check).cast(), &mut o);
+    let ret = unsafe {
+        HOST_SLOTS.entitlement_check.unwrap()(d.ctx, std::ptr::from_ref(&check).cast(), &mut o)
+    };
     assert_eq!(
         (ret.outcome(), o.value),
         (Outcome::Fault, 0),
@@ -2854,7 +2899,9 @@ fn a_handle_reused_for_another_request_of_one_service_is_fault_and_quarantines()
             into: bufs(buf, spans),
         };
         let mut o = blank();
-        let ret = HOST_SLOTS.records_get.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+        let ret = unsafe {
+            HOST_SLOTS.records_get.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o)
+        };
         (ret.outcome(), o)
     };
     let (mut buf, mut spans) = ([0u8; 16], [NO_SPAN; 1]);
@@ -2997,7 +3044,7 @@ fn red_two_instances_on_one_ticket_each_keep_their_own_results() {
     assert_eq!(call_judge(&d, &first_in).0.outcome(), Outcome::Pending);
     let mut o = blank();
     let f = HOST_SLOTS.dest_judge.unwrap();
-    let ret = f(second, std::ptr::from_ref(&second_in).cast(), &mut o);
+    let ret = unsafe { f(second, std::ptr::from_ref(&second_in).cast(), &mut o) };
     assert_eq!(
         ret.outcome(),
         Outcome::Pending,
@@ -3175,7 +3222,10 @@ fn red_auth_call_delegates_to_the_installed_kernel_side_and_answers_names_only()
     let i = auth_call_into(r, &mut slot, &mut buf, &mut spans);
     let (ret, o) = call_auth(d.ctx, &i);
     assert_eq!(ret.outcome(), Outcome::Ready, "{}", error(&o));
-    assert_eq!(svc::check_auth_call(&i, ret, &o), Ok(Filled::Written));
+    assert_eq!(
+        unsafe { svc::check_auth_call(&i, ret, &o) },
+        Ok(Filled::Written)
+    );
     let calls = side.calls.lock().unwrap();
     assert_eq!(calls.len(), 1);
     assert_eq!(
@@ -3327,9 +3377,14 @@ fn red_hand_in_and_refuse_delegate_to_the_installed_kernel_side() {
         answer: &mut slot,
     };
     let mut o = blank();
-    let ret = HOST_SLOTS.unit_hand_in.unwrap()(d.ctx, std::ptr::from_ref(&hand).cast(), &mut o);
+    let ret = unsafe {
+        HOST_SLOTS.unit_hand_in.unwrap()(d.ctx, std::ptr::from_ref(&hand).cast(), &mut o)
+    };
     assert_eq!(ret.outcome(), Outcome::Ready, "{}", error(&o));
-    assert_eq!(svc::check_unit_hand_in(&hand, ret, &o), Ok(Filled::Written));
+    assert_eq!(
+        unsafe { svc::check_unit_hand_in(&hand, ret, &o) },
+        Ok(Filled::Written)
+    );
     assert_eq!(slot.flow, svc::FLOW_STOP);
     assert_eq!(slot.unit.id, 78);
     {
@@ -3356,10 +3411,12 @@ fn red_hand_in_and_refuse_delegate_to_the_installed_kernel_side() {
         request: get_view(),
     };
     let mut o = blank();
-    let ret = HOST_SLOTS.unit_refuse.unwrap()(d.ctx, std::ptr::from_ref(&refuse).cast(), &mut o);
+    let ret = unsafe {
+        HOST_SLOTS.unit_refuse.unwrap()(d.ctx, std::ptr::from_ref(&refuse).cast(), &mut o)
+    };
     assert_eq!(ret.outcome(), Outcome::Ready, "{}", error(&o));
     assert_eq!(
-        svc::check_unit_refuse(&refuse, ret, &o),
+        unsafe { svc::check_unit_refuse(&refuse, ret, &o) },
         Ok(Filled::Written)
     );
     assert_eq!(refusal.status, 404);
@@ -3442,7 +3499,10 @@ fn red_a_peer_answer_is_the_flow_alone() {
     assert_eq!(ret.outcome(), Outcome::Ready, "{}", error(&o));
     assert_eq!((o.len, o.items), (0, 0));
     assert_eq!((slot.flow, slot.unit), (svc::FLOW_CONTINUE, UnitRef::NONE));
-    assert_eq!(svc::check_auth_call(&i, ret, &o), Ok(Filled::Written));
+    assert_eq!(
+        unsafe { svc::check_auth_call(&i, ret, &o) },
+        Ok(Filled::Written)
+    );
 }
 
 /// RED (deadline classes): an `auth.call` made inside a framer op's crossing hands the kernel what
@@ -3504,8 +3564,9 @@ fn red_n_refusals_keep_nothing_per_connection() {
             ..refuse_in()
         };
         let mut o = blank();
-        let ret =
-            HOST_SLOTS.unit_refuse.unwrap()(d.ctx, std::ptr::from_ref(&refuse).cast(), &mut o);
+        let ret = unsafe {
+            HOST_SLOTS.unit_refuse.unwrap()(d.ctx, std::ptr::from_ref(&refuse).cast(), &mut o)
+        };
         assert_eq!(ret.outcome(), Outcome::Ready, "{}", error(&o));
         assert_eq!(refusal.status, 404);
         assert!(refusals_held() <= 1, "{} refusals held", refusals_held());
@@ -3606,7 +3667,7 @@ fn a_hand_in_on_a_lent_none_line_mints_its_unit_and_continues() {
         };
         let mut o = blank();
         let f = HOST_SLOTS.unit_hand_in.unwrap();
-        let ret = f(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+        let ret = unsafe { f(d.ctx, std::ptr::from_ref(&i).cast(), &mut o) };
         (ret.outcome(), o, slot)
     };
     let (outcome, o, slot) = hand_in(lent);
@@ -3647,7 +3708,8 @@ fn a_lent_none_line_admits_before_delegating_to_an_installed_auth_host() {
         answer: &mut slot,
     };
     let mut out = blank();
-    let result = HOST_SLOTS.unit_hand_in.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut out);
+    let result =
+        unsafe { HOST_SLOTS.unit_hand_in.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut out) };
     assert_eq!(result.outcome(), Outcome::Ready, "{}", error(&out));
     assert_eq!(
         slot.flow,
