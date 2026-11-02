@@ -420,3 +420,13 @@ mod ordinary_plane_lending;
 #[allow(unsafe_code)]
 #[path = "tests/ordinary_suite_dispatch_tests.rs"]
 mod ordinary_suite_dispatch_tests;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/ordinary_auth_short.rs"]
+mod ordinary_auth_short;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/ordinary_suite_hook_ticket_tests.rs"]
+mod ordinary_suite_hook_ticket_tests;
