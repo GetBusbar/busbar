@@ -891,6 +891,26 @@ fn checked_line_ids(ids: &[u64], lines: usize) -> Result<HashMap<u64, u32>, &'st
     Ok(lines_by_id)
 }
 
+fn connection_allows_key_prestep(answers: &[Option<Judged>]) -> bool {
+    !answers
+        .iter()
+        .any(|answer| matches!(answer, Some(Judged::Denied | Judged::Overloaded)))
+}
+
+enum SignedReaderStep {
+    Pass(Vec<Strip>),
+    Final(Option<VerifyAnswer>),
+}
+
+fn signed_reader_step(answer: Option<VerifyAnswer>, faulted: bool) -> SignedReaderStep {
+    match answer {
+        Some(answer) if !faulted && matches!(&answer.verified, Verified::Pass) => {
+            SignedReaderStep::Pass(answer.strips)
+        }
+        answer => SignedReaderStep::Final(answer),
+    }
+}
+
 struct Table {
     listener: Listener,
     doors: crate::core_routes::CoreRouteTable,
@@ -2133,11 +2153,7 @@ impl Inbound {
                 .ok_or(UNIT_FOREIGN)?;
             if unfinished && !peer && table.listener.app.auth.keys_in_chain {
                 let connection_denied = me
-                    .with_state(target, |u| {
-                        u.answers.iter().any(|answer| {
-                            matches!(answer, Some(Judged::Denied | Judged::Overloaded))
-                        })
-                    })
+                    .with_state(target, |u| !connection_allows_key_prestep(&u.answers))
                     .ok_or(UNIT_FOREIGN)?;
                 let method = axum::http::Method::from_bytes(head.method.as_bytes()).ok();
                 let prefix = method
@@ -2185,13 +2201,11 @@ impl Inbound {
                         let mut verifying = calls.verify(req);
                         let answer = until_deadline(deadline, &mut verifying).await;
                         let faulted = verifying.faulted();
-                        match answer {
-                            Some(answer)
-                                if !faulted && matches!(&answer.verified, Verified::Pass) =>
-                            {
+                        match signed_reader_step(answer, faulted) {
+                            SignedReaderStep::Pass(strips) => {
                                 me.with_state(target, |u| {
                                     u.signed_pending = false;
-                                    for strip in answer.strips {
+                                    for strip in strips {
                                         if !u.strips.contains(&strip) {
                                             u.strips.push(strip);
                                         }
@@ -2199,7 +2213,7 @@ impl Inbound {
                                 })
                                 .ok_or(UNIT_FOREIGN)?;
                             }
-                            answer => {
+                            SignedReaderStep::Final(answer) => {
                                 me.preflight_keys(target, keys.index)?;
                                 let judging = match answer {
                                     Some(answer) => Judging::Keys(
