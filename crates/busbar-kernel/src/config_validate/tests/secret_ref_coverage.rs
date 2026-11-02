@@ -473,11 +473,9 @@ auth:
         .map(|name| {
             let def: crate::config::ProviderDef = serde_yaml::from_str(&format!(
                 "protocol: {}\nbase_url: \"https://api.vendor-a.test\"\n",
-                crate::testkit::neutral_protocols::NEUTRAL_PROTOCOLS
-                    .iter()
-                    .find(|d| d.codec.is_some())
-                    .map(|d| d.name)
-                    .expect("the test binary ships a codec protocol")
+                // Only secret-field enumeration and keyless host validation are exercised.
+                // This inert dialect word does not register executable plane behavior.
+                "secret-field-metadata"
             ))
             .expect("the fixture ProviderDef yaml must parse");
             (name.to_string(), def)
