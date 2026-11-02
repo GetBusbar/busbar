@@ -1950,10 +1950,10 @@ impl Connection {
 
     /// Check opening bounds before advancing their stages, and again when arming their timer.
     fn check_open_deadlines(&self, now: Instant) -> Result<(), Failure> {
-        if matches!(self.phase, Phase::Connecting | Phase::Handshaking) || self.handshaking() {
-            if self.open_deadline.is_some_and(|at| at <= now) {
-                return Err(Failure::Timeout);
-            }
+        if (matches!(self.phase, Phase::Connecting | Phase::Handshaking) || self.handshaking())
+            && self.open_deadline.is_some_and(|at| at <= now)
+        {
+            return Err(Failure::Timeout);
         }
         let tunnel_deadline = self.tunnel.as_ref().and_then(|t| t.deadline);
         if tunnel_deadline.is_some_and(|at| at <= now) {
