@@ -3282,6 +3282,10 @@ impl PollConns for Connector {
 mod tests;
 
 #[cfg(test)]
+#[path = "tests/real_tcp_tests.rs"]
+mod real_tcp_tests;
+
+#[cfg(test)]
 #[path = "tests/callback_waker.rs"]
 #[allow(unsafe_code)]
 mod callback_waker;
