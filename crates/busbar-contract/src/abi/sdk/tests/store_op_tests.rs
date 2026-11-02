@@ -27,6 +27,7 @@ fn holding(need: u32, target: Option<&str>) -> Op<'static> {
                 stream: 42,
             }),
             issued: 1,
+            replay: None,
             host: None,
             ticket: TICKET,
         }),

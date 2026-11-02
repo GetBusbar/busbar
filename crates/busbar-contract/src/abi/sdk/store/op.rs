@@ -70,6 +70,8 @@ pub(crate) struct Parked {
     pub(crate) state: Option<Box<dyn Any + Send + Sync>>,
     pub(crate) checkout: Option<Checkout>,
     pub(crate) issued: u32,
+    /// The last still-pending service's handle, distinct from the next free handle above.
+    pub(crate) replay: Option<u32>,
     pub(crate) host: Option<Host>,
     pub(crate) ticket: Ticket,
 }
@@ -91,10 +93,14 @@ pub struct Op<'a> {
     host: Option<&'a Host>,
     state: Option<Box<dyn Any + Send + Sync>>,
     checkout: Option<Checkout>,
-    /// The connector services this op has made, over all its entries.
+    /// The next free completion-handle sequence. Replaying a pending service never lowers it.
     issued: u32,
-    /// Where `issued` stood when this entry began.
-    entered_at: u32,
+    /// The pending logical service to reissue, if any. Completed services retain their numbers.
+    replay: Option<u32>,
+    /// The last counted service attempted in this entry.
+    last_service: Option<u32>,
+    /// Reissuing a pending handle is still a service attempt even if the high-water count stays.
+    made_service: bool,
     /// The instance's read buffers its wire ops read into (none for an op with no instance).
     reads: Option<&'a super::wire::ReadBufs>,
 }
@@ -121,7 +127,9 @@ impl Op<'static> {
             state: None,
             checkout: None,
             issued: 0,
-            entered_at: 0,
+            replay: None,
+            last_service: None,
+            made_service: false,
             reads: None,
         }
     }
@@ -142,14 +150,16 @@ impl<'a> Op<'a> {
             state: None,
             checkout: None,
             issued: 0,
-            entered_at: 0,
+            replay: None,
+            last_service: None,
+            made_service: false,
             reads,
         };
         if let Some(mut p) = parked {
             op.state = p.state.take();
             op.checkout = p.checkout.take();
             op.issued = p.issued;
-            op.entered_at = p.issued;
+            op.replay = p.replay;
         }
         op
     }
@@ -160,6 +170,7 @@ impl<'a> Op<'a> {
             state: self.state,
             checkout: self.checkout,
             issued: self.issued,
+            replay: self.replay,
             host: self.host.copied(),
             ticket: self.ticket,
         }
@@ -172,7 +183,17 @@ impl<'a> Op<'a> {
 
     /// Whether this entry made a connector service (a PENDING on 0 needs one in flight).
     pub(crate) fn made_a_service(&self) -> bool {
-        self.issued > self.entered_at
+        self.made_service
+    }
+
+    /// The wire driver is retrying the same pending logical service, rather than starting a
+    /// new request after a timer or a completed zero-byte write. Keep the next free handle for
+    /// subsequent work and cancellation cleanup; only this service reuses its original number.
+    pub(crate) fn replay_last_service(&mut self) {
+        self.replay = Some(
+            self.last_service
+                .expect("a pending wire service was attempted"),
+        );
     }
 
     /// Whether this op runs on a ticket, and so may answer PENDING.
@@ -224,10 +245,15 @@ impl<'a> Op<'a> {
         if !self.can_pend() {
             return Err(ConnFailure::NoTicket);
         }
-        let conn = host.connector_from(self.ticket, self.issued);
+        let started_at = self.replay.unwrap_or(self.issued);
+        let conn = host.connector_from(self.ticket, started_at);
         Ok(Services {
             conn: Some(conn),
             issued: &mut self.issued,
+            started_at,
+            replay: &mut self.replay,
+            last_service: &mut self.last_service,
+            made_service: &mut self.made_service,
         })
     }
 
@@ -267,6 +293,10 @@ impl<'a> Op<'a> {
                 target: target.map(str::to_owned),
                 stream,
             });
+        } else if answer.is_pending() {
+            // Checkout itself owns this logical dial, including for a store that uses it
+            // directly rather than through Wire. Its retry must reuse the pending handle.
+            self.replay_last_service();
         }
         answer
     }
@@ -305,6 +335,10 @@ impl Op<'_> {
 pub struct Services<'o, 'h> {
     conn: Option<Connector<'h>>,
     issued: &'o mut u32,
+    started_at: u32,
+    replay: &'o mut Option<u32>,
+    last_service: &'o mut Option<u32>,
+    made_service: &'o mut bool,
 }
 
 impl<'h> std::ops::Deref for Services<'_, 'h> {
@@ -327,7 +361,14 @@ impl<'h> std::ops::DerefMut for Services<'_, 'h> {
 impl Drop for Services<'_, '_> {
     fn drop(&mut self) {
         if let Some(c) = self.conn.take() {
-            *self.issued = c.issued();
+            // Clock/admission services run without a ticket and do not consume a handle. They
+            // must not clear the pending wire service's bookmark before its actual retry.
+            if c.issued() > self.started_at {
+                *self.issued = (*self.issued).max(c.issued());
+                *self.replay = None;
+                *self.last_service = Some(c.issued() - 1);
+                *self.made_service = true;
+            }
         }
     }
 }
