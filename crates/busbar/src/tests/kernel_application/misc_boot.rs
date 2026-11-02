@@ -87,8 +87,26 @@ fn boot_hydration_makes_the_trust_record_durable_on_the_configured_store() {
     app.demotion_record
         .keep_decision(&decision, 1)
         .expect("the store keeps the decision");
-    app.demotion_record
-        .record("inst\u{1f}upstream", "quarantined", 1);
+    let demotion = busbar_contract::records::PlaneRecord {
+        kind: kernel::store::plane_view::KIND_DEMOTION.into(),
+        id: "inst\u{1f}upstream".into(),
+        parent: None,
+        seq: 0,
+        ts: 1,
+        disposition: busbar_contract::records::PlaneDisposition::Active,
+        body: serde_json::to_vec(&serde_json::json!({
+            "server": "inst\u{1f}upstream", "reason": "quarantined", "recorded_at": 1,
+        }))
+        .expect("the persisted demotion data is JSON"),
+    };
+    kernel::store::plane_view::PlaneStoreView::narrow(
+        app.governance
+            .as_ref()
+            .expect("the actual Store owns governance")
+            .store(),
+    )
+    .upsert_plane_record(demotion.view())
+    .expect("the actual Store keeps the demotion data");
 
     drop(app);
     assert!(
