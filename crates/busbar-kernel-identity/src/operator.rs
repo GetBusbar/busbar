@@ -167,9 +167,7 @@ pub fn migrated_token(op: &str) -> String {
 /// (1.5.5's refusal bytes), or not its credential — and what rides with it. A verifier that is
 /// overloaded or answered no verdict is refused (a `Reject`, fail-closed). One that answered NO
 /// VERDICT is marked [`Self::no_verdict`]: a server-side failure, not the caller's bad credential,
-/// which a caller that answers HTTP answers 503 with `Retry-After` (SIGN-auth-kind 2026-10-30,
-/// lead-signed under owner delegation, extending the owner-signed 2026-10-30 rule "an IdP outage
-/// answers 503, never 401").
+/// which an HTTP caller answers with 503 and `Retry-After`, never 401.
 #[derive(Debug)]
 pub struct Judgement {
     /// The verdict.

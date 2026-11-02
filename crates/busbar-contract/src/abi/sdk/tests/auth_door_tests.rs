@@ -823,7 +823,7 @@ fn with_operator_states_the_fact_and_the_principal() {
     assert_eq!(OPERATOR.head.size as usize, size_of::<AuthTail>());
 }
 
-/// RED (open160 WH1/ADM1): the verify kit's `validate` answered READY whatever the settings, so
+/// Validate refuses the settings open refuses.
 #[test]
 fn red_validate_refuses_the_settings_open_refuses() {
     let validate = |settings: &[u8]| {
@@ -853,7 +853,7 @@ fn red_validate_refuses_the_settings_open_refuses() {
     );
 }
 
-/// RED (open160 A9): an op the verify door does not serve answered REFUSED with no text, so the
+/// An unserved op is refused saying why.
 #[test]
 fn red_an_unserved_op_is_refused_saying_why() {
     let (_, opened) = open(b"\"ok\"");

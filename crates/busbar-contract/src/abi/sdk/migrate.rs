@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A PLUGIN MIGRATES ITS OWN SETTINGS (owner ruling 2026-10-27): the door's optional `migrate`
+//! A plugin migrates its own settings through the door's optional `migrate` entry
 //! (`abi::mechanism::lifecycle`, MIGRATE), once for every kind.
 //!
 //! `busbar --migrate-config` migrates core's own keys and nothing inside a plugin's settings

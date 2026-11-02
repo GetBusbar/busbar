@@ -608,7 +608,7 @@ fn a_member_program_need_is_refused_unless_declared_as_written() {
     });
 }
 
-/// RED (`BUSBAR-1.6.0.md` l.388: the supervisor of a spawned program is its carrier's): THE HOST
+/// The host holds no restart policy of its own.
 #[test]
 fn the_host_holds_no_restart_policy_of_its_own() {
     worker().block_on(async {
@@ -781,7 +781,7 @@ async fn drain(c: &Connector, id: ConnId, bound: Duration) -> usize {
     read
 }
 
-/// RED (resource bounds; THE DESIGN §5, back-pressure): every frame the program writes is kept for
+/// A lease that does not read holds its program back.
 #[test]
 fn a_lease_that_does_not_read_holds_its_program_back() {
     worker().block_on(async {
@@ -817,7 +817,7 @@ fn a_lease_that_does_not_read_holds_its_program_back() {
     });
 }
 
-/// RED (`DialIn::supervision_key`): a member's spawn carries its supervision key, never `0`, one per
+/// A member's spawn carries its supervision key and a changed member a new one.
 #[test]
 fn a_members_spawn_carries_its_supervision_key_and_a_changed_member_a_new_one() {
     worker().block_on(async {
@@ -984,7 +984,7 @@ impl crate::framer::FramerDoor for HangingRead {
     }
 }
 
-/// RED while a member's lock was held across its program's carrier crossings (`BUSBAR-1.6.0.md`
+/// A hung carrier read on one lease never blocks the member's other callers.
 #[test]
 fn a_hung_carrier_read_on_one_lease_never_blocks_the_members_other_callers() {
     let rt = worker();
@@ -1064,7 +1064,7 @@ fn a_hung_carrier_read_on_one_lease_never_blocks_the_members_other_callers() {
     });
 }
 
-/// RED (T5, stdio TS1): A RETIRED MEMBER'S KEY IS SIGNALLED RETIRED. A member a re-declaration
+/// A retired member's supervision key is signalled retired once.
 #[test]
 fn a_retired_members_supervision_key_is_signalled_retired_once() {
     worker().block_on(async {

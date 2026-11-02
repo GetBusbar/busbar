@@ -801,7 +801,7 @@ fn validated<P: HookOpen>(raw: &[u8]) -> (Outcome, String) {
     (o, text)
 }
 
-/// RED (hook ABI defect 1): `validate` refuses the settings `open` refuses, in `open`'s words, so
+/// Validate refuses what open refuses.
 #[test]
 fn validate_refuses_what_open_refuses() {
     assert_eq!(
@@ -1273,7 +1273,7 @@ impl HookOpen for OpenAsks {
     }
 }
 
-/// RED (hook ABI defect 5): a `decide` / `transform` whose verdict does not fit the host's buffers
+/// A short-buffer retry returns the first verdict without rerunning the hook.
 #[test]
 fn red_the_short_buffer_re_call_answers_the_first_verdict_without_running_the_hook_again() {
     let p = opened_with::<OpenAsks>(&zeroed());
@@ -1451,7 +1451,7 @@ fn configure_sdk_leases_the_atomic_checkpoint_and_preserves_the_pushed_ack_versi
     closed::<OpenCheckpoint>(instance);
 }
 
-/// RED (hook ABI defect 3): a hook that will not take pushed settings says WHY, and the operator
+/// A configure refusal states the hook's reason.
 #[test]
 fn red_a_configure_refusal_states_the_hooks_reason() {
     let p = opened_with::<OpenPickyConfigure>(&zeroed());
@@ -1491,7 +1491,7 @@ impl HookOpen for OpenSecrets {
     }
 }
 
-/// RED (hook ABI defect 6): `open` and `refresh` hand the hook the secrets the host resolved for
+/// Open and refresh hand the hook its secrets and generation.
 #[test]
 fn red_open_and_refresh_hand_the_hook_its_secrets_and_generation() {
     use crate::abi::mechanism::lifecycle::slot::REFRESH;
@@ -1569,7 +1569,7 @@ impl HookOpen for OpenUnsendable {
     }
 }
 
-/// RED (hook ABI defect 11): `Op::exchange`'s request builder returns its own text when it cannot
+/// A request the builder refuses answers the builder's text.
 #[test]
 fn red_a_request_the_builder_refuses_answers_the_builders_text() {
     ESTABLISHED.set(0);
@@ -1601,7 +1601,7 @@ fn red_a_request_the_builder_refuses_answers_the_builders_text() {
     closed::<OpenUnsendable>(p);
 }
 
-/// RED (the shared test kit, E11): a plugin's test drives an op that asks the far end through
+/// A scripted far end drives a pending decide to its answer.
 #[test]
 fn a_scripted_far_end_drives_a_pending_decide_to_its_answer() {
     use crate::abi::sdk::test_support::fake::FakeHost;

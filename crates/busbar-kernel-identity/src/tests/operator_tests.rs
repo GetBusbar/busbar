@@ -149,7 +149,7 @@ fn every_answer_is_read_as_the_admin_chain_reads_it() {
     }
 }
 
-/// SIGN-auth-kind 2026-10-30 (lead-signed under owner delegation, extending the owner-signed
+/// An answer without a verdict is refused and marked as a module failure.
 #[test]
 fn a_verdict_less_answer_is_refused_and_marked() {
     for (verified, no_verdict) in [

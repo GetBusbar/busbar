@@ -170,7 +170,7 @@ fn sole_entry_over_names_the_one_entry_pricing_a_whole_window() {
     );
 }
 
-/// **WHERE A CORRECTION WOULD CUT INSIDE A ROW** (OWNER ruling #32, 2026-09-29). Rows are
+/// Correction cut names a boundary inside a row.
 #[test]
 fn correction_cut_names_a_boundary_inside_a_row() {
     let mut history = History::opening(card_at(2.0), 0);

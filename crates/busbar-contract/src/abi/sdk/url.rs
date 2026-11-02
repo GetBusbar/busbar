@@ -112,7 +112,7 @@ pub fn cut_userinfo(url: &str, with: &str) -> String {
     format!("{with}{}", &url[at + 1..])
 }
 
-/// THE AMBIGUOUS-URL REFUSAL (owner ruling 2026-10-24): `Some(the refusal)` when the parsed `url`
+/// Returns a refusal for an ambiguous credential-bearing URL, without exposing its credential.
 #[must_use]
 pub fn ambiguous_url(url: &str, from_path: &str) -> Option<String> {
     if !from_path.contains('@') {

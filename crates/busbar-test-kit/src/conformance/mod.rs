@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **THE PUBLISHED CONFORMANCE SUITE** (BUSBAR-1.6.0.md THE DESIGN §11.4 "compiled in
-//! or dropped in, the same table", §11.11 M6/contract; Part 2 #2 and #11). OWNER 2026-10-03: *"NO
-//! TEST PLUGINS. We have real plugins for everything. PLUGINS test themselves against busbar.
-//! busbar doesn't test plugins."* So busbar PUBLISHES this suite and every real plugin repo RUNS it,
+//! **The published conformance suite** exercises a plugin through linked and dropped-in doors.
+//! Real plugin repositories test themselves against busbar; core does not test plugins.
+//! Busbar publishes this suite and every real plugin repo runs it,
 //! in its own CI (`plugin-ci.yml`'s conformance step), at the busbar commit it pins (§9).
 //!
 //! A plugin repo calls it from its own `tests/conformance.rs`, one line:

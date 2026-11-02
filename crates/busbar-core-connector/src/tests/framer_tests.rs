@@ -598,7 +598,7 @@ impl std::task::Wake for Woken {
     }
 }
 
-/// RED (a framer pends only on a ticketed auth call): a TICKETED `begin` whose auth call answers
+/// A ticketed begin whose auth pends resumes on the wake with one auth call.
 #[test]
 fn a_ticketed_begin_whose_auth_pends_resumes_on_the_wake_with_one_auth_call() {
     use std::sync::atomic::Ordering;
@@ -669,7 +669,7 @@ fn noop_cx() -> std::task::Context<'static> {
     std::task::Context::from_waker(std::task::Waker::noop())
 }
 
-/// RED (A PENDING ANSWER PARKS ONLY ITS OWN STREAM, emit): two streams on one dialled framing.
+/// One stream pending auth parks only that stream and resumes with one auth call.
 #[test]
 fn one_stream_pending_auth_parks_only_that_stream_and_resumes_with_one_auth_call() {
     let door = Arc::new(PendingDoor::new(TestDoor::identity("bytes"), 1));
@@ -847,7 +847,7 @@ impl FramerDoor for MuxDoor {
     }
 }
 
-/// RED (A PENDING ANSWER PARKS ONLY ITS OWN STREAM, ingest): on one accepted connection the first
+/// A pending ingest holds only its stream and the next stream head is handed up first.
 #[test]
 fn a_pending_ingest_holds_only_its_stream_and_the_next_stream_head_is_handed_up_first() {
     let door = Arc::new(MuxDoor::new());
@@ -927,7 +927,7 @@ fn a_dialled_head_emit_states_its_body_length_and_nothing_else_does() {
     );
 }
 
-/// RED (NO TICKET-LESS PATH FOR AN AUTH-CALLING FRAMER): a framing whose binding has auth points is
+/// A binding with auth points is refused without a ticket.
 #[test]
 fn a_binding_with_auth_points_is_refused_ticket_less() {
     use busbar_contract::abi::host::service::AuthRef;
@@ -1003,7 +1003,7 @@ fn a_binding_with_auth_points_is_refused_ticket_less() {
     );
 }
 
-/// RED (Q128 arch u22 LOW 9; `busbar_contract::abi::transport`: "A framer that fills a buffer
+/// An encode that answers YIELD_MORE faults without sending truncated bytes.
 #[test]
 fn an_encode_answered_yield_more_faults_and_is_never_sent_truncated() {
     let door = TestDoor::new(
@@ -1081,7 +1081,7 @@ fn a_writable_piece_is_never_handed_up_as_a_frame() {
     assert_eq!(got, vec![b"x".to_vec(), b"z".to_vec()]);
 }
 
-/// RED (a transport's size answer): `locate`'s short answer names the buffer sizes it needs, and
+/// A locate size answer past the host's bound is a fault never an allocation.
 #[test]
 fn a_locate_size_answer_past_the_hosts_bound_is_a_fault_never_an_allocation() {
     let needed = busbar_contract::abi::mechanism::check::MAX_BYTES;

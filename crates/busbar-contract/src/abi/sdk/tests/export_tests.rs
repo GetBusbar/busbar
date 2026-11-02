@@ -281,7 +281,7 @@ fn the_tail_and_the_alias_state_what_they_are_given() {
     assert_eq!(view().name(), "probe-sink");
 }
 
-/// RED (the shared test kit, E11): what a reply's envelope carried (its diagnostics and metrics) is
+/// A called op keeps a copy of its envelope.
 #[test]
 fn a_called_op_keeps_a_copy_of_its_envelope() {
     let view = view();
@@ -315,7 +315,7 @@ fn a_called_op_keeps_a_copy_of_its_envelope() {
     close(&view, instance);
 }
 
-/// RED (export ABI defect 17): an op over the open instance answers a call with NO instance in the
+/// A held operation with no instance returns the SDK's refusal.
 #[test]
 fn a_held_op_with_no_instance_answers_in_the_sdks_words() {
     let view = view();
@@ -336,7 +336,7 @@ fn a_held_op_with_no_instance_answers_in_the_sdks_words() {
     assert_eq!(c.error.as_deref(), Some(NO_INSTANCE));
 }
 
-/// RED (export ABI defect 5): a sink states no `refresh` — the host never refreshes an export
+/// The SDK handles a sink that declares no refresh operation.
 #[test]
 fn a_sink_that_states_no_refresh_is_answered_by_the_sdk() {
     let Err(refused) = Probe.refresh(b"{}", &[], 2) else {

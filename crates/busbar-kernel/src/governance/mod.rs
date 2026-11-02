@@ -87,7 +87,7 @@ struct ModelCell {
 /// In-memory TOKEN-LEDGER cell for a bucket's CURRENT window - the AUTHORITATIVE hot-path
 /// enforcement state. A bucket is a key's own budget bucket OR a budget-group bucket (same shape).
 /// NO SPEND FIELD: money is derived at check time as `cell tokens x the card IN FORCE WHEN EACH WAS
-/// EARNED` (+ the flat fee x requests per admission era) - OWNER RULING Q14 / #79. The counts are
+/// EARNED` (+ the flat fee x requests per admission era). The counts are
 /// segmented by card era and each era prices at the card the dated history resolves for it, so an
 /// edit prices what follows it and a signed back-dated correction reprices the window it names,
 /// with no data fix either way. The durable store is a write-behind

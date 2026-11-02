@@ -301,7 +301,7 @@ fn fill_writes_a_pieces_own_fault_reading_over_the_tables() {
     assert_eq!(pieces[1].fault, 2, "no reading of its own: the table's");
 }
 
-/// RED (the stream-end ruling): the SDK SAYS a stream's end (`Piece::end` -> `PIECE_END` on an
+/// Fill reports stream end separately from an empty frame.
 #[test]
 fn fill_says_the_stream_end_and_an_empty_frame_is_not_it() {
     let mut o = Owes {

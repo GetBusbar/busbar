@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The dated budget ledger (OWNER RULING Q14, #79): a cell's segments price at the card in force
+//! Prices each dated budget segment at the rate card in force when its usage occurred.
 
 use std::collections::BTreeMap;
 

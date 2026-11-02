@@ -395,7 +395,7 @@ fn head_through_the_table_with(knobs: crate::support::Knobs) -> Piece {
     })
 }
 
-/// RED (1.5.5 parity, the pre-body download cap): the declared body length a framer states on its
+/// A framer's declared body length reaches the tables head piece.
 #[test]
 fn a_framers_declared_body_length_reaches_the_tables_head_piece() {
     assert_eq!(
@@ -1279,7 +1279,7 @@ fn stalled_far_end(
     });
 }
 
-/// RED (BUSBAR-1.6.0.md:4890): `timeout_ms` bounds the WHOLE request until its answer, not only the
+/// A request bound times out a far end that never answers.
 #[test]
 fn a_request_bound_times_out_a_far_end_that_never_answers() {
     worker().block_on(async {
@@ -1849,7 +1849,7 @@ impl FramerDoor for HangingAccept {
     }
 }
 
-/// RED before a listener was driven under no lock (`BUSBAR-1.6.0.md` §11: no plugin code runs
+/// An accept beside a hung carrier accept never waits and is woken once it is back.
 #[test]
 fn an_accept_beside_a_hung_carrier_accept_never_waits_and_is_woken_once_it_is_back() {
     let rt = worker();
@@ -2727,7 +2727,7 @@ mod transport_pin {
         c
     }
 
-    /// RED (THE DESIGN §8, the connector holds every destination's trust; the transport pin): a
+    /// A pooled line is never lent once its destination is sealed again.
     #[test]
     fn a_pooled_line_is_never_lent_once_its_destination_is_sealed_again() {
         worker().block_on(async {
@@ -2850,7 +2850,7 @@ mod transport_pin {
         DeclaredConns::declare(c, OWNER, NeedId(0), &need, None, Some(pem))
     }
 
-    /// RED (THE DESIGN §5, the host connector: a need's `trust_from` is "an extra trusted root
+    /// A pooled line is never lent once its need trusts another operator ca.
     #[test]
     fn a_pooled_line_is_never_lent_once_its_need_trusts_another_operator_ca() {
         worker().block_on(async {
@@ -3070,7 +3070,7 @@ mod transport_pin {
         });
     }
 
-    /// RED (`PollConns::anchor`: "an open naming it, to its own target's authority, is held to its
+    /// A registration holding no anchors never borrows one sealed after it.
     #[test]
     fn a_registration_holding_no_anchors_never_borrows_one_sealed_after_it() {
         worker().block_on(async {
@@ -3103,7 +3103,7 @@ mod transport_pin {
         });
     }
 
-    /// RED (`PollConns::anchor`; "a pin nobody enforces is refused, never dropped"): an open naming
+    /// An unregistered open is refused when registrations at its authority disagree.
     #[test]
     fn an_open_naming_no_registration_is_refused_where_the_registrations_at_its_authority_disagree()
     {
@@ -3376,7 +3376,7 @@ mod transport_pin {
             .expect("the far end runs")
     }
 
-    /// RED (the operator docs: a pin is written `sha256/<base64>`): a pin written in
+    /// A pin in either spelling reaches its key and refuses another before any request byte.
     #[test]
     fn a_pin_in_either_spelling_reaches_its_key_and_refuses_another_before_any_request_byte() {
         worker().block_on(async {
@@ -3755,7 +3755,7 @@ mod transport_pin {
     }
 }
 
-/// RED (a registration's private reach, `abi::plane::TRUST_PRIVATE_REACH`, sealed per
+/// A registration's private reach admits its own opens and nothing else.
 #[test]
 fn a_registrations_private_reach_admits_its_own_opens_and_nothing_else() {
     worker().block_on(async {
@@ -3949,7 +3949,7 @@ fn a_pinned_carrier_need_uses_the_same_authority_as_its_dial() {
     });
 }
 
-/// RED (1.5.5: a request-log webhook target that is not `https://` was refused when the sink was
+/// An open web need pinned to a plaintext target is refused at declare.
 #[test]
 fn an_open_web_need_pinned_to_a_plaintext_target_is_refused_at_declare() {
     let c = plain_and_secure_connector();
@@ -4006,7 +4006,7 @@ fn a_pinned_target_every_dial_would_admit_is_admitted_at_declare() {
     assert_eq!(DeclaredConns::declared(&c, OWNER, NeedId(2)), Some(Ok(())));
 }
 
-/// RED (THE DESIGN §5: `open-web` is "public https only"; v1.5.5 refused a private open-web target
+/// An open web need pinned to a private literal is refused at declare.
 #[test]
 fn an_open_web_need_pinned_to_a_private_literal_is_refused_at_declare() {
     let c = plain_and_secure_connector();
@@ -4254,7 +4254,7 @@ async fn pooled_exchange(
     (got, whole, failed)
 }
 
-/// RED (THE DESIGN §5 "a `ConnId` belongs to the plugin instance that opened it"; §8 the connector
+/// A pooled line is never lent to another need or instance.
 #[test]
 fn a_pooled_line_is_never_lent_to_another_need_or_instance() {
     worker().block_on(async {
@@ -4357,7 +4357,7 @@ fn a_forgotten_instances_pooled_line_and_listener_go_and_a_neighbours_line_is_ke
     });
 }
 
-/// RED (`limits.pool_idle_timeout_secs`, the pool's own contract: "an idle connection reaped once
+/// An idle pooled line is closed once its idle time passes whatever is opened next.
 #[test]
 fn an_idle_pooled_line_is_closed_once_its_idle_time_passes_whatever_is_opened_next() {
     worker().block_on(async {
@@ -4425,7 +4425,7 @@ impl FramerDoor for HangingDial {
     }
 }
 
-/// RED before a held connection's dial crossed with its judgement's lock let go (`BUSBAR-1.6.0.md`
+/// A write and a wait beside a hung carrier dial never wait.
 #[test]
 fn a_write_and_a_wait_beside_a_hung_carrier_dial_never_wait() {
     let rt = worker();
@@ -4558,7 +4558,7 @@ impl FramerDoor for HangingRead {
     }
 }
 
-/// RED before a read had the connection's rest out of its lock (`BUSBAR-1.6.0.md` §11: no plugin
+/// A read beside a hung carrier read never waits and is woken once it is back.
 #[test]
 fn a_read_beside_a_hung_carrier_read_never_waits_and_is_woken_once_it_is_back() {
     let rt = worker();

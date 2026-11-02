@@ -48,7 +48,7 @@ fn auth_module_cacheable_defaults_to_false() {
     assert!(!Minimal.cacheable());
 }
 
-/// RED (auth ABI defect 2): the login step types never print a credential through `Debug`: not
+/// Login debug never prints a credential.
 #[test]
 fn login_debug_never_prints_a_credential() {
     let hop = LoginHop {
@@ -85,7 +85,7 @@ fn login_debug_never_prints_a_credential() {
     }
 }
 
-/// RED (auth ABI, FIELD_SENSITIVE ruling 2026-10-27): an auth field whose sensitivity the plugin
+/// An auth field never prints its value marked or not.
 #[test]
 fn an_auth_field_never_prints_its_value_marked_or_not() {
     for sensitive in [false, true] {
@@ -134,7 +134,7 @@ fn a_connector_open_never_debug_prints_the_query_handoff_or_target() {
     assert!(shown.contains("https://upstream.example"));
 }
 
-/// RED (open160 A2): a login hop's form and header values (a bearer token, a client credential)
+/// Every login credential is held in a wiping buffer.
 #[test]
 fn red_every_login_credential_is_held_in_a_wiping_buffer() {
     fn wipes<T: zeroize::ZeroizeOnDrop>(_: &T) {}

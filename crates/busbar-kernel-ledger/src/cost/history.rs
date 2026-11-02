@@ -597,7 +597,7 @@ impl HistoryView<'_> {
         (base_reaches_end && !outranked).then_some(base)
     }
 
-    /// **THE BOUNDARY OF A CORRECTION THAT WOULD CUT INSIDE A ROW** (OWNER ruling #32, 2026-09-29),
+    /// The boundary of a correction that would cut inside a row.
     pub fn correction_cut(
         &self,
         from: u64,

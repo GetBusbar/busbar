@@ -458,14 +458,12 @@ fn admin_verdict_of(answer: VerifyAnswer, faulted: bool) -> Judgement {
 /// 401 — the caller's credential was never judged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VerifierUnavailable {
-    /// Its instance's `max_inflight` was full and the call was not queued (owner ruling Q134,
-    /// 2026-10-07; THE DESIGN §11.11 R8; accepted difference "Q134 503 when an auth verifier's
-    /// max_inflight is full").
+    /// Its instance's `max_inflight` was full and the call was not queued.
+    /// HTTP callers report 503 for this overload.
     Overloaded,
     /// It answered NO VERDICT: FAILED (a module failure, e.g. an OIDC plugin whose key set is
-    /// unavailable), a FAULT, a timeout (SIGN-auth-kind 2026-10-30, lead-signed under owner
-    /// delegation, extending the owner-signed 2026-10-30 rule "an IdP outage answers 503, never
-    /// 401").
+    /// unavailable), a FAULT, or a timeout. HTTP callers report 503 for this module failure,
+    /// never 401.
     NoVerdict,
 }
 
@@ -1617,10 +1615,10 @@ fn admin_scope_for(
         .fold(Grants::default(), Grants::with)
 }
 
-/// THE PER-VERB ALLOW-LIST an identified admin principal holds beside its rung grants (#77(9),
-/// OWNER-LOCKED, `docs/design/BUSBAR-1.6.0.md` l.2279: "Each verb is a plain scoped verb authorized
-/// by the per-verb allow-list on the admin token (`verbs: [ … ]` or `verbs: "*"`; `read-only` and
-/// `full` stay the 1.5.5 shorthands)"). Built only for a principal some bound role grants verbs BY
+/// The per-verb allow-list an identified admin principal holds beside its rung grants.
+/// Each verb is authorized by the per-verb allow-list on the admin token
+/// (`verbs: [ … ]` or `verbs: "*"`; `read-only` and
+/// `full` stay the 1.5.5 shorthands). Built only for a principal some bound role grants verbs BY
 /// NAME; every other principal is judged on its rungs alone, as 1.5.5 judged it.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct VerbAllowList {

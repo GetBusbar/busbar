@@ -284,7 +284,7 @@ pub enum LoginOutcome {
     Outage {
         /// The delay the IdP's `Retry-After` asked for, in whole seconds, as the plugin stated it
         /// (`abi::auth::EXT_RETRY_AFTER`); `None` = none stated. Unclamped: the host bounds it
-        /// before it answers (owner-signed 2026-10-30, OWNER-QUEUE.md item "IdP errors").
+        /// before it answers.
         retry_after_secs: Option<u64>,
     },
     /// The identity provider answered, and its answer failed the login's security check (its

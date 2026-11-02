@@ -421,7 +421,7 @@ fn a_text_message_is_whole_and_not_empty() {
     );
 }
 
-/// RED (SEAM-4l additions): THE MESSAGE BOUNDARY is a known bit, valid on an answer toward the
+/// A message boundary ends a message toward the caller only.
 #[test]
 fn a_message_boundary_ends_a_message_toward_the_caller_only() {
     let mut o: OnPieceOut = z();
@@ -440,7 +440,7 @@ fn a_message_boundary_ends_a_message_toward_the_caller_only() {
     );
 }
 
-/// RED (SEAM-4l additions): THE FINAL STATUS closes the reply (`EMIT_DONE`), its message and details
+/// A final status closes the reply inside the arena.
 #[test]
 fn a_final_status_closes_the_reply_inside_the_arena() {
     let at = |offset: u32, len: u32| crate::abi::mechanism::call::Span { offset, len };
@@ -1687,7 +1687,7 @@ fn a_need_keeps_only_declarable_response_fields() {
     );
 }
 
-/// RED for the keep mode (OWNER ruling 2026-10-02, dialect fidelity F2): a need keeps either the
+/// A need keeps named fields or all but denied ones and nothing else.
 #[test]
 fn a_need_keeps_named_fields_or_all_but_denied_ones_and_nothing_else() {
     let mut n: Need = z();
@@ -2123,7 +2123,7 @@ fn an_admin_route_flag_is_known() {
     );
 }
 
-/// RED (`BUSBAR-1.6.0.md` l.4882, a callback route the plane addresses by its own token): a
+/// Only a public route carries its own token.
 #[test]
 fn only_a_public_route_carries_its_own_token() {
     let mut r = AdminRoute {
@@ -2352,7 +2352,7 @@ fn well_formed_trust_keys_pass() {
     assert_eq!(check_pin_mechanisms(&MECHANISMS), Ok(()));
 }
 
-/// RED (SEAM-4f): a registration's private reach is a trust key of its own role: a boolean the
+/// A private reach key carries no default flags or mechanisms.
 #[test]
 fn a_private_reach_key_carries_no_default_flags_or_mechanisms() {
     let reach = TrustKey {

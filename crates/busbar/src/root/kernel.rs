@@ -105,7 +105,7 @@ pub struct RootHistory {
     /// about which generation of the deployment's configuration produced the entry. The day the seam
     /// carries the engine's own epoch, this counter is what it replaces.
     resolutions: std::sync::atomic::AtomicU64,
-    /// **WHERE AN APPLIED CARD IS MADE DURABLE** (#79, OWNER RULING Q14 "date everything"). A
+    /// Where an applied card is made durable. A
     /// history that lives only in memory is rebuilt at the next boot as the boot card from instant
     /// zero, and every posting a restart replays is then priced at a card that was not in force when
     /// it arrived. So every config-applied card is journalled on the node's one book with its

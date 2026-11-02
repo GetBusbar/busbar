@@ -180,7 +180,7 @@ fn malformed_and_ambiguous_credentials_are_cut_through_the_last_at() {
     }
 }
 
-/// export-otlp and export-webhook (owner ruling 2026-10-24): a url whose `@` comes after its host
+/// An ambiguous url is refused without its credential.
 #[test]
 fn an_ambiguous_url_is_refused_without_its_credential() {
     for (url, from_path, secret) in [

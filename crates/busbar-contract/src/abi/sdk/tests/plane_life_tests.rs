@@ -387,7 +387,7 @@ fn validate_tick_drive_cancel_and_release_answer_the_defaults_and_the_planes_can
     assert_eq!(close(inst), Outcome::Ready);
 }
 
-/// RED (a2a's PlaneLife adoption, ruled 2026-10-29): a PlaneLife plane sees the applied owned
+/// A PlaneLife plane receives owned sections at refresh and refuses malformed input.
 #[test]
 fn a_plane_life_plane_sees_the_owned_sections_at_refresh_and_a_malformed_one_is_refused() {
     let (_, inst, _, _) = open(b"{}");

@@ -387,7 +387,7 @@ fn an_admitted_program_is_spawned_bare_and_killed_with_its_handle() {
     });
 }
 
-/// RED (a program carrier's end, coordinator ruling (A)): `io.ends` on a program's handle answers the program's
+/// A program's own exit is answered by ends while a descendant holds its output.
 #[test]
 fn a_programs_own_exit_is_answered_by_ends_while_a_descendant_holds_its_output() {
     worker().block_on(async {
@@ -595,7 +595,7 @@ fn a_spawn_resolves_nothing_and_a_rotation_reaches_the_first_child_after_the_ref
     });
 }
 
-/// RED (transport ABI defect 2): `reap` releases every handle its owner still holds, as `close`
+/// Reap releases every handle of its owner and no other.
 #[test]
 fn reap_releases_every_handle_of_its_owner_and_no_other() {
     worker().block_on(async {

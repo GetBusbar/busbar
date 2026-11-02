@@ -1439,7 +1439,7 @@ fn an_answer_whose_lines_do_not_mirror_refuses_the_open() {
     });
 }
 
-/// RED (THE DESIGN §5, datagram media: "ICE path migration rebinds only on a verified round-trip
+/// A path one association holds is never taken by a check another hears from it.
 #[test]
 fn a_path_one_association_holds_is_never_taken_by_a_check_another_hears_from_it() {
     let (da, db) = (
@@ -1468,7 +1468,7 @@ fn a_path_one_association_holds_is_never_taken_by_a_check_another_hears_from_it(
     assert_eq!(id, a, "a's path is still a's");
 }
 
-/// RED (resource bounds): the paths a port routes to one association are only those it still
+/// A port keeps no path for an association that no longer owns it.
 #[test]
 fn a_port_keeps_no_path_for_an_association_that_no_longer_owns_it() {
     let da = scripted(Knobs::default());
@@ -1491,7 +1491,7 @@ fn a_port_keeps_no_path_for_an_association_that_no_longer_owns_it() {
     );
 }
 
-/// RED (resource bounds): the far end's description is bounded. Buffered whole until the
+/// A far end description past its bound fails the open.
 #[test]
 fn a_far_end_description_past_its_bound_fails_the_open() {
     use busbar_contract::conn::{ConnError, PieceKind};
@@ -1518,7 +1518,7 @@ fn a_far_end_description_past_its_bound_fails_the_open() {
     });
 }
 
-/// RED (resource bounds; THE DESIGN §5 "Writes are back-pressured"): a message a plugin writes in
+/// A message written in parts past its bound is refused.
 #[test]
 fn a_message_written_in_parts_past_its_bound_is_refused() {
     use busbar_contract::conn::{ConnError, PieceKind};

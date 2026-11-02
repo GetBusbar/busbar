@@ -81,7 +81,7 @@ fn a_concurrent_reader_gets_the_partial_messages_suffix_before_the_next_message(
     assert_eq!(take_ready(&ready, &mut buf), None);
 }
 
-/// RED (THE DESIGN §5: a plugin's slow I/O answers not-ready, "no blocking thread exists"): a
+/// A message longer than the reader's buffer is read in parts and never wedges the reader.
 #[test]
 fn a_message_longer_than_the_readers_buffer_is_read_in_parts_and_never_wedges_the_reader() {
     let ready = Arc::new(Mutex::new(ready_messages(&[(b"abcd", true)])));
@@ -128,7 +128,7 @@ fn message(bytes: &[u8]) -> crate::framer::Got {
     }
 }
 
-/// RED (THE DESIGN §5: reads are back-pressured, nothing is lost silently on
+/// Every channel message reaches the reader, including empty and oversized messages.
 #[test]
 fn every_channel_message_reaches_the_reader_empty_ones_and_past_the_bound() {
     crate::support::worker().block_on(async {
@@ -220,7 +220,7 @@ impl crate::framer::FramerDoor for Hanging {
     }
 }
 
-/// RED before the leg's association was driven under no lock (`BUSBAR-1.6.0.md` §11: no plugin
+/// A close beside a hung datagram emit never waits and the holder finishes it.
 #[test]
 fn a_close_beside_a_hung_datagram_emit_never_waits_and_the_holder_finishes_it() {
     use crate::datagram::{Across, LegSink as _};

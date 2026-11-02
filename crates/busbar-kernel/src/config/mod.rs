@@ -361,7 +361,7 @@ pub struct RootCfg {
     /// EVERY REGISTERED PLANE'S DECLARED SECTION this document writes, by config section, carried
     /// through `resolve` VERBATIM.
     ///
-    /// Verbatim on purpose: this is operator INTENT (owner ruling 3), and the only derivation that
+    /// Verbatim on purpose: this is operator intent, and the only derivation that
     /// happens to it is building the plane's own snapshot, which is a separate value with its own
     /// generation. Lowering it here would give a registry two representations that could disagree
     /// about what the operator approved — precisely the disagreement the trust lifecycle removes by

@@ -232,7 +232,7 @@ fn a_short_buffer_writes_nothing_and_names_what_it_needs() {
     }
 }
 
-/// An IdP that could not answer (owner-signed 2026-10-30, OWNER-QUEUE.md item "IdP errors"):
+/// A login outage carries the IdP's retry after in the host's buffer.
 #[test]
 fn a_login_outage_carries_the_idps_retry_after_in_the_hosts_buffer() {
     use crate::abi::auth::{retry_after_of, EXT_RETRY_AFTER, LOGIN_OUTAGE};

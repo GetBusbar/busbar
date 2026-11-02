@@ -467,7 +467,7 @@ fn empty_messages_relay_and_the_stream_ends_only_on_its_flag() {
     });
 }
 
-/// RED (Autobahn 3.2, 3.3, 4.1.3, 4.1.4, 4.2.3, 4.2.4, 5.15 NON-STRICT): the far side's frames
+/// A message handed up with the frames end is still answered.
 #[test]
 fn a_message_handed_up_with_the_frames_end_is_still_answered() {
     worker().block_on(async {
@@ -667,7 +667,7 @@ fn a_holder_that_does_not_read_holds_the_far_end_back() {
     });
 }
 
-/// RED (THE DESIGN §5 "Writes are back-pressured (a full buffer answers not-ready)"; resource
+/// A far end that never reads is not read past the answers it is owed.
 #[test]
 fn a_far_end_that_never_reads_is_not_read_past_the_answers_it_is_owed() {
     const SENT: usize = 64 * 1024 * 1024;
@@ -713,7 +713,7 @@ fn a_far_end_that_never_reads_is_not_read_past_the_answers_it_is_owed() {
     });
 }
 
-/// RED (A PENDING ANSWER PARKS ONLY ITS OWN STREAM, on one connection): two streams on one
+/// One stream pending auth holds only that stream on the connection.
 #[test]
 fn one_stream_pending_auth_holds_only_that_stream_on_the_connection() {
     worker().block_on(async {
@@ -791,7 +791,7 @@ fn a_parked_streams_empty_write_backpressures_only_that_stream() {
     });
 }
 
-/// RED (THE DESIGN §5: TLS is the connector's, "today's code moved byte-identically"; a write is
+/// One write larger than the tls send buffer crosses whole.
 #[test]
 fn one_write_larger_than_the_tls_send_buffer_crosses_whole() {
     const SENT: usize = 200_000;
@@ -1062,7 +1062,7 @@ fn a_located_opening_carries_the_framers_lines_and_the_bodys_length_last() {
     assert_eq!(located(&stating, None), None);
 }
 
-/// RED (TSEAL; "the plane never sees credential bytes"): OVER A FRAMER THAT RENDERS SEALED VALUES
+/// A sealed credential reaches the far end and never the framer.
 #[test]
 fn a_sealed_credential_reaches_the_far_end_and_never_the_framer() {
     use busbar_contract::conn::SEALED_FIELDS_FIELD;

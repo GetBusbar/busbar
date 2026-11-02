@@ -906,8 +906,8 @@ const AMENDMENT_RECORD_TAG_V1: &str = "busbar/rate-amendment/v1";
 /// on the history, who submitted it, and the canonical bytes of the correction.
 ///
 /// The `operator_fingerprint`, `dual_control` and `signature` slots keep the `v3` shape a record
-/// already on a journal was written in. Under #77(9) (OWNER-LOCKED, `docs/design/BUSBAR-1.6.0.md`
-/// l.2279: no verb carries dual control or operator signatures) this node writes them as the empty
+/// already on a journal was written in. No verb carries dual control or operator signatures;
+/// this node writes them as the empty
 /// fingerprint, `single` and the empty signature.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AmendmentRecord {

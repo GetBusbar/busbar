@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE BUDGET LEDGER, DATED (OWNER RULING Q14, DECISION #79).
+//! The budget ledger segmented by rate-card effective dates.
 
 use std::collections::BTreeMap;
 

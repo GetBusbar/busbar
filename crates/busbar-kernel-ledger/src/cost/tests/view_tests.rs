@@ -99,7 +99,7 @@ fn publishing_a_card_leaves_every_prior_posting_byte_identical() {
     assert_eq!(priced_before.micros(), 23_440);
 }
 
-/// THE CARD IN EFFECT AT THE LEDGERED ITEM'S TIME (owner ruling 2026-10-27), at the edge: card B
+/// An item costs the card in effect at its own instant on either side of a price change.
 #[test]
 fn an_item_costs_the_card_in_effect_at_its_own_instant_on_either_side_of_a_price_change() {
     const T: u64 = 1_000_000;

@@ -676,7 +676,7 @@ fn a_list_entry_that_names_no_host_is_dropped_and_lifts_no_real_target() {
     }
 }
 
-/// RED (HIGH): an operator's list entry is read as a target's host is read. A full-width blocked
+/// A list entry is read as a target's host is read.
 #[test]
 fn a_list_entry_is_read_as_a_targets_host_is_read() {
     let full_width_ip = "\u{ff11}\u{ff10}.\u{ff19}\u{ff19}.\u{ff19}\u{ff19}.\u{ff19}\u{ff19}";

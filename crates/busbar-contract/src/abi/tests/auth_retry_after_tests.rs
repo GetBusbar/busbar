@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! An IdP's `Retry-After` on a LOGIN_OUTAGE (owner-signed 2026-10-30, OWNER-QUEUE.md item "IdP
+//! An identity provider's `Retry-After` on a `LOGIN_OUTAGE` answer.
 
 use super::{retry_after_extensions, retry_after_of, retry_after_secs, EXT_RETRY_AFTER};
 use crate::abi::mechanism::extensions;
