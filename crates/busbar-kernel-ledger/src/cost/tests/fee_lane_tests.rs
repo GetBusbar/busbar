@@ -4,7 +4,7 @@
 //! ONE FEE-LANE RESOLUTION (#44, #47): the settlement lookup (`price_at_card`) and the one
 
 use crate::cost::{
-    compose_plane_cards, plane_fee_lane, price_at_card, price_fail_closed, HistorySeq, LaneClass,
+    compose_plane_cards, plane_fee_lane, price_at_card, price_fail_closed, EntryKey, LaneClass,
     PlaneFees, Posting, Quantity, RateCard, Tally, TierRates, NANOS_PER_CENT, PER_REQUEST,
     PER_SESSION, STANDARD_TIER_BP,
 };
@@ -92,7 +92,7 @@ fn a_fee_lane_on_a_present_plane_card_prices_the_same_on_settlement_and_on_every
     let expected = (4 * 3 + 40) * NANOS_PER_CENT;
 
     assert_eq!(tallied(&card, &p), Ok(expected), "the accumulator's figure");
-    let priced = price_at_card(HistorySeq::OPENING, &card, &p).expect("the lookup answers");
+    let priced = price_at_card(EntryKey::new(0, [0; 8], 0), &card, &p).expect("the lookup answers");
     assert!(
         !priced.lane_unpriced,
         "a plane's fee lane is not a lane its card forgot"
@@ -126,7 +126,7 @@ fn a_fee_lane_on_an_absent_plane_card_shows_the_fee_it_bills() {
     let p = posting(plane_fee_lane("s"), &[(PER_REQUEST, 5)], 0);
     let expected = 5 * 2 * NANOS_PER_CENT;
     assert_eq!(tallied(&card, &p), Ok(expected));
-    let priced = price_at_card(HistorySeq::OPENING, &card, &p).expect("the lookup answers");
+    let priced = price_at_card(EntryKey::new(0, [0; 8], 0), &card, &p).expect("the lookup answers");
     assert_eq!(priced.priced_nanos, expected);
     let line = priced
         .lines
@@ -147,7 +147,8 @@ fn a_stray_class_on_a_fee_lane_still_refuses_and_an_ordinary_lane_is_untouched()
         tallied(&card, &stray),
         Err(crate::cost::MoneyError::ClassUnpriced { .. })
     ));
-    let priced = price_at_card(HistorySeq::OPENING, &card, &stray).expect("the read posture");
+    let priced =
+        price_at_card(EntryKey::new(0, [0; 8], 0), &card, &stray).expect("the read posture");
     assert!(priced
         .lines
         .iter()
@@ -160,7 +161,7 @@ fn a_stray_class_on_a_fee_lane_still_refuses_and_an_ordinary_lane_is_untouched()
     );
     let expected = 2 * 7_000 + 2 * 3 * NANOS_PER_CENT;
     assert_eq!(tallied(&card, &served), Ok(expected));
-    let priced = price_at_card(HistorySeq::OPENING, &card, &served).expect("priced");
+    let priced = price_at_card(EntryKey::new(0, [0; 8], 0), &card, &served).expect("priced");
     assert_eq!(priced.priced_nanos, expected);
     assert!(!priced.lane_unpriced);
 }

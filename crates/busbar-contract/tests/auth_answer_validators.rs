@@ -580,7 +580,7 @@ fn a_style_decl_flag_outside_the_vocabulary_is_fault() {
     );
 }
 
-/// RED (arch-audit u29 F1): a style STATES where its token endpoint is — the provider entry's
+/// A style declaration states its token endpoint and list rank.
 #[test]
 fn a_style_decl_states_its_token_endpoint_and_its_list_rank() {
     let head = POINT_HEAD;
@@ -603,7 +603,7 @@ fn a_style_decl_states_its_token_endpoint_and_its_list_rank() {
     assert_eq!(ranked(255), STYLE_RANK_MASK);
 }
 
-/// RED (arch-audit u29 F1): a style takes its token endpoint from ONE place: both endpoint bits
+/// A style declaration with both token endpoint flags faults.
 #[test]
 fn a_style_decl_stating_both_token_endpoints_is_fault() {
     assert_eq!(
@@ -949,7 +949,7 @@ fn a_target_is_a_span_in_the_buffer_or_absent() {
     }
 }
 
-/// RED (arch-audit u29 F1): THE ONE ORDER the host lists the outbound styles a provider's `auth:`
+/// Style declarations list ranked entries first, then registration order.
 #[test]
 fn the_declared_styles_list_ranked_first_then_in_registration_order() {
     use busbar_contract::auth_calls::{listed_styles, DeclaredStyle};

@@ -510,13 +510,10 @@ pub(crate) fn linked_source(
     out.push_str("],\n");
     for (axis, field, item) in AXES {
 
-        if *field == "stores" {
+        if matches!(*field, "stores" | "protocols") {
             continue;
         }
 
-        if *field == "protocols" {
-            out.push_str("    #[cfg(test)]\n");
-        }
         out.push_str(&format!("    {field}: &["));
         for ((e, axes), door) in linked.iter().zip(&doors) {
             if !axes.iter().any(|x| x == axis) {

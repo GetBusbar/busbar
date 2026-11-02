@@ -33,7 +33,7 @@
 //!    no stage-projection presence bit (1.5.5's `stage: None`).
 //! 5. [`DecideIn`] gains the OLD `HookContext` (`budget_remaining` + presence,
 //!    `budget: *const `[`BudgetBucketState`]).
-//! 6. **Zero-copy body, no kernel-built JSON (owner rule, ruling 3 of the shared mechanism).**
+//! 6. **Zero-copy body, no kernel-built JSON.**
 //!    [`PromptView::body`] is the RAW origin-dialect request bytes
 //!    ([`super::mechanism::call::BLOB_OCTETS`]), not kernel-flattened JSON; the SDK/plugin parses
 //!    its own dialect. [`TransformOut`]'s rewrite bytes are likewise plugin-produced dialect bytes
@@ -55,10 +55,10 @@
 //!     ([`MARK_WORD_HOOK`](crate::abi::mechanism::door::MARK_WORD_HOOK)): STATIC, a Statement fact.
 //!
 //!
-//! **OFF-WORKER (OWNER RULING, decided 2026-09-27, abi-brief.md section 4 item 1):** every hook call
+//! **OFF-WORKER:** every hook call
 //! (`decide`/`transform`/`notify`/`configure`/`status`/`describe`/`serve`) runs OFF the request's
 //! own worker thread, never inline on it — the 1.5.5 `spawn_blocking` + hard-timeout parity this
-//! ruling keeps (`dlopen_decide_deadline_cuts_off_a_slow_gate`,
+//! behavior preserves (`dlopen_decide_deadline_cuts_off_a_slow_gate`,
 //! `dlopen_slow_gate_hits_the_deadline`): a hook that sleeps or spins loses only its own call, not
 //! its worker's other in-flight requests. Each op's contract doc below repeats this so a plugin
 //! author reads it at the op, not only here; it constrains M1's dispatch (M3-wire), not a shape in

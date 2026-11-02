@@ -1062,15 +1062,6 @@ pub async fn resolve_transport_for_test(
         .is_some()
 }
 
-#[cfg(test)]
-pub async fn await_transport_published(
-    name: &str,
-    hook: &crate::config::HookCfg,
-    env: &HookEnv,
-) -> bool {
-    crate::test_support::hooks::await_transport_published(name, hook, env).await
-}
-
 pub async fn fetch_status(
     name: &str,
     hook: &crate::config::HookCfg,

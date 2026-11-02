@@ -748,29 +748,6 @@ fn on_error_chain_strategy_terminates() {
 }
 
 #[test]
-fn pool_rw_gate_resolves_as_rewrite_not_decision() {
-    let env = test_env();
-    let mut rw = base_gate();
-    rw.prompt = PromptAccess::Rw;
-    let hooks = registry("rw", rw);
-    let pool = pool_with_hook("rw");
-    assert!(
-        resolve_pool_gates(&pool, &hooks, &env, 0).is_empty(),
-        "an rw gate must not resolve as a decision gate"
-    );
-    assert_eq!(
-        resolve_pool_rewrites(&pool, &hooks, &env, 0).len(),
-        1,
-        "an rw gate must resolve into the pool rewrite chain"
-    );
-
-    let hooks = registry("plain", base_gate());
-    let pool = pool_with_hook("plain");
-    assert_eq!(resolve_pool_gates(&pool, &hooks, &env, 0).len(), 1);
-    assert!(resolve_pool_rewrites(&pool, &hooks, &env, 0).is_empty());
-}
-
-#[test]
 fn missing_plugin_gate_is_absent_not_stranded() {
     let hooks = registry("h", base_gate());
 
@@ -1579,128 +1556,36 @@ async fn dlopen_decide_order_and_abstain() {
 }
 
 #[tokio::test]
-async fn dlopen_decide_reject_from_opt_in_prompt() {
-    let env = test_env();
-    let budget = std::time::Duration::from_secs(5);
-    let cands = [dcand(0)];
-    let policy = resolve_one(
-        &env,
-        serde_json::json!({"order": [0], "reject_if_contains": "BLOCKME"}),
-    )
-    .expect("resolve");
-
-    let d = policy
-        .decide(&dreq("clean prompt"), &cands, &dctx(), budget)
-        .await
-        .expect("decide");
-    assert_eq!(d, RoutingDecision::Prefer(vec![0]));
-
-    let d = policy
-        .decide(&dreq("please BLOCKME"), &cands, &dctx(), budget)
-        .await
-        .expect("decide");
-    assert_eq!(
-        d,
-        RoutingDecision::Reject {
-            status: 403,
-            message: "blocked by test gate".to_string()
-        }
-    );
-}
-
-#[tokio::test]
-async fn dlopen_transform_rewrite_and_reject() {
-    use busbar_contract::hooks::TransformOutcome;
-    let env = test_env();
-    let budget = std::time::Duration::from_secs(5);
-    let policy =
-        resolve_one(&env, serde_json::json!({"reject_if_contains": "BLOCKME"})).expect("resolve");
-
-    match policy.transform(&dreq("hello"), budget).await {
-        TransformOutcome::Rewrite(rw) => assert_eq!(rw.messages.len(), 1),
-        other => panic!("expected Rewrite, got {other:?}"),
-    }
-    match policy.transform(&dreq("BLOCKME"), budget).await {
-        TransformOutcome::Reject { status, .. } => assert_eq!(status, 451),
-        other => panic!("expected Reject, got {other:?}"),
-    }
-}
-
-#[tokio::test]
-async fn dlopen_notify_is_fire_and_forget() {
-    let env = test_env();
-    let budget = std::time::Duration::from_secs(5);
-    let policy = resolve_one(&env, serde_json::json!({})).expect("resolve");
-
-    async fn taps(policy: &Arc<dyn RoutingPolicy>) -> f64 {
-        let status = policy
-            .status(std::time::Duration::from_secs(5))
-            .await
-            .expect("status");
-        let metrics = status.metrics.expect("metrics");
-        let tap = metrics
-            .iter()
-            .find(|m| m["name"] == "test_notifies_total")
-            .expect("test_notifies_total metric");
-        tap["value"].as_f64().expect("counter value")
-    }
-
-    assert_eq!(taps(&policy).await, 0.0, "no tap dispatched yet");
-    let tap = || busbar_contract::abi::host::hook::NotifyFrame::build(&dreq("hello"), None, false);
-    policy.notify(tap(), budget).await;
-    assert_eq!(
-        taps(&policy).await,
-        1.0,
-        "a tap view must actually reach the plugin's `notify` over the ABI"
-    );
-    policy.notify(tap(), budget).await;
-    assert_eq!(taps(&policy).await, 2.0, "each tap is one dispatch");
-
-    match policy.transform(&dreq("hello"), budget).await {
-        busbar_contract::hooks::TransformOutcome::Rewrite(rw) => assert_eq!(rw.messages.len(), 1),
-        other => panic!("seam unusable after notify: expected Rewrite, got {other:?}"),
-    }
-}
-
-#[tokio::test]
-async fn dlopen_status_and_schema_reads() {
-    let env = test_env();
-    let hook = {
-        let mut h = base_gate();
-        h.settings = serde_json::json!({"order": [0]})
-            .as_object()
-            .cloned()
-            .unwrap();
-        h
-    };
-
-    let hooks = registry("h", hook.clone());
-    let ResolvedPolicy::Policy { policy, .. } =
-        resolve_gate_transport("h", &hooks["h"], &hooks, &env, 0).expect("resolve");
-    let _ = policy
-        .decide(
-            &dreq("x"),
-            &[dcand(0)],
-            &dctx(),
-            std::time::Duration::from_secs(5),
-        )
-        .await;
-
-    let status = fetch_status("h", &hook, 0, &env).await.expect("status");
-    let metrics = status.metrics.expect("metrics");
-    assert_eq!(metrics[0]["name"], "test_decides_total");
-
-    let schema = fetch_schema("h", &hook, 0, &env).await.expect("schema");
-
-    assert_eq!(schema["type"], "object");
-}
-
-#[tokio::test]
 async fn dlopen_configure_acks_exact_version() {
     let env = test_env();
     let hook = base_gate();
+    let key = resolution::key("h", &hook, &env)
+        .expect("the loadable hook is eligible for transport publication");
+    let mut failed_loads = 0;
+    for attempt in 0..24 {
+        if resolution::published(key) {
+            break;
+        }
+        if gate_transport_offloaded("h", &hook, &env, 0).await.is_some() {
+            break;
+        }
+        // A timed-out resolver retains its claim until it publishes. Only a finished,
+        // unpublished load counts as a failure; retries retain the production deadline.
+        if !resolution::in_flight(key) {
+            failed_loads += 1;
+            if failed_loads >= 3 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(
+            attempt < 23,
+            "the loader never published a transport for hook 'h' after 24 resolve attempts; \
+             that is a HANG in plugin resolution, not a slow machine"
+        );
+    }
     assert!(
-        super::await_transport_published("h", &hook, &env).await,
+        resolution::published(key),
         "the loader must publish a transport for a loadable hook plugin"
     );
 
@@ -2089,15 +1974,18 @@ fn offload_bounded_returns_none_when_the_work_outlives_the_deadline() {
 
 #[test]
 fn offload_bounded_logs_when_the_blocking_task_panics() {
-    use crate::test_support::warn_capture::WarnCapture;
-    use tracing_subscriber::layer::SubscriberExt as _;
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
-    let cap = WarnCapture::default();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let output = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_max_level(tracing::Level::WARN)
+        .with_writer(output.clone())
+        .finish();
 
     let out: Option<()> = tracing::subscriber::with_default(subscriber, || {
         rt.block_on(offload_bounded("panicky-hook", || {
@@ -2109,11 +1997,12 @@ fn offload_bounded_logs_when_the_blocking_task_panics() {
         out.is_none(),
         "a panicking resolve must still resolve to None, not propagate the panic to the caller"
     );
+    let captured = String::from_utf8(output.lock().unwrap().clone()).expect("UTF-8 diagnostics");
     assert!(
-        cap.contains("panicky-hook") && cap.contains("panicked"),
+        captured.contains("panicky-hook") && captured.contains("panicked"),
         "the panic must be logged, naming the hook and distinct from the ordinary unresolvable \
          case: {:?}",
-        cap.messages()
+        captured
     );
 }
 

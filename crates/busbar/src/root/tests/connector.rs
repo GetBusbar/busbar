@@ -10,6 +10,26 @@ fn judge() -> Arc<dyn busbar_kernel::host_services::DestJudge> {
 #[cfg(linked_axis_transport_door)]
 #[test]
 fn the_process_has_one_connector_and_every_path_takes_it() {
+    const CHILD: &str = "BUSBAR_TEST_CONNECTOR_SINGLETON_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
+            .args([
+                "--exact",
+                "root::connector::tests::the_process_has_one_connector_and_every_path_takes_it",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .expect("the isolated connector test starts");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success() && stdout.contains("1 passed; 0 failed"),
+            "the isolated singleton test must run and pass: {}\n{stdout}\n{stderr}",
+            output.status
+        );
+        return;
+    }
     let doors = crate::LINKED_TRANSPORT_DOORS;
     assert!(!doors.is_empty(), "this build links a transport door");
     let built = process::build_with_secrets(
@@ -161,7 +181,7 @@ fn operator_infrastructure_refuses_metadata_even_when_carved_out() {
 #[test]
 fn a_reload_that_removes_a_carve_out_refuses_the_next_dial() {
     let _registry = busbar_kernel_testkit::test_support::planes::TestRegistryIsolation::seeded(&[
-        busbar_kernel_testkit::test_support::neutral_fallback_plane(),
+        crate::root::test_plane_registry::fallback(),
     ]);
     let boot = deployment(
         &[],
@@ -191,7 +211,7 @@ fn a_reload_that_removes_a_carve_out_refuses_the_next_dial() {
 fn a_reload_that_changes_the_allowlist_changes_nothing() {
     use busbar_contract::abi::host::service::DEST_INTERNAL;
     let _registry = busbar_kernel_testkit::test_support::planes::TestRegistryIsolation::seeded(&[
-        busbar_kernel_testkit::test_support::neutral_fallback_plane(),
+        crate::root::test_plane_registry::fallback(),
     ]);
     let private_a = vec!["10.0.0.5".parse().unwrap()];
     let private_b = vec!["10.0.0.9".parse().unwrap()];

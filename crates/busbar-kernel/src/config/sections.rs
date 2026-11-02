@@ -58,8 +58,8 @@ pub struct SecurityCfg {
 /// The top-level `store:` block: the durable store as `{ module, settings }` - the same
 /// module/settings shape as every other plugin instance. `settings` is the store module's OWN
 /// config, passed through verbatim (the built-in sqlite plugin reads `db_path` /
-/// `busy_timeout_ms`; postgres/valkey read `url`). REQUIRED (owner ruling Q-STORE = (B),
-/// 2026-09-27): exactly one store resolves, from config — a config with no `store:` block is refused
+/// `busy_timeout_ms`; postgres/valkey read `url`). Required: exactly one store resolves
+/// from config — a config with no `store:` block is refused
 /// with [`store_required`], and no linked row stands in as a default.
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)]

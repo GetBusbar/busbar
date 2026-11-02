@@ -883,7 +883,7 @@ fn guarded(blocked: &[&str]) -> std::sync::Arc<dyn busbar_core_connector::DialJu
     )
 }
 
-/// RED (a plaintext private plugin registry): 1.5.5's download took plaintext http to a loopback or
+/// A plaintext private registry downloads under the default guard.
 #[test]
 fn a_plaintext_private_registry_downloads_under_the_default_guard() {
     let (got, _) = fetch_once_over(

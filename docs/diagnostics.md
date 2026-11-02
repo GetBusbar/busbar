@@ -793,6 +793,17 @@ An update_key request body did not parse as valid JSON, so busbar returns a gene
 
 **What to do:** None — self-heals; the client must send well-formed JSON. Persistent volume from one caller indicates a broken client worth fixing.
 
+<a id="credential-invalid-bytes"></a>
+### BUSBAR-4030 — Auth credential contains invalid header bytes (credential header omitted)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `credential-invalid-bytes`
+
+A credential under a scheme configured with a credential-family table contains bytes invalid in an HTTP header value (for example a trailing newline), so the plugin omits the credential header. This also applies when no family prefix matches. It is raised on each request that would have carried the header, naming the protocol and the header; an unpresentable own credential is also logged once at open.
+
+**What to do:** Fix the credential's configured value (strip the control character, often a trailing newline from a file or env source). Requests omit the credential until it is fixed and may be refused by the upstream.
+
 ## 5xxx — Proxy & routing
 
 <a id="usage-tap-reassembly-cap-exceeded"></a>
@@ -1823,13 +1834,13 @@ The collector answered an OTLP export with a non-2xx status, so that batch of sp
 **What to do:** Check the collector's health and that the configured `url` path and credentials are accepted; the line names the status.
 
 <a id="otlp-export-transport-failure"></a>
-### BUSBAR-7142 — OTLP export failed in transport (batch dropped)
+### BUSBAR-7142 — OTLP export could not be delivered (batch dropped)
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `otlp-export-transport-failure`
 
-An OTLP export did not reach the collector (connection, timeout, DNS or TLS failure), so that batch of spans was dropped (exports are not retried).
+An OTLP export could not be delivered because framing, connector admission or transport failed, so that batch of spans was dropped (exports are not retried). A refusal after the initial admission verdict does not change that verdict.
 
 **What to do:** Check the collector's reachability from the busbar host and the configured `url`; the line names the error.
 
@@ -1854,6 +1865,28 @@ The collector accepted an OTLP export but its partial_success reply rejected som
 A line of the traces stream was not exported because it is not JSON or carries no span identity (trace and span ids), so that span is missing from the collector.
 
 **What to do:** Check what writes the traces stream; every record must be a JSON object with trace and span ids.
+
+<a id="otlp-collector-warning"></a>
+### BUSBAR-7145 — OTLP collector feedback needs attention
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `otlp-collector-warning`
+
+The collector accepted an OTLP export but returned a partial-success warning, or its malformed or oversized reply left partial-success details unavailable. An unreadable reply does not establish how many spans were accepted or rejected.
+
+**What to do:** Read the warning and check the collector's response format and health. If it reports a partial-success message, fix what it warns about, such as span age or attributes.
+
+<a id="ranking-configure-refused"></a>
+### BUSBAR-7150 — Ranking hook settings push refused (live strategy unchanged)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `ranking-configure-refused`
+
+A settings push at the last applied version or a newer version was refused (an unknown key, a non-string `policy`, a strategy word the hook does not claim, or an invalid `expected_units` map), so the push was NACKed and the hook keeps ranking by the strategy it already had. The reason is in the line. Older versions are acknowledged without validation, application or logging.
+
+**What to do:** Fix the named hook's settings (`policy` is one of cheapest, fastest, least_busy, usage; optional `expected_units` maps class names to finite non-negative numbers) and push the corrected configuration.
 
 ## 8xxx — Governance & cost
 

@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-#[cfg(test)]
-extern crate self as busbar_core_admin;
-#[cfg(test)]
-#[path = "../../busbar-core-admin-testkit/src/restart.rs"]
-mod restart_fixture;
-
 pub mod admin_state;
 pub mod keys;
 pub mod restart;

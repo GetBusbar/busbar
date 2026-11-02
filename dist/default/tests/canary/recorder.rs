@@ -490,7 +490,9 @@ fn on_op(
             }
         }
     } else {
-        real(instance, input, out)
+        // SAFETY: this trampoline forwards the caller's instance and slot-specific input/output
+        // loans unchanged to the same real ABI slot whose table entry it replaced.
+        unsafe { real(instance, input, out) }
     };
 
     quietly(|| {
@@ -539,7 +541,9 @@ fn on_ready(w: usize, instance: *mut c_void, input: *const c_void, out: *mut c_v
     let real = wr.real_ready.expect("a wrapped ready was present");
     quietly(|| call(&wr.label, "op:ready".into()));
     if input.is_null() {
-        return real(instance, input, out);
+        // SAFETY: forward the ready caller's unchanged arguments, including its null input,
+        // to the real ready callback; the recorder adds no dereference on this path.
+        return unsafe { real(instance, input, out) };
     }
     // SAFETY: as `open`: the `in` is sized by its head and `host` sits at its fixed offset.
     unsafe {
@@ -811,7 +815,9 @@ fn on_svc(
             }
         }
     });
-    let answer = real(ctx, input, out);
+    // SAFETY: the plugin supplied these loans for this exact host service slot. The recorder
+    // forwards its original context and buffers unchanged to the loader's real callback.
+    let answer = unsafe { real(ctx, input, out) };
 
     quietly(|| {
         if family != SERVICES

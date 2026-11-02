@@ -14,7 +14,6 @@ use busbar_kernel::governance::signing::{TokenSigner, DEFAULT_KID};
 use busbar_kernel::governance::{GovState, NewKeySpec};
 use busbar_kernel::hooks::ResolvedPolicy;
 use busbar_kernel::plane_driver::{EndPost, PlaneMoney};
-use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::planes_tests::{composed_services, PUBLISHING};
@@ -67,18 +66,10 @@ pub(super) fn pools_door() -> busbar_contract::abi::mechanism::door::DoorFn {
 }
 
 pub(super) fn install_door_seams() {
-    static ROW: std::sync::OnceLock<&'static busbar_kernel::plane_driver::registry::PlaneDecl> =
-        std::sync::OnceLock::new();
     for decls in crate::LINKED.protocols {
         busbar_kernel_testkit::test_support::protocols::register_test_protocols(decls);
     }
-    let row = ROW.get_or_init(|| {
-        use crate::root::loader::dispatch::kinds::plane::{linked_probe, registration};
-        let reg = registration(linked_probe(pools_door(), "pools-door-row"))
-            .expect("the door serving the `pools` map binds");
-        busbar_kernel::plane_driver::door::fold(reg).expect("the door folds")
-    });
-    busbar_kernel_testkit::test_support::planes::register_test_plane(row);
+    crate::root::test_plane_registry::register();
 }
 
 static CARD: std::sync::LazyLock<crate::root::kernel::RootHistory> =
@@ -878,7 +869,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
 
     let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
     let gov = Arc::new(
-        GovState::new_with_signer(Arc::new(MemoryStore::new()), None, Some(signer))
+        GovState::new_with_signer(crate::root::real_store::records(), None, Some(signer))
             .expect("governance"),
     );
     let configured = opts.group.map(|(name, limits)| {

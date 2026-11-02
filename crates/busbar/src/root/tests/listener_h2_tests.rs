@@ -6,7 +6,6 @@ use std::sync::Arc;
 
 use axum::routing::get;
 use axum::Router;
-use busbar_kernel::config::secret::SecretResolver;
 use busbar_kernel::config::sections::TlsCfg;
 use busbar_kernel::config::SecretRef;
 use rustls::pki_types::pem::PemObject;
@@ -39,7 +38,7 @@ async fn tls_listener(tls: &TlsCfg) -> (SocketAddr, tokio::sync::oneshot::Sender
     let security = busbar_core_connector::tls::prepare(
         "h2-listener",
         Some(tls),
-        &SecretResolver::builtins_only(),
+        &super::tests::tls_fixture_resolver(tls),
         true,
     )
     .expect("a valid tls: block over a capable transport");

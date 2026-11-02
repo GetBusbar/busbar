@@ -5,7 +5,7 @@
 
 use busbar_contract::caps::Usage;
 
-use crate::cost::history::{HistorySeq, HistoryView};
+use crate::cost::history::{EntryKey, HistoryView};
 use crate::cost::rate::{ClassPrice, RateCard};
 
 /// The neutral tier multiplier, in basis points: one times the price, so no tier at all.
@@ -110,7 +110,7 @@ pub struct PricedLine {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Priced {
     /// The history entry the instant resolved to.
-    pub card_seq: HistorySeq,
+    pub card_seq: EntryKey,
     /// Every priced line, in the order the posting carried them, with the fee line last.
     pub lines: Vec<PricedLine>,
     /// The sum over every line, including the fee line, in nano-units, before the tier.
@@ -152,7 +152,7 @@ pub enum Unpriceable {
     /// [`price_fail_closed`].
     LaneUnpriced {
         /// The entry that was in force.
-        card_seq: HistorySeq,
+        card_seq: EntryKey,
         /// The lane the card is silent about.
         lane: String,
     },
@@ -160,7 +160,7 @@ pub enum Unpriceable {
     /// class (#42: *"a hit class not priced ⇒ REFUSE"*), reached through [`price_fail_closed`].
     ClassUnpriced {
         /// The entry that was in force.
-        card_seq: HistorySeq,
+        card_seq: EntryKey,
         /// The lane the class was reported on.
         lane: String,
         /// The class the card is silent about.
@@ -206,7 +206,7 @@ pub fn price(view: &HistoryView<'_>, posting: &Posting) -> Result<Priced, Unpric
 
 /// The lookup with the resolution already done — the same arithmetic, reached by a caller that
 pub fn price_at_card(
-    card_seq: HistorySeq,
+    card_seq: EntryKey,
     card: &RateCard,
     posting: &Posting,
 ) -> Result<Priced, Unpriceable> {

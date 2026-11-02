@@ -7,7 +7,6 @@ use std::sync::Arc;
 use base64::Engine as _;
 use busbar_kernel::admission::{Judged, PluginAdmission as _, Refusal};
 use busbar_kernel::governance::GovState;
-use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 
 use crate::root::admission::ADMISSION;
 use crate::root::loader::sign::{sign, Manifest, SigningKey};
@@ -111,7 +110,7 @@ fn publisher_posture(name: &str, key: &SigningKey) -> busbar_kernel::config::Plu
 fn gov_with_signer(admin_token: Option<String>) -> Arc<GovState> {
     Arc::new(
         GovState::new_with_signer(
-            Arc::new(MemoryStore::new()),
+            crate::root::real_store::records(),
             admin_token,
             Some(
                 busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(

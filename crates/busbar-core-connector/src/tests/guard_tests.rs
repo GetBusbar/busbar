@@ -132,7 +132,7 @@ fn a_name_entry_never_admits_a_metadata_answer() {
     );
 }
 
-/// RED (security.md:208, "the denylist takes precedence over every private-range allowance, so
+/// A cidr allowlist entry does not admit a metadata address inside it.
 #[test]
 fn a_cidr_allowlist_entry_does_not_admit_a_metadata_address_inside_it() {
     for (entry, meta, private) in [
@@ -207,7 +207,7 @@ fn a_cidr_allowlist_entry_does_not_admit_a_metadata_address_inside_it() {
     assert_eq!(g.judge_answer("x.test", &[ip("203.0.113.8")], C), Ok(()));
 }
 
-/// RED (security.md:171, "only an IP or CIDR entry naming the address does"; :230-239, the 1.5.5
+/// An exact metadata allow entry is the documented carve out.
 #[test]
 fn an_exact_metadata_allow_entry_is_the_documented_carve_out() {
     for (entry, meta) in [
@@ -638,7 +638,7 @@ fn operator_infrastructure_is_allowed_private_and_refused_metadata_whatever_is_c
     );
 }
 
-/// RED (THE DESIGN §5 "no blocking thread exists"; resource bounds): the dial guard's name
+/// A lookup past the cap is refused at once and starts no thread.
 #[test]
 fn a_lookup_past_the_cap_is_refused_at_once_and_starts_no_thread() {
     use std::sync::atomic::AtomicUsize;

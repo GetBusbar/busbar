@@ -585,7 +585,7 @@ fn an_observing_exchange_reads_its_streams_facts_before_the_close() {
     assert_eq!(plain.runs.len(), 9, "no facts asked, none made");
 }
 
-/// RED (SEAM-4p): an exchange that names a REGISTRATION (`Exchange::as_member`) establishes its
+/// An exchange names its registration on its establish.
 #[test]
 fn an_exchange_names_its_registration_on_its_establish() {
     let _g = SERIAL
@@ -732,7 +732,7 @@ fn op_bounded(
     (answered, built.get())
 }
 
-/// RED (a plugin with a documented reply cap below `REPLY_MAX`, secret-vault's 1 MiB): an op's
+/// A bounded exchange refuses a reply above its operation's limit.
 #[test]
 fn an_ops_bounded_exchange_refuses_a_reply_over_its_limit() {
     let _g = SERIAL
@@ -886,7 +886,7 @@ fn a_limit_above_reply_max_clamps() {
     assert_eq!(req().reply_limit(7).reply_ceiling, 7);
 }
 
-/// RED (Q128, a send-once caller's leak): an exchange that FAILS after it established its stream
+/// A failed exchange closes its stream before it answers.
 #[test]
 fn a_failed_exchange_closes_its_stream_before_it_answers() {
     let _g = SERIAL
@@ -1281,7 +1281,7 @@ fn op_run(reply: Vec<Scripted>, limit: usize) -> Result<ExchangeResponse, super:
     op_bounded(reply, limit).0
 }
 
-/// RED (SV-F): an op's exchange takes the reply limit, so a source can cap a reply (a vault read
+/// An exchange uses the operation's reply limit.
 #[test]
 fn an_ops_exchange_takes_its_reply_limit() {
     let _g = SERIAL

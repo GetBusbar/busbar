@@ -144,7 +144,7 @@ pub struct DoorSection {
     /// (`PlaneRegistration::secret_refs`), each with the config path it was read at.
     refs: Vec<(String, busbar_contract::secret_ref::SecretRef)>,
     /// The refusal for the first secret reference the section holds at a position its door did
-    /// NOT declare (OWNER RULING, CHIP-REVIEW-v4 change 2), if any.
+    /// NOT declare, if any.
     undeclared: Option<String>,
 }
 

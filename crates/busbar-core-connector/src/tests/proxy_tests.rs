@@ -731,7 +731,7 @@ fn no_proxy_and_a_raw_stream_dial_direct() {
     });
 }
 
-/// RED (the proxy environment honoured "exactly as 1.5.5's reqwest clients did"): the proxy URL's
+/// The proxy credential is percent decoded before it is presented.
 #[test]
 fn the_proxy_credential_is_percent_decoded_before_it_is_presented() {
     use base64::Engine;

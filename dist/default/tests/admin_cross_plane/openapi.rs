@@ -65,14 +65,14 @@ fn render_committed_openapi() -> String {
 
 #[cfg(feature = "openapi-schema")]
 pub(crate) fn openapi_doc_seamed() -> serde_json::Value {
-    crate::ensure_seam();
+    crate::distribution::admin_cross_plane::ensure_seam();
     openapi_doc()
 }
 
 #[cfg(feature = "openapi-schema")]
 #[test]
 fn openapi_json_matches_committed_file() {
-    crate::ensure_seam();
+    crate::distribution::admin_cross_plane::ensure_seam();
     let fresh = render_committed_openapi();
     if std::env::var("UPDATE_OPENAPI").is_ok_and(|v| v == "1") {
         std::fs::write(COMMITTED_OPENAPI_PATH, &fresh)
@@ -96,8 +96,8 @@ fn openapi_json_matches_committed_file() {
 
 #[cfg(feature = "openapi-schema")]
 #[test]
-fn openapi_plane_component_schemas_are_the_committed_ones() {
-    crate::ensure_seam();
+fn openapi_rendered_component_schemas_are_the_committed_ones() {
+    crate::distribution::admin_cross_plane::ensure_seam();
     let committed: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(COMMITTED_OPENAPI_PATH).expect("read committed openapi"),
     )
@@ -105,16 +105,28 @@ fn openapi_plane_component_schemas_are_the_committed_ones() {
     let committed = committed["components"]["schemas"]
         .as_object()
         .expect("committed component schemas");
+    let actual = openapi_doc_seamed();
+    let schemas = actual["components"]["schemas"]
+        .as_object()
+        .expect("rendered component schemas");
+    assert_eq!(
+        schemas.len(),
+        committed.len(),
+        "component schema count changed"
+    );
     let mut seen = 0usize;
-    for (plane, name, schema) in busbar_core_admin_testkit::plane_component_schemas() {
+    for (name, schema) in schemas {
         assert_eq!(
-            committed.get(&name),
-            Some(&schema),
-            "plane `{plane}` registers component schema `{name}` unlike the committed openapi.json"
+            committed.get(name),
+            Some(schema),
+            "rendered component schema `{name}` differs from the committed openapi.json"
         );
         seen += 1;
     }
-    assert!(seen > 0, "no plane registered a component schema");
+    assert!(
+        seen > 0,
+        "the rendered OpenAPI document has no component schema"
+    );
 }
 
 #[cfg(feature = "openapi-schema")]

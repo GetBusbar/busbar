@@ -42,6 +42,7 @@ fn two_nodes_cannot_both_accept_corrections_beyond_the_shared_count() {
                 pool: "",
                 model: MODEL,
                 entry_era: era_now(),
+                entry_id: None,
                 card_epoch_ms: card_epoch_millis(now),
                 delta: &delta,
                 now,
@@ -62,6 +63,7 @@ fn two_nodes_cannot_both_accept_corrections_beyond_the_shared_count() {
                 pool: "",
                 model: MODEL,
                 entry_era: era_now(),
+                entry_id: None,
                 card_epoch_ms: card_epoch_millis(now),
                 delta: &delta,
                 now,
@@ -109,7 +111,7 @@ fn correction_only_hydration_registers_its_group_for_reclamation() {
     const GROUP: &str = "correction-only";
     const MODEL: &str = "m";
     const REQUEST_CAP: u64 = 1;
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new(store.clone(), None).unwrap();
     let cm = model(&[(
         GROUP,
@@ -136,6 +138,7 @@ fn correction_only_hydration_registers_its_group_for_reclamation() {
             pool: "",
             model: MODEL,
             entry_era: era_now(),
+            entry_id: None,
             card_epoch_ms: card_epoch_millis(now),
             delta: &delta,
             now,
@@ -155,7 +158,7 @@ fn correction_registers_a_second_owner_of_a_shared_legacy_bucket() {
     const ORIGINAL_POOL: &str = "p@total";
     const MODEL: &str = "m";
     const REQUEST_CAP: u64 = 1;
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new(store.clone(), None).unwrap();
     let original = model(&[(
         ORIGINAL_GROUP,
@@ -198,6 +201,7 @@ fn correction_registers_a_second_owner_of_a_shared_legacy_bucket() {
             pool: "",
             model: MODEL,
             entry_era: era_now(),
+            entry_id: None,
             card_epoch_ms: card_epoch_millis(now),
             delta: &delta,
             now,
@@ -214,7 +218,7 @@ fn correction_registers_a_second_owner_of_a_shared_legacy_bucket() {
 
 #[test]
 fn reclaiming_a_short_group_name_preserves_a_live_delimiter_named_groups_cap() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new(store, None).unwrap();
     let name = "team@day#pool:p";
     let cm = model(&[(
@@ -318,7 +322,10 @@ fn correction_hydration_preserves_an_older_inflight_eras_retry_and_group_owner()
     let gov = Arc::new(GovState::new(store.clone(), None).unwrap());
     let cm = minute_fee_model();
     let key = key("vk_era_hydrate", Some("g"));
-    let now = crate::governance::budget_window(super::super::WINDOW_MINUTE, crate::store::now());
+    let now = crate::governance::budget_window(
+        super::super::WINDOW_MINUTE,
+        crate::store::now().saturating_sub(120),
+    );
     let next = now + 60;
     let bucket = "group:g@minute";
     store.put_key(&key).unwrap();
@@ -366,6 +373,7 @@ fn correction_hydration_preserves_an_older_inflight_eras_retry_and_group_owner()
                     pool: "",
                     model: "m",
                     entry_era: era_now(),
+                    entry_id: None,
                     card_epoch_ms: card_epoch_millis(next),
                     delta: &delta,
                     now: next,

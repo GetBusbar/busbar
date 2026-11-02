@@ -475,6 +475,8 @@ extern "C" {
 /* transport */
 #define BB_TRANSPORT_EXT_ADOPTED_SESSION "session.adopted" /* An Adopt input's host-issued session reference, in the shared extensions envelope. */
 #define BB_TRANSPORT_SUPPORT_ADOPTED_SESSION "1" /* A Statement advertises this extension value when its Adopt consumes inherited sessions. */
+#define BB_TRANSPORT_EXT_PREWIRE_SESSION "session.prewire" /* Opt in to a transport-owned opening held until an explicit status-101 commit. */
+#define BB_TRANSPORT_SUPPORT_PREWIRE_SESSION "1" /* The complete value of [`EXT_PREWIRE_SESSION`]. */
 #define BB_TRANSPORT_MAX_PIECES UINT64_C(4096) /* The most frame pieces one framer answer may produce. */
 #define BB_TRANSPORT_MAX_CLAIMS UINT64_C(1024) /* The most claims one transport entry may make. */
 #define BB_TRANSPORT_MAX_ALPN_BYTES UINT64_C(65535) /* The most bytes one protocol offer may take (a TLS ProtocolNameList is at most `2^16 - 1`). */

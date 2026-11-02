@@ -353,10 +353,12 @@ mod staged_file_pin {
     use super::*;
 
     pub(super) fn two_libraries() -> (Vec<u8>, Vec<u8>) {
-        let verified = std::fs::read(crate::both_ways::example_cdylib("dispatch_test_plugin"))
+        let verified = std::fs::read(crate::both_ways::example_cdylib("json_contract_auth"))
             .expect("read the verified fixture library");
-        let other = std::fs::read(crate::both_ways::example_cdylib("neutral_frame_door"))
-            .expect("read the replacement fixture library");
+        // Only the verified image is ever allowed to load. The staged-file check must refuse
+        // these changed bytes before dlopen; an invalid-image error cannot pass assert_refused.
+        let mut other = verified.clone();
+        other[0] ^= 0xff;
         assert_ne!(verified, other, "the two fixtures must differ");
         (verified, other)
     }

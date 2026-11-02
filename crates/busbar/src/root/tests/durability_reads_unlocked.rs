@@ -52,6 +52,13 @@ fn node_over(
     )
     .expect("the store reads back");
     ready(&mut durability);
+    assert!(
+        durability
+            .lane()
+            .expect("a journal over the store")
+            .drain(std::time::Duration::from_secs(5)),
+        "the store takes the seeded records before the read probe is armed"
+    );
     let book = Arc::new(Mutex::new(durability));
     let scans = Arc::new(Scans::default());
     let (seen, held) = (Arc::clone(&scans), Arc::downgrade(&book));
@@ -112,7 +119,7 @@ fn audit_inputs(unit: u64) -> busbar_kernel_audit::AuditInputs {
             lines: Vec::new(),
             tier_bp: 10_000,
             fee_count: 0,
-            rate_card_version: 1,
+            rate_card_version: Some([1; 20]),
             bucket_chain_ref: String::new(),
         },
         controls: Controls::default(),
@@ -124,14 +131,6 @@ fn audit_inputs(unit: u64) -> busbar_kernel_audit::AuditInputs {
 fn the_verify_walk_scans_the_store_without_the_book_lock() {
     let slots = RecordSlots::new();
     let (book, scans) = node_over(&slots, |durability| seal(durability, 1));
-    assert!(
-        book.lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .lane()
-            .expect("a journal over the store")
-            .drain(std::time::Duration::from_secs(5)),
-        "the store takes the record"
-    );
     let findings = NodeAudit::new(Arc::clone(&book)).stored_chain_findings();
     assert!(findings.is_empty(), "{findings:?}");
     scans.assert_unlocked("the verify walk");

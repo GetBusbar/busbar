@@ -287,7 +287,7 @@ fn piece(kind: PieceKind, len: usize, end: bool) -> Piece {
         len,
         end,
         status: (kind == PieceKind::Fields).then_some(WireStatusClass::Success),
-        status_code: None,
+        status_code: (kind == PieceKind::Fields).then_some(200),
         status_namespace: None,
         retry_after_secs: None,
         fault: None,

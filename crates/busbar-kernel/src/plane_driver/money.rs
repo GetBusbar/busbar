@@ -29,8 +29,7 @@ pub struct UnitEnd {
     /// The far end CUT the unit's streamed answer after its head: its connection failed, or its
     /// send's deadline passed, before it completed (the driver's `cut` fact,
     /// `DriverSteps::answered`, on a unit whose caller asked for a stream). It never changes the
-    /// bill: what the plane ledgered for the unit is final, cut or not (owner ruling 2026-10-20:
-    /// "spend is what it is. if spend occurred it occurred").
+    /// bill: what the plane ledgered for the unit is final, cut or not.
     pub cut: bool,
 }
 

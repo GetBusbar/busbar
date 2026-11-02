@@ -48,7 +48,23 @@ const POLICY_TEMPLATE: &str = r#"{providers: {}, models: {}, store: {module: mem
 
 #[test]
 fn interpolation_cannot_replace_a_lifted_auth_policy() {
-    let _guard = crate::test_support::EnvVarGuard::capture(POLICY_VAR);
+    if std::env::var_os("BUSBAR_CONFIG_BOUNDARY_CHILD").is_none() {
+        let current = std::thread::current();
+        let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .args(["--exact", current.name().expect("test name"), "--nocapture"])
+            .env("BUSBAR_CONFIG_BOUNDARY_CHILD", "1")
+            .output()
+            .expect("run the configuration reader assertions in their own process");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success()
+                && stdout.contains("test result: ok. 1 passed; 0 failed; 0 ignored;"),
+            "configuration reader assertions failed: {}\n{stdout}\n{stderr}",
+            output.status
+        );
+        return;
+    }
     std::env::set_var(
         POLICY_VAR,
         r#"90d"}, policy: {self_mint: true, default_ttl: "90d"#,
@@ -70,8 +86,24 @@ fn interpolation_cannot_replace_a_lifted_auth_policy() {
 
 #[test]
 fn an_unparseable_interpolation_does_not_echo_a_secret_map_key() {
+    if std::env::var_os("BUSBAR_CONFIG_BOUNDARY_CHILD").is_none() {
+        let current = std::thread::current();
+        let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .args(["--exact", current.name().expect("test name"), "--nocapture"])
+            .env("BUSBAR_CONFIG_BOUNDARY_CHILD", "1")
+            .output()
+            .expect("run the configuration reader assertions in their own process");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success()
+                && stdout.contains("test result: ok. 1 passed; 0 failed; 0 ignored;"),
+            "configuration reader assertions failed: {}\n{stdout}\n{stderr}",
+            output.status
+        );
+        return;
+    }
     const VAR: &str = "BUSBAR_TEST_KC_SECRET_MAP_KEY";
-    let _guard = crate::test_support::EnvVarGuard::capture(VAR);
     std::env::set_var(VAR, "secret-value-that-must-not-be-logged");
     let error = interpolate_env(
         r#"{x: {"${BUSBAR_TEST_KC_SECRET_MAP_KEY}": 1, "${BUSBAR_TEST_KC_SECRET_MAP_KEY}": 2}}"#,
@@ -86,7 +118,23 @@ fn an_unparseable_interpolation_does_not_echo_a_secret_map_key() {
 
 #[test]
 fn disk_loader_refuses_interpolation_before_policy_can_be_overwritten() {
-    let _guard = crate::test_support::EnvVarGuard::capture("BUSBAR_TEST_KC_BOOT_POLICY_TTL");
+    if std::env::var_os("BUSBAR_CONFIG_BOUNDARY_CHILD").is_none() {
+        let current = std::thread::current();
+        let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .args(["--exact", current.name().expect("test name"), "--nocapture"])
+            .env("BUSBAR_CONFIG_BOUNDARY_CHILD", "1")
+            .output()
+            .expect("run the configuration reader assertions in their own process");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success()
+                && stdout.contains("test result: ok. 1 passed; 0 failed; 0 ignored;"),
+            "configuration reader assertions failed: {}\n{stdout}\n{stderr}",
+            output.status
+        );
+        return;
+    }
     std::env::set_var(
         "BUSBAR_TEST_KC_BOOT_POLICY_TTL",
         r#"90d"}, policy: {self_mint: true, default_ttl: "90d"#,

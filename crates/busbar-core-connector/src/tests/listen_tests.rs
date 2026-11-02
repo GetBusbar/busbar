@@ -593,7 +593,7 @@ fn a_stream_listener_hands_up_the_socket_as_it_arrived_under_the_cap() {
     });
 }
 
-/// RED (`BUSBAR-1.6.0.md` l.477-478): THE LISTENER'S PROTOCOL OFFER IS THE ENTRY'S
+/// A listener offers the entry's accept offer not its dial offer.
 #[test]
 fn a_listener_offers_the_entrys_accept_offer_not_its_dial_offer() {
     let door = TestDoor::new(
@@ -625,7 +625,7 @@ fn a_listener_offers_the_entrys_accept_offer_not_its_dial_offer() {
     );
 }
 
-/// RED (`BUSBAR-1.6.0.md` l.477-478): AN ENTRY THAT STATES NO ACCEPT OFFER
+/// A listener whose entry states no accept offer offers the transport's list.
 #[test]
 fn a_listener_whose_entry_states_no_accept_offer_offers_the_transports_list() {
     let door = TestDoor::new(
@@ -777,7 +777,7 @@ fn an_accepting_framers_agreed_protocol_is_read_back_against_the_listeners_offer
     });
 }
 
-/// RED (T1, tcp TT1): A RETIRED LISTENER IS UNBOUND WHEN IT IS DROPPED. A listener bound through a
+/// A dropped listener stops accepting at once.
 #[test]
 fn a_dropped_listener_stops_accepting_at_once() {
     worker().block_on(async {

@@ -155,7 +155,7 @@ async fn through_final_gate_identity(
 
 #[tokio::test]
 async fn ticket_preflight_skips_the_chain_and_only_the_final_gate_spends_it() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let gov = signing_gov();
     let now = crate::store::now();
     let (id, _) = minted(&gov, now + 3600, now);
@@ -167,7 +167,8 @@ async fn ticket_preflight_skips_the_chain_and_only_the_final_gate_spends_it() {
     for _ in 0..2 {
         let original = bearer(&ticket);
         let answer = k
-            .call(MESSAGES, UnitRef::NONE, POINT_HEAD, original.clone())
+            .call_async(MESSAGES, UnitRef::NONE, POINT_HEAD, original.clone())
+            .await
             .unwrap();
         assert_eq!(
             answer.flow, FLOW_CONTINUE,
@@ -193,7 +194,8 @@ async fn ticket_preflight_skips_the_chain_and_only_the_final_gate_spends_it() {
     }
     let original = bearer(&ticket);
     let answer = k
-        .call(MESSAGES, UnitRef::NONE, POINT_HEAD, original.clone())
+        .call_async(MESSAGES, UnitRef::NONE, POINT_HEAD, original.clone())
+        .await
         .unwrap();
     assert_eq!(
         answer.flow, FLOW_CONTINUE,
@@ -214,8 +216,69 @@ async fn ticket_preflight_skips_the_chain_and_only_the_final_gate_spends_it() {
         gov.admit_ticket("tk_", &ticket, now).is_none(),
         "the final gate spent exactly once"
     );
-    assert_eq!(spend(&k, bearer(&ticket)).0, FLOW_STOP);
+    assert_eq!(
+        k.call_async(MESSAGES, UnitRef::NONE, POINT_HEAD, bearer(&ticket))
+            .await
+            .unwrap()
+            .flow,
+        FLOW_STOP
+    );
     assert_eq!(earlier.calls(), 0);
+}
+
+async fn ticket_callers_leave_the_reactor_live_during_store_waits(ops: &[&'static str]) {
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
+    for &op in ops {
+        let (gov, id, ticket, release, entered) =
+            crate::governance::GovState::paused_ticket_for_test(op, crate::store::now());
+        let earlier = Script::new(AuthPoints::HEAD, Verified::Reject, Vec::new());
+        let k = ticket_kit(&gov, Arc::clone(&earlier));
+        let original = bearer(&ticket);
+        let mut preflight =
+            Box::pin(k.call_async(MESSAGES, UnitRef::NONE, POINT_HEAD, original.clone()));
+        let entered = if op == "live" {
+            assert!(futures::poll!(&mut preflight).is_pending());
+            entered.await.unwrap();
+            assert!(release.is_busy());
+            tokio::spawn(async {}).await.unwrap();
+            release.release();
+            None
+        } else {
+            Some(entered)
+        };
+        let answer = preflight.await.unwrap();
+        assert_eq!(answer.flow, FLOW_CONTINUE);
+        assert_eq!(earlier.calls(), 0);
+        let sanitized = original.stripped(&answer.strips).unwrap();
+        assert_eq!(
+            k.hand_in(MESSAGES, MESSAGES, answer.unit, sanitized.clone())
+                .0,
+            FLOW_CONTINUE
+        );
+        let receipt = k.inbound.claim_request(OWNER, 1, 1, &sanitized).unwrap();
+        let mut admitted = Box::pin(through_final_gate_identity(&k, receipt, &sanitized));
+        if let Some(entered) = entered {
+            assert!(futures::poll!(&mut admitted).is_pending());
+            entered.await.unwrap();
+            assert!(release.is_busy());
+            tokio::spawn(async {}).await.unwrap();
+            release.release();
+        }
+        assert_eq!(admitted.await, (200, Some(b"record".to_vec()), Some(id)));
+        assert!(gov
+            .admit_ticket("tk_", &ticket, crate::store::now())
+            .is_none());
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ticket_preflight_leaves_the_reactor_live_during_store_waits() {
+    ticket_callers_leave_the_reactor_live_during_store_waits(&["live"]).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ticket_final_auth_leaves_the_reactor_live_during_store_waits() {
+    ticket_callers_leave_the_reactor_live_during_store_waits(&["get"]).await;
 }
 
 #[test]
@@ -600,6 +663,38 @@ fn line_ids(n: u64) -> Vec<u64> {
 }
 
 impl Kit {
+    async fn call_async(
+        &self,
+        path: &str,
+        unit: UnitRef,
+        point: u32,
+        head: Head,
+    ) -> Result<Answer, &'static str> {
+        let (sent, received) = tokio::sync::oneshot::channel();
+        let answer = self.inbound.auth_call(
+            Call {
+                owner: OWNER,
+                generation: GEN,
+                auth: self.id(path),
+                unit,
+                point,
+                conn: 1,
+                stream: 1,
+                framing: 1,
+                head,
+                body: (point == POINT_HEAD_BODY).then(|| b"{}".to_vec()),
+                deadline: None,
+            },
+            Box::new(move |answer| {
+                let _ = sent.send(answer);
+            }),
+        );
+        match answer {
+            Some(answer) => answer,
+            None => received.await.expect("the asynchronous auth call answers"),
+        }
+    }
+
     fn id(&self, path: &str) -> u64 {
         self.inbound.specs(OWNER, GEN).expect("installed")[self.line(path) as usize].auth
     }
@@ -1855,7 +1950,7 @@ fn signing_gov() -> Arc<crate::governance::GovState> {
     );
     let gov = Arc::new(
         crate::governance::GovState::new_with_signer(
-            Arc::new(crate::governance::MemoryStore::new()),
+            crate::real_store::store(),
             Some("admintok".to_string()),
             Some(signer),
         )
@@ -2087,6 +2182,12 @@ fn signed_call(k: &Kit, head: Head) -> Answer {
         .expect("answered")
 }
 
+async fn signed_call_async(k: &Kit, head: Head) -> Answer {
+    k.call_async(MESSAGES, UnitRef::NONE, POINT_HEAD_BODY, head)
+        .await
+        .expect("answered")
+}
+
 fn declared_signed_ticket_kit(
     gov: &Arc<crate::governance::GovState>,
     reader: Arc<Script>,
@@ -2127,7 +2228,7 @@ fn declared_signed_ticket_kit(
 
 #[tokio::test]
 async fn a_declared_signed_identity_preempts_ticket_and_plugins_through_the_final_gate() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     for valid_ticket in [true, false] {
         let gov = signing_gov();
         let now = crate::store::now();
@@ -2200,7 +2301,7 @@ async fn a_declared_signed_identity_preempts_ticket_and_plugins_through_the_fina
 
 #[tokio::test]
 async fn a_signed_pass_reaches_ticket_once_but_a_signed_refusal_never_does() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     for verdict in [
         Verified::Pass,
         Verified::Reject,
@@ -2233,7 +2334,7 @@ async fn a_signed_pass_reaches_ticket_once_but_a_signed_refusal_never_does() {
             ],
             None,
         );
-        let answer = signed_call(&k, head.clone());
+        let answer = signed_call_async(&k, head.clone()).await;
         assert_eq!(reader.calls(), 1);
         assert_eq!(earlier.calls(), 0);
         assert_eq!(answer.flow, if pass { FLOW_CONTINUE } else { FLOW_STOP });
@@ -2260,7 +2361,7 @@ async fn a_signed_pass_reaches_ticket_once_but_a_signed_refusal_never_does() {
 async fn signed_receipt_replay_is_claimed_only_at_final_admission_and_ticket_stays_unspent() {
     use busbar_contract::store_calls::StoreDoor;
 
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let opened = crate::test_support::store_axis_stand_in()
         .open(
             StoreDoor::Linked(crate::test_support::store_double::door),
@@ -2324,7 +2425,7 @@ async fn signed_receipt_replay_is_claimed_only_at_final_admission_and_ticket_sta
         "cancelled waiting head invokes no reader"
     );
     for status in [200, 401] {
-        let answer = signed_call(&k, head.clone());
+        let answer = signed_call_async(&k, head.clone()).await;
         assert_eq!(answer.flow, FLOW_CONTINUE, "preflight never claims replay");
         let sanitized = head.stripped(&answer.strips).unwrap();
         assert_eq!(
@@ -2934,7 +3035,7 @@ fn continuations_allow_only_original_bytes_and_declared_partial_stripping() {
 #[tokio::test]
 async fn a_host_receipt_forwards_only_the_verifiers_credential_through_the_opaque_reference() {
     use tower::ServiceExt as _;
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     for (carrier, verified) in [
         ("query", Some("query-verified")),
         ("custom", Some("custom-verified")),

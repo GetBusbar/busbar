@@ -274,6 +274,29 @@ async fn tool_door_a_program_members_env_gone_by_an_apply_reaches_the_caller_wit
         "served while it resolves: {}",
         String::from_utf8_lossy(&body)
     );
+    let first: serde_json::Value = serde_json::from_slice(&body).expect("the initial tool reply");
+    assert_ne!(
+        first["result"]["isError"], true,
+        "the initial program call succeeded: {first}"
+    );
+    assert!(
+        first["result"]["content"][0]["text"]
+            .as_str()
+            .is_some_and(|text| text.starts_with("from the server ")),
+        "the initial call reached the actual child: {first}"
+    );
+    let facts = |reply: &serde_json::Value| {
+        reply["result"]["content"][0]["text"]
+            .as_str()
+            .expect("the child result")
+            .split_ascii_whitespace()
+            .filter_map(|word| word.split_once('='))
+            .map(|(key, value)| (key.to_owned(), value.to_owned()))
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    let before = facts(&first);
+    assert!(before["pid"].parse::<u32>().is_ok_and(|pid| pid > 0));
+    assert_eq!(before["calls"], "1");
     std::env::remove_var(&var);
     refused_naming_its_source(&secret);
     rig.live.apply(&rig.app);
@@ -284,6 +307,18 @@ async fn tool_door_a_program_members_env_gone_by_an_apply_reaches_the_caller_wit
         String::from_utf8_lossy(&body).contains("from the server"),
         "the member is served by the program spawned while its reference resolved"
     );
+    let second: serde_json::Value =
+        serde_json::from_slice(&body).expect("the post-apply tool reply");
+    assert_ne!(
+        second["result"]["isError"], true,
+        "the retained child served: {second}"
+    );
+    let after = facts(&second);
+    assert_eq!(
+        after["pid"], before["pid"],
+        "the same actual child survived apply"
+    );
+    assert_eq!(after["calls"], "2", "the retained child handled both calls");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

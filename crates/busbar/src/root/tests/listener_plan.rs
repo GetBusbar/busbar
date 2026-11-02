@@ -968,7 +968,6 @@ async fn a_kernel_keys_listener_prepares_and_keeps_real_key_verification() {
     use busbar_kernel::governance::signing::{TokenSigner, DEFAULT_KID};
     use busbar_kernel::governance::{GovState, NewKeySpec};
     use busbar_kernel::inbound::{Call, HandIn, Head, Inbound, Listener, Seals};
-    use busbar_kernel_testkit::test_support::store_double::MemoryStore;
     const PATH: &str = "/exports/private/secured";
     const OWNER: u64 = 27;
     const LISTENER: u64 = 29;
@@ -979,7 +978,7 @@ async fn a_kernel_keys_listener_prepares_and_keeps_real_key_verification() {
     Arc::get_mut(&mut plan).unwrap().offers[0].1 = AuthPoints(POINT_HEAD | POINT_HEAD_BODY);
     let signer = TokenSigner::from_secret_bytes(&[37; 32], DEFAULT_KID);
     let gov = Arc::new(
-        GovState::new_with_signer(Arc::new(MemoryStore::new()), None, Some(signer)).unwrap(),
+        GovState::new_with_signer(crate::root::real_store::records(), None, Some(signer)).unwrap(),
     );
     let now = busbar_kernel::store::now();
     let (key, token) = gov

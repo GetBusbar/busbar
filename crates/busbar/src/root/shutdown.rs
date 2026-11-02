@@ -7,7 +7,8 @@
 //! the store before the process is gone, whichever transport the answer went out on (ruling H2
 //! U10; BUSBAR-1.6.0.md THE DESIGN, §7):
 //!
-//! 1. the budget and metering write-behind, each final flush awaited off the runtime;
+//! 1. dropped plane callers are settled under the shared record-drain deadline, before their
+//!    cancellation bills reach the budget and metering write-behind final flushes;
 //! 2. the plane record write-behind, drained ([`crate::root::serve::drain_records`]);
 //! 3. the journal's lane to the configured store, drained under the same deadline
 //!    ([`crate::root::serve::RECORD_DRAIN`]): on a node with no data directory the store is where
@@ -31,6 +32,14 @@ pub async fn tail(
     late: &LateServices,
     journal: Option<&Arc<Mutex<Durability>>>,
 ) {
+    let cleanup_started = std::time::Instant::now();
+    if let Some(kernel) = late.kernel() {
+        if !kernel.drain_plane_cleanup(RECORD_DRAIN).await {
+            tracing::warn!("plane cancellations were still pending at shutdown");
+        }
+    }
+    let record_remaining = RECORD_DRAIN.saturating_sub(cleanup_started.elapsed());
+
     if let Some(gov) = governance {
         let budgets = gov.clone();
         let dispatch = tracing::dispatcher::get_default(Clone::clone);
@@ -62,7 +71,7 @@ pub async fn tail(
         }
     }
 
-    if !drain_records(late).await {
+    if !drain_records(late, record_remaining).await {
         tracing::warn!("plane record writes were still queued at shutdown");
     }
 

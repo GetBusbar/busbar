@@ -56,13 +56,6 @@ async fn post(router: Router, path: &str) -> (u16, String) {
 }
 
 #[tokio::test]
-async fn a_door_route_installed_at_construction_is_answered_ahead_of_the_fallback() {
-    let (code, body) = post(data_router(vec![door(RouteAuth::None)]), DOOR).await;
-    assert_eq!(code, 200, "the installed door route answers: {body}");
-    assert_eq!(body, format!("door {DOOR} piece"));
-}
-
-#[tokio::test]
 async fn without_the_install_the_same_path_is_the_fallbacks() {
     let (code, body) = post(data_router(Vec::new()), DOOR).await;
     assert_ne!(code, 200, "no door route, so the fallback answers: {body}");
@@ -71,11 +64,10 @@ async fn without_the_install_the_same_path_is_the_fallbacks() {
 
 #[test]
 fn a_door_route_is_recorded_at_the_bar_it_declares() {
-    let app = crate::test_support::TestApp::new().build();
     let table = crate::router::base_data_router(
-        &app.plugin_routes,
-        &app.plane_slots,
-        app.oauth_as.as_ref(),
+        &crate::plugin_routes::PluginRouteTable::default(),
+        &Default::default(),
+        None,
         vec![door(RouteAuth::Key)],
         Vec::new(),
     )

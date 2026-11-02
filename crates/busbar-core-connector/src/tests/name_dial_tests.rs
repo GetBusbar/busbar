@@ -336,7 +336,7 @@ impl Resolve for Flaky {
     }
 }
 
-/// RED (1.5.5 `otlp_resolves_to_internal`, v1.5.5
+/// A name that does not resolve fails the exchange and is never a refusal.
 #[test]
 fn a_name_that_does_not_resolve_fails_the_exchange_and_is_never_a_refusal() {
     worker().block_on(async {
@@ -548,7 +548,7 @@ fn an_empty_address_set_keeps_the_dial_as_it_was() {
     });
 }
 
-/// RED (the destination guard): under the default, a name resolving to loopback is refused after
+/// A name resolving to loopback is refused before any socket.
 #[test]
 fn a_name_resolving_to_loopback_is_refused_before_any_socket() {
     worker().block_on(async {
@@ -629,7 +629,7 @@ fn a_config_named_target_on_loopback_is_trusted() {
     });
 }
 
-/// RED (THE DESIGN §5 destination guard: "refused unless allowlisted"
+/// A config named provider target on loopback is refused until allowlisted.
 #[test]
 fn a_config_named_provider_target_on_loopback_is_refused_until_allowlisted() {
     use busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER;

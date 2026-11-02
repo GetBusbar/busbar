@@ -3,69 +3,139 @@
 
 use std::path::Path;
 
-pub fn issuer() -> &'static busbar_test_kit::test_issuer::Issuer {
-    static ONE: std::sync::OnceLock<busbar_test_kit::test_issuer::Issuer> =
-        std::sync::OnceLock::new();
-    ONE.get_or_init(|| {
-        let issuer =
-            busbar_test_kit::test_issuer::Issuer::start("https://issuer.e2e.invalid", "e2e-issuer");
-        let (url, cert_pem) = serve_jwks(issuer.jwks().to_string());
-        issuer.served_at(&url, &cert_pem)
+// A single OIDC input for these distribution tests. Both the public key document and
+// the tokens come from this key; the plugin fetches the document over a real TLS socket.
+const ISSUER: &str = "https://issuer.e2e.invalid";
+const KEY_ID: &str = "distribution-oidc";
+
+type Idp = (ring::signature::EcdsaKeyPair, String, String);
+
+fn idp() -> &'static Idp {
+    use base64::Engine as _;
+    use ring::signature::KeyPair as _;
+    static IDP: std::sync::OnceLock<Idp> = std::sync::OnceLock::new();
+    IDP.get_or_init(|| {
+        let certificate = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()])
+            .expect("the local IdP certificate");
+        let signing_key = ring::signature::EcdsaKeyPair::from_pkcs8(
+            &ring::signature::ECDSA_P256_SHA256_FIXED_SIGNING,
+            &certificate.signing_key.serialize_der(),
+            &ring::rand::SystemRandom::new(),
+        )
+        .expect("the IdP's P-256 signing key");
+        let point = signing_key.public_key().as_ref();
+        let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        let jwks = serde_json::json!({"keys": [{
+            "kty": "EC", "crv": "P-256", "kid": KEY_ID, "alg": "ES256", "use": "sig",
+            "x": b64.encode(&point[1..33]), "y": b64.encode(&point[33..65]),
+        }]})
+        .to_string();
+        let cert_pem = certificate.cert.pem();
+        let private = rustls_pki_types::PrivateKeyDer::Pkcs8(
+            rustls_pki_types::PrivatePkcs8KeyDer::from(certificate.signing_key.serialize_der()),
+        );
+        let tls = std::sync::Arc::new(
+            rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(
+                rustls::crypto::ring::default_provider(),
+            ))
+            .with_safe_default_protocol_versions()
+            .expect("TLS versions")
+            .with_no_client_auth()
+            .with_single_cert(vec![certificate.cert.der().clone()], private)
+            .expect("the IdP TLS certificate"),
+        );
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("the local IdP port");
+        let jwks_url = format!("https://{}/jwks", listener.local_addr().expect("the IdP address"));
+        std::thread::spawn(move || {
+            use std::io::{Read as _, Write as _};
+            for socket in listener.incoming() {
+                let Ok(socket) = socket else { continue };
+                socket.set_read_timeout(Some(std::time::Duration::from_secs(5))).ok();
+                socket.set_write_timeout(Some(std::time::Duration::from_secs(5))).ok();
+                let session = rustls::ServerConnection::new(tls.clone()).expect("TLS session");
+                let mut stream = rustls::StreamOwned::new(session, socket);
+                let mut request = Vec::new();
+                loop {
+                    let mut byte = [0];
+                    match stream.read(&mut byte) {
+                        Ok(1) => request.push(byte[0]),
+                        _ => break,
+                    }
+                    if request.ends_with(b"\r\n\r\n") || request.len() > 8192 {
+                        break;
+                    }
+                }
+                let (status, body) = if request.starts_with(b"GET /jwks HTTP/1.1\r\n") {
+                    ("200 OK", jwks.as_str())
+                } else {
+                    ("404 Not Found", "{}")
+                };
+                let _ = write!(stream,
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len());
+                let _ = stream.flush();
+                stream.conn.send_close_notify();
+                let _ = stream.flush();
+            }
+        });
+        (signing_key, jwks_url, cert_pem)
     })
 }
 
-pub fn serve_jwks(jwks: String) -> (String, String) {
-    use std::io::{Read as _, Write as _};
-    let cert = rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_string()])
-        .expect("mint a self-signed certificate");
-    let cert_pem = cert.cert.pem();
-    let private = rustls_pki_types::PrivateKeyDer::Pkcs8(
-        rustls_pki_types::PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der()),
-    );
-    let config = std::sync::Arc::new(
-        rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()
-        .expect("protocol versions")
-        .with_no_client_auth()
-        .with_single_cert(vec![cert.cert.der().clone()], private)
-        .expect("server certificate"),
-    );
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a loopback port");
-    let url = format!(
-        "https://{}/jwks",
-        listener.local_addr().expect("local addr")
-    );
-    std::thread::spawn(move || {
-        for socket in listener.incoming() {
-            let (Ok(socket), Ok(session)) = (socket, rustls::ServerConnection::new(config.clone()))
-            else {
-                continue;
-            };
-            let mut stream = rustls::StreamOwned::new(session, socket);
-            let _ = stream.read(&mut [0u8; 4096]);
-            let _ = write!(
-                stream,
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
-                 Connection: close\r\n\r\n{jwks}",
-                jwks.len()
-            );
-            let _ = stream.flush();
-            stream.conn.send_close_notify();
-            let _ = stream.flush();
-        }
-    });
-    (url, cert_pem)
+/// Start the local IdP before launching a distribution process.
+pub fn issuer() {
+    let _ = idp();
+}
+
+pub fn cert_pem() -> &'static str {
+    &idp().2
+}
+
+pub fn settings(audience: &str) -> serde_json::Map<String, serde_json::Value> {
+    serde_json::json!({
+        "issuer": ISSUER,
+        "audience": audience,
+        "jwks_url": idp().1,
+        "ca_cert_pem": cert_pem(),
+        "role_claim": "roles",
+        "authorization_endpoint": format!("{ISSUER}/authorize"),
+        "token_endpoint": format!("{ISSUER}/token"),
+    })
+    .as_object()
+    .expect("OIDC settings")
+    .clone()
 }
 
 pub fn token_for(sub: &str, roles: &[&str], aud: &str) -> String {
-    issuer().mint(sub, roles, aud)
+    use base64::Engine as _;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("the clock")
+        .as_secs();
+    let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let header = b64.encode(
+        serde_json::to_vec(&serde_json::json!({
+            "alg": "ES256", "typ": "JWT", "kid": KEY_ID,
+        }))
+        .expect("JWT header"),
+    );
+    let claims = b64.encode(
+        serde_json::to_vec(&serde_json::json!({
+            "iss": ISSUER, "aud": aud, "sub": sub, "roles": roles,
+            "exp": now + 3600, "nbf": now.saturating_sub(10),
+        }))
+        .expect("JWT claims"),
+    );
+    let signed = format!("{header}.{claims}");
+    let signature = idp()
+        .0
+        .sign(&ring::rand::SystemRandom::new(), signed.as_bytes())
+        .expect("sign the IdP token");
+    format!("{signed}.{}", b64.encode(signature.as_ref()))
 }
 
 pub fn issuer_settings_yaml(audience: &str, indent: usize) -> String {
-    issuer()
-        .settings(audience)
+    settings(audience)
         .into_iter()
         .map(|(k, v)| format!("{}{k}: {v}\n", " ".repeat(indent)))
         .collect()

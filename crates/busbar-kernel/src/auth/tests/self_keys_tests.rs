@@ -14,7 +14,7 @@ use super::super::self_keys::{
 use super::super::{ChainVerdict, Principal};
 use crate::config::groups::{provision_child, GroupCfg};
 use crate::config::{RoleBindingCfg, RoleBindings};
-use crate::governance::{GovState, MemoryStore, RecordStore as _};
+use crate::governance::{GovState, RecordStore as _};
 
 const SEED: [u8; 32] = [7u8; 32];
 
@@ -61,7 +61,7 @@ impl SelfGroupProvisioner for NoopProvisioner {
 fn gov() -> Arc<GovState> {
     Arc::new(
         GovState::new_with_signer(
-            Arc::new(MemoryStore::new()),
+            crate::real_store::store(),
             None,
             Some(crate::governance::signing::TokenSigner::from_secret_bytes(
                 &SEED,
@@ -465,7 +465,7 @@ fn concurrent_issue_self_yields_one_binding() {
 }
 
 struct RefreshOverlapStore {
-    inner: MemoryStore,
+    inner: std::sync::Arc<busbar_plugin_loader::store_v3::LoadedStore>,
     next_put: std::sync::Mutex<
         Option<(
             tokio::sync::oneshot::Sender<()>,
@@ -551,7 +551,7 @@ async fn a_login_or_refresh_overlapping_refresh_uses_the_surviving_binding() {
 
     for contender_refresh in [false, true] {
         let store = Arc::new(RefreshOverlapStore {
-            inner: MemoryStore::new(),
+            inner: crate::real_store::store(),
             next_put: std::sync::Mutex::new(None),
         });
         let gov = Arc::new(
@@ -1408,7 +1408,7 @@ async fn issued_key_debug_never_leaks_the_live_token() {
 
 #[tokio::test]
 async fn proof_self_mint_disabled_refuses_self_serve() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     for self_mint in [Some(true), Some(false), None] {
         let gov = gov();
         let overlay = crate::test_support::TestOverlayStore::new();
@@ -1470,7 +1470,7 @@ async fn self_mint_mode_policy_gates_exchange_login_and_refresh_before_mutation(
     use crate::governance::mint_policy::{MintPolicy, RoleCeiling};
     use crate::governance::{SELF_KEY_BINDING_MODE, SELF_KEY_BINDING_MODE_APP};
 
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     for route in ["exchange", "login", "refresh"] {
         for (block, role, allowed) in [
             (None, None, true),
@@ -1681,7 +1681,7 @@ impl busbar_contract::auth_calls::AuthCalls for ModeReplayIdentity {
 async fn mode_refused_exchange_leaves_its_verified_identitys_replay_claim_unclaimed() {
     use busbar_contract::store_calls::StoreDoor;
 
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let opened = crate::test_support::store_axis_stand_in()
         .open(
             StoreDoor::Linked(crate::test_support::store_double::door),

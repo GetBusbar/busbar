@@ -6,10 +6,28 @@ use std::process::Command;
 use std::sync::OnceLock;
 
 pub fn exe() -> &'static str {
-    static WARM: OnceLock<()> = OnceLock::new();
-    let path = env!("CARGO_BIN_EXE_busbar");
+    static WARM: OnceLock<String> = OnceLock::new();
     WARM.get_or_init(|| {
-        let out = Command::new(path)
+        let path = option_env!("CARGO_BIN_EXE_busbar")
+            .map(str::to_owned)
+            .unwrap_or_else(|| {
+                let test = std::env::current_exe().expect("current test executable");
+                let profile = test
+                    .parent()
+                    .and_then(Path::parent)
+                    .expect("the test executable's profile directory");
+                let binary = profile.join(format!("busbar{}", std::env::consts::EXE_SUFFIX));
+                assert!(
+                    binary.is_file(),
+                    "build the actual product binary: {}",
+                    binary.display()
+                );
+                binary
+                    .to_str()
+                    .expect("the product binary path is UTF-8")
+                    .to_owned()
+            });
+        let out = Command::new(&path)
             .arg("--version")
             .output()
             .expect("exec the busbar binary under test");
@@ -19,8 +37,8 @@ pub fn exe() -> &'static str {
             out.status,
             String::from_utf8_lossy(&out.stderr)
         );
-    });
-    path
+        path
+    })
 }
 
 pub fn free_port() -> u16 {

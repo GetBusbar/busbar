@@ -7,7 +7,7 @@ use crate::cost::CostModel;
 use std::collections::BTreeMap;
 
 fn gov() -> GovState {
-    GovState::new(Arc::new(MemoryStore::new()), None).expect("memory store constructs")
+    GovState::new(crate::real_store::store(), None).expect("memory store constructs")
 }
 
 fn limit(metric: LimitMetric, amount: u64, per: Option<LimitWindow>) -> LimitCfg {
@@ -732,7 +732,7 @@ fn missing_group_fails_closed() {
 
 #[test]
 fn accrual_and_hydrate_cover_every_chain_bucket() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let g = GovState::new(store.clone(), None).unwrap();
     let cm = model_with_card(
         &[(
@@ -1279,6 +1279,7 @@ fn an_adjust_moves_the_key_group_and_metrics_reads_of_the_budget_book() {
         pool: "",
         model: "m",
         entry_era: era_now(),
+        entry_id: None,
         card_epoch_ms: now * 1_000,
         delta: &delta,
         now,
@@ -1316,6 +1317,7 @@ fn an_adjust_larger_than_its_segment_is_refused_and_moves_nothing() {
         pool: "",
         model: "m",
         entry_era: era_now(),
+        entry_id: None,
         card_epoch_ms: now * 1_000,
         delta: &delta,
         now,
@@ -1379,6 +1381,7 @@ fn admit_after_adjust(id: &'static str, recorded: u64, corrected: u64) -> (bool,
         pool: "",
         model: "m",
         entry_era: era_now(),
+        entry_id: None,
         card_epoch_ms: now * 1_000,
         delta: &delta,
         now,
@@ -1440,6 +1443,7 @@ fn q64_adjust(g: &GovState, cm: &CostModel, id: &str, now: u64, pool: Option<&st
         pool: pool.unwrap_or(""),
         model: "m",
         entry_era: era_now(),
+        entry_id: None,
         card_epoch_ms: now * 1_000,
         delta: &delta,
         now,
@@ -1664,7 +1668,7 @@ fn the_estimate_is_never_billed_or_held() {
 }
 
 struct FlakyStore {
-    inner: MemoryStore,
+    inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
     down: std::sync::atomic::AtomicBool,
     meter_down: std::sync::atomic::AtomicBool,
     era_down: std::sync::atomic::AtomicBool,
@@ -1676,7 +1680,7 @@ struct FlakyStore {
 impl FlakyStore {
     fn new() -> Self {
         Self {
-            inner: MemoryStore::new(),
+            inner: crate::real_store::store(),
             down: std::sync::atomic::AtomicBool::new(false),
             meter_down: std::sync::atomic::AtomicBool::new(false),
             era_down: std::sync::atomic::AtomicBool::new(false),
@@ -1804,7 +1808,7 @@ fn minute_row(store: &dyn RecordStore, bucket: &str, at: u64) -> (u64, u64, u64,
 
 #[test]
 fn a_window_roll_before_the_flush_keeps_the_old_windows_counts() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let g = GovState::new(store.clone(), None).expect("memory store constructs");
     let cm = minute_fee_model();
     let k = key("vk_roll_delta", Some("g"));
@@ -1927,7 +1931,7 @@ fn a_window_roll_during_an_in_flight_flush_writes_the_old_window_once() {
 
 #[test]
 fn a_refund_after_a_roll_returns_the_fee_from_the_window_it_was_charged_in() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let g = GovState::new(store.clone(), None).expect("memory store constructs");
     let cm = minute_fee_model();
     let k = key("vk_refund_charged", Some("g"));
@@ -1962,7 +1966,7 @@ fn captured<R>(f: impl FnOnce() -> R) -> (R, Vec<String>) {
 
 #[test]
 fn metering_overflow_coalescing_warns_once_per_window_naming_the_count() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let pending = PendingMetering::new();
     let ((), lines) = captured(|| {
         for i in 0..(MAX_PENDING_METERING_PER_SHARD + 3) {
@@ -2000,7 +2004,7 @@ fn metering_overflow_coalescing_warns_once_per_window_naming_the_count() {
 
 #[test]
 fn deleting_a_group_keeps_its_unflushed_spend_until_the_flush() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let g = GovState::new(store.clone(), None).expect("memory store constructs");
     let cm = minute_fee_model();
     let k = key("vk_reclaim", Some("g"));

@@ -139,11 +139,11 @@ pub fn attach(
 pub const RECORD_DRAIN: std::time::Duration =
     std::time::Duration::from_secs(5 * busbar_kernel::host_records::FLUSH_INTERVAL.as_secs());
 
-pub async fn drain_records(late: &LateServices) -> bool {
+pub async fn drain_records(late: &LateServices, deadline: std::time::Duration) -> bool {
     let Some(kernel) = late.kernel() else {
         return true;
     };
-    tokio::task::spawn_blocking(move || kernel.drain(RECORD_DRAIN))
+    tokio::task::spawn_blocking(move || kernel.drain(deadline))
         .await
         .unwrap_or(false)
 }
@@ -505,6 +505,9 @@ impl DoorApply {
         secrets: Arc<dyn busbar_contract::secret::SecretResolve>,
         scope: &busbar_contract::config_time::ConfigScope,
     ) -> Result<DoorLive, String> {
+        let admission = self
+            .driver
+            .prepare_section((self.served_facts.section, section))?;
         let settings = if section.is_null() {
             Vec::new()
         } else {
@@ -522,6 +525,7 @@ impl DoorApply {
         );
         let pools = DoorPools::of(&table, self.served_facts.section)
             .map_err(|e| format!("{}: {e}", self.facts.plane.as_str()))?;
+        let mut fetches = None;
         let egress = match &self.reach {
             Some(r) => {
                 let reach = crate::root::door_steps::DoorReach {
@@ -552,11 +556,15 @@ impl DoorApply {
                     r.stream_ceiling_secs,
                 )?;
 
-                bind_fetches(&self.plugin, &self.served_facts, &routes, &self.units);
+                fetches = Some(routes);
                 Some(Arc::new(egress))
             }
             None => None,
         };
+        admission.commit()?;
+        if let Some(routes) = fetches {
+            bind_fetches(&self.plugin, &self.served_facts, &routes, &self.units);
+        }
         Ok(DoorLive {
             section: section.clone(),
             generation,
@@ -1486,6 +1494,7 @@ pub(crate) fn compose_planes_over(
             kernel.units(),
         )?;
         let driver = Arc::new(driver);
+        kernel.register_plane_cleanup(Arc::downgrade(&driver));
         let probe_schedule = Arc::new(busbar_kernel::probe::ProbeSchedule::new(
             egress
                 .and_then(|e| e.reach.models)
@@ -2454,7 +2463,8 @@ impl ListenerPlan {
                 refusals,
                 refuse_by_path,
                 at == "listen",
-            )?;
+            )?
+            .with_dispatch_layer(crate::root::listener::deferred_dispatch_layer);
             prepared.insert(at, Arc::new(router));
         }
 
@@ -5177,6 +5187,7 @@ fn closed_before_body(
 
 fn closed_whole(h: Head, block: HeaderMap) -> Response {
     let mut response = stated(h, Body::empty());
+    response.headers_mut().remove(axum::http::header::TRAILER);
     response.headers_mut().extend(block);
     response
 }

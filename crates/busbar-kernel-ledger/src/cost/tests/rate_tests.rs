@@ -6,7 +6,7 @@
 use super::*;
 use crate::cost::{nano_rate, History, LaneClass, RateCard, STANDARD_TIER_BP};
 
-/// $ RED (OWNER rule 21, #81): THE CONVERSION NEVER ROUNDS. The card holds integer nano-units, so
+/// Nano rate refuses a rate that is not a whole number of nano units.
 #[test]
 fn nano_rate_refuses_a_rate_that_is_not_a_whole_number_of_nano_units() {
     for refused in [0.0015, 0.0014, 0.0005, 0.5005, 0.5015, 0.1 + 0.2, 1.0001] {

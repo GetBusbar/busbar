@@ -56,7 +56,7 @@ fn red(rule: Rule, field: &'static str) -> Result<(), Fault> {
     Err(Fault { rule, field })
 }
 
-/// RED (S3): a READY answer that names no material: a secret resolved to nothing is no secret,
+/// Ready with no secret faults.
 #[test]
 fn ready_with_no_secret_faults() {
     assert_eq!(
@@ -65,7 +65,7 @@ fn ready_with_no_secret_faults() {
     );
 }
 
-/// RED (S12): READY material in the host's buffer that is not flagged secret.
+/// Ready with material not flagged secret faults.
 #[test]
 fn ready_with_material_not_flagged_secret_faults() {
     let buf = [0u8; 16];

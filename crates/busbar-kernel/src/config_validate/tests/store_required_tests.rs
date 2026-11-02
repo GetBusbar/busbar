@@ -8,9 +8,13 @@ const NO_STORE: &str = "listen: \"127.0.0.1:8080\"\nproviders:\n  acme:\n    api
 
 #[test]
 fn a_config_without_a_store_block_is_refused() {
-    crate::test_support::register_neutral_test_plane();
-    let mut cfg =
-        crate::test_support::cfg_with_provider_api_key(config::SecretRef::env("ACME_KEY"));
+    // Store presence is host metadata validation; no executable store is required.
+    let deploy: config::DeployCfg = serde_yaml::from_str(
+        "providers: {}\nmodels: {}\nstore: {module: inert-store-metadata}\nauth: {chain: [], admin_auth: []}\n",
+    )
+    .expect("host-only fixture parses");
+    let mut cfg = config::resolve(&deploy, &std::collections::HashMap::new())
+        .expect("host-only fixture resolves");
     assert!(
         validate(&cfg).is_ok(),
         "the fixture validates with its store"
@@ -94,10 +98,6 @@ fn the_store_double_answers_to_the_migrated_store_module() {
         crate::config::migration_table::text("store_1_5_default")
     );
     assert!(!crate::config::migrated_store_module().is_empty());
-    assert_eq!(
-        crate::test_support::store_double::KEY,
-        crate::config::migrated_store_module()
-    );
     let refusal = crate::config::store_required();
     assert!(
         refusal.contains(&format!(

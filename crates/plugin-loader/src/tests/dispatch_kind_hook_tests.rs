@@ -483,3 +483,66 @@ fn a_hook_tail_admits_valid_routes_and_refuses_malformed_routes_or_requested_sig
     let err = bind(&signalled).expect_err("requested signals are refused");
     assert!(err.contains("requested_signals"), "{err}");
 }
+
+#[test]
+fn hook_route_lists_require_alignment_before_copying() {
+    use crate::dispatch::kinds::hook::HookContext;
+    use busbar_contract::abi::hook::{Route, Tail, CLASS_GATE, PROMPT_NO, USER_NO};
+    use busbar_contract::abi::mechanism::call::AbiStr;
+    use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
+    use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
+
+    let text = |value: &'static str| AbiStr {
+        ptr: value.as_ptr(),
+        len: value.len(),
+    };
+    let routes = [Route {
+        path: text("/hooks/alignment/feedback"),
+        method: text("POST"),
+        auth: busbar_contract::abi::hook::ROUTE_AUTH_KEY,
+        _reserved: 0,
+    }; 2];
+    let bind = |tail: &Tail| {
+        let statement = Statement {
+            name: text("alignment"),
+            kind_tail: std::ptr::from_ref(tail).cast::<KindTailHead>(),
+            ..Statement::ZERO
+        };
+        <Hook as Kind>::context(&statement).map(|context| {
+            *context
+                .expect("a hook has a context")
+                .downcast::<HookContext>()
+                .unwrap_or_else(|_| panic!("the hook context has its own type"))
+        })
+    };
+    let mut tail = Tail::EMPTY.with_access(CLASS_GATE, PROMPT_NO, USER_NO);
+    tail.routes = routes.as_ptr();
+    tail.routes_len = 1;
+    let context = bind(&tail).expect("an aligned route list is copied");
+    assert_eq!(context.routes.len(), 1);
+    assert_eq!(context.routes[0].path, "/hooks/alignment/feedback");
+    assert_eq!(context.routes[0].method, RouteMethod::Post);
+    assert_eq!(context.routes[0].auth, RouteAuth::Key);
+
+    // Only the fixed loader sees this raw misaligned address; the test never dereferences it.
+    let misaligned = routes.as_ptr().cast::<u8>().wrapping_add(1).cast::<Route>();
+    assert!(!misaligned.is_aligned());
+    tail.routes = misaligned;
+    let error = bind(&tail).expect_err("a misaligned route list is refused before reading it");
+    assert!(error.contains("route list is misaligned"), "{error}");
+
+    tail.routes_len = 0;
+    for pointer in [std::ptr::null(), misaligned] {
+        tail.routes = pointer;
+        let context = bind(&tail).expect("an empty route list ignores its pointer");
+        assert!(context.routes.is_empty());
+    }
+    tail.routes_len = 1;
+    tail.routes = std::ptr::null();
+    let error = bind(&tail).expect_err("the existing NULL/count check is retained");
+    assert!(error.contains("route list is null"), "{error}");
+    tail.routes = routes.as_ptr();
+    tail.routes_len = busbar_contract::abi::export::validate::HARD_MAX_ROUTES as usize + 1;
+    let error = bind(&tail).expect_err("the existing route count bound is retained");
+    assert!(error.contains("exceeds the route bound"), "{error}");
+}

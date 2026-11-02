@@ -520,7 +520,23 @@ fn admin_require_mtls_defaults_on_and_the_retired_key_loud_fails() {
 
 #[test]
 fn a_config_naming_a_plane_owned_section_refuses_cleanly_with_no_plane_registered() {
-    let _isolation = busbar_kernel::test_support::planes::TestRegistryIsolation::empty();
+    if std::env::var_os("BUSBAR_CONFIG_EMPTY_REGISTRY_CHILD").is_none() {
+        let current = std::thread::current();
+        let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .args(["--exact", current.name().expect("test name"), "--nocapture"])
+            .env("BUSBAR_CONFIG_EMPTY_REGISTRY_CHILD", "1")
+            .output()
+            .expect("run the configuration reader with no planes installed");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success()
+                && stdout.contains("test result: ok. 1 passed; 0 failed; 0 ignored;"),
+            "empty-registry reader assertions failed: {}\n{stdout}\n{stderr}",
+            output.status
+        );
+        return;
+    }
     let result = serde_yaml::from_str::<DeployCfg>("providers: {}\nmodels: {}\npools: {}\n");
     let err = result.expect_err(
         "a config with a pools: section must be REFUSED, not silently accepted, when no plane \

@@ -307,14 +307,24 @@ impl Inner {
     }
 
     fn trial(&self, window: Duration) -> Result<Arc<Plugin<Hook>>, String> {
-        let opened = (self.rebind)().and_then(|p| {
-            if p.context::<HookContext>()
-                .is_none_or(|context| context.routes != self.routes)
-            {
-                return Err("hook route declarations changed during recovery".into());
+        let recoverable = {
+            let configured = self.configured.lock().unwrap_or_else(|e| e.into_inner());
+            if configured.pending != 0 || configured.uncertain {
+                Err("hook configuration result is unresolved; recovery is unavailable".to_owned())
+            } else {
+                Ok(())
             }
-            open(&p, &self.settings)?;
-            Ok(Arc::new(p))
+        };
+        let opened = recoverable.and_then(|()| {
+            (self.rebind)().and_then(|p| {
+                if p.context::<HookContext>()
+                    .is_none_or(|context| context.routes != self.routes)
+                {
+                    return Err("hook route declarations changed during recovery".into());
+                }
+                open(&p, &self.settings)?;
+                Ok(Arc::new(p))
+            })
         });
         let opened = opened.and_then(|p| loop {
             let saved = {

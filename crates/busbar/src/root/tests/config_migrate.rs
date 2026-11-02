@@ -1,70 +1,85 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_contract::abi::sdk::migrate::Migrated;
 use busbar_kernel::config::migrate::migrate_config_with;
 use busbar_kernel::config::migrate_plugins::MigrateHost;
-use busbar_test_kit::root_door_fixtures::migrate_stub as stub;
 
 use super::{Index, IndexPlugin};
-use crate::root::loader::dispatch::{load::raw, migrate::migrate_door};
 
-struct StubHost;
-impl MigrateHost for StubHost {
-    fn migrate(
-        &self,
-        _: &str,
-        module: &str,
-        settings: &serde_json::Value,
-        from: &str,
-    ) -> Result<Option<(String, Migrated)>, String> {
-        if module != "stub" {
-            return Ok(None);
-        }
-        Ok(migrate_door(raw(stub::door), settings, from)?
-            .map(|m| ("busbar-secret-stub".to_string(), m)))
-    }
-    fn repin(&self, _: &str) -> Result<Option<String>, String> {
-        Ok(None)
-    }
-    fn release_for(&self, _: &str, _: &str) -> Result<Option<String>, String> {
-        Ok(None)
-    }
-}
-
+#[cfg(feature = "export-webhook")]
 #[test]
-fn core_calls_the_stub_plugins_migrate_and_applies_the_result() {
+fn core_calls_the_real_webhook_migration_and_applies_its_settings_and_report() {
     let config = "\
 store: { module: memory }
-secrets:
-  vaulted:
-    module: stub
-    settings: { signing-secret: { env: S }, url: 10.1.2.3 }
+export:
+  delivery:
+    module: request-log-webhook
+    settings:
+      url: https://collector.example/requests
+      auth_header: { name: 'Bad Name', value: 'Bearer private' }
 ";
-    let out = migrate_config_with(config, &StubHost).expect("migrates");
-    let body: String = out
-        .yaml
-        .lines()
-        .filter(|l| !l.starts_with('#'))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let doc: serde_yaml::Value = serde_yaml::from_str(&body).expect("YAML");
-    let want: serde_yaml::Value =
-        serde_yaml::from_str("{ signing_secret: { env: S }, url: 10.1.2.3 }").unwrap();
-    assert_eq!(doc["secrets"]["vaulted"]["settings"], want, "{}", out.yaml);
-    let allowed: serde_yaml::Value = serde_yaml::from_str("['10.1.2.3']").unwrap();
+    let directory = super::FetchedDir::create_in(&std::env::temp_dir()).unwrap();
+    let host = super::RootHost::for_document(config, &directory.0.join("config.yaml"));
+    let out = migrate_config_with(config, &host).expect("the real linked export migrates");
+    let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("migrated YAML");
     assert_eq!(
-        doc["advanced"]["allow_destinations"], allowed,
-        "{}",
+        doc["export"]["delivery"]["settings"],
+        serde_yaml::from_str::<serde_yaml::Value>("{ url: 'https://collector.example/requests' }")
+            .unwrap(),
+        "only the header the real plugin cannot send is removed: {}",
         out.yaml
     );
     assert!(
-        out.changes.iter().any(|c| c.starts_with(
-            "busbar-secret-stub: settings.signing-secret -> settings.signing_secret (renamed in \
-             1.6.0; the configuration came from 1.5.5)"
-        )),
-        "the plugin's report line, under its name: {:?}",
         out.changes
+            .iter()
+            .any(|line| line.starts_with("busbar-export-webhook:")
+                && line.contains("settings.auth_header")),
+        "the real plugin's report retains its name and reaches the operator: {:?}",
+        out.changes
+    );
+    assert!(
+        out.changes
+            .iter()
+            .all(|line| !line.contains("Bearer private")),
+        "migration reports do not disclose the discarded credential"
+    );
+}
+
+#[cfg(feature = "plane-llm")]
+#[test]
+fn core_applies_the_real_llm_migrations_private_destination_need() {
+    let config = "\
+store: { module: memory }
+providers:
+  in-rack:
+    base_url: http://10.1.2.3:8000/v1
+models: {}
+pools: {}
+";
+    let registration = crate::root::loader::dispatch::kinds::plane::registration(
+        crate::root::loader::dispatch::kinds::plane::linked_probe(
+            busbar_plane_llm::plane_door::door,
+            "real-migration",
+        ),
+    )
+    .expect("the real plane's statement registers");
+    let plane =
+        busbar_kernel::plane_driver::door::fold(registration).expect("the real plane folds");
+    let _registry =
+        busbar_kernel_testkit::test_support::planes::TestRegistryIsolation::seeded(&[plane]);
+    let directory = super::FetchedDir::create_in(&std::env::temp_dir()).unwrap();
+    let host = super::RootHost::for_document(config, &directory.0.join("config.yaml"));
+    let out = migrate_config_with(config, &host).expect("the real linked plane migrates");
+    let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("migrated YAML");
+    assert_eq!(
+        doc["advanced"]["allow_destinations"],
+        serde_yaml::from_str::<serde_yaml::Value>("['10.1.2.3']").unwrap(),
+        "the real plane's need is applied to the core-owned allowlist: {}",
+        out.yaml
+    );
+    assert_eq!(
+        doc["providers"]["in-rack"]["base_url"], "http://10.1.2.3:8000/v1",
+        "the plane's provider settings remain intact"
     );
 }
 

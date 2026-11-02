@@ -143,7 +143,7 @@ const PROVISION_FAIL_VERSION_SUMMARY: &str = "group.provision group:user:alice-m
 
 #[tokio::test]
 async fn mint_failure_after_the_provision_commit_still_records_the_committed_group() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let app = crate::new_test_app()
         .governance(gov(Arc::new(RefusesKeyWrites(MemoryStore::new()))))
         .groups_tree(tree(&["team"]))
@@ -227,7 +227,7 @@ const CEILING_ACTOR: &str = "test:ceiling-audit";
 
 #[tokio::test]
 async fn auto_provision_stops_at_the_group_ceiling() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let mut app = crate::new_test_app()
         .governance(gov(Arc::new(MemoryStore::new())))
         .groups_tree(tree(&["team"]))

@@ -14,7 +14,7 @@ use busbar_contract::UnitKey;
 
 use super::*;
 use crate::config::groups::{GroupCfg, LimitCfg, LimitMetric, LimitWindow};
-use crate::governance::{MemoryStore, WINDOW_TOTAL};
+use crate::governance::WINDOW_TOTAL;
 use crate::plane_driver::CancelBill;
 use crate::registry::Generation;
 
@@ -114,7 +114,7 @@ fn rig(budget_cents: Option<u64>, fee: i64, mode: ExhaustionMode) -> Rig {
 }
 
 fn rig_with(budget_cents: Option<u64>, fee: i64, mode: ExhaustionMode, rule: FeeRefund) -> Rig {
-    let gov = Arc::new(GovState::new(Arc::new(MemoryStore::new()), None).expect("gov"));
+    let gov = Arc::new(GovState::new(crate::real_store::store(), None).expect("gov"));
     let posted = Arc::new(Posted::default());
     let money = PlaneMoney::new(gov.clone(), posted.clone());
     let (cost, key) = (cost(budget_cents, fee), key());
@@ -1044,7 +1044,7 @@ fn a_session_whose_open_failed_is_refunded_its_per_session_fee() {
     };
     let one = BTreeMap::from([(PER_SESSION.to_string(), 1)]);
     for (answered, kept) in [(false, 0), (true, 40)] {
-        let gov = Arc::new(GovState::new(Arc::new(MemoryStore::new()), None).expect("gov"));
+        let gov = Arc::new(GovState::new(crate::real_store::store(), None).expect("gov"));
         let money = PlaneMoney::new(gov.clone(), Arc::new(Posted::default()));
         money.open(
             UnitKey::new(1),
@@ -1084,7 +1084,7 @@ fn a_session_whose_open_failed_is_refunded_its_per_session_fee() {
 #[test]
 fn red_a_book_with_no_signing_key_lends_every_principal_its_own_reference() {
     let node = |material: Option<[u8; 32]>| {
-        let gov = Arc::new(GovState::new(Arc::new(MemoryStore::new()), None).expect("gov"));
+        let gov = Arc::new(GovState::new(crate::real_store::store(), None).expect("gov"));
         let money = PlaneMoney::new(Arc::clone(&gov), Arc::new(Posted::default()));
         let slot = money.caller_refs().expect("the book lends a slot");
         if let Some(m) = material {
@@ -1122,7 +1122,7 @@ fn red_a_book_with_no_signing_key_lends_every_principal_its_own_reference() {
 
 #[test]
 fn red_a_node_with_no_signing_key_and_no_signing_chain_lends_two_principals_two_references() {
-    let gov = Arc::new(GovState::new(Arc::new(MemoryStore::new()), None).expect("gov"));
+    let gov = Arc::new(GovState::new(crate::real_store::store(), None).expect("gov"));
     let money = PlaneMoney::new(Arc::clone(&gov), Arc::new(Posted::default()));
     let slot = money.caller_refs().expect("the book lends a slot");
     let lent = |p: &str| {
@@ -1143,7 +1143,7 @@ fn red_a_node_with_no_signing_key_and_no_signing_chain_lends_two_principals_two_
 
 #[test]
 fn the_signing_material_keys_the_reference_and_the_keyset_backs_it() {
-    let gov = Arc::new(GovState::new(Arc::new(MemoryStore::new()), None).expect("gov"));
+    let gov = Arc::new(GovState::new(crate::real_store::store(), None).expect("gov"));
     let slot = gov.caller_ref_slot();
     gov.bind_deployment_caller_ref([7u8; 32]);
     let by_keyset = slot.read().unwrap().as_ref().unwrap().caller_ref("p");
@@ -1177,7 +1177,7 @@ fn lent_to_p(gov: &GovState) -> String {
 }
 
 fn booted(signer: Option<crate::governance::signing::TokenSigner>) -> GovState {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     GovState::new_with_signer(store, None, signer).expect("gov")
 }
 

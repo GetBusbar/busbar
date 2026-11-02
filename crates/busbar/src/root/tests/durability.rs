@@ -157,7 +157,7 @@ fn audit_inputs(unit: u64) -> AuditInputs {
             lines: Vec::new(),
             tier_bp: 9_000,
             fee_count: 1,
-            rate_card_version: 3,
+            rate_card_version: Some([3; 20]),
             bucket_chain_ref: "chain:free>paid".into(),
         },
         controls: Controls {
@@ -186,7 +186,7 @@ fn a_sealed_audit_record_goes_on_the_journal_whole() {
         .seal_unit(audit_inputs(11), audit_pass(), &token)
         .expect("the record goes on the chain");
     assert_eq!(sealed.what.incarnation, durability.incarnation);
-    assert_eq!(sealed.recipe, Recipe::V4);
+    assert_eq!(sealed.recipe, Recipe::V5);
 
     let records = durability.journal.replay().unwrap().unwrap();
     let on_chain: Vec<_> = records
@@ -1875,7 +1875,7 @@ fn pending_store_puts_keep_lane_and_journal_custody_and_fail_closed_at_the_bound
 fn an_unknown_store_commit_stays_queued_and_restart_resumes_the_committed_chain() {
     let slots = crate::root::store_double::RecordSlots::new();
     let mut first = store_book_bounded(&slots, 74, 1);
-    slots.lose_acks(true);
+    slots.lose_transaction_acks(true);
     seal(&mut first, 1);
     let lane = first.lane().unwrap().clone();
     assert!(lane
@@ -1892,7 +1892,7 @@ fn an_unknown_store_commit_stays_queued_and_restart_resumes_the_committed_chain(
     let restarted = store_book(&slots, 74);
     assert_eq!(restarted.journal.head(), head);
     assert_eq!(restarted.audit_records.len(), 1);
-    slots.lose_acks(false);
+    slots.lose_transaction_acks(false);
     drained(&first);
     assert!(first.refuses_money().is_none());
     assert_eq!(

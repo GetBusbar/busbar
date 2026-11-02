@@ -205,9 +205,6 @@ pub fn install_accepted_entry_test_hook(hook: fn(&AuditEntry)) {
     let _ = ACCEPTED_ENTRY_TEST_HOOK.set(hook);
 }
 
-#[cfg(test)]
-pub use crate::test_support::accepted_audit::{observe_accepted_admin_entry, AcceptedAdminAudit};
-
 impl Default for PlaneAuditLog {
     fn default() -> Self {
         Self::new()
@@ -938,7 +935,19 @@ pub fn register_test_audit_stream(app: &Arc<crate::state::App>) {
 
 #[cfg(test)]
 pub(crate) fn ensure_global_audit_stream_registered() {
-    crate::test_support::audit::ensure_global_audit_stream_registered();
+    static REGISTERED: std::sync::Once = std::sync::Once::new();
+    REGISTERED.call_once(|| {
+        stream_registry::register(
+            KIND_ID_AUDIT,
+            KIND_AUDIT.to_string(),
+            AUDIT_FRAMING,
+            AUDIT_DIGESTS_SCOPE,
+            Decode::Native(reframe_audit),
+            usize::MAX,
+            None,
+        );
+        open_plugin_refusals();
+    });
 }
 
 #[cfg(test)]
@@ -950,10 +959,15 @@ pub(crate) struct AuditTestHarness {
 impl AuditTestHarness {
     pub(crate) fn over(store: Arc<dyn busbar_contract::records::RecordStore>) -> Self {
         let kind_id = fresh_test_kind_id();
-        let gov =
-            Arc::new(crate::governance::GovState::new(store, None).expect("gov store constructs"));
-        let app = crate::test_support::TestApp::new().governance(gov).build();
-        register_audit_stream_as(kind_id, &app);
+        stream_registry::register(
+            kind_id,
+            KIND_AUDIT.to_string(),
+            AUDIT_FRAMING,
+            AUDIT_DIGESTS_SCOPE,
+            Decode::Native(reframe_audit),
+            usize::MAX,
+            Some(PlaneStoreView::narrow(store)),
+        );
         Self {
             log: PlaneAuditLog::with_kind_id(kind_id),
         }

@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use crate::test_support::tokens::pass;
 use busbar_contract::abi::transport::STATUS_CALLER_FAULT;
 use busbar_contract::conn::ConnError;
 use busbar_contract::transport::registry::status_ns;
@@ -810,7 +809,7 @@ fn a_refused_primary_fails_over_to_the_next_lane() {
         vec![Outcome::Transient { retry_after: None }]
     );
     let now = node.clock.now_secs();
-    let token = pass::<busbar_contract::caps::Route>();
+    let token = Pass::<busbar_contract::caps::Route>::mint(&crate::seal::acquire());
     assert!(
         !real.ready("primary", DestinationId::new(0), now, &token),
         "the refused lane is unusable: it cools down as a transient failure"
@@ -1067,7 +1066,7 @@ fn test_permit_lifetime_during_stream() {
     );
 
     let egress = node.egress();
-    let token = pass::<busbar_contract::caps::Route>();
+    let token = Pass::<busbar_contract::caps::Route>::mint(&crate::seal::acquire());
     let far = egress.unit(node.unit_route("default"));
     node.rt.block_on(async {
         let Pick::Member { name, pool, .. } = far.member(&token, 1).await else {

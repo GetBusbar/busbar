@@ -76,9 +76,14 @@ async fn listener() -> (std::net::SocketAddr, Arc<AtomicUsize>) {
     let socket = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = socket.local_addr().expect("addr");
     tokio::spawn(async move {
-        super::serve_plain(socket, router, std::future::pending(), None)
-            .await
-            .expect("serve");
+        super::serve_plain(
+            socket,
+            super::deferred_dispatch_layer(router),
+            std::future::pending(),
+            None,
+        )
+        .await
+        .expect("serve");
     });
     (addr, dispatched)
 }

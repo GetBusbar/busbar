@@ -127,7 +127,7 @@ fn an_operator_infrastructure_need_reaches_a_unix_domain_far_end() {
     });
 }
 
-/// RED ("the connector serves unix-domain targets for
+/// A loopback-allowed need refuses a Unix-domain target.
 #[test]
 fn a_loopback_allowed_need_is_refused_a_unix_target() {
     worker().block_on(async {

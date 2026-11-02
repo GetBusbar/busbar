@@ -299,6 +299,38 @@ const AUTH_ADMISSION_WAIT: std::time::Duration = std::time::Duration::from_secs(
 static AUTH_ADMISSION_PERMITS: std::sync::LazyLock<tokio::sync::Semaphore> =
     std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(AUTH_ADMISSION_MAX_INFLIGHT));
 
+struct TicketStoreTask<T>(tokio::task::JoinHandle<T>);
+
+impl<T> Drop for TicketStoreTask<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+pub(crate) async fn ticket_store<T: Send + 'static>(
+    run: impl FnOnce() -> Option<T> + Send + 'static,
+) -> Option<T> {
+    ticket_store_on(&AUTH_ADMISSION_PERMITS, run).await
+}
+
+async fn ticket_store_on<T: Send + 'static>(
+    permits: &'static tokio::sync::Semaphore,
+    run: impl FnOnce() -> Option<T> + Send + 'static,
+) -> Option<T> {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return run();
+    }
+    let Ok(Ok(permit)) = tokio::time::timeout(AUTH_ADMISSION_WAIT, permits.acquire()).await else {
+        auth_saturated();
+        return None;
+    };
+    let mut task = TicketStoreTask(tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        run()
+    }));
+    (&mut task.0).await.ok().flatten()
+}
+
 const ADMIN_ADMISSION_MAX_INFLIGHT: usize = 16;
 
 const ADMIN_ADMISSION_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
@@ -458,14 +490,12 @@ fn admin_verdict_of(answer: VerifyAnswer, faulted: bool) -> Judgement {
 /// 401 — the caller's credential was never judged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VerifierUnavailable {
-    /// Its instance's `max_inflight` was full and the call was not queued (owner ruling Q134,
-    /// 2026-10-07; THE DESIGN §11.11 R8; accepted difference "Q134 503 when an auth verifier's
-    /// max_inflight is full").
+    /// Its instance's `max_inflight` was full and the call was not queued.
+    /// HTTP callers report 503 for this overload.
     Overloaded,
     /// It answered NO VERDICT: FAILED (a module failure, e.g. an OIDC plugin whose key set is
-    /// unavailable), a FAULT, a timeout (SIGN-auth-kind 2026-10-30, lead-signed under owner
-    /// delegation, extending the owner-signed 2026-10-30 rule "an IdP outage answers 503, never
-    /// 401").
+    /// unavailable), a FAULT, or a timeout. HTTP callers report 503 for this module failure,
+    /// never 401.
     NoVerdict,
 }
 
@@ -1149,10 +1179,15 @@ pub fn auth_failure_status_and_kind(proto: &str) -> (StatusCode, &'static str) {
         ))
 }
 
+pub(crate) type RefusalDoor = (
+    busbar_kernel::plane_routes::PlaneRefuseFn,
+    zeroize::Zeroizing<String>,
+);
+
 fn unauthorized_response(
     app: &crate::state::App,
     path: &str,
-    door: Option<&(busbar_kernel::plane_routes::PlaneRefuseFn, String)>,
+    door: Option<&RefusalDoor>,
 ) -> Response {
     if let Some((refuse, target)) = door {
         return refuse(busbar_contract::caps::ReasonCode::Unauthenticated, target);
@@ -1590,19 +1625,34 @@ fn admin_scope_for(
     module: Option<&str>,
     principal: Option<&Principal>,
 ) -> busbar_contract::authz::Grants {
+    admin_scope_from_bindings(
+        &app.role_bindings,
+        &app.admin_modules.operator,
+        crate::config::operator_principal_id(),
+        module,
+        principal,
+    )
+}
+
+fn admin_scope_from_bindings(
+    role_bindings: &crate::config::RoleBindings,
+    operator: &Operator,
+    operator_principal: &str,
+    module: Option<&str>,
+    principal: Option<&Principal>,
+) -> busbar_contract::authz::Grants {
     use busbar_contract::authz::{Grants, Scope};
     let Some(p) = principal else {
         return Grants::of(Scope::Full);
     };
 
     if p.roles.is_empty() {
-        let op = &app.admin_modules.operator;
-        if op.mints(module, &p.id, crate::config::operator_principal_id()) {
+        if operator.mints(module, &p.id, operator_principal) {
             return Grants::of(Scope::Full);
         }
         return Grants::default();
     }
-    let Some(table) = module.and_then(|m| app.role_bindings.get(m)) else {
+    let Some(table) = module.and_then(|m| role_bindings.get(m)) else {
         return Grants::default();
     };
 
@@ -1617,10 +1667,10 @@ fn admin_scope_for(
         .fold(Grants::default(), Grants::with)
 }
 
-/// THE PER-VERB ALLOW-LIST an identified admin principal holds beside its rung grants (#77(9),
-/// OWNER-LOCKED, `docs/design/BUSBAR-1.6.0.md` l.2279: "Each verb is a plain scoped verb authorized
-/// by the per-verb allow-list on the admin token (`verbs: [ … ]` or `verbs: "*"`; `read-only` and
-/// `full` stay the 1.5.5 shorthands)"). Built only for a principal some bound role grants verbs BY
+/// The per-verb allow-list an identified admin principal holds beside its rung grants.
+/// Each verb is authorized by the per-verb allow-list on the admin token
+/// (`verbs: [ … ]` or `verbs: "*"`; `read-only` and
+/// `full` stay the 1.5.5 shorthands). Built only for a principal some bound role grants verbs BY
 /// NAME; every other principal is judged on its rungs alone, as 1.5.5 judged it.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct VerbAllowList {
@@ -1714,7 +1764,7 @@ fn rate_limited_response() -> Response {
 pub(crate) fn unauthorized_with_completion_taps(
     app: &std::sync::Arc<crate::state::App>,
     path: &str,
-    door: Option<&(busbar_kernel::plane_routes::PlaneRefuseFn, String)>,
+    door: Option<&RefusalDoor>,
 ) -> Response {
     let proto = crate::ingress::native::envelope_dialect(ingress_for_path(app, path));
     if !app.tap_hooks_response.is_empty() {
@@ -1800,14 +1850,13 @@ pub(crate) async fn auth_middleware(
         crate::inbound::RequestAdmission::plane_admission,
     );
 
-    let door: Option<(busbar_kernel::plane_routes::PlaneRefuseFn, String)> =
-        core_routes.door_refusal(&path, req.method()).map(|refuse| {
-            let target = req
-                .uri()
-                .path_and_query()
-                .map_or_else(|| path.clone(), |t| t.as_str().to_owned());
-            (refuse.clone(), target)
-        });
+    let door: Option<RefusalDoor> = core_routes.door_refusal(&path, req.method()).map(|refuse| {
+        let target = req
+            .uri()
+            .path_and_query()
+            .map_or_else(|| path.clone(), |t| t.as_str().to_owned());
+        (refuse.clone(), zeroize::Zeroizing::new(target))
+    });
 
     let mut declared_admin = false;
 
@@ -2076,10 +2125,13 @@ pub(crate) async fn auth_middleware(
         (true, Some(prefix), Some(token))
             if app.auth.keys_in_chain && token.starts_with(prefix) =>
         {
-            let admitted = app
-                .governance
-                .as_deref()
-                .and_then(|gov| gov.admit_ticket(prefix, token, busbar_kernel::store::now()));
+            let admitted = match app.governance.as_ref() {
+                Some(gov) => {
+                    gov.admit_ticket_async(prefix, token, busbar_kernel::store::now())
+                        .await
+                }
+                None => None,
+            };
             match admitted {
                 Some((key, record)) => {
                     consumed.ticket = Some(record);
@@ -2212,6 +2264,13 @@ pub fn resolve_data_plane_identity(
     app: &crate::state::App,
     verdict: ChainVerdict,
 ) -> Result<(AuthPrincipal, crate::governance::GovCtx), IdentityRefusal> {
+    resolve_identity_from_bindings(&app.role_bindings, verdict)
+}
+
+fn resolve_identity_from_bindings(
+    role_bindings: &crate::config::RoleBindings,
+    verdict: ChainVerdict,
+) -> Result<(AuthPrincipal, crate::governance::GovCtx), IdentityRefusal> {
     match verdict {
         ChainVerdict::Open => Ok((AuthPrincipal(None), crate::governance::GovCtx::default())),
         ChainVerdict::Denied => Err(IdentityRefusal::Denied),
@@ -2221,10 +2280,10 @@ pub fn resolve_data_plane_identity(
             resolved,
         } => {
             let gov_key = resolved.or_else(|| {
-                crate::governance::synthesize_bound_key(&module, &principal, &app.role_bindings)
+                crate::governance::synthesize_bound_key(&module, &principal, role_bindings)
             });
             let Some(key) = gov_key else {
-                if admits_ungoverned(&module, &principal, &app.role_bindings) {
+                if admits_ungoverned(&module, &principal, role_bindings) {
                     return Ok((
                         AuthPrincipal(Some(principal)),
                         crate::governance::GovCtx { key: None },
@@ -2404,8 +2463,7 @@ pub mod exchange;
 pub mod login;
 
 #[cfg(test)]
-#[path = "../../../busbar-kernel-testkit/src/test_support/auth_stand_in.rs"]
-pub(crate) mod stand_in;
+pub(crate) use crate::test_support::auth_stand_in as stand_in;
 
 #[cfg(test)]
 #[path = "tests/tests.rs"]
@@ -2447,3 +2505,7 @@ fn fallback_test_metadata_fills_absence_and_keeps_existing_values() {
     );
     assert_eq!(middleware.issued_credential(), Some(expected));
 }
+
+#[cfg(test)]
+#[path = "tests/ticket_store_tests.rs"]
+mod ticket_store_tests;

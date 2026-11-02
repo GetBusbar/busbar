@@ -1507,9 +1507,13 @@ fn report_lines(report: &Report) -> Vec<RecordLine> {
 pub(crate) fn card_in_force(
     card: Option<&crate::root::kernel::PinnedHistory>,
     arrived_ms: u64,
-) -> u64 {
-    card.and_then(|pinned| pinned.view().card_at(arrived_ms).map(|(seq, _)| seq.get()))
-        .unwrap_or_else(|| busbar_kernel_ledger::cost::HistorySeq::OPENING.get())
+) -> Option<[u8; 20]> {
+    card.and_then(|pinned| {
+        pinned
+            .view()
+            .entry_at(arrived_ms)
+            .map(|entry| entry.key().0)
+    })
 }
 
 pub(crate) fn policy_in_force(

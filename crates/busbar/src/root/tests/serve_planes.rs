@@ -7,7 +7,6 @@ use std::sync::Arc;
 use busbar_kernel::governance::GovState;
 use busbar_kernel::host_services::KernelServices;
 use busbar_kernel::plane_driver::{EndPost, PlaneMoney};
-use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 
 use crate::root::plane_node::NodeEndPost;
 use crate::root::test_plugins::{missing, BUILD_BUSBAR_EXAMPLES};
@@ -18,7 +17,8 @@ use crate::root::loader::dispatch::{
 };
 
 pub(crate) fn money() -> Arc<PlaneMoney> {
-    let gov = Arc::new(GovState::new(Arc::new(MemoryStore::new()), None).expect("governance"));
+    let gov =
+        Arc::new(GovState::new(crate::root::real_store::records(), None).expect("governance"));
     Arc::new(PlaneMoney::new(gov, post() as Arc<dyn EndPost>))
 }
 
@@ -425,18 +425,21 @@ fn a_door_plane_is_handed_its_referenced_providers_dialect_facts_at_open() {
 pub(crate) type ChainedRecords = (String, Vec<(Vec<u8>, u64)>);
 
 pub(crate) fn chained_records(
-    store: &MemoryStore,
+    store: &Arc<crate::root::loader::store_v3::LoadedStore>,
     kind: &'static str,
     framing: busbar_contract::abi::plane::RecordChain,
     want: usize,
 ) -> ChainedRecords {
     use busbar_contract::services::chain_key_parts;
+    use busbar_kernel::host_records::{RecordRows, StoreRows};
     let schema = busbar_contract::ids::RecordSchemaId::new(kind);
     let framing =
         busbar_kernel::host_chains::ChainFraming::of(&framing).expect("a framing this host keeps");
     let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
     let rows = loop {
-        let rows = store.record_scan(schema, b"", u32::MAX).expect("a read");
+        let rows = StoreRows(store.clone())
+            .record_scan(schema, b"", u32::MAX)
+            .expect("a read");
         if rows.len() >= want || std::time::Instant::now() >= until {
             break rows;
         }

@@ -10,9 +10,21 @@ pub(crate) fn undeclared_secret_refs(
     registry: &dyn PluginRows,
     cfg: &RootCfg,
 ) -> Result<(), String> {
+    check_declared_paths(
+        cfg,
+        |module| registry.secret_slots(module),
+        |module| registry.reference_slots(module),
+    )
+}
+
+fn check_declared_paths(
+    cfg: &RootCfg,
+    secret_slots: impl Fn(&str) -> Vec<String>,
+    reference_slots: impl Fn(&str) -> Vec<String>,
+) -> Result<(), String> {
     let declared = |module: &str| {
-        let mut paths = registry.secret_slots(module);
-        paths.extend(registry.reference_slots(module));
+        let mut paths = secret_slots(module);
+        paths.extend(reference_slots(module));
         paths
     };
     let policed = |at: String,
@@ -38,7 +50,7 @@ pub(crate) fn undeclared_secret_refs(
             format!("secrets.{module}.settings"),
             module,
             &m.settings,
-            &registry.secret_slots(module),
+            &secret_slots(module),
         )?;
     }
     let mut hooks: Vec<_> = cfg.hooks.iter().collect();

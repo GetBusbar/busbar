@@ -64,7 +64,7 @@ pub struct ProviderCfg {
     /// (all metadata blocked).
     #[serde(default)]
     pub allow_metadata_hosts: Vec<String>,
-    /// THE PROVIDER'S OPTIONS (owner ruling 2026-10-27): every key of the entry that is not one of
+    /// The provider's options: every key of the entry that is not one of
     /// the keys above, under its far end's own wire name (`OpenAI-Organization`, `api-version`,
     /// ...), carried unread into the plane's table. The plane that speaks the provider's dialect
     /// judges each one against that dialect's list ([`judge_options`]); the kernel names none.
@@ -188,8 +188,8 @@ pub struct ProviderDef {
     #[serde(default)]
     pub allow_metadata_hosts: Vec<String>,
     /// The entry's OPTIONS: every key that is not one of the keys above, under its far end's own
-    /// wire name, judged at resolve by the plane that speaks its dialect (owner ruling 2026-10-27:
-    /// the catalog follows the `config.yaml` rule; see [`ProviderDeploy::options`]).
+    /// wire name, judged at resolve by the plane that speaks its dialect;
+    /// the catalog follows the `config.yaml` rule (see [`ProviderDeploy::options`]).
     #[serde(skip)]
     pub options: ProviderTable,
 }
@@ -262,7 +262,7 @@ pub struct ProviderDeploy {
     /// `health` when set; this is the block the shipped `config.yaml` documents under a provider.
     #[serde(default)]
     pub health: Option<HealthCfg>,
-    /// THE PROVIDER'S OPTIONS (owner ruling 2026-10-27): every key of the entry that is not one of
+    /// The provider's options: every key of the entry that is not one of
     /// the keys above, under its far end's own wire name (`OpenAI-Organization`, `api-version`,
     /// ...), carried unread into the plane's table. The plane that speaks the provider's dialect
     /// judges each one against that dialect's list ([`judge_options`]); the kernel names none.

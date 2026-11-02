@@ -53,8 +53,7 @@ pub(crate) fn mount_admin(router: axum::Router<Arc<AppHandle>>) -> axum::Router<
 }
 
 /// THE CLOSED ADMIN VERB TABLE, as the kernel reads it: the per-verb allow-list's vocabulary
-/// (#77(9), OWNER-LOCKED, `docs/design/BUSBAR-1.6.0.md` l.2279 — "Each verb is a plain scoped verb
-/// authorized by the per-verb allow-list on the admin token").
+/// Each verb is authorized by the per-verb allow-list on the admin token.
 ///
 /// The table is `busbar-core-admin`'s (the 66 pinned 1.5.5 operations and the 1.6.0 verbs, each
 /// with its snake-case operation name), and the kernel cannot name it — the same reverse edge

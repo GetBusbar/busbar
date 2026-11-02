@@ -244,7 +244,7 @@ fn a_form_body_encodes_as_serde_urlencoded_and_seals_its_credential() {
     );
 }
 
-/// RED (type level): a form body's public values (an authorization code, a PKCE verifier) travel
+/// A form body wipes on drop.
 #[test]
 fn a_form_body_wipes_on_drop() {
     fn wipes<T: zeroize::ZeroizeOnDrop>(_: &T) {}

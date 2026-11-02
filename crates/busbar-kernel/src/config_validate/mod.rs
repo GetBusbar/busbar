@@ -1144,11 +1144,77 @@ fn validate_limit_ceilings(limits: &crate::config::LimitsResolved, errors: &mut 
 }
 
 fn priced_classes(
-    d: &crate::plane_driver::registry::PlaneDecl,
+    d: &crate::plane_driver::registry::PlaneDeclaration,
 ) -> impl Iterator<Item = &'static str> + Clone + '_ {
     (d.billable_classes.iter())
         .map(|c| c.class)
         .filter(|c| !d.fee_units.contains(c))
+}
+
+fn validate_plane_card(
+    d: &crate::plane_driver::registry::PlaneDeclaration,
+    card: &std::collections::BTreeMap<String, crate::config::RateEntryCfg>,
+    flat_card: bool,
+    errors: &mut Vec<String>,
+) {
+    let own = if d.fallback { "" } else { d.key };
+    let on: Vec<_> = card
+        .iter()
+        .filter(|(k, _)| split_plane_lane(k).0 == own)
+        .collect();
+    let entry = on.iter().any(|(k, _)| !split_plane_lane(k).1.is_empty());
+    let unset = |c: &&str| {
+        !(entry && busbar_contract::records::RESERVED_UNITS.contains(c)
+            || on.iter().any(|(_, r)| r.units.contains_key(*c)))
+    };
+    let declared = priced_classes(d);
+    let missing: Vec<&str> = declared.clone().filter(unset).collect();
+    let present = if d.fallback {
+        flat_card
+    } else {
+        !on.is_empty()
+    };
+    if present && !missing.is_empty() {
+        errors.push(format!(
+            "{}.rate_card does not configure billable unit(s) {} declared by this plane; \
+             add them (0 to make them free)",
+            d.config_section,
+            missing.join(", ")
+        ));
+    }
+
+    let unknown: std::collections::BTreeSet<&str> = (on.iter())
+        .flat_map(|(_, r)| r.units.keys().map(String::as_str))
+        .filter(|k| !declared.clone().any(|c| c == *k))
+        .collect();
+    if !unknown.is_empty() {
+        errors.push(format!(
+            "{}.rate_card configures unit(s) {} not declared by this plane (declared: {}); \
+             remove them or fix the name",
+            d.config_section,
+            unknown.into_iter().collect::<Vec<_>>().join(", "),
+            Some(declared.collect::<Vec<_>>().join(", "))
+                .filter(|l| !l.is_empty())
+                .unwrap_or_else(|| "none".into())
+        ));
+    }
+}
+
+fn validate_plane_fees(
+    d: &crate::plane_driver::registry::PlaneDeclaration,
+    f: &busbar_kernel_ledger::cost::PlaneFees,
+    errors: &mut Vec<String>,
+) {
+    let counted = Some(d.fee_units.join(", ")).filter(|l| !l.is_empty());
+    for (unit, fee) in [(PER_REQUEST, f.per_request), (PER_SESSION, f.per_session)] {
+        if fee != 0 && !d.fee_units.contains(&unit) {
+            errors.push(format!(
+                "{}.fees.{unit} is not counted by this plane (counted: {}); remove it",
+                d.config_section,
+                counted.as_deref().unwrap_or("none")
+            ));
+        }
+    }
 }
 
 fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
@@ -1244,47 +1310,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         }
 
         for d in crate::plane_driver::registry::plane_decls() {
-            let own = if d.fallback { "" } else { d.key };
-            let on: Vec<_> = card
-                .iter()
-                .filter(|(k, _)| split_plane_lane(k).0 == own)
-                .collect();
-            let entry = on.iter().any(|(k, _)| !split_plane_lane(k).1.is_empty());
-            let unset = |c: &&str| {
-                !(entry && busbar_contract::records::RESERVED_UNITS.contains(c)
-                    || on.iter().any(|(_, r)| r.units.contains_key(*c)))
-            };
-            let declared = priced_classes(d);
-            let missing: Vec<&str> = declared.clone().filter(unset).collect();
-            let present = if d.fallback {
-                flat_card
-            } else {
-                !on.is_empty()
-            };
-            if present && !missing.is_empty() {
-                errors.push(format!(
-                    "{}.rate_card does not configure billable unit(s) {} declared by this plane; \
-                     add them (0 to make them free)",
-                    d.config_section,
-                    missing.join(", ")
-                ));
-            }
-
-            let unknown: std::collections::BTreeSet<&str> = (on.iter())
-                .flat_map(|(_, r)| r.units.keys().map(String::as_str))
-                .filter(|k| !declared.clone().any(|c| c == *k))
-                .collect();
-            if !unknown.is_empty() {
-                errors.push(format!(
-                    "{}.rate_card configures unit(s) {} not declared by this plane (declared: {}); \
-                     remove them or fix the name",
-                    d.config_section,
-                    unknown.into_iter().collect::<Vec<_>>().join(", "),
-                    Some(declared.collect::<Vec<_>>().join(", "))
-                        .filter(|l| !l.is_empty())
-                        .unwrap_or_else(|| "none".into())
-                ));
-            }
+            validate_plane_card(&d.declaration, card, flat_card, errors);
         }
     }
 
@@ -1303,7 +1329,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
             else {
                 continue;
             };
-            let zero = priced_classes(d)
+            let zero = priced_classes(&d.declaration)
                 .map(|c| format!("{c}: 0"))
                 .collect::<Vec<_>>()
                 .join(", ");
@@ -1331,16 +1357,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
 
     let fee_decls = (cfg.plane_fees.iter()).filter_map(|(p, f)| Some((plane_decl_for(p)?, f)));
     for (d, f) in fee_decls {
-        let counted = Some(d.fee_units.join(", ")).filter(|l| !l.is_empty());
-        for (unit, fee) in [(PER_REQUEST, f.per_request), (PER_SESSION, f.per_session)] {
-            if fee != 0 && !d.fee_units.contains(&unit) {
-                errors.push(format!(
-                    "{}.fees.{unit} is not counted by this plane (counted: {}); remove it",
-                    d.config_section,
-                    counted.as_deref().unwrap_or("none")
-                ));
-            }
-        }
+        validate_plane_fees(&d.declaration, f, errors);
     }
 
     crate::config::groups::validate_groups(&cfg.groups, &|p| cfg.pools.contains_key(p), errors);
@@ -1692,6 +1709,91 @@ pub(crate) use undeclared_secret_refs::undeclared_secret_refs;
 mod check;
 pub use check::{check, no_root_rules, Check, Refusal};
 
+fn validate_token_endpoint_fields(
+    provider_name: &str,
+    provider_cfg: &crate::config::providers::ResolvedProvider,
+    style: &str,
+    style_flags: u32,
+    cfg: &RootCfg,
+    unset_env_vars: &[String],
+    errors: &mut Vec<String>,
+) {
+    let is_env_placeholder = |v: &str| {
+        !v.contains("://")
+            && unset_env_vars
+                .iter()
+                .any(|u| !u.is_empty() && v.contains(u.as_str()))
+    };
+    let allow_overrides: Vec<String> = provider_cfg
+        .allow_metadata_hosts
+        .iter()
+        .chain(cfg.allow_metadata_hosts.iter())
+        .cloned()
+        .collect();
+    if style_flags & busbar_contract::abi::auth::STYLE_ENDPOINT_TOKEN_URL != 0 {
+        if provider_cfg.api_key.is_none() {
+            errors.push(format!(
+                "provider '{provider_name}' uses auth: {style} but declares \
+                 `api_key: none`; that grant mints its token FROM the credential \
+                 (`client_id:client_secret`), so there is nothing to declare keyless"
+            ));
+        }
+        if provider_cfg
+            .token_url
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .is_empty()
+        {
+            errors.push(format!(
+                "provider '{provider_name}' uses auth: {style} but has no `token_url` (the OAuth token endpoint the client credentials are POSTed to)"
+            ));
+        } else if let Some(tu) = &provider_cfg.token_url {
+            let host_private = extract_normalized_host(tu)
+                .as_deref()
+                .map(host_is_private_or_loopback)
+                .unwrap_or(false);
+            let tu_scheme_ok = is_env_placeholder(tu)
+                || scheme_is(tu, "https")
+                || (host_private && scheme_is(tu, "http"));
+            if !tu_scheme_ok {
+                let plaintext = scheme_is(tu, "http");
+                let tu = busbar_kernel_egress::trust::net::redact_userinfo(tu);
+                errors.push(if plaintext {
+                    format!(
+                        "provider '{provider_name}' token_url must use https for a public host (got '{tu}'); it carries the client secret, so plaintext http is permitted only for a private/loopback token endpoint"
+                    )
+                } else {
+                    format!(
+                        "provider '{provider_name}' token_url must use http or https (got '{tu}')"
+                    )
+                });
+            } else if let Some(host) = ssrf_blocked_host(
+                tu,
+                &allow_overrides,
+                cfg.allow_all_metadata,
+                &cfg.blocked_metadata_hosts,
+            ) {
+                let tu = busbar_kernel_egress::trust::net::redact_userinfo(tu);
+                errors.push(format!(
+                    "provider '{provider_name}' token_url '{tu}' targets a blocked cloud-metadata host '{host}' (the client secret is POSTed there; cloud-metadata/IMDS endpoints are denied — override via this provider's allow_metadata_hosts, security.allow_metadata_hosts, or security.allow_all_metadata)"
+                ));
+            }
+        }
+        if provider_cfg
+            .scope
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .is_empty()
+        {
+            errors.push(format!(
+                "provider '{provider_name}' uses auth: {style} but has no `scope`"
+            ));
+        }
+    }
+}
+
 fn validate_providers_with(
     known: &[&str],
     cfg: &RootCfg,
@@ -1848,68 +1950,16 @@ fn validate_providers_with(
             }
         }
 
+        validate_token_endpoint_fields(
+            provider_name,
+            provider_cfg,
+            style,
+            style_flags,
+            cfg,
+            unset_env_vars,
+            errors,
+        );
         if style_flags & busbar_contract::abi::auth::STYLE_ENDPOINT_TOKEN_URL != 0 {
-            if provider_cfg.api_key.is_none() {
-                errors.push(format!(
-                    "provider '{provider_name}' uses auth: {style} but declares \
-                     `api_key: none`; that grant mints its token FROM the credential \
-                     (`client_id:client_secret`), so there is nothing to declare keyless"
-                ));
-            }
-            if provider_cfg
-                .token_url
-                .as_deref()
-                .unwrap_or("")
-                .trim()
-                .is_empty()
-            {
-                errors.push(format!(
-                    "provider '{provider_name}' uses auth: {style} but has no `token_url` (the OAuth token endpoint the client credentials are POSTed to)"
-                ));
-            } else if let Some(tu) = &provider_cfg.token_url {
-                let host_private = extract_normalized_host(tu)
-                    .as_deref()
-                    .map(host_is_private_or_loopback)
-                    .unwrap_or(false);
-                let tu_scheme_ok = is_env_placeholder(tu)
-                    || scheme_is(tu, "https")
-                    || (host_private && scheme_is(tu, "http"));
-                if !tu_scheme_ok {
-                    let plaintext = scheme_is(tu, "http");
-                    let tu = busbar_kernel_egress::trust::net::redact_userinfo(tu);
-                    errors.push(if plaintext {
-                        format!(
-                            "provider '{provider_name}' token_url must use https for a public host (got '{tu}'); it carries the client secret, so plaintext http is permitted only for a private/loopback token endpoint"
-                        )
-                    } else {
-                        format!(
-                            "provider '{provider_name}' token_url must use http or https (got '{tu}')"
-                        )
-                    });
-                } else if let Some(host) = ssrf_blocked_host(
-                    tu,
-                    &allow_overrides,
-                    cfg.allow_all_metadata,
-                    &cfg.blocked_metadata_hosts,
-                ) {
-                    let tu = busbar_kernel_egress::trust::net::redact_userinfo(tu);
-                    errors.push(format!(
-                        "provider '{provider_name}' token_url '{tu}' targets a blocked cloud-metadata host '{host}' (the client secret is POSTed there; cloud-metadata/IMDS endpoints are denied — override via this provider's allow_metadata_hosts, security.allow_metadata_hosts, or security.allow_all_metadata)"
-                    ));
-                }
-            }
-            if provider_cfg
-                .scope
-                .as_deref()
-                .unwrap_or("")
-                .trim()
-                .is_empty()
-            {
-                errors.push(format!(
-                    "provider '{provider_name}' uses auth: {style} but has no `scope`"
-                ));
-            }
-
             let cred = crate::config::secret::resolve_linked_string_at_config(
                 &provider_cfg.api_key,
                 &busbar_contract::config_time::ConfigScope::config_time(),

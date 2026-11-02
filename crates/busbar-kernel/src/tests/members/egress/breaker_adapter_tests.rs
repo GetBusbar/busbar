@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use crate::test_support::tokens::pass;
 use busbar_contract::caps::{Pass, Route};
 use busbar_contract::transport::wire::{WireFault, WireStatusClass};
 use busbar_kernel_breaker::cfg::BreakerCfg;
@@ -145,7 +144,12 @@ impl Breaker for BreakerAdapter {
 #[test]
 fn a_fresh_destination_is_ready_and_admits() {
     let breaker = BreakerAdapter::new();
-    assert!(breaker.ready("pool", DestinationId::new(3), 0, &pass::<Route>()));
+    assert!(breaker.ready(
+        "pool",
+        DestinationId::new(3),
+        0,
+        &Pass::<Route>::mint(&crate::seal::acquire())
+    ));
     assert!(breaker.admissible(DestinationId::new(3)));
     assert_eq!(
         breaker.try_admit("pool", DestinationId::new(3), 0),
@@ -192,23 +196,38 @@ fn classify_never_reads_the_class_in_place_of_a_fault_reading() {
 fn a_hard_down_trip_suppresses_a_later_admit_with_the_cooldown_the_port_expects() {
     let breaker = BreakerAdapter::new();
 
-    assert!(breaker.ready("pool", DestinationId::new(4), 0, &pass::<Route>()));
+    assert!(breaker.ready(
+        "pool",
+        DestinationId::new(4),
+        0,
+        &Pass::<Route>::mint(&crate::seal::acquire())
+    ));
     let tripped = breaker.observe(
         "pool",
         DestinationId::new(4),
         Outcome::HardDown,
         0,
-        &pass::<Route>(),
+        &Pass::<Route>::mint(&crate::seal::acquire()),
     );
     assert!(tripped);
 
-    assert!(!breaker.ready("pool", DestinationId::new(4), 10, &pass::<Route>()));
+    assert!(!breaker.ready(
+        "pool",
+        DestinationId::new(4),
+        10,
+        &Pass::<Route>::mint(&crate::seal::acquire())
+    ));
     let err = breaker
         .try_admit("pool", DestinationId::new(4), 10)
         .unwrap_err();
     assert_eq!(err, Unavailable::BreakerOpen { until: 1800 });
     assert_eq!(
-        breaker.cooldown_remaining("pool", DestinationId::new(4), 10, &pass::<Route>()),
+        breaker.cooldown_remaining(
+            "pool",
+            DestinationId::new(4),
+            10,
+            &Pass::<Route>::mint(&crate::seal::acquire())
+        ),
         1790
     );
 }
@@ -234,16 +253,42 @@ fn a_hard_reading_is_hard_down_and_takes_every_sibling_pool_cell_for_the_destina
     );
     assert_eq!(out.outcome, Outcome::HardDown);
 
-    assert!(breaker.ready("primary", destination, 0, &pass::<Route>()));
-    assert!(breaker.ready("secondary", destination, 0, &pass::<Route>()));
+    assert!(breaker.ready(
+        "primary",
+        destination,
+        0,
+        &Pass::<Route>::mint(&crate::seal::acquire())
+    ));
+    assert!(breaker.ready(
+        "secondary",
+        destination,
+        0,
+        &Pass::<Route>::mint(&crate::seal::acquire())
+    ));
 
-    assert!(breaker.observe("primary", destination, out.outcome, 0, &pass::<Route>()));
+    assert!(breaker.observe(
+        "primary",
+        destination,
+        out.outcome,
+        0,
+        &Pass::<Route>::mint(&crate::seal::acquire())
+    ));
 
     assert!(
-        breaker.cooldown_remaining("secondary", destination, 0, &pass::<Route>()) > 0,
+        breaker.cooldown_remaining(
+            "secondary",
+            destination,
+            0,
+            &Pass::<Route>::mint(&crate::seal::acquire())
+        ) > 0,
         "the sibling lane goes down with it: a refused credential is not one pool's problem"
     );
-    assert!(!breaker.ready("secondary", destination, 0, &pass::<Route>()));
+    assert!(!breaker.ready(
+        "secondary",
+        destination,
+        0,
+        &Pass::<Route>::mint(&crate::seal::acquire())
+    ));
 }
 
 #[test]
@@ -271,9 +316,20 @@ fn a_transient_reading_with_a_stated_wait_of_seven_sets_a_seven_second_cooldown(
         }
     );
 
-    breaker.observe("primary", destination, out.outcome, 100, &pass::<Route>());
+    breaker.observe(
+        "primary",
+        destination,
+        out.outcome,
+        100,
+        &Pass::<Route>::mint(&crate::seal::acquire()),
+    );
     assert_eq!(
-        breaker.cooldown_remaining("primary", destination, 100, &pass::<Route>()),
+        breaker.cooldown_remaining(
+            "primary",
+            destination,
+            100,
+            &Pass::<Route>::mint(&crate::seal::acquire())
+        ),
         7,
         "the upstream's own wait is the floor the cooldown lands on"
     );
@@ -299,9 +355,20 @@ fn a_transient_reading_with_no_stated_wait_keeps_the_ladders_own_cooldown() {
     assert_eq!(out.disposition, Disposition::TransientUpstream);
     assert_eq!(out.outcome, Outcome::Transient { retry_after: None });
 
-    breaker.observe("primary", destination, out.outcome, 100, &pass::<Route>());
+    breaker.observe(
+        "primary",
+        destination,
+        out.outcome,
+        100,
+        &Pass::<Route>::mint(&crate::seal::acquire()),
+    );
 
-    let remaining = breaker.cooldown_remaining("primary", destination, 100, &pass::<Route>());
+    let remaining = breaker.cooldown_remaining(
+        "primary",
+        destination,
+        100,
+        &Pass::<Route>::mint(&crate::seal::acquire()),
+    );
     assert!(
         (36..=44).contains(&remaining),
         "the ladder's own cooldown, jittered — nothing from the upstream moved it: {remaining}"
@@ -322,13 +389,18 @@ fn budget_spend_and_refund_cross_the_seam() {
 fn probe_release_crosses_the_seam() {
     let breaker = BreakerAdapter::new();
 
-    breaker.ready("pool", DestinationId::new(5), 0, &pass::<Route>());
+    breaker.ready(
+        "pool",
+        DestinationId::new(5),
+        0,
+        &Pass::<Route>::mint(&crate::seal::acquire()),
+    );
     breaker.observe(
         "pool",
         DestinationId::new(5),
         Outcome::HardDown,
         0,
-        &pass::<Route>(),
+        &Pass::<Route>::mint(&crate::seal::acquire()),
     );
     let admit = breaker
         .try_admit("pool", DestinationId::new(5), 100_000)

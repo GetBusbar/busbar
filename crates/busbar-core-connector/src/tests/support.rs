@@ -308,6 +308,7 @@ pub type OpeningFields = Vec<(Vec<u8>, Vec<u8>)>;
 /// The test entry.
 pub struct TestDoor {
     facts: DoorFacts,
+    io: Option<Arc<super::hostio::HostIo>>,
     knobs: Knobs,
     framings: Mutex<HashMap<u64, State>>,
     next: AtomicU64,
@@ -371,6 +372,7 @@ impl TestDoor {
                 datagram: false,
             },
             knobs,
+            io: None,
             framings: Mutex::new(HashMap::new()),
             next: AtomicU64::new(1),
             crossings: Mutex::new(Vec::new()),
@@ -385,6 +387,12 @@ impl TestDoor {
             locate_caps: Mutex::new(Vec::new()),
             handed: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Use this fixture's host I/O for carrier crossings.
+    pub fn with_host_io(mut self, io: Arc<super::hostio::HostIo>) -> Self {
+        self.io = Some(io);
+        self
     }
 
     /// The same entry, stating `role` (`ROLE_CARRIER` | `ROLE_FRAMER`).
@@ -968,7 +976,7 @@ fn text_of(s: busbar_contract::abi::mechanism::call::AbiStr) -> String {
 impl TestDoor {
     /// The carrier ops: a byte-stream carrier over the process's host I/O, each connection named by
     fn carry_io(&self, side: &dyn Side, call: Carry<'_>) -> Crossed {
-        let io = super::hostio::process();
+        let io = self.io.clone().unwrap_or_else(super::hostio::process);
         let t = side.ticket();
         self.threads
             .lock()

@@ -696,8 +696,5 @@ plane_behaviour! {
 }
 
 #[cfg(test)]
-pub use crate::test_support::planes::{register_test_plane, TestRegistryIsolation};
-
-#[cfg(test)]
 #[path = "tests/registry_memo_tests.rs"]
 mod registry_memo_tests;

@@ -3,7 +3,7 @@
 
 use super::harness::{ok_frames, Health, Script};
 use super::{member, Node, Routed};
-use crate::test_support::tokens::pass;
+use busbar_contract::caps::Pass;
 use busbar_contract::DestinationId;
 use busbar_kernel_egress::exhaustion::AT_CAPACITY_RETRY_AFTER_SECS;
 use busbar_kernel_egress::pool::OnExhausted;
@@ -96,7 +96,7 @@ fn a_purely_saturated_pool_gets_the_floor_and_never_the_bare_one_second() {
 #[test]
 fn an_empty_candidate_set_gets_the_floor_too() {
     let node = Node::with_lanes(&[]);
-    let token = pass::<busbar_contract::caps::Route>();
+    let token = Pass::<busbar_contract::caps::Route>::mint(&crate::seal::acquire());
     let wait = busbar_kernel_egress::exhaustion::retry_after_secs(
         node.breaker.as_ref(),
         &[],
@@ -998,7 +998,7 @@ fn run_world(world: &World) -> &'static str {
         }
     }
 
-    let token = pass::<busbar_contract::caps::Route>();
+    let token = Pass::<busbar_contract::caps::Route>::mint(&crate::seal::acquire());
     let free = |d: DestinationId| node.capacity.try_acquire(d).is_some();
     let ready =
         |pool: &str, d: DestinationId| real.admissible(d) && real.ready(pool, d, now, &token);
@@ -1361,7 +1361,7 @@ fn a_stated_member_reads_its_own_wait_and_a_stranger_reads_none() {
     );
     let egress = node.egress();
     let far = egress.unit(node.unit_route("p"));
-    let token = pass::<busbar_contract::caps::Route>();
+    let token = Pass::<busbar_contract::caps::Route>::mint(&crate::seal::acquire());
     assert_eq!(far.member_wait(&token, "b"), Some(110));
     assert_eq!(far.member_wait(&token, "a"), Some(30));
     assert_eq!(far.member_wait(&token, "stranger"), None);

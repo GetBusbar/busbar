@@ -52,7 +52,7 @@ fn suffix_plus_scopeless_prelude_equals_legacy_audit_digest() {
 
 #[test]
 fn a_converted_sites_seam_record_matches_the_legacy_ring_hash() {
-    let h = AuditTestHarness::over(std::sync::Arc::new(crate::governance::MemoryStore::new()));
+    let h = AuditTestHarness::over(crate::real_store::store());
     let (ts, act, res, out, pr) = (
         1_700_000_123u64,
         "hook.register",
@@ -88,7 +88,7 @@ fn a_converted_sites_seam_record_matches_the_legacy_ring_hash() {
 type PlaneRows = std::collections::HashMap<(String, Option<String>), Vec<Vec<u8>>>;
 
 struct DualDurableStore {
-    inner: crate::governance::MemoryStore,
+    inner: std::sync::Arc<busbar_plugin_loader::store_v3::LoadedStore>,
     audit: std::sync::Mutex<std::collections::BTreeMap<u64, busbar_contract::records::AuditRecord>>,
     plane: std::sync::Mutex<PlaneRows>,
 }
@@ -96,7 +96,7 @@ struct DualDurableStore {
 impl DualDurableStore {
     fn new() -> Self {
         Self {
-            inner: crate::governance::MemoryStore::new(),
+            inner: crate::real_store::store(),
             audit: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             plane: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
@@ -430,7 +430,26 @@ fn old_store_audit_only_in_legacy_table_boots_migrates_and_verifies() {
     assert!(ring.iter().all(|e| !e.recorded_here));
 }
 
-use crate::test_support::warn_capture::DiagCapture;
+#[derive(Clone, Default)]
+struct AuditDiagnosticCodes(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for AuditDiagnosticCodes {
+    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        if *event.metadata().level() != tracing::Level::ERROR {
+            return;
+        }
+        struct Code<'a>(&'a mut Vec<String>);
+        impl tracing::field::Visit for Code<'_> {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "diag" {
+                    self.0.push(format!("{value:?}"));
+                }
+            }
+        }
+        let mut codes = self.0.lock().unwrap();
+        event.record(&mut Code(&mut codes));
+    }
+}
 
 static DIAG_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -439,7 +458,7 @@ struct IsolatedCapture {
     _lock: std::sync::MutexGuard<'static, ()>,
 }
 
-fn capture_into(cap: &DiagCapture) -> IsolatedCapture {
+fn capture_into(cap: &AuditDiagnosticCodes) -> IsolatedCapture {
     use tracing_subscriber::layer::SubscriberExt as _;
     let lock = DIAG_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(cap.clone()));
@@ -478,7 +497,7 @@ fn restore_reports_an_undecodable_audit_row_loudly_and_still_seeds_the_good_row(
 
     let h2 = AuditTestHarness::over(store.clone());
     let plane = PlaneStoreView::narrow(store.clone());
-    let cap = DiagCapture::default();
+    let cap = AuditDiagnosticCodes::default();
     {
         let _g = capture_into(&cap);
 
@@ -625,7 +644,7 @@ fn parse_audit_suffix_still_reads_legacy_bodies() {
 #[test]
 fn a_safe_suffix_record_restores_with_exact_fields_despite_embedded_pipes() {
     let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
-        std::sync::Arc::new(crate::governance::MemoryStore::new());
+        crate::real_store::store();
     let h = AuditTestHarness::over(store.clone());
     let ts = 1_700_000_555u64;
     let forged_resource = "x|applied|nobody";
@@ -838,7 +857,7 @@ fn pending_audit_queue_stops_at_the_first_failure_and_preserves_the_rest() {
 fn pending_audit_queue_reports_a_gap_when_it_overflows() {
     let q = PendingAuditQueue::new(2);
 
-    let cap = DiagCapture::default();
+    let cap = AuditDiagnosticCodes::default();
     {
         let _g = capture_into(&cap);
         for tag in 0..3u8 {
@@ -879,7 +898,7 @@ fn a_clean_restore_captures_no_unreadable_row_diagnostic() {
         std::sync::Arc::new(DualDurableStore::new());
     let h = AuditTestHarness::over(store.clone());
     let plane = PlaneStoreView::narrow(store.clone());
-    let cap = DiagCapture::default();
+    let cap = AuditDiagnosticCodes::default();
     {
         let _g = capture_into(&cap);
         let _ = h.log.restore_from_store(plane.as_ref());
@@ -1524,7 +1543,7 @@ fn overlapping_pending_drains_cannot_overtake_the_oldest_row() {
 fn a_failed_in_flight_row_cannot_overfill_the_pending_queue() {
     let q = PendingAuditQueue::new(1);
     q.enqueue(pending("admin", 1));
-    let cap = DiagCapture::default();
+    let cap = AuditDiagnosticCodes::default();
     {
         let _capture = capture_into(&cap);
         q.drain_with(

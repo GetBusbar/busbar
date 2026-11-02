@@ -543,9 +543,6 @@ fn a_reference_at_a_reference_capable_url_reaches_the_sink_resolved() {
 
 #[test]
 fn export_reference_diagnostics_keep_secret_and_plain_fields_distinct() {
-    use crate::test_support::warn_capture::WarnCapture;
-    use tracing_subscriber::layer::SubscriberExt as _;
-
     let url_var = format!("BUSBAR_T_EXPORT_CLASS_URL_{}", std::process::id());
     let token_var = format!("BUSBAR_T_EXPORT_CLASS_TOKEN_{}", std::process::id());
     let url = "https://classification.example/collector";
@@ -556,8 +553,13 @@ fn export_reference_diagnostics_keep_secret_and_plain_fields_distinct() {
         "url": { "env": url_var },
         "auth_header": { "name": "Authorization", "value": { "env": token_var } },
     }));
-    let cap = WarnCapture::capturing_debug();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let output = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_max_level(tracing::Level::DEBUG)
+        .with_writer(output.clone())
+        .finish();
     let handed = tracing::subscriber::with_default(subscriber, || {
         sink_settings(&DeclaringAxis, "declaring-sink", &written)
     });
@@ -581,7 +583,8 @@ fn export_reference_diagnostics_keep_secret_and_plain_fields_distinct() {
             .as_value(),
         &Value::Object(literal.clone())
     );
-    let events = cap.messages();
+    let captured = String::from_utf8(output.lock().unwrap().clone()).expect("UTF-8 diagnostics");
+    let events: Vec<_> = captured.lines().collect();
     assert!(
         events
             .iter()
@@ -591,14 +594,14 @@ fn export_reference_diagnostics_keep_secret_and_plain_fields_distinct() {
     assert!(
         events
             .iter()
-            .any(|line| line.contains("setting=url ")
+            .any(|line| line.contains("setting=\"url\" ")
                 && line.contains("reference-capable (not secret)")),
         "the URL reference must retain its plain-setting classification"
     );
     assert!(
         events
             .iter()
-            .any(|line| line.contains("setting=auth_header.value ")
+            .any(|line| line.contains("setting=\"auth_header.value\" ")
                 && line.contains("SECRET REFERENCE")),
         "the declared credential must be identified as a secret reference"
     );
@@ -630,4 +633,97 @@ fn the_host_words_the_one_instance_refusal() {
         word_one_instance("probe", &names[..2], whole.clone()),
         whole
     );
+}
+
+#[test]
+fn export_restart_metadata_compares_boot_membership_module_and_effective_projection() {
+    let streams = [ExportStream::Logs as u8, ExportStream::Events as u8];
+    let desired: ExportDefCfg = serde_json::from_value(serde_json::json!({
+        "module": "neutral-sink",
+        "streams": ["logs", "events"],
+        "settings": { "destination": "before" }
+    }))
+    .unwrap();
+    let mut errors = Vec::new();
+    let projection = resolve_projection(
+        "sink",
+        "neutral-sink",
+        Some(&streams_of(&streams)),
+        desired.streams.as_deref(),
+        None,
+        false,
+        &mut errors,
+    );
+    assert!(errors.is_empty(), "{errors:?}");
+    let boot = Some(("neutral-sink", projection, streams.as_slice()));
+    assert!(!definition_requires_restart("sink", boot, Some(&desired)));
+    assert!(definition_requires_restart("sink", None, Some(&desired)));
+    assert!(definition_requires_restart("sink", boot, None));
+    assert!(!definition_requires_restart("sink", None, None));
+
+    let mut settings_only = desired.clone();
+    settings_only
+        .settings
+        .insert("destination".into(), "after".into());
+    assert!(!definition_requires_restart(
+        "sink",
+        boot,
+        Some(&settings_only)
+    ));
+    assert!(definition_requires_restart(
+        "sink",
+        None,
+        Some(&settings_only)
+    ));
+
+    let mut changed_module = desired.clone();
+    changed_module.module = "other-sink".into();
+    assert!(definition_requires_restart(
+        "sink",
+        boot,
+        Some(&changed_module)
+    ));
+
+    let mut narrowed = desired.clone();
+    narrowed.streams = Some(vec!["events".into()]);
+    assert!(definition_requires_restart("sink", boot, Some(&narrowed)));
+    narrowed.fields = Some(vec!["seq".into(), "ts".into(), "prev_hash".into()]);
+    let events_projection = resolve_projection(
+        "sink",
+        "neutral-sink",
+        Some(&streams_of(&streams)),
+        narrowed.streams.as_deref(),
+        None,
+        false,
+        &mut errors,
+    );
+    assert!(errors.is_empty(), "{errors:?}");
+    let events_boot = Some(("neutral-sink", events_projection, streams.as_slice()));
+    assert!(definition_requires_restart(
+        "sink",
+        events_boot,
+        Some(&narrowed)
+    ));
+    let narrow_projection = resolve_projection(
+        "sink",
+        "neutral-sink",
+        Some(&streams_of(&streams)),
+        narrowed.streams.as_deref(),
+        narrowed.fields.as_deref(),
+        false,
+        &mut errors,
+    );
+    assert!(errors.is_empty(), "{errors:?}");
+    let narrow_boot = Some(("neutral-sink", narrow_projection, streams.as_slice()));
+    assert!(!definition_requires_restart(
+        "sink",
+        narrow_boot,
+        Some(&narrowed)
+    ));
+    narrowed.fields.as_mut().unwrap().reverse();
+    assert!(!definition_requires_restart(
+        "sink",
+        narrow_boot,
+        Some(&narrowed)
+    ));
 }

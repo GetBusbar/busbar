@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! P-ITEM: REFUSAL-REASON COLLAPSE (spec DONE item 2, `docs/design/BUSBAR-1.6.0.md`, "All P-item
+//! Exercises distinct refusal reasons across plugin operation boundaries.
 
 use busbar_contract::abi::plane::{
     class_of, class_of_refusal, class_of_word, wire_code, RefusalClass, RefusalCode,

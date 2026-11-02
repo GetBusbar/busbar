@@ -10,21 +10,32 @@ use busbar_contract::ir::invoke::InvokeReq;
 use std::sync::{Arc, Mutex};
 
 #[test]
-fn projected_invocations_keep_exact_arguments_and_unnamed_documents() {
+fn projected_invocations_keep_target_and_arguments_without_unused_members() {
     use serde_json::json;
     let named = super::read_projected(Some(
         br#"{"tool":"private-tool","arguments":{"private-key":["private-value"]},"unused":{"private":"discarded"}}"#,
     ))
     .unwrap();
-    assert_eq!(named.tool, "private-tool");
-    assert_eq!(named.arguments, json!({"private-key": ["private-value"]}));
-    assert!(named.extra.is_empty());
+    assert_eq!(
+        named.body,
+        json!({"tool": "private-tool", "arguments": {"private-key": ["private-value"]}})
+    );
 
     let unnamed = super::read_projected(Some(br#"{"private-key":["private-value"]}"#)).unwrap();
-    assert!(unnamed.tool.is_empty());
-    assert_eq!(unnamed.arguments, json!({"private-key": ["private-value"]}));
+    assert_eq!(unnamed.body, json!({"private-key": ["private-value"]}));
     assert!(super::read_projected(None).is_none());
     assert!(super::read_projected(Some(b"invalid JSON")).is_none());
+}
+
+#[test]
+fn projected_document_cleanup_clears_nested_members_and_strings() {
+    let mut value = serde_json::json!([
+        {"private-key": {"nested-key": ["nested-value"]}},
+        ["array-value", {"array-key": "array-secret"}],
+        "plain-value"
+    ]);
+    super::wipe_projected_value(&mut value);
+    assert_eq!(value, serde_json::json!([{}, ["", {}], ""]));
 }
 
 fn no_reads(_: &str, _: Option<&str>, _: &str, _: bool) {}
@@ -60,6 +71,150 @@ impl RoutingPolicy for Spy {
 
     fn name(&self) -> &'static str {
         "spy"
+    }
+}
+
+struct TargetGate {
+    seen: Mutex<Vec<serde_json::Value>>,
+}
+
+#[async_trait::async_trait]
+impl RoutingPolicy for TargetGate {
+    async fn decide(
+        &self,
+        req: &RoutingRequest<'_>,
+        candidates: &[Candidate<'_>],
+        ctx: &RoutingContext<'_>,
+        _budget: std::time::Duration,
+    ) -> PolicyResult {
+        let wire = serde_json::to_value(busbar_contract::hook_wire::build(
+            busbar_contract::hook_wire::OP_DECIDE,
+            req,
+            candidates,
+            ctx,
+        ))
+        .unwrap();
+        let projected = wire["request"]["messages"][0]["text"]
+            .as_str()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok());
+        let denied = projected
+            .as_ref()
+            .and_then(|body| body.get("tool"))
+            .and_then(serde_json::Value::as_str)
+            == Some("delete_database");
+        self.seen.lock().unwrap().push(wire);
+        Ok(if denied {
+            RoutingDecision::Reject {
+                status: 403,
+                message: "denied target".into(),
+            }
+        } else {
+            RoutingDecision::Abstain
+        })
+    }
+
+    fn name(&self) -> &'static str {
+        "target-gate"
+    }
+}
+
+#[tokio::test]
+async fn door_gate_distinguishes_targets_with_equal_arguments_and_cached_clearance() {
+    let _lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
+    let store = SessionStore::new(4, None);
+    let policy = Arc::new(TargetGate {
+        seen: Mutex::new(Vec::new()),
+    });
+    let gates = gate(
+        policy.clone(),
+        crate::config::PolicyOnError::Reject,
+        true,
+        false,
+    );
+    for (tool, rejected, calls) in [
+        ("get_status", false, 1),
+        ("delete_database", true, 2),
+        ("delete_database", true, 3),
+        ("get_status", false, 3),
+    ] {
+        let body = serde_json::to_vec(&serde_json::json!({
+            "tool": tool, "arguments": {"id": 7}
+        }))
+        .unwrap();
+        let mut door = door_on(Some(&body), DoorShape::default());
+        door.session = Some(b"shared-session");
+        door.scan = Some(ScanSubstrate {
+            store: &store,
+            generation: 1,
+            now_ms: 0,
+        });
+        let verdict = decide_door(&gates, &door, &mut Vec::new()).await;
+        assert_eq!(
+            matches!(verdict, GateVerdict::Reject { status: 403, .. }),
+            rejected
+        );
+        assert_eq!(policy.seen.lock().unwrap().len(), calls);
+    }
+    let seen = policy.seen.lock().unwrap();
+    for (wire, tool) in seen
+        .iter()
+        .zip(["get_status", "delete_database", "delete_database"])
+    {
+        let request = &wire["request"];
+        assert_eq!(request["pool"], "entry");
+        let text = request["messages"][0]["text"].as_str().unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(text).unwrap(),
+            serde_json::json!({"tool": tool, "arguments": {"id": 7}})
+        );
+        assert_eq!(request["total_chars"], text.chars().count());
+    }
+    assert_eq!(store.len(), 1, "a rejected target is never cleared");
+}
+
+#[tokio::test]
+async fn door_target_disclosure_requires_the_content_grant_and_discards_unused_fields() {
+    let _lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
+    let tool = "private-target\n\"quoted\"";
+    let body = serde_json::to_vec(&serde_json::json!({
+        "tool": tool, "arguments": {"private-argument": "private-value"},
+        "unused": {"private-extra": "discarded-value"}
+    }))
+    .unwrap();
+    for granted in [false, true] {
+        let spy = abstaining();
+        let gates = gate(
+            spy.clone(),
+            crate::config::PolicyOnError::Reject,
+            granted,
+            false,
+        );
+        let door = door_on(
+            Some(&body),
+            DoorShape {
+                end_user: Some("private-user"),
+                ..Default::default()
+            },
+        );
+        assert!(matches!(
+            decide_door(&gates, &door, &mut Vec::new()).await,
+            GateVerdict::Proceed
+        ));
+        let wire = spy.seen.lock().unwrap().take().unwrap();
+        assert!(wire["request"].get("user").is_none());
+        assert!(!wire.to_string().contains("discarded-value"));
+        if granted {
+            let text = wire["request"]["messages"][0]["text"].as_str().unwrap();
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(text).unwrap(),
+                serde_json::json!({"tool": tool, "arguments": {"private-argument": "private-value"}})
+            );
+            assert_eq!(wire["request"]["total_chars"], text.chars().count());
+        } else {
+            assert!(wire["request"].get("messages").is_none());
+            assert!(!wire.to_string().contains("private-target"));
+            assert!(!wire.to_string().contains("private-value"));
+        }
     }
 }
 
@@ -506,6 +661,126 @@ use crate::session::{SessionKey, SessionStore};
 
 fn derive_session_key(sid: &str, principal_id: &str, hook_generation: u64) -> SessionKey {
     IncrementalScan::derive_session_key_octets(sid.as_bytes(), principal_id, hook_generation)
+}
+
+async fn screens_cache_piece(store: &SessionStore, piece: u32, now_ms: u64) -> bool {
+    let mut facts = tool_call();
+    facts.arguments = serde_json::json!({ "piece": piece });
+    let spy = Arc::new(Spy {
+        reply: RoutingDecision::Abstain,
+        seen: Mutex::new(None),
+    });
+    let gates = gate(
+        spy.clone(),
+        crate::config::PolicyOnError::Reject,
+        true,
+        false,
+    );
+    let verdict = decide(
+        &gates,
+        &GateSubject {
+            incremental: Some(IncrementalScan {
+                store,
+                session: SessionKey(17),
+                now_ms,
+            }),
+            ..tool_subject(&facts)
+        },
+    )
+    .await;
+    assert!(matches!(verdict, GateVerdict::Proceed));
+    let screened = spy.seen.lock().unwrap().is_some();
+    screened
+}
+
+#[tokio::test]
+async fn incremental_scan_uses_the_shared_capacity_and_rescreens_evicted_pieces() {
+    let _lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
+    let store = SessionStore::new(2, None);
+    for (piece, screened) in [(1, true), (2, true), (1, false), (3, true), (1, false)] {
+        assert_eq!(screens_cache_piece(&store, piece, 0).await, screened);
+        assert!(store.len() <= 2);
+    }
+    assert!(
+        screens_cache_piece(&store, 2, 0).await,
+        "the older piece must be screened again after shared LRU eviction"
+    );
+    assert_eq!(store.len(), 2);
+}
+
+#[tokio::test]
+async fn incremental_scan_rescreens_when_pinned_tenants_occupy_the_capacity() {
+    let _lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
+    let store = SessionStore::new(1, None);
+    store.put(
+        SessionKey(9),
+        "held-session",
+        Arc::new(42_u32),
+        0,
+        true,
+        None,
+    );
+    assert!(screens_cache_piece(&store, 1, 0).await);
+    assert!(
+        screens_cache_piece(&store, 1, 0).await,
+        "a cache entry evicted by pinned pressure grants no clearance"
+    );
+    assert_eq!(store.len(), 1);
+    assert_eq!(
+        *store.get::<u32>(SessionKey(9), "held-session", 0).unwrap(),
+        42
+    );
+}
+
+#[tokio::test]
+async fn incremental_scan_expires_each_piece_without_extending_it_on_a_hit() {
+    let _lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
+    let store = SessionStore::new(2, Some(10));
+    assert!(screens_cache_piece(&store, 1, 0).await);
+    assert!(!screens_cache_piece(&store, 1, 9).await);
+    assert!(screens_cache_piece(&store, 1, 10).await);
+}
+
+#[test]
+fn incremental_scan_requires_the_full_tuple_when_a_cache_index_collides() {
+    use busbar_contract::ir::facts::IrFacts;
+
+    let store = SessionStore::new(1, None);
+    let scan = IncrementalScan {
+        store: &store,
+        session: SessionKey(17),
+        now_ms: 0,
+    };
+    let facts = tool_call();
+    let items = facts.content();
+    let screened = super::ScreenedContent::over(&items);
+    let digest = screened.digest(0).unwrap();
+    let clearance = "this-gate";
+    for (session, claimed_clearance, claimed_digest) in [
+        (SessionKey(18), clearance, digest.as_str()),
+        (scan.session, "another-gate", digest.as_str()),
+        (scan.session, clearance, "another-digest"),
+    ] {
+        store.put(
+            scan.piece_key(clearance, &digest),
+            IncrementalScan::OWNER,
+            Arc::new(super::ClearedPiece {
+                session,
+                clearance: claimed_clearance.into(),
+                digest: claimed_digest.into(),
+            }),
+            0,
+            false,
+            None,
+        );
+        assert_eq!(
+            scan.unscreened(clearance, &screened).len(),
+            1,
+            "a colliding entry cannot clear a different session, hook or content"
+        );
+    }
+    scan.mark_cleared(clearance, &screened);
+    assert!(scan.unscreened(clearance, &screened).is_empty());
 }
 
 #[tokio::test]
@@ -1037,7 +1312,11 @@ async fn incremental_door_clearance_tracks_the_delivered_prompt_across_ceiling_c
     }
     let _restore = Restore(crate::hooks::hook_content_max_bytes());
     const OMIT_CONTENT_CEILING_BYTES: usize = 1;
-    const RETAIN_CONTENT_CEILING_BYTES: usize = PROJECTED.len();
+    let retain_content_ceiling_bytes = "user".len()
+        + serde_json::from_slice::<serde_json::Value>(PROJECTED)
+            .unwrap()
+            .to_string()
+            .len();
     const SESSION_CAPACITY: usize = 1;
     const HOOK_GENERATION: u64 = 1;
     const SESSION: &[u8] = b"ceiling-session";
@@ -1054,7 +1333,7 @@ async fn incremental_door_clearance_tracks_the_delivered_prompt_across_ceiling_c
                 false,
             ),
             (
-                RETAIN_CONTENT_CEILING_BYTES,
+                retain_content_ceiling_bytes,
                 OMIT_CONTENT_CEILING_BYTES,
                 true,
             ),

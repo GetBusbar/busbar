@@ -358,9 +358,9 @@ pub(crate) struct AdjustReq {
     key: String,
     /// The lane (model) the counts were earned on.
     lane: String,
-    /// The rate-card history entry the counts were priced with, by its position (the
-    /// `rate_card_version` `GET /admin/usage` names).
-    entry: u64,
+    /// The rate-card history entry key the counts were priced with, as 40 hexadecimal digits.
+    #[schemars(regex(pattern = r"^[0-9a-fA-F]{40}$"))]
+    entry: String,
     /// The corrected unit's card epoch: its arrival instant, unix milliseconds. The correction
     /// lands in the budget windows, the card entry and the metering day holding it, never in those
     /// current when it is made, and `entry` must be the entry in force at it.
@@ -386,8 +386,9 @@ pub(crate) struct AdjustView {
     key: String,
     /// The lane corrected.
     lane: String,
-    /// The history entry the counts were priced with.
-    entry: u64,
+    /// The rate-card history entry key, as 40 lowercase hexadecimal digits.
+    #[schemars(regex(pattern = r"^[0-9a-f]{40}$"))]
+    entry: String,
     /// The corrected unit's card epoch, unix milliseconds: where the correction landed.
     card_epoch_ms: u64,
     /// The pool the correction names.

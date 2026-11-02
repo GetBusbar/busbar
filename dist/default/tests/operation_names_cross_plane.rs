@@ -21,7 +21,7 @@ fn no_verb_name_carries_a_plane_key_or_a_protocol_name() {
     );
     let mut identities: Vec<&'static str> = plane_keys.clone();
     identities.extend(
-        busbar_kernel::ingress::protocols::registry()
+        busbar_kernel_testkit::ingress::protocols::registry()
             .decls()
             .iter()
             .map(|d| d.name),

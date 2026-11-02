@@ -304,7 +304,7 @@ fn self_signed() -> (Vec<u8>, Vec<u8>) {
     (cert.der().to_vec(), kp.serialize_der())
 }
 
-/// RED (1.5.5's `rediss://…#insecure`): a self-signed far
+/// Verify-off accepts a self-signed peer for operator infrastructure only.
 #[test]
 fn verify_off_accepts_a_self_signed_far_end_for_operator_infrastructure_only() {
     let (leaf, key) = self_signed();

@@ -3282,6 +3282,10 @@ impl PollConns for Connector {
 mod tests;
 
 #[cfg(test)]
+#[path = "tests/real_tcp_tests.rs"]
+mod real_tcp_tests;
+
+#[cfg(test)]
 #[path = "tests/callback_waker.rs"]
 #[allow(unsafe_code)]
 mod callback_waker;
@@ -3293,11 +3297,6 @@ mod rest_callback_tests;
 #[cfg(test)]
 #[path = "tests/settled_dial_error_tests.rs"]
 mod settled_dial_error_tests;
-
-/// TEST ONLY: busbar-test-kit's log double, mounted into this crate's test build.
-#[cfg(test)]
-#[path = "../../busbar-test-kit/src/warn_capture.rs"]
-pub mod warn_capture;
 
 #[cfg(test)]
 #[path = "tests/trust_from_tests.rs"]

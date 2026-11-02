@@ -18,24 +18,19 @@ name = "busbar-plugin-pack"
 path = "src/pack.rs"
 required-features = ["pack"]
 
+[[test]]
+name = "c_abi"
+path = "tests/c_abi.rs"
+test = false
+
 [[example]]
 name = "dispatch_test_plugin"
 path = "tests/fixtures/dispatch_test_plugin.rs"
 crate-type = ["cdylib"]
 
 [[example]]
-name = "plane_door_plugin"
-path = "tests/fixtures/plane_door_plugin.rs"
-crate-type = ["cdylib"]
-
-[[example]]
 name = "log_witness_door"
 path = "tests/fixtures/log_witness_door.rs"
-crate-type = ["cdylib"]
-
-[[example]]
-name = "store_v3_door"
-path = "tests/fixtures/store_v3_door.rs"
 crate-type = ["cdylib"]
 
 [[example]]
@@ -49,18 +44,8 @@ path = "tests/fixtures/conditional_store_legacy_door.rs"
 crate-type = ["cdylib"]
 
 [[example]]
-name = "open_reason_store_door"
-path = "tests/fixtures/open_reason_store_door.rs"
-crate-type = ["cdylib"]
-
-[[example]]
 name = "secret_broken_door"
 path = "tests/fixtures/secret_broken_door.rs"
-crate-type = ["cdylib"]
-
-[[example]]
-name = "hook_door"
-path = "tests/fixtures/hook_door.rs"
 crate-type = ["cdylib"]
 
 [[example]]
@@ -76,11 +61,6 @@ crate-type = ["cdylib"]
 [[example]]
 name = "json_contract_auth"
 path = "tests/fixtures/json_contract_auth.rs"
-crate-type = ["cdylib"]
-
-[[example]]
-name = "neutral_frame_door"
-path = "tests/fixtures/neutral_frame_door.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
@@ -106,37 +86,13 @@ jsonschema = { workspace = true, optional = true }
 [dev-dependencies]
 base64 = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "io-util"] }
-busbar-stub-export = { path = "stubs/export/logic" }
-busbar-stub-export-plugin = { path = "stubs/export/plugin", features = ["dropped-in"] }
-busbar-stub-export-carried = { path = "stubs/export-carried/logic" }
-busbar-stub-export-carried-plugin = { path = "stubs/export-carried/plugin", features = ["dropped-in"] }
-busbar-stub-export-scrape = { path = "stubs/export-scrape/logic" }
-busbar-stub-export-scrape-plugin = { path = "stubs/export-scrape/plugin" }
-busbar-stub-export-trace = { path = "stubs/export-trace/logic" }
-busbar-stub-export-trace-plugin = { path = "stubs/export-trace/plugin" }
-busbar-stub-store = { path = "stubs/store/logic" }
-busbar-stub-secret = { path = "stubs/secret/logic" }
-busbar-stub-auth-verify = { path = "stubs/auth-verify/logic" }
-busbar-stub-auth-verify-plugin = { path = "stubs/auth-verify/plugin" }
 h2 = { workspace = true }
 log = { workspace = true }
 tungstenite = { workspace = true }
-busbar-stub-transport-plugin = { path = "stubs/transport/plugin" }
-busbar-stub-transport = { path = "stubs/transport/logic" }
 busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
-
-[package.metadata.busbar.both-ways]
-store = "busbar-stub-store"
-auth-verify = "busbar-stub-auth-verify"
-secret = "busbar-stub-secret"
-transport = "busbar-stub-transport"
-export = "busbar-stub-export"
-export-carried = "busbar-stub-export-carried"
-export-scrape = "busbar-stub-export-scrape"
-export-trace = "busbar-stub-export-trace"
 
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Networking_WinSock"] }

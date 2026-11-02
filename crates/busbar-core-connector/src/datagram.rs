@@ -2777,10 +2777,57 @@ impl DatagramFraming {
         if token == 0 {
             return;
         }
+        let untold: Vec<(u32, String)> = self
+            .book
+            .untold
+            .iter()
+            .filter_map(|path| Some((*path, self.book.addr(*path)?.to_string())))
+            .collect();
+        let paths: Vec<DatagramPath> = untold
+            .iter()
+            .map(|(path, addr)| DatagramPath {
+                path: *path,
+                _reserved: 0,
+                addr: text(addr.as_bytes()),
+            })
+            .collect();
+        let verified = self.verified();
+        let keying = self
+            .keying
+            .as_ref()
+            .filter(|_| verified)
+            .map(|keying| KeyingMaterial {
+                size: u32::try_from(std::mem::size_of::<KeyingMaterial>()).unwrap_or(u32::MAX),
+                profile: keying.profile.code(),
+                bytes: keying.material().as_ptr(),
+                len: keying.material().len(),
+            });
+        let lane = DatagramLane {
+            size: u32::try_from(std::mem::size_of::<DatagramLane>()).unwrap_or(u32::MAX),
+            lane: 0,
+            path: 0,
+            bound: self.bound_path(),
+            path_addr: NO_TEXT,
+            local_addr: text(self.local.as_bytes()),
+            verified: u32::from(verified),
+            _reserved: 0,
+            keying: keying
+                .as_ref()
+                .map_or(std::ptr::null(), |keying| keying as *const KeyingMaterial),
+            routes: self.routes.as_mut_ptr(),
+            routes_cap: self.routes.len(),
+            paths: if paths.is_empty() {
+                std::ptr::null()
+            } else {
+                paths.as_ptr()
+            },
+            paths_len: paths.len(),
+        };
         let mut i: FinishIn = blank_in();
         i.framing = token;
         i.reason = CLOSE_NORMAL;
         i.sink = self.bufs.sink();
+        i.lane = &lane;
         let mut o: FramerOut = blank_out();
         let _ = self.door.cross(Call::Finish(&mut i, &mut o));
     }

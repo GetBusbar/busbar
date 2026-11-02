@@ -199,7 +199,10 @@ fn plane_slot_holds_the_one_built_object_of_each_configured_plane() {
     );
 
     let app = build_once(cfg, None).expect("app builds with the door + agents: configured");
-    let routes = busbar_kernel_testkit::routes::base_data_route_method_view(&app);
+    let routes = busbar_kernel::base_data_core_lines(&app)
+        .into_iter()
+        .map(|(path, method, auth)| (path, method.as_str().to_string(), auth))
+        .collect::<Vec<_>>();
 
     for decl in configured {
         let key = decl.key;
@@ -514,7 +517,10 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
     )
     .build();
 
-    let core_routes = busbar_kernel_testkit::routes::base_data_route_method_view(&app);
+    let core_routes = busbar_kernel::base_data_core_lines(&app)
+        .into_iter()
+        .map(|(path, method, auth)| (path, method.as_str().to_string(), auth))
+        .collect::<Vec<_>>();
 
     for path in &admissible {
         if by_root {

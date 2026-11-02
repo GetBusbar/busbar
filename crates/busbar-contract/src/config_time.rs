@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE CONFIG-TIME PROOF (`BUSBAR-1.6.0.md` THE DESIGN Q-DISK R4 as the OWNER amended it,
+//! Proof that a caller is executing configuration-time work.
 
 /// A CONFIG-TIME PROOF: the caller is booting, applying a configuration or refreshing. A request
 /// path must never hold one. Constructed only by [`ConfigScope::config_time`], which the

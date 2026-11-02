@@ -635,7 +635,7 @@ fn d2_an_open_meter_class_is_handed_to_the_one_function_by_the_enforcement_side(
     let (door_cents, _) = accrued_on_the_book(Some(&open_card), &counts);
     row("ONE function                 [micro]", one.micros());
     row("ledger derive (every class)  [micro]", &ledger_micros);
-    row("kernel derive (every class)  [micro]", &kernel_micros);
+    row("kernel derive (every class)  [micro]", kernel_micros);
     row("governance read (every class) [minor]", &door_cents);
     assert_eq!(one.micros(), 5_200_000, "100,000×2 + 1,000,000×5");
     assert_eq!(ledger_micros.map(i128::from), Ok(one.micros()));

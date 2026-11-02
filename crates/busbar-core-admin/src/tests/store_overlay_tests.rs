@@ -172,7 +172,7 @@ async fn settings_preserves_a_large_store_overlay_across_reload() {
 async fn unknown_settings_receipt_requires_successful_reload_before_new_mutation() {
     let _audit_guard = OVERLAY_ROOT_AUDIT.lock().await;
     let _limits_lock = busbar_kernel_testkit::limits::LIMITS_TEST_LOCK.lock().await;
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let (dir, config_path, providers_path) = write_reset_fixture("unknown-reload-custody");
     let original_config = std::fs::read(&config_path).unwrap();
     let overlay = TestOverlayStore::new();

@@ -234,12 +234,5 @@ all_zero!(row:
 );
 
 #[cfg(test)]
-#[allow(unsafe_code, missing_docs, missing_debug_implementations)]
-#[path = "../../../../../busbar-test-kit/src/test_support/mod.rs"]
-mod kit;
-#[cfg(test)]
-pub use kit::*;
-
-#[cfg(test)]
 #[path = "../tests/test_support_tests.rs"]
 mod tests;

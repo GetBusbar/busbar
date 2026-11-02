@@ -659,7 +659,35 @@ async fn server_posture_matches_the_1_5_5_defaults() {
             http_body_util::Empty::<bytes::Bytes>::new(),
         ))
     });
-    let builder = super::hardened_conn_builder();
+    struct DeadlineTimer(std::sync::Arc<std::sync::Mutex<Option<std::time::Instant>>>);
+    impl hyper::rt::Timer for DeadlineTimer {
+        fn sleep(&self, duration: Duration) -> std::pin::Pin<Box<dyn hyper::rt::Sleep>> {
+            hyper::rt::Timer::sleep(&hyper_util::rt::TokioTimer::new(), duration)
+        }
+        fn sleep_until(
+            &self,
+            deadline: std::time::Instant,
+        ) -> std::pin::Pin<Box<dyn hyper::rt::Sleep>> {
+            *self.0.lock().unwrap() = Some(deadline);
+            hyper::rt::Timer::sleep_until(&hyper_util::rt::TokioTimer::new(), deadline)
+        }
+        fn now(&self) -> std::time::Instant {
+            hyper::rt::Timer::now(&hyper_util::rt::TokioTimer::new())
+        }
+        fn reset(
+            &self,
+            sleep: &mut std::pin::Pin<Box<dyn hyper::rt::Sleep>>,
+            deadline: std::time::Instant,
+        ) {
+            *self.0.lock().unwrap() = Some(deadline);
+            hyper::rt::Timer::reset(&hyper_util::rt::TokioTimer::new(), sleep, deadline);
+        }
+    }
+    let deadline = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let mut builder = super::hardened_conn_builder();
+    builder
+        .http1()
+        .timer(DeadlineTimer(std::sync::Arc::clone(&deadline)));
     let mut conn =
         Box::pin(builder.serve_connection(hyper_util::rt::TokioIo::new(server), service));
     let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
@@ -677,7 +705,12 @@ async fn server_posture_matches_the_1_5_5_defaults() {
         .expect("the armed header timer must end the incomplete request")
         .expect_err("an incomplete header ends with a timeout error");
     assert_eq!(
-        tokio::time::Instant::now(),
+        tokio::time::Instant::from_std(
+            deadline
+                .lock()
+                .unwrap()
+                .expect("the header timer was armed")
+        ),
         armed_at + Duration::from_secs(30),
         "the watchdog permits scheduling progress, not a later header deadline"
     );
@@ -721,13 +754,43 @@ fn gen_self_signed() -> (String, String) {
     (cert.pem(), signing_key.serialize_pem())
 }
 
+pub(super) fn tls_fixture_resolver(
+    tls: &busbar_kernel::config::sections::TlsCfg,
+) -> busbar_kernel::config::secret::SecretResolver {
+    let bindings: Vec<_> = [&tls.cert, &tls.key]
+        .into_iter()
+        .chain(tls.client_ca.iter())
+        .map(|reference| {
+            assert_eq!(reference.module, "file");
+            let path = reference.settings["path"].as_str().unwrap();
+            let material = std::fs::read(path)
+                .map(busbar_kernel::config::secret::Held::new)
+                .map_err(|error| format!("cannot read fixture {path}: {error}"));
+            (
+                reference.module.clone(),
+                serde_json::Value::Object(reference.settings.clone()).to_string(),
+                material,
+            )
+        })
+        .collect();
+    busbar_kernel::config::secret::SecretResolver::with_plugin(Box::new(move |module, settings| {
+        bindings
+            .iter()
+            .find(|(bound_module, bound_settings, _)| {
+                bound_module == module && bound_settings == settings
+            })
+            .map(|(_, _, material)| material.clone())
+            .unwrap_or_else(|| Err("unbound TLS fixture reference".into()))
+    }))
+}
+
 async fn spawn_tls_server(
     tls: &busbar_kernel::config::sections::TlsCfg,
 ) -> (SocketAddr, tokio::sync::oneshot::Sender<()>) {
     let security = busbar_core_connector::tls::prepare(
         "engine-tls test",
         Some(tls),
-        &busbar_kernel::config::secret::SecretResolver::builtins_only(),
+        &tls_fixture_resolver(tls),
         true,
     )
     .expect("valid test TLS config");
@@ -1073,4 +1136,131 @@ fn a_refused_handshake_logs_at_debug_only() {
         !debug.messages().iter().any(|m| m.contains(&key_body)),
         "a log line echoed the server key"
     );
+}
+
+#[tokio::test]
+async fn shutdown_retires_the_listening_socket_before_an_accepted_request_finishes_draining() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = busbar_core_connector::listen::Listening::bind_stream(
+        None,
+        "127.0.0.1:0",
+        busbar_core_connector::listen::AcceptLimits::default(),
+    )
+    .unwrap();
+    let addr = listener.local_addr();
+    let entered = std::sync::Arc::new(tokio::sync::Notify::new());
+    let release = std::sync::Arc::new(tokio::sync::Notify::new());
+    let router = Router::new().route(
+        "/held",
+        get({
+            let entered = entered.clone();
+            let release = release.clone();
+            move || {
+                let entered = entered.clone();
+                let release = release.clone();
+                async move {
+                    entered.notify_one();
+                    release.notified().await;
+                    "finished"
+                }
+            }
+        }),
+    );
+    let (stop, stopped) = oneshot::channel::<()>();
+    let (observed, shutdown_observed) = oneshot::channel::<()>();
+    let serving = tokio::spawn(super::serve_admitted(
+        listener,
+        router,
+        None,
+        async move {
+            let _ = stopped.await;
+            let _ = observed.send(());
+        },
+        None,
+    ));
+    let mut existing = tokio::net::TcpStream::connect(addr).await.unwrap();
+    existing
+        .write_all(b"GET /held HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), entered.notified())
+        .await
+        .expect("the accepted request reached its held handler");
+    stop.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(3), shutdown_observed)
+        .await
+        .expect("the accept loop polled shutdown")
+        .unwrap();
+    let was_draining = !serving.is_finished();
+    let new_connection =
+        tokio::time::timeout(Duration::from_secs(3), tokio::net::TcpStream::connect(addr))
+            .await
+            .expect("a new TCP handshake resolves while the accepted request is held");
+    let still_accepting = new_connection.is_ok();
+    drop(new_connection);
+    release.notify_one();
+    let mut response = Vec::new();
+    tokio::time::timeout(Duration::from_secs(3), existing.read_to_end(&mut response))
+        .await
+        .expect("the accepted request completes during drain")
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), serving)
+        .await
+        .expect("drain completes after the held request finishes")
+        .unwrap()
+        .unwrap();
+    assert!(was_draining, "shutdown waited for the accepted request");
+    assert!(
+        !still_accepting,
+        "shutdown kept the listener open and completed a new TCP handshake during drain"
+    );
+    assert!(response.starts_with(b"HTTP/1.1 200"), "{response:?}");
+    assert!(response.windows(8).any(|bytes| bytes == b"finished"));
+}
+
+#[test]
+fn tls_fixture_bindings_preserve_unbound_and_missing_file_refusals() {
+    use busbar_contract::secret::SecretResolve;
+
+    let (cert_pem, key_pem) = gen_self_signed();
+    let tls = busbar_kernel::config::sections::TlsCfg {
+        cert: file(&temp_pem("bound-cert", &cert_pem)),
+        key: file(&temp_pem("bound-key", &key_pem)),
+        client_ca: None,
+    };
+    let resolver = tls_fixture_resolver(&tls);
+    busbar_core_connector::tls::prepare("bound TLS fixture", Some(&tls), &resolver, true)
+        .expect("the explicitly bound PEM files build a TLS configuration");
+    let mut unbound = tls.cert.clone();
+    unbound.module = "outside-this-tls-fixture".into();
+    let scope = busbar_contract::config_time::ConfigScope::config_time();
+    let error = resolver
+        .resolve_at_config(&unbound, &scope)
+        .expect_err("an unbound module is refused");
+    assert!(error.contains("unbound TLS fixture reference"), "{error:?}");
+
+    let missing_path = temp_pem("missing-cert", &cert_pem);
+    std::fs::remove_file(&missing_path).unwrap();
+    let missing = busbar_kernel::config::sections::TlsCfg {
+        cert: file(&missing_path),
+        key: tls.key,
+        client_ca: None,
+    };
+    let missing_resolver = tls_fixture_resolver(&missing);
+    let error = missing_resolver
+        .resolve_at_config(&missing.cert, &scope)
+        .expect_err("a missing bound file is refused");
+    assert!(error.contains(missing_path.to_str().unwrap()), "{error:?}");
+    assert!(
+        !error.contains("unbound TLS fixture reference"),
+        "{error:?}"
+    );
+    assert!(busbar_core_connector::tls::prepare(
+        "missing TLS fixture",
+        Some(&missing),
+        &missing_resolver,
+        true,
+    )
+    .is_err());
 }

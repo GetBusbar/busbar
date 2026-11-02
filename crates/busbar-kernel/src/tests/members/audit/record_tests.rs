@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use crate::test_support::tokens::pass;
+use busbar_contract::caps::Pass;
 use busbar_contract::caps::{
     Audit as AuditStep, KernelSeal, Origin, OriginKind, Outcome, ReasonCode, StepName, UnitKey,
 };
@@ -50,7 +50,7 @@ fn inputs(unit: u64) -> AuditInputs {
             }],
             tier_bp: 9_000,
             fee_count: 1,
-            rate_card_version: 3,
+            rate_card_version: Some([3; 20]),
             bucket_chain_ref: "chain:free>paid".into(),
         },
         controls: Controls {
@@ -79,7 +79,13 @@ fn frozen_record() -> busbar_kernel_audit::record::AuditRecord {
     with_payloads.outcome.step = Some(StepName::Admit);
     with_payloads.outcome.finish = FinishClass::Error;
     with_payloads.what.incarnation = 3;
-    chain.seal(with_payloads, &pass::<AuditStep>())
+    let mut record = chain.seal(with_payloads, &Pass::<AuditStep>::mint(&crate::seal::acquire()));
+    record.usage.rate_card_version = None;
+    record.recipe = busbar_kernel_audit::recipe::Recipe::V4 {
+        legacy_rate_card_version: 3,
+    };
+    record.hash = AuditChain::digest_of(&record);
+    record
 }
 
 const FROZEN_NODE: u64 = 9;
@@ -90,6 +96,7 @@ fn frozen_v2_record() -> busbar_kernel_audit::record::AuditRecord {
     let mut record = frozen_record();
     record.recipe = busbar_kernel_audit::recipe::Recipe::V2 {
         currency: "USD".into(),
+        legacy_rate_card_version: 3,
     };
     record.hash = FROZEN_V2.to_string();
     record
@@ -98,7 +105,12 @@ fn frozen_v2_record() -> busbar_kernel_audit::record::AuditRecord {
 #[test]
 fn the_sealed_digest_of_a_fully_populated_record_is_the_frozen_hex() {
     let record = frozen_record();
-    assert_eq!(record.recipe, busbar_kernel_audit::recipe::Recipe::V4);
+    assert_eq!(
+        record.recipe,
+        busbar_kernel_audit::recipe::Recipe::V4 {
+            legacy_rate_card_version: 3
+        }
+    );
     assert_eq!(record.node, FROZEN_NODE);
     assert_eq!(
         record.hash, "c52e40669e4afb81c8a244a7dfbd9142281e3b74179d51426075ad2564b2668b",
@@ -107,8 +119,7 @@ fn the_sealed_digest_of_a_fully_populated_record_is_the_frozen_hex() {
 }
 
 #[test]
-fn a_new_record_is_sealed_under_v4_and_its_preimage_is_v2_less_currency_plus_incarnation_and_node()
-{
+fn legacy_v4_retains_its_original_preimage_relative_to_v2() {
     use busbar_kernel_audit::recipe::{digest_fields, DigestValue};
     let v4 = digest_fields(&frozen_record());
     let v4_names: Vec<_> = v4.iter().map(|f| f.name).collect();
@@ -150,7 +161,9 @@ fn a_new_record_is_sealed_under_v4_and_its_preimage_is_v2_less_currency_plus_inc
     );
     assert_eq!(
         frozen_record().recipe,
-        busbar_kernel_audit::recipe::Recipe::V4
+        busbar_kernel_audit::recipe::Recipe::V4 {
+            legacy_rate_card_version: 3
+        }
     );
     assert!(AuditChain::verify_chain(std::slice::from_ref(&frozen_record())).is_ok());
 }
@@ -159,7 +172,7 @@ fn a_new_record_is_sealed_under_v4_and_its_preimage_is_v2_less_currency_plus_inc
 fn a_record_names_the_node_that_sealed_it_in_its_digest_and_its_range_read() {
     let seal = |node: u64| {
         let mut chain = AuditChain::new().sealing_as(node);
-        let record = chain.seal(inputs(1), &pass::<AuditStep>());
+        let record = chain.seal(inputs(1), &Pass::<AuditStep>::mint(&crate::seal::acquire()));
         (chain, record)
     };
     let ((chain_a, a), (_, b)) = (seal(11), seal(12));
@@ -192,7 +205,7 @@ fn two_boots_minting_the_same_unit_key_seal_distinct_verified_records() {
         let mut chain = AuditChain::new();
         let mut i = inputs(1);
         i.what.incarnation = incarnation;
-        chain.seal(i, &pass::<AuditStep>())
+        chain.seal(i, &Pass::<AuditStep>::mint(&crate::seal::acquire()))
     };
     let (first, second) = (seal(1), seal(2));
     assert_eq!(first.what.unit_key, second.what.unit_key);
@@ -223,14 +236,18 @@ fn tampering_fails_under_either_recipe_and_so_does_relabelling_one() {
         ("a v2 record's currency text", frozen_v2_record(), |r| {
             r.recipe = Recipe::V2 {
                 currency: "EUR".into(),
+                legacy_rate_card_version: 3,
             }
         }),
         ("a v2 record relabelled v4", frozen_v2_record(), |r| {
-            r.recipe = Recipe::V4
+            r.recipe = Recipe::V4 {
+                legacy_rate_card_version: 3,
+            }
         }),
         ("a v4 record relabelled v2", frozen_record(), |r| {
             r.recipe = Recipe::V2 {
                 currency: "USD".into(),
+                legacy_rate_card_version: 3,
             }
         }),
         ("a v4 record's incarnation", frozen_record(), |r| {
@@ -290,7 +307,7 @@ fn the_v1_frozen_digest_is_reproduced_by_v1_rules_from_a_v2_record() {
 fn a_record_links_to_the_one_before_it_and_the_run_verifies() {
     let mut chain = AuditChain::new();
     let records: Vec<_> = (1..=4)
-        .map(|i| chain.seal(inputs(i), &pass::<AuditStep>()))
+        .map(|i| chain.seal(inputs(i), &Pass::<AuditStep>::mint(&crate::seal::acquire())))
         .collect();
     assert_eq!(records[0].prev_hash, "");
     for pair in records.windows(2) {
@@ -304,7 +321,7 @@ fn a_record_links_to_the_one_before_it_and_the_run_verifies() {
 #[test]
 fn the_correlation_label_is_hashed_and_the_label_itself_is_gone() {
     let mut chain = AuditChain::new();
-    let record = chain.seal(inputs(1), &pass::<AuditStep>());
+    let record = chain.seal(inputs(1), &Pass::<AuditStep>::mint(&crate::seal::acquire()));
     let hash = record.correlation_hash.clone().unwrap();
     assert_eq!(
         hash,
@@ -324,7 +341,7 @@ fn a_record_with_no_correlation_label_carries_no_hash() {
     let mut chain = AuditChain::new();
     let mut without = inputs(1);
     without.correlation_label = None;
-    let record = chain.seal(without, &pass::<AuditStep>());
+    let record = chain.seal(without, &Pass::<AuditStep>::mint(&crate::seal::acquire()));
     assert!(record.correlation_hash.is_none());
 }
 
@@ -332,7 +349,7 @@ fn a_record_with_no_correlation_label_carries_no_hash() {
 fn editing_any_recorded_fact_is_caught() {
     let mut chain = AuditChain::new();
     let mut records: Vec<_> = (1..=3)
-        .map(|i| chain.seal(inputs(i), &pass::<AuditStep>()))
+        .map(|i| chain.seal(inputs(i), &Pass::<AuditStep>::mint(&crate::seal::acquire())))
         .collect();
 
     let edits: Vec<(&str, Edit)> = vec![
@@ -343,7 +360,9 @@ fn editing_any_recorded_fact_is_caught() {
             r.usage.lines[0].source = QuantitySource::KernelBytes { divisor: 4 }
         }),
         ("the estimated mark", |r| r.usage.lines[0].estimated = true),
-        ("the card version", |r| r.usage.rate_card_version += 1),
+        ("the card version", |r| {
+            r.usage.rate_card_version.as_mut().unwrap()[19] ^= 1
+        }),
         ("the bucket chain", |r| {
             r.usage.bucket_chain_ref = "chain:other".into()
         }),
@@ -406,11 +425,11 @@ fn two_nodes_do_not_digest_the_same() {
     let mut chain = AuditChain::new();
     let mut a = inputs(1);
     a.subject = Subject::Node(1);
-    let first = chain.seal(a, &pass::<AuditStep>());
+    let first = chain.seal(a, &Pass::<AuditStep>::mint(&crate::seal::acquire()));
     let mut chain = AuditChain::new();
     let mut b = inputs(1);
     b.subject = Subject::Node(2);
-    let second = chain.seal(b, &pass::<AuditStep>());
+    let second = chain.seal(b, &Pass::<AuditStep>::mint(&crate::seal::acquire()));
     assert_ne!(first.hash, second.hash);
 }
 
@@ -420,11 +439,14 @@ fn a_plane_contributes_exactly_two_identifiers() {
     let mut other_plane = inputs(1);
     other_plane.what.op_class = OpClassId::new("tool.call");
     other_plane.outcome.finish = FinishClass::TurnComplete;
-    let record = chain.seal(other_plane, &pass::<AuditStep>());
+    let record = chain.seal(
+        other_plane,
+        &Pass::<AuditStep>::mint(&crate::seal::acquire()),
+    );
 
     assert_eq!(record.what.op_class.as_str(), "tool.call");
     assert_eq!(record.outcome.finish, FinishClass::TurnComplete);
-    assert_eq!(record.recipe, busbar_kernel_audit::recipe::Recipe::V4);
+    assert_eq!(record.recipe, busbar_kernel_audit::recipe::Recipe::V5);
     assert!(record.controls.hold_ref.is_some());
 }
 
@@ -432,11 +454,11 @@ fn a_plane_contributes_exactly_two_identifiers() {
 fn a_chain_resumed_from_a_persisted_tail_continues_it() {
     let mut chain = AuditChain::new();
     let first: Vec<_> = (1..=2)
-        .map(|i| chain.seal(inputs(i), &pass::<AuditStep>()))
+        .map(|i| chain.seal(inputs(i), &Pass::<AuditStep>::mint(&crate::seal::acquire())))
         .collect();
 
     let mut resumed = AuditChain::resume(&first);
-    let third = resumed.seal(inputs(3), &pass::<AuditStep>());
+    let third = resumed.seal(inputs(3), &Pass::<AuditStep>::mint(&crate::seal::acquire()));
     assert_eq!(third.prev_hash, first[1].hash);
 
     let mut all = first;
@@ -448,7 +470,7 @@ fn a_chain_resumed_from_a_persisted_tail_continues_it() {
 fn a_record_carries_its_position_and_the_position_is_digested() {
     let mut chain = AuditChain::new();
     let records: Vec<_> = (1..=3)
-        .map(|i| chain.seal(inputs(i), &pass::<AuditStep>()))
+        .map(|i| chain.seal(inputs(i), &Pass::<AuditStep>::mint(&crate::seal::acquire())))
         .collect();
     assert_eq!(
         records.iter().map(|r| r.seq).collect::<Vec<_>>(),
@@ -475,7 +497,7 @@ fn a_record_carries_its_position_and_the_position_is_digested() {
 fn a_run_missing_its_oldest_records_does_not_verify_against_the_genesis() {
     let mut chain = AuditChain::new();
     let records: Vec<_> = (1..=4)
-        .map(|i| chain.seal(inputs(i), &pass::<AuditStep>()))
+        .map(|i| chain.seal(inputs(i), &Pass::<AuditStep>::mint(&crate::seal::acquire())))
         .collect();
 
     let brk = AuditChain::verify_chain(&records[1..]).unwrap_err();
@@ -492,7 +514,7 @@ fn a_run_missing_its_oldest_records_does_not_verify_against_the_genesis() {
 fn a_window_verifies_a_contiguous_middle_run_and_not_a_gapped_one() {
     let mut chain = AuditChain::new();
     let records: Vec<_> = (1..=6)
-        .map(|i| chain.seal(inputs(i), &pass::<AuditStep>()))
+        .map(|i| chain.seal(inputs(i), &Pass::<AuditStep>::mint(&crate::seal::acquire())))
         .collect();
 
     assert!(AuditChain::verify_window(&records[2..5]).is_ok());
@@ -512,3 +534,182 @@ type Edit = fn(&mut busbar_kernel_audit::record::AuditRecord);
 
 #[path = "break_reporting_tests.rs"]
 mod break_reporting_tests;
+
+#[test]
+fn old_v2_and_v4_fixed_journal_bytes_keep_their_original_hashes_and_ordinal_metadata() {
+    use busbar_kernel_audit::journal::{from_journal_body, head_from_journal_body, journal_body};
+    for (bytes, expected) in [
+        (
+            include_bytes!("fixtures/legacy-v2.bin").as_slice(),
+            frozen_v2_record(),
+        ),
+        (
+            include_bytes!("fixtures/legacy-v4.bin").as_slice(),
+            frozen_record(),
+        ),
+    ] {
+        let back = from_journal_body(bytes, &declared_for_keyed_audit)
+            .unwrap()
+            .unwrap();
+        assert_eq!(back, expected);
+        assert_eq!(journal_body(&back).unwrap(), bytes);
+        assert_eq!(AuditChain::digest_of(&back), expected.hash);
+        assert_eq!(
+            back.usage.rate_card_version, None,
+            "an old ordinal never invents a key"
+        );
+        let head = head_from_journal_body(bytes).unwrap().unwrap();
+        assert_eq!(head.head.hash, expected.hash);
+        assert_eq!(head.node, expected.node);
+        let signer = busbar_kernel_audit::AuditSigningKey::from_seed(&[42; 32]);
+        let mut signed = back.clone();
+        signed.signature = Some(signer.sign_digest(&signed.hash));
+        signed.key_id = Some(signer.key_id().to_owned());
+        let signed_bytes = journal_body(&signed).unwrap();
+        assert!(from_journal_body(&signed_bytes, &|_| None).is_err());
+        let signed_head = head_from_journal_body(&signed_bytes).unwrap().unwrap();
+        assert_eq!(signed_head.head.signature, signed.signature);
+        assert_eq!(signed_head.head.key_id, signed.key_id);
+        assert_eq!(signed_head.head.hash, signed.hash);
+        let signed_back = from_journal_body(&signed_bytes, &declared_for_keyed_audit)
+            .unwrap()
+            .unwrap();
+        assert_eq!(signed_back, signed);
+        let key =
+            busbar_kernel_audit::AuditVerifyingKey::from_hex(&signer.public_key_hex()).unwrap();
+        assert!(AuditChain::verify_signature(&signed_back, &key).is_ok());
+        let mut wrong_tag = bytes.to_vec();
+        wrong_tag[11] = b'5';
+        assert!(head_from_journal_body(&wrong_tag).is_err());
+        assert!(from_journal_body(&wrong_tag, &declared_for_keyed_audit).is_err());
+        let mut edited = back;
+        match &mut edited.recipe {
+            busbar_kernel_audit::Recipe::V2 {
+                legacy_rate_card_version,
+                ..
+            }
+            | busbar_kernel_audit::Recipe::V4 {
+                legacy_rate_card_version,
+            } => *legacy_rate_card_version += 1,
+            _ => panic!("a frozen old recipe"),
+        }
+        assert_ne!(AuditChain::digest_of(&edited), expected.hash);
+    }
+}
+
+#[test]
+fn v5_key_presence_and_every_key_byte_survive_seal_journal_and_publication() {
+    use busbar_kernel_audit::{
+        journal::{from_journal_body, journal_body},
+        Recipe,
+    };
+    let mut hashes = std::collections::BTreeSet::new();
+    for key in [
+        None,
+        Some([0; 20]),
+        Some([3; 20]),
+        Some({
+            let mut key = [3; 20];
+            key[8] = 4;
+            key
+        }),
+        Some({
+            let mut key = [3; 20];
+            key[19] = 4;
+            key
+        }),
+    ] {
+        let mut input = inputs(1);
+        input.usage.rate_card_version = key;
+        let mut chain = AuditChain::new();
+        let record = chain.seal(input, &pass::<AuditStep>());
+        assert_eq!(record.recipe, Recipe::V5);
+        assert!(
+            hashes.insert(record.hash.clone()),
+            "None, zero, writer and counter must differ"
+        );
+        let body = journal_body(&record).unwrap();
+        let back = from_journal_body(&body, &declared_for_keyed_audit)
+            .unwrap()
+            .unwrap();
+        assert_eq!(back, record);
+        let exposed: serde_json::Value = serde_json::from_str(
+            &busbar_kernel_audit::expose::range_body(&chain, &[record], 1, 1),
+        )
+        .unwrap();
+        assert_eq!(
+            exposed["records"][0]["rate_card_key_present"],
+            if key.is_some() { "1" } else { "0" }
+        );
+        let hex = key
+            .map(|key| {
+                key.iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>()
+            })
+            .unwrap_or_default();
+        assert_eq!(exposed["records"][0]["rate_card_version"], hex);
+    }
+}
+
+#[test]
+fn v5_journal_rejects_wrong_key_lengths_presence_tags_and_trailing_bytes() {
+    use busbar_kernel_audit::journal::{from_journal_body, head_from_journal_body, journal_body};
+    let mut input = inputs(1);
+    input.usage.rate_card_version = Some([0xa5; 20]);
+    let record = AuditChain::new().seal(input, &pass::<AuditStep>());
+    let body = journal_body(&record).unwrap();
+    let key_at = body.windows(20).position(|w| w == [0xa5; 20]).unwrap();
+    for len in [0_usize, 19, 21] {
+        let mut bad = body[..key_at - 4].to_vec();
+        bad.extend_from_slice(&(len as u32).to_be_bytes());
+        bad.extend(std::iter::repeat_n(0xa5, len));
+        bad.extend_from_slice(&body[key_at + 20..]);
+        assert!(from_journal_body(&bad, &declared_for_keyed_audit).is_err());
+    }
+    let mut bad = body.clone();
+    bad[key_at - 12..key_at - 4].copy_from_slice(&2_u64.to_be_bytes());
+    assert!(from_journal_body(&bad, &declared_for_keyed_audit).is_err());
+    let mut bad = body.clone();
+    bad.push(0);
+    assert!(from_journal_body(&bad, &declared_for_keyed_audit).is_err());
+    let mut bad = body;
+    bad[11] = b'4';
+    assert!(head_from_journal_body(&bad).is_err());
+    assert!(from_journal_body(&bad, &declared_for_keyed_audit).is_err());
+}
+
+#[test]
+fn a_mixed_old_and_keyed_chain_preserves_original_old_heads() {
+    use busbar_kernel_audit::Recipe;
+    let first = frozen_v2_record();
+    let mut second = frozen_record();
+    second.seq = 2;
+    second.prev_hash = first.hash.clone();
+    second.recipe = Recipe::V4 {
+        legacy_rate_card_version: u64::MAX,
+    };
+    second.hash = AuditChain::digest_of(&second);
+    let mut chain = AuditChain::resume(&[first.clone(), second.clone()]);
+    let third = chain.seal(inputs(3), &pass::<AuditStep>());
+    let records = [first, second, third];
+    assert_eq!(records[0].hash, FROZEN_V2);
+    assert_eq!(records[2].recipe, Recipe::V5);
+    assert!(AuditChain::verify_chain(&records).is_ok());
+    for record in &records {
+        let bytes = busbar_kernel_audit::journal_body(record).unwrap();
+        let back = busbar_kernel_audit::from_journal_body(&bytes, &declared_for_keyed_audit)
+            .unwrap()
+            .unwrap();
+        assert_eq!(back, *record);
+        assert_eq!(busbar_kernel_audit::journal_body(&back).unwrap(), bytes);
+    }
+}
+
+fn declared_for_keyed_audit(name: &str) -> Option<busbar_contract::MeterClassId> {
+    match name {
+        "tokens_out" => Some(busbar_contract::MeterClassId::new("tokens_out")),
+        "tokens_in" => Some(busbar_contract::MeterClassId::new("tokens_in")),
+        _ => None,
+    }
+}

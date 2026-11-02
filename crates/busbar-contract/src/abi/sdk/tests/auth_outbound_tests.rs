@@ -1379,7 +1379,7 @@ fn staged_diagnostics_read_back_in_order() {
     );
 }
 
-/// RED (open160 A9, "every refusal says why"): an outbound door's REFUSED answers named no text,
+/// Every outbound refusal says why.
 #[test]
 fn red_every_outbound_refusal_says_why() {
     let t = ops();

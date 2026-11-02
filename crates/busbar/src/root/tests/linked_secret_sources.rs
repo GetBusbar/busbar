@@ -6,9 +6,41 @@ use busbar_contract::secret_ref::{SECRET_MODULE_ENV, SECRET_MODULE_FILE};
 use busbar_kernel::config::SecretRef;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+pub(super) fn linked_axis() -> &'static crate::root::loader::secret_calls::SecretRows {
+    static AXIS: std::sync::OnceLock<crate::root::loader::secret_calls::SecretRows> =
+        std::sync::OnceLock::new();
+    AXIS.get_or_init(|| {
+        let mut rows = crate::root::loader::secret_calls::SecretRows::new(
+            crate::root::dispatch::dispatcher,
+            super::conns,
+        )
+        .with_logs(|| crate::root::boot::plugin_logs().clone())
+        .with_disk_lane(super::disk_run);
+        for door in crate::LINKED.secrets {
+            rows.link(*door).expect("the linked secret door states");
+        }
+        for (door, json) in crate::LINKED.secret_declares {
+            rows.declare_linked(*door, json)
+                .expect("the linked secret declaration reads");
+        }
+        rows.with_former_names(busbar_kernel::config::migration_table::former_names)
+            .expect("the linked secret names migrate");
+        rows
+    })
+}
+
+#[test]
+fn the_linked_source_fixture_is_independent_of_the_boot_registry_rows() {
+    let boot = super::secret_rows();
+    let before = (boot.linked("env"), boot.linked("file"));
+    let axis = linked_axis();
+    assert!(axis.linked("env") && axis.linked("file"));
+    assert!(!std::ptr::eq(boot, axis));
+    assert_eq!((boot.linked("env"), boot.linked("file")), before);
+}
+
 fn resolve_linked(secret: &SecretRef) -> Result<Vec<u8>, String> {
-    let axis = super::link_secrets(crate::LINKED.secrets, crate::LINKED.secret_declares)
-        .expect("the linked secret doors state");
+    let axis = linked_axis();
     let settings = serde_json::Value::Object(secret.settings.clone()).to_string();
     axis.shared(&secret.module)?
         .resolve_at_config(
@@ -20,8 +52,7 @@ fn resolve_linked(secret: &SecretRef) -> Result<Vec<u8>, String> {
 }
 
 fn resolve_on_a_request_path(secret: &SecretRef) -> Result<Vec<u8>, String> {
-    let axis = super::link_secrets(crate::LINKED.secrets, crate::LINKED.secret_declares)
-        .expect("the linked secret doors state");
+    let axis = linked_axis();
     let settings = serde_json::Value::Object(secret.settings.clone()).to_string();
     axis.shared(&secret.module)?
         .resolve(settings.as_bytes())

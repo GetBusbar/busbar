@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! NO PLUGIN CODE RUNS UNDER A HOST LOCK (`BUSBAR-1.6.0.md` §11, M1 DISPATCH RULINGS), on a line:
+//! Verifies that no plugin code runs while the host holds a connection-line lock.
 
 use std::sync::{mpsc, Arc, Mutex, OnceLock, Weak};
 use std::task::{Context, Waker};

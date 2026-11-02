@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use busbar_contract::abi::plane::{ROUTE_DIRECT, ROUTE_POOL};
-use busbar_kernel_testkit::test_support::governance::GovStateFixtures;
 
 use busbar_contract::section::TOOL_CALL_SECTION_KEY;
 
@@ -2064,7 +2063,6 @@ pub(crate) mod tool_door {
     use busbar_kernel::governance::signing::{TokenSigner, DEFAULT_KID};
     use busbar_kernel::governance::{GovState, NewKeySpec};
     use busbar_kernel::plane_driver::{refusal_status, EndPost, PlaneMoney};
-    use busbar_kernel_testkit::test_support::store_double::MemoryStore;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use crate::root::loader::dispatch::kinds::plane::Plane;
@@ -2541,8 +2539,8 @@ pub(crate) mod tool_door {
             instance: &'static str,
             tools: serde_yaml::Value,
             configure: &dyn Fn(
-                busbar_kernel::test_support::TestApp,
-            ) -> busbar_kernel::test_support::TestApp,
+                busbar_kernel_testkit::test_support::TestApp,
+            ) -> busbar_kernel_testkit::test_support::TestApp,
         ) -> Rig {
             self.try_rig(instance, tools, configure)
                 .unwrap_or_else(|e| panic!("the TLS door composes: {e}"))
@@ -2553,8 +2551,8 @@ pub(crate) mod tool_door {
             instance: &'static str,
             tools: serde_yaml::Value,
             configure: &dyn Fn(
-                busbar_kernel::test_support::TestApp,
-            ) -> busbar_kernel::test_support::TestApp,
+                busbar_kernel_testkit::test_support::TestApp,
+            ) -> busbar_kernel_testkit::test_support::TestApp,
         ) -> Result<Rig, String> {
             self.try_rig_with_footing(instance, tools, None, self.footing(), configure)
         }
@@ -2565,8 +2563,8 @@ pub(crate) mod tool_door {
             tools: serde_yaml::Value,
             footing: Footing<'_>,
             configure: &dyn Fn(
-                busbar_kernel::test_support::TestApp,
-            ) -> busbar_kernel::test_support::TestApp,
+                busbar_kernel_testkit::test_support::TestApp,
+            ) -> busbar_kernel_testkit::test_support::TestApp,
         ) -> Rig {
             self.try_rig_with_footing(instance, tools, None, footing, configure)
                 .unwrap_or_else(|e| panic!("the TLS door composes: {e}"))
@@ -2578,8 +2576,8 @@ pub(crate) mod tool_door {
             tools: serde_yaml::Value,
             allowed_pools: Option<Vec<String>>,
             configure: &dyn Fn(
-                busbar_kernel::test_support::TestApp,
-            ) -> busbar_kernel::test_support::TestApp,
+                busbar_kernel_testkit::test_support::TestApp,
+            ) -> busbar_kernel_testkit::test_support::TestApp,
         ) -> Rig {
             self.try_rig_with_footing(instance, tools, allowed_pools, self.footing(), configure)
                 .unwrap_or_else(|e| panic!("the granted TLS door composes: {e}"))
@@ -2592,8 +2590,8 @@ pub(crate) mod tool_door {
             allowed_pools: Option<Vec<String>>,
             mut footing: Footing<'_>,
             configure: &dyn Fn(
-                busbar_kernel::test_support::TestApp,
-            ) -> busbar_kernel::test_support::TestApp,
+                busbar_kernel_testkit::test_support::TestApp,
+            ) -> busbar_kernel_testkit::test_support::TestApp,
         ) -> Result<Rig, String> {
             if footing.tls.is_none() {
                 footing.tls = Some(Arc::clone(&self.tls));
@@ -2650,7 +2648,7 @@ pub(crate) mod tool_door {
 
         pub(crate) audience: Option<String>,
 
-        pub(crate) store: Arc<busbar_kernel_testkit::test_support::store_double::MemoryStore>,
+        pub(crate) store: Arc<crate::root::loader::store_v3::LoadedStore>,
 
         pub(crate) tokens: Arc<super::TokenEndpoint>,
 
@@ -2728,7 +2726,7 @@ pub(crate) mod tool_door {
             let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
             let gov = Arc::new(
                 GovState::new_with_signer(
-                    Arc::new(MemoryStore::new()),
+                    crate::root::real_store::records(),
                     Some(ADMIN_TOKEN.to_string()),
                     Some(signer),
                 )
@@ -2915,6 +2913,7 @@ pub(crate) mod tool_door {
             };
 
             let tables = busbar_kernel::plane_driver::serve::ServeTables::default();
+            let app = busbar_kernel_testkit::test_support::TestApp::new();
             let mut served = compose_planes(
                 &doors,
                 &dispatcher,
@@ -2938,8 +2937,7 @@ pub(crate) mod tool_door {
             let audience = composed.snapshot.audience.clone();
             served.post = Some(Arc::clone(&post));
             let app = configure(
-                busbar_kernel_testkit::test_support::TestApp::new()
-                    .keys_chain()
+                app.keys_chain()
                     .governance(Arc::clone(&gov))
                     .serve_tables(tables.clone())
                     .cost(CostModel::flat(1)),
@@ -3104,9 +3102,9 @@ pub(crate) mod tool_door {
         dest: Arc<dyn busbar_kernel::host_services::DestJudge>,
     ) -> (
         Arc<crate::root::serve::LateServices>,
-        Arc<busbar_kernel_testkit::test_support::store_double::MemoryStore>,
+        Arc<crate::root::loader::store_v3::LoadedStore>,
     ) {
-        let store = Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new());
+        let store = crate::root::real_store::store();
         let (origin, ahead) = (std::time::Instant::now(), Arc::clone(clock));
         let wall_ahead = Arc::clone(wall);
         let kernel = busbar_kernel::host_services::KernelServices::new()
@@ -3128,7 +3126,7 @@ pub(crate) mod tool_door {
                 busbar_kernel::host_records::QUEUE_CAP,
             )));
         let kernel = Arc::new(match ledger {
-            Ledger::Memory => kernel.with_records(Arc::new(StoreRows(Arc::clone(&store)))),
+            Ledger::Memory => kernel.with_records(Arc::new(StoreRows(store.clone()))),
             Ledger::Store(claims) => {
                 kernel.with_records(Arc::new(ClaimsIn(Arc::new(Rows::default()), claims)))
             }
@@ -3481,51 +3479,7 @@ pub(crate) mod tool_door {
         Unbound,
     }
 
-    struct StoreRows(Arc<busbar_kernel_testkit::test_support::store_double::MemoryStore>);
-
-    impl busbar_kernel::host_records::RecordRows for StoreRows {
-        fn claim(
-            &self,
-            kind: &str,
-            token: &str,
-            expires_at: u64,
-            now: u64,
-        ) -> Result<bool, busbar_contract::kinds::StoreError> {
-            busbar_contract::records::RecordStore::redeem_plane_token(
-                &*self.0, kind, token, expires_at, now,
-            )
-            .map_err(|e| busbar_contract::kinds::StoreError::Rejected(e.0))
-        }
-        fn record_put(
-            &self,
-            schema: busbar_contract::ids::RecordSchemaId,
-            key: &[u8],
-            value: &busbar_contract::kinds::RecordBytes,
-        ) -> Result<(), busbar_contract::kinds::StoreError> {
-            self.0.record_put(schema, key, value)
-        }
-
-        fn record_get(
-            &self,
-            schema: busbar_contract::ids::RecordSchemaId,
-            key: &[u8],
-        ) -> Result<Option<busbar_contract::kinds::RecordBytes>, busbar_contract::kinds::StoreError>
-        {
-            self.0.record_get(schema, key)
-        }
-
-        fn record_scan(
-            &self,
-            schema: busbar_contract::ids::RecordSchemaId,
-            prefix: &[u8],
-            limit: u32,
-        ) -> Result<
-            Vec<(Vec<u8>, busbar_contract::kinds::RecordBytes)>,
-            busbar_contract::kinds::StoreError,
-        > {
-            self.0.record_scan(schema, prefix, limit)
-        }
-    }
+    use busbar_kernel::host_records::StoreRows;
 
     struct ClaimsIn(Arc<Rows>, Arc<dyn busbar_contract::records::RecordStore>);
 
@@ -3692,8 +3646,7 @@ pub(crate) mod tool_door {
         let error = (row
             .parse_section
             .expect("the door parses its owned section"))(row, &section(9))
-        .err()
-        .expect("pinned_pubkey does not authenticate a server in this build");
+        .expect_err("pinned_pubkey does not authenticate a server in this build");
         assert!(
             error.contains("pinned_pubkey") && error.contains("authenticates nothing"),
             "{error}"
@@ -4214,13 +4167,13 @@ pub(crate) mod tool_door {
         let instance = "door-verify-on-call";
         let mut server = TlsToolServer::new().await;
         let rig = server.rig(instance, tools(&server, "1h"), &|app| app);
-        let mut heard = &mut server.heard;
+        let heard = &mut server.heard;
         for _ in 0..2 {
             let (status, body) = send(&rig.router, Some(&rig.bound_token()), CALL).await;
             assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
         }
         assert_eq!(
-            drain(&mut heard),
+            drain(heard),
             vec!["list", "call", "call"],
             "one fetch, two calls"
         );
@@ -4230,7 +4183,7 @@ pub(crate) mod tool_door {
         let listed = Arc::new(std::sync::Mutex::new(tool_listing()));
         let mut server = TlsToolServer::listing(Arc::clone(&listed)).await;
         let rig = server.rig(instance, tools(&server, "0s"), &|app| app);
-        let mut heard = &mut server.heard;
+        let heard = &mut server.heard;
         let (status, _) = send(&rig.router, Some(&rig.bound_token()), CALL).await;
         assert_eq!(
             status,
@@ -4246,7 +4199,7 @@ pub(crate) mod tool_door {
         let body: serde_json::Value = serde_json::from_slice(&body).expect("JSON-RPC");
         assert_eq!(body["error"]["data"]["reason"], "quarantined", "{body}");
         assert_eq!(
-            drain(&mut heard),
+            drain(heard),
             vec!["list", "call", "list"],
             "the drifted call was refused before it was sent"
         );
@@ -4922,7 +4875,10 @@ pub(crate) mod door_boundary {
             "messages": [{"role": "user", "content": "hi"}],
             "max_tokens": 16
         });
-        let mut routes = busbar_kernel_testkit::routes::base_data_route_method_view(&rig.app);
+        let mut routes = busbar_kernel::base_data_core_lines(&rig.app)
+            .into_iter()
+            .map(|(path, method, auth)| (path, method.as_str().to_string(), auth))
+            .collect::<Vec<_>>();
         routes.extend(rig.door_table.iter().cloned());
         let mut walked: Vec<String> = Vec::new();
         for (pattern, verb, auth) in &routes {
@@ -5034,7 +4990,10 @@ pub(crate) mod door_boundary {
             Some("client-1"),
         );
 
-        let mut routes = busbar_kernel_testkit::routes::base_data_route_method_view(&rig.app);
+        let mut routes = busbar_kernel::base_data_core_lines(&rig.app)
+            .into_iter()
+            .map(|(path, method, auth)| (path, method.as_str().to_string(), auth))
+            .collect::<Vec<_>>();
         routes.extend(rig.door_table.iter().cloned());
         let admissible: Vec<String> = rig
             .door_table
@@ -8545,8 +8504,10 @@ fn the_configured_error_body_cap_reaches_both_egress_constructors() {
         (ordinary, models)
     };
 
-    let mut limits = LimitsResolved::default();
-    limits.upstream_error_body_max_bytes = 17;
+    let mut limits = LimitsResolved {
+        upstream_error_body_max_bytes: 17,
+        ..LimitsResolved::default()
+    };
     let _outer = BuildScope::enter(&limits);
     let first = build();
     {

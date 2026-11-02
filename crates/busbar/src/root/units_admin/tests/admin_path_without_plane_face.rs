@@ -203,7 +203,7 @@ fn the_real_surface_bare_and_mounted() -> (axum::Router, axum::Router) {
     );
     let gov = Arc::new(
         busbar_kernel::governance::GovState::new_with_signer(
-            Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new()),
+            crate::root::real_store::records(),
             None,
             Some(signer),
         )
@@ -622,11 +622,8 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
     busbar_core_admin::install();
 
     let gov = Arc::new(
-        busbar_kernel::governance::GovState::new(
-            Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new()),
-            None,
-        )
-        .expect("a governance over the memory store"),
+        busbar_kernel::governance::GovState::new(crate::root::real_store::records(), None)
+            .expect("a governance over the memory store"),
     );
     gov.attach_store_calls(crate::root::store_double::RecordSlots::new().calls());
     let booted = busbar_kernel_testkit::test_support::TestApp::new()

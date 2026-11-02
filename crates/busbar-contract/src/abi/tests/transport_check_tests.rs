@@ -1021,7 +1021,7 @@ fn a_route_content_is_checked() {
     );
 }
 
-/// RED (audit contract-src #11): a read route no request can match by its method set or its path
+/// A route view with no method or no known form is refused.
 #[test]
 fn a_route_view_with_no_method_or_no_known_form_is_refused() {
     use route::*;

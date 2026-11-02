@@ -1174,12 +1174,13 @@ hook_op!(
     /// `status`: the 1.5.5 envelope, held under a lease.
     Status, InHead, StatusOut, |held, _i, _input, out| {
         // A blob that will not serialise is a FAILED answer saying so, never an empty READY.
-        let bytes = match serde_json::to_vec(&held.life().hook().status()) {
-            Ok(bytes) => bytes,
-            Err(e) => return out.fail(Refusal::failed(format!("status: {e}"))),
-        };
+        let status = JsonValue(held.life().hook().status());
+        let mut bytes = crate::abi::sdk::secret_bytes::SecretBytes::default();
+        if let Err(e) = serde_json::to_writer(&mut bytes, &status.0) {
+            return out.fail(Refusal::failed(format!("status: {e}")));
+        }
         let o = out.raw();
-        o.status = held.leases().blob(&mut o.head, bytes, BLOB_JSON);
+        o.status = held.leases().secret_blob(&mut o.head, bytes.into_vec(), BLOB_JSON);
         Outcome::Ready
     }
 );

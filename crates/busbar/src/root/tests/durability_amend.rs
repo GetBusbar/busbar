@@ -85,11 +85,8 @@ fn boot(
         "the child process boots over the directory its phase names"
     );
     let gov = Arc::new(
-        busbar_kernel::governance::GovState::new(
-            Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new()),
-            None,
-        )
-        .expect("a governance over the memory store"),
+        busbar_kernel::governance::GovState::new(crate::root::real_store::records(), None)
+            .expect("a governance over the memory store"),
     );
     gov.attach_store_calls(slots.calls());
     let app = busbar_kernel_testkit::test_support::TestApp::new()

@@ -21,7 +21,7 @@ async fn signal(receiver: std::sync::mpsc::Receiver<()>) {
 #[tokio::test]
 async fn a_configure_result_lost_before_or_after_ready_cannot_restore_an_older_checkpoint() {
     for queued_ready in [false, true] {
-        let (instance, _) = checkpoint_instance(Way::Linked, "block_drop");
+        let (instance, binds) = checkpoint_instance(Way::Linked, "block_drop");
         instance
             .configure("checkpoint", r#"{"reject_over_messages":2}"#, 2, BUDGET)
             .await
@@ -54,10 +54,21 @@ async fn a_configure_result_lost_before_or_after_ready_cannot_restore_an_older_c
             "the abandoned configure actually committed"
         );
         regenerate(&instance);
+        let before_recovery = binds.load(std::sync::atomic::Ordering::SeqCst);
         assert!(
             matches!(instance.decide(frame(2), BUDGET).await, Answered::Broken(_)),
             "queued_ready={queued_ready}: an unknown configure result reopened stale state"
         );
+        assert_eq!(
+            binds.load(std::sync::atomic::Ordering::SeqCst),
+            before_recovery,
+            "queued_ready={queued_ready}: known unresolved configuration must refuse before binding a fresh instance"
+        );
+        assert!(instance.quarantined());
+        assert!(!matches!(
+            *instance.inner.lock(),
+            super::super::State::Trialing
+        ));
     }
 }
 

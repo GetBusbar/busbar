@@ -108,7 +108,9 @@ macro_rules! disarmed {
             let op = inner()
                 .$field
                 .expect(concat!("the test plane answers ", stringify!($field)));
-            unmeasured(|| op(i, input, out))
+            // SAFETY: the dispatcher lends this trampoline the instance and buffers for this
+            // exact plane slot; forwarding them unchanged preserves that slot's ABI contract.
+            unmeasured(|| unsafe { op(i, input, out) })
         }
     };
 }

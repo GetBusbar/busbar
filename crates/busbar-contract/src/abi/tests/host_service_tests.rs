@@ -1196,7 +1196,7 @@ fn in_rule(r: Result<(), Fault>) -> Fault {
     r.expect_err("the `in` must be refused")
 }
 
-/// RED (exact sizes): an `in` whose stated size is one field short, or longer, is refused; another
+/// An exact-size input one field short or long is refused.
 #[test]
 fn red_an_exact_size_in_one_field_short_or_long_is_refused() {
     let exact = core::mem::size_of::<UnitRefuseIn>();

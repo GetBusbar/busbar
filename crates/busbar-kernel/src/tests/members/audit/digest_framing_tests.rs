@@ -18,7 +18,7 @@
 //! 2. **Every field carries its own length**, checked on the preimage bytes themselves rather than
 //!    inferred from a digest agreeing with itself.
 
-use crate::test_support::tokens::pass;
+use busbar_contract::caps::Pass;
 use busbar_contract::caps::{Audit as AuditStep, KernelSeal, Origin, OriginKind, Outcome, UnitKey};
 
 use busbar_kernel_audit::digest::{Digest, Framing};
@@ -62,7 +62,7 @@ fn record_inputs(op_class: &str, destination: &str) -> AuditInputs {
             }],
             tier_bp: 9_000,
             fee_count: 1,
-            rate_card_version: 3,
+            rate_card_version: Some([3; 20]),
             bucket_chain_ref: "chain:free>paid".into(),
         },
         controls: Controls {
@@ -85,13 +85,13 @@ fn a_bar_moved_between_two_caller_named_fields_of_the_new_record_changes_its_dig
     let mut chain = AuditChain::new();
     let left = chain.seal(
         record_inputs("chat.completion|upstream-a", "eu"),
-        &pass::<AuditStep>(),
+        &Pass::<AuditStep>::mint(&crate::seal::acquire()),
     );
 
     let mut chain = AuditChain::new();
     let right = chain.seal(
         record_inputs("chat.completion", "upstream-a|eu"),
-        &pass::<AuditStep>(),
+        &Pass::<AuditStep>::mint(&crate::seal::acquire()),
     );
 
     assert_ne!(

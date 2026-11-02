@@ -115,6 +115,7 @@ impl Fixture {
                     pool: "",
                     model: LANE,
                     entry_era: self.era,
+                    entry_id: None,
                     card_epoch_ms: self.epoch,
                     delta: &delta,
                     now: busbar_kernel::store::now(),

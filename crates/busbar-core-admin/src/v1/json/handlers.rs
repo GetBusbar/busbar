@@ -517,11 +517,11 @@ pub(crate) async fn get_usage(
 
     let as_of = match q.get("as_of") {
         None => None,
-        Some(v) => match v.parse::<u64>() {
-            Ok(s) => Some(s),
-            Err(_) => {
+        Some(v) => match busbar_kernel::cost::EntryKey::parse_hex(v) {
+            Some(key) => Some(key),
+            None => {
                 return err_json(&AdminError::Validation(
-                    "invalid `as_of`: expected a rate-card history sequence number".into(),
+                    "invalid `as_of`: expected a 40-hex-digit rate-card history entry key".into(),
                 ))
             }
         },
@@ -3608,12 +3608,11 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 ),
                 (
                     "as_of",
-                    "A rate-card history sequence number to price against (default: the \
-                     history as it stands). Each row is priced at the card in force at the row's own \
-                     instant UNDER THIS SNAPSHOT, so an invoice cut at a snapshot is re-derived by \
-                     asking for it again. A seq above the head is refused, never clamped to it. \
-                     Distinct from the `as_of` FIELD in the response, which is the instant the read \
-                     was taken",
+                    "A known rate-card history entry key as 40 hexadecimal digits (default: the \
+                     history as it stands). Each row is priced at its own instant through the \
+                     inclusive key boundary, which remains stable when earlier entries arrive. \
+                     Unknown keys and numeric list positions are refused. Distinct from the numeric \
+                     `as_of` FIELD in the response, which is the instant the read was taken",
                     false,
                 ),
             ],
@@ -3636,8 +3635,13 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             let list: Vec<serde_json::Value> = params
                 .iter()
                 .map(|(name, desc, required)| {
+                    let schema = if *path == "/usage" && *name == "as_of" {
+                        json!({"type": "string", "pattern": "^[0-9a-fA-F]{40}$"})
+                    } else {
+                        json!({"type": "string"})
+                    };
                     json!({"name": name, "in": "query", "required": required,
-                           "schema": {"type": "string"}, "description": desc})
+                           "schema": schema, "description": desc})
                 })
                 .collect();
             match op.get_mut("parameters").and_then(|p| p.as_array_mut()) {
@@ -4084,6 +4088,13 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         );
         body!(&settings, "patch", super::named_map::NamedSettingsReq);
     }
+
+    typed!(
+        "/export/{name}",
+        "delete",
+        "200",
+        super::named_map::PendingRestartRemovalView
+    );
 
     let mut schemas = gen.definitions().clone();
 

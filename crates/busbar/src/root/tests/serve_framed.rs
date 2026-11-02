@@ -325,3 +325,36 @@ fn the_line_carrier_is_never_handed_to_a_framer_that_claims_its_name() {
         "another carrier such a framer answers is still framed by it"
     );
 }
+
+#[tokio::test]
+async fn folded_closing_fields_do_not_advertise_a_trailer_block() {
+    let fields = vec![
+        (
+            b"content-type".to_vec(),
+            b"application/test-framed".to_vec(),
+        ),
+        (b"trailer".to_vec(), b"frame-status, frame-details".to_vec()),
+        (b"x-retained".to_vec(), b"head-value".to_vec()),
+    ];
+    let streaming = super::stated((200, fields.clone()), axum::body::Body::empty());
+    assert_eq!(
+        field(streaming.headers(), "trailer"),
+        Some("frame-status, frame-details")
+    );
+    let mut closing = axum::http::HeaderMap::new();
+    closing.insert("frame-status", "5".parse().unwrap());
+    closing.insert("frame-details", "details".parse().unwrap());
+    let response = super::closed_whole((200, fields), closing);
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    assert!(response.headers().get("trailer").is_none());
+    assert_eq!(
+        field(response.headers(), "content-type"),
+        Some("application/test-framed")
+    );
+    assert_eq!(field(response.headers(), "x-retained"), Some("head-value"));
+    assert_eq!(field(response.headers(), "frame-status"), Some("5"));
+    assert_eq!(field(response.headers(), "frame-details"), Some("details"));
+    let collected = response.into_body().collect().await.unwrap();
+    assert!(collected.trailers().is_none());
+    assert!(collected.to_bytes().is_empty());
+}

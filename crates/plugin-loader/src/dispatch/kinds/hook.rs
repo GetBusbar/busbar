@@ -65,12 +65,10 @@ fn read(st: &Statement) -> Result<HookContext, String> {
         infallible: t.infallible != 0,
         words: Vec::new(),
     };
-    let routes = if t.routes_len == 0 {
-        &[][..]
-    } else {
-        // SAFETY: the count and pointer were checked above; the tail is static plugin data.
-        unsafe { std::slice::from_raw_parts(t.routes, t.routes_len) }
-    };
+    // SAFETY: a nonempty route list is static plugin data. `lent` checks alignment and the byte
+    // bound before forming a slice; the existing route count and NULL checks remain above.
+    let routes = unsafe { crate::dispatch::validate::lent(t.routes, t.routes_len) }
+        .ok_or("the hook tail's route list is misaligned or exceeds the byte bound")?;
     let mut declared_routes = Vec::new();
     for r in routes {
         let path = owned(r.path).ok_or("a hook route's path is malformed")?;

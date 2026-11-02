@@ -1774,7 +1774,7 @@ extern "C" fn sees_scheme(_ctx: HostCtx, input: *const c_void, out: *mut Service
     }
 }
 
-/// RED (the upstream's scheme): the code the host declared for the stream reaches the auth in the
+/// Auth call hands the auth the scheme the request carries.
 #[test]
 fn auth_call_hands_the_auth_the_scheme_the_request_carries() {
     let t = auth_table(Some(sees_scheme));

@@ -376,7 +376,7 @@ fn token_signer(seed: u8) -> crate::governance::signing::TokenSigner {
 
 fn deployment(seed: u8) -> crate::governance::GovState {
     crate::governance::GovState::new_with_signer(
-        Arc::new(crate::governance::MemoryStore::new()),
+        crate::real_store::store(),
         None,
         Some(token_signer(seed)),
     )

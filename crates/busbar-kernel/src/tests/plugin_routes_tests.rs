@@ -355,9 +355,9 @@ fn admin_auth_route_is_classified_to_the_admin_plane_only() {
 
 #[tokio::test]
 async fn admin_auth_route_is_absent_from_the_data_listener() {
-    use crate::governance::{GovState, MemoryStore};
+    use crate::governance::GovState;
     use crate::test_support::{LaneSpec, TestApp};
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
     let base = TestApp::new()
         .lane(LaneSpec::new("m", LANE_PROTOCOL, "http://127.0.0.1:1"))

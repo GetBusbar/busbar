@@ -20,14 +20,25 @@ enum Reply {
     LoseAfter,
     CancelAfter,
 }
-#[derive(Default)]
 struct ChunkStore {
-    inner: MemoryStore,
+    inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
     legacy: bool,
     replies: std::sync::Mutex<VecDeque<Reply>>,
     batches: std::sync::Mutex<Vec<Batch>>,
     before_batch: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
     before_delete: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
+}
+impl Default for ChunkStore {
+    fn default() -> Self {
+        Self {
+            inner: crate::real_store::store(),
+            legacy: false,
+            replies: Default::default(),
+            batches: Default::default(),
+            before_batch: Default::default(),
+            before_delete: Default::default(),
+        }
+    }
 }
 impl RecordStore for ChunkStore {
     fn supports_usage_batch_deduped(&self) -> bool {
@@ -512,7 +523,10 @@ fn in_flight_flush_preserves_roll_refund_and_independent_window_correction(initi
     store.put_key(&key).unwrap();
     let gov = Arc::new(GovState::new(store.clone(), None).unwrap());
     let cm = minute_fee_model();
-    let now = crate::governance::budget_window(super::super::WINDOW_MINUTE, crate::store::now());
+    let now = crate::governance::budget_window(
+        super::super::WINDOW_MINUTE,
+        crate::store::now().saturating_sub(120),
+    );
     let next = super::super::window_end(super::super::WINDOW_MINUTE, now).unwrap();
     let charged = gov.try_admit(&cm, &key, "", now).unwrap();
     gov.record_usage(&cm, &key, "", MODEL, &toks(initial_input, 0), now);
@@ -546,6 +560,7 @@ fn in_flight_flush_preserves_roll_refund_and_independent_window_correction(initi
                         pool: "",
                         model: MODEL,
                         entry_era: era_now(),
+                        entry_id: None,
                         card_epoch_ms: epoch(now),
                         delta: &delta,
                         now
@@ -562,6 +577,7 @@ fn in_flight_flush_preserves_roll_refund_and_independent_window_correction(initi
                     pool: "",
                     model: MODEL,
                     entry_era: era_now(),
+                    entry_id: None,
                     card_epoch_ms: epoch(next),
                     delta: &delta,
                     now: next,

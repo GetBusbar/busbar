@@ -7,6 +7,38 @@ use busbar_contract::conn::{
     PROGRAM_EXPECT_GENERATION_FIELD as GENERATION, PROGRAM_EXPECT_INSTANCE_FIELD as INSTANCE,
 };
 
+fn guarded_connector() -> Connector {
+    let io = Arc::new(crate::hostio::HostIo::new());
+    let mut connector = connector_over(TestDoor::identity("bytes").with_host_io(Arc::clone(&io)));
+    connector.io = io;
+    connector
+}
+
+#[test]
+fn program_guard_counts_are_local_while_other_connectors_and_guards_run_in_parallel() {
+    worker().block_on(async {
+        let unrelated = connector();
+        declare(&unrelated, &[("unrelated", sh(ECHO_PID, &[]))]).unwrap();
+        let held = open(&unrelated, "unrelated", b"").unwrap();
+        let _pair = observed_pair(&unrelated, held).await;
+        let results = std::thread::scope(|scope| {
+            let cold = scope
+                .spawn(a_guarded_open_never_spawns_and_only_the_exact_live_pair_receives_its_body);
+            let replaced = scope.spawn(
+                a_changed_member_and_an_ended_generation_cannot_be_restarted_by_a_stale_guard,
+            );
+            (cold.join(), replaced.join())
+        });
+        unrelated.close(OWNER, held).unwrap();
+        unrelated.forget(OWNER);
+        assert!(results.0.is_ok(), "cold/live pair guard fixture failed");
+        assert!(
+            results.1.is_ok(),
+            "replacement/ended pair guard fixture failed"
+        );
+    });
+}
+
 async fn observed_pair(c: &Connector, id: ConnId) -> Expected {
     let mut bytes = [0; 512];
     let piece = read(c, id, &mut bytes).await.unwrap();
@@ -81,7 +113,7 @@ fn program_constraints_require_one_complete_canonical_pair() {
 #[test]
 fn a_guarded_open_never_spawns_and_only_the_exact_live_pair_receives_its_body() {
     worker().block_on(async {
-        let c = connector();
+        let c = guarded_connector();
         declare(&c, &[("m", sh(ECHO_PID, &[]))]).unwrap();
         let member = Arc::clone(
             c.over
@@ -148,7 +180,7 @@ fn a_guarded_open_never_spawns_and_only_the_exact_live_pair_receives_its_body() 
 #[test]
 fn a_changed_member_and_an_ended_generation_cannot_be_restarted_by_a_stale_guard() {
     worker().block_on(async {
-        let c = connector();
+        let c = guarded_connector();
         let script = "while read l; do if [ \"$l\" = end ]; then exit 0; fi; echo \"$$ $l\"; done";
         declare(&c, &[("m", sh(script, &[]))]).unwrap();
         let old = open(&c, "m", b"").unwrap();

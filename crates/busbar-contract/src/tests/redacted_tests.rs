@@ -18,7 +18,7 @@ fn debug_and_display_never_reveal_the_secret() {
     assert_eq!(r.expose(&crate::plugin::TestKernelSeal), secret);
 }
 
-/// RED (Part 2 #54, coordinator ruling 2026-10-14): `Debug`, `Display` and `to_string` render the
+/// Debug, Display and string conversion retain the 1.5.5 bytes.
 #[test]
 fn debug_display_and_to_string_are_the_1_5_5_bytes() {
     let text = Secret::new("sk-live-0001".to_string());

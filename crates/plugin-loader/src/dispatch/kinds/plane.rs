@@ -1732,22 +1732,16 @@ pub(crate) fn copy_snapshot(p: *const PlaneSnapshot, dialects: u64) -> Option<Ow
 
     let s = &as_written(p);
     // SAFETY: the check refused a list counted over a NULL pointer or over its cap; each names
-    // `*_len` entries, bounded again before the slice is formed. A snapshot from before `listed`
-    // was appended reads NULL with `0`.
-    let (claims, routes, listed) = unsafe {
+    // `*_len` live entries, with byte bounds and alignment checked by `lent` before any slice is
+    // formed. A snapshot from before `listed` or `arrival_spans` was appended reads NULL with `0`.
+    let (claims, routes, listed, spans) = unsafe {
         use crate::dispatch::validate::lent;
         (
             lent(s.claims, s.claims_len)?,
             lent(s.admin_routes, s.admin_routes_len)?,
             lent(s.listed, s.listed_len)?,
+            lent(s.arrival_spans, s.arrival_spans_len)?,
         )
-    };
-    // SAFETY: as above; a snapshot from before the list was appended reads NULL with `0`, and the
-    // check refused any length but `0` or one per claim.
-    let spans = if s.arrival_spans_len == 0 {
-        &[][..]
-    } else {
-        unsafe { std::slice::from_raw_parts(s.arrival_spans, s.arrival_spans_len) }
     };
     check_claims(claims, dialects).ok()?;
     check_admin_routes(routes).ok()?;

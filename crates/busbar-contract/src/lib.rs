@@ -13,8 +13,8 @@ pub mod authz;
 pub mod abi;
 
 #[cfg(test)]
-#[path = "../../busbar-test-kit/src/alloc_counter.rs"]
-pub mod alloc_counter;
+#[path = "tests/allocation_observer.rs"]
+mod alloc_counter;
 
 mod sdk_hyper;
 

@@ -15,8 +15,8 @@ pub struct Correction {
     pub key: String,
     /// The lane (model) the counts were earned on.
     pub lane: String,
-    /// The card entry the counts were priced with, by its history position.
-    pub entry: u64,
+    /// The immutable key of the card entry the counts were priced with.
+    pub entry: busbar_kernel::cost::EntryKey,
     /// THE CARD EPOCH: the corrected unit's arrival instant in milliseconds. The correction lands
     /// in the window, card entry and metering day holding it.
     pub card_epoch_ms: u64,
@@ -29,7 +29,7 @@ pub struct Correction {
 /// Why the ledger would not take a correction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refused {
-    /// The history holds no entry at that position.
+    /// The history holds no entry with that key.
     UnknownEntry,
     /// The ledger refused it; nothing was applied.
     Ledger(AdjustRefused),
@@ -52,12 +52,11 @@ pub fn live_adjuster(app: Arc<busbar_kernel::state::AppHandle>) -> UsageAdjuster
         };
         let history = busbar_kernel::rate_apply::dated_history();
         let era = match history.as_deref() {
-            Some(history) => match history.entries().iter().find(|e| e.seq().get() == c.entry) {
+            Some(history) => match history.entry(&c.entry) {
                 Some(entry) => entry.effective_from(),
                 None => return Ok(Err(Refused::UnknownEntry)),
             },
 
-            None if c.entry == busbar_kernel::cost::HistorySeq::OPENING.get() => 0,
             None => return Ok(Err(Refused::UnknownEntry)),
         };
         let adjustment = busbar_kernel::governance::Adjustment {
@@ -65,6 +64,7 @@ pub fn live_adjuster(app: Arc<busbar_kernel::state::AppHandle>) -> UsageAdjuster
             pool: &c.pool,
             model: &c.lane,
             entry_era: era,
+            entry_id: Some(c.entry.id()),
             card_epoch_ms: c.card_epoch_ms,
             delta: &c.delta,
             now: busbar_kernel::store::now(),
@@ -96,9 +96,7 @@ pub(crate) fn adjust_effect(
     let key = text("key")?;
     let lane = text("lane")?;
     let _reason = text("reason")?;
-    let entry = obj
-        .get("entry")
-        .and_then(serde_json::Value::as_u64)
+    let entry = busbar_kernel::cost::EntryKey::parse_hex(text("entry")?)
         .ok_or(GovernanceError::Validation)?;
     let card_epoch_ms = obj
         .get("card_epoch_ms")
@@ -143,14 +141,14 @@ pub(crate) fn adjust_effect(
         }
         Ok(Err(Refused::Ledger(AdjustRefused::UnknownKey))) => Err(GovernanceError::NotFound),
         Ok(Err(Refused::UnknownEntry)) => Ok(refused(&format!(
-            "`entry` names {entry}, which is not a rate-card history position"
+            "`entry` names {entry}, which is not a known rate-card history key"
         ))),
         Ok(Err(Refused::Ledger(why))) => Ok(refused(&why.to_string())),
         Ok(Ok(())) => serde_json::to_vec(&serde_json::json!({
             "applied": true,
             "key": correction.key,
             "lane": correction.lane,
-            "entry": correction.entry,
+            "entry": correction.entry.hex(),
             "card_epoch_ms": correction.card_epoch_ms,
             "pool": correction.pool,
             "delta": correction.delta,
@@ -166,5 +164,64 @@ fn refused(message: &str) -> AdminAnswer {
         headers: vec![("content-type".to_string(), "application/json".to_string())],
         body: busbar_core_admin::admin_codec::refusal::envelope_of("invalid_request", message)
             .into_bytes(),
+    }
+}
+
+#[cfg(test)]
+mod key_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    #[test]
+    fn an_adjustment_keeps_the_exact_entry_key_in_the_request_and_response() {
+        let entry = busbar_kernel::cost::EntryKey::new(300, [7; 8], 1);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let received = seen.clone();
+        let adjuster: UsageAdjuster = Arc::new(move |correction| {
+            received.lock().unwrap().push(correction.entry);
+            Ok(Ok(()))
+        });
+        let body = serde_json::to_vec(&serde_json::json!({
+            "key": "key", "lane": "lane", "entry": entry.hex(), "card_epoch_ms": 350,
+            "pool": "pool", "delta": {"input": 1}, "reason": "correct a count"
+        }))
+        .unwrap();
+        let answer = adjust_effect(
+            &body,
+            busbar_contract::authz::Scope::Full,
+            &|pool| pool == "pool",
+            &adjuster,
+        )
+        .unwrap();
+        assert_eq!(answer.status, 200);
+        assert_eq!(*seen.lock().unwrap(), vec![entry]);
+        let reply: serde_json::Value = serde_json::from_slice(&answer.body).unwrap();
+        assert_eq!(reply["entry"], entry.hex());
+    }
+
+    #[test]
+    fn an_adjustment_refuses_ordinal_and_malformed_tokens_before_the_ledger() {
+        let adjuster: UsageAdjuster = Arc::new(|_| panic!("invalid entry reached the ledger"));
+        for entry in [
+            serde_json::json!(1),
+            serde_json::json!("1"),
+            serde_json::json!("not-a-key"),
+            serde_json::json!("g".repeat(40)),
+        ] {
+            let body = serde_json::to_vec(&serde_json::json!({
+                "key": "key", "lane": "lane", "entry": entry, "card_epoch_ms": 350,
+                "pool": "pool", "delta": {"input": 1}, "reason": "correct a count"
+            }))
+            .unwrap();
+            assert!(matches!(
+                adjust_effect(
+                    &body,
+                    busbar_contract::authz::Scope::Full,
+                    &|_| true,
+                    &adjuster
+                ),
+                Err(GovernanceError::Validation)
+            ));
+        }
     }
 }

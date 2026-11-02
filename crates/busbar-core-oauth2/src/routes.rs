@@ -338,6 +338,16 @@ fn error_page(response: oauth_as::http::Response) -> Response {
         .into_response()
 }
 
+fn unresolved_grant(error: &oauth_as::store::StorageError) -> Response {
+    tracing::warn!(%error, "oauth_as: the consent grant could not be resolved");
+    (
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        [(axum::http::header::CACHE_CONTROL, "no-store")],
+        axum::response::Html(PAGE_UNRESOLVED_GRANT),
+    )
+        .into_response()
+}
+
 async fn consent_screen(
     busbar_kernel::state::CurrentApp(app): busbar_kernel::state::CurrentApp,
     axum::extract::Query(query): axum::extract::Query<ConsentQuery>,
@@ -354,15 +364,7 @@ async fn consent_screen(
     };
     let pending = match pending_request(plane, target).await {
         Ok(pending) => pending,
-        Err(error) => {
-            tracing::warn!(%error, "oauth_as: the consent grant could not be resolved");
-            return (
-                axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                [(axum::http::header::CACHE_CONTROL, "no-store")],
-                axum::response::Html(PAGE_UNRESOLVED_GRANT),
-            )
-                .into_response();
-        }
+        Err(error) => return unresolved_grant(&error),
     };
 
     let Some(id) = new_session_id() else {
@@ -721,3 +723,7 @@ mod consent_host_tests;
 #[cfg(test)]
 #[path = "tests/local_path_tests.rs"]
 mod local_path_tests;
+
+#[cfg(test)]
+#[path = "tests/consent_resolution_tests.rs"]
+mod consent_resolution_tests;

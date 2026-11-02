@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use crate::governance::MemoryStore;
 use busbar_contract::records::{
     AuditRecord, MeteringDelta, MeteringRow, RecordStoreResult, UsageDelta, UsageLedger, VirtualKey,
 };
@@ -11,7 +10,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 struct HungDenylistStore {
-    inner: MemoryStore,
+    inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
 
     entered: mpsc::Sender<()>,
 
@@ -62,7 +61,7 @@ impl RecordStore for HungDenylistStore {
 }
 
 struct BrokenDenylistStore {
-    inner: MemoryStore,
+    inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
     calls: Arc<AtomicUsize>,
 }
 impl RecordStore for BrokenDenylistStore {
@@ -112,7 +111,7 @@ fn a_hung_store_does_not_park_the_reactor() {
     let (tx, entered) = mpsc::channel();
     let entries = Arc::new(AtomicUsize::new(0));
     let store = Arc::new(HungDenylistStore {
-        inner: MemoryStore::new(),
+        inner: crate::real_store::store(),
         entered: tx,
         entries: entries.clone(),
     });
@@ -172,7 +171,7 @@ fn a_hung_store_does_not_park_the_reactor() {
 fn a_failed_read_does_not_close_the_staleness_window() {
     let calls = Arc::new(AtomicUsize::new(0));
     let store = Arc::new(BrokenDenylistStore {
-        inner: MemoryStore::new(),
+        inner: crate::real_store::store(),
         calls: calls.clone(),
     });
     let rev = RevocationSync::new(store, HashSet::new(), 0);
@@ -206,7 +205,7 @@ fn a_failed_read_does_not_close_the_staleness_window() {
 
 #[test]
 fn a_successful_read_unions_and_closes_the_window() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     store.add_denylist("vk_peer", "revoked by a peer").unwrap();
     let mut local = HashSet::new();
     local.insert("vk_local".to_string());
@@ -227,7 +226,7 @@ fn a_key_another_node_minted_rotated_or_deleted_is_seen_within_one_window() {
     use crate::governance::signing::{TokenSigner, DEFAULT_KID};
     use crate::governance::{GovState, NewKeySpec};
 
-    let store: Arc<dyn RecordStore> = Arc::new(MemoryStore::new());
+    let store: Arc<dyn RecordStore> = crate::real_store::store();
     let node = || {
         GovState::new_with_signer(
             Arc::clone(&store),
@@ -283,7 +282,7 @@ fn a_backwards_wall_clock_still_observes_shared_store_rotation_and_revocation() 
     use crate::governance::signing::{TokenSigner, DEFAULT_KID};
     use crate::governance::{GovState, NewKeySpec};
 
-    let store: Arc<dyn RecordStore> = Arc::new(MemoryStore::new());
+    let store: Arc<dyn RecordStore> = crate::real_store::store();
     let node = || {
         GovState::new_with_signer(
             store.clone(),
@@ -345,7 +344,7 @@ fn failed_refreshes_under_a_regressing_clock_are_rate_limited_by_monotonic_age()
     let calls = Arc::new(AtomicUsize::new(0));
     let rev = RevocationSync::new(
         Arc::new(BrokenDenylistStore {
-            inner: MemoryStore::new(),
+            inner: crate::real_store::store(),
             calls: calls.clone(),
         }),
         HashSet::new(),

@@ -201,7 +201,7 @@ impl Drop for Inputs {
 }
 
 fn settings_handle(tag: &str) -> (Inputs, TestOverlayStore, Arc<AppHandle>) {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let (dir, config_path, providers_path) = write_reset_fixture(tag);
     let overlay = TestOverlayStore::new();
     let mut app = crate::new_test_app()

@@ -21,7 +21,18 @@ fn fixture() -> &'static serde_json::Value {
     })
 }
 
+fn fixture_boot() {
+    static BOOT: std::sync::Once = std::sync::Once::new();
+    BOOT.call_once(|| {
+        crate::register_diagnostics();
+        busbar_kernel::preflight::install_declared_styles(
+            crate::root::door_steps::declared_styles(),
+        );
+    });
+}
+
 fn axis() -> Arc<dyn busbar_contract::auth_calls::AuthAxis> {
+    fixture_boot();
     crate::root::dispatch::auth_axis(Arc::new(crate::root::loader::PluginRegistry::empty()))
 }
 
@@ -221,9 +232,27 @@ fn each_twin_carries_the_fixture_scheme_of_its_dialect() {
     }
 }
 
+fn signed_refusal(key: &str) -> Option<&'static str> {
+    match key {
+        "AKID" | "not-a-valid-key" => {
+            Some("expected ACCESS_KEY_ID:SECRET_ACCESS_KEY[:SESSION_TOKEN]")
+        }
+        ":SECRET" => Some("the access key id is empty"),
+        "AKID:SECRET:" => Some("the session token is empty"),
+        "AKID\r\nINJECT:SECRET" | "AKID\u{0001}X:SECRET" => {
+            Some("the access key id holds a byte no header value may carry")
+        }
+        "AKID:SECRET:bad\ntoken" | "AKID:SECRET:TOK\r\nEN" | "AKID:SECRET:TOK\u{0001}EN" => {
+            Some("the session token holds a byte no header value may carry")
+        }
+        _ => None,
+    }
+}
+
 #[test]
 fn each_declared_scheme_presents_what_its_dialect_builder_wrote() {
     let mut compared = 0usize;
+    let mut refused = 0usize;
     for row in fixture()["rows"].as_array().expect("rows") {
         let dialect = row["dialect"].as_str().expect("dialect");
         let key = String::from_utf8(hex(&row["key_hex"])).expect("utf-8 key");
@@ -243,6 +272,23 @@ fn each_declared_scheme_presents_what_its_dialect_builder_wrote() {
                 UpstreamCreds::Passthrough
             },
         };
+        if dialect == "bedrock" {
+            if let Some(reason) = signed_refusal(&key) {
+                if matches!(ctx.upstream_creds, UpstreamCreds::Own) {
+                    let binding = binding_of(dialect, ctx.host, &[]);
+                    let error = match bind(&*axis(), &binding, key.as_bytes()) {
+                        Ok(_) => panic!("the signed malformed credential must not open"),
+                        Err(error) => error,
+                    };
+                    assert_eq!(error, format!("`busbar-auth-sigv4` did not open the outbound style `sigv4`: Failed credential: {reason}"));
+                } else {
+                    assert!(present(twin(dialect), &key, &ctx).is_empty());
+                }
+                refused += 1;
+                compared += 1;
+                continue;
+            }
+        }
         let presented: Vec<serde_json::Value> = present(twin(dialect), &key, &ctx)
             .into_iter()
             .map(|(k, v)| serde_json::json!([k, hex::encode(v.as_bytes())]))
@@ -258,6 +304,67 @@ fn each_declared_scheme_presents_what_its_dialect_builder_wrote() {
         compared += 1;
     }
     assert!(compared > 0);
+    assert!(refused > 0, "the signed refusal rows were exercised");
+}
+
+#[test]
+fn every_recorded_nonblank_whitespace_credential_keeps_its_exact_bytes() {
+    let mut compared = 0;
+    let mut differences = Vec::new();
+    for (index, row) in fixture()["rows"].as_array().unwrap().iter().enumerate() {
+        let dialect = row["dialect"].as_str().unwrap();
+        let key = String::from_utf8(hex(&row["key_hex"])).unwrap();
+        if dialect == "bedrock" || key == key.trim_matches([' ', '\t']) {
+            continue;
+        }
+        let body = hex(&row["body_hex"]);
+        let ctx = SigningContext {
+            host: row["host"].as_str().unwrap(),
+            canonical_uri: row["canonical_uri"].as_str().unwrap(),
+            body: &body,
+            timestamp_epoch: row["timestamp_epoch"].as_u64().unwrap(),
+            upstream_creds: if row["mode"] == "own" {
+                UpstreamCreds::Own
+            } else {
+                UpstreamCreds::Passthrough
+            },
+        };
+        let got = serde_json::Value::Array(
+            present(twin(dialect), &key, &ctx)
+                .into_iter()
+                .map(|(name, value)| serde_json::json!([name, hex::encode(value.as_bytes())]))
+                .collect(),
+        );
+        if got != row["headers"] {
+            differences.push(serde_json::json!({"row": index, "got": got, "want": row["headers"]}));
+        }
+        compared += 1;
+    }
+    assert_eq!(
+        compared, 20,
+        "all eighteen affected rows and two selected-trim controls"
+    );
+    let binding = binding_of("api-key-override", "h.example.com", &[]);
+    for mode in [UpstreamCreds::Own, UpstreamCreds::Passthrough] {
+        let ctx = SigningContext {
+            host: "h.example.com",
+            canonical_uri: "/v1/x",
+            body: b"{}",
+            timestamp_epoch: 1_756_000_000,
+            upstream_creds: mode,
+        };
+        let got = present_bound(&binding, " leading", &ctx);
+        let want = vec![("api-key".to_string(), " leading".to_string())];
+        if got != want {
+            differences.push(
+                serde_json::json!({"override_mode": format!("{mode:?}"), "got": got, "want": want}),
+            );
+        }
+    }
+    assert!(
+        differences.is_empty(),
+        "nonblank credential bytes changed: {differences:#?}"
+    );
 }
 
 fn signed(key: &str, host: &str, uri: &str, body: &[u8]) -> Vec<(String, String)> {
@@ -318,7 +425,7 @@ fn a_session_token_is_sent_and_signed_for_the_hosts_region() {
 }
 
 #[test]
-fn a_misconfigured_or_unsendable_signing_credential_signs_nothing() {
+fn a_misconfigured_or_unsendable_signing_credential_is_refused_at_open() {
     let host = "bedrock-runtime.us-east-1.amazonaws.com";
     for key in [
         "not-a-valid-key",
@@ -327,8 +434,16 @@ fn a_misconfigured_or_unsendable_signing_credential_signs_nothing() {
         "AKID:SECRET:TOK\r\nEN",
         "AKID:SECRET:TOK\u{0001}EN",
     ] {
-        let h = signed(key, host, "/model/m/converse", b"{}");
-        assert!(h.is_empty(), "{key:?} must yield no headers, got {h:?}");
+        let binding = binding_of("bedrock", host, &[]);
+        let error = match bind(&*axis(), &binding, key.as_bytes()) {
+            Ok(_) => panic!("a malformed signing credential must not open"),
+            Err(error) => error,
+        };
+        assert!(error.contains("Failed credential:"), "{error}");
+        assert!(
+            !error.contains(key),
+            "the refusal must not echo credential material"
+        );
     }
     let ok = signed("AKID:SECRET:CLEANTOKEN", host, "/model/m/converse", b"{}");
     let auth = get(&ok, "authorization").expect("a clean credential signs");
@@ -395,14 +510,14 @@ fn the_linked_sigv4_style_signs_the_walked_requests_method_and_query() {
         .expect("the binding opens");
 
     let request = FieldsRequest {
-        point: AuthPoint::Head,
+        point: AuthPoint::HeadBody,
+        body: Some(Vec::new()),
         method: b"GET".to_vec(),
         authority: AUTHORITY.into(),
         path: b"/model/a%3Ab/invoke".to_vec(),
         query: Some(b"b=2&a=1".to_vec()),
         timestamp: 1_440_938_160,
         headers: vec![],
-        body: Default::default(),
         caller_credential: Default::default(),
         extensions: Default::default(),
         ..Default::default()
@@ -770,23 +885,23 @@ fn lines(binding: &StyleBinding, key: &str) -> Vec<String> {
 }
 
 #[test]
-fn an_unsendable_session_token_logs_the_signers_own_line() {
+fn an_unsendable_session_token_is_refused_with_the_signers_own_reason() {
     let signing = named_binding("bedrock", "static-twin-signing");
-    assert_eq!(
-        lines(&signing, "AKID:SECRET:TOK\r\nEN"),
-        vec![
-            "Bedrock lane session token contains a byte rejected by HeaderValue; skipping \
-             signing to avoid a signed-but-absent x-amz-security-token header."
-                .to_string()
-        ]
-    );
-    for quiet in [
-        "not-a-valid-key",
-        "AKID\r\nINJECT:SECRET",
+    let error = match bind(&*axis(), &signing, b"AKID:SECRET:TOK\r\nEN") {
+        Ok(_) => panic!("an unsendable session token must not open"),
+        Err(error) => error,
+    };
+    assert_eq!(error, "`busbar-auth-sigv4` did not open the outbound style `sigv4`: Failed credential: the session token holds a byte no header value may carry");
+    assert!(!error.contains("SECRET"));
+    assert!(!error.contains("TOK"));
+    assert!(!error.contains("Bedrock lane session token"));
+    assert!(!signed(
         "AKID:SECRET:CLEAN",
-    ] {
-        assert!(lines(&signing, quiet).is_empty(), "{quiet:?}");
-    }
+        SIGNING_HOST,
+        "/model/m/converse",
+        b"{}"
+    )
+    .is_empty());
 }
 
 #[test]
@@ -819,7 +934,7 @@ fn an_unpresentable_static_credential_logs_its_builders_own_line() {
             vec![format!(
                 "auth credential contains bytes invalid for an HTTP header value (e.g. a \
                  trailing newline); omitting the credential header — upstream will return \
-                 401, check the key configuration protocol=static-twin-versioned \
+                 401, check the key configuration diag=BUSBAR-4030 protocol=static-twin-versioned \
                  header={header}"
             )]
         );
@@ -878,8 +993,8 @@ fn concurrent_binds_of_one_instance_each_log_their_own_header() {
     );
 }
 
-#[test]
-fn a_callers_unpresentable_credential_logs_on_its_request() {
+#[tokio::test]
+async fn a_callers_unpresentable_credential_fails_its_request() {
     assert_eq!(
         lines_in(
             &named_binding("openai", "static-twin-bearer"),
@@ -893,15 +1008,56 @@ fn a_callers_unpresentable_credential_logs_on_its_request() {
                 .to_string()
         ]
     );
-    assert_eq!(
-        lines_in(
-            &named_binding("bedrock", "static-twin-signing"),
-            "AKID:SECRET:TOK\r\nEN",
-            UpstreamCreds::Passthrough
+
+    use busbar_contract::abi::auth::AuthPoint;
+    use busbar_contract::auth_calls::{Fields, FieldsRequest};
+    let signing = named_binding("bedrock", "static-twin-signing");
+    let serving = axis()
+        .serving(&signing.style, &signing.params)
+        .unwrap()
+        .unwrap();
+    let handle = serving
+        .auth
+        .open_outbound(&signing.style, b"", &signing.params)
+        .unwrap();
+    let request = |credential: &[u8]| FieldsRequest {
+        point: AuthPoint::HeadBody,
+        body: Some(b"{}".to_vec()),
+        method: b"POST".to_vec(),
+        authority: SIGNING_HOST.into(),
+        path: b"/model/m/converse".to_vec(),
+        timestamp: 1_756_000_000,
+        caller_credential: Some(busbar_contract::redacted::Secret::new(credential.to_vec())),
+        query: None,
+        headers: Vec::new(),
+        extensions: Vec::new(),
+        ..Default::default()
+    };
+    for (credential, ready) in [
+        (b"AKID:SECRET:CLEAN".as_slice(), true),
+        (b"AKID:SECRET:TOK\r\nEN".as_slice(), false),
+    ] {
+        let answer = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            serving.auth.fields(handle, request(credential), u64::MAX),
         )
-        .len(),
-        1
-    );
+        .await
+        .expect("the signing request settles");
+        if ready {
+            let Fields::Ready(fields) = answer else {
+                panic!("the clean caller signs")
+            };
+            assert!(fields.iter().any(|field| field.name == b"authorization"));
+            assert!(fields
+                .iter()
+                .any(|field| field.name == b"x-amz-security-token"));
+        } else {
+            assert!(
+                matches!(answer, Fields::Failed),
+                "an invalid caller must fail, not send no fields"
+            );
+        }
+    }
 }
 
 #[test]
@@ -1122,6 +1278,7 @@ fn each_dialects_declared_scheme_maps_to_its_recorded_binding() {
 #[cfg(all(linked_driver_proofs, feature = "auth-header"))]
 #[test]
 fn a_configured_api_key_override_presents_the_api_key_header_on_every_dialect() {
+    fixture_boot();
     use busbar_contract::auth_calls::{Fields, FieldsRequest};
     const KEY: &str = "operator-key-0123456789";
     let served = served_pools_door();
@@ -1133,9 +1290,6 @@ fn a_configured_api_key_override_presents_the_api_key_header_on_every_dialect() 
         "the door states an outbound need serving the `api-key` override: {:?}",
         served.need_auths
     );
-    let key_file =
-        std::env::temp_dir().join(format!("busbar-declared-override-{}", std::process::id()));
-    std::fs::write(&key_file, KEY).expect("the key");
     for dialect in &served.dialects {
         let entry: busbar_kernel::config::ProviderCfg = serde_yaml::from_str(&format!(
             "{{protocol: {dialect}, base_url: 'http://127.0.0.1:9', api_key: none, \
@@ -1151,8 +1305,11 @@ fn a_configured_api_key_override_presents_the_api_key_header_on_every_dialect() 
         );
         let route = providers.get_mut("p").expect("the provider's route");
         assert_eq!(route.style.as_deref(), Some("api-key"), "{dialect}");
-        route.credential =
-            busbar_contract::secret_ref::SecretRef::file(key_file.display().to_string());
+        route.credential = serde_json::from_value(serde_json::json!({
+            "module": "override-fixture",
+            "settings": {"id": "declared-override"}
+        }))
+        .expect("the explicit fixture reference");
         let section: serde_yaml::Value =
             serde_yaml::from_str("models: {m: {provider: p}}").expect("yaml");
         let dispatcher = Arc::new(crate::root::loader::dispatch::Dispatcher::new(
@@ -1161,7 +1318,17 @@ fn a_configured_api_key_override_presents_the_api_key_header_on_every_dialect() 
         crate::root::connector::install_io(&dispatcher);
         let reach = crate::root::door_steps::DoorReach {
             providers: &providers,
-            secrets: Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only()),
+            secrets: Arc::new(busbar_kernel::config::secret::SecretResolver::with_plugin(
+                Box::new(|module, settings| {
+                    if module == "override-fixture" && settings == r#"{"id":"declared-override"}"# {
+                        Ok(busbar_kernel::config::secret::Held::new(
+                            KEY.as_bytes().to_vec(),
+                        ))
+                    } else {
+                        Err("unbound override fixture reference".into())
+                    }
+                }),
+            )),
             auths: Arc::new(crate::root::door_steps::OutboundAuths::new(
                 dispatcher,
                 crate::LINKED.auths,
@@ -1209,7 +1376,6 @@ fn a_configured_api_key_override_presents_the_api_key_header_on_every_dialect() 
             "{dialect}: `auth: api-key` presents the credential in `api-key` alone"
         );
     }
-    let _ = std::fs::remove_file(&key_file);
 }
 
 #[test]

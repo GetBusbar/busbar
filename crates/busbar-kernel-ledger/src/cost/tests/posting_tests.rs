@@ -4,7 +4,7 @@
 //! Clause two, three and five: what a posting stores, how it projects, and the tier multiplier.
 
 use crate::cost::{
-    checked_apply_tier, nanos_of_exact, price_at_card, HistorySeq, Posting, Quantity, Tally,
+    checked_apply_tier, nanos_of_exact, price_at_card, EntryKey, Posting, Quantity, Tally,
     STANDARD_TIER_BP,
 };
 
@@ -135,7 +135,8 @@ fn fifteen_nano_units_at_half_price_bill_seven() {
         arrived_mono: 0,
         estimated: false,
     };
-    let priced = price_at_card(HistorySeq::OPENING, &card, &posting).expect("the card prices it");
+    let priced =
+        price_at_card(EntryKey::new(0, [0; 8], 0), &card, &posting).expect("the card prices it");
     assert_eq!(
         priced.pre_tier_nanos, 15,
         "fifteen nano-units before the tier"

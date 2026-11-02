@@ -112,7 +112,23 @@ fn only_identity_providers_carry_a_trust_ceiling() {
 
 #[test]
 fn a_section_no_registered_plane_declares_is_an_unknown_field() {
-    let _isolation = crate::test_support::planes::TestRegistryIsolation::empty();
+    if std::env::var_os("BUSBAR_CONFIG_EMPTY_REGISTRY_CHILD").is_none() {
+        let current = std::thread::current();
+        let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .args(["--exact", current.name().expect("test name"), "--nocapture"])
+            .env("BUSBAR_CONFIG_EMPTY_REGISTRY_CHILD", "1")
+            .output()
+            .expect("run the configuration reader with no planes installed");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success()
+                && stdout.contains("test result: ok. 1 passed; 0 failed; 0 ignored;"),
+            "empty-registry reader assertions failed: {}\n{stdout}\n{stderr}",
+            output.status
+        );
+        return;
+    }
     let section = NamedMapSection::Plane("bays");
     let err = section
         .parse_def("dock", &serde_json::json!({}))

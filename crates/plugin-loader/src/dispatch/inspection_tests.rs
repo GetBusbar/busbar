@@ -405,7 +405,7 @@ fn ticketless_cancel_invalidates_the_ticket_named_in_its_body() {
     d.recycle(ticket);
 }
 
-#[path = "../../../busbar-test-kit/src/alloc_counter.rs"]
+#[path = "../../../busbar-contract/src/tests/allocation_observer.rs"]
 mod alloc_counter;
 
 #[global_allocator]

@@ -209,7 +209,7 @@ fn order_needed_without_failed_faults() {
     );
 }
 
-/// RED (the multi-buffer short answer): `order_needed <= order_cap`, and no other dimension's
+/// A SHORT order answer faults when its needed size already fits the capacity.
 #[test]
 fn order_needed_not_larger_than_cap_faults() {
     let mut out = decide_out();
@@ -286,7 +286,7 @@ fn decide_restrict_tags_written_beyond_cap_faults() {
     );
 }
 
-/// RED (the multi-buffer short answer): `restrict_tags`
+/// A SHORT restrict-tags answer faults when its needed size already fits the capacity.
 #[test]
 fn decide_restrict_tags_needed_not_larger_than_cap_faults() {
     let mut out = decide_out();
@@ -557,7 +557,7 @@ fn notify_null_error_faults() {
     assert_eq!(check_notify(&out), red(Rule::NullWithCount, "notify.error"));
 }
 
-/// RED (the multi-buffer short answer): both `reject_message_needed` and
+/// A SHORT transform answer faults when both result dimensions already fit.
 #[test]
 fn transform_joint_both_dims_fit_faults() {
     let mut out = transform_out();
@@ -676,7 +676,7 @@ fn describe_oversize_faults() {
     );
 }
 
-/// RED (the multi-buffer short answer): `decide`'s `reject_message` dimension is short
+/// A SHORT decide answer faults if it writes result bytes.
 #[test]
 fn decide_short_answer_writes_something_faults() {
     let mut out = decide_out();
@@ -689,7 +689,7 @@ fn decide_short_answer_writes_something_faults() {
     );
 }
 
-/// RED (the multi-buffer short answer): same rule for `transform` — `rewrite` is short, so
+/// A SHORT transform answer faults if it writes result bytes.
 #[test]
 fn transform_short_answer_writes_something_faults() {
     let mut out = transform_out();

@@ -6,11 +6,9 @@ members = [
     "crates/busbar",
     "crates/busbar-core-connector",
     "crates/busbar-core-admin",
-    "crates/busbar-core-admin-testkit",
     "crates/busbar-core-oauth2",
     "crates/busbar-contract",
     "crates/busbar-kernel",
-    "crates/busbar-kernel-testkit",
     "crates/busbar-kernel-identity",
     "crates/busbar-kernel-ledger",
     "crates/busbar-kernel-egress",
@@ -19,9 +17,6 @@ members = [
     "crates/busbar-kernel-audit",
     "crates/busbar-kernel-seams",
     "crates/plugin-loader",
-    "crates/busbar-test-kit",
-    "crates/plugin-loader/stubs/*/logic",
-    "crates/plugin-loader/stubs/*/plugin",
 ]
 
 # Each version is written once here; members inherit with `workspace = true` and may add features.

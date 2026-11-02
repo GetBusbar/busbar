@@ -693,3 +693,92 @@ async fn every_exit_closes_an_arrived_unit_exactly_once() {
         "(exit, closing calls, expected), where they differ: {wrong:?}"
     );
 }
+
+#[tokio::test]
+async fn idle_maintenance_pays_a_dropped_units_close_without_another_arrival() {
+    let (plane, driver) = screened(1, false);
+    let driver = Arc::new(driver);
+    let services = services();
+    services.register_plane_cleanup(Arc::downgrade(&driver));
+    let cadence = Arc::clone(&services);
+    let maintenance = tokio::spawn(async move { cadence.flushes().await });
+    let (steps, far, caller) = (
+        common::TestUnits::passing(),
+        cases::Far::new(&["ok"], cases::CHUNKS),
+        cases::Caller::default(),
+    );
+    let units = driver.unit(&steps, &far, &caller, cases::arrival("/v1", b"hi"), 0);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(30), drive_as(&units, 811))
+            .await
+            .is_err()
+    );
+    drop(units);
+    assert_eq!(driver.owed_closes(), 1);
+    let settled = tokio::time::timeout(Duration::from_secs(3), async {
+        while driver.owed_closes() != 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    maintenance.abort();
+    assert!(settled.is_ok(), "idle maintenance must pay the owed close");
+    assert_eq!(closes(&plane, 811), 1);
+    driver.sweep();
+    assert_eq!(closes(&plane, 811), 1);
+}
+
+#[tokio::test]
+async fn cleanup_drain_retains_a_pending_close_and_uses_the_callers_waker() {
+    struct Wakes(std::sync::atomic::AtomicUsize);
+    impl std::task::Wake for Wakes {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    let (plane, driver) = screened(1, false);
+    plane
+        .sessions
+        .delay_cancel_reply
+        .store(true, Ordering::SeqCst);
+    let driver = Arc::new(driver);
+    let services = services();
+    services.register_plane_cleanup(Arc::downgrade(&driver));
+    let (steps, far, caller) = (
+        common::TestUnits::passing(),
+        cases::Far::new(&["ok"], cases::CHUNKS),
+        cases::Caller::default(),
+    );
+    let units = driver.unit(&steps, &far, &caller, cases::arrival("/v1", b"hi"), 0);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(30), drive_as(&units, 812))
+            .await
+            .is_err()
+    );
+    drop(units);
+    assert!(!services.drain_plane_cleanup(Duration::ZERO).await);
+    assert_eq!(
+        driver.owed_closes(),
+        1,
+        "timeout must retain cancellation custody"
+    );
+    let wakes = Arc::new(Wakes(std::sync::atomic::AtomicUsize::new(0)));
+    let waker = std::task::Waker::from(Arc::clone(&wakes));
+    let mut cx = Context::from_waker(&waker);
+    let mut draining = Box::pin(services.drain_plane_cleanup(Duration::from_secs(1)));
+    assert!(draining.as_mut().poll(&mut cx).is_pending());
+    let before = wakes.0.load(Ordering::SeqCst);
+    plane.sessions.cancel_reply.notify_one();
+    assert!(
+        wakes.0.load(Ordering::SeqCst) > before,
+        "cancel completion must wake the actual maintenance caller"
+    );
+    assert!(draining.await);
+    assert_eq!(driver.owed_closes(), 0);
+    assert_eq!(closes(&plane, 812), 1);
+    assert!(services.drain_plane_cleanup(Duration::ZERO).await);
+    assert_eq!(closes(&plane, 812), 1);
+}

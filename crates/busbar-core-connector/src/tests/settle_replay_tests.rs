@@ -230,7 +230,7 @@ fn replay_keeps_a_short_suffix_and_empty_flags_across_zero_and_busy_retries() {
         wakes.lock().unwrap().clear();
         carrier.inner.gate.release();
         let woken = wakes.lock().unwrap().clone();
-        let was_woken = woken.contains(&73) || woken.contains(&72);
+        let was_woken = woken.contains(&73);
 
         let mut expected = opening;
         expected.extend_from_slice(b"accepted");

@@ -161,7 +161,7 @@ its counts x the card in effect at the unit's own time. The body names the key, 
 rate-card history `entry` the counts were priced with, and the unit's **`card_epoch_ms`** (its
 arrival instant): the correction lands where the unit was ledgered — in each budget window, card
 entry segment and metering day holding that instant — never in the window or card current when the
-correction is made. It fails closed: an epoch no card entry covers, an `entry` other than the one
+correction is made. It fails closed: a future arrival epoch, an epoch no card entry covers, an `entry` other than the one
 the unit's counts were dated with, a window that no longer holds the counts a downward delta moves,
 or a count taken below zero is refused `400 invalid_request` with a message saying why, and nothing
 is applied. The body also names the **`pool`** the unit was dispatched through, and it is
@@ -307,6 +307,9 @@ The virtual-key surface at `/api/v1/admin/keys` (`full` scope for mutations). Ke
 | `GET /keys/{id}/usage` | The **attribution view**: `{id, budget_period: "total", window_start: 0, as_of, group, spend_cents, tokens, requests, rate_headroom}`, the key's all-time attribution counters (its limits, if any, live on the bound group's own windows). `spend_cents` is DERIVED at read time from the key bucket's token ledger x the current `rate_card` plus fee x requests (reprice-on-read; nothing dollar-shaped is stored). `rate_headroom`: the fraction `[0,1]` of the tightest `requests`/`tokens` limit across the group chain left in each limit's own window (`null` = no such limit), back off *before* tripping a 429 |
 
 **Idempotency.** `POST /keys` and `POST /keys/{id}/rotate` accept an **`Idempotency-Key`** header: a retried request with the same key inside the ~10-minute window returns the first response verbatim (including the once-shown secret) instead of double-minting. The cache is scoped per principal (and per operation + key id for rotate), so no other admin's identical header value can replay your secret. A concurrent request while the first is still in flight is a terminal `409 conflict`.
+
+If a mint's key write commits but cache reconciliation fails, `POST /keys` returns `409 conflict` with `MINT APPLIED (new secret not returned)` and the committed public key ID. It returns no token or issued secret. The applied outcome is audited and retained for its `Idempotency-Key`; retrying that key does not mint again, including after the response cache is lost. Recover the Store/cache service, then revoke or delete the identified key before minting a replacement. A Store write failure without a confirmed commit keeps the existing uncertain-outcome handling; it is not reported as applied.
+
 
 **Anti-sprawl caps.** Two optional knobs, both `0` = unlimited by default (an absent knob changes nothing):
 

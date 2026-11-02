@@ -43,6 +43,39 @@ fn ticket_id() -> Result<String, TicketRefusal> {
 }
 
 impl GovState {
+    pub(crate) async fn admit_ticket_async(
+        self: &Arc<Self>,
+        prefix: &str,
+        credential: &str,
+        now: u64,
+    ) -> Option<(Arc<VirtualKey>, Vec<u8>)> {
+        let gov = Arc::clone(self);
+        let owned_prefix = prefix.to_owned();
+        let owned_credential = zeroize::Zeroizing::new(credential.to_owned());
+        let (admitted, mut record) = crate::auth::ticket_store(move || {
+            gov.admit_ticket(&owned_prefix, &owned_credential, now)
+                .map(|(key, record)| (key, zeroize::Zeroizing::new(record)))
+        })
+        .await?;
+        let (current, _, _) = self.checked_ticket(prefix, credential, now)?;
+        (current.id == admitted.id).then(|| (current, std::mem::take(&mut *record)))
+    }
+
+    pub(crate) async fn peek_ticket_async(
+        self: &Arc<Self>,
+        prefix: &str,
+        credential: &str,
+        now: u64,
+    ) -> Option<Arc<VirtualKey>> {
+        let gov = Arc::clone(self);
+        let owned_prefix = prefix.to_owned();
+        let owned_credential = zeroize::Zeroizing::new(credential.to_owned());
+        crate::auth::ticket_store(move || gov.peek_ticket(&owned_prefix, &owned_credential, now))
+            .await?;
+        self.checked_ticket(prefix, credential, now)
+            .map(|(key, _, _)| key)
+    }
+
     pub fn mint_ticket(
         &self,
         key_id: &str,

@@ -28,9 +28,6 @@ pub const WINDOW_HOUR: &str = "hour";
 
 const VK_ID_PREFIX: &str = "vk_";
 
-#[cfg(test)]
-const SK_SECRET_PREFIX: &str = crate::test_support::governance::SK_SECRET_PREFIX;
-
 pub const BINDING_MARKER_PREFIX: &str = "binding:";
 
 pub const SELF_KEY_GROUP_PREFIX: &str = "user:";
@@ -87,7 +84,7 @@ struct ModelCell {
 /// In-memory TOKEN-LEDGER cell for a bucket's CURRENT window - the AUTHORITATIVE hot-path
 /// enforcement state. A bucket is a key's own budget bucket OR a budget-group bucket (same shape).
 /// NO SPEND FIELD: money is derived at check time as `cell tokens x the card IN FORCE WHEN EACH WAS
-/// EARNED` (+ the flat fee x requests per admission era) - OWNER RULING Q14 / #79. The counts are
+/// EARNED` (+ the flat fee x requests per admission era). The counts are
 /// segmented by card era and each era prices at the card the dated history resolves for it, so an
 /// edit prices what follows it and a signed back-dated correction reprices the window it names,
 /// with no data fix either way. The durable store is a write-behind
@@ -795,8 +792,8 @@ pub mod group_provision;
 
 mod state;
 pub use state::{
-    metering_lane, AdjustRefused, Adjustment, PricedBucket, UsageAdjustment, ADJUST_DOWN_BUCKET,
-    ADJUST_UP_BUCKET,
+    metering_lane, AdjustRefused, Adjustment, MintError, PricedBucket, UsageAdjustment,
+    ADJUST_DOWN_BUCKET, ADJUST_UP_BUCKET,
 };
 
 mod tickets;
@@ -1060,11 +1057,6 @@ fn synthesize_key(
 pub use busbar_contract::records::PlaneRequestCtx;
 
 pub type GovCtx = busbar_contract::records::PlaneRequestCtx;
-
-#[cfg(test)]
-fn generate_secret() -> Result<String, getrandom::Error> {
-    crate::test_support::governance::generate_secret()
-}
 
 fn draw(alphabet: &str, n: usize) -> Result<String, getrandom::Error> {
     let symbols = alphabet.as_bytes();
@@ -1386,9 +1378,6 @@ impl<T> IntoStoreResult<T> for Result<T, getrandom::Error> {
         self.map_err(|e| RecordStoreError(format!("OS CSPRNG (getrandom) unavailable: {e}")))
     }
 }
-
-#[cfg(test)]
-pub use crate::test_support::store_double::MemoryStore;
 
 pub fn spawn_budget_flusher(
     gov: std::sync::Arc<GovState>,

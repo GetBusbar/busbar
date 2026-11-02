@@ -188,7 +188,7 @@ fn a_linked_dialect() -> String {
 }
 
 fn sealed_timeouts() -> busbar_kernel::plane_driver::Egress {
-    busbar_kernel_testkit::test_support::register_neutral_test_plane();
+    crate::root::test_plane_registry::register();
     let dialect = a_linked_dialect();
     let mut defs = std::collections::HashMap::new();
     defs.insert(
@@ -257,6 +257,25 @@ fn sealed_attempt_ms(
         .find(|member| member.name == model)
         .unwrap_or_else(|| panic!("`{model}` is a member of `{pool}`"))
         .attempt_timeout_ms
+}
+
+#[cfg(linked_section_pools)]
+#[test]
+fn the_root_fixture_cohort_keeps_one_actual_fallback_after_timeout_resolution() {
+    let actual = crate::root::test_plane_registry::fallback();
+    assert!(actual.fallback);
+    assert_ne!(actual.key, "neutral-test-fallback");
+    crate::root::test_plane_registry::register();
+    let egress = sealed_timeouts();
+    assert_eq!(sealed_attempt_ms(&egress, "fast", "patient"), Some(50));
+    let rows = busbar_kernel::plane_driver::registry::plane_decls();
+    let fallback: Vec<_> = rows.iter().filter(|row| row.fallback).collect();
+    assert_eq!(fallback.len(), 1);
+    assert!(std::ptr::eq(*fallback[0], actual));
+    assert_eq!(
+        busbar_kernel::plane_driver::dispatch::fallback_key(),
+        actual.key
+    );
 }
 
 #[test]

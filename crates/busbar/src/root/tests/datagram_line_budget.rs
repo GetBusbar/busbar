@@ -24,12 +24,8 @@ const CALLER_CHANNEL: u64 = 12;
 const UPSTREAM_CHANNEL: u64 = 22;
 const COMPLETION_WAIT: Duration = Duration::from_secs(5);
 
-struct Quiet;
-impl Wake for Quiet {
-    fn wake(self: Arc<Self>) {}
-}
 fn waker() -> Waker {
-    Waker::from(Arc::new(Quiet))
+    Waker::noop().clone()
 }
 
 fn exchange_piece(kind: PieceKind, len: usize) -> Piece {
@@ -191,7 +187,7 @@ async fn complete_feedback(limit: Option<usize>, depth: u8, per_batch: usize) {
     assert_eq!(outcome.accepted_frames, (1_u64 << (depth + 1)) - 2);
     assert_eq!(outcome.handed_frames, outcome.accepted_frames);
     assert_eq!(outcome.cancelled_frames, 0);
-    let (mut terminals, other) = if depth % 2 == 0 {
+    let (mut terminals, other) = if depth.is_multiple_of(2) {
         (actual.caller_messages(), actual.upstream_messages())
     } else {
         (actual.upstream_messages(), actual.caller_messages())
@@ -232,7 +228,7 @@ async fn an_idle_upstream_reader_releases_crossing_credit_before_the_callers_nex
         2,
         Terminals::Paths,
     );
-    for prefix in [b'a', b'b'] {
+    for prefix in *b"ab" {
         let token = [3, prefix];
         assert!(
             tokio::time::timeout(COMPLETION_WAIT, actual.caller.write(&token, false))

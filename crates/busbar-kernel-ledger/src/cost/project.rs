@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 use crate::cost::rate::RateCard;
 use crate::cost::{
-    plane_fee_lane, price_exact, price_in_view, split_plane_lane, whole, HistorySeq, HistoryView,
+    plane_fee_lane, price_exact, price_in_view, split_plane_lane, whole, EntryKey, HistoryView,
     LedgerEntry, MoneyError, Tally, PER_REQUEST, STANDARD_TIER_BP,
 };
 
@@ -98,17 +98,20 @@ impl<'r> MeteredRow<'r> {
 
     /// What the row cost, in micro-units, at one `card`: the reading when no dated history is
     pub fn spend_micros_at_card(&self, card: &RateCard) -> Result<i64, MoneyError> {
-        self.spend_micros_at_card_seq(HistorySeq::OPENING, card)
+        self.spend_micros_with_tally(Tally::at_card(card))
     }
 
-    /// The row at an already resolved card and its snapshot sequence. A reader resolving exact
+    /// The row at an already resolved card and its actual history-entry key.
     pub fn spend_micros_at_card_seq(
         &self,
-        seq: HistorySeq,
+        seq: EntryKey,
         card: &RateCard,
     ) -> Result<i64, MoneyError> {
+        self.spend_micros_with_tally(Tally::at_card_seq(seq, card))
+    }
+
+    fn spend_micros_with_tally(&self, mut t: Tally<'_>) -> Result<i64, MoneyError> {
         let (lanes, fee_count) = self.lanes();
-        let mut t = Tally::at_card_seq(seq, card);
         for (lane, counts) in &lanes {
             t.row(
                 lane,

@@ -4,7 +4,10 @@
 //! THE DIGEST RECIPE, as published contract rather than as an implementation detail.
 
 /// The recipe's version name. Goes in every published body so a verifier never has to guess which
-pub const DIGEST_RECIPE: &str = "busbar.audit.digest.v4";
+pub const DIGEST_RECIPE: &str = "busbar.audit.digest.v5";
+
+/// The unchanged legacy recipe with a chain-local rate-card ordinal.
+pub const DIGEST_RECIPE_V4: &str = "busbar.audit.digest.v4";
 
 /// The name of the recipe `v2`: `v3` plus `currency`, so `v4` less `incarnation` and `node`, plus
 pub const DIGEST_RECIPE_V2: &str = "busbar.audit.digest.v2";
@@ -24,9 +27,16 @@ pub enum Recipe {
     V2 {
         /// The text the `v2` preimage framed in the `currency` position.
         currency: String,
+        /// The exact ordinal byte framed by this old recipe, never a current history key.
+        legacy_rate_card_version: u64,
     },
-    /// `busbar.audit.digest.v4`: every record this build seals.
-    V4,
+    /// The unchanged legacy v4 recipe and its original ordinal preimage field.
+    V4 {
+        /// The exact ordinal byte framed by this old recipe, never a current history key.
+        legacy_rate_card_version: u64,
+    },
+    /// The keyed recipe used by every new seal.
+    V5,
 }
 
 impl Recipe {
@@ -35,7 +45,8 @@ impl Recipe {
     pub fn name(&self) -> &'static str {
         match self {
             Recipe::V2 { .. } => DIGEST_RECIPE_V2,
-            Recipe::V4 => DIGEST_RECIPE,
+            Recipe::V4 { .. } => DIGEST_RECIPE_V4,
+            Recipe::V5 => DIGEST_RECIPE,
         }
     }
 }
@@ -106,7 +117,7 @@ pub fn digest_fields(record: &crate::record::AuditRecord) -> Vec<DigestField> {
     ));
     f.push(DigestField::num("unit_key", record.what.unit_key.get()));
 
-    if record.recipe == Recipe::V4 {
+    if matches!(record.recipe, Recipe::V4 { .. } | Recipe::V5) {
         f.push(DigestField::num("incarnation", record.what.incarnation));
     }
     f.push(DigestField::text("op_class", record.what.op_class.as_str()));
@@ -129,7 +140,7 @@ pub fn digest_fields(record: &crate::record::AuditRecord) -> Vec<DigestField> {
     f.push(DigestField::num("wall", record.wall));
     f.push(DigestField::num("mono", record.mono));
 
-    if record.recipe == Recipe::V4 {
+    if matches!(record.recipe, Recipe::V4 { .. } | Recipe::V5) {
         f.push(DigestField::num("node", record.node));
     }
     f.push(DigestField::text("origin_kind", record.origin_kind));
@@ -183,13 +194,39 @@ pub fn digest_fields(record: &crate::record::AuditRecord) -> Vec<DigestField> {
         u64::from(record.usage.fee_count),
     ));
 
-    if let Recipe::V2 { currency } = &record.recipe {
+    if let Recipe::V2 { currency, .. } = &record.recipe {
         f.push(DigestField::text("currency", currency.clone()));
     }
-    f.push(DigestField::num(
-        "rate_card_version",
-        record.usage.rate_card_version,
-    ));
+    match record.recipe {
+        Recipe::V2 {
+            legacy_rate_card_version,
+            ..
+        }
+        | Recipe::V4 {
+            legacy_rate_card_version,
+        } => {
+            f.push(DigestField::num(
+                "rate_card_version",
+                legacy_rate_card_version,
+            ));
+        }
+        Recipe::V5 => {
+            f.push(DigestField::num(
+                "rate_card_key_present",
+                u64::from(record.usage.rate_card_version.is_some()),
+            ));
+            let key = record
+                .usage
+                .rate_card_version
+                .map(|key| {
+                    key.iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<String>()
+                })
+                .unwrap_or_default();
+            f.push(DigestField::text("rate_card_version", key));
+        }
+    }
     f.push(DigestField::text(
         "bucket_chain_ref",
         record.usage.bucket_chain_ref.clone(),
@@ -222,7 +259,7 @@ pub fn digest_fields(record: &crate::record::AuditRecord) -> Vec<DigestField> {
     for hook in &record.controls.hooks_applied {
         f.push(DigestField::text("hooks[].hook", hook.hook.clone()));
 
-        if record.recipe == Recipe::V4 {
+        if matches!(record.recipe, Recipe::V4 { .. } | Recipe::V5) {
             f.push(DigestField::text("hooks[].head", hook.head.as_str()));
             f.push(DigestField::num("hooks[].failed", u64::from(hook.failed)));
         }

@@ -70,17 +70,21 @@ fn a_session_that_does_not_open_answers_its_failure_and_runs_nothing() {
 
 mod replay_handles {
     use super::*;
+    use crate::abi::host::conn::connector::ConnectorSlots;
     use crate::abi::host::conn::connector::{
         EstablishIn, IdentityIn, IoIn, ProcessIdentity, StreamIn,
     };
     use crate::abi::host::service::{ClockNowIn, ClockReading};
+    use crate::abi::host::service::{HostSlots, ServiceOut};
     use crate::abi::mechanism::call::Outcome;
+    use crate::abi::mechanism::call::RawOutcome;
     use crate::abi::mechanism::ticket::{CompletionHandle, Ticket};
+    use crate::abi::mechanism::ticket::{HostCtx, HostTables};
     use crate::abi::sdk::conn::{ConnFailure, Host};
     use crate::abi::sdk::door::abi_str;
     use crate::abi::sdk::store::op::Parked;
     use crate::abi::sdk::store::wire::{drive_kept, Body};
-    use crate::abi::sdk::test_support::fake::{self, FakeHost, FakeService, ServiceCall};
+    use core::ffi::c_void;
     use std::cell::RefCell;
     use std::collections::HashMap;
     use std::mem::size_of;
@@ -221,107 +225,113 @@ mod replay_handles {
         })
     }
 
-    struct Establish;
-    impl FakeService for Establish {
-        type In = EstablishIn;
-        fn serve(call: &mut ServiceCall<EstablishIn>) -> Outcome {
-            let (outcome, stream) = cross(Kind::Establish, call.input().head.handle, &[]);
-            if outcome == Outcome::Ready {
-                call.set_value(stream as u64);
+    extern "C" fn establish(_: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+        // SAFETY: the actual SDK supplies this exact live EstablishIn and exclusive ServiceOut.
+        let input = unsafe { &*input.cast::<EstablishIn>() };
+        let (outcome, stream) = cross(Kind::Establish, input.head.handle, &[]);
+        if outcome == Outcome::Ready {
+            unsafe { (*out).value = stream as u64 };
+        }
+        RawOutcome::of(outcome)
+    }
+
+    extern "C" fn write(_: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+        // SAFETY: the SDK owns this exact IoIn and its initialized read-only write prefix.
+        let input = unsafe { &*input.cast::<IoIn>() };
+        let bytes = unsafe { std::slice::from_raw_parts(input.buf, input.len) };
+        let (outcome, written) = cross(Kind::Write, input.head.handle, bytes);
+        if outcome == Outcome::Ready {
+            unsafe { (*out).len = written as u64 };
+        }
+        RawOutcome::of(outcome)
+    }
+
+    extern "C" fn read(_: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+        // SAFETY: the SDK supplies this exact IoIn and an exclusively writable read buffer.
+        let input = unsafe { &*input.cast::<IoIn>() };
+        let (outcome, _) = cross(Kind::Read, input.head.handle, &[]);
+        if outcome == Outcome::Ready {
+            assert!(input.len >= b"reply".len());
+            unsafe {
+                std::ptr::copy_nonoverlapping(b"reply".as_ptr(), input.buf, b"reply".len());
+                (*out).len = b"reply".len() as u64;
             }
-            outcome
         }
+        RawOutcome::of(outcome)
     }
 
-    struct Write;
-    impl FakeService for Write {
-        type In = IoIn;
-        fn serve(call: &mut ServiceCall<IoIn>) -> Outcome {
-            let bytes = call.lent(|i| &i.buf).to_vec();
-            let (outcome, written) = cross(Kind::Write, call.input().head.handle, &bytes);
-            if outcome == Outcome::Ready {
-                call.set_len(written as u64);
-            }
-            outcome
-        }
+    extern "C" fn close(_: HostCtx, input: *const c_void, _: *mut ServiceOut) -> RawOutcome {
+        // SAFETY: the SDK supplies the exact initialized StreamIn to its CLOSE slot.
+        let input = unsafe { &*input.cast::<StreamIn>() };
+        RawOutcome::of(cross(Kind::Close, input.head.handle, &[]).0)
     }
 
-    struct Read;
-    impl FakeService for Read {
-        type In = IoIn;
-        fn serve(call: &mut ServiceCall<IoIn>) -> Outcome {
-            let (outcome, _) = cross(Kind::Read, call.input().head.handle, &[]);
-            if outcome == Outcome::Ready {
-                assert!(call.fill_lent(|i| &i.buf, b"reply"));
-            }
-            outcome
-        }
-    }
-
-    struct Close;
-    impl FakeService for Close {
-        type In = StreamIn;
-        fn serve(call: &mut ServiceCall<StreamIn>) -> Outcome {
-            cross(Kind::Close, call.input().head.handle, &[]).0
-        }
-    }
-
-    struct Identity;
-    impl FakeService for Identity {
-        type In = IdentityIn;
-        fn serve(call: &mut ServiceCall<IdentityIn>) -> Outcome {
-            let outcome = cross(Kind::Identity, call.input().head.handle, &[]).0;
-            call.put(
-                |i| &i.identity,
-                ProcessIdentity {
-                    size: size_of::<ProcessIdentity>() as u32,
-                    _reserved: 0,
-                    pid: 7,
-                    os_user: abi_str("tester"),
-                    program: abi_str("fixture"),
-                },
-            );
-            outcome
-        }
-    }
-
-    struct Clock;
-    impl FakeService for Clock {
-        type In = ClockNowIn;
-        fn serve(call: &mut ServiceCall<ClockNowIn>) -> Outcome {
-            let now = script(|s| {
-                s.clocks.push(call.input().head.handle);
-                s.now
+    extern "C" fn identity(_: HostCtx, input: *const c_void, _: *mut ServiceOut) -> RawOutcome {
+        // SAFETY: the SDK supplies an IdentityIn and one initialized writable ProcessIdentity.
+        let input = unsafe { &*input.cast::<IdentityIn>() };
+        let outcome = cross(Kind::Identity, input.head.handle, &[]).0;
+        unsafe {
+            input.identity.write(ProcessIdentity {
+                size: size_of::<ProcessIdentity>() as u32,
+                _reserved: 0,
+                pid: 7,
+                os_user: abi_str("tester"),
+                program: abi_str("fixture"),
             });
-            call.put(
-                |i| &i.reading,
-                ClockReading {
-                    size: size_of::<ClockReading>() as u32,
-                    _reserved: 0,
-                    mono_ns: now,
-                    wall_ns: 0,
-                },
-            );
-            Outcome::Ready
         }
+        RawOutcome::of(outcome)
     }
 
-    fn host(mode: Mode) -> (FakeHost, Host) {
-        script(|s| {
-            *s = Script {
+    extern "C" fn clock(_: HostCtx, input: *const c_void, _: *mut ServiceOut) -> RawOutcome {
+        // SAFETY: the SDK supplies this exact ClockNowIn and writable ClockReading.
+        let input = unsafe { &*input.cast::<ClockNowIn>() };
+        let now = script(|state| {
+            state.clocks.push(input.head.handle);
+            state.now
+        });
+        unsafe {
+            input.reading.write(ClockReading {
+                size: size_of::<ClockReading>() as u32,
+                _reserved: 0,
+                mono_ns: now,
+                wall_ns: 0,
+            });
+        }
+        RawOutcome::of(Outcome::Ready)
+    }
+
+    fn host(mode: Mode) -> Host {
+        script(|state| {
+            *state = Script {
                 mode,
                 ..Script::default()
             }
         });
-        let fake = FakeHost::new()
-            .serve(fake::conn::ESTABLISH, Establish)
-            .serve(fake::conn::WRITE, Write)
-            .serve(fake::conn::READ, Read)
-            .serve(fake::conn::CLOSE, Close)
-            .serve(fake::conn::IDENTITY, Identity)
-            .serve(fake::host::CLOCK_NOW, Clock);
-        let host = Host::of(fake.lent());
-        (fake, host)
+        let mut conns: ConnectorSlots = crate::abi::sdk::test_support::zeroed();
+        conns.size = size_of::<ConnectorSlots>() as u32;
+        conns.slots = crate::abi::host::conn::connector::SERVICES;
+        conns.establish = Some(establish);
+        conns.write = Some(write);
+        conns.read = Some(read);
+        conns.close = Some(close);
+        conns.identity = Some(identity);
+        let mut services: HostSlots = crate::abi::sdk::test_support::zeroed();
+        services.size = size_of::<HostSlots>() as u32;
+        services.slots = crate::abi::host::service::SERVICES;
+        services.clock_now = Some(clock);
+        // SAFETY: Host snapshots these initialized local tables. Their concrete callbacks keep
+        // all per-test state thread-local and inspect only the actual SDK's live input loans.
+        unsafe {
+            Host::from_raw(&HostTables {
+                size: size_of::<HostTables>() as u32,
+                _reserved: 0,
+                ctx: HostCtx::NONE,
+                wake: None,
+                conns: &conns,
+                services: &services,
+                io: std::ptr::null(),
+            })
+        }
     }
 
     type Start = fn(Wire) -> Body<Result<(), ConnFailure>>;
@@ -390,7 +400,7 @@ mod replay_handles {
 
     #[test]
     fn repeated_pending_replays_one_handle_and_never_restarts_completed_wire_requests() {
-        let (_fake, host) = host(Mode::RepeatedPending);
+        let host = host(Mode::RepeatedPending);
         let pool = Pool::new(1);
         finish(&host, &pool, TICKET, None, exchange);
         let establish = calls(Kind::Establish);
@@ -432,7 +442,7 @@ mod replay_handles {
 
     #[test]
     fn cancelling_a_replayed_read_closes_with_a_fresh_handle_above_every_attempt() {
-        let (_fake, host) = host(Mode::CancelRead);
+        let host = host(Mode::CancelRead);
         let pool = Pool::new(1);
         let (answer, held, attempted) = enter(&host, &pool, TICKET, None, hold_read);
         assert!(matches!(answer, Step::Pending { wake_at_ns: 0 }) && attempted);
@@ -462,7 +472,7 @@ mod replay_handles {
 
     #[test]
     fn a_successful_zero_byte_write_retries_on_a_new_handle_after_its_timer_wait() {
-        let (_fake, host) = host(Mode::ZeroWrite);
+        let host = host(Mode::ZeroWrite);
         let pool = Pool::new(1);
         finish(&host, &pool, TICKET, None, write_once);
         let writes = calls(Kind::Write);
@@ -489,7 +499,7 @@ mod replay_handles {
 
     #[test]
     fn a_pool_wait_does_not_replay_the_completed_request_that_preceded_it() {
-        let (_fake, host) = host(Mode::PoolWait);
+        let host = host(Mode::PoolWait);
         let pool = Pool::new(1);
         let (answer, holder, _) = enter(&host, &pool, HOLDER, None, hold_read);
         assert!(matches!(answer, Step::Pending { wake_at_ns: 0 }));
@@ -549,7 +559,7 @@ mod replay_handles {
             close_after_timeout as Start,
             reconnect_after_timeout as Start,
         ] {
-            let (_fake, host) = host(Mode::RecoverTimedOutRead);
+            let host = host(Mode::RecoverTimedOutRead);
             let pool = Pool::new(1);
             let (answer, held, attempted) = enter(&host, &pool, TICKET, None, start);
             let expiry = match answer {

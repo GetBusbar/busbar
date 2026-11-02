@@ -762,7 +762,7 @@ fn a_local_file_url_host_reads_opaque() {
     }
 }
 
-/// RED (HIGH, the percent-escape the judge did not decode): a host reaches the judge decoded, so a
+/// Host validation refuses a percent escape outside an IPv6 zone ID.
 #[test]
 fn judged_host_refuses_a_percent_outside_an_ipv6_zone_id() {
     for escaped in [

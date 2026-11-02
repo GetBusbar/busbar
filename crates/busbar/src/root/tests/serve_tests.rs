@@ -126,7 +126,6 @@ use busbar_kernel::governance::signing::{TokenSigner, DEFAULT_KID};
 use busbar_kernel::governance::{GovState, NewKeySpec, PLANE_LANE_SEP};
 #[cfg(feature = "plane-decisions")]
 use busbar_kernel::plane_driver::{refusal_status, EndPost, PlaneMoney};
-use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 #[cfg(feature = "plane-decisions")]
 use busbar_plane_decisions::door as decisions_door;
 #[cfg(feature = "plane-decisions")]
@@ -340,7 +339,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
 
     let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
     let gov = Arc::new(
-        GovState::new_with_signer(Arc::new(MemoryStore::new()), None, Some(signer))
+        GovState::new_with_signer(crate::root::real_store::records(), None, Some(signer))
             .expect("governance"),
     );
     let (key, token) = gov
@@ -683,7 +682,6 @@ pub(super) mod session_door {
     use busbar_kernel::governance::signing::{TokenSigner, DEFAULT_KID};
     use busbar_kernel::governance::{GovState, NewKeySpec};
     use busbar_kernel::plane_driver::{refusal_status, EndPost, PlaneMoney};
-    use busbar_kernel_testkit::test_support::store_double::MemoryStore;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use crate::root::door_steps::{provider_routes, DoorReach, OutboundAuths};
@@ -1080,7 +1078,7 @@ pub(super) mod session_door {
         };
         let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
         let gov = Arc::new(
-            GovState::new_with_signer(Arc::new(MemoryStore::new()), None, Some(signer))
+            GovState::new_with_signer(crate::root::real_store::records(), None, Some(signer))
                 .expect("governance"),
         );
         let (key, plain) = gov
@@ -4912,7 +4910,7 @@ async fn serve_configured(
 
     let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
     let gov = Arc::new(
-        GovState::new_with_signer(Arc::new(MemoryStore::new()), None, Some(signer))
+        GovState::new_with_signer(crate::root::real_store::records(), None, Some(signer))
             .expect("governance"),
     );
     let group = format!("decider-{instance}");

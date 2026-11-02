@@ -57,47 +57,62 @@ fn admin_scope_resolution() {
         ],
     );
     let module = Some("test-groups-module");
-    let app = crate::test_support::TestApp::new()
-        .role_bindings(rb)
-        .build();
-
-    assert_eq!(admin_scope_for(&app, None, None), Grants::of(Scope::Full));
+    let operator = Operator::new("operator-provider");
+    let operator_id = "operator:local";
 
     assert_eq!(
-        admin_scope_for(
-            &app,
-            Some(crate::config::operator_provider()),
-            Some(&Principal::from_id(crate::config::operator_principal_id()))
+        admin_scope_from_bindings(&rb, &operator, operator_id, None, None),
+        Grants::of(Scope::Full)
+    );
+
+    assert_eq!(
+        admin_scope_from_bindings(
+            &rb,
+            &operator,
+            operator_id,
+            Some("operator-provider"),
+            Some(&Principal::from_id(operator_id))
         ),
         Grants::of(Scope::Full)
     );
 
     assert_eq!(
-        admin_scope_for(
-            &app,
+        admin_scope_from_bindings(
+            &rb,
+            &operator,
+            operator_id,
             module,
-            Some(&Principal::from_id(crate::config::operator_principal_id()))
+            Some(&Principal::from_id(operator_id))
         ),
         Grants::default()
     );
 
     let p = grp_principal("test:alice", &["viewers", "admins"]);
-    assert!(admin_scope_for(&app, module, Some(&p)).allows(Scope::Full));
+    assert!(
+        admin_scope_from_bindings(&rb, &operator, operator_id, module, Some(&p))
+            .allows(Scope::Full)
+    );
     let p = grp_principal("test:alice", &["viewers"]);
     assert_eq!(
-        admin_scope_for(&app, module, Some(&p)),
+        admin_scope_from_bindings(&rb, &operator, operator_id, module, Some(&p)),
         Grants::of(Scope::ReadOnly)
     );
 
     let p = grp_principal("test:alice", &["strangers"]);
-    assert_eq!(admin_scope_for(&app, module, Some(&p)), Grants::default());
+    assert_eq!(
+        admin_scope_from_bindings(&rb, &operator, operator_id, module, Some(&p)),
+        Grants::default()
+    );
 
     let p = grp_principal("test:alice", &["no-admin"]);
-    assert_eq!(admin_scope_for(&app, module, Some(&p)), Grants::default());
+    assert_eq!(
+        admin_scope_from_bindings(&rb, &operator, operator_id, module, Some(&p)),
+        Grants::default()
+    );
 
     let stranger = Principal::from_id("test:bob");
     assert_eq!(
-        admin_scope_for(&app, module, Some(&stranger)),
+        admin_scope_from_bindings(&rb, &operator, operator_id, module, Some(&stranger)),
         Grants::default()
     );
 }
@@ -109,22 +124,33 @@ fn admin_scope_bindings_are_module_scoped() {
         "other-module",
         &[("admins", binding(None, None, Some("full")))],
     );
-    let app = crate::test_support::TestApp::new()
-        .role_bindings(rb)
-        .build();
+    let operator = Operator::new("operator-provider");
+    let operator_id = "operator:local";
     let p = grp_principal("test:alice", &["admins"]);
     assert!(
-        admin_scope_for(&app, Some("test-groups-module"), Some(&p)) == Grants::default(),
+        admin_scope_from_bindings(
+            &rb,
+            &operator,
+            operator_id,
+            Some("test-groups-module"),
+            Some(&p)
+        ) == Grants::default(),
         "a role asserted by module A must not ride module B's binding"
     );
 
     assert_eq!(
-        admin_scope_for(&app, Some("other-module"), Some(&p)),
+        admin_scope_from_bindings(&rb, &operator, operator_id, Some("other-module"), Some(&p)),
         Grants::of(Scope::Full)
     );
 
     assert_eq!(
-        admin_scope_for(&app, Some("unbound-module"), Some(&p)),
+        admin_scope_from_bindings(
+            &rb,
+            &operator,
+            operator_id,
+            Some("unbound-module"),
+            Some(&p)
+        ),
         Grants::default()
     );
 }
@@ -212,18 +238,17 @@ fn an_identified_principal_with_no_grant_is_refused() {
         principal,
         resolved: None,
     };
-    let refused =
-        |app: &crate::state::App, v: ChainVerdict, why: &str| match resolve_data_plane_identity(
-            app, v,
-        ) {
+    let refused = |role_bindings: &crate::config::RoleBindings, v: ChainVerdict, why: &str| {
+        match resolve_identity_from_bindings(role_bindings, v) {
             Err(IdentityRefusal::NoGrant) => {}
             other => panic!(
                 "{why}: refused NoGrant, got {:?}",
                 other.map(|(_, gov)| gov.key.map(|k| k.id.clone()))
             ),
-        };
+        }
+    };
 
-    let bare = crate::test_support::TestApp::new().build();
+    let bare = crate::config::RoleBindings::new();
     refused(
         &bare,
         identified("test-groups-module", grp_principal("test:nobody", &[])),
@@ -239,9 +264,7 @@ fn an_identified_principal_with_no_grant_is_refused() {
         "test-groups-module",
         &[("dev", binding(Some(&["pa"]), None, None))],
     );
-    let governed = crate::test_support::TestApp::new()
-        .role_bindings(table)
-        .build();
+    let governed = table;
     refused(
         &governed,
         identified("test-groups-module", grp_principal("test:nobody", &[])),
@@ -253,13 +276,13 @@ fn an_identified_principal_with_no_grant_is_refused() {
         "an unbound role under a governed module",
     );
 
-    let (who, gov) = resolve_data_plane_identity(
+    let (who, gov) = resolve_identity_from_bindings(
         &governed,
         identified("test-groups-module", grp_principal("test:dev", &["dev"])),
     )
     .expect("a bound role earns a key and is admitted");
     assert!(who.0.is_some() && gov.key.is_some());
-    let (who, gov) = resolve_data_plane_identity(&bare, ChainVerdict::Open).expect("open door");
+    let (who, gov) = resolve_identity_from_bindings(&bare, ChainVerdict::Open).expect("open door");
     assert!(who.0.is_none() && gov.key.is_none());
 }
 
@@ -599,6 +622,32 @@ fn collect_strings(v: &serde_json::Value, out: &mut Vec<String>) {
 }
 
 #[test]
+fn a_door_refusal_retains_its_exact_query_in_a_wiping_target() {
+    use std::sync::Arc;
+
+    fn wiped_when_dropped<T: zeroize::ZeroizeOnDrop>(_: &T) {}
+
+    let seen = Arc::new(std::sync::Mutex::new(None));
+    let observed = Arc::clone(&seen);
+    let target = "/v1/responses?token=query-canary";
+    let door: RefusalDoor = (
+        Arc::new(move |reason, target| {
+            assert_eq!(reason, busbar_contract::caps::ReasonCode::Unauthenticated);
+            *observed.lock().unwrap() = Some(target.to_owned());
+            Response::builder()
+                .status(StatusCode::UNAUTHORIZED)
+                .body(Body::empty())
+                .unwrap()
+        }),
+        zeroize::Zeroizing::new(target.to_owned()),
+    );
+    wiped_when_dropped(&door.1);
+    let response = unauthorized_response(&residual_app(), "/v1/responses", Some(&door));
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(seen.lock().unwrap().as_deref(), Some(target));
+}
+
+#[test]
 fn test_unauthorized_body_carries_no_busbar_vocabulary() {
     const FORBIDDEN: &[&str] = &[
         "virtual key",
@@ -664,7 +713,7 @@ fn test_extract_admin_header_token_empty_filtered() {
 async fn forbidden_admin_requests_audit_once_per_window() {
     use crate::test_support::TestApp;
 
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
 
     let unique = format!(
         "unbound-{}",
@@ -790,7 +839,7 @@ async fn serve_app(
 
 #[tokio::test]
 async fn admin_plugin_full_binding_allows_mutation() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let rb = bindings_for(
         "test-scope-module",
         &[("minters", binding(None, None, Some("full")))],
@@ -825,7 +874,7 @@ async fn admin_plugin_full_binding_allows_mutation() {
 
 #[tokio::test]
 async fn admin_plugin_readonly_binding_get_ok_post_403() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let rb = bindings_for(
         "test-scope-module",
         &[("viewers", binding(None, None, Some("read-only")))],
@@ -876,7 +925,7 @@ async fn admin_plugin_readonly_binding_get_ok_post_403() {
 
 #[tokio::test]
 async fn admin_max_admin_scope_caps_binding() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let rb = bindings_for(
         "test-scope-module",
         &[("ops", binding(None, None, Some("full")))],
@@ -908,7 +957,7 @@ async fn admin_max_admin_scope_caps_binding() {
 
 #[tokio::test]
 async fn roleless_external_admin_principal_denied() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let app = crate::test_support::TestApp::new()
         .admin_chain(vec!["ext-admin".to_string()])
         .admin_module("ext-admin", Box::new(RolelessAdminModule))
@@ -932,7 +981,7 @@ async fn roleless_external_admin_principal_denied() {
 
 #[tokio::test]
 async fn a_slow_admin_door_does_not_stall_healthz() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let app = crate::test_support::TestApp::new()
         .admin_chain(vec!["slow-oidc".to_string()])
         .admin_door(
@@ -983,17 +1032,17 @@ async fn a_slow_admin_door_does_not_stall_healthz() {
 #[tokio::test]
 async fn test_audience_bound_token_is_rejected_on_the_data_plane() {
     use crate::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
-    use crate::governance::{GovState, MemoryStore};
+    use crate::governance::GovState;
     use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
     use serde_json::json;
     use std::sync::Arc;
 
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
 
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state).await;
 
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
     let gov = Arc::new(
         GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
@@ -1095,17 +1144,17 @@ async fn test_audience_bound_token_is_rejected_on_the_data_plane() {
 
 #[tokio::test]
 async fn test_governance_rejects_empty_token_even_if_empty_secret_key_exists() {
-    use crate::governance::{GovState, MemoryStore, RecordStore, ScopeRef, VirtualKey};
+    use crate::governance::{GovState, RecordStore, ScopeRef, VirtualKey};
     use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
     use serde_json::json;
     use std::sync::Arc;
 
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
 
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state).await;
 
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
 
     store
         .put_key(&VirtualKey {
@@ -1221,17 +1270,17 @@ fn test_caller_token_debug_redacts_value() {
 
 #[tokio::test]
 async fn test_governance_active_with_admin_token_rejects_missing_vkey() {
-    use crate::governance::{GovState, MemoryStore};
+    use crate::governance::GovState;
     use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
     use serde_json::json;
     use std::sync::Arc;
 
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
 
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state).await;
 
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
 
     let app = TestApp::new()
@@ -1278,7 +1327,7 @@ async fn test_governance_active_with_admin_token_rejects_missing_vkey() {
 #[test]
 fn test_admin_scope_cap_ceilings_external_module() {
     use busbar_contract::authz::{Grants, Scope};
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
 
     let mk_app = |cap: Option<&str>, bind_module: &str| {
         let mut app = crate::test_support::TestApp::new().build();
@@ -1321,7 +1370,7 @@ fn test_admin_scope_cap_ceilings_external_module() {
 #[test]
 fn test_dry_run_empty_admin_chain_is_not_full() {
     use busbar_contract::authz::{Grants, Scope};
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
 
     let mut app = crate::test_support::TestApp::new().build();
     let a = std::sync::Arc::get_mut(&mut app).expect("freshly built App Arc is unshared");
@@ -1360,8 +1409,8 @@ async fn dp_serve(
 }
 
 fn dp_gov_with_key() -> (std::sync::Arc<crate::governance::GovState>, String) {
-    use crate::governance::{GovState, MemoryStore, NewKeySpec};
-    let store = std::sync::Arc::new(MemoryStore::new());
+    use crate::governance::{GovState, NewKeySpec};
+    let store = crate::real_store::store();
     let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
         crate::governance::signing::DEFAULT_KID,
@@ -1404,7 +1453,7 @@ fn dp_ok_state() -> std::sync::Arc<crate::test_support::MockServerState> {
 #[tokio::test]
 async fn test_1_5_2_keys_chain_disabled_vkey_rejected() {
     use crate::test_support::{LaneSpec, MockServer, TestApp};
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let server = MockServer::new(dp_ok_state()).await;
     let (gov, secret) = dp_gov_with_key();
     let key_id = gov.all_keys().unwrap()[0].id.clone();
@@ -1435,9 +1484,9 @@ async fn test_1_5_2_keys_chain_disabled_vkey_rejected() {
 
 #[test]
 fn test_1_5_2_keys_arm_resolves_the_vkey() {
-    use crate::governance::{GovState, MemoryStore, NewKeySpec};
-    crate::snapshot::init();
-    let store = std::sync::Arc::new(MemoryStore::new());
+    use crate::governance::{GovState, NewKeySpec};
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
+    let store = crate::real_store::store();
     let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
         &[9u8; 32],
         crate::governance::signing::DEFAULT_KID,
@@ -1669,7 +1718,7 @@ async fn admin_get(app: std::sync::Arc<crate::state::App>) -> (u16, Option<Strin
 async fn an_operator_door_without_a_verdict_answers_503_and_an_overloaded_one_the_1_5_5_admin_401()
 {
     use busbar_contract::auth_calls::Verified;
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let rejected = admin_get(operator_app(Verified::Reject)).await;
     assert_eq!(rejected.0, 401, "a bad credential is the admin 401");
     assert_eq!(rejected.1, None, "a 401 names no Retry-After");
@@ -1691,7 +1740,7 @@ async fn an_operator_door_without_a_verdict_answers_503_and_an_overloaded_one_th
 #[tokio::test]
 async fn an_external_admin_door_without_a_verdict_answers_503_and_a_reject_401() {
     use busbar_contract::auth_calls::Verified;
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let door = |calls: std::sync::Arc<dyn AuthCalls>| {
         crate::test_support::TestApp::new()
             .admin_chain(vec!["ext".to_string()])
@@ -2006,7 +2055,7 @@ fn at_capacity_503() -> (u16, Option<String>, Option<String>, String) {
 async fn a_data_plane_door_without_a_verdict_answers_503_like_an_overloaded_one_and_a_reject_401() {
     use crate::test_support::{LaneSpec, MockServer, TestApp};
     use busbar_contract::auth_calls::Verified;
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let server = MockServer::new(dp_ok_state()).await;
     let ask = |auth: AuthMiddleware, path: &'static str| {
         let app = TestApp::new()
@@ -2345,11 +2394,7 @@ fn replay_gov() -> std::sync::Arc<crate::governance::GovState> {
 #[tokio::test]
 async fn a_replay_claim_with_no_store_calls_to_redeem_in_is_refused() {
     use busbar_contract::auth_calls::{Replay, VerifiedIdentity};
-    let bare = crate::governance::GovState::new(
-        std::sync::Arc::new(crate::governance::MemoryStore::new()),
-        None,
-    )
-    .expect("gov");
+    let bare = crate::governance::GovState::new(crate::real_store::store(), None).expect("gov");
     let now = busbar_kernel::store::now();
     let asks = VerifiedIdentity {
         subject: "subject".into(),
@@ -2492,7 +2537,7 @@ fn naming_app(
 
 #[tokio::test]
 async fn a_replayed_signed_delivery_is_answered_401_the_second_time() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let app = naming_app(hook_answer(Some("standard-webhooks/msg_1"), Vec::new()));
     let (base, served) = echo_behind_the_gate(app).await;
     let deliver = || async {
@@ -2513,7 +2558,7 @@ async fn a_replayed_signed_delivery_is_answered_401_the_second_time() {
 #[tokio::test]
 async fn an_auth_named_header_and_query_key_never_reach_the_plane() {
     use busbar_contract::auth_calls::Strip;
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let app = naming_app(hook_answer(
         None,
         vec![Strip::field("X-Hook-Secret"), Strip::query("api_key")],
@@ -2626,7 +2671,7 @@ async fn still_unclaimed(gov: &crate::governance::GovState, provider: &str, key:
 
 #[tokio::test]
 async fn a_delivery_refused_for_its_grant_leaves_its_replay_key_unclaimed() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let gov = replay_gov();
     let answer = hook_answer(Some("standard-webhooks/msg_r6"), Vec::new());
     let deliver = |base: String| async move {
@@ -2708,7 +2753,7 @@ async fn an_admin_identity_refused_for_scope_leaves_its_replay_key_unclaimed() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_racing_identical_deliveries_admit_at_most_one() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let app = replay_app(
         hook_answer(Some("standard-webhooks/msg_race"), Vec::new()),
         replay_gov(),
@@ -2777,7 +2822,7 @@ async fn door_serve(
     app: std::sync::Arc<crate::state::App>,
     paths: &[&str],
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let doors = paths.iter().map(|p| admitting_door(p)).collect();
     let (router, _admin, _handle) = crate::build_split_routers_serving(
         app,
@@ -2828,7 +2873,7 @@ async fn door_bearer(
 }
 
 fn door_gov(admin_token: Option<&str>) -> std::sync::Arc<crate::governance::GovState> {
-    let store = std::sync::Arc::new(crate::governance::MemoryStore::new());
+    let store = crate::real_store::store();
     let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
         crate::governance::signing::DEFAULT_KID,
@@ -3024,11 +3069,7 @@ async fn test_governance_revoked_signed_token_key_rejected() {
 #[tokio::test]
 async fn test_governance_inert_without_admin_token_static_token_admitted() {
     let gov = std::sync::Arc::new(
-        crate::governance::GovState::new(
-            std::sync::Arc::new(crate::governance::MemoryStore::new()),
-            None,
-        )
-        .unwrap(),
+        crate::governance::GovState::new(crate::real_store::store(), None).unwrap(),
     );
     assert!(
         gov.admin_token_hash().is_none(),
@@ -3069,11 +3110,7 @@ async fn test_governance_inert_without_admin_token_static_token_admitted() {
 #[tokio::test]
 async fn test_governance_inert_without_admin_token_open_relay_admits() {
     let gov = std::sync::Arc::new(
-        crate::governance::GovState::new(
-            std::sync::Arc::new(crate::governance::MemoryStore::new()),
-            None,
-        )
-        .unwrap(),
+        crate::governance::GovState::new(crate::real_store::store(), None).unwrap(),
     );
     let app = door_app()
         .upstream_creds(crate::auth::UpstreamCreds::Own)
@@ -3123,7 +3160,7 @@ async fn test_governance_active_with_admin_token_enforces_minted_key() {
 async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins() {
     use crate::governance::RecordStore as _;
     let persisted_secret = "sk-vk-persisted-from-prior-run";
-    let store = std::sync::Arc::new(crate::governance::MemoryStore::new());
+    let store = crate::real_store::store();
     store
         .put_key(&crate::governance::VirtualKey {
             id: "kold".to_string(),
@@ -3225,7 +3262,7 @@ async fn test_1_5_2_open_chain_valid_vkey_ignored_not_metered() {
         app: std::sync::Arc<crate::state::App>,
         gov: std::sync::Arc<crate::governance::GovState>,
     ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
-        crate::snapshot::init();
+        crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
         let mut door = admitting_door("/pa/v1/messages");
         let echo = door.handler.clone();
         door.handler = std::sync::Arc::new(move |ctx| {
@@ -3338,7 +3375,7 @@ async fn test_unauthorized_body_carries_no_busbar_vocabulary_on_the_live_stack()
         "unauthorized",
         "admin",
     ];
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let app = door_app()
         .auth(std::sync::Arc::new(AuthMiddleware::new_builtin(
             &chain_cfg(&["test-groups-module"]),
@@ -3384,7 +3421,7 @@ async fn test_unauthorized_body_carries_no_busbar_vocabulary_on_the_live_stack()
 
 #[tokio::test]
 async fn test_admin_prefix_is_boundary_safe() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let app = crate::test_support::TestApp::new()
         .lane(
             crate::test_support::LaneSpec::new("test-model", LANE_PROTOCOL, "http://127.0.0.1:1")
@@ -3593,7 +3630,7 @@ fn verbs_binding(yaml: &str) -> crate::config::RoleBindingCfg {
 #[test]
 fn a_role_granting_verbs_by_name_is_identified_with_its_allow_list() {
     use busbar_contract::authz::{Grants, Scope};
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let app = verbs_app(verbs_binding("verbs: [post_config_apply]"), "full");
     let door = admin_door(
         &app,
@@ -3631,7 +3668,7 @@ fn a_role_granting_verbs_by_name_is_identified_with_its_allow_list() {
 
 #[test]
 fn verbs_star_is_exactly_admin_scope_full() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let star = verbs_app(verbs_binding("verbs: \"*\""), "full");
     let full = verbs_app(binding(None, None, Some("full")), "full");
     let headers = admin_headers(Some("grp:ops"), None);
@@ -3652,7 +3689,7 @@ fn verbs_star_is_exactly_admin_scope_full() {
 #[test]
 fn a_binding_without_verbs_is_judged_by_its_rung_alone() {
     use busbar_contract::authz::{Grants, Scope};
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let headers = admin_headers(Some("grp:ops"), None);
     for (scope, rung) in [("read-only", Scope::ReadOnly), ("full", Scope::Full)] {
         let app = verbs_app(binding(None, None, Some(scope)), "full");
@@ -3667,7 +3704,7 @@ fn a_binding_without_verbs_is_judged_by_its_rung_alone() {
 #[test]
 fn the_providers_ceiling_caps_a_named_verb() {
     use busbar_contract::authz::{Grants, Scope};
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let app = verbs_app(
         verbs_binding("verbs: [get_keys, post_config_apply]"),
         "read-only",
@@ -3691,7 +3728,7 @@ fn the_providers_ceiling_caps_a_named_verb() {
 
 #[tokio::test]
 async fn the_admin_gate_admits_only_the_listed_verbs() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let app = verbs_app(verbs_binding("verbs: [post_config_apply]"), "full");
     let (base, handle) = serve_app(app).await;
     let client = reqwest::Client::new();

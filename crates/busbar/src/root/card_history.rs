@@ -1362,7 +1362,8 @@ pub fn migrated(chains: &[Chain], writer: u64) -> Vec<StoredEntry> {
         let has_opening = opening.is_some();
         let mut history = History::new();
 
-        let mut cards: Vec<CardFields> = Vec::new();
+        let mut cards: BTreeMap<EntryKey, CardFields> = BTreeMap::new();
+        let mut original_keys = Vec::new();
         for (index, (seq, body, card)) in opening.into_iter().chain(rest).enumerate() {
             let key = |at: u64| EntryKey::new(at, node.to_be_bytes(), seq as u32);
             let migrated = |reason: Option<String>| EntryAuthor::Migrated {
@@ -1376,8 +1377,12 @@ pub fn migrated(chains: &[Chain], writer: u64) -> Vec<StoredEntry> {
                     (applied.draft(), applied.form.to_fields(), None)
                 }
                 JournalledCard::Corrected(correction, sealed_over) => {
-                    let draft = match correction.rebuild_over(history.current(), sealed_over) {
-                        Ok(draft) => draft,
+                    let (base_key, draft) = match correction.rebuild_from_original_chain(
+                        &history,
+                        sealed_over,
+                        &original_keys,
+                    ) {
+                        Ok(resolved) => resolved,
                         Err(cause) => {
                             tracing::warn!(
                                 node,
@@ -1386,20 +1391,20 @@ pub fn migrated(chains: &[Chain], writer: u64) -> Vec<StoredEntry> {
                                 "a journalled rate correction its chain's rebuild refuses is not \
                                  migrated (it never priced an instant)"
                             );
+                            original_keys.push(None);
                             continue;
                         }
                     };
-                    let base = usize::try_from(sealed_over.seq.get())
-                        .ok()
-                        .and_then(|i| cards.get(i))
-                        .cloned()
-                        .unwrap_or_default();
+                    let Some(base) = cards.get(&base_key) else {
+                        original_keys.push(None);
+                        continue;
+                    };
                     let cells: Vec<(String, String, u64)> = correction
                         .cells
                         .iter()
                         .map(|(cell, nanos)| (cell.lane.clone(), cell.class.clone(), *nanos))
                         .collect();
-                    let fields = crate::root::kernel::cells_onto(&base, &cells, correction.fee);
+                    let fields = crate::root::kernel::cells_onto(base, &cells, correction.fee);
                     let reason = match &draft.author {
                         Author::Amend { reason_hash } => Some(hex::encode(reason_hash)),
                         _ => Some(String::new()),
@@ -1416,7 +1421,11 @@ pub fn migrated(chains: &[Chain], writer: u64) -> Vec<StoredEntry> {
                 }
             };
             history.append(draft.clone());
-            cards.push(fields.clone());
+            let entry_key = history.head_key();
+            original_keys.push(entry_key);
+            if let Some(key) = entry_key {
+                cards.insert(key, fields.clone());
+            }
             out.push(StoredEntry {
                 key: key(draft.appended_at),
                 effective_from: draft.effective_from,

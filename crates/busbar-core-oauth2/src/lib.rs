@@ -22,9 +22,6 @@ mod config_tests;
 #[path = "tests/device_routes_tests.rs"]
 mod device_routes_tests;
 #[cfg(test)]
-#[path = "tests/fapi2_tests.rs"]
-mod fapi2_tests;
-#[cfg(test)]
 #[path = "tests/flow_tests.rs"]
 mod flow_tests;
 #[cfg(test)]

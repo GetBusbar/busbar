@@ -34,20 +34,20 @@ fn an_appended_entry_prices_later_instants_and_moves_nothing_earlier() {
     let view = history.current();
     let earlier = price(&view, &before).expect("entry zero covers it");
     let later = price(&view, &after).expect("entry one covers it");
-    assert_eq!(earlier.card_seq, HistorySeq(0));
+    assert_eq!(earlier.card_seq, history.entries()[0].key());
     assert_eq!(
         minor(&earlier),
         1000,
         "the unit that arrived first did not move"
     );
-    assert_eq!(later.card_seq, HistorySeq(1));
+    assert_eq!(later.card_seq, history.entries()[1].key());
     assert_eq!(
         minor(&later),
         500,
         "the unit that arrived after pays the new rate"
     );
 
-    let at_zero = history.snapshot(HistorySeq(0));
+    let at_zero = history.snapshot(history.entries()[0].key());
     assert_eq!(
         minor(&price(&at_zero, &after).expect("entry zero is open-ended")),
         1000,

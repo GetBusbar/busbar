@@ -55,6 +55,9 @@ struct Store {
     fail_read: AtomicBool,
     fail_delete: AtomicBool,
     lose_write_reply: AtomicBool,
+    fail_refresh_after_write: AtomicBool,
+    fail_list: AtomicBool,
+    refuse_write_with_applied_text: AtomicBool,
 }
 
 impl Store {
@@ -68,16 +71,27 @@ impl Store {
             fail_read: AtomicBool::new(false),
             fail_delete: AtomicBool::new(false),
             lose_write_reply: AtomicBool::new(false),
+            fail_refresh_after_write: AtomicBool::new(false),
+            fail_list: AtomicBool::new(false),
+            refuse_write_with_applied_text: AtomicBool::new(false),
         })
     }
 }
 
 impl RecordStore for Store {
     fn put_key(&self, key: &VirtualKey) -> RecordStoreResult<()> {
+        if self.refuse_write_with_applied_text.load(Ordering::SeqCst) {
+            return Err(RecordStoreError(
+                "MINT APPLIED (new secret not returned): untrusted Store error text".into(),
+            ));
+        }
         if self.pause_write.swap(false, Ordering::SeqCst) {
             self.write.wait();
         }
         self.inner.put_key(key)?;
+        if self.fail_refresh_after_write.load(Ordering::SeqCst) {
+            self.fail_list.store(true, Ordering::SeqCst);
+        }
         if self.lose_write_reply.load(Ordering::SeqCst) {
             return Err(RecordStoreError(
                 "reply lost after committed key write".into(),
@@ -94,6 +108,9 @@ impl RecordStore for Store {
     }
 
     fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
+        if self.fail_list.load(Ordering::SeqCst) {
+            return Err(RecordStoreError("private refresh failure detail".into()));
+        }
         self.inner.list_keys()
     }
 
@@ -156,7 +173,7 @@ impl RecordStore for Store {
 }
 
 fn app(store: Arc<Store>) -> Arc<AppHandle> {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7; 32],
         busbar_kernel::governance::signing::DEFAULT_KID,
@@ -476,4 +493,95 @@ async fn lost_rotate_reply_does_not_release_a_committed_claim() {
         store.inner.get_key(&id).unwrap().unwrap().generation_hash,
         generation
     );
+}
+
+#[tokio::test]
+async fn committed_mint_refresh_failure_is_truthful_and_same_idempotency_cannot_mint_again() {
+    let store = Store::new();
+    let handle = app(store.clone());
+    let cache = Arc::new(KeyReplayCache::new());
+    store.fail_refresh_after_write.store(true, Ordering::SeqCst);
+    let response = mint(
+        handle.clone(),
+        cache.clone(),
+        "custody:applied-refresh",
+        "applied-refresh",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let answer = body(response).await;
+    let rows = store.inner.list_keys().unwrap();
+    assert_eq!(rows.len(), 1);
+    let id = &rows[0].id;
+    let text = answer.to_string();
+    assert!(
+        text.contains("MINT APPLIED (new secret not returned)"),
+        "{text}"
+    );
+    assert!(text.contains(id));
+    assert!(!text.contains("private refresh failure detail"));
+    assert!(answer.get("token").is_none());
+    assert!(answer.get("aws_secret_access_key").is_none());
+    assert_eq!(
+        audit_rows("custody:applied-refresh", "key.create", "applied"),
+        1
+    );
+    assert_eq!(
+        audit_rows("custody:applied-refresh", "key.create", "rejected"),
+        0
+    );
+    assert!(matches!(crate::idempotency::durable::claim(
+        &*store,
+        &("custody:applied-refresh".into(), crate::idempotency::create_replay_key("applied-refresh")),
+        busbar_kernel::store::now(),
+    ), Err(crate::idempotency::durable::Refused::Applied(what)) if what == format!("key:{id}")));
+    store.fail_list.store(false, Ordering::SeqCst);
+    store
+        .fail_refresh_after_write
+        .store(false, Ordering::SeqCst);
+    let retry = mint(
+        handle,
+        Arc::new(KeyReplayCache::new()),
+        "custody:applied-refresh",
+        "applied-refresh",
+    )
+    .await;
+    assert_eq!(retry.status(), StatusCode::CONFLICT);
+    assert!(body(retry).await.to_string().contains("already ran"));
+    assert_eq!(store.inner.list_keys().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_store_error_cannot_spoof_the_typed_committed_mint_outcome() {
+    let store = Store::new();
+    let handle = app(store.clone());
+    store
+        .refuse_write_with_applied_text
+        .store(true, Ordering::SeqCst);
+    let response = mint(
+        handle,
+        Arc::new(KeyReplayCache::new()),
+        "custody:spoofed-applied",
+        "spoofed-applied",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let answer = body(response).await;
+    assert!(!answer.to_string().contains("MINT APPLIED"));
+    assert!(store.inner.list_keys().unwrap().is_empty());
+    assert_eq!(
+        audit_rows("custody:spoofed-applied", "key.create", "applied"),
+        0
+    );
+    assert!(matches!(
+        crate::idempotency::durable::claim(
+            &*store,
+            &(
+                "custody:spoofed-applied".into(),
+                crate::idempotency::create_replay_key("spoofed-applied")
+            ),
+            busbar_kernel::store::now(),
+        ),
+        Err(crate::idempotency::durable::Refused::InFlight)
+    ));
 }

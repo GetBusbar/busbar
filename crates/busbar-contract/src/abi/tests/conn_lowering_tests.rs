@@ -516,7 +516,7 @@ impl Conns for Panics {
     }
 }
 
-/// RED (THE DESIGN, the signed kind-ABI design's finding M3, `BUSBAR-1.6.0.md` l.1515): every slot
+/// A panicking slot answers fault without unwinding.
 #[test]
 fn a_panicking_slot_answers_fault_without_unwinding() {
     let slots = host_slots();

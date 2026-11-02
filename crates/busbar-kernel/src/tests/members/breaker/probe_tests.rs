@@ -8,7 +8,7 @@ use busbar_kernel_breaker::{Breaker, BreakerUnit, DestinationId, LaneState, Outc
 const NOW: u64 = 1_700_000_000;
 
 fn route_token() -> Pass<Route> {
-    crate::test_support::tokens::pass::<Route>()
+    Pass::<Route>::mint(&crate::seal::acquire())
 }
 
 const POOL: &str = "p";

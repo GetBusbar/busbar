@@ -8,7 +8,7 @@ use busbar_contract::records::{PlaneRequestCtx, ScopeRef, VirtualKey};
 
 fn deployment(pool: &str) -> Arc<App> {
     crate::test_support::register_neutral_test_plane();
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     TestApp::new()
         .lane(LaneSpec::new(
             pool,

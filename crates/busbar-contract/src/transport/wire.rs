@@ -25,7 +25,7 @@ pub enum Direction {
 /// Named by what it is — the WIRE's four-way reading — because the contract family carries one
 /// other status class, `busbar_contract::upstream::StatusClass`, the nine-way reading a plane's
 /// dialect makes of an upstream's answer, and one name per meaning is the rule: the two are
-/// compared by the ledger, never confused by a reader. (Owner ruling, 2026-09-09.)
+/// compared by the ledger, never confused by a reader.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub enum WireStatusClass {
     /// The upstream reported success.

@@ -11,8 +11,8 @@ use busbar_contract::records::VirtualKey;
 use busbar_contract::services::{HostServices, Later, Ran, Stored};
 
 use super::*;
-use crate::governance::MemoryStore;
-use crate::host_services::tests::{caller, Mem};
+use crate::host_records::StoreRows;
+use crate::host_services::tests::caller;
 use crate::host_services::{InstanceFacts, KernelServices, Offload, NOT_A_KIND, POOL_REFUSED};
 use crate::host_units::UnitRecord;
 
@@ -50,16 +50,20 @@ fn key(id: &str) -> Arc<VirtualKey> {
 
 struct Rig {
     s: KernelServices,
-    store: Arc<MemoryStore>,
+    store: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
     clock: Arc<AtomicU64>,
 }
 
-fn rig_over(store: Arc<MemoryStore>, bounds: WorkBounds) -> Rig {
-    let rows = Arc::new(Mem(Arc::clone(&store)));
+fn rig_over(store: Arc<busbar_plugin_loader::store_v3::LoadedStore>, bounds: WorkBounds) -> Rig {
+    let rows = Arc::new(StoreRows(store.clone()));
     rig_with_rows(store, bounds, rows)
 }
 
-fn rig_with_rows(store: Arc<MemoryStore>, bounds: WorkBounds, rows: Arc<dyn RecordRows>) -> Rig {
+fn rig_with_rows(
+    store: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
+    bounds: WorkBounds,
+    rows: Arc<dyn RecordRows>,
+) -> Rig {
     let clock = Arc::new(AtomicU64::new(1_000_000));
     let c = Arc::clone(&clock);
     let s = KernelServices::new()
@@ -90,7 +94,7 @@ fn rig_with_rows(store: Arc<MemoryStore>, bounds: WorkBounds, rows: Arc<dyn Reco
 }
 
 fn rig() -> Rig {
-    rig_over(Arc::new(MemoryStore::new()), WorkBounds::default())
+    rig_over(crate::real_store::store(), WorkBounds::default())
 }
 
 fn run(f: impl FnOnce(Later) -> Ran) -> Stored {
@@ -188,7 +192,7 @@ fn a_settled_handle_answers_its_final_record_and_settles_once() {
 #[test]
 fn the_bound_refuses_an_open_and_never_evicts_a_live_handle() {
     let r = rig_over(
-        Arc::new(MemoryStore::new()),
+        crate::real_store::store(),
         WorkBounds {
             max_live: 2,
             retain_ms: 1_000,
@@ -215,7 +219,7 @@ fn the_bound_refuses_an_open_and_never_evicts_a_live_handle() {
 #[test]
 fn retention_bounds_only_settled_handles_and_the_sweep_runs_on_submit() {
     let r = rig_over(
-        Arc::new(MemoryStore::new()),
+        crate::real_store::store(),
         WorkBounds {
             max_live: 16,
             retain_ms: 1_000,
@@ -231,7 +235,7 @@ fn retention_bounds_only_settled_handles_and_the_sweep_runs_on_submit() {
 
     let row = |reference: &[u8]| {
         let reference = parse_reference(reference).unwrap();
-        r.store
+        StoreRows(r.store.clone())
             .record_get(WORK_SCHEMA, &work_key("inst", &reference))
             .unwrap()
             .map(|v| v.as_slice().to_vec())
@@ -249,14 +253,14 @@ fn retention_bounds_only_settled_handles_and_the_sweep_runs_on_submit() {
 #[test]
 fn a_sweep_removes_the_swept_rows_from_the_store() {
     let r = rig_over(
-        Arc::new(MemoryStore::new()),
+        crate::real_store::store(),
         WorkBounds {
             max_live: 16,
             retain_ms: 1_000,
         },
     );
     let rows = || {
-        r.store
+        StoreRows(r.store.clone())
             .record_scan(WORK_SCHEMA, b"", u32::MAX)
             .unwrap()
             .len()
@@ -275,7 +279,7 @@ fn a_sweep_removes_the_swept_rows_from_the_store() {
 
 #[test]
 fn a_handle_is_found_and_resumed_after_a_restart() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let bounds = WorkBounds {
         max_live: 2,
         retain_ms: 1_000,
@@ -411,7 +415,7 @@ fn a_sweep_settles_a_handle_whose_units_have_ended() {
 
 #[test]
 fn the_owners_find_scopes_the_settle_of_a_handle_read_from_the_store() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let before = rig_over(Arc::clone(&store), WorkBounds::default());
     let (_, reference) = open(&before, 1, b"park");
     drop(before);
@@ -470,8 +474,7 @@ fn a_plane_claiming_lapsed_cannot_settle_a_live_handle() {
         (WORK_LIVE, b"asked".to_vec())
     );
 
-    let row = r
-        .store
+    let row = StoreRows(r.store.clone())
         .record_get(
             WORK_SCHEMA,
             &work_key("inst", &parse_reference(&reference).unwrap()),
@@ -504,8 +507,7 @@ fn a_settle_the_pool_refuses_leaves_the_handle_live_in_the_book_and_the_store() 
         booked.live && booked.record == b"working",
         "the book holds it live"
     );
-    let row = r
-        .store
+    let row = StoreRows(r.store.clone())
         .record_get(
             WORK_SCHEMA,
             &work_key("inst", &parse_reference(&reference).unwrap()),
@@ -808,7 +810,7 @@ impl Offload for HoldNext {
 }
 
 struct SettlementRows {
-    rows: Mem,
+    rows: StoreRows,
     mode: Arc<AtomicU64>,
 }
 
@@ -858,7 +860,7 @@ impl RecordRows for SettlementRows {
 #[test]
 fn pending_settlement_keeps_capacity_and_survives_sweep_until_store_confirmation() {
     for mode in 0..=4 {
-        let store = Arc::new(MemoryStore::new());
+        let store = crate::real_store::store();
         let store_mode = Arc::new(AtomicU64::new(0));
 
         let r = rig_with_rows(
@@ -868,7 +870,7 @@ fn pending_settlement_keeps_capacity_and_survives_sweep_until_store_confirmation
                 retain_ms: 0,
             },
             Arc::new(SettlementRows {
-                rows: Mem(store),
+                rows: StoreRows(store),
                 mode: store_mode.clone(),
             }),
         );

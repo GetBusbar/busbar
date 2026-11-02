@@ -421,7 +421,7 @@ fn every_lifecycle_slot_answers_the_kinds_value() {
     assert_eq!(close(inst), Outcome::Ready);
 }
 
-/// RED (secret ABI defect 13, transport 9): a release of a lease the instance does not hold, or
+/// An unknown lease is refused in words.
 #[test]
 fn an_unknown_lease_is_refused_in_words() {
     let said = |inst: *mut c_void| {
@@ -976,7 +976,7 @@ fn raised(head: &OutHead) -> Vec<(u32, u8, String)> {
         .collect()
 }
 
-/// RED (BIND-AUDIT): what the instance an `open` or `refresh` built raises ([`Life::flagged`])
+/// An open and a refresh carry what the instance raises.
 #[test]
 fn an_open_and_a_refresh_carry_what_the_instance_raises() {
     let warn = crate::abi::mechanism::call::SEVERITY_WARN;
