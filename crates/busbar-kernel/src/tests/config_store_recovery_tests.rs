@@ -5,7 +5,7 @@ use crate::config::overlay::{persist_root, RootSettings};
 use busbar_contract::{
     abi::store::OpId,
     kinds::RecordBytes,
-    records::{MeteringDelta, UsageDelta},
+    records::{MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta},
     store_calls::{StoreCall, StoreCalls, StoreFailure},
 };
 use std::sync::{
@@ -18,13 +18,22 @@ struct FailOverlayReads {
     fail: AtomicBool,
 }
 impl StoreCalls for FailOverlayReads {
+    fn supports_usage_correction(&self) -> bool {
+        self.actual.supports_usage_correction()
+    }
+    fn apply_usage_correction<'a>(
+        &'a self,
+        request: &'a crate::records::correction::Request,
+    ) -> StoreCall<'a, crate::records::correction::Decision> {
+        self.actual.apply_usage_correction(request)
+    }
     fn supports_record_transaction(&self) -> bool {
         self.actual.supports_record_transaction()
     }
     fn record_transaction<'a>(
         &'a self,
-        request: &'a busbar_contract::abi::sdk::store::conditional::Request,
-    ) -> StoreCall<'a, busbar_contract::abi::sdk::store::conditional::Decision> {
+        request: &'a crate::abi::sdk::store::conditional::Request,
+    ) -> StoreCall<'a, crate::abi::sdk::store::conditional::Decision> {
         self.actual.record_transaction(request)
     }
     fn add_usage_batch<'a>(
@@ -69,6 +78,109 @@ impl StoreCalls for FailOverlayReads {
         limit: u32,
     ) -> StoreCall<'a, Vec<(Vec<u8>, RecordBytes)>> {
         self.actual.record_scan(schema, prefix, limit)
+    }
+    fn put_key<'a>(&'a self, key: &'a crate::records::VirtualKey) -> StoreCall<'a, ()> {
+        self.actual.put_key(key)
+    }
+    fn get_key<'a>(&'a self, id: &'a str) -> StoreCall<'a, Option<crate::records::VirtualKey>> {
+        self.actual.get_key(id)
+    }
+    fn list_keys(&self) -> StoreCall<'_, Vec<crate::records::VirtualKey>> {
+        self.actual.list_keys()
+    }
+    fn delete_key<'a>(&'a self, id: &'a str) -> StoreCall<'a, ()> {
+        self.actual.delete_key(id)
+    }
+    fn put_key_with_credential<'a>(
+        &'a self,
+        key: &'a crate::records::VirtualKey,
+        secret: &'a crate::records::CredentialSecret,
+    ) -> StoreCall<'a, ()> {
+        self.actual.put_key_with_credential(key, secret)
+    }
+    fn list_credentials<'a>(
+        &'a self,
+        key_id: &'a str,
+    ) -> StoreCall<'a, Vec<crate::records::CredentialMeta>> {
+        self.actual.list_credentials(key_id)
+    }
+    fn revoke_credential<'a>(&'a self, id: &'a str, reason: &'a str) -> StoreCall<'a, ()> {
+        self.actual.revoke_credential(id, reason)
+    }
+    fn list_credentials_since(
+        &self,
+        since: u64,
+    ) -> StoreCall<'_, Vec<crate::records::CredentialSecret>> {
+        self.actual.list_credentials_since(since)
+    }
+    fn add_denylist<'a>(&'a self, sub: &'a str, reason: &'a str) -> StoreCall<'a, ()> {
+        self.actual.add_denylist(sub, reason)
+    }
+    fn list_denylist(&self) -> StoreCall<'_, Vec<String>> {
+        self.actual.list_denylist()
+    }
+    fn list_metering(&self, bucket: u64) -> StoreCall<'_, Vec<crate::records::MeteringRow>> {
+        self.actual.list_metering(bucket)
+    }
+    fn list_audit(&self) -> StoreCall<'_, Vec<crate::records::AuditRecord>> {
+        self.actual.list_audit()
+    }
+    fn list_audit_tail(&self, limit: u64) -> StoreCall<'_, Vec<crate::records::AuditRecord>> {
+        self.actual.list_audit_tail(limit)
+    }
+    fn upsert_plane_record<'a>(&'a self, record: PlaneRecordRef<'a>) -> StoreCall<'a, ()> {
+        self.actual.upsert_plane_record(record)
+    }
+    fn get_plane_record<'a>(
+        &'a self,
+        kind: &'a str,
+        id: &'a str,
+    ) -> StoreCall<'a, Option<Vec<u8>>> {
+        self.actual.get_plane_record(kind, id)
+    }
+    fn append_plane_record<'a>(
+        &'a self,
+        op: OpId,
+        record: PlaneRecordRef<'a>,
+    ) -> StoreCall<'a, ()> {
+        self.actual.append_plane_record(op, record)
+    }
+    fn list_plane_records<'a>(
+        &'a self,
+        kind: &'a str,
+        selector: &'a PlaneSelector<'a>,
+    ) -> StoreCall<'a, Vec<Vec<u8>>> {
+        self.actual.list_plane_records(kind, selector)
+    }
+    fn delete_plane_record<'a>(&'a self, kind: &'a str, id: &'a str) -> StoreCall<'a, ()> {
+        self.actual.delete_plane_record(kind, id)
+    }
+    fn redeem_plane_token<'a>(
+        &'a self,
+        kind: &'a str,
+        token: &'a str,
+        expires_at: u64,
+        now: u64,
+    ) -> StoreCall<'a, bool> {
+        self.actual.redeem_plane_token(kind, token, expires_at, now)
+    }
+    fn plane_token_live<'a>(
+        &'a self,
+        kind: &'a str,
+        token: &'a str,
+        expires_at: u64,
+        now: u64,
+    ) -> StoreCall<'a, bool> {
+        self.actual.plane_token_live(kind, token, expires_at, now)
+    }
+    fn list_plane_record_parents<'a>(&'a self, kind: &'a str) -> StoreCall<'a, Vec<String>> {
+        self.actual.list_plane_record_parents(kind)
+    }
+    fn purge_plane_records_before<'a>(&'a self, kind: &'a str, before: u64) -> StoreCall<'a, u64> {
+        self.actual.purge_plane_records_before(kind, before)
+    }
+    fn purge_usage_before(&self, before: u64) -> StoreCall<'_, u64> {
+        self.actual.purge_usage_before(before)
     }
 }
 
