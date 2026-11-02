@@ -5,7 +5,8 @@ use crate::auth_axis::AuthRows;
 use crate::dispatch::{DispatchConfig, Dispatcher};
 use crate::{LinkedPlugin, PluginRegistry};
 use busbar_contract::abi::auth::{
-    AuthPoints, AuthTail, Ops, CAP_INBOUND, CAP_LOGIN, LOGIN_KIND_REDIRECT,
+    AuthPoints, AuthTail, BeginLoginOut, Ops, BEGIN_AUTHORIZE, CAP_INBOUND, CAP_LOGIN,
+    LOGIN_KIND_REDIRECT,
 };
 use busbar_contract::abi::mechanism::call::AbiStr;
 use busbar_contract::abi::mechanism::call::{Outcome, RawOutcome};
