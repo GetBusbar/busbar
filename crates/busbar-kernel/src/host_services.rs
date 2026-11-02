@@ -435,26 +435,41 @@ fn nested_answer(reply: NestReply) -> Stored {
     s
 }
 
-/// A settle the book has marked and the store has not yet taken. Dropped unwritten (the pool
-/// refused its job and dropped it unrun, or the store refused the write) it puts the handle back as
-/// it stood, so the book never says settled while the store says live.
+/// Custody of an unconfirmed settlement. The book keeps the live state and capacity until the
+/// Store confirms; dropping this guard only retires the proposal, so no rollback can exceed a cap.
 struct Unwritten {
     book: Arc<WorkBook>,
     handle: u64,
-    before: Option<Work>,
+    settled: Option<Work>,
+    later: Option<Later>,
 }
 
 impl Unwritten {
-    /// The store took the settle: the book's mark stands.
-    fn written(mut self) {
-        self.before = None;
+    fn answer(mut self, confirmed: bool) {
+        if let Some(settled) = self.settled.take() {
+            if confirmed {
+                self.book.commit_settle(self.handle, settled);
+            } else {
+                self.book.cancel_settle(self.handle);
+            }
+        }
+        if let Some(later) = self.later.take() {
+            later(if confirmed {
+                Stored::ready(0)
+            } else {
+                failed(STORE_FAILED)
+            });
+        }
     }
 }
 
 impl Drop for Unwritten {
     fn drop(&mut self) {
-        if let Some(before) = self.before.take() {
-            self.book.restore(self.handle, before);
+        if self.settled.take().is_some() {
+            self.book.cancel_settle(self.handle);
+        }
+        if let Some(later) = self.later.take() {
+            later(failed(POOL_REFUSED));
         }
     }
 }
@@ -2803,7 +2818,7 @@ impl HostServices for KernelServices {
         // the handle's units are still in its unit table.
         let owner = self.owner_of_unit(unit);
         let in_flight = |u: u64| self.units.get(u).is_some();
-        let (before, settled) = match self.work.settle(
+        let settled = match self.work.settle(
             &caller.instance,
             handle,
             owner.as_ref(),
@@ -2815,25 +2830,24 @@ impl HostServices for KernelServices {
             Err(why) => return Ran::Now(Stored::refused(why)),
         };
         let Some(row) = settled.row() else {
-            self.work.restore(handle, before);
+            self.work.cancel_settle(handle);
             return Ran::Now(Stored::refused(work_refusal::TOO_LONG));
         };
-        // DURABLE BEFORE ANSWERED, AND THE BOOK AGREES WITH THE STORE: a settle the pool drops
-        // unrun, or the store refuses, puts the handle back live.
+        // Keep the live reservation until the Store confirms. Refusal, unknown outcome, unwind
+        // or a pool dropping the job unrun retires only the proposed settlement.
         let unwritten = Unwritten {
             book: Arc::clone(&self.work),
             handle,
-            before: Some(before),
+            settled: Some(settled.clone()),
+            later: Some(later),
         };
         let rows = Arc::clone(&records.reads);
         let key = work_key(&caller.instance, &settled.reference);
-        submit(pool, later, move || {
-            if rows.record_put(WORK_SCHEMA, &key, &row).is_err() {
-                return failed(STORE_FAILED);
-            }
-            unwritten.written();
-            Stored::ready(0)
-        })
+        pool.run(Box::new(move || {
+            let confirmed = rows.record_put(WORK_SCHEMA, &key, &row).is_ok();
+            unwritten.answer(confirmed);
+        }));
+        Ran::Later
     }
 
     fn work_resume(&self, caller: &Caller, unit: Option<u64>, handle: u64, _later: Later) -> Ran {
