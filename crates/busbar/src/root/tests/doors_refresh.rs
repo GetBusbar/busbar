@@ -272,6 +272,23 @@ async fn a_real_stdio_refresh_changes_the_live_line_bound_and_a_refusal_preserve
     );
 
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        // WriteReady accepts a frame into the carrier's queue. Drive its production Flush
+        // before expecting the child to have received and echoed those accepted lines.
+        let mut flush = blank_in::<ConnIn>();
+        flush.conn = connection;
+        let mut flushed = blank_out::<OutHead>();
+        let called = std::future::poll_fn(|cx| {
+            match side.cross(&door, Carry::Flush(&mut flush, &mut flushed), Some(cx)) {
+                Some(called) => std::task::Poll::Ready(called),
+                None => std::task::Poll::Pending,
+            }
+        })
+        .await;
+        assert_eq!(
+            called.outcome,
+            Outcome::Ready,
+            "the actual carrier flushes its accepted lines: {called:?}"
+        );
         for expected in [b"12345".as_slice(), b"1234567".as_slice()] {
             let mut received = Vec::new();
             loop {
