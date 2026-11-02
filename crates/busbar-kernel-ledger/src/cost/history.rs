@@ -709,7 +709,7 @@ impl HistoryView<'_> {
         _stored_before: u64,
         bucket_ms: u64,
     ) -> Option<u64> {
-        let cuts = |boundary: u64| boundary % bucket_ms.max(1) != 0;
+        let cuts = |boundary: u64| !boundary.is_multiple_of(bucket_ms.max(1));
         if cuts(from) {
             return Some(from);
         }
