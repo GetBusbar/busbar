@@ -2,16 +2,21 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::task::{Context, Poll};
 
 use busbar_contract::abi::auth::POINT_HEAD;
 use busbar_contract::abi::host::service::{UnitRef, FLOW_CONTINUE};
+use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::transport::route::{METHOD_POST, PATH_CONTAINS};
 use busbar_contract::abi::transport::{CLOSE_NORMAL, SIDE_ACCEPT};
+use busbar_contract::framing_scope::FramingScope;
 use busbar_contract::transport::TransportSettings;
+use busbar_core_connector::carrier::{Carry, Side};
 use busbar_core_connector::framer::{
-    Established, FramerDoor, Framing, GuestLine, GuestLines, Yielded,
+    Call, Crossed, DoorFacts, Established, FramerDoor, Framing, GuestLine, GuestLines, Refused,
+    Yielded,
 };
 
 use crate::root::doors::{bind_on, Dispatched};
@@ -129,7 +134,84 @@ impl Drop for ReleaseAll {
     }
 }
 
-fn opened() -> (Arc<Dispatched>, Arc<Host>) {
+// This observer preserves the product's inputs, outputs, tickets and contexts.
+// Its sole fault injection is the mismatch test's invalid provisional host token.
+struct TraceDoor {
+    inner: Arc<Dispatched>,
+    ingests: Mutex<Vec<(Ticket, bool, usize)>>,
+    mismatched_claim: AtomicBool,
+    returned: AtomicU64,
+    finishes: Mutex<Vec<u64>>,
+}
+impl FramerDoor for TraceDoor {
+    fn facts(&self) -> &DoorFacts {
+        self.inner.facts()
+    }
+    fn instance(&self) -> Option<u64> {
+        self.inner.instance()
+    }
+    fn cross(&self, call: Call<'_>) -> Crossed {
+        self.inner.cross(call)
+    }
+    fn framing_side(&self) -> Option<Box<dyn Side>> {
+        self.inner.framing_side()
+    }
+    fn framing_context(
+        &self,
+        listener: u64,
+        connection: u64,
+    ) -> Result<Option<Arc<dyn FramingScope>>, Refused> {
+        self.inner.framing_context(listener, connection)
+    }
+    fn cancel_scoped(
+        &self,
+        context: Option<&Arc<dyn FramingScope>>,
+        side: &dyn Side,
+        call: Carry<'_>,
+    ) -> Crossed {
+        self.inner.cancel_scoped(context, side, call)
+    }
+    fn cross_scoped(
+        &self,
+        context: Option<&Arc<dyn FramingScope>>,
+        side: Option<&dyn Side>,
+        resume: bool,
+        call: Call<'_>,
+    ) -> Crossed {
+        match call {
+            Call::Begin(input, out) => {
+                let crossed =
+                    self.inner
+                        .cross_scoped(context, side, resume, Call::Begin(input, out));
+                if crossed.outcome == busbar_contract::abi::mechanism::call::Outcome::Ready {
+                    self.returned.store(out.framing, Ordering::SeqCst);
+                    if self.mismatched_claim.swap(false, Ordering::SeqCst) {
+                        let scope = context.expect("a real HTTP opening has host custody");
+                        scope.check(scope.owner(), out.framing + 1, false).expect("the deliberately wrong provisional service token is initially unconfirmed");
+                    }
+                }
+                crossed
+            }
+            Call::Ingest(input, out) => {
+                self.ingests.lock().unwrap().push((
+                    side.expect("real operation ticket").ticket(),
+                    resume,
+                    input.len,
+                ));
+                self.inner
+                    .cross_scoped(context, side, resume, Call::Ingest(input, out))
+            }
+            Call::Finish(input, out) => {
+                self.finishes.lock().unwrap().push(input.framing);
+                self.inner
+                    .cross_scoped(context, side, resume, Call::Finish(input, out))
+            }
+            call => self.inner.cross_scoped(context, side, resume, call),
+        }
+    }
+}
+
+fn opened() -> (Arc<TraceDoor>, Arc<Host>) {
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let host = Arc::new(Host::default());
     assert!(dispatcher.install_auth_handle(host.clone()));
@@ -139,11 +221,20 @@ fn opened() -> (Arc<Dispatched>, Arc<Host>) {
     );
     let door = Dispatched::open_on(plugin, &TransportSettings::default(), dispatcher)
         .expect("the SDK door opens");
-    (Arc::new(door), host)
+    (
+        Arc::new(TraceDoor {
+            inner: Arc::new(door),
+            ingests: Mutex::new(Vec::new()),
+            mismatched_claim: AtomicBool::new(false),
+            returned: AtomicU64::new(0),
+            finishes: Mutex::new(Vec::new()),
+        }),
+        host,
+    )
 }
 
 fn begin(
-    door: Arc<Dispatched>,
+    door: Arc<TraceDoor>,
     target: &str,
 ) -> Result<(Framing, Yielded), busbar_core_connector::framer::Refused> {
     let owner = door.instance().expect("actual loaded owner");
@@ -196,6 +287,15 @@ fn loaded_http_streams_keep_their_scope_when_a_sibling_ticket_is_disposed() {
         .iter()
         .any(|piece| piece.stream == 3 && piece.fields));
     assert_eq!(host.pending.lock().unwrap().len(), 2);
+    let original_tickets = door
+        .ingests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(_, resume, len)| !resume && *len != 0)
+        .map(|(ticket, _, _)| *ticket)
+        .collect::<Vec<_>>();
+    assert_eq!(original_tickets.len(), 3);
     assert!(host.release(2));
     let mut cx = Context::from_waker(futures::task::noop_waker_ref());
     let Poll::Ready(Ok(middle)) = framing.poll_parked(&mut cx) else {
@@ -209,6 +309,12 @@ fn loaded_http_streams_keep_their_scope_when_a_sibling_ticket_is_disposed() {
     let extra = door
         .framing_side()
         .expect("an independent operation ticket");
+    let extra_ticket = extra.ticket();
+    assert_eq!(
+        extra_ticket.slot, original_tickets[1].slot,
+        "the completed operation's slot was actually recycled"
+    );
+    assert_ne!(extra_ticket.generation, original_tickets[1].generation);
     drop(extra);
     assert!(
         host.ended.lock().unwrap().is_empty(),
@@ -222,6 +328,19 @@ fn loaded_http_streams_keep_their_scope_when_a_sibling_ticket_is_disposed() {
         .pieces
         .iter()
         .any(|piece| piece.stream == 1 && piece.fields));
+    let resumed = door
+        .ingests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(_, resume, _)| *resume)
+        .map(|(ticket, _, _)| *ticket)
+        .collect::<Vec<_>>();
+    assert!(resumed.contains(&original_tickets[1]));
+    assert!(
+        resumed.contains(&original_tickets[0]),
+        "the original auth resumes on its exact live operation ticket"
+    );
     drop(cleanup);
     framing.finish(CLOSE_NORMAL);
     let seen = host.seen.lock().unwrap();
@@ -247,26 +366,28 @@ fn loaded_http_streams_keep_their_scope_when_a_sibling_ticket_is_disposed() {
 }
 
 #[test]
-fn a_local_token_mismatch_is_refused_and_a_real_http_resource_retires() {
+fn a_ready_token_mismatch_finishes_the_actual_returned_http_resource() {
     let (door, host) = opened();
-    let (framing, _) = begin(door, "").expect("real HTTP framing");
-    let scope = framing.scope().unwrap();
-    // A mismatched resource identifier is a host-mechanism negative input. The
-    // actual transport has already returned and confirmed its genuine resource.
+    door.mismatched_claim.store(true, Ordering::SeqCst);
     assert!(
-        framing_context::current().is_none(),
-        "the caller's scope is restored after begin"
+        begin(door.clone(), "").is_err(),
+        "READY must agree with the provisional service token"
     );
-    let context = framing_context::FramingContext::new(scope.owner(), 71, 0, None).unwrap();
-    context.confirm(1).unwrap();
-    assert!(
-        context.confirm(2).is_err(),
-        "a READY token must agree with the confirmed resource"
+    let returned = door.returned.load(Ordering::SeqCst);
+    assert_ne!(
+        returned, 0,
+        "the real HTTP product allocated an actual resource"
     );
-    context.end();
-    assert_ne!(scope.leg(), 0);
+    assert_eq!(
+        *door.finishes.lock().unwrap(),
+        vec![returned],
+        "the rejected opening finishes the actual resource returned by the product"
+    );
+    assert_eq!(host.ended.lock().unwrap().len(), 1);
+    let (framing, _) =
+        begin(door.clone(), "").expect("the real product still opens an independent connection");
     framing.finish(CLOSE_NORMAL);
-    assert_eq!(*host.ended.lock().unwrap(), vec![scope.leg()]);
+    assert_eq!(host.ended.lock().unwrap().len(), 2);
 }
 
 #[test]
