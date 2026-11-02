@@ -1186,6 +1186,19 @@ async fn read_reply(client: &mut tokio::io::DuplexStream, body: &[u8]) -> Vec<u8
     .expect("the actual transport delivers its complete response")
 }
 
+#[cfg(feature = "transport-ws")]
+async fn drain_reply(client: &mut tokio::io::DuplexStream, wire: &mut Vec<u8>) {
+    let room = 16 * 1024 - wire.len() + 1;
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        (&mut *client).take(room as u64).read_to_end(wire),
+    )
+    .await
+    .expect("the actual transport reaches EOF after its actor stops")
+    .unwrap();
+    assert!(wire.len() <= 16 * 1024, "bounded complete response");
+}
+
 async fn answer(s: &mut tokio::net::TcpStream) -> String {
     let mut got = Vec::new();
     let mut buf = [0_u8; 4096];
@@ -1884,7 +1897,7 @@ async fn an_ended_session_adoption_refuses_before_any_plane_effect() {
         .await
         .unwrap()
         .unwrap();
-    client.read_to_end(&mut wire).await.unwrap();
+    drain_reply(&mut client, &mut wire).await;
     assert!(
         wire.starts_with(b"HTTP/1.1 400") || wire.starts_with(b"HTTP/1.1 426"),
         "{wire:?}"
@@ -1953,7 +1966,7 @@ async fn a_staged_plane_refusal_keeps_its_head_and_body_without_committing_101()
         .await
         .unwrap()
         .unwrap();
-    client.read_to_end(&mut wire).await.unwrap();
+    drain_reply(&mut client, &mut wire).await;
     let head_end = wire
         .windows(4)
         .position(|bytes| bytes == b"\r\n\r\n")
@@ -2048,7 +2061,7 @@ async fn stopping_eof_and_timeout_abandon_uncommitted_sessions_without_wire() {
             .expect("the abandoned staging actor terminates")
             .unwrap();
         let mut wire = Vec::new();
-        client.read_to_end(&mut wire).await.unwrap();
+        drain_reply(&mut client, &mut wire).await;
         assert!(
             wire.is_empty(),
             "{ending}: neither held adoption nor finish wire may leak: {wire:?}"
@@ -2528,7 +2541,7 @@ async fn a_plain_request_that_declines_detach_keeps_http_400_and_runs_no_plane_e
         .expect("the retained HTTP actor closes normally")
         .unwrap();
     let mut rest = Vec::new();
-    client.read_to_end(&mut rest).await.unwrap();
+    drain_reply(&mut client, &mut rest).await;
     assert!(
         rest.is_empty(),
         "there is no duplicate refusal or 101 handshake"
