@@ -1519,7 +1519,14 @@ fn a_login_outages_retry_after_is_read_only_from_the_hosts_identity_buffer() {
     use busbar_contract::abi::auth::retry_after_extensions;
     use busbar_contract::abi::mechanism::call::{Blob, BLOB_OCTETS};
     const CAP: usize = 64;
-    let held = super::Held::new(&VerifyRequest::default(), None, CAP, 1, 0);
+    let held = super::Held::new(
+        &VerifyRequest::default(),
+        None,
+        &super::Headers::None,
+        CAP,
+        1,
+        0,
+    );
     let entry = retry_after_extensions(120);
     // SAFETY: `held.buf` is `CAP` writable bytes this test owns; nothing else reads them now.
     unsafe { std::ptr::copy_nonoverlapping(entry.as_ptr(), held.buf.add(8), entry.len()) };

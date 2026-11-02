@@ -273,7 +273,14 @@ impl CompleteHeld {
                 .filter_map(|(n, v)| Some((n.clone(), v.expose(seal?).as_bytes().to_vec())))
                 .collect(),
             named: Vec::new(),
-            id: Held::new(&VerifyRequest::default(), seal, buf_cap, groups_cap, 0),
+            id: Held::new(
+                &VerifyRequest::default(),
+                seal,
+                &super::Headers::None,
+                buf_cap,
+                groups_cap,
+                0,
+            ),
         };
         held.named = held
             .submitted
