@@ -5,7 +5,7 @@ use busbar_kernel::config::{IdentityProviderCfg, IdentityProviders};
 
 #[test]
 fn a_test_support_build_accepts_the_identity_provider_stand_ins_its_auth_chain_registers() {
-    let _registered_here = busbar_kernel::auth::AdminAuthChain::empty();
+    busbar_kernel_testkit::test_support::root::ensure();
     for module in ["test-scope-module", "test-groups-module"] {
         let mut providers = IdentityProviders::default();
         providers.insert(
