@@ -1503,7 +1503,6 @@ impl FramerDoor for ObservedDoor {
     }
 }
 
-#[cfg(feature = "transport-ws")]
 async fn actual_session_framer() -> (
     tokio::sync::MutexGuard<'static, ()>,
     DataFramer,
@@ -1518,10 +1517,36 @@ async fn actual_session_framer() -> (
         busbar_transport_http::door::door,
         dispatcher.clone(),
     ));
+    #[cfg(feature = "transport-ws")]
     let ws = ObservedDoor::new(actual_transport_on(
         busbar_transport_ws::door::door,
         dispatcher,
     ));
+    #[cfg(not(feature = "transport-ws"))]
+    let ws = {
+        use crate::root::loader::dispatch::{
+            kinds::transport::Transport, load_dropped, rendering_of_library,
+        };
+        let path = std::path::PathBuf::from(
+            std::env::var_os("BUSBAR_TEST_WS_CDYLIB")
+                .expect("BUSBAR_TEST_WS_CDYLIB names the actual WS product when it is not linked"),
+        );
+        let statement = rendering_of_library(&path)
+            .expect("the actual dropped WS statement reads")
+            .expect("the actual dropped WS exports its statement");
+        let plugin =
+            load_dropped::<Transport>(&path, &statement, crate::root::doors::bind_on(&dispatcher))
+                .expect("the actual dropped WS binds through its memory ABI");
+        let door: Arc<dyn FramerDoor> = Arc::new(
+            crate::root::doors::Dispatched::open_on(
+                plugin,
+                &busbar_contract::transport::TransportSettings::default(),
+                dispatcher,
+            )
+            .expect("the actual dropped WS opens on the same root host"),
+        );
+        ObservedDoor::new(door)
+    };
     let (http_door, ws_door): (Arc<dyn FramerDoor>, Arc<dyn FramerDoor>) =
         (http.clone(), ws.clone());
     let framer = data_framer(Arc::new(move |scheme| match scheme {
@@ -1533,10 +1558,8 @@ async fn actual_session_framer() -> (
     (publishing, framer, http, ws)
 }
 
-#[cfg(feature = "transport-ws")]
 const SESSION_REQUEST: &[u8] = b"GET /first HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n";
 
-#[cfg(feature = "transport-ws")]
 async fn read_reply(client: &mut tokio::io::DuplexStream, body: &[u8]) -> Vec<u8> {
     tokio::time::timeout(Duration::from_secs(10), async {
         let mut wire = Vec::new();
@@ -1561,7 +1584,6 @@ async fn read_reply(client: &mut tokio::io::DuplexStream, body: &[u8]) -> Vec<u8
     .expect("the actual transport delivers its complete response")
 }
 
-#[cfg(feature = "transport-ws")]
 async fn drain_reply(client: &mut tokio::io::DuplexStream, wire: &mut Vec<u8>) {
     let room = 16 * 1024 - wire.len() + 1;
     tokio::time::timeout(
@@ -2070,7 +2092,7 @@ async fn a_parked_stream_does_not_hold_an_independent_stream_behind_its_body() {
 }
 
 #[tokio::test]
-#[cfg(feature = "transport-ws")]
+
 async fn a_session_waits_for_its_parked_message_before_emitting_the_next() {
     use busbar_kernel::plane_routes::{FramedSession, SessionOut, SessionPipe};
     let (_publishing, framer, _http, ws) = actual_session_framer().await;
@@ -2448,7 +2470,7 @@ async fn stopping_eof_and_timeout_abandon_uncommitted_sessions_without_wire() {
 }
 
 #[tokio::test]
-#[cfg(feature = "transport-ws")]
+
 async fn a_pending_session_adoption_admits_only_after_its_original_ticket_is_ready() {
     use busbar_kernel::plane_routes::{FramedSession, SessionPipe};
     use std::future::Future as _;
@@ -2542,7 +2564,7 @@ async fn a_pending_session_adoption_admits_only_after_its_original_ticket_is_rea
 }
 
 #[tokio::test]
-#[cfg(feature = "transport-ws")]
+
 async fn a_pending_session_adoption_that_refuses_never_admits_the_route() {
     use busbar_kernel::plane_routes::FramedSession;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -2615,7 +2637,7 @@ async fn a_pending_session_adoption_that_refuses_never_admits_the_route() {
 }
 
 #[tokio::test]
-#[cfg(feature = "transport-ws")]
+
 async fn a_pending_session_commit_holds_wire_and_application_calls_until_ready() {
     use busbar_kernel::plane_routes::{FramedSession, SessionOut, SessionPipe};
     let (_publishing, framer, _http, ws) = actual_session_framer().await;
@@ -2724,7 +2746,7 @@ async fn a_pending_session_commit_holds_wire_and_application_calls_until_ready()
 }
 
 #[tokio::test]
-#[cfg(feature = "transport-ws")]
+
 async fn cancelled_pending_adoption_and_commit_ignore_their_late_wakes() {
     use busbar_kernel::plane_routes::{FramedSession, SessionPipe};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -2824,7 +2846,6 @@ async fn cancelled_pending_adoption_and_commit_ignore_their_late_wakes() {
     }
 }
 
-#[cfg(feature = "transport-ws")]
 #[tokio::test]
 async fn a_dropped_pending_admission_ack_cannot_publish_a_late_acceptance() {
     use busbar_kernel::plane_routes::FramedSession;
