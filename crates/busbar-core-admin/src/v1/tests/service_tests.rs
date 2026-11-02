@@ -1671,40 +1671,40 @@ mod dated_rate_card_history {
         Box::leak(Box::new(Arc::new(history)))
     }
 
-    pub(super) fn gov_with_rows(rows: &[(u64, u64)]) -> Arc<GovState> {
-        gov_with_priced_rows(rows.iter().map(|(bucket, era)| (*bucket, *era, "")))
+    pub(super) fn metering_rows(
+        rows: &[(u64, u64)],
+    ) -> Vec<(u64, busbar_kernel::governance::MeteringRow)> {
+        priced_metering_rows(rows.iter().map(|(bucket, era)| (*bucket, *era, "")))
     }
 
-    pub(super) fn gov_with_priced_rows<'a>(
+    pub(super) fn priced_metering_rows<'a>(
         rows: impl IntoIterator<Item = (u64, u64, &'a str)>,
-    ) -> Arc<GovState> {
-        let store = Arc::new(MemoryStore::new());
-        for (bucket, priced_from_ms, pricing_version) in rows {
-            busbar_contract::records::RecordStore::add_metering(
-                store.as_ref(),
-                &busbar_contract::records::MeteringDelta {
-                    usage_units: Default::default(),
-                    key_id: KEY.to_string(),
+    ) -> Vec<(u64, busbar_kernel::governance::MeteringRow)> {
+        rows.into_iter()
+            .map(|(bucket, priced_from_ms, pricing_version)| {
+                (
                     bucket,
-                    model: LANE.to_string(),
-                    provider: PROVIDER.to_string(),
-                    tokens_input: TOKENS,
-                    tokens_output: 0,
-                    tokens_cache_read: 0,
-                    tokens_cache_write: 0,
-                    requests: 1,
-                    billable_requests: 1,
-                    key_group_at_use: String::new(),
-                    pricing_version: pricing_version.to_string(),
-                    priced_from_ms,
-                },
-            )
-            .expect("the memory store accepts a metering delta");
-        }
-        Arc::new(GovState::new(store, None).expect("governance builds"))
+                    busbar_kernel::governance::MeteringRow {
+                        usage_units: Default::default(),
+                        key_id: KEY.to_string(),
+                        model: LANE.to_string(),
+                        provider: PROVIDER.to_string(),
+                        tokens_input: TOKENS,
+                        tokens_output: 0,
+                        tokens_cache_read: 0,
+                        tokens_cache_write: 0,
+                        requests: 1,
+                        billable_requests: 1,
+                        key_group_at_use: String::new(),
+                        pricing_version: pricing_version.to_string(),
+                        priced_from_ms,
+                    },
+                )
+            })
+            .collect()
     }
 
-    async fn read(gov: Arc<GovState>, src: &'static Arc<History>, bucket: u64) -> UsageView {
+    async fn read_stored(gov: Arc<GovState>, src: &'static Arc<History>, bucket: u64) -> UsageView {
         let app = crate::new_test_app()
             .governance(gov)
             .cost(newest_cost())
@@ -1716,32 +1716,65 @@ mod dated_rate_card_history {
             .expect("usage read")
     }
 
+    async fn read(
+        rows: Vec<(u64, busbar_kernel::governance::MeteringRow)>,
+        src: &'static Arc<History>,
+        bucket: u64,
+    ) -> UsageView {
+        read_as_of(rows, src, bucket, None)
+            .await
+            .expect("usage read")
+    }
+
     pub(super) async fn read_as_of(
-        gov: Arc<GovState>,
+        rows: Vec<(u64, busbar_kernel::governance::MeteringRow)>,
         src: &'static Arc<History>,
         bucket: u64,
         as_of: Option<busbar_kernel::cost::EntryKey>,
     ) -> Result<UsageView, AdminError> {
-        let app = crate::new_test_app()
-            .governance(gov)
-            .cost(newest_cost())
-            .build();
-        AdminService::new(app)
-            .with_rate_history(Arc::clone(src))
-            .get_usage(Some(bucket), as_of)
-            .await
+        let snapshot = as_of
+            .map(|key| validated_snapshot(Some(src.as_ref()), key))
+            .transpose()?;
+        let rows = rows
+            .into_iter()
+            .filter(|(window, _)| *window == bucket)
+            .map(|(_, row)| row)
+            .collect();
+        super::super::operations::project_usage_rows(
+            Arc::new(newest_cost()),
+            Some(Arc::clone(src)),
+            snapshot,
+            UsageWindow {
+                start: bucket,
+                end: bucket + DAY,
+            },
+            busbar_kernel::store::now(),
+            (rows, HashMap::new(), Vec::new()),
+        )
     }
 
     pub(super) async fn read_no_source_as_of(
-        gov: Arc<GovState>,
+        rows: Vec<(u64, busbar_kernel::governance::MeteringRow)>,
         bucket: u64,
         as_of: Option<busbar_kernel::cost::EntryKey>,
     ) -> Result<UsageView, AdminError> {
-        let app = crate::new_test_app()
-            .governance(gov)
-            .cost(newest_cost())
-            .build();
-        AdminService::new(app).get_usage(Some(bucket), as_of).await
+        let snapshot = as_of.map(|key| validated_snapshot(None, key)).transpose()?;
+        let rows = rows
+            .into_iter()
+            .filter(|(window, _)| *window == bucket)
+            .map(|(_, row)| row)
+            .collect();
+        super::super::operations::project_usage_rows(
+            Arc::new(newest_cost()),
+            None,
+            snapshot,
+            UsageWindow {
+                start: bucket,
+                end: bucket + DAY,
+            },
+            busbar_kernel::store::now(),
+            (rows, HashMap::new(), Vec::new()),
+        )
     }
 
     #[tokio::test]
@@ -1791,7 +1824,7 @@ mod dated_rate_card_history {
         gov.record_usage(&cost, &key, "", LANE, &units, served_at);
         let src = source(History::opening(card(2.5), 0));
 
-        let before = read(gov.clone(), src, day).await.total;
+        let before = read_stored(gov.clone(), src, day).await.total;
         assert_eq!((before.tokens_input, before.spend_micros), (1_000, 2_500));
 
         let era = busbar_kernel::rate_apply::effective_from_at(busbar_kernel::store::now_ms());
@@ -1823,12 +1856,12 @@ mod dated_rate_card_history {
             "an adjustment past the metered count is refused"
         );
         assert_eq!(
-            read(gov.clone(), src, day).await.total.spend_micros,
+            read_stored(gov.clone(), src, day).await.total.spend_micros,
             2_500,
             "a refused adjustment moves nothing"
         );
         assert_eq!(adjust(ADJUSTED_KEY, -200), Ok(()));
-        let after = read(gov.clone(), src, day).await.total;
+        let after = read_stored(gov.clone(), src, day).await.total;
         assert_eq!(
             (after.tokens_input, after.spend_micros),
             (800, 2_000),
@@ -1836,7 +1869,7 @@ mod dated_rate_card_history {
         );
 
         let restarted = Arc::new(GovState::new(store, None).expect("governance builds"));
-        let again = read(restarted, src, day).await.total;
+        let again = read_stored(restarted, src, day).await.total;
         assert_eq!(
             (again.tokens_input, again.spend_micros),
             (800, 2_000),
@@ -1873,7 +1906,7 @@ mod dated_rate_card_history {
         let (payg, monthly, prepaid) = windows();
         let src = source(payg_then_monthly_then_prepaid(monthly, prepaid));
 
-        let gov = gov_with_rows(&[
+        let gov = metering_rows(&[
             (payg, 0),
             (monthly, monthly * 1_000),
             (prepaid, prepaid * 1_000),
@@ -1916,7 +1949,7 @@ mod dated_rate_card_history {
             author: Author::Config { policy_epoch: 2 },
         });
         let src = source(history);
-        let old_rows = gov_with_rows(&[(later, old * 1_000)]);
+        let old_rows = metering_rows(&[(later, old * 1_000)]);
         let old_read = read(old_rows.clone(), src, later).await;
         assert_eq!(old_read.total.spend_micros, 10_000);
         assert_eq!(old_read.rate_card_version, Some(old_seq.hex()));
@@ -1928,7 +1961,7 @@ mod dated_rate_card_history {
                 .spend_micros,
             10_000,
         );
-        let both = gov_with_rows(&[(later, old * 1_000), (later, activated * 1_000)]);
+        let both = metering_rows(&[(later, old * 1_000), (later, activated * 1_000)]);
         let both_read = read(both, src, later).await;
         assert_eq!(both_read.total.tokens_input, TOKENS * 2);
         assert_eq!(both_read.total.spend_micros, 11_000);
@@ -1965,7 +1998,7 @@ mod dated_rate_card_history {
         });
         let amended_seq = history.head_key().expect("the appended entry has a key");
         let src = source(history);
-        let rows = gov_with_rows(&[(activated, old * 1_000), (corrected_day, old * 1_000)]);
+        let rows = metering_rows(&[(activated, old * 1_000), (corrected_day, old * 1_000)]);
         let before = read_as_of(rows.clone(), src, corrected_day, Some(activated_seq))
             .await
             .unwrap();
@@ -1996,12 +2029,12 @@ mod dated_rate_card_history {
         let activated_seq = history.head_key().expect("the appended entry has a key");
         let activated_version = history.entries()[1].id().metering_version();
         let src = source(history);
-        let known = gov_with_priced_rows([(later, 0, opening_version.as_str())]);
+        let known = priced_metering_rows([(later, 0, opening_version.as_str())]);
         let view = read(known, src, later).await;
         assert_eq!(view.total.spend_micros, 10_000);
         assert_eq!(view.rate_card_version, Some(src.entries()[0].key().hex()));
         for legacy in ["", LEGACY_NAMED_VERSION] {
-            let rows = gov_with_priced_rows([(later, 0, legacy)]);
+            let rows = priced_metering_rows([(later, 0, legacy)]);
             let view = read(rows, src, later).await;
             assert_eq!(view.total.spend_micros, 1_000);
             assert_eq!(view.rate_card_version, Some(activated_seq.hex()));
@@ -2015,14 +2048,14 @@ mod dated_rate_card_history {
             (0, unknown.as_str()),
             (activated * 1_000, opening_version.as_str()),
         ] {
-            let rows = gov_with_priced_rows([(later, era, version)]);
+            let rows = priced_metering_rows([(later, era, version)]);
             assert!(matches!(
                 read_as_of(rows, src, later, None).await,
                 Err(AdminError::Internal)
             ));
         }
         let new_rows =
-            gov_with_priced_rows([(later, activated * 1_000, activated_version.as_str())]);
+            priced_metering_rows([(later, activated * 1_000, activated_version.as_str())]);
         assert!(
             matches!(
                 read_as_of(new_rows, src, later, Some(src.entries()[0].key())).await,
@@ -2036,7 +2069,7 @@ mod dated_rate_card_history {
     async fn the_usage_response_names_the_rate_card_version_that_priced_it() {
         let (payg, monthly, prepaid) = windows();
         let src = source(payg_then_monthly_then_prepaid(monthly, prepaid));
-        let gov = gov_with_rows(&[
+        let gov = metering_rows(&[
             (payg, 0),
             (monthly, monthly * 1_000),
             (prepaid, prepaid * 1_000),
@@ -2083,7 +2116,7 @@ mod dated_rate_card_history {
             author: Author::Config { policy_epoch: 0 },
         });
         let src = source(history);
-        let gov = gov_with_rows(&[(payg, 0), (monthly, monthly * 1_000)]);
+        let gov = metering_rows(&[(payg, 0), (monthly, monthly * 1_000)]);
 
         assert_eq!(
             read(gov.clone(), src, monthly).await.total.spend_micros,
@@ -2102,7 +2135,7 @@ mod dated_rate_card_history {
     #[tokio::test]
     async fn publishing_a_card_leaves_the_window_before_it_byte_identical() {
         let (payg, _, _) = windows();
-        let gov = gov_with_rows(&[(payg, 0)]);
+        let gov = metering_rows(&[(payg, 0)]);
 
         let before = source(History::opening(card(10.0), 0));
 
@@ -2138,7 +2171,7 @@ mod dated_rate_card_history {
     async fn a_back_dated_correction_reprices_its_window_and_nothing_outside_it() {
         let (payg, monthly, prepaid) = windows();
 
-        let gov = gov_with_rows(&[(payg, 0), (monthly, 0), (prepaid, 0)]);
+        let gov = metering_rows(&[(payg, 0), (monthly, 0), (prepaid, 0)]);
 
         let before = source(History::opening(card(10.0), 0));
         for w in [payg, monthly, prepaid] {
@@ -2192,7 +2225,7 @@ mod dated_rate_card_history {
         });
         let src = source(history);
 
-        let gov = gov_with_rows(&[(today, 0), (today, noon)]);
+        let gov = metering_rows(&[(today, 0), (today, noon)]);
 
         let view = read(gov, src, today).await;
         assert_eq!(
@@ -2259,15 +2292,14 @@ mod dated_rate_card_history {
 #[cfg(test)]
 mod usage_as_of {
     use super::dated_rate_card_history::{
-        card, gov_with_priced_rows, gov_with_rows, read_as_of, read_no_source_as_of, source,
-        windows,
+        card, metering_rows, priced_metering_rows, read_as_of, source, windows,
     };
     use busbar_kernel::cost::{Author, CardEntryDraft, History};
 
     #[tokio::test]
     async fn an_older_snapshot_is_re_derivable_and_the_publish_moves_neither() {
         let (payg, _, _) = windows();
-        let gov = gov_with_rows(&[(payg, 0)]);
+        let gov = metering_rows(&[(payg, 0)]);
         let mut history = History::opening(card(10.0), 0);
         let now_ms = busbar_kernel::store::now().saturating_mul(1_000);
         history.append(CardEntryDraft {
@@ -2302,7 +2334,7 @@ mod usage_as_of {
     #[tokio::test]
     async fn a_snapshot_before_a_correction_still_answers_the_old_figure() {
         let (payg, _, _) = windows();
-        let gov = gov_with_rows(&[(payg, 0)]);
+        let gov = metering_rows(&[(payg, 0)]);
         let mut history = History::opening(card(10.0), 0);
         history.append(CardEntryDraft {
             effective_from: payg.saturating_mul(1_000),
@@ -2410,8 +2442,8 @@ mod usage_as_of {
         history.insert(saved, draft(300, 10.0));
         let version = saved.id().metering_version();
         for gov in [
-            gov_with_rows(&[(payg, 0)]),
-            gov_with_priced_rows([(payg, 300, version.as_str())]),
+            metering_rows(&[(payg, 0)]),
+            priced_metering_rows([(payg, 300, version.as_str())]),
         ] {
             let before = read_as_of(gov.clone(), source(history.clone()), payg, Some(saved))
                 .await
