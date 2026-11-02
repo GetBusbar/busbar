@@ -264,3 +264,92 @@ fn an_op_that_pends_and_resumes_answers_what_the_inline_op_answers() {
     );
     assert_eq!(pended, inline);
 }
+
+use crate::dispatch::{in_head, out_head};
+use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut};
+use busbar_contract::abi::store::IdIn;
+use std::ffi::c_void;
+fn raw_delete_key(
+    door: busbar_contract::abi::mechanism::door::DoorFn,
+    ticket: Ticket,
+    flags: u32,
+) -> Outcome {
+    // SAFETY: the SDK's `'static` door and its store table; every call passes the slot's own
+    // `in`/`out` shapes, live for the call.
+    unsafe {
+        let d = door();
+        let ops = &*d.ops().cast::<busbar_contract::abi::store::Ops>();
+        let settings = actual_store::settings();
+        let mut oi: OpenIn = std::mem::zeroed();
+        oi.head = in_head();
+        oi.head.size = std::mem::size_of::<OpenIn>() as u32;
+        oi.head.op = busbar_contract::abi::mechanism::lifecycle::slot::OPEN;
+        oi.settings = busbar_contract::abi::mechanism::call::Blob {
+            ptr: settings.as_ptr(),
+            len: settings.len(),
+            fmt: busbar_contract::abi::mechanism::call::BLOB_OCTETS,
+            flags: 0,
+        };
+        oi.generation = 1;
+        let mut oo: OpenOut = std::mem::zeroed();
+        oo.head = out_head();
+        oo.head.size = std::mem::size_of::<OpenOut>() as u32;
+        let open = ops.head.open.expect("open");
+        assert_eq!(
+            open(
+                std::ptr::null_mut(),
+                std::ptr::from_ref(&oi).cast(),
+                std::ptr::from_mut(&mut oo).cast()
+            )
+            .outcome(),
+            Outcome::Ready
+        );
+        let instance: *mut c_void = oo.instance;
+        let mut input = IdIn {
+            head: in_head(),
+            id: busbar_contract::abi::mechanism::call::AbiStr {
+                ptr: b"absent".as_ptr(),
+                len: 6,
+            },
+        };
+        input.head.size = std::mem::size_of::<IdIn>() as u32;
+        input.head.op = busbar_contract::abi::store::slot::DELETE_KEY;
+        input.head.ticket = ticket;
+        input.head.flags = flags;
+        let mut out: OutHead = out_head();
+        let call = ops.delete_key.expect("delete_key");
+        let answer = call(
+            instance,
+            std::ptr::from_ref(&input).cast(),
+            std::ptr::from_mut(&mut out).cast(),
+        )
+        .outcome();
+        let mut close_in = in_head();
+        close_in.op = busbar_contract::abi::mechanism::lifecycle::slot::CLOSE;
+        let mut close_out = out_head();
+        (ops.head.close.expect("actual SQLite closes"))(
+            instance,
+            std::ptr::from_ref(&close_in).cast(),
+            std::ptr::from_mut(&mut close_out).cast(),
+        );
+        answer
+    }
+}
+
+const TICKET: Ticket = Ticket {
+    slot: 3,
+    generation: 1,
+};
+
+#[test]
+fn a_resume_with_nothing_parked_is_fault_and_never_a_fresh_run() {
+    assert_eq!(
+        raw_delete_key(actual_store::door, TICKET, FLAG_RESUME),
+        Outcome::Fault
+    );
+
+    assert_eq!(
+        raw_delete_key(actual_store::door, TICKET, 0),
+        Outcome::Failed
+    );
+}
