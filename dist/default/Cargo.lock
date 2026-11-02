@@ -848,6 +848,7 @@ dependencies = [
  "hex",
  "libc",
  "libloading",
+ "ring",
  "serde",
  "serde_json",
  "tar",

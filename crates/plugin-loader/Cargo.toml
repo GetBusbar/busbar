@@ -82,6 +82,7 @@ path = "tests/fixtures/neutral_frame_door.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
+ring = { workspace = true }
 arc-swap = { workspace = true }
 busbar-contract = { path = "../busbar-contract" }
 busbar-kernel-seams = { path = "../busbar-kernel-seams" }
@@ -101,7 +102,6 @@ getrandom = { workspace = true }
 jsonschema = { workspace = true, optional = true }
 
 [dev-dependencies]
-ring = { workspace = true }
 base64 = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "io-util"] }
 busbar-stub-export = { path = "stubs/export/logic" }
