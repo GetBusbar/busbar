@@ -24,7 +24,263 @@ type Completion = Box<dyn FnOnce(ConditionalResult) + Send>;
 struct Provider {
     accepted: Mutex<Vec<(ConditionalCandidate, Completion)>>,
 }
-impl crate::services_double::ServicesDouble for Arc<Provider> {
+impl busbar_contract::services::HostServices for Provider {
+    fn now(&self) -> busbar_contract::services::Reading {
+        panic!("unexpected host service now in inspection/conditional boundary control")
+    }
+    fn dest_judge(
+        &self,
+        _dest: &str,
+        _class: u32,
+        _flags: u32,
+        _later: Option<busbar_contract::services::Later>,
+    ) -> busbar_contract::services::Ran {
+        panic!("unexpected host service dest_judge in inspection/conditional boundary control")
+    }
+    fn records_get(
+        &self,
+        _caller: &busbar_contract::services::Caller,
+        _kind: &str,
+        _key: &[u8],
+        _later: busbar_contract::services::Later,
+    ) -> busbar_contract::services::Ran {
+        panic!("unexpected host service records_get in inspection/conditional boundary control")
+    }
+    fn records_list(
+        &self,
+        _caller: &busbar_contract::services::Caller,
+        _list: busbar_contract::services::RecordsList,
+        _later: busbar_contract::services::Later,
+    ) -> busbar_contract::services::Ran {
+        panic!("unexpected host service records_list in inspection/conditional boundary control")
+    }
+    fn records_claim(
+        &self,
+        _caller: &busbar_contract::services::Caller,
+        _kind: &str,
+        _key: &[u8],
+        _ttl_ms: u64,
+        _later: busbar_contract::services::Later,
+    ) -> busbar_contract::services::Ran {
+        panic!("unexpected host service records_claim in inspection/conditional boundary control")
+    }
+    fn sign(
+        &self,
+        _caller: &busbar_contract::services::Caller,
+        _data: &[u8],
+    ) -> busbar_contract::services::Stored {
+        panic!("unexpected host service sign in inspection/conditional boundary control")
+    }
+    fn trust_sight(
+        &self,
+        _caller: &busbar_contract::services::Caller,
+        _counterparty: &str,
+        _hash: &str,
+        _later: busbar_contract::services::Later,
+    ) -> busbar_contract::services::Ran {
+        panic!("unexpected host service trust_sight in inspection/conditional boundary control")
+    }
+    fn trust_unreached(
+        &self,
+        _caller: &busbar_contract::services::Caller,
+        _counterparty: &str,
+    ) -> busbar_contract::services::Stored {
+        panic!("unexpected host service trust_unreached in inspection/conditional boundary control")
+    }
+    fn trust_sight_item(
+        &self,
+        _caller: &busbar_contract::services::Caller,
+        _counterparty: &str,
+        _item: &str,
+        _digest: &str,
+    ) -> busbar_contract::services::Stored {
+        panic!(
+            "unexpected host service trust_sight_item in inspection/conditional boundary control"
+        )
+    }
+    fn trust_decide(
+        &self,
+        _caller: &busbar_contract::services::Caller,
+        _key: busbar_contract::services::TrustKeyRef<'_>,
+        _expected: Option<&str>,
+        _approve: bool,
+    ) -> busbar_contract::services::Stored {
+        panic!("unexpected host service trust_decide in inspection/conditional boundary control")
+    }
+    fn trust_state(
+        &self,
+        _caller: &busbar_contract::services::Caller,
+        _counterparty: &str,
+    ) -> busbar_contract::services::Stored {
+        panic!("unexpected host service trust_state in inspection/conditional boundary control")
+    }
+    fn trust_serves(
+        &self,
+        _caller: &busbar_contract::services::Caller,
+        _counterparty: &str,
+        _item: Option<&str>,
+        _digest: Option<&str>,
+    ) -> busbar_contract::services::Stored {
+        panic!("unexpected host service trust_serves in inspection/conditional boundary control")
+    }
+    fn trust_due(
+        &self,
+        _caller: &busbar_contract::services::Caller,
+    ) -> busbar_contract::services::Stored {
+        panic!("unexpected host service trust_due in inspection/conditional boundary control")
+    }
+    fn trust_verify(
+        &self,
+        _caller: &busbar_contract::services::Caller,
+        _counterparty: &str,
+        _payload: &[u8],
+        _signatures: &[u8],
+    ) -> busbar_contract::services::Stored {
+        panic!("unexpected host service trust_verify in inspection/conditional boundary control")
+    }
+    fn entitlement_check(
+        &self,
+        _caller: &busbar_contract::services::Caller,
+        _unit: Option<u64>,
+        _target: &str,
+    ) -> busbar_contract::services::Stored {
+        panic!(
+            "unexpected host service entitlement_check in inspection/conditional boundary control"
+        )
+    }
+    fn session_emit(
+        &self,
+        _caller: &busbar_contract::services::Caller,
+        _session: u64,
+        _bytes: &[u8],
+    ) -> busbar_contract::services::Stored {
+        panic!("unexpected host service session_emit in inspection/conditional boundary control")
+    }
+    fn ticket_mint(
+        &self,
+        _caller: &busbar_contract::services::Caller,
+        _unit: Option<u64>,
+        _ttl_secs: u64,
+        _record: &[u8],
+    ) -> busbar_contract::services::Stored {
+        panic!("unexpected host service ticket_mint in inspection/conditional boundary control")
+    }
+    fn ticket_take(
+        &self,
+        _caller: &busbar_contract::services::Caller,
+        _unit: Option<u64>,
+    ) -> busbar_contract::services::Stored {
+        panic!("unexpected host service ticket_take in inspection/conditional boundary control")
+    }
+    fn random_fill(&self, _len: u64) -> busbar_contract::services::Stored {
+        panic!("unexpected host service random_fill in inspection/conditional boundary control")
+    }
+    fn records_secret(
+        &self,
+        _kind: &str,
+        _id: &str,
+        _later: busbar_contract::services::Later,
+    ) -> busbar_contract::services::Ran {
+        panic!("unexpected host service records_secret in inspection/conditional boundary control")
+    }
+    fn unit_nest(
+        &self,
+        _caller: &busbar_contract::services::Caller,
+        _unit: Option<u64>,
+        _ask: busbar_contract::services::NestAsk,
+        _later: busbar_contract::services::Later,
+    ) -> busbar_contract::services::Ran {
+        panic!("unexpected host service unit_nest in inspection/conditional boundary control")
+    }
+    fn work_open(
+        &self,
+        _caller: &busbar_contract::services::Caller,
+        _unit: Option<u64>,
+        _kind: &str,
+        _record: &[u8],
+        _later: busbar_contract::services::Later,
+    ) -> busbar_contract::services::Ran {
+        panic!("unexpected host service work_open in inspection/conditional boundary control")
+    }
+    fn work_find(
+        &self,
+        _caller: &busbar_contract::services::Caller,
+        _unit: Option<u64>,
+        _reference: &[u8],
+        _later: busbar_contract::services::Later,
+    ) -> busbar_contract::services::Ran {
+        panic!("unexpected host service work_find in inspection/conditional boundary control")
+    }
+    fn work_settle(
+        &self,
+        _caller: &busbar_contract::services::Caller,
+        _unit: Option<u64>,
+        _handle: u64,
+        _record: &[u8],
+        _later: busbar_contract::services::Later,
+    ) -> busbar_contract::services::Ran {
+        panic!("unexpected host service work_settle in inspection/conditional boundary control")
+    }
+    fn work_resume(
+        &self,
+        _caller: &busbar_contract::services::Caller,
+        _unit: Option<u64>,
+        _handle: u64,
+        _later: busbar_contract::services::Later,
+    ) -> busbar_contract::services::Ran {
+        panic!("unexpected host service work_resume in inspection/conditional boundary control")
+    }
+    fn disk_append(
+        &self,
+        _dest: &busbar_contract::services::DiskDest,
+        _bytes: Vec<u8>,
+        _later: busbar_contract::services::Later,
+    ) -> busbar_contract::services::Ran {
+        panic!("unexpected host service disk_append in inspection/conditional boundary control")
+    }
+    fn verify_lookup(
+        &self,
+        _caller: &busbar_contract::services::Caller,
+        _key: &[u8],
+        _later: busbar_contract::services::Later,
+    ) -> busbar_contract::services::Ran {
+        panic!("unexpected host service verify_lookup in inspection/conditional boundary control")
+    }
+    fn verify_store(
+        &self,
+        _caller: &busbar_contract::services::Caller,
+        _key: &[u8],
+        _entry: &[u8],
+        _ttl_ms: u64,
+    ) -> busbar_contract::services::Stored {
+        panic!("unexpected host service verify_store in inspection/conditional boundary control")
+    }
+    fn content_scan(
+        &self,
+        _caller: &busbar_contract::services::Caller,
+        _unit: Option<u64>,
+        _content: &[u8],
+        _later: busbar_contract::services::Later,
+    ) -> busbar_contract::services::Ran {
+        panic!("unexpected host service content_scan in inspection/conditional boundary control")
+    }
+    fn hook_call(
+        &self,
+        _caller: &busbar_contract::services::Caller,
+        _unit: Option<u64>,
+        _ask: busbar_contract::services::HookAsk,
+        _later: busbar_contract::services::Later,
+    ) -> busbar_contract::services::Ran {
+        panic!("unexpected host service hook_call in inspection/conditional boundary control")
+    }
+    fn snapshot_read(
+        &self,
+        _caller: &busbar_contract::services::Caller,
+        _scope: u32,
+    ) -> busbar_contract::services::Snapshot {
+        panic!("unexpected host service snapshot_read in inspection/conditional boundary control")
+    }
+
     fn observe_chain_life(
         &self,
         _: &busbar_contract::services::Caller,
@@ -51,7 +307,7 @@ impl crate::services_double::ServicesDouble for Arc<Provider> {
 }
 struct Route {
     store: Arc<super::super::services::ServiceStore>,
-    provider: crate::services_double::Double<Arc<Provider>>,
+    provider: Arc<Provider>,
     wakes: AtomicUsize,
     tickets: Mutex<Vec<Ticket>>,
 }
@@ -63,7 +319,7 @@ impl super::super::ticket::WakeRoute for Route {
     fn services(&self) -> Option<super::super::services::Served<'_>> {
         Some(super::super::services::Served {
             store: &self.store,
-            provider: &self.provider,
+            provider: &*self.provider,
         })
     }
 }
@@ -86,7 +342,7 @@ fn candidate(id: u64) -> ConditionalCandidate {
 fn rig() -> (Arc<Route>, &'static InstanceWake, InHead) {
     let route = Arc::new(Route {
         store: Arc::default(),
-        provider: crate::services_double::Double(Arc::new(Provider::default())),
+        provider: Arc::new(Provider::default()),
         wakes: AtomicUsize::new(0),
         tickets: Mutex::new(Vec::new()),
     });
@@ -464,7 +720,7 @@ fn plane_rig() -> (
     let provider = Arc::new(Provider::default());
     let dispatcher = Arc::new(Dispatcher::with_services(
         DispatchConfig::default(),
-        Arc::new(crate::services_double::Double(provider.clone())),
+        provider.clone(),
     ));
     let plugin = super::super::load_linked::<Plane>(
         &LinkedRow::of(door).unwrap(),
