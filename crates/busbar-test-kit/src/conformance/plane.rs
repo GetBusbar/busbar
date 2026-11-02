@@ -168,11 +168,11 @@ use busbar_contract::abi::plane::{
 use serde_json::Value;
 
 use super::{
-    answered, called, close, crossings, dispatcher, input, json, load, on_ticket_frame, output,
+    answered, called, close, crossings, dispatcher, dispatcher_serving, input, json, load, on_ticket_frame, output,
     ready_step, release, submit_on, validate, Fold, Leg, Recorder, Subject,
 };
 use crate::dispatch::kinds::plane::{OwnedSnapshot, Plane, ServedFacts};
-use crate::dispatch::{now_ns, Called, DispatchConfig, Dispatcher, Frame, Lent, Plugin};
+use crate::dispatch::{now_ns, Called, Dispatcher, Frame, Lent, Plugin};
 
 #[path = "plane_host.rs"]
 mod host;
@@ -804,6 +804,9 @@ fn arrive(p: &Plugin<Plane>, a: &Arrival, body: &[u8]) -> String {
     f.input.body = octets(body);
     (f.input.units_buf, f.input.units_cap) = (units.as_mut_ptr(), units.len());
     let c = p.call(slot::ARRIVE, &mut f);
+    if c.outcome != busbar_contract::abi::mechanism::call::Outcome::Ready {
+        return format!("{} UNREAD", called(&c));
+    }
     let line = format!(
         "{} op_class={} principal_required={} dialect={} units={} refusal={} status={}",
         called(&c),
@@ -1065,6 +1068,9 @@ fn project(
     (f.input.messages_buf, f.input.messages_cap) = (turns.as_mut_ptr(), turns.len());
     (f.input.arena_buf, f.input.arena_cap) = (arena.as_mut_ptr(), arena.len());
     let c = p.call(slot::PROJECT, &mut f);
+    if c.outcome != busbar_contract::abi::mechanism::call::Outcome::Ready {
+        return format!("{} UNREAD", called(&c));
+    }
     let span = |s: Span| (s.offset != SPAN_ABSENT && s.len != 0).then(|| at(&arena, s));
     let turns: Vec<String> = turns[..f.out.prompt.messages_len.min(CAP)]
         .iter()
@@ -1237,6 +1243,7 @@ struct Inputs {
 
 /// One admin request [`Inputs::serve_first`] names: the plane's admin route (its index in the
 /// snapshot's `admin_routes`), the request target, its head fields and its body.
+#[derive(Clone, Default)]
 struct ServeFirst {
     route: u32,
     target: Vec<u8>,
@@ -1458,6 +1465,10 @@ fn generation(p: &Plugin<Plane>, s: u32, generation: u64) -> String {
     called(&p.call(s, &mut g))
 }
 
+fn leg_dispatcher(host: Option<Arc<host::Host>>) -> Arc<Dispatcher> {
+    host.map_or_else(dispatcher, |h| dispatcher_serving(h))
+}
+
 pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let mut k = Inputs::of(s.kind_inputs("plane"));
     // The kernel services the plugin's inputs state (`plane.host`), served on the leg's dispatcher;
@@ -1469,9 +1480,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let url = k.public_url.as_deref();
     let (c, claim) = (&k.carried, k.claimed.claim);
 
-    let d = k.carried.host.clone().map_or_else(dispatcher, |h| {
-        Arc::new(Dispatcher::with_services(DispatchConfig::default(), h))
-    });
+    let d = leg_dispatcher(k.carried.host.clone());
     // The plane's own declared needs (a card it fetches, a callback it delivers) reach the far
     // ends its inputs state (`far_ends`), as the auth script's do; naming none, the leg's table.
     let far = s.far_table();
@@ -1526,15 +1535,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     r.line("hydrate", 1, || generation(&p, slot::HYDRATE, 1));
     r.line("start", 1, || generation(&p, slot::START, 1));
     for (n, first) in k.serve_first.iter().enumerate() {
-        r.line(&format!("serve first #{n}"), 1, || {
-            let fields = field_list(&first.fields);
-            serve(&p, &d, |i| {
-                i.route = first.route;
-                i.target = abi(&first.target);
-                (i.fields, i.fields_len) = (fields.as_ptr(), fields.len());
-                i.body = octets(&first.body);
-            })
-        });
+        r.line(&format!("serve first #{n}"), 1, || serve(&p, &d, Some(first)));
     }
     r.line("arrive claimed", 1, || arrive(&p, &k.claimed, &k.request));
     r.line("arrive unclaimed", 1, || {
@@ -1666,7 +1667,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
             f.out.status
         )
     });
-    r.line("serve", 1, || serve(&p, &d, |_| {}));
+    r.line("serve", 1, || serve(&p, &d, None));
     r.line("project", 1, || {
         let mut arena = [0_u8; 256];
         let mut signals = [z::<SignalEntry>(); 4];
@@ -1808,32 +1809,50 @@ pub(super) fn red_unreported_class(s: &Subject) {
     );
 }
 
-/// The memory a `serve` lends the plane: its reply, fields and arena buffers.
+/// Every allocation a `serve` frame names, held until its last crossing returns.
 struct ServeLend {
+    request: ServeFirst,
+    request_fields: Vec<Field>,
     reply: [u8; 512],
     arena: [u8; 256],
     fields: [OutField; 2],
 }
 
-// SAFETY: plain buffers the plane writes and the host reads only after the op completes.
+// SAFETY: input pointers name immutable allocations owned here. Output buffers are written only by
+// the crossing and read by the caller only when the dispatcher returns a joined frame.
 unsafe impl Send for ServeLend {}
-// SAFETY: as above.
+// SAFETY: the caller never inspects output buffers while an abandoned crossing can still run.
 unsafe impl Sync for ServeLend {}
 
-/// ONE ADMIN REQUEST on the plane's `serve` op: on a request ticket, its buffers lent to the op,
-/// as the kernel serves an admin route; `request` fills the route, target, fields and body.
-fn serve(p: &Plugin<Plane>, d: &Arc<Dispatcher>, request: impl FnOnce(&mut ServeIn)) -> String {
-    let mut lend = Arc::new(ServeLend {
-        reply: [0; 512],
-        arena: [0; 256],
-        fields: [z(); 2],
-    });
-    let me = Arc::get_mut(&mut lend).expect("unshared");
-    let mut f: Frame<ServeIn, ServeOut> = Frame::new(input(), output());
-    request(&mut f.input);
-    (f.input.reply_buf, f.input.reply_cap) = (me.reply.as_mut_ptr(), me.reply.len());
-    (f.input.fields_buf, f.input.fields_cap) = (me.fields.as_mut_ptr(), me.fields.len());
-    (f.input.arena_buf, f.input.arena_cap) = (me.arena.as_mut_ptr(), me.arena.len());
+impl ServeLend {
+    fn frame(request: Option<&ServeFirst>) -> (Arc<Self>, Frame<ServeIn, ServeOut>) {
+        let mut lend = Arc::new(Self {
+            request: request.cloned().unwrap_or_default(),
+            request_fields: Vec::new(),
+            reply: [0; 512],
+            arena: [0; 256],
+            fields: [z(); 2],
+        });
+        let me = Arc::get_mut(&mut lend).expect("unshared");
+        me.request_fields = field_list(&me.request.fields);
+        let mut f: Frame<ServeIn, ServeOut> = Frame::new(input(), output());
+        if request.is_some() {
+            f.input.route = me.request.route;
+            f.input.target = abi(&me.request.target);
+            (f.input.fields, f.input.fields_len) =
+                (me.request_fields.as_ptr(), me.request_fields.len());
+            f.input.body = octets(&me.request.body);
+        }
+        (f.input.reply_buf, f.input.reply_cap) = (me.reply.as_mut_ptr(), me.reply.len());
+        (f.input.fields_buf, f.input.fields_cap) = (me.fields.as_mut_ptr(), me.fields.len());
+        (f.input.arena_buf, f.input.arena_cap) = (me.arena.as_mut_ptr(), me.arena.len());
+        (lend, f)
+    }
+}
+
+/// One admin request on its real ticket; all input and output allocations belong to the loan.
+fn serve(p: &Plugin<Plane>, d: &Arc<Dispatcher>, request: Option<&ServeFirst>) -> String {
+    let (lend, f) = ServeLend::frame(request);
     let (c, f) = on_ticket_frame(
         p,
         d,
@@ -2287,3 +2306,7 @@ mod host_tests;
 #[cfg(test)]
 #[path = "../tests/conformance_plane_settings_tests.rs"]
 mod settings_tests;
+
+#[cfg(all(test, loader_self_tests))]
+#[path = "../tests/conformance_plane_lending_tests.rs"]
+mod lending_tests;

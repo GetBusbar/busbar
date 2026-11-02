@@ -62,7 +62,7 @@ struct Inner {
     handles: HashMap<u64, (u64, Handle)>,
     admitted: HashMap<Ticket, Admit>,
     made: HashMap<Ticket, u64>,
-    waiting: Vec<(u64, Waker)>,
+    waiting: Vec<(u64, u32, Waker)>,
 }
 
 /// THE SUITE'S HOST I/O (module docs).
@@ -77,6 +77,19 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 
 fn failed(e: &std::io::Error) -> IoRefusal {
     IoRefusal::Failed(e.to_string())
+}
+
+/// A zero-timeout readiness query does not consume input or send probe bytes.
+fn socket_ready(stream: &TcpStream, direction: u32) -> bool {
+    use std::os::fd::AsRawFd;
+    let mut fd = libc::pollfd {
+        fd: stream.as_raw_fd(),
+        events: if direction == DIR_WRITE { libc::POLLOUT } else { libc::POLLIN },
+        revents: 0,
+    };
+    // SAFETY: one live pollfd, a socket borrowed for this nonblocking call, and no callbacks.
+    let ready = unsafe { libc::poll(&mut fd, 1, 0) };
+    ready > 0 && fd.revents != 0
 }
 
 impl SuiteIo {
@@ -138,23 +151,20 @@ impl SuiteIo {
         }
     }
 
-    fn park(&self, id: u64, waker: &Waker) {
+    fn park(&self, id: u64, direction: u32, waker: &Waker) {
         let waker = waker.clone();
-        lock(&self.inner).waiting.push((id, waker));
+        lock(&self.inner).waiting.push((id, direction, waker));
     }
 
-    /// Wake every op waiting on a socket that is now readable (or at its end).
+    /// Wake socket waiters whose requested direction is ready (including errors and closure).
     pub fn pump(&self) {
         let mut inner = lock(&self.inner);
         let waiting = std::mem::take(&mut inner.waiting);
         let mut ready_wakes = Vec::new();
         let mut retired_wakes = Vec::new();
-        for (id, waker) in waiting {
+        for (id, direction, waker) in waiting {
             let ready = match inner.handles.get(&id).map(|(_, h)| h) {
-                Some(Handle::Stream(s)) => {
-                    let mut one = [0_u8; 1];
-                    !matches!(s.peek(&mut one), Err(e) if e.kind() == ErrorKind::WouldBlock)
-                }
+                Some(Handle::Stream(s)) => socket_ready(s, direction),
                 Some(Handle::Listener(_)) | None => true,
                 // A program's output wakes its reader from the thread that reads it.
                 Some(Handle::Program { .. }) => {
@@ -165,7 +175,7 @@ impl SuiteIo {
             if ready {
                 ready_wakes.push(waker);
             } else {
-                inner.waiting.push((id, waker));
+                inner.waiting.push((id, direction, waker));
             }
         }
         drop(inner);
@@ -246,7 +256,7 @@ impl IoHost for SuiteIo {
                 )))
             }
             Ok(None) => {
-                self.park(listener, waker);
+                self.park(listener, DIR_READ, waker);
                 Poll::Pending
             }
             Err(e) => Poll::Ready(Err(e)),
@@ -288,7 +298,7 @@ impl IoHost for SuiteIo {
         match got {
             Ok(Some(n)) => Poll::Ready(Ok(n)),
             Ok(None) => {
-                self.park(id, waker);
+                self.park(id, DIR_READ, waker);
                 Poll::Pending
             }
             Err(e) => Poll::Ready(Err(e)),
@@ -315,7 +325,7 @@ impl IoHost for SuiteIo {
         match got {
             Ok(Some(n)) => Poll::Ready(Ok(n)),
             Ok(None) => {
-                self.park(id, waker);
+                self.park(id, DIR_WRITE, waker);
                 Poll::Pending
             }
             Err(e) => Poll::Ready(Err(e)),
@@ -442,5 +452,61 @@ impl IoHost for SuiteIo {
             }),
             Handle::Listener(_) => Ok(Ends::default()),
         })
+    }
+}
+
+#[cfg(all(test, loader_self_tests))]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::task::Wake;
+
+    #[derive(Default)]
+    struct Wakes(AtomicUsize);
+    impl Wake for Wakes {
+        fn wake(self: Arc<Self>) { self.0.fetch_add(1, Ordering::SeqCst); }
+    }
+
+    #[test]
+    fn a_pending_writer_wakes_when_peer_drains_without_sending_input() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        stream.set_nonblocking(true).unwrap();
+        peer.set_nonblocking(true).unwrap();
+        let io = SuiteIo::default();
+        let id = io.hold(7, None, Handle::Stream(stream));
+        let writes = Arc::new(Wakes::default());
+        let reads = Arc::new(Wakes::default());
+        let writer = Waker::from(Arc::clone(&writes));
+        let reader = Waker::from(Arc::clone(&reads));
+        let bytes = [7; 65536];
+        let mut sent = 0;
+        loop {
+            match io.write(7, id, &bytes, &writer) {
+                Poll::Ready(Ok(n)) if n > 0 => sent += n,
+                Poll::Pending => break,
+                other => panic!("write: {other:?}"),
+            }
+            assert!(sent < 64 * 1024 * 1024, "the peer must eventually apply backpressure");
+        }
+        assert!(io.read(7, id, &mut [0; 1], &reader).is_pending());
+        let until = Instant::now() + Duration::from_secs(5);
+        let mut scratch = [0; 65536];
+        while writes.0.load(Ordering::SeqCst) == 0 {
+            loop {
+                match peer.read(&mut scratch) {
+                    Ok(n) if n > 0 => {}
+                    Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+                    other => panic!("peer read: {other:?}"),
+                }
+            }
+            io.pump();
+            assert!(Instant::now() < until, "a writable socket never woke its writer");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(reads.0.load(Ordering::SeqCst), 0, "the peer sent no input");
+        assert!(matches!(io.write(7, id, b"next", &writer), Poll::Ready(Ok(n)) if n > 0));
+        io.close(7, id).unwrap();
     }
 }
