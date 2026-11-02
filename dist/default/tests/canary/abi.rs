@@ -5,11 +5,15 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use busbar_contract::abi::mechanism::door::{Door, DoorFn};
 use busbar_contract::abi::sdk::door::RawDoorFn;
-use busbar_contract::auth_calls::FieldsRequest;
-use busbar_contract::plugin_rows::PluginRows;
+use busbar_contract::auth_calls::{FieldsRequest, Verified, VerifyRequest};
+use busbar_contract::secret::SecretAxis as _;
 use busbar_contract::secret_ref::{SECRET_MODULE_ENV, SECRET_MODULE_FILE, SECRET_MODULE_TEMPLATE};
-use busbar_kernel::auth::AuthMiddleware;
-use busbar_kernel::config::{AuthCfg, AuthChainEntry};
+use busbar_core_connector::{doors::Dispatched, process, registry::Entry, Connector};
+use busbar_kernel::host_services::KernelServices;
+use busbar_plugin_loader::auth_axis::AuthRows;
+use busbar_plugin_loader::dispatch::{
+    kinds::transport::Transport, load_linked, DispatchConfig, Dispatcher, LinkedRow,
+};
 use busbar_plugin_loader::{LinkedPlugin, PluginRegistry};
 
 use crate::canary::{Canary, Sink};
@@ -141,43 +145,128 @@ impl AbiCanaries {
     }
 }
 
-fn chain(
-    rows: &Arc<dyn PluginRows>,
+// The ABI observer owns its FFI boundary, while all services and I/O are the
+// public product implementations. It never installs a substitute kernel root.
+fn runtime() -> &'static tokio::runtime::Runtime {
+    static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("the canary I/O runtime")
+    })
+}
+
+fn host() -> &'static (Arc<Dispatcher>, Arc<Connector>) {
+    static HOST: OnceLock<(Arc<Dispatcher>, Arc<Connector>)> = OnceLock::new();
+    HOST.get_or_init(|| {
+        let guard = process::dest_judge(&busbar_kernel::config::Destinations {
+            allow: vec!["127.0.0.1".into()],
+            ..Default::default()
+        })
+        .expect("the local IdP destination policy");
+        let services = Arc::new(KernelServices::new().with_dest_judge(guard.clone()));
+        let dispatcher = Arc::new(Dispatcher::with_services(
+            DispatchConfig::default(),
+            services,
+        ));
+        assert!(dispatcher.lend_seal(busbar_kernel::seal::lend()));
+        dispatcher.install_runtime(runtime().handle().clone());
+        busbar_core_connector::io::install_process_reactor(runtime().handle().clone());
+        let settings = busbar_contract::transport::TransportSettings::default();
+        let row = LinkedRow::of(busbar_transport_http::linked::door)
+            .expect("the actual HTTP transport states itself");
+        let plugin =
+            load_linked::<Transport>(&row, busbar_core_connector::doors::bind_on(&dispatcher))
+                .expect("the actual HTTP transport admits");
+        let door = Dispatched::open_on(plugin, &settings, dispatcher.clone())
+            .expect("the actual HTTP transport opens");
+        let connector = process::build_with_secrets(
+            || {
+                Ok(vec![Entry {
+                    door: Arc::new(door),
+                    alpn: Vec::new(),
+                }])
+            },
+            guard,
+            &[],
+            dispatcher.conn_waker(),
+            busbar_core_connector::pool::PoolPosture::NONE,
+            busbar_core_connector::spawn_env::linked_spawn_secret,
+        )
+        .expect("the real connector builds");
+        (dispatcher, connector)
+    })
+}
+
+fn dispatcher() -> Arc<Dispatcher> {
+    host().0.clone()
+}
+
+fn connections() -> Option<Arc<dyn busbar_contract::conn::DeclaredConns>> {
+    Some(host().1.clone())
+}
+
+fn sources() -> &'static busbar_plugin_loader::secret_calls::SecretRows {
+    static SOURCES: OnceLock<busbar_plugin_loader::secret_calls::SecretRows> = OnceLock::new();
+    SOURCES.get_or_init(|| {
+        let mut sources =
+            busbar_plugin_loader::secret_calls::SecretRows::new(dispatcher, connections)
+                .with_disk_lane(|job| {
+                    static DISK: OnceLock<busbar_kernel::host_disk::DiskLane> = OnceLock::new();
+                    DISK.get_or_init(Default::default)
+                        .run(job)
+                        .map_err(str::to_string)
+                });
+        sources
+            .link(busbar_secret_env::door::door)
+            .expect("the real env source");
+        sources
+            .link(busbar_secret_file::door::door)
+            .expect("the real file source");
+        sources
+            .declare_linked(busbar_secret_file::door::door, busbar_secret_file::DECLARES)
+            .expect("the file source's own disk declaration");
+        sources
+    })
+}
+
+fn source(module: &str, settings: serde_json::Value) -> String {
+    let value = sources()
+        .shared(module)
+        .expect("the actual secret source opens")
+        .resolve_at_config(
+            settings.to_string().as_bytes(),
+            &busbar_contract::config_time::ConfigScope::config_time(),
+        )
+        .expect("the actual secret source resolves the canary");
+    String::from_utf8(value.into_exposed(&busbar_kernel::seal::lend()))
+        .expect("the canary source is UTF-8")
+}
+
+fn open(
+    rows: &AuthRows,
     module: &str,
     settings: serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), String> {
-    let mut entry = AuthChainEntry::bare(module);
-    entry.settings = settings;
-    let cfg = AuthCfg {
-        chain: vec![entry],
-        ..AuthCfg::default_none()
-    };
-    AuthMiddleware::new(
-        &cfg,
-        rows,
-        &busbar_kernel::config::secret::SecretResolver::builtins_only(),
-    )
-    .map(|_| ())
+    rows.open(module, module, &serde_json::Value::Object(settings))
+        .map(|_| ())
 }
 
 pub fn run(c: &AbiCanaries) -> (Vec<Sink>, Vec<String>) {
-    crate::dist_root_install::install();
     let tracing = tracing_capture();
     let traced_from = tracing.lock().unwrap_or_else(|p| p.into_inner()).len();
     let d = doors();
     let reg = registry();
-    let rows: Arc<dyn PluginRows> = reg.clone();
+    let rows = AuthRows::new(reg.clone(), dispatcher()).with_table(host().1.clone());
     let mut sinks = Vec::new();
     let mut notes = Vec::new();
     let mut outcome = |what: &str, r: Result<(), String>| match r {
         Ok(()) => notes.push(format!("{what}: opened")),
         Err(e) => {
             notes.push(format!("{what}: refused"));
-            sinks.push(Sink::text(
-                format!("refusal:{what}"),
-                "AuthMiddleware::new",
-                e,
-            ));
+            sinks.push(Sink::text(format!("refusal:{what}"), "AuthRows::open", e));
         }
     };
     let pid = std::process::id();
@@ -193,11 +282,15 @@ pub fn run(c: &AbiCanaries) -> (Vec<Sink>, Vec<String>) {
     s.insert("origin".into(), "wss://edge.canary.invalid".into());
     s.insert(
         "signing-secret".into(),
-        serde_json::json!({ SECRET_MODULE_FILE: secret_file.display().to_string() }),
+        source(
+            SECRET_MODULE_FILE,
+            serde_json::json!({"path": secret_file.display().to_string()}),
+        )
+        .into(),
     );
     outcome(
         "webhook-signature secret_refs (file ref)",
-        chain(&rows, &d.webhook_signature.0, s),
+        open(&rows, &d.webhook_signature.0, s),
     );
 
     let audience = "api://canary";
@@ -206,9 +299,9 @@ pub fn run(c: &AbiCanaries) -> (Vec<Sink>, Vec<String>) {
     let mut s = common::credentials::settings(audience);
     s.insert(
         "audience".into(),
-        serde_json::json!({ SECRET_MODULE_ENV: env_var }),
+        source(SECRET_MODULE_ENV, serde_json::json!({"key": env_var})).into(),
     );
-    outcome("oidc settings (env ref)", chain(&rows, &d.oidc.0, s));
+    outcome("oidc settings (env ref)", open(&rows, &d.oidc.0, s));
 
     let tpl_var = format!("BUSBAR_CANARY_TPL_{pid}_{run}");
     std::env::set_var(&tpl_var, &c.settings_template.value);
@@ -219,7 +312,7 @@ pub fn run(c: &AbiCanaries) -> (Vec<Sink>, Vec<String>) {
     );
     outcome(
         "oidc settings (env-template ref)",
-        chain(&rows, &d.oidc.0, s),
+        open(&rows, &d.oidc.0, s),
     );
 
     let interp_var = format!("BUSBAR_CANARY_INTERP_{pid}_{run}");
@@ -233,15 +326,42 @@ pub fn run(c: &AbiCanaries) -> (Vec<Sink>, Vec<String>) {
     s.extend(parsed);
     outcome(
         "oidc settings (${VAR} interpolation)",
-        chain(&rows, &d.oidc.0, s),
+        open(&rows, &d.oidc.0, s),
     );
+    // Prove that the observed dropped-in OIDC door reaches the TLS JWKS server
+    // through the actual connector, rather than only recording a refused open.
+    let oidc = rows
+        .open(
+            &d.oidc.0,
+            "canary-live-oidc",
+            &serde_json::Value::Object(common::credentials::settings(audience)),
+        )
+        .expect("the observed OIDC plugin opens on actual host services");
+    let mut request = VerifyRequest::default();
+    request.credential = Some(busbar_contract::redacted::Secret::new(
+        common::credentials::token_for("canary", &["privacy"], audience).into_bytes(),
+    ));
+    request.timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("the clock")
+        .as_secs();
+    let answer = runtime().block_on(async {
+        tokio::time::timeout(std::time::Duration::from_secs(15), oidc.verify(request))
+            .await
+            .expect("the real OIDC verification answers")
+    });
+    assert!(
+        matches!(answer.verified, Verified::Identity(ref identity) if identity.subject == "oidc:canary"),
+        "the observed dropped-in door verifies a signed token over the real TLS connection: {:?}",
+        answer.verified,
+    );
+    drop(oidc);
+
     for v in [&env_var, &tpl_var, &interp_var] {
         std::env::remove_var(v);
     }
 
-    let outbound =
-        busbar_plugin_loader::auth_axis::AuthRows::new(reg, crate::root::dispatch::dispatcher())
-            .with_table(crate::root::connector::the().clone());
+    let outbound = AuthRows::new(reg, dispatcher()).with_table(host().1.clone());
     let settings = serde_json::json!({});
     match outbound.serving("api-key", &settings) {
         Ok(Some(serving)) => {
