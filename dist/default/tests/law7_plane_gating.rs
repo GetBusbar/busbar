@@ -135,7 +135,10 @@ fn boot_hooks_run(sections: &[&'static str]) -> (usize, usize) {
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
-    let directory = plugins::scratch("installed-door-route");
+    let directory = plugins::scratch(&format!(
+        "law7_plane_gating-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
@@ -212,7 +215,7 @@ fn an_unconfigured_plane_hydrates_and_starts_nothing() {
         assert!(
             output.status.success()
                 && stdout.contains("running 1 test")
-                && stdout.contains(&format!("test {test} ... ok"))
+                && stdout.contains(&format!("test {test} ..."))
                 && stdout.contains("1 passed; 0 failed; 0 ignored"),
             "isolated original case failed or did not run exactly once:\n{stdout}\n{}",
             String::from_utf8_lossy(&output.stderr)
@@ -245,7 +248,7 @@ fn a_configured_plane_still_hydrates_and_starts() {
         assert!(
             output.status.success()
                 && stdout.contains("running 1 test")
-                && stdout.contains(&format!("test {test} ... ok"))
+                && stdout.contains(&format!("test {test} ..."))
                 && stdout.contains("1 passed; 0 failed; 0 ignored"),
             "isolated original case failed or did not run exactly once:\n{stdout}\n{}",
             String::from_utf8_lossy(&output.stderr)
@@ -277,7 +280,7 @@ fn only_a_configured_plane_builds_its_slot() {
         assert!(
             output.status.success()
                 && stdout.contains("running 1 test")
-                && stdout.contains(&format!("test {test} ... ok"))
+                && stdout.contains(&format!("test {test} ..."))
                 && stdout.contains("1 passed; 0 failed; 0 ignored"),
             "isolated original case failed or did not run exactly once:\n{stdout}\n{}",
             String::from_utf8_lossy(&output.stderr)
@@ -308,7 +311,10 @@ fn only_a_configured_plane_builds_its_slot() {
         );
         manifest.statement = Some(hex::encode(statement));
         let library = std::fs::read(library_path).expect("the actual store library reads");
-        let directory = plugins::scratch("installed-door-route");
+        let directory = plugins::scratch(&format!(
+            "law7_plane_gating-{}",
+            busbar_kernel::door::op_id().counter()
+        ));
         let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
         std::fs::write(directory.join("store.tar.gz"), archive)
             .expect("stage the actual store archive");
@@ -375,8 +381,8 @@ fn only_a_configured_plane_builds_its_slot() {
     busbar_kernel::plane_driver::registry::publish_planes(&[]);
 }
 
-#[test]
-fn resolve_reads_the_configured_plane_sections_off_the_config() {
+#[tokio::test]
+async fn resolve_reads_the_configured_plane_sections_off_the_config() {
     crate::dist_root_install::install();
     let tools_plane = linked::owning("tools");
     let door = linked::door_section(tools_plane);
@@ -384,6 +390,7 @@ fn resolve_reads_the_configured_plane_sections_off_the_config() {
         door, tools_plane.config_section,
         "the `tools:` plane declares an endpoint door of its own"
     );
+    let peer = crate::root::door_steps::tests::tool_door::TlsToolServer::new().await;
     let sections = |extra: &str| {
         let yaml = format!(
             "providers:\n  acme: {{ api_key: none }}\nmodels:\n  m: {{ provider: acme }}\n{extra}"
@@ -407,10 +414,11 @@ fn resolve_reads_the_configured_plane_sections_off_the_config() {
         "a 1.5.5-shaped config (public_url included) configures no plane"
     );
     assert_eq!(
-        sections(
-            "tools:\n  t1: { url: \"https://t.example/t\", pin: { mechanism: unpinned } }\n\
-             agents:\n  a1: { url: \"https://a.example/a\", pin: { mechanism: unpinned } }\n"
-        ),
+        sections(&format!(
+            "tools:\n  t1: {{ url: \"https://127.0.0.1:{}/rpc\", pin: {{ mechanism: cert_spki, key: \"{}\" }} }}\n\
+             agents:\n  a1: {{ url: \"https://127.0.0.1:{}/rpc\", pin: {{ mechanism: cert_spki, key: \"{}\" }} }}\n",
+             peer.port, peer.pin, peer.port, peer.pin,
+        )),
         vec!["agents", "tools"]
     );
     assert_eq!(
