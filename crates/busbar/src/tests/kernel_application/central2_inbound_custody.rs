@@ -405,5 +405,118 @@ async fn actual_inbound_foreign_binding_and_session_custody() {
     assert!(inbound.unit_secret(97, unit.id).is_none());
     assert!(inbound.with_credential(unit.id, |_| ()).is_none());
     drop(admission);
+    // Two independently claimed requests on one detached connection cannot be
+    // guessed into a session. Each actual Store-backed key admission remains held.
+    inbound.framing_started(7, 71, 21, 3).unwrap();
+    let mut held = Vec::new();
+    for stream in [1, 2] {
+        inbound.grant_stream(7, 21, stream, 3).unwrap();
+        let (send, receive) = tokio::sync::oneshot::channel();
+        let result = inbound.auth_call(
+            request(UnitRef::NONE, 11, stream, 21),
+            Box::new(move |r| {
+                let _ = send.send(r);
+            }),
+        );
+        let unit = match result {
+            Some(r) => r,
+            None => receive.await.unwrap(),
+        }
+        .unwrap()
+        .unit;
+        assert_eq!(
+            inbound.hand_in(HandIn {
+                owner: 7,
+                generation: 3,
+                auth,
+                unit,
+                line: 0,
+                conn: 11,
+                stream,
+                framing: Some(21),
+                head: sanitized.clone()
+            }),
+            Ok((FLOW_CONTINUE, unit))
+        );
+        let receipt = inbound.claim_request(7, 11, stream, &sanitized).unwrap();
+        held.push((unit, receipt));
+    }
+    inbound.framing_detached(7, 21).unwrap();
+    assert!(inbound
+        .framing_adopting(
+            busbar_contract::framing_scope::AdoptionSource {
+                owner: 7,
+                listener: 71,
+                leg: 21,
+                conn: 11
+            },
+            97,
+            29
+        )
+        .is_err());
+    for (unit, _) in &held {
+        assert!(inbound.unit_secret(7, unit.id).is_some());
+    }
+    inbound.framing_ended(21);
+    for (unit, _) in &held {
+        assert!(inbound.unit_secret(7, unit.id).is_none());
+    }
+    drop(held);
+
+    // Ending either side of a staged transfer retires its credential and prevents
+    // a late commit; repeat with distinct genuine framing/connection identities.
+    for (source_leg, destination_leg, conn, ended) in [(31, 39, 21, 31), (41, 49, 31, 49)] {
+        inbound.framing_started(7, 71, source_leg, 3).unwrap();
+        inbound.grant_stream(7, source_leg, 1, 3).unwrap();
+        let (send, receive) = tokio::sync::oneshot::channel();
+        let result = inbound.auth_call(
+            request(UnitRef::NONE, conn, 1, source_leg),
+            Box::new(move |r| {
+                let _ = send.send(r);
+            }),
+        );
+        let unit = match result {
+            Some(r) => r,
+            None => receive.await.unwrap(),
+        }
+        .unwrap()
+        .unit;
+        assert_eq!(
+            inbound.hand_in(HandIn {
+                owner: 7,
+                generation: 3,
+                auth,
+                unit,
+                line: 0,
+                conn,
+                stream: 1,
+                framing: Some(source_leg),
+                head: sanitized.clone()
+            }),
+            Ok((FLOW_CONTINUE, unit))
+        );
+        let receipt = inbound.claim_request(7, conn, 1, &sanitized).unwrap();
+        inbound.framing_detached(7, source_leg).unwrap();
+        let moved = inbound
+            .framing_adopting(
+                busbar_contract::framing_scope::AdoptionSource {
+                    owner: 7,
+                    listener: 71,
+                    leg: source_leg,
+                    conn,
+                },
+                97,
+                destination_leg,
+            )
+            .unwrap();
+        inbound.framing_ended(ended);
+        assert!(inbound.framing_adopted(97, destination_leg, 803).is_err());
+        assert!(inbound.unit_secret(7, unit.id).is_none());
+        assert!(inbound.unit_secret(97, moved.session.unit.id).is_none());
+        assert!(inbound.with_credential(unit.id, |_| ()).is_none());
+        inbound.framing_ended(source_leg);
+        inbound.framing_ended(destination_leg);
+        drop(receipt);
+    }
     println!("{WITNESS}");
 }
