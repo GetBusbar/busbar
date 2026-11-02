@@ -2,6 +2,9 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
+use crate::governance::recovery::{
+    tests::Journal, RecoveryKind, RecoveryResolution, RecoveryState, RecoveryVerdict,
+};
 
 const MODEL: &str = "m";
 const INITIAL_INPUT: u64 = 100;
@@ -605,4 +608,290 @@ fn correction_common_positives_keep_same_timestamp_fee_refunds_in_both_raw_branc
             "positive custody transferred only once"
         );
     }
+}
+
+#[test]
+fn restarted_unlanded_correction_revalidates_foreign_usage_before_reposting_and_refunding() {
+    const FOREIGN_INPUT: u64 = 13;
+    let store = Arc::new(MemoryStore::new());
+    let journal = Arc::new(Journal::default());
+    let first = GovState::new(store.clone(), None).unwrap();
+    first.attach_recovery_sink(journal.clone()).unwrap();
+    let key = key("vk_correction_quarantined_not_landed", None);
+    store.put_key(&key).unwrap();
+    let cm = model(&[]);
+    let now = crate::store::now();
+    let grant = first.try_admit(&cm, &key, "", now).unwrap();
+    let refund = grant.charge().clone();
+    first.record_usage(&cm, &key, "", MODEL, &toks(INITIAL_INPUT, 0), now);
+    metered(&first, &key.id, MODEL, INITIAL_INPUT, now);
+    journal
+        .fail_after_write
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(first
+        .adjust_usage(&cm, &correction(&key, &delta(), now))
+        .is_err());
+    assert_eq!(
+        input(&store.get_usage(&key.id, 0).unwrap()),
+        0,
+        "Intent acknowledgement failed before backend submission"
+    );
+    let original = journal
+        .selected
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|event| event.kind == RecoveryKind::Correction)
+        .unwrap()
+        .clone();
+    let count = journal.selected.lock().unwrap().len();
+    let held = first
+        .hold_foreign_correction_recovery(original.operation_id)
+        .unwrap();
+    assert!(held.is_some());
+    assert!(
+        first
+            .adjust_usage(&cm, &correction(&key, &delta(), now))
+            .is_err(),
+        "the retained adoption guard prevents the real correction sender from restarting"
+    );
+    assert_eq!(journal.selected.lock().unwrap().len(), count);
+    drop(held);
+    let adoption = RecoveryResolution {
+        operation_id: original.operation_id,
+        body_fingerprint: original.body_fingerprint,
+        expected_revision: original.revision,
+        verdict: RecoveryVerdict::NotLanded,
+        sender_quiesced: true,
+        backend_quiesced: true,
+        actor: "adopter".into(),
+        reason: "foreign sender retired and backend checked".into(),
+    };
+    let staged = GovState::stage_foreign_correction_verdict(&original, &adoption).unwrap();
+    assert_eq!(staged.len(), 2);
+    assert_eq!(
+        (staged[0].state, staged[1].state),
+        (
+            RecoveryState::LandedUnknown,
+            RecoveryState::VerdictNotLanded
+        )
+    );
+    assert!(staged
+        .iter()
+        .all(|event| event.body_fingerprint == original.body_fingerprint
+            && event.first_sent_at_ms == original.first_sent_at_ms));
+    let repeated = GovState::stage_foreign_correction_verdict(
+        &staged[1],
+        &RecoveryResolution {
+            expected_revision: staged[1].revision,
+            actor: "another adopter".into(),
+            ..adoption
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        repeated[0].payload, staged[1].payload,
+        "handover does not replace the original verdict's audit provenance"
+    );
+    assert_eq!(
+        journal.selected.lock().unwrap().len(),
+        count,
+        "foreign staging performs no Store I/O"
+    );
+    assert_eq!(input(&store.get_usage(&key.id, 0).unwrap()), 0);
+    drop(first);
+    journal
+        .fail_after_write
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    store
+        .add_usage(
+            &key.id,
+            0,
+            &UsageDelta {
+                requests: 1,
+                billable_requests: 1,
+                models: vec![busbar_contract::records::ModelTokensDelta {
+                    model: MODEL.into(),
+                    usage_units: BTreeMap::from([(
+                        busbar_contract::records::UNIT_INPUT.into(),
+                        FOREIGN_INPUT as i64,
+                    )]),
+                }],
+            },
+        )
+        .unwrap();
+    let gov = GovState::new(store.clone(), None).unwrap();
+    gov.attach_recovery_sink(journal.clone()).unwrap();
+    gov.hydrate_budgets(&cm, now).unwrap();
+    assert_eq!(
+        gov.usage_for(&cm, &key.id, now).unwrap().unwrap().tokens,
+        FOREIGN_INPUT,
+        "fresh Store counts remain authoritative while old branches are quarantined separately"
+    );
+    gov.flush_budgets();
+    assert_eq!(
+        gov.recovery_event(original.operation_id).unwrap().state,
+        RecoveryState::LandedUnknown
+    );
+    gov.record_usage(&cm, &key, "", MODEL, &toks(CONCURRENT_INPUT, 0), now);
+    gov.refund_charge(&refund);
+    gov.flush_budgets();
+    let fresh = store.get_usage(&key.id, 0).unwrap();
+    assert_eq!(
+        (input(&fresh), fresh.billable_requests),
+        (FOREIGN_INPUT + CONCURRENT_INPUT, 1),
+        "fresh positives post and the refund waits for the old positive's verdict"
+    );
+    let selected = gov.recovery_event(original.operation_id).unwrap();
+    let resolution = RecoveryResolution {
+        operation_id: selected.operation_id,
+        body_fingerprint: selected.body_fingerprint,
+        expected_revision: selected.revision,
+        verdict: RecoveryVerdict::NotLanded,
+        sender_quiesced: false,
+        backend_quiesced: true,
+        actor: "operator".into(),
+        reason: "all senders retired; backend confirms no original write".into(),
+    };
+    let count = journal.selected.lock().unwrap().len();
+    assert!(gov.recovery().resolve(&cm, resolution.clone()).is_err());
+    assert_eq!(
+        journal.selected.lock().unwrap().len(),
+        count,
+        "missing attestation causes no persisted verdict or effect"
+    );
+    let resolution = RecoveryResolution {
+        sender_quiesced: true,
+        ..resolution
+    };
+    gov.recovery().resolve(&cm, resolution.clone()).unwrap();
+    let after = store.get_usage(&key.id, 0).unwrap();
+    assert_eq!(
+        (input(&after), after.requests, after.billable_requests),
+        (CORRECTED_INPUT + FOREIGN_INPUT + CONCURRENT_INPUT, 2, 1)
+    );
+    assert_eq!(
+        gov.usage_for(&cm, &key.id, now).unwrap().unwrap().tokens,
+        CORRECTED_INPUT + FOREIGN_INPUT + CONCURRENT_INPUT
+    );
+    let events = journal.selected.lock().unwrap().clone();
+    assert!(events
+        .iter()
+        .filter(|event| event.operation_id == original.operation_id)
+        .all(|event| event.body_fingerprint == original.body_fingerprint));
+    let successor = events
+        .iter()
+        .find(|event| {
+            event.kind == RecoveryKind::Correction
+                && event.operation_id != original.operation_id
+                && event.revision == 0
+        })
+        .unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&successor.payload).unwrap();
+    let request = busbar_contract::records::correction::Request::decode(
+        &serde_json::to_vec(&payload["request"]).unwrap(),
+    )
+    .unwrap();
+    let row = request
+        .usage
+        .iter()
+        .find(|row| row.address.bucket_id == key.id)
+        .unwrap();
+    assert_eq!(
+        (input(&row.expected), input(&row.replacement)),
+        (
+            INITIAL_INPUT + FOREIGN_INPUT + CONCURRENT_INPUT,
+            CORRECTED_INPUT + FOREIGN_INPUT + CONCURRENT_INPUT
+        ),
+        "fresh conditional basis preserves other writers instead of replaying the old replacement"
+    );
+    assert_ne!(request.op_id.0, original.operation_id);
+    let count = events.len();
+    gov.recovery().resolve(&cm, resolution).unwrap();
+    assert_eq!(store.get_usage(&key.id, 0).unwrap(), after);
+    assert_eq!(
+        journal.selected.lock().unwrap().len(),
+        count,
+        "repeating the audited verdict does not re-post it"
+    );
+}
+
+#[test]
+fn restarted_landed_correction_keeps_foreign_basis_and_does_not_reapply_the_old_request() {
+    let store = Arc::new(FlakyStore::new());
+    let journal = Arc::new(Journal::default());
+    let first = GovState::new(store.clone(), None).unwrap();
+    first.attach_recovery_sink(journal.clone()).unwrap();
+    let key = key("vk_correction_quarantined_landed", None);
+    store.put_key(&key).unwrap();
+    let cm = model(&[]);
+    let now = crate::store::now();
+    first.record_usage(&cm, &key, "", MODEL, &toks(INITIAL_INPUT, 0), now);
+    metered(&first, &key.id, MODEL, INITIAL_INPUT, now);
+    store
+        .lose_correction_reply
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(first
+        .adjust_usage(&cm, &correction(&key, &delta(), now))
+        .is_err());
+    let original = journal
+        .selected
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|event| event.kind == RecoveryKind::Correction)
+        .unwrap()
+        .clone();
+    drop(first);
+    store
+        .inner
+        .add_usage(
+            &key.id,
+            0,
+            &UsageDelta {
+                models: vec![busbar_contract::records::ModelTokensDelta {
+                    model: MODEL.into(),
+                    usage_units: BTreeMap::from([(
+                        busbar_contract::records::UNIT_INPUT.into(),
+                        CONCURRENT_INPUT as i64,
+                    )]),
+                }],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let gov = GovState::new(store.clone(), None).unwrap();
+    gov.attach_recovery_sink(journal).unwrap();
+    gov.hydrate_budgets(&cm, now).unwrap();
+    gov.flush_budgets();
+    gov.record_usage(&cm, &key, "", MODEL, &toks(NEXT_WINDOW_INPUT, 0), now);
+    let selected = gov.recovery_event(original.operation_id).unwrap();
+    gov.recovery()
+        .resolve(
+            &cm,
+            RecoveryResolution {
+                operation_id: selected.operation_id,
+                body_fingerprint: selected.body_fingerprint,
+                expected_revision: selected.revision,
+                verdict: RecoveryVerdict::Landed,
+                sender_quiesced: true,
+                backend_quiesced: true,
+                actor: "operator".into(),
+                reason: "all senders retired; original backend receipt checked".into(),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        store.correction_calls.lock().unwrap().len(),
+        1,
+        "reboot and landed verdict never resubmit the expired/age-unknown conditional request"
+    );
+    assert_eq!(
+        input(&store.get_usage(&key.id, 0).unwrap()),
+        CORRECTED_INPUT + CONCURRENT_INPUT
+    );
+    assert_eq!(
+        gov.usage_for(&cm, &key.id, now).unwrap().unwrap().tokens,
+        CORRECTED_INPUT + CONCURRENT_INPUT + NEXT_WINDOW_INPUT
+    );
 }
