@@ -435,3 +435,37 @@ fn expired_positions_stop_before_the_provider_point_is_queried() {
     );
     assert_eq!(position_work(None, None), PositionWork::Verify);
 }
+
+#[test]
+fn overloaded_admission_stops_and_renders_the_exact_verifier_unavailable_envelope() {
+    let answer = inbound_answer(
+        Some(Fixed::Overloaded),
+        UnitRef { id: 13, mac: 17 },
+        false,
+        &[],
+    );
+    assert_eq!(answer.flow, FLOW_STOP);
+    for cause in [REFUSE_STOPPED, REFUSE_CHECK_FAILED] {
+        let actual = Refusal::of(
+            overloaded_refusal(cause, true)
+                .expect("an overloaded stopped unit has its own503 envelope"),
+        );
+        assert_eq!(actual.status, 503);
+        assert_eq!(
+            actual,
+            Refusal::of(crate::auth::verifier_unavailable_response())
+        );
+        assert!(overloaded_refusal(cause, false).is_none());
+    }
+    for cause in [
+        REFUSE_NO_ROUTE,
+        REFUSE_METHOD_MISS,
+        REFUSE_OVER_GATE,
+        u32::MAX,
+    ] {
+        assert!(
+            overloaded_refusal(cause, true).is_none(),
+            "other refusal causes retain their own priority"
+        );
+    }
+}

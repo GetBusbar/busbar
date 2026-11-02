@@ -958,6 +958,14 @@ fn position_deadline_expired(deadline: Option<std::time::Instant>) -> bool {
     deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline)
 }
 
+fn overloaded_refusal(cause: u32, overloaded: bool) -> Option<axum::response::Response> {
+    if matches!(cause, REFUSE_STOPPED | REFUSE_CHECK_FAILED) && overloaded {
+        Some(crate::auth::verifier_unavailable_response())
+    } else {
+        None
+    }
+}
+
 struct Table {
     listener: Listener,
     doors: crate::core_routes::CoreRouteTable,
@@ -2675,6 +2683,9 @@ impl Inbound {
         );
         let app = &table.listener.app;
         let respond = || {
+            if let Some(response) = overloaded_refusal(r.cause, overloaded) {
+                return Ok(response);
+            }
             Ok(match r.cause {
                 REFUSE_NO_ROUTE => crate::router::fallback_error_response(
                     &app.planes,
@@ -2697,9 +2708,6 @@ impl Inbound {
                     busbar_contract::protocol::KIND_REQUEST_TOO_LARGE,
                     "request body exceeds the maximum allowed size",
                 ),
-                REFUSE_STOPPED | REFUSE_CHECK_FAILED if overloaded => {
-                    crate::auth::verifier_unavailable_response()
-                }
                 REFUSE_STOPPED | REFUSE_CHECK_FAILED => {
                     let method = head
                         .as_ref()
