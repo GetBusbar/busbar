@@ -1026,32 +1026,28 @@ impl AdminService {
         let Some(gov) = self.app.governance.clone() else {
             return Ok(empty());
         };
-        type Fetched = (
-            Vec<busbar_kernel::governance::MeteringRow>,
-            std::collections::HashMap<String, String>,
-            Vec<busbar_kernel::governance::UsageAdjustment>,
-        );
         type UsageFetchError = (&'static str, busbar_kernel::governance::RecordStoreError);
-        let joined = tokio::task::spawn_blocking(move || -> Result<Fetched, UsageFetchError> {
-            let rows = gov
-                .metering_for(bucket)
-                .map_err(|e| ("usage.metering", e))?;
+        let joined =
+            tokio::task::spawn_blocking(move || -> Result<FetchedUsage, UsageFetchError> {
+                let rows = gov
+                    .metering_for(bucket)
+                    .map_err(|e| ("usage.metering", e))?;
 
-            let names = gov
-                .all_keys()
-                .map_err(|e| ("usage.keys", e))?
-                .into_iter()
-                .map(|k| (k.id, k.name))
-                .collect();
+                let names = gov
+                    .all_keys()
+                    .map_err(|e| ("usage.keys", e))?
+                    .into_iter()
+                    .map(|k| (k.id, k.name))
+                    .collect();
 
-            let adjustments = gov
-                .usage_adjustments(bucket)
-                .map_err(|e| ("usage.adjustments", e))?;
-            Ok((rows, names, adjustments))
-        })
-        .await;
+                let adjustments = gov
+                    .usage_adjustments(bucket)
+                    .map_err(|e| ("usage.adjustments", e))?;
+                Ok((rows, names, adjustments))
+            })
+            .await;
         let cost = self.app.cost.clone();
-        let (mut rows, names, adjustments) = match joined {
+        let (rows, names, adjustments) = match joined {
             Ok(Ok(f)) => f,
 
             Ok(Err((operation, e))) => {
@@ -1069,194 +1065,14 @@ impl AdminService {
             }
         };
 
-        let view = history.as_deref().map(|h| match snapshot {
-            Some(at) => h.snapshot(at),
-            None => h.current(),
-        });
-
-        let mut priced_by: Option<busbar_kernel::cost::EntryKey> = None;
-
-        if let Err(why) = fold_adjustments(&mut rows, &adjustments) {
-            diag_error!(
-                ADMIN_STORE_OPERATION_FAILED,
-                operation = "usage.adjustments",
-                error = %why,
-                "admin store operation failed"
-            );
-            return Err(AdminError::Internal);
-        }
-
-        let mut total = UsageBreakdown::default();
-        let mut by_model: std::collections::BTreeMap<(String, String), UsageBreakdown> =
-            std::collections::BTreeMap::new();
-        let mut by_key: std::collections::BTreeMap<String, UsageBreakdown> =
-            std::collections::BTreeMap::new();
-        for r in &rows {
-            let lane = row_lane(&r.model, &r.provider);
-
-            let mut row_view = UsageBreakdown {
-                tokens_input: r.tokens_input,
-                tokens_output: r.tokens_output,
-                tokens_cache_read: r.tokens_cache_read,
-
-                tokens_cache_creation: r.tokens_cache_write,
-                requests: r.requests,
-                spend_micros: 0,
-                classes: std::collections::BTreeMap::new(),
-            };
-
-            let at = row_priced_at_ms(window.start, r.priced_from_ms);
-            let resolved = view
-                .as_ref()
-                .map(|v| row_card(v, r, at))
-                .transpose()
-                .map_err(|e| usage_refusal("usage.price", &e))?;
-
-            let classes: &std::collections::BTreeMap<String, u64> = &r.usage_units;
-            let row_spend = match resolved {
-                Some((card_seq, card)) => {
-                    priced_by = priced_by.max(Some(card_seq));
-                    derive_spend_micros_row_classes_at_entry(
-                        card_seq, card, &cost, &lane, &row_view, classes,
-                    )
-                }
-                None => derive_spend_micros_row_classes(&cost, &lane, &row_view, classes),
-            };
-
-            let row_spend = match row_spend {
-                Ok(spend) => spend,
-                Err(e) => return Err(usage_refusal("usage.price", &e)),
-            };
-
-            let none = UsageBreakdown::default();
-            let unitemized = std::collections::BTreeMap::new();
-            let itemized = if row_carries_classes(&r.provider) {
-                classes
-            } else {
-                &unitemized
-            };
-            for (class, count) in itemized {
-                let one = std::collections::BTreeMap::from([(class.clone(), *count)]);
-                let class_cost = match resolved {
-                    Some((card_seq, card)) => derive_spend_micros_row_classes_at_entry(
-                        card_seq, card, &cost, &lane, &none, &one,
-                    ),
-                    None => derive_spend_micros_row_classes(&cost, &lane, &none, &one),
-                }
-                .map_err(|e| usage_refusal("usage.price", &e))?;
-                row_view.classes.insert(
-                    class.clone(),
-                    ClassUsage {
-                        count: *count,
-                        cost: class_cost,
-                    },
-                );
-            }
-            for b in [
-                &mut total,
-                by_model
-                    .entry((r.model.clone(), r.provider.clone()))
-                    .or_default(),
-                by_key.entry(r.key_id.clone()).or_default(),
-            ] {
-                b.tokens_input = b.tokens_input.saturating_add(row_view.tokens_input);
-                b.tokens_output = b.tokens_output.saturating_add(row_view.tokens_output);
-                b.tokens_cache_read = b
-                    .tokens_cache_read
-                    .saturating_add(row_view.tokens_cache_read);
-                b.tokens_cache_creation = b
-                    .tokens_cache_creation
-                    .saturating_add(row_view.tokens_cache_creation);
-                b.requests = b.requests.saturating_add(r.requests);
-                if add_classes(&mut b.classes, &row_view.classes).is_none() {
-                    diag_error!(
-                        ADMIN_STORE_OPERATION_FAILED,
-                        operation = "usage.price",
-                        error = "a class cost rollup left the representable range",
-                        "admin store operation failed"
-                    );
-                    return Err(AdminError::Internal);
-                }
-
-                b.spend_micros = match busbar_kernel::cost::sum_spend(b.spend_micros, row_spend) {
-                    Ok(sum) => sum,
-                    Err(_) => {
-                        diag_error!(
-                            ADMIN_STORE_OPERATION_FAILED,
-                            operation = "usage.price",
-                            error = "the spend rollup left the representable range",
-                            "admin store operation failed"
-                        );
-                        return Err(AdminError::Internal);
-                    }
-                };
-            }
-        }
-        let by_model = by_model
-            .into_iter()
-            .map(|((model, provider), usage)| ModelUsageView {
-                model,
-                upstream: provider,
-                usage,
-            })
-            .collect();
-        let mut by_key: Vec<KeyUsageView> = by_key
-            .into_iter()
-            .map(|(id, usage)| KeyUsageView {
-                name: names.get(&id).cloned(),
-                id,
-                usage,
-            })
-            .collect();
-
-        const BY_KEY_CAP: usize = 1000;
-        by_key.sort_by(|a, b| {
-            b.usage
-                .spend_micros
-                .cmp(&a.usage.spend_micros)
-                .then_with(|| a.id.cmp(&b.id))
-        });
-        let by_key_truncated = by_key.len() > BY_KEY_CAP;
-
-        let others = if by_key_truncated {
-            let mut o = UsageBreakdown::default();
-            for row in &by_key[BY_KEY_CAP..] {
-                o.tokens_input = o.tokens_input.saturating_add(row.usage.tokens_input);
-                o.tokens_output = o.tokens_output.saturating_add(row.usage.tokens_output);
-                o.tokens_cache_read = o
-                    .tokens_cache_read
-                    .saturating_add(row.usage.tokens_cache_read);
-                o.tokens_cache_creation = o
-                    .tokens_cache_creation
-                    .saturating_add(row.usage.tokens_cache_creation);
-                o.requests = o.requests.saturating_add(row.usage.requests);
-
-                o.spend_micros =
-                    busbar_kernel::cost::sum_spend(o.spend_micros, row.usage.spend_micros)
-                        .map_err(|_| rollup_refused("the others spend rollup left the range"))?;
-                for (class, u) in &row.usage.classes {
-                    let e = o.classes.entry(class.clone()).or_default();
-                    e.count = e.count.saturating_add(u.count);
-                    e.cost = busbar_kernel::cost::sum_spend(e.cost, u.cost)
-                        .map_err(|_| rollup_refused("the others class cost left the range"))?;
-                }
-            }
-            Some(o)
-        } else {
-            None
-        };
-        by_key.truncate(BY_KEY_CAP);
-        Ok(UsageView {
+        project_usage_rows(
+            cost,
+            history,
+            snapshot,
             window,
-            as_of: now,
-            currency: (),
-            rate_card_version: priced_by.map(|key| key.hex()),
-            total,
-            by_model,
-            by_key,
-            by_key_truncated,
-            others,
-        })
+            now,
+            (rows, names, adjustments),
+        )
     }
 
     pub(crate) async fn get_auth(&self) -> Result<AuthView, AdminError> {
@@ -1290,6 +1106,210 @@ impl AdminService {
     fn hook_view(&self, name: &str, cfg: &HookCfg) -> HookView {
         project_hook_view(name, cfg, &self.app.global_hooks)
     }
+}
+
+type FetchedUsage = (
+    Vec<busbar_kernel::governance::MeteringRow>,
+    std::collections::HashMap<String, String>,
+    Vec<busbar_kernel::governance::UsageAdjustment>,
+);
+
+pub(super) fn project_usage_rows(
+    cost: Arc<busbar_kernel::cost::CostModel>,
+    history: Option<Arc<busbar_kernel::cost::History>>,
+    snapshot: Option<busbar_kernel::cost::EntryKey>,
+    window: UsageWindow,
+    now: u64,
+    data: FetchedUsage,
+) -> Result<UsageView, AdminError> {
+    let (mut rows, names, adjustments) = data;
+    let view = history.as_deref().map(|h| match snapshot {
+        Some(at) => h.snapshot(at),
+        None => h.current(),
+    });
+
+    let mut priced_by: Option<busbar_kernel::cost::EntryKey> = None;
+
+    if let Err(why) = fold_adjustments(&mut rows, &adjustments) {
+        diag_error!(
+            ADMIN_STORE_OPERATION_FAILED,
+            operation = "usage.adjustments",
+            error = %why,
+            "admin store operation failed"
+        );
+        return Err(AdminError::Internal);
+    }
+
+    let mut total = UsageBreakdown::default();
+    let mut by_model: std::collections::BTreeMap<(String, String), UsageBreakdown> =
+        std::collections::BTreeMap::new();
+    let mut by_key: std::collections::BTreeMap<String, UsageBreakdown> =
+        std::collections::BTreeMap::new();
+    for r in &rows {
+        let lane = row_lane(&r.model, &r.provider);
+
+        let mut row_view = UsageBreakdown {
+            tokens_input: r.tokens_input,
+            tokens_output: r.tokens_output,
+            tokens_cache_read: r.tokens_cache_read,
+
+            tokens_cache_creation: r.tokens_cache_write,
+            requests: r.requests,
+            spend_micros: 0,
+            classes: std::collections::BTreeMap::new(),
+        };
+
+        let at = row_priced_at_ms(window.start, r.priced_from_ms);
+        let resolved = view
+            .as_ref()
+            .map(|v| row_card(v, r, at))
+            .transpose()
+            .map_err(|e| usage_refusal("usage.price", &e))?;
+
+        let classes: &std::collections::BTreeMap<String, u64> = &r.usage_units;
+        let row_spend = match resolved {
+            Some((card_seq, card)) => {
+                priced_by = priced_by.max(Some(card_seq));
+                derive_spend_micros_row_classes_at_entry(
+                    card_seq, card, &cost, &lane, &row_view, classes,
+                )
+            }
+            None => derive_spend_micros_row_classes(&cost, &lane, &row_view, classes),
+        };
+
+        let row_spend = match row_spend {
+            Ok(spend) => spend,
+            Err(e) => return Err(usage_refusal("usage.price", &e)),
+        };
+
+        let none = UsageBreakdown::default();
+        let unitemized = std::collections::BTreeMap::new();
+        let itemized = if row_carries_classes(&r.provider) {
+            classes
+        } else {
+            &unitemized
+        };
+        for (class, count) in itemized {
+            let one = std::collections::BTreeMap::from([(class.clone(), *count)]);
+            let class_cost = match resolved {
+                Some((card_seq, card)) => derive_spend_micros_row_classes_at_entry(
+                    card_seq, card, &cost, &lane, &none, &one,
+                ),
+                None => derive_spend_micros_row_classes(&cost, &lane, &none, &one),
+            }
+            .map_err(|e| usage_refusal("usage.price", &e))?;
+            row_view.classes.insert(
+                class.clone(),
+                ClassUsage {
+                    count: *count,
+                    cost: class_cost,
+                },
+            );
+        }
+        for b in [
+            &mut total,
+            by_model
+                .entry((r.model.clone(), r.provider.clone()))
+                .or_default(),
+            by_key.entry(r.key_id.clone()).or_default(),
+        ] {
+            b.tokens_input = b.tokens_input.saturating_add(row_view.tokens_input);
+            b.tokens_output = b.tokens_output.saturating_add(row_view.tokens_output);
+            b.tokens_cache_read = b
+                .tokens_cache_read
+                .saturating_add(row_view.tokens_cache_read);
+            b.tokens_cache_creation = b
+                .tokens_cache_creation
+                .saturating_add(row_view.tokens_cache_creation);
+            b.requests = b.requests.saturating_add(r.requests);
+            if add_classes(&mut b.classes, &row_view.classes).is_none() {
+                diag_error!(
+                    ADMIN_STORE_OPERATION_FAILED,
+                    operation = "usage.price",
+                    error = "a class cost rollup left the representable range",
+                    "admin store operation failed"
+                );
+                return Err(AdminError::Internal);
+            }
+
+            b.spend_micros = match busbar_kernel::cost::sum_spend(b.spend_micros, row_spend) {
+                Ok(sum) => sum,
+                Err(_) => {
+                    diag_error!(
+                        ADMIN_STORE_OPERATION_FAILED,
+                        operation = "usage.price",
+                        error = "the spend rollup left the representable range",
+                        "admin store operation failed"
+                    );
+                    return Err(AdminError::Internal);
+                }
+            };
+        }
+    }
+    let by_model = by_model
+        .into_iter()
+        .map(|((model, provider), usage)| ModelUsageView {
+            model,
+            upstream: provider,
+            usage,
+        })
+        .collect();
+    let mut by_key: Vec<KeyUsageView> = by_key
+        .into_iter()
+        .map(|(id, usage)| KeyUsageView {
+            name: names.get(&id).cloned(),
+            id,
+            usage,
+        })
+        .collect();
+
+    const BY_KEY_CAP: usize = 1000;
+    by_key.sort_by(|a, b| {
+        b.usage
+            .spend_micros
+            .cmp(&a.usage.spend_micros)
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    let by_key_truncated = by_key.len() > BY_KEY_CAP;
+
+    let others = if by_key_truncated {
+        let mut o = UsageBreakdown::default();
+        for row in &by_key[BY_KEY_CAP..] {
+            o.tokens_input = o.tokens_input.saturating_add(row.usage.tokens_input);
+            o.tokens_output = o.tokens_output.saturating_add(row.usage.tokens_output);
+            o.tokens_cache_read = o
+                .tokens_cache_read
+                .saturating_add(row.usage.tokens_cache_read);
+            o.tokens_cache_creation = o
+                .tokens_cache_creation
+                .saturating_add(row.usage.tokens_cache_creation);
+            o.requests = o.requests.saturating_add(row.usage.requests);
+
+            o.spend_micros = busbar_kernel::cost::sum_spend(o.spend_micros, row.usage.spend_micros)
+                .map_err(|_| rollup_refused("the others spend rollup left the range"))?;
+            for (class, u) in &row.usage.classes {
+                let e = o.classes.entry(class.clone()).or_default();
+                e.count = e.count.saturating_add(u.count);
+                e.cost = busbar_kernel::cost::sum_spend(e.cost, u.cost)
+                    .map_err(|_| rollup_refused("the others class cost left the range"))?;
+            }
+        }
+        Some(o)
+    } else {
+        None
+    };
+    by_key.truncate(BY_KEY_CAP);
+    Ok(UsageView {
+        window,
+        as_of: now,
+        currency: (),
+        rate_card_version: priced_by.map(|key| key.hex()),
+        total,
+        by_model,
+        by_key,
+        by_key_truncated,
+        others,
+    })
 }
 
 fn linked_store_rows() -> Vec<PluginView> {
