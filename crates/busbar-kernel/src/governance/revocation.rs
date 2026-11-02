@@ -33,10 +33,12 @@
 //! 3. **Attempt-stamped separately from success.** The previous implementation advanced the single
 //!    staleness stamp to `now` BEFORE the read, so a read that failed — or never returned — still
 //!    "closed" the window: every subsequent window looked fresh and the denylist could stay stale
-//!    indefinitely while nothing ever reported a problem. Here `attempted_at` (the rate-limit
-//!    anchor, advanced before the read) and `synced_at` (advanced ONLY on a successful read) are
+//!    indefinitely while nothing ever reported a problem. Here the attempt anchor (advanced
+//!    before the read) and `synced_at` (advanced ONLY on a successful read) are
 //!    distinct, so staleness is measured against reality and a persistently failing store is
 //!    visible in `synced_age_secs` on the warning it emits once per window.
+//!    Monotonic elapsed time also bounds both anchors: a backwards wall clock cannot make a
+//!    healthy Store's peer revocations look fresh until that clock catches up.
 //!
 //! ## What the offload costs, honestly
 //!
@@ -52,7 +54,8 @@ use crate::diagnostics::{diag_warn, REVOCATION_RESYNC_FAILED, REVOCATION_RESYNC_
 use busbar_contract::records::RecordStore;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::Instant;
 
 use super::REVOCATION_SYNC_TTL_SECS;
 
@@ -65,10 +68,12 @@ pub(crate) struct RevocationSync {
     set: RwLock<HashSet<String>>,
     /// Unix-seconds epoch of the last SUCCESSFUL store read. Advanced only when a read returns.
     synced_at: AtomicU64,
-    /// Unix-seconds epoch of the last read ATTEMPT (advanced BEFORE the read, and also when an
-    /// attempt is declined because one is already in flight). The rate-limit anchor: it bounds
-    /// retries against a broken store to one per window regardless of request rate.
-    attempted_at: AtomicU64,
+    /// The monotonic age of this cache, in milliseconds. It never depends on node wall time.
+    clock: Instant,
+    synced_tick: AtomicU64,
+    /// The last attempt in both clocks. The mutex is used only after the fresh-cache fast path,
+    /// released before spawning work, logging or calling the Store.
+    attempted: Mutex<Attempt>,
     /// Whether a refresh is outstanding. The BOUND: at most one blocking-pool thread may ever be
     /// inside `list_denylist` for this node, so a store that never returns costs one thread rather
     /// than one per window until the pool is gone.
@@ -77,6 +82,26 @@ pub(crate) struct RevocationSync {
     /// of the fleet minted, rotated, disabled or deleted is seen within the same window. `None` for
     /// a denylist kept on its own.
     reload_keys: Option<KeyReload>,
+}
+
+struct Attempt {
+    wall: u64,
+    tick: u64,
+}
+
+/// Keep the single-flight bound through result application, unwinding and a queued job's drop.
+struct RefreshFlight(Arc<RevocationSync>);
+
+impl RefreshFlight {
+    fn run(self, now: u64, tick: u64) {
+        self.0.refresh_blocking(now, tick);
+    }
+}
+
+impl Drop for RefreshFlight {
+    fn drop(&mut self) {
+        self.0.inflight.store(false, Ordering::Release);
+    }
 }
 
 /// What a re-sync calls to reload the node's key caches from the store.
@@ -114,7 +139,9 @@ impl RevocationSync {
             store,
             set: RwLock::new(initial),
             synced_at: AtomicU64::new(now),
-            attempted_at: AtomicU64::new(now),
+            clock: Instant::now(),
+            synced_tick: AtomicU64::new(0),
+            attempted: Mutex::new(Attempt { wall: now, tick: 0 }),
             inflight: AtomicBool::new(false),
             reload_keys,
         })
@@ -147,32 +174,42 @@ impl RevocationSync {
     /// [`REVOCATION_SYNC_TTL_SECS`] it SCHEDULES a refresh (see the module docs for why it is
     /// scheduled and not performed); the caller then reads the current set.
     ///
-    /// Every gate here is a bound: the staleness check bounds refreshes to one per window, the
-    /// `attempted_at` CAS single-flights the window across concurrent callers, and `inflight`
-    /// bounds outstanding blocking work to one thread whatever the store does.
+    /// The fresh-cache path takes no mutex. Attempts are arbitrated under one short hold, and
+    /// `inflight` bounds outstanding blocking work to one thread whatever the Store does.
     pub(crate) fn refresh_if_stale(self: &Arc<Self>, now: u64) {
-        // Fresh enough — the overwhelmingly common path, two relaxed atomic loads.
-        if now.saturating_sub(self.synced_at.load(Ordering::Relaxed)) < REVOCATION_SYNC_TTL_SECS {
-            return;
-        }
-        // Rate limit, applied to ATTEMPTS (so a failing or hung store is retried once per window
-        // rather than on every request) and single-flighted by the CAS: exactly one caller per
-        // window proceeds, everyone else returns and reads the set they already have.
-        let attempted = self.attempted_at.load(Ordering::Relaxed);
-        if now.saturating_sub(attempted) < REVOCATION_SYNC_TTL_SECS {
-            return;
-        }
-        if self
-            .attempted_at
-            .compare_exchange(attempted, now, Ordering::Relaxed, Ordering::Relaxed)
-            .is_err()
+        let tick = u64::try_from(self.clock.elapsed().as_millis()).unwrap_or(u64::MAX);
+        self.refresh_if_stale_at(now, tick);
+    }
+
+    /// Both clocks explicit so tests can advance the real scheduler without sleeping or changing
+    /// process wall time. `tick` is milliseconds since this cache was constructed.
+    fn refresh_if_stale_at(self: &Arc<Self>, now: u64, tick: u64) {
+        let ttl_ms = REVOCATION_SYNC_TTL_SECS * 1_000;
+        let synced = self.synced_at.load(Ordering::Relaxed);
+        let synced_tick = self.synced_tick.load(Ordering::Relaxed);
+        if now
+            .checked_sub(synced)
+            .is_some_and(|age| age < REVOCATION_SYNC_TTL_SECS)
+            && tick.saturating_sub(synced_tick) < ttl_ms
         {
-            return; // another caller owns this window
+            return;
+        }
+        {
+            let mut attempted = self.attempted.lock().unwrap_or_else(|p| p.into_inner());
+            let wall_due = now
+                .checked_sub(attempted.wall)
+                .is_some_and(|age| age >= REVOCATION_SYNC_TTL_SECS);
+            if !wall_due && tick.saturating_sub(attempted.tick) < ttl_ms {
+                return;
+            }
+            // A backwards clock never extends this wait beyond one monotonic window. Stamp
+            // attempts separately, including while another read is still outstanding.
+            *attempted = Attempt { wall: now, tick };
         }
         // THE BOUND. If a previous refresh has not returned, do not start another — that is the
         // difference between a hung store costing one blocking-pool thread and it draining the
         // whole pool. Report it: reaching this branch means the store has not answered for at
-        // least a full window, and the CAS above rate-limits the warning to once per window.
+        // least a full window, and the attempt stamp rate-limits the warning to once per window.
         if self
             .inflight
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -188,16 +225,16 @@ impl RevocationSync {
             return;
         }
 
-        let this = self.clone();
+        let flight = RefreshFlight(self.clone());
         match tokio::runtime::Handle::try_current() {
             // On a Tokio runtime: the read is blocking I/O, so it goes to the blocking pool. The
             // join handle is dropped deliberately — this is a cache refresh, nothing awaits it.
             Ok(handle) => {
-                handle.spawn_blocking(move || this.refresh_blocking(now));
+                handle.spawn_blocking(move || flight.run(now, tick));
             }
             // No runtime ⇒ no reactor to protect (unit tests, `--validate`, boot-time paths). Run
             // it inline so those callers keep the synchronous semantics they were written against.
-            Err(_) => this.refresh_blocking(now),
+            Err(_) => flight.run(now, tick),
         }
     }
 
@@ -212,7 +249,7 @@ impl RevocationSync {
     /// A store error leaves the previous set in place (fail-closed: a store blip never widens
     /// access) and, crucially, leaves `synced_at` UNADVANCED, so the set is still correctly reported
     /// as stale and the next window retries.
-    pub(crate) fn refresh_blocking(&self, now: u64) {
+    fn refresh_blocking(&self, now: u64, tick: u64) {
         let denied = self.store.list_denylist();
         // The key caches reload after a denylist read that answered; a revoke seen is merged even
         // when the key reload fails, and only both together close the window.
@@ -220,9 +257,6 @@ impl RevocationSync {
             (Ok(_), Some(reload)) => reload(),
             _ => Ok(()),
         };
-        // Release the bound BEFORE handling the result: every exit from here must clear it, or one
-        // failed refresh would wedge re-syncing for the life of the process.
-        self.inflight.store(false, Ordering::Release);
         let result = denied.map(|subs| {
             if !subs.is_empty() {
                 let mut set = self.set.write().unwrap_or_else(|e| e.into_inner());
@@ -232,7 +266,10 @@ impl RevocationSync {
         match result.and(keys) {
             // Success — and ONLY success — closes the staleness window.
             Ok(()) => {
-                self.synced_at.fetch_max(now, Ordering::Relaxed);
+                // One flight owns both the read and this application. Reset a regressed wall
+                // stamp to the actual successful read; never pin a future timestamp with max.
+                self.synced_at.store(now, Ordering::Relaxed);
+                self.synced_tick.store(tick, Ordering::Relaxed);
             }
             Err(e) => {
                 diag_warn!(

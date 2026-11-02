@@ -330,3 +330,51 @@ fn repeated_unknowns_retain_one_snapshot_and_coalesce_fresh_pending_separately()
     assert_eq!(gov.flush_metering(), 1);
     assert_eq!(requests(&gov), 9);
 }
+
+#[test]
+fn expired_unknown_metering_is_not_replayed_by_periodic_or_final_flush() {
+    let store = Arc::new(UncertainStore::new([Reply::Lost, Reply::Unknown]));
+    let gov = GovState::new(store.clone(), None).unwrap();
+    let era = RawRateEra::entry(0, EntryId::parse_hex("050505050505050505050505").unwrap());
+    accrue_raw(&gov, 3, era);
+    assert_eq!(gov.flush_metering(), 0); // Applied, but the acknowledgement was lost.
+    assert_eq!(gov.flush_metering(), 0); // Still unknown; retains the first operation.
+    let first = store.calls.lock().unwrap()[0].clone();
+    assert_eq!(store.calls.lock().unwrap()[1], first);
+    gov.pending_metering
+        .flight
+        .lock()
+        .unwrap()
+        .front_mut()
+        .unwrap()
+        .expire_attempt();
+    accrue_raw(&gov, 5, era); // Fresh arrivals remain separate from the uncertain body.
+
+    for final_flush in [false, true, false] {
+        assert_eq!(
+            if final_flush {
+                gov.flush_metering_final()
+            } else {
+                gov.flush_metering()
+            },
+            0
+        );
+        assert_eq!(
+            store.calls.lock().unwrap().len(),
+            2,
+            "expired ids never cross the Store"
+        );
+        assert_eq!(
+            requests(&gov),
+            1,
+            "the possibly committed body is never applied twice"
+        );
+        let (cells, counts) = gov.pending_metering_totals();
+        assert_eq!((cells, counts.requests, counts.tokens_input), (2, 2, 8));
+    }
+    assert_eq!(
+        first.1[0].pricing_version,
+        era.entry_id.unwrap().metering_version()
+    );
+    assert_eq!(store.legacy_calls.load(Ordering::SeqCst), 0);
+}
