@@ -502,7 +502,7 @@ pub(crate) fn validate_browser_login_secret(
 pub mod seam {
     use std::future::Future;
     use std::pin::Pin;
-    use std::sync::{Arc, OnceLock};
+    use std::sync::Arc;
 
     use axum::body::Body;
     use axum::extract::State;
@@ -528,24 +528,23 @@ pub mod seam {
         pub credential_form: CredentialFormFn,
     }
 
-    static SEAM: OnceLock<LoginSeam> = OnceLock::new();
-
+    /// Register the flow's handlers (the first registration stands).
     pub fn install(seam: LoginSeam) {
-        let _ = SEAM.set(seam);
+        crate::oauth_as::seam::install_hosted_login(seam);
     }
 
     pub(crate) async fn browser(
         State(handle): State<Arc<AppHandle>>,
         req: Request<Body>,
     ) -> Response {
-        match SEAM.get() {
+        match crate::oauth_as::seam::hosted_login() {
             Some(seam) => (seam.browser)(handle, req).await,
             None => StatusCode::NOT_FOUND.into_response(),
         }
     }
 
     pub(crate) async fn credential_form(handle: Arc<AppHandle>, req: Request<Body>) -> FormAnswer {
-        match SEAM.get() {
+        match crate::oauth_as::seam::hosted_login() {
             Some(seam) => (seam.credential_form)(handle, req).await,
             None => Err(Box::new(req)),
         }

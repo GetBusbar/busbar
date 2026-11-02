@@ -51,6 +51,19 @@ pub struct AsPlaneSeam {
 
 static SEAM: OnceLock<AsPlaneSeam> = OnceLock::new();
 
+/// The existing hosted-login registration shares the authorization-server core boundary.
+static HOSTED_LOGIN: OnceLock<crate::auth::login::seam::LoginSeam> = OnceLock::new();
+
+/// Register the hosted handlers; preserve the login API's first-registration-wins behavior.
+pub(crate) fn install_hosted_login(seam: crate::auth::login::seam::LoginSeam) {
+    let _ = HOSTED_LOGIN.set(seam);
+}
+
+/// Read the hosted handlers, or none when the build registered no hosted flow.
+pub(crate) fn hosted_login() -> Option<&'static crate::auth::login::seam::LoginSeam> {
+    HOSTED_LOGIN.get()
+}
+
 pub fn install_as_plane_seam(seam: AsPlaneSeam) {
     assert!(
         SEAM.set(seam).is_ok(),
