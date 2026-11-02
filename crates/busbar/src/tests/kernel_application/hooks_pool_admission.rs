@@ -13,6 +13,36 @@ mod plugins;
 #[tokio::test]
 async fn pool_rw_gate_resolves_as_rewrite_not_decision() {
     crate::dist_root_install::install();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}/hook", listener.local_addr().unwrap());
+    let received = Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));
+    let recorded = received.clone();
+    let endpoint_routes = axum::Router::new().route(
+        "/hook",
+        axum::routing::post(move |axum::Json(body): axum::Json<serde_json::Value>| {
+            let recorded = recorded.clone();
+            async move {
+                let blocked = body["prompt"].to_string().contains("BLOCKME");
+                let transform = body["op"] == "transform";
+                recorded.lock().unwrap().push(body);
+                axum::Json(if blocked {
+                    serde_json::json!({"reject": {
+                        "status": if transform { 451 } else { 403 },
+                        "message": "blocked by test gate"
+                    }})
+                } else if transform {
+                    serde_json::json!({"rewrite": {"messages": [
+                        {"role": "user", "content": "rewritten"}
+                    ]}})
+                } else {
+                    serde_json::json!({"order": [0]})
+                })
+            }
+        }),
+    );
+    let server = tokio::spawn(async move {
+        axum::serve(listener, endpoint_routes).await.unwrap();
+    });
     let directory = plugins::scratch(&format!(
         "kernel-pool-admission-{}",
         busbar_kernel::door::op_id().counter()
@@ -74,11 +104,14 @@ async fn pool_rw_gate_resolves_as_rewrite_not_decision() {
         "store": {"module": store_module.expect("the actual store was staged"), "settings": settings},
         "hooks": {
             "rw": {"module": hook_module, "kind": "gate", "prompt": "rw",
-                   "settings": {"url": "http://127.0.0.1:1/hook"}},
+                   "settings": {"url": endpoint}},
+            "read": {"module": hook_module, "kind": "gate", "prompt": "ro",
+                     "settings": {"url": endpoint}},
             "plain": {"module": hook_module, "kind": "gate", "prompt": "no",
-                      "settings": {"url": "http://127.0.0.1:1/hook"}}
+                      "settings": {"url": endpoint}}
         },
         "pools": {
+            "read": {"members": ["local-model"], "hooks": ["read"]},
             "rewrite": {"members": ["local-model"], "hooks": ["rw"]},
             "decision": {"members": ["local-model"], "hooks": ["plain"]}
         }
@@ -120,4 +153,86 @@ async fn pool_rw_gate_resolves_as_rewrite_not_decision() {
     );
     assert_eq!(app.pool_gates("decision").len(), 1);
     assert!(app.pool_rewrites("decision").is_empty());
+
+    // Original dlopen_decide_reject_from_opt_in_prompt and
+    // dlopen_transform_rewrite_and_reject oracles, now through the actual
+    // webrequest door and a real HTTP endpoint supplying only response data.
+    use busbar_contract::hooks::{
+        Candidate, PromptProjection, RoutingContext, RoutingDecision, RoutingRequest,
+        TransformOutcome,
+    };
+    let request = |text: &'static str| RoutingRequest {
+        request_id: 1,
+        pool: "read",
+        ingress_protocol: "anthropic",
+        requested_model: None,
+        message_count: 1,
+        tool_count: 0,
+        has_tools: false,
+        total_chars: text.len(),
+        system_chars: 0,
+        max_tokens: None,
+        stream: false,
+        prompt: Some(PromptProjection {
+            system: None,
+            messages: vec![("user".into(), text.into())],
+        }),
+        identity: None,
+        signals: Default::default(),
+        session: None,
+    };
+    let candidates = [Candidate {
+        idx: 0,
+        model: "local-model",
+        provider: "local",
+        weight: 1,
+        context_max: None,
+        tier: None,
+        cost_per_mtok: None,
+        tags: &[],
+        latency_ms: None,
+        available_concurrency: 1,
+        budget_remaining: None,
+        rate_headroom: None,
+        signals: Default::default(),
+    }];
+    let context = RoutingContext {
+        pool: "read",
+        budget_remaining: None,
+        budget: &[],
+    };
+    let budget = std::time::Duration::from_secs(5);
+    let busbar_kernel::hooks::ResolvedPolicy::Policy { policy, .. } = &app.pool_gates("read")[0].1;
+    assert_eq!(
+        policy
+            .decide(&request("clean prompt"), &candidates, &context, budget)
+            .await
+            .expect("decide"),
+        RoutingDecision::Prefer(vec![0])
+    );
+    assert_eq!(
+        policy
+            .decide(&request("please BLOCKME"), &candidates, &context, budget)
+            .await
+            .expect("decide"),
+        RoutingDecision::Reject {
+            status: 403,
+            message: "blocked by test gate".into()
+        }
+    );
+    let rewrite = &app.pool_rewrites("rewrite")[0].1;
+    match rewrite.transform(&request("hello"), budget).await {
+        TransformOutcome::Rewrite(rw) => assert_eq!(rw.messages.len(), 1),
+        other => panic!("expected Rewrite, got {other:?}"),
+    }
+    match rewrite.transform(&request("BLOCKME"), budget).await {
+        TransformOutcome::Reject { status, .. } => assert_eq!(status, 451),
+        other => panic!("expected Reject, got {other:?}"),
+    }
+    assert_eq!(
+        received.lock().unwrap().len(),
+        4,
+        "all four calls crossed actual HTTP"
+    );
+    server.abort();
 }
