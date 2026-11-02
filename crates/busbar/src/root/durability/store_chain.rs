@@ -212,6 +212,22 @@ fn confirm_immutable_record(
     if lease.recovery_predicates(calls, record.node)?.as_slice() != fences {
         return Err("the node fence changed before recovery readback".into());
     }
+    confirm_record_parts(calls, record, parts)?;
+    if lease.recovery_predicates(calls, record.node)?.as_slice() != fences {
+        return Err("the node fence changed during recovery readback".into());
+    }
+    Ok(())
+}
+
+pub(super) fn confirm_record_bytes(calls: &dyn StoreCalls, record: &Record) -> Result<(), String> {
+    confirm_record_parts(calls, record, &parts_of(record)?)
+}
+
+fn confirm_record_parts(
+    calls: &dyn StoreCalls,
+    record: &Record,
+    parts: &[RecordBytes],
+) -> Result<(), String> {
     let prefix = part_key(record.node, record.node_seq, 0);
     let actual = wait_for(calls.record_scan(JOURNAL_SCHEMA, &prefix[..16], SCAN_LIMIT))
         .map_err(|why| format!("recovery record readback failed: {why}"))?;
@@ -225,9 +241,6 @@ fn confirm_immutable_record(
         {
             return Err("an exact recovery record part is absent or differs".into());
         }
-    }
-    if lease.recovery_predicates(calls, record.node)?.as_slice() != fences {
-        return Err("the node fence changed during recovery readback".into());
     }
     Ok(())
 }

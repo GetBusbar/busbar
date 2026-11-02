@@ -11,7 +11,7 @@ use busbar_kernel::governance::recovery::{RecoveryError, RecoveryEvent, Recovery
 use busbar_kernel_wal::{BodyReader, BodyWriter, Entry, JournalRecord, Record, RecordClass};
 use serde::{Deserialize, Serialize};
 
-use super::store_chain::{off_runtime, read_chain, wait_for, ACK_DEADLINE};
+use super::store_chain::{confirm_record_bytes, off_runtime, read_chain, wait_for, ACK_DEADLINE};
 use super::{Durability, JournalLane};
 
 pub(crate) const HEAD_SCHEMA: &str = "busbar.usage-recovery-head.v1";
@@ -122,6 +122,11 @@ fn selected(
             .iter()
             .find(|record| record.node == at.node && record.node_seq == at.sequence)
             .ok_or_else(|| invalid("selected recovery journal record is missing"))?;
+        confirm_record_bytes(
+            calls,
+            &Record::new(record.node, record.node_seq, record.encode()),
+        )
+        .map_err(unavailable)?;
         let candidate = candidate(record)?
             .ok_or_else(|| invalid("selected journal record is not a recovery candidate"))?;
         if &candidate.event.operation_id != operation
