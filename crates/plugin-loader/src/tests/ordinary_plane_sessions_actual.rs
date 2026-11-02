@@ -65,7 +65,11 @@ extern "C" fn piece(
         SEEN.lock()
             .unwrap()
             .push((i.head.ticket, i.head.flags, i.unit));
-        let answer = if MODE.load(SeqCst) == 0 && i.head.flags & FLAG_RESUME == 0 {
+        o.units_needed = 0;
+        let answer = if MODE.load(SeqCst) == 3 && i.units_cap == 0 {
+            o.units_needed = 1;
+            Outcome::Failed
+        } else if MODE.load(SeqCst) == 0 && i.head.flags & FLAG_RESUME == 0 {
             crate::dispatch::ticket::host_wake(i.head.host, i.head.ticket);
             Outcome::Pending
         } else {
@@ -270,5 +274,61 @@ fn open_passes_an_absent_public_url_as_none_and_a_present_url_verbatim() {
     assert_eq!(
         *OPEN_URLS.lock().unwrap(),
         vec![None, Some("https://public.example/mcp".to_string())]
+    );
+}
+
+#[test]
+fn a_short_piece_is_recalled_with_room_on_the_same_session_ticket() {
+    let _serial = SERIAL.lock().unwrap();
+    MODE.store(3, SeqCst);
+    SEEN.lock().unwrap().clear();
+    let d = Dispatcher::new(DispatchConfig::default());
+    let p = plugin(&d);
+    for unit in [73, 74] {
+        let ticket = d.mint(0).unwrap();
+        d.bind_plane_unit(&p, ticket, unit);
+        let first = d
+            .submit(
+                &p,
+                ticket,
+                slot::ON_PIECE,
+                frame(unit),
+                DeadlineClass::Stream,
+                0,
+            )
+            .wait(Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(first.outcome, Outcome::Failed);
+        assert!(first.short);
+        let mut recalled = *first.frame.unwrap();
+        assert_eq!(recalled.out.units_needed, 1);
+        // SAFETY: UnitCount consists of zero-valid scalar ABI fields; the callback writes none.
+        let mut room: [busbar_contract::abi::plane::UnitCount; 1] = unsafe { std::mem::zeroed() };
+        recalled.input.units_buf = room.as_mut_ptr();
+        recalled.input.units_cap = room.len();
+        let second = d
+            .submit(
+                &p,
+                ticket,
+                slot::ON_PIECE,
+                recalled,
+                DeadlineClass::Stream,
+                0,
+            )
+            .wait(Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(second.outcome, Outcome::Ready);
+        assert!(!second.short);
+        let seen = SEEN.lock().unwrap();
+        let last = &seen[seen.len() - 2..];
+        assert_eq!((last[0].0, last[1].0), (ticket, ticket));
+        assert_eq!((last[0].2, last[1].2), (unit, unit));
+        drop(seen);
+        d.recycle(ticket);
+    }
+    assert_eq!(
+        SEEN.lock().unwrap().len(),
+        4,
+        "two actual crossings for each SHORT and recall"
     );
 }
