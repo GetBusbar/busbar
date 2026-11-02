@@ -677,8 +677,10 @@ impl Store for MemoryStore {
     }
 
     fn upsert_plane_record(&self, record: PlaneRecordRef<'_>) -> StoreResult<()> {
-        self.plane_records()
-            .insert(Self::plane_key(record), record.to_record());
+        self.plane_records().insert(
+            (record.kind.to_string(), record.id.to_string(), 0),
+            record.to_record(),
+        );
         Ok(())
     }
 
