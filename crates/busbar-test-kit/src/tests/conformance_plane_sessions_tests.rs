@@ -22,6 +22,8 @@ use crate::dispatch::kinds::plane::Plane;
 
 const PUBLIC_URL: &str = "https://node.example/base";
 
+// The live session stays open until its CANCEL. A terminal reply closes its unit's ticket, so
+// ordinary and SHORT terminal answers run on fresh sessions instead of reusing that closed unit.
 const SESSIONS: &str = r#"[
   { "name": "live", "unit": 40, "stream": 40, "claim": 1, "ticket": true, "steps": [
     { "label": "upgrade", "arrive": { "method": "GET", "target": "/upgrade", "body": "hi" },
@@ -37,12 +39,12 @@ const SESSIONS: &str = r#"[
       "piece": { "from": "far_end", "status": 200, "fields": [["x-up", "1"]], "bytes": "abc" },
       "want": { "outcome": "Ready", "emitted": "abc", "status": 200, "done": false,
                 "fields": [["x-plane", "door"]], "units": [[0, 3]] } },
-    { "label": "answer tail", "piece": { "from": "far_end", "last": true, "bytes": "de" },
-      "want": { "outcome": "Ready", "emitted": "de", "done": true, "units": [[0, 2]] } },
+    { "label": "answer tail", "piece": { "from": "far_end", "bytes": "de" },
+      "want": { "outcome": "Ready", "emitted": "de", "done": false, "units": [[0, 2]] } },
     { "label": "answer short",
-      "piece": { "from": "far_end", "last": true,
+      "piece": { "from": "far_end",
                  "bytes": [{ "repeat": "x", "times": 3 }], "short": "units" },
-      "want": { "outcome": "Ready", "emitted": "xxx", "done": true, "units": [[0, 3]] } },
+      "want": { "outcome": "Ready", "emitted": "xxx", "done": false, "units": [[0, 3]] } },
     { "label": "project", "project": { "target": "/upgrade", "body": "hi" },
       "want": { "outcome": "Ready", "rewritten": false, "body_has": ["hi"] } },
     { "label": "tick", "tick": { "now_ns": 1000 },
@@ -57,7 +59,21 @@ const SESSIONS: &str = r#"[
                 "target": "/up", "need": 0 } },
     { "label": "answer", "piece": { "from": "far_end", "status": 200, "last": true,
                                     "bytes": "abcdef" },
-      "want": { "outcome": "Ready", "emitted": "abcd", "more": 1, "done": false } } ] }
+      "want": { "outcome": "Ready", "emitted": "abcd", "more": 1, "done": false } } ] },
+  { "name": "terminal", "unit": 42, "stream": 42, "claim": 1, "steps": [
+    { "label": "upgrade", "arrive": { "method": "GET", "target": "/upgrade", "body": "hi" },
+      "want": { "outcome": "Ready", "route_flags": ["session"] } },
+    { "label": "answer head", "piece": { "from": "far_end", "status": 200, "bytes": "abc" },
+      "want": { "outcome": "Ready", "emitted": "abc", "done": false, "units": [[0, 3]] } },
+    { "label": "answer tail", "piece": { "from": "far_end", "last": true, "bytes": "de" },
+      "want": { "outcome": "Ready", "emitted": "de", "done": true, "units": [[0, 2]] } } ] },
+  { "name": "terminal-short", "unit": 43, "stream": 43, "claim": 1, "steps": [
+    { "label": "upgrade", "arrive": { "method": "GET", "target": "/upgrade", "body": "hi" },
+      "want": { "outcome": "Ready", "route_flags": ["session"] } },
+    { "label": "answer short",
+      "piece": { "from": "far_end", "last": true,
+                 "bytes": [{ "repeat": "x", "times": 3 }], "short": "units" },
+      "want": { "outcome": "Ready", "emitted": "xxx", "done": true, "units": [[0, 3]] } } ] }
 ]"#;
 
 fn subject() -> Subject {
@@ -128,11 +144,91 @@ fn the_sessions_leg_runs_both_ways_at_its_pins_and_answers_as_wanted() {
         "{}",
         linked[0].answer
     );
-    let short = linked
-        .iter()
-        .find(|st| st.label == "live answer short")
-        .expect("the short step ran");
-    assert_eq!((short.crossed, short.pinned), (2, 2), "{}", short.answer);
+    for label in ["live answer short", "terminal-short answer short"] {
+        let short = linked
+            .iter()
+            .find(|st| st.label == label)
+            .expect("the short step ran");
+        assert_eq!((short.crossed, short.pinned), (2, 2), "{}", short.answer);
+    }
+}
+
+/// A completed unit cannot cross again; a fresh unit on the same instance still can. Both doors
+/// exercise the actual worker guard rather than changing the session script's crossing pins.
+#[test]
+fn a_terminal_session_refuses_another_piece_without_crossing_and_allows_a_fresh_unit() {
+    use super::{arrive, on_piece, Arrival, Given, Unit, CAP};
+    use crate::conformance::close;
+    use busbar_contract::abi::mechanism::call::Outcome;
+    use busbar_contract::abi::plane::{EMIT_DONE, FROM_FAR_END, PIECE_HAS_STATUS, PIECE_LAST};
+
+    dropped_built();
+    let s = subject();
+    for leg in [Leg::Linked, Leg::Dropped] {
+        let d = dispatcher();
+        let p = load::<Plane>(&s, leg, s.bind(&d, "terminal-session"))
+            .expect("the real plane fixture loads");
+        assert!(open(&p, b"{}", Some(PUBLIC_URL.as_bytes())).starts_with("Ready "));
+        let carried = Carried {
+            member: b"m1".to_vec(),
+            pool: Some(b"p1".to_vec()),
+            caller_ref: Some(b"c0ffee".to_vec()),
+            host: None,
+        };
+        let arrival = Arrival {
+            unit: 90,
+            claim: 1,
+            method: b"GET".to_vec(),
+            target: b"/upgrade".to_vec(),
+            fields: Vec::new(),
+            route: false,
+        };
+        assert!(arrive(&p, &arrival, b"hi").starts_with("Ready "));
+        let unit = Unit::mint(&d, 1024);
+        let terminal = Given {
+            unit: 90,
+            stream: 90,
+            claim: 1,
+            from: FROM_FAR_END,
+            flags: PIECE_HAS_STATUS | PIECE_LAST,
+            bytes: b"closed",
+            attempt_no: 0,
+            status: 200,
+            head: &[],
+        };
+        let first = on_piece(&p, &d, &unit, terminal, (CAP, CAP), &carried);
+        assert_eq!(first.called.outcome, Outcome::Ready);
+        assert_ne!(first.out().flags & EMIT_DONE, 0);
+        let before = crossings(&p).read();
+        let refused = on_piece(&p, &d, &unit, terminal, (CAP, CAP), &carried);
+        assert_eq!(refused.called.outcome, Outcome::Refused);
+        assert_eq!(refused.out().emitted, 0);
+        assert_eq!(crossings(&p).read(), before, "no post-DONE crossing");
+
+        assert!(arrive(&p, &arrival.for_unit(91), b"hi").starts_with("Ready "));
+        let fresh = Unit::mint(&d, 1024);
+        let before = crossings(&p).read();
+        let answered = on_piece(
+            &p,
+            &d,
+            &fresh,
+            Given {
+                unit: 91,
+                stream: 91,
+                bytes: b"fresh",
+                ..terminal
+            },
+            (CAP, CAP),
+            &carried,
+        );
+        assert_eq!(answered.called.outcome, Outcome::Ready);
+        assert_eq!(answered.out().emitted, 5);
+        assert_ne!(answered.out().flags & EMIT_DONE, 0);
+        assert_eq!(crossings(&p).read(), (before.0 + 1, before.1));
+        unit.end(&d);
+        fresh.end(&d);
+        assert_eq!(close(&p).outcome, Outcome::Ready);
+    }
 }
 
 /// With no public URL named, `open` hands none: the fixture claims no session door.
@@ -369,6 +465,9 @@ mod pieces_on_tickets {
             "live answer head",
             "live answer tail",
             "live answer short",
+            "terminal answer head",
+            "terminal answer tail",
+            "terminal-short answer short",
             "request attempt",
             "request answer",
         ] {
