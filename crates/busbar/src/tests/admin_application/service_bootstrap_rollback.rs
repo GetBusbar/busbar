@@ -619,9 +619,36 @@ async fn a_secret_plugin_needed_to_open_the_anchor_cannot_rely_on_its_unread_sto
         .expect("the actual secret statement reads")
         .expect("the actual secret exports its statement");
     let library = std::fs::read(secret_path).expect("the actual secret library reads");
-    let target_name = "acme-vault".to_string();
-    let target_alias = "vault-alias".to_string();
-    let base_floor = "2.0.0";
+    let secret = busbar_contract::abi::mechanism::rendering::read(&secret_statement)
+        .expect("the actual secret Statement is valid");
+    assert_eq!(
+        secret.kind,
+        busbar_contract::abi::mechanism::KindCode::Secret as u32
+    );
+    assert!(
+        busbar_contract::plugin::valid_semver(&secret.version),
+        "the actual secret states its version"
+    );
+    let target_name = secret.name;
+    let target_alias = target_name.clone();
+    let target_version = secret.version;
+    let major: u64 = target_version.split('.').next().unwrap().parse().unwrap();
+    let base_floor = format!("{}.0.0", major.checked_add(1).unwrap());
+    let anchor = busbar_kernel::config::migrated_store_module();
+    let build = busbar_kernel::preflight::root_rows()
+        .registry_build
+        .expect("the actual root installs its registry builder");
+    let linked = build(
+        busbar_kernel::preflight::RegistryIn {
+            linked: busbar_kernel::preflight::linked_rows(),
+            plugins: None,
+            data_dir: None,
+            inventory_only: true,
+        },
+        &mut |_| {},
+    )
+    .expect("the actual linked registry resolves");
+    assert!(linked.secret_slots(anchor).into_iter().chain(linked.reference_slots(anchor)).any(|path| path == "token"), "the actual memory Store must declare the token credential reference used by this dependency test");
     manifest = plugins::manifest("secret", &target_name, "acme");
     manifest.statement = Some(hex::encode(secret_statement));
     document["store"] = serde_json::json!({"module":busbar_kernel::config::migrated_store_module(), "settings":{"token":{"module":target_alias, "settings":{}}}});
@@ -637,11 +664,11 @@ async fn a_secret_plugin_needed_to_open_the_anchor_cannot_rely_on_its_unread_sto
         });
     app.plugins_cfg
         .min_versions
-        .insert(target_name.clone(), "1.4.0".into());
+        .insert(target_name.clone(), target_version.clone());
     manifest.name = target_name.clone();
     manifest.alias = target_alias.clone();
     manifest.publisher = "acme".into();
-    manifest.version = "1.4.0".into();
+    manifest.version = target_version;
     let target = plugins::signed(&publisher_key, manifest.clone(), &library);
     if target_name == module {
         std::fs::remove_file(directory.join("store.tar.gz")).unwrap();
@@ -700,7 +727,7 @@ async fn a_secret_plugin_needed_to_open_the_anchor_cannot_rely_on_its_unread_sto
     let error: serde_json::Value = response.json().await.unwrap();
     let message = error["error"]["message"].as_str().unwrap();
     assert!(
-        message.contains("bootstrap dependency") && message.contains("acme-vault"),
+        message.contains("bootstrap dependency") && message.contains(&target_name),
         "{error}"
     );
     assert_eq!(
