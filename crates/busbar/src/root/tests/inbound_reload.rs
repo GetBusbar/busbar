@@ -15,7 +15,6 @@ use busbar_contract::auth_calls::{
 use busbar_contract::transport::TransportSettings;
 use busbar_core_connector::framer::{Established, FramerDoor, Framing};
 use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
-use busbar_kernel_testkit::test_support::TestApp;
 
 use crate::root::doors::{bind_on, Dispatched};
 use crate::root::inbound;
@@ -75,14 +74,43 @@ fn provider(name: &'static str) -> Arc<Provider> {
 
 fn app(provider: &Arc<Provider>) -> Arc<busbar_kernel::state::App> {
     let calls: Arc<dyn AuthCalls> = provider.clone();
-    TestApp::new()
-        .auth(Arc::new(
-            busbar_kernel_testkit::test_support::auth_helpers::from_doors_for_test(vec![(
-                provider.name.into(),
-                calls,
-            )]),
-        ))
-        .build()
+    let store = crate::root::real_store::store();
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .expect("the actual Store settings are JSON");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+        "providers": {},
+        "models": {},
+        "store": {"module": store.name(), "settings": settings},
+    }))
+    .expect("the ordinary reload deployment parses");
+    let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the ordinary reload deployment resolves");
+    let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
+        Arc::new(crate::root::door_steps::Rules::default());
+    let (mut app, _rotation, _limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+        cfg,
+        Default::default(),
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+        Some(busbar_contract::store_calls::OpenedStore {
+            records: store.clone(),
+            calls: Some(store),
+        }),
+    )
+    .expect("the production builder owns the supplied actual Store");
+    // Only the host policy value varies between these Apps. The HTTP product
+    // and listener still drive the actual admission and reload boundaries.
+    app.auth = Arc::new(busbar_kernel::auth::AuthMiddleware::from_calls_for_test(
+        vec![(provider.name.into(), calls)],
+        &[],
+    ));
+    Arc::new(app)
 }
 
 fn stage(provider: &Provider) {
