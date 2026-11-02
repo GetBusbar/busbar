@@ -993,7 +993,7 @@ fn gate_transport_named(
 ) -> Option<(Arc<dyn RoutingPolicy>, ResolvedSettings)> {
     if let Some(opened) = env.route_calls.get(name).filter(|opened| {
         opened.module == hook.plugin
-            && &*opened.definition == &hook.settings
+            && *opened.definition == hook.settings
             && opened.budget == policy_timeout(hook.timeout_ms)
     }) {
         return Some((

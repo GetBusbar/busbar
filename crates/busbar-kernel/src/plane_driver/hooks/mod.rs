@@ -1302,7 +1302,7 @@ struct ProjectArena(zeroize::Zeroizing<ProjectBytes>);
 
 impl From<Vec<u8>> for ProjectArena {
     fn from(bytes: Vec<u8>) -> Self {
-        Self(zeroize::Zeroizing::new(bytes.into()))
+        Self(zeroize::Zeroizing::new(bytes))
     }
 }
 
