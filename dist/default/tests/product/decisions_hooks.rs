@@ -79,6 +79,10 @@ fn stage(directory: &Path, file: &str, variable: &str, kind: &str) -> (String, S
     manifest.version = facts.version;
     manifest.statement = Some(hex::encode(statement));
     if kind == "hook" {
+        assert_eq!(
+            facts.name, "busbar-hook-webrequest",
+            "the supplied hook must be the actual webrequest product"
+        );
         // The real webrequest module asks for prompt:rw/user:ro; the operator grant below
         // determines what each configured instance receives.
         manifest.needs = busbar_plugin_loader::sign::HookNeeds {
