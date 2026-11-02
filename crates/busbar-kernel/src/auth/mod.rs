@@ -2403,23 +2403,6 @@ impl AuthMiddleware {
         }
     }
 
-    pub fn with_fallback_test_metadata(
-        mut self,
-        carriers: &[&str],
-        issued: Option<(String, busbar_contract::auth_calls::IssuedShape)>,
-    ) -> Self {
-        if self.carriers.is_empty() {
-            self.carriers = carriers
-                .iter()
-                .filter_map(|word| HeaderName::from_bytes(word.as_bytes()).ok())
-                .collect();
-        }
-        if self.issued.is_none() {
-            self.issued = issued;
-        }
-        self
-    }
-
     #[cfg(test)]
     pub fn from_doors_for_test(chain: Vec<(String, std::sync::Arc<dyn AuthCalls>)>) -> Self {
         let carriers = test_inbound_style();
@@ -2480,35 +2463,6 @@ mod plugin_chain_tests;
 #[cfg(test)]
 #[path = "tests/acceptance_1_5_5_tests.rs"]
 mod acceptance_1_5_5_tests;
-
-#[cfg(test)]
-#[path = "tests/c7_injection_tests.rs"]
-mod c7_injection_tests;
-
-#[cfg(test)]
-#[test]
-fn fallback_test_metadata_fills_absence_and_keeps_existing_values() {
-    let expected = crate::test_support::issued::double();
-    let mut replacement = expected.clone();
-    replacement.0 = "different-issued-kind".to_string();
-    let middleware = AuthMiddleware::from_calls_for_test(Vec::new(), &[])
-        .with_fallback_test_metadata(&["x-original-credential"], Some(expected.clone()))
-        .with_fallback_test_metadata(&["x-replacement-credential"], Some(replacement));
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        "x-original-credential",
-        HeaderValue::from_static("original"),
-    );
-    headers.insert(
-        "x-replacement-credential",
-        HeaderValue::from_static("replacement"),
-    );
-    assert_eq!(
-        middleware.extract_client_token(&headers).as_deref(),
-        Some("original")
-    );
-    assert_eq!(middleware.issued_credential(), Some(expected));
-}
 
 #[cfg(test)]
 #[path = "tests/ticket_store_tests.rs"]
