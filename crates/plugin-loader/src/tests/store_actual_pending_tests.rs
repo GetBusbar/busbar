@@ -429,3 +429,88 @@ fn a_store_that_pends_then_answers_completes_a_governance_op_on_the_bridge() {
         vec!["alice".to_string()]
     );
 }
+
+mod commits_then_pends {
+    use super::*;
+    use std::collections::HashSet;
+    use std::ffi::c_void;
+    static PENDED: OnceLock<Mutex<HashSet<OpId>>> = OnceLock::new();
+    extern "C" fn batch(
+        instance: *mut c_void,
+        input: *const c_void,
+        out: *mut c_void,
+    ) -> RawOutcome {
+        // SAFETY: the production dispatcher supplies this actual SQLite batch frame;
+        // only the old adversarial timing boundary after a real commit is changed.
+        unsafe {
+            let request = &*input.cast::<busbar_contract::abi::store::AddUsageBatchIn>();
+            let ops = &*actual_store::door().ops().cast::<Ops>();
+            let answer = (ops.add_usage_batch.expect("actual SQLite batch"))(instance, input, out);
+            if answer != RawOutcome::of(Outcome::Ready) || (*out.cast::<OutHead>()).lease != 0 {
+                return answer;
+            }
+            if PENDED
+                .get_or_init(Default::default)
+                .lock()
+                .unwrap()
+                .insert(request.op_id)
+            {
+                let head = &mut *out.cast::<OutHead>();
+                head.outcome = RawOutcome::of(Outcome::Pending);
+                head.wake_at_ns = crate::dispatch::now_ns().saturating_add(60_000_000_000);
+                return RawOutcome::of(Outcome::Pending);
+            }
+            answer
+        }
+    }
+    pub(super) extern "C" fn door() -> &'static Door {
+        static HELD: OnceLock<usize> = OnceLock::new();
+        let ptr = *HELD.get_or_init(|| {
+            let real = *actual_store::door();
+            // SAFETY: actual_store retains the genuine validated descriptor and image.
+            let mut ops = unsafe { real.ops().cast::<Ops>().read_unaligned() };
+            ops.add_usage_batch = Some(batch);
+            let ops = Box::leak(Box::new(ops));
+            // SAFETY: actual Store lifecycle and all operations retained except one hostile
+            // post-commit timing result; table/descriptor are permanent.
+            Box::into_raw(Box::new(unsafe {
+                Door::__from_parts(DoorParts {
+                    ops: std::ptr::from_ref(ops).cast(),
+                    ..real.parts()
+                })
+            })) as usize
+        });
+        // SAFETY: immutable permanent descriptor allocation.
+        unsafe { &*(ptr as *const Door) }
+    }
+}
+#[test]
+fn a_usage_batch_cancelled_after_its_write_retries_counted_once() {
+    let s = open(commits_then_pends::door);
+    let rt = rt();
+    let op = actual_store::mint();
+    let cells = [(
+        "m",
+        60u64,
+        UsageDelta {
+            requests: 4,
+            billable_requests: 4,
+            models: Vec::new(),
+        },
+    )];
+    let first = rt.block_on(async {
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            s.add_usage_batch(op, &cells),
+        )
+        .await
+    });
+    assert!(
+        first.is_err(),
+        "the first attempt pends until it is cancelled"
+    );
+    rt.block_on(s.add_usage_batch(op, &cells))
+        .expect("the retry of the same op_id answers");
+    let counted = RecordStore::get_usage(&s, "m", 60).expect("read");
+    assert_eq!(counted.requests, 4, "counted once, not twice");
+}
