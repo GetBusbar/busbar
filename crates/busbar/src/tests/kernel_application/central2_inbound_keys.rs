@@ -305,12 +305,22 @@ async fn actual_inbound_keys_preserve_resolution_revocation_rotation_and_carrier
             .flow,
         FLOW_STOP
     );
-    assert_eq!(
-        call(head(vec![("x-api-key".into(), b"not-a-key".to_vec())]))
-            .await
-            .flow,
-        FLOW_STOP
-    );
+    let invalid = call(head(vec![("x-api-key".into(), b"not-a-key".to_vec())])).await;
+    assert_eq!(invalid.flow, FLOW_STOP);
+    let invalid_refusal = inbound
+        .refuse(Refuse {
+            owner: 7,
+            generation: 3,
+            unit: invalid.unit,
+            cause: REFUSE_STOPPED,
+            line: 0,
+            conn: 1,
+            stream: 1,
+            framing: Some(1),
+            request: Some(head(Vec::new())),
+        })
+        .expect("the kernel refuses the invalid carrier");
+    assert_eq!(invalid_refusal.status, 401);
     assert_eq!(call(head(Vec::new())).await.flow, FLOW_STOP);
     let dual = call(head(vec![
         ("authorization".into(), format!("Bearer {new}").into_bytes()),
