@@ -873,4 +873,77 @@ mod tests {
         restarted.resume_raw_recovery().unwrap();
         assert_eq!(store.get_usage("child-bucket", 0).unwrap().requests, 7);
     }
+    #[test]
+    fn two_unknown_positives_cannot_release_each_others_dependent_negatives() {
+        use super::super::{GovState, MemoryStore, RecordStore};
+        let store = Arc::new(MemoryStore::new());
+        let sink = Arc::new(Journal::default());
+        let original = GovState::new(store.clone(), None).unwrap();
+        original.attach_recovery_sink(sink.clone()).unwrap();
+        let first = raw_intent(&original, 7);
+        let second = raw_intent(&original, 11);
+        drop(original);
+        let gov = GovState::new(store.clone(), None).unwrap();
+        gov.attach_recovery_sink(sink).unwrap();
+        let captured = gov
+            .capture_usage_recovery(
+                "recovery-bucket",
+                0,
+                super::super::ExactUsageDelta {
+                    requests: -18,
+                    ..Default::default()
+                },
+                Default::default(),
+            )
+            .unwrap();
+        assert!(captured.child.is_none());
+        assert!(captured.deferred_plain.requests < 0);
+        gov.drive_durable_usage_flight(&captured).unwrap();
+        let remaining = gov
+            .capture_usage_recovery(
+                "recovery-bucket",
+                0,
+                captured.deferred_plain,
+                captured.deferred_dated,
+            )
+            .unwrap();
+        assert!(remaining.child.is_none());
+        assert!(remaining.deferred_plain.is_zero());
+        gov.drive_durable_usage_flight(&remaining).unwrap();
+        for intent in [first, second] {
+            let selected = gov.recovery_event(intent.operation_id).unwrap();
+            gov.resolve_raw_recovery(&RecoveryResolution {
+                operation_id: intent.operation_id,
+                body_fingerprint: intent.body_fingerprint,
+                expected_revision: selected.revision,
+                verdict: RecoveryVerdict::NotLanded,
+                actor: "operator".into(),
+                reason: "neither original operation reached backend".into(),
+            })
+            .unwrap();
+        }
+        assert_eq!(store.get_usage("recovery-bucket", 0).unwrap().requests, 0);
+    }
+
+    #[test]
+    fn unknown_chunk_transfers_never_sent_unsigned_remainder_to_fresh_children() {
+        use super::super::{GovState, MemoryStore, RecordStore};
+        let store = Arc::new(MemoryStore::new());
+        let sink = Arc::new(Journal::default());
+        let original = GovState::new(store.clone(), None).unwrap();
+        original.attach_recovery_sink(sink.clone()).unwrap();
+        let intent = raw_intent(&original, i128::from(u64::MAX));
+        drop(original);
+        let gov = GovState::new(store.clone(), None).unwrap();
+        gov.attach_recovery_sink(sink).unwrap();
+        assert_eq!(
+            gov.recovery_event(intent.operation_id).unwrap().state,
+            RecoveryState::LandedUnknown
+        );
+        assert_eq!(
+            store.get_usage("recovery-bucket", 0).unwrap().requests,
+            u64::MAX - i64::MAX as u64,
+            "only the old sent chunk is unknown; never-sent remainder keeps progressing"
+        );
+    }
 }

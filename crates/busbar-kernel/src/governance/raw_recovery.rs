@@ -326,10 +326,11 @@ impl GovState {
                         event.body_fingerprint,
                         RecoveryState::LandedUnknown,
                         event.first_sent_at_ms,
-                        event.payload.clone(),
+                        self.expired_raw_payload(&event)?,
                     )
                     .map_err(invalid)?;
                 self.keep_recovery_event(&next)?;
+                self.drive_recovery_children(&next)?;
                 return Ok(());
             }
             match event.kind {
@@ -388,10 +389,31 @@ impl GovState {
                     .map_err(invalid)?;
                 self.keep_recovery_event(&settled)?;
             }
-            RecoveryState::LandedUnknown | RecoveryState::Settled => {}
+            RecoveryState::LandedUnknown => self.drive_recovery_children(&event)?,
+            RecoveryState::Settled => {}
             _ => return Err(invalid("unsupported raw recovery state")),
         }
         Ok(())
+    }
+
+    fn expired_raw_payload(&self, event: &RecoveryEvent) -> RecordStoreResult<Vec<u8>> {
+        if event.kind != RecoveryKind::Usage {
+            return Ok(event.payload.clone());
+        }
+        let mut custody: UsageCustody = decode(&event.payload)?;
+        let mut unsent_plain = custody.plain.clone();
+        let mut unsent_dated = custody.dated.clone();
+        unsent_plain.subtract(&custody.chunk_plain);
+        unsent_dated.subtract(&custody.chunk_dated);
+        custody.handoffs.extend(Self::usage_recovery_child(
+            &custody.bucket,
+            custody.window,
+            unsent_plain,
+            unsent_dated,
+        )?);
+        custody.plain = ExactUsageDelta::from_signed(&custody.chunk_plain);
+        custody.dated = ExactUsageDelta::from_signed(&custody.chunk_dated);
+        encode(&custody)
     }
 
     fn applied_raw_payload(&self, event: &RecoveryEvent) -> RecordStoreResult<Vec<u8>> {
@@ -543,31 +565,54 @@ impl GovState {
 pub(super) struct DurableUsageFlight {
     pub(super) child: Option<RecoveryChild>,
     pub(super) prerequisite: Option<RecoveryEvent>,
+    pub(super) deferred_plain: ExactUsageDelta,
+    pub(super) deferred_dated: ExactUsageDelta,
 }
 
 impl ExactUsageDelta {
-    fn take_negatives(&mut self) -> Self {
-        let mut negative = Self::default();
-        if self.requests < 0 {
-            negative.requests = self.requests;
-            self.requests = 0;
+    fn positive_capacity(chunk: &UsageDelta, absorbed: &Self) -> Self {
+        let mut capacity = Self::from_signed(chunk);
+        capacity.requests = capacity.requests.max(0);
+        capacity.billable_requests = capacity.billable_requests.max(0);
+        for model in &mut capacity.models {
+            for count in model.usage_units.values_mut() {
+                *count = (*count).max(0);
+            }
         }
-        if self.billable_requests < 0 {
-            negative.billable_requests = self.billable_requests;
-            self.billable_requests = 0;
+        capacity.merge(absorbed);
+        capacity.requests = capacity.requests.max(0);
+        capacity.billable_requests = capacity.billable_requests.max(0);
+        for model in &mut capacity.models {
+            for count in model.usage_units.values_mut() {
+                *count = (*count).max(0);
+            }
         }
+        capacity
+    }
+
+    /// Remove only negatives whose matching positive may still be absent. Each
+    /// unresolved operation owns at most its original positive, per raw field.
+    fn take_capped_negatives(&mut self, capacity: &Self) -> Self {
+        let take = |count: &mut i128, capacity: i128| {
+            let amount = count.saturating_neg().max(0).min(capacity.max(0));
+            *count += amount;
+            -amount
+        };
+        let mut negative = Self {
+            requests: take(&mut self.requests, capacity.requests),
+            billable_requests: take(&mut self.billable_requests, capacity.billable_requests),
+            models: Vec::new(),
+        };
         for model in &mut self.models {
+            let Some(capacity) = capacity.models.iter().find(|row| row.model == model.model) else {
+                continue;
+            };
             let units = model
                 .usage_units
                 .iter_mut()
                 .filter_map(|(unit, count)| {
-                    if *count < 0 {
-                        let value = *count;
-                        *count = 0;
-                        Some((unit.clone(), value))
-                    } else {
-                        None
-                    }
+                    let amount = take(count, capacity.usage_units.get(unit).copied().unwrap_or(0));
+                    (amount != 0).then(|| (unit.clone(), amount))
                 })
                 .collect();
             negative.models.push(super::exact_debt::ExactModelDelta {
@@ -589,40 +634,95 @@ impl GovState {
         mut plain: ExactUsageDelta,
         mut dated: ExactUsageDelta,
     ) -> RecordStoreResult<DurableUsageFlight> {
-        let owner = self
-            .selected_recovery_events()
-            .into_iter()
-            .find_map(|event| {
-                if event.kind != RecoveryKind::Usage || event.state != RecoveryState::LandedUnknown
+        let mut owners = Vec::new();
+        let mut capacity_plain = ExactUsageDelta::default();
+        let mut capacity_dated = ExactUsageDelta::default();
+        // A selected parent may own an exact child template at the crash cut
+        // before child Intent. Its positive also gates dependent negatives.
+        for event in self.selected_recovery_events() {
+            let links: Links = decode(&event.payload)?;
+            for child in links.handoffs {
+                if child.kind != RecoveryKind::Usage
+                    || self.recovery_event(child.operation_id).is_some()
                 {
-                    return None;
+                    continue;
                 }
-                let custody = decode::<UsageCustody>(&event.payload).ok()?;
-                (custody.bucket == bucket && custody.window == window).then_some((event, custody))
-            });
-        let mut prerequisite = None;
-        if let Some((event, mut custody)) = owner {
-            let negative_plain = plain.take_negatives();
-            let negative_dated = dated.take_negatives();
-            if !negative_plain.is_zero() || !negative_dated.is_zero() {
-                custody.absorbed_plain.merge(&negative_plain);
-                custody.absorbed_dated.merge(&negative_dated);
-                let candidate = self
-                    .new_recovery_event(
-                        event.operation_id,
-                        event.kind,
-                        event.body_fingerprint,
-                        event.state,
-                        event.first_sent_at_ms,
-                        encode(&custody)?,
-                    )
-                    .map_err(invalid)?;
-                prerequisite = Some(candidate);
+                let custody: UsageCustody = decode(&child.payload)?;
+                if custody.bucket == bucket && custody.window == window {
+                    capacity_plain.merge(&ExactUsageDelta::positive_capacity(
+                        &custody.chunk_plain,
+                        &custody.absorbed_plain,
+                    ));
+                    capacity_dated.merge(&ExactUsageDelta::positive_capacity(
+                        &custody.chunk_dated,
+                        &custody.absorbed_dated,
+                    ));
+                }
             }
+            if event.kind != RecoveryKind::Usage
+                || !matches!(
+                    event.state,
+                    RecoveryState::Intent | RecoveryState::LandedUnknown
+                )
+            {
+                continue;
+            }
+            let custody: UsageCustody = decode(&event.payload)?;
+            if custody.bucket != bucket || custody.window != window {
+                continue;
+            }
+            let own_plain =
+                ExactUsageDelta::positive_capacity(&custody.chunk_plain, &custody.absorbed_plain);
+            let own_dated =
+                ExactUsageDelta::positive_capacity(&custody.chunk_dated, &custody.absorbed_dated);
+            capacity_plain.merge(&own_plain);
+            capacity_dated.merge(&own_dated);
+            owners.push((event, custody, own_plain, own_dated));
         }
+        let mut prerequisite = None;
+        // Exactly one immutable owner checkpoint is staged per capture. A later
+        // capture handles any remaining dependent fields under another owner.
+        for (event, mut custody, own_plain, own_dated) in owners {
+            let mut remaining_plain = plain.clone();
+            let mut remaining_dated = dated.clone();
+            let negative_plain = remaining_plain.take_capped_negatives(&own_plain);
+            let negative_dated = remaining_dated.take_capped_negatives(&own_dated);
+            if negative_plain.is_zero() && negative_dated.is_zero() {
+                continue;
+            }
+            let runner = self.recovery_driver(event.operation_id)?;
+            let _running = runner.enter(false).map_err(invalid)?;
+            // A concurrent definitive decision or pending immutable candidate
+            // must finish before these fields can be assigned a new owner.
+            if self.recovery_event(event.operation_id).as_ref() != Some(&event) {
+                return Err(invalid("raw negative owner changed during capture"));
+            }
+            custody.absorbed_plain.merge(&negative_plain);
+            custody.absorbed_dated.merge(&negative_dated);
+            let candidate = self
+                .new_recovery_event(
+                    event.operation_id,
+                    event.kind,
+                    event.body_fingerprint,
+                    event.state,
+                    event.first_sent_at_ms,
+                    encode(&custody)?,
+                )
+                .map_err(invalid)?;
+            capacity_plain.merge(&negative_plain);
+            capacity_dated.merge(&negative_dated);
+            plain = remaining_plain;
+            dated = remaining_dated;
+            prerequisite = Some(candidate);
+            break;
+        }
+        let deferred_plain = plain.take_capped_negatives(&capacity_plain);
+        let deferred_dated = dated.take_capped_negatives(&capacity_dated);
         Ok(DurableUsageFlight {
             child: Self::usage_recovery_child(bucket, window, plain, dated)?,
             prerequisite,
+            deferred_plain,
+            deferred_dated,
         })
     }
 

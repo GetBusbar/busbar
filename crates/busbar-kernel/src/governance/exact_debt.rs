@@ -5,11 +5,13 @@ use super::*;
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct ExactModelDelta {
     pub(super) model: String,
     pub(super) usage_units: BTreeMap<String, i128>,
 }
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct ExactUsageDelta {
     pub(super) requests: i128,
     pub(super) billable_requests: i128,
@@ -359,6 +361,8 @@ impl GovState {
                                 return Ok(super::raw_recovery::DurableUsageFlight {
                                     child: None,
                                     prerequisite: None,
+                                    deferred_plain: ExactUsageDelta::default(),
+                                    deferred_dated: ExactUsageDelta::default(),
                                 });
                             };
                             let parent =
@@ -366,6 +370,8 @@ impl GovState {
                             Ok(super::raw_recovery::DurableUsageFlight {
                                 child: Some(child),
                                 prerequisite: Some(parent),
+                                deferred_plain: ExactUsageDelta::default(),
+                                deferred_dated: ExactUsageDelta::default(),
                             })
                         })
                 } else {
@@ -383,6 +389,10 @@ impl GovState {
             } else {
                 None
             };
+            let (deferred_plain, deferred_dated) = durable
+                .as_ref()
+                .map(|flight| (flight.deferred_plain.clone(), flight.deferred_dated.clone()))
+                .unwrap_or_default();
             let flight = Arc::new(BudgetFlushFlight {
                 bucket: bucket.into(),
                 window,
@@ -413,6 +423,8 @@ impl GovState {
                             model.flushed_era = model.cur.clone();
                         }
                     }
+                    park_window(&mut cell.rolled, window, deferred_plain.clone());
+                    park_window(&mut cell.rolled_eras, window, deferred_dated.clone());
                 }
                 cell.flushing += 1;
                 *cell.flushing_windows.entry(window).or_default() += 1;
