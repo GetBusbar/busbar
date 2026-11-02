@@ -820,10 +820,10 @@ pub const NAME: &str = "store-double";
 pub const SECRET_REF_PATHS: &[&str] = &["token"];
 
 pub const STORE: (
-    &'static str,
+    &str,
     bool,
     busbar_contract::abi::mechanism::door::DoorFn,
-    &'static str,
+    &str,
 ) = (KEY, true, door, NAME);
 
 pub const KEY: &str = "memory";

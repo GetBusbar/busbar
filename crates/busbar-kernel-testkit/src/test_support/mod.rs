@@ -1795,12 +1795,9 @@ pub fn builtins_only_secret_resolver() -> crate::config::secret::SecretResolver 
 mod fixtures;
 pub use fixtures::*;
 
-#[path = "../app.rs"]
-mod app;
-
 #[path = "../limits.rs"]
 pub(crate) mod fixture_limits;
-pub use app::{build_once, build_once_under, from_cfg};
+pub use crate::app::{build_once, build_once_under, from_cfg};
 
 #[cfg(test)]
 #[path = "tests/eventstream_frame_tests.rs"]
