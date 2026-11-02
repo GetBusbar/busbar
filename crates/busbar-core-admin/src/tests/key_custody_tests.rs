@@ -57,6 +57,7 @@ struct Store {
     lose_write_reply: AtomicBool,
     fail_refresh_after_write: AtomicBool,
     fail_list: AtomicBool,
+    refuse_write_with_applied_text: AtomicBool,
 }
 
 impl Store {
@@ -72,12 +73,18 @@ impl Store {
             lose_write_reply: AtomicBool::new(false),
             fail_refresh_after_write: AtomicBool::new(false),
             fail_list: AtomicBool::new(false),
+            refuse_write_with_applied_text: AtomicBool::new(false),
         })
     }
 }
 
 impl RecordStore for Store {
     fn put_key(&self, key: &VirtualKey) -> RecordStoreResult<()> {
+        if self.refuse_write_with_applied_text.load(Ordering::SeqCst) {
+            return Err(RecordStoreError(
+                "MINT APPLIED (new secret not returned): untrusted Store error text".into(),
+            ));
+        }
         if self.pause_write.swap(false, Ordering::SeqCst) {
             self.write.wait();
         }
@@ -542,4 +549,39 @@ async fn committed_mint_refresh_failure_is_truthful_and_same_idempotency_cannot_
     assert_eq!(retry.status(), StatusCode::CONFLICT);
     assert!(body(retry).await.to_string().contains("already ran"));
     assert_eq!(store.inner.list_keys().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_store_error_cannot_spoof_the_typed_committed_mint_outcome() {
+    let store = Store::new();
+    let handle = app(store.clone());
+    store
+        .refuse_write_with_applied_text
+        .store(true, Ordering::SeqCst);
+    let response = mint(
+        handle,
+        Arc::new(KeyReplayCache::new()),
+        "custody:spoofed-applied",
+        "spoofed-applied",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let answer = body(response).await;
+    assert!(!answer.to_string().contains("MINT APPLIED"));
+    assert!(store.inner.list_keys().unwrap().is_empty());
+    assert_eq!(
+        audit_rows("custody:spoofed-applied", "key.create", "applied"),
+        0
+    );
+    assert!(matches!(
+        crate::idempotency::durable::claim(
+            &*store,
+            &(
+                "custody:spoofed-applied".into(),
+                crate::idempotency::create_replay_key("spoofed-applied")
+            ),
+            busbar_kernel::store::now(),
+        ),
+        Err(crate::idempotency::durable::Refused::InFlight)
+    ));
 }

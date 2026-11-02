@@ -29,7 +29,7 @@ pub const REVOCATION_DURABLE_MARKER: &str = "REVOCATION APPLIED (cache reconcile
 pub const ROTATION_DURABLE_MARKER: &str = "ROTATION APPLIED (new secret not returned)";
 
 /// A mint can commit its binding before cache reconciliation fails. An applied failure
-/// contains only the public key identifier; no issued credential is returned.
+/// exposes only the public key identifier; no issued credential is returned.
 #[derive(Debug)]
 pub enum MintError {
     Store(RecordStoreError),
@@ -68,7 +68,10 @@ impl From<RecordStoreError> for MintError {
 
 impl From<MintError> for RecordStoreError {
     fn from(error: MintError) -> Self {
-        Self(error.to_string())
+        match error {
+            MintError::Store(error) => error,
+            applied => Self(applied.to_string()),
+        }
     }
 }
 

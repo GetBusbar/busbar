@@ -308,6 +308,9 @@ The virtual-key surface at `/api/v1/admin/keys` (`full` scope for mutations). Ke
 
 **Idempotency.** `POST /keys` and `POST /keys/{id}/rotate` accept an **`Idempotency-Key`** header: a retried request with the same key inside the ~10-minute window returns the first response verbatim (including the once-shown secret) instead of double-minting. The cache is scoped per principal (and per operation + key id for rotate), so no other admin's identical header value can replay your secret. A concurrent request while the first is still in flight is a terminal `409 conflict`.
 
+If a mint's key write commits but cache reconciliation fails, `POST /keys` returns `409 conflict` with `MINT APPLIED (new secret not returned)` and the committed public key ID. It returns no token or issued secret. The applied outcome is audited and retained for its `Idempotency-Key`; retrying that key does not mint again, including after the response cache is lost. Recover the Store/cache service, then revoke or delete the identified key before minting a replacement. A Store write failure without a confirmed commit keeps the existing uncertain-outcome handling; it is not reported as applied.
+
+
 **Anti-sprawl caps.** Two optional knobs, both `0` = unlimited by default (an absent knob changes nothing):
 
 - `limits.max_keys_per_principal` caps how many keys may be bound to **one group** (a group = one principal in the self-service model; a user leaf can only hold so many keys). It counts **live** keys only (revoking or disabling a key returns its slot) and it applies to the unbound (`no group`) bucket too. Enforced on **both** `POST /keys` and a `PATCH /keys/{id}` rebind, so a principal cannot be walked past its ceiling one rebind at a time. Over cap ⇒ terminal `409 conflict`.
