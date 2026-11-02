@@ -37,43 +37,20 @@ pub fn install(rows: Rows) {
     let _ = ROWS.set(rows);
 }
 
-/// The installed table. Before any hand-in: none in a shipped build (no root linked no migration
-/// table); in a TEST build the frozen 1.5.5 rows the kernel tests pin stand in
-/// (`tests/fixtures/frozen_customer_text.yaml`, `migration_rows`).
+/// The table explicitly installed by the composition root. A normal kernel library owns no
+/// fixture rows or fallback parser; kernel unit tests read the shared external fixture source.
 pub fn rows() -> Rows {
-    ROWS.get().copied().unwrap_or_else(stand_in)
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn stand_in() -> Rows {
-    // The parsed rows live in one static and the borrowed table in a second, so every `&'static
-    // str` points into a static rather than into a leaked allocation.
-    static OWNED: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
-    static STAND_IN: std::sync::OnceLock<Vec<(&'static str, &'static str)>> =
-        std::sync::OnceLock::new();
-    STAND_IN.get_or_init(|| {
-        OWNED
-            .get_or_init(|| {
-                let doc: Value = serde_yaml::from_str(include_str!(
-                    "../../tests/fixtures/frozen_customer_text.yaml"
-                ))
-                .expect("the frozen-text fixture parses");
-                doc.get("migration_rows")
-                    .and_then(Value::as_mapping)
-                    .expect("the frozen-text fixture carries `migration_rows`")
-                    .iter()
-                    .filter_map(|(k, v)| Some((k.as_str()?.to_owned(), v.as_str()?.to_owned())))
-                    .collect()
-            })
-            .iter()
-            .map(|(k, v)| (k.as_str(), v.as_str()))
-            .collect()
-    })
-}
-
-#[cfg(not(any(test, feature = "test-support")))]
-fn stand_in() -> Rows {
-    &[]
+    if let Some(rows) = ROWS.get() {
+        return rows;
+    }
+    #[cfg(test)]
+    {
+        crate::test_support::migration::rows()
+    }
+    #[cfg(not(test))]
+    {
+        &[]
+    }
 }
 
 /// The value of `key`; empty when the table has no such row.

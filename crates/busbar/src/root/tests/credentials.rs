@@ -20,7 +20,7 @@ use super::AppCredentials;
 /// read off the kernel's frozen-text fixture rather than spelled here.
 fn signed_kind() -> String {
     const FROZEN: &str =
-        include_str!("../../../../busbar-kernel/tests/fixtures/frozen_customer_text.yaml");
+        include_str!("../../../../busbar-kernel-testkit/tests/fixtures/frozen_customer_text.yaml");
     FROZEN
         .lines()
         .find_map(|l| l.strip_prefix("signed_credential_kind:"))

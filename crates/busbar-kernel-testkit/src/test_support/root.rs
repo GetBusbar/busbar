@@ -84,6 +84,7 @@ pub fn publish() {
 pub fn ensure() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
+        super::migration::install();
         // A fixture with no composition root installs its own explicit operator row before
         // deriving configuration defaults. A root-provided row already installed wins.
         if crate::config::operator_provider().is_empty() {

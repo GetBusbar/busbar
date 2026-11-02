@@ -3132,7 +3132,7 @@ async fn a_500_on_the_native_api_root_is_the_frozen_internal_envelope() {
 /// credential kind operators see, byte-for-byte as 1.5.5 shipped them — so no test source spells them.
 pub(crate) fn frozen_text(key: &str) -> serde_yaml::Value {
     let doc: serde_yaml::Value = serde_yaml::from_str(include_str!(
-        "../../tests/fixtures/frozen_customer_text.yaml"
+        "../../../busbar-kernel-testkit/tests/fixtures/frozen_customer_text.yaml"
     ))
     .expect("the frozen-text fixture parses");
     doc.get(key)
