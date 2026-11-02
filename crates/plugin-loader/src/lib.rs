@@ -398,3 +398,13 @@ mod stand_in_tests;
 #[allow(unsafe_code)]
 #[path = "tests/warn_capture_tests.rs"]
 mod warn_capture_tests;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/actual_mcp.rs"]
+mod actual_mcp;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/actual_mcp_identity_tests.rs"]
+mod actual_mcp_identity_tests;
