@@ -656,9 +656,10 @@ mod v3 {
     };
     use busbar_contract::store_calls::{StoreCalls, StoreFailure};
     use busbar_plugin_loader::dispatch::kinds::store::{Store, StoreFacts};
+    use busbar_plugin_loader::dispatch::load::door_addresses_of_library;
     use busbar_plugin_loader::dispatch::{
-        door_addresses_of_library, load_dropped, load_linked, rendering_of_library, Bind,
-        DispatchConfig, Dispatcher, LinkedRow, NoSink, Plugin,
+        load_dropped, load_linked, rendering_of_library, Bind, DispatchConfig, Dispatcher,
+        LinkedRow, NoSink, Plugin,
     };
     use busbar_plugin_loader::store_v3::LoadedStore;
 
