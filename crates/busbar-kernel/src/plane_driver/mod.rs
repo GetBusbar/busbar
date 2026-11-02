@@ -901,6 +901,8 @@ pub(crate) struct UnitState {
     principal: Option<PrincipalId>,
     /// A gate-first plane's hooks screened the unit before the door ([`RouteAwait::screen`]).
     screened: bool,
+    /// The session open's request hooks passed, either at its opener or its route leg.
+    open_hooks_ran: bool,
     /// The body a request-stage rewrite left, kept for every attempt; `None` = the caller's own.
     body: Option<bytes::Bytes>,
     /// The unit's hooks and the plane's view of its effective request, once the request stage ran.
@@ -1436,8 +1438,14 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
     ///
     /// The reason a hook stopped the session's open.
     pub async fn open_hooks(&self, token: &Pass<Route>, ctx: &UnitCtx) -> Result<(), ReasonCode> {
+        if self.lock().open_hooks_ran {
+            return Ok(());
+        }
         match self.request_stage(token).await {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                self.lock().open_hooks_ran = true;
+                Ok(())
+            }
             Err(stopped) => {
                 let reason = self.stopped(stopped);
                 self.driver.money.finished(ctx);

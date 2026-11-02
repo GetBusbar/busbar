@@ -988,10 +988,14 @@ impl Drop for Pumping<'_> {
         let (flight, done) = match self.flight.take() {
             Some(mut flight) => match flight.settled() {
                 // The op ended on its own: its answer may have closed the unit.
-                Some(settled) => (
-                    None,
-                    answered_done(&settled, &*flight, self.piece_flags, self.final_answer),
-                ),
+                Some(settled) => {
+                    let done =
+                        answered_done(&settled, &*flight, self.piece_flags, self.final_answer);
+                    // The worker may have completed a cancel before this task was polled again.
+                    // The sweep still needs that answer's disposition and record writes, including
+                    // a FAULT which must not cause another terminal cancel.
+                    (Some(flight), done)
+                }
                 None => {
                     self.driver.calls.drop_client(self.ticket);
                     (Some(flight), false)
@@ -1550,7 +1554,42 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     self.far.stated(run.token, labels);
                 }
             }
+            // The same answer's billing identity must precede its checkpoint: cut-stream prices
+            // these counts immediately against the unit's pinned card. An explicit lane wins over
+            // its serving member, while the member still supplies the provider attribution.
+            let lane = run.bufs.arena(out.lane);
+            if !lane.is_empty() && run.billed() {
+                match std::str::from_utf8(lane) {
+                    Ok(lane) => self.driver.money.laned(run.ctx, lane),
+                    Err(_) => return Step::End(End::Failed(ReasonCode::PlanePanic)),
+                }
+            }
             let bufs = &run.bufs;
+            let emitted = &bufs.reply[..(out.emitted as usize).min(bufs.reply.len())];
+            let caller_bound = match &*toward {
+                Toward::Caller => true,
+                Toward::Session(_) => out.flags & EMIT_TO_FAR_END == 0,
+                Toward::FarEnd(request) => {
+                    out.flags & EMIT_TO_FAR_END == 0
+                        && (out.flags & EMIT_DONE != 0
+                            || (request.member.is_empty()
+                                && (out.reply_status != 0 || !emitted.is_empty())))
+                }
+                Toward::Nowhere => false,
+            };
+            let commits = {
+                let st = run.lock();
+                caller_bound
+                    && !st.facts.headed
+                    && !st.facts.streamed
+                    && (out.reply_status != 0 || !emitted.is_empty())
+                    && !(out.verdict == VERDICT_RETRY
+                        && fails_over(st.facts.streamed, st.facts.relayed))
+            };
+            if commits && !bufs.member.is_empty() && run.billed() {
+                let member = String::from_utf8_lossy(&bufs.member);
+                self.driver.money.served(run.ctx, &member, &bufs.provider);
+            }
             let units = &bufs.units[..(out.units_written as usize).min(bufs.units.len())];
             let checkpoint = if units.is_empty() || !run.billed() {
                 Checkpoint::Continue
@@ -1566,15 +1605,6 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             if let Some(reason) = out.usage_tap_fault() {
                 self.steps
                     .usage_tap_fault(run.ctx, run.bufs.dialect, reason);
-            }
-            // THE UNIT'S LEDGER LANE, where the answer names one (SEAM-L(j)): the money steps
-            // lane the unit by it from here. A lane that is not UTF-8 is a plane fault.
-            let lane = run.bufs.arena(out.lane);
-            if !lane.is_empty() && run.billed() {
-                match std::str::from_utf8(lane) {
-                    Ok(lane) => self.driver.money.laned(run.ctx, lane),
-                    Err(_) => return Step::End(End::Failed(ReasonCode::PlanePanic)),
-                }
             }
             if let Err(end) = run.write_records(out.records_written).await {
                 return Step::End(end);
@@ -1648,14 +1678,8 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                             st.facts.headed = true;
                             st.facts.status = out.reply_status;
                         }
-                        // THE ANSWER COMMITS: no failover after the first byte, so the member that
-                        // answered is the unit's serving member, the one 1.5.5 ledgered and metered
-                        // the response under (v1.5.5 `crates/busbar/src/proxy/usage.rs`
-                        // `ledger_and_meter`: "`lane` is the SERVING lane"). A local answer has none.
-                        if !bufs.member.is_empty() && run.billed() {
-                            let model = String::from_utf8_lossy(&bufs.member);
-                            self.driver.money.served(run.ctx, &model, &bufs.provider);
-                        }
+                        // Its serving member was bound before this answer's checkpoint; the same
+                        // commit predicate keeps failed-over answers from acquiring that identity.
                         let mut fields = bufs.fields_of(out.fields_written);
                         // TRANSPARENCY (opt-in, `advanced.response_headers.route_policy`): which
                         // hook chose the serving member, after the plane's own fields, as 1.5.5

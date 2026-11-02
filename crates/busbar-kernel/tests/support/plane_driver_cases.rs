@@ -450,14 +450,12 @@ impl Book {
 
 impl MoneySeam for Book {
     fn checkpoint(&self, ctx: &UnitCtx, units: &[UnitCount]) -> Checkpoint {
-        if let Some(f) = &self.forward {
-            let _ = f.checkpoint(ctx, units);
-        }
+        let forwarded = self.forward.as_ref().map(|f| f.checkpoint(ctx, units));
         let amount = units.iter().map(|u| u.amount).max().unwrap_or(0);
         self.checkpoints.lock().unwrap().push(amount);
         match self.cut_at {
             Some(at) if amount >= at => Checkpoint::Cut,
-            _ => Checkpoint::Continue,
+            _ => forwarded.unwrap_or(Checkpoint::Continue),
         }
     }
 
@@ -493,7 +491,7 @@ impl MoneySeam for Book {
 }
 
 impl Book {
-    fn bills(&self) -> Vec<CancelBill> {
+    pub(crate) fn bills(&self) -> Vec<CancelBill> {
         self.bills.lock().unwrap().clone()
     }
 

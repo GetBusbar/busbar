@@ -819,15 +819,20 @@ impl EgressFarEnd<'_> {
     /// Settle the attempt before the next: close its connection, give back its permit, a probe it
     /// still owns, a budget unit a delivery that did not complete spent, and a dispatch record no
     /// answer settled.
-    fn settle(&self, w: &mut State) {
-        // An answer the plane never read is recorded with the transport's reading, before the
-        // probe is given back: the order it was always recorded in.
-        if let Some(live) = w.live.as_mut() {
-            self.record_unjudged(live, None);
-        }
-        let Some(mut live) = w.live.take() else {
+    fn settle(&self) {
+        let live = self.lock().live.take();
+        self.retire(live);
+    }
+
+    /// The attempt owns its retirement effects after leaving the state table. In particular a
+    /// connection close and a permit drop may wake another task or call back into this far end.
+    fn retire(&self, live: Option<Live>) {
+        let Some(mut live) = live else {
             return;
         };
+        // An answer the plane never read is recorded with the transport's reading, before the
+        // probe is given back: the order it was always recorded in.
+        self.record_unjudged(&mut live, None);
         let e = self.egress;
         if let Some(conn) = live.conn.take() {
             let _closed = e.conns.close(e.caller, conn);
@@ -858,11 +863,15 @@ impl EgressFarEnd<'_> {
     /// awaited: the plane is handed the answer's last piece next, and its reading of it
     /// ([`FarEnd::judged`]) records the answer and settles the attempt. A unit that drops, or an
     /// attempt that moves on, before that settles it as ever (the transport's reading stands).
-    fn settle_read(&self, w: &mut State) {
-        if w.live.as_ref().is_some_and(|l| l.unjudged.is_some()) {
-            return;
-        }
-        self.settle(w);
+    fn settle_read(&self) {
+        let live = {
+            let mut w = self.lock();
+            if w.live.as_ref().is_some_and(|l| l.unjudged.is_some()) {
+                return;
+            }
+            w.live.take()
+        };
+        self.retire(live);
     }
 
     /// Record one classified answer against the live attempt's destination: the observation, a
@@ -1066,10 +1075,11 @@ impl EgressFarEnd<'_> {
     /// THE WALK'S NEXT MEMBER, or its terminal: the egress unit's stepper, asked under the unit's
     /// lock; its one bounded wait (the queue) is awaited outside it.
     async fn next_member(&self, token: &Pass<Route>) -> Pick {
+        // Release the old member's capacity before the next pick can need it.
+        self.settle();
         let ports = self.egress.ports(self.breaker());
         let wait = {
             let mut w = self.lock();
-            self.settle(&mut w);
             if let Some(reason) = w.refused.take() {
                 return Pick::Refused(reason);
             }
@@ -1156,7 +1166,8 @@ impl EgressFarEnd<'_> {
         if failed.is_some() {
             w.failed = failed;
         }
-        self.settle(&mut w);
+        drop(w);
+        self.settle();
         fail_over()
     }
 
@@ -1313,9 +1324,8 @@ impl EgressFarEnd<'_> {
             .ride(request.need)
             .map(|r| (r.need, r.keep.clone(), r.base_url.to_string()))
         else {
-            let mut w = self.lock();
-            self.settle(&mut w);
-            w.unsent = Some(RefusalCode::UnsentNeedUnbound);
+            self.lock().unsent = Some(RefusalCode::UnsentNeedUnbound);
+            self.settle();
             return false;
         };
         // THE TARGET IS A PATH. Joined onto the operator's base_url, anything else could move the
@@ -1340,7 +1350,6 @@ impl EgressFarEnd<'_> {
             if let Some(live) = w.live.as_mut() {
                 live.answered = true;
             }
-            self.settle(&mut w);
             w.unsent = Some(if !path {
                 RefusalCode::UnsentTargetNotPath
             } else if !named {
@@ -1355,15 +1364,16 @@ impl EgressFarEnd<'_> {
                 // `crates/busbar/src/proxy/engine/mod.rs:1514-1526`, `:1621-1631`).
                 w.walk.refuse(Shed::internal());
             }
+            drop(w);
+            self.settle();
             return false;
         }
         // A pin no address reads from sends nothing: it could only have narrowed the dial.
         let Some(within) = pin.as_deref().map_or(Some(Vec::new()), |v| {
             busbar_contract::abi::host::conn::connector::within_of(v)
         }) else {
-            let mut w = self.lock();
-            self.settle(&mut w);
-            w.unsent = Some(RefusalCode::UnsentOpenRefused);
+            self.lock().unsent = Some(RefusalCode::UnsentOpenRefused);
+            self.settle();
             return false;
         };
         let url = join(&base_url, &request.target);
@@ -1398,9 +1408,8 @@ impl EgressFarEnd<'_> {
             let Some(handle) = handle else {
                 // Nothing was sent: the dispatch record is abandoned, nothing is recorded
                 // against the destination, and the unit is refused before its next member.
-                let mut w = self.lock();
-                self.settle(&mut w);
-                w.refused = Some(ReasonCode::CredentialUnavailable);
+                self.lock().refused = Some(ReasonCode::CredentialUnavailable);
+                self.settle();
                 return false;
             };
             match self
@@ -1410,9 +1419,8 @@ impl EgressFarEnd<'_> {
                 Some(fields) => auth = fields,
                 None => {
                     // Not the destination's fault: nothing recorded against it; the next member.
-                    let mut w = self.lock();
-                    self.settle(&mut w);
-                    w.unsent = Some(RefusalCode::UnsentAuthFailed);
+                    self.lock().unsent = Some(RefusalCode::UnsentAuthFailed);
+                    self.settle();
                     return false;
                 }
             }
@@ -1558,8 +1566,7 @@ impl EgressFarEnd<'_> {
             // and the destination did not fail. Nothing is recorded against it; the next member,
             // as for an auth that answers no fields.
             Err(err) if err.is_auth() => {
-                let mut w = self.lock();
-                self.settle(&mut w);
+                self.settle();
                 false
             }
             Err(err) => {
@@ -1658,8 +1665,7 @@ impl EgressFarEnd<'_> {
             // An auth outcome before any answer: nothing recorded against the destination; the
             // next member (as at the open).
             Ok(Err(err)) if !answered && err.is_auth() => {
-                let mut w = self.lock();
-                self.settle(&mut w);
+                self.settle();
                 return Some(fail_over());
             }
             Ok(Err(err)) if !answered => {
@@ -1778,8 +1784,9 @@ impl EgressFarEnd<'_> {
             }
         }
         delivered(live, &out, self.route.wants_stream);
+        drop(w);
         if out.last {
-            self.settle_read(&mut w);
+            self.settle_read();
         }
         out
     }
@@ -1792,10 +1799,11 @@ impl EgressFarEnd<'_> {
         };
         let piece = cap(live, piece);
         delivered(live, &piece, self.route.wants_stream);
+        drop(w);
         if piece.last {
             // The rest is never read: the connection closes and the member's slot frees, once the
             // plane has read this last piece where its reading is awaited.
-            self.settle_read(&mut w);
+            self.settle_read();
         }
         piece
     }
@@ -1839,12 +1847,13 @@ impl EgressFarEnd<'_> {
     /// The answer ended: `clean` keeps the budget unit its success spent.
     fn end(&self, clean: bool) -> FarPiece {
         let mut w = self.lock();
+        let mut refund = None;
         if let Some(live) = w.live.as_mut() {
             if !clean && live.spent && !live.delivered {
                 // A delivery that did not complete gives its budget unit back unless a byte of a
                 // streamed answer was delivered: a mid-stream cut is not a refund (spec Part 2 #62,
                 // #77(2)); a buffered answer delivered nothing (v1.5.5 `engine/mod.rs:329-353`).
-                self.breaker().refund_budget(live.member.destination);
+                refund = Some(live.member.destination);
             }
             live.kept = clean && live.spent;
             live.spent = false;
@@ -1872,7 +1881,11 @@ impl EgressFarEnd<'_> {
                 });
             }
         }
-        self.settle_read(&mut w);
+        drop(w);
+        if let Some(destination) = refund {
+            self.breaker().refund_budget(destination);
+        }
+        self.settle_read();
         FarPiece {
             last: true,
             ..FarPiece::default()
@@ -1914,7 +1927,8 @@ impl EgressFarEnd<'_> {
             if matches!(status.class, Some(WireStatusClass::Success) | None) {
                 self.breaker()
                     .probed(destination, Outcome::Success, now, token);
-                self.settle(&mut w);
+                drop(w);
+                self.settle();
             } else {
                 live.unjudged = Some(Unjudged {
                     classified: self.breaker().classify(destination, status),
@@ -1988,8 +2002,9 @@ impl EgressFarEnd<'_> {
                     cut: false,
                 },
             );
+            drop(w);
             if piece.last {
-                self.settle_read(&mut w);
+                self.settle_read();
             }
             return piece;
         }
@@ -2067,7 +2082,8 @@ impl EgressFarEnd<'_> {
                         .refused_for_size(&e.ports(self.breaker()), &pool, &failed);
                 }
                 w.failed = Some(classified.label);
-                self.settle(&mut w);
+                drop(w);
+                self.settle();
             }
         }
         fail_over()
@@ -2078,8 +2094,13 @@ impl Drop for EgressFarEnd<'_> {
     /// A unit dropped mid-attempt settles it: the connection closed, the permit and an owned probe
     /// given back, the budget unit of a delivery that did not complete refunded.
     fn drop(&mut self) {
-        let mut w = self.lock();
-        self.settle(&mut w);
+        let live = self
+            .state
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .live
+            .take();
+        self.retire(live);
     }
 }
 
@@ -2130,10 +2151,13 @@ impl FarEnd for EgressFarEnd<'_> {
         // A clean end that the plane reads as failed delivered nothing (a buffered answer reaches
         // the caller whole or not at all; a streamed one that delivered a byte is no refund, #62):
         // the unit its success kept is given back, once.
-        if fault != FAULT_NONE && live.ended && live.kept && !live.delivered && !live.taken {
-            live.kept = false;
-            self.breaker().refund_budget(live.member.destination);
-        }
+        let refund =
+            if fault != FAULT_NONE && live.ended && live.kept && !live.delivered && !live.taken {
+                live.kept = false;
+                Some(live.member.destination)
+            } else {
+                None
+            };
         // THE DEFERRAL (ARCHITECT row 68): a relayed non-success answer is recorded on the plane's
         // FIRST STATED reading of it. A piece the plane reads with no reading (`FAULT_NONE`) keeps
         // the wait, bounded by the answer: once its last piece has been read with none, the
@@ -2141,8 +2165,13 @@ impl FarEnd for EgressFarEnd<'_> {
         if fault != FAULT_NONE || live.ended {
             self.record_unjudged(live, Some((token, fault)));
         }
-        if live.ended {
-            self.settle(&mut w);
+        let ended = live.ended;
+        drop(w);
+        if let Some(destination) = refund {
+            self.breaker().refund_budget(destination);
+        }
+        if ended {
+            self.settle();
         }
     }
 

@@ -24,6 +24,9 @@ mod close_cases;
 #[path = "support/plane_driver_session_input_cases.rs"]
 mod session_input_cases;
 
+#[path = "support/plane_driver_retirement_cases.rs"]
+mod retirement_cases;
+
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -264,6 +267,8 @@ struct WakeLine {
 #[derive(Default)]
 struct Sessions {
     open: Mutex<Vec<u64>>,
+    initials: AtomicU64,
+    server_first: AtomicBool,
     read: Mutex<Vec<(u64, Vec<u8>)>>,
     read_at: Mutex<Vec<usize>>,
     collects: AtomicU64,
@@ -717,15 +722,43 @@ impl Double {
             }
             FROM_CALLER => {
                 let body = bytes(i.bytes).to_vec();
+                let initial = {
+                    let mut open = s.open.lock().unwrap();
+                    let initial = !open.contains(&i.stream);
+                    if initial {
+                        open.push(i.stream);
+                    }
+                    initial
+                };
+                if initial && body.is_empty() {
+                    s.initials.fetch_add(1, Ordering::SeqCst);
+                    if s.server_first.load(Ordering::SeqCst) {
+                        let mut at = 0;
+                        o.verb = put(i, &mut at, b"GET");
+                        o.target = put(i, &mut at, b"/open");
+                        o.arena_written = at as u64;
+                        o.flags = EMIT_TO_FAR_END;
+                    }
+                    return ready(Outcome::Ready);
+                }
                 s.read_at.lock().unwrap().push(i.bytes.ptr as usize);
                 s.read.lock().unwrap().push((i.stream, body.clone()));
-                s.open.lock().unwrap().push(i.stream);
+                if s.server_first.load(Ordering::SeqCst) {
+                    reply(o, &body);
+                    o.flags = EMIT_TO_FAR_END;
+                    return ready(Outcome::Ready);
+                }
                 o.reply_status = 200;
                 reply(o, &[b"open:".as_slice(), &body].concat());
             }
             FROM_KERNEL if i.attempt_no == 0 => {
                 s.collects.fetch_add(1, Ordering::SeqCst);
                 reply(o, b"keepalive;");
+            }
+            FROM_KERNEL if s.server_first.load(Ordering::SeqCst) => {}
+            FROM_FAR_END if s.server_first.load(Ordering::SeqCst) => {
+                o.reply_status = 200;
+                reply(o, bytes(i.bytes));
             }
             _ => return ready(Outcome::Refused),
         }
