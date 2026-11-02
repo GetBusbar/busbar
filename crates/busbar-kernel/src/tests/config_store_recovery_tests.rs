@@ -314,3 +314,90 @@ fn malformed_and_conflicting_bootstrap_pins_cannot_authorize_native_code() {
         .is_err());
     }
 }
+
+#[test]
+fn root_recovery_can_run_before_hydration_without_changing_standalone_builds() {
+    use busbar_contract::records::{UsageLedger, VirtualKey};
+    use std::sync::Arc;
+
+    let _limits_lock = crate::config::limits::LIMITS_TEST_LOCK.blocking_lock();
+    crate::test_support::register_neutral_test_plane();
+    crate::snapshot::init();
+    let _fixture = crate::test_support::TestApp::new();
+    for recover_first in [false, true] {
+        let cfg = crate::test_support::cfg_with_provider_api_key(crate::config::SecretRef::none());
+        let opened =
+            crate::appbuild::bootstrap_config_store(&cfg, &crate::config::PluginsCfg::default())
+                .unwrap();
+        let records = Arc::clone(&opened.records);
+        let id = "vk_recovery_boot_order";
+        records
+            .put_key(&VirtualKey {
+                id: id.into(),
+                name: "recovery boot ordering".into(),
+                generation_hash: format!("binding:{id}:public-generation"),
+                enabled: true,
+                ..Default::default()
+            })
+            .unwrap();
+        records
+            .put_usage(
+                id,
+                0,
+                &UsageLedger {
+                    requests: 7,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let rules: Arc<dyn crate::appbuild::RootRules> = Arc::new(AcceptAll);
+        let (app, _, _limits) = crate::appbuild::build_app_from_config_with_store(
+            cfg,
+            crate::config::PluginsCfg::default(),
+            None,
+            Default::default(),
+            Default::default(),
+            (None, None),
+            None,
+            &rules,
+            Some(opened),
+            recover_first,
+        )
+        .unwrap();
+        records
+            .put_usage(
+                id,
+                0,
+                &UsageLedger {
+                    requests: 11,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let gov = app.governance.as_ref().unwrap();
+        let now = crate::store::now();
+        assert_eq!(
+            gov.usage_for(&app.cost, id, now).unwrap().unwrap().requests,
+            if recover_first { 11 } else { 7 },
+            "only the explicit recovery boot postpones its initial Store snapshot"
+        );
+        if recover_first {
+            gov.hydrate_budgets(&app.cost, now).unwrap();
+            records
+                .put_usage(
+                    id,
+                    0,
+                    &UsageLedger {
+                        requests: 13,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            assert_eq!(
+                gov.usage_for(&app.cost, id, now).unwrap().unwrap().requests,
+                11,
+                "the recovery boot explicitly installs the fresh snapshot before serving"
+            );
+        }
+    }
+}
