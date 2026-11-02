@@ -782,7 +782,21 @@ fn gate_transport_uncached(
     hook: &crate::config::HookCfg,
     env: &HookEnv,
 ) -> Option<(Arc<dyn RoutingPolicy>, ResolvedSettings)> {
-    let resolved = match env.resolve_hook_settings(&hook.plugin, &hook.settings) {
+    open_resolved(
+        name,
+        hook,
+        env.resolve_hook_settings(&hook.plugin, &hook.settings),
+        |resolved| env.open(&hook.plugin, resolved, name, hook.timeout_ms),
+    )
+}
+
+fn open_resolved<T>(
+    name: &str,
+    hook: &crate::config::HookCfg,
+    settings: Result<ResolvedSettings, String>,
+    open: impl FnOnce(&ResolvedSettings) -> Result<T, String>,
+) -> Option<(T, ResolvedSettings)> {
+    let resolved = match settings {
         Ok(r) => r,
         Err(e) => {
             tracing::warn!(
@@ -793,7 +807,7 @@ fn gate_transport_uncached(
             return None;
         }
     };
-    match env.open(&hook.plugin, &resolved, name, hook.timeout_ms) {
+    match open(&resolved) {
         Ok(policy) => Some((policy, resolved)),
         Err(e) => {
             tracing::warn!(
@@ -822,6 +836,13 @@ mod resolution {
     }
 
     impl Paths {
+        pub(super) fn matches(
+            &self,
+            registry: &std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>,
+        ) -> bool {
+            std::sync::Weak::ptr_eq(&self.registry, &std::sync::Arc::downgrade(registry))
+        }
+
         pub(super) fn new(
             registry: &std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>,
         ) -> std::sync::Arc<Self> {
@@ -868,17 +889,27 @@ mod resolution {
         hook: &crate::config::HookCfg,
         env: &super::HookEnv,
     ) -> Option<u64> {
-        use busbar_contract::secret_fields;
-        use std::hash::{Hash as _, Hasher as _};
-
-        if !std::sync::Weak::ptr_eq(
-            &env.resolution_paths.registry,
-            &std::sync::Arc::downgrade(&env.registry),
-        ) {
+        if !env.resolution_paths.matches(&env.registry) {
             return None;
         }
 
         let paths = env.resolution_paths.modules.get(&hook.plugin)?;
+        key_for_settings(
+            std::sync::Arc::as_ptr(&env.registry) as *const u8 as usize,
+            name,
+            hook,
+            paths,
+        )
+    }
+
+    pub(super) fn key_for_settings(
+        registry: usize,
+        name: &str,
+        hook: &crate::config::HookCfg,
+        paths: &[String],
+    ) -> Option<u64> {
+        use busbar_contract::secret_fields;
+        use std::hash::{Hash as _, Hasher as _};
         let settings = serde_json::Value::Object(hook.settings.clone());
 
         if secret_fields::undeclared_reference(&settings, &[]).is_some()
@@ -890,7 +921,7 @@ mod resolution {
         }
         let mut h = std::collections::hash_map::DefaultHasher::new();
 
-        (std::sync::Arc::as_ptr(&env.registry) as *const u8 as usize).hash(&mut h);
+        registry.hash(&mut h);
         name.hash(&mut h);
         hook.plugin.hash(&mut h);
         super::policy_timeout(hook.timeout_ms).hash(&mut h);
@@ -1029,20 +1060,31 @@ pub async fn push_configure(
     settings_version: u64,
     env: &HookEnv,
 ) -> Result<(), String> {
-    let Some((transport, resolved)) =
-        gate_transport_offloaded(name, hook, env, settings_version).await
-    else {
+    configure_resolved(
+        gate_transport_offloaded(name, hook, env, settings_version).await,
+        |transport, resolved| async move {
+            transport
+                .configure(
+                    name,
+                    &resolved,
+                    settings_version,
+                    applied_deadline(CONFIGURE_TIMEOUT_MS),
+                )
+                .await
+                .map_err(|e| e.to_string())
+        },
+    )
+    .await
+}
+
+async fn configure_resolved<T, F: std::future::Future<Output = Result<(), String>>>(
+    loaded: Option<(T, ResolvedSettings)>,
+    configure: impl FnOnce(T, ResolvedSettings) -> F,
+) -> Result<(), String> {
+    let Some((transport, resolved)) = loaded else {
         return Err("hook plugin unresolvable".to_string());
     };
-    transport
-        .configure(
-            name,
-            &resolved,
-            settings_version,
-            applied_deadline(CONFIGURE_TIMEOUT_MS),
-        )
-        .await
-        .map_err(|e| e.to_string())
+    configure(transport, resolved).await
 }
 
 const TRANSPORT_RESOLVE_TIMEOUT_MS: u64 = CONFIGURE_TIMEOUT_MS;
