@@ -509,7 +509,7 @@ pub(super) fn group_orphans(
         .flatten()
         .map(|(ticket, entry)| {
             for id in &entry.conns {
-                drop(super::conn_services::forget(*id, ticket));
+                drop(crate::dispatch::conn_services::forget(*id, ticket));
             }
             entry
         })
