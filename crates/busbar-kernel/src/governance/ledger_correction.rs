@@ -10,6 +10,7 @@ struct Intent {
     pool: String,
     model: String,
     era: u64,
+    entry_id: Option<[u8; 12]>,
     epoch: u64,
     delta: BTreeMap<String, i64>,
 }
@@ -19,6 +20,7 @@ impl Intent {
             pool: adj.pool.into(),
             model: adj.model.into(),
             era: adj.entry_era,
+            entry_id: adj.entry_id.map(|id| id.0),
             epoch: adj.card_epoch_ms,
             delta: adj.delta.clone(),
         }
@@ -481,12 +483,20 @@ fn unique_metered_era(adj: &Adjustment<'_>, rows: &[MeteringRow]) -> RecordStore
             effective_from: row.priced_from_ms,
             entry_id: id,
         };
+        if adj.entry_id.is_some_and(|expected| Some(expected) != era.entry_id) {
+            continue;
+        }
         if captured.is_some_and(|previous| previous != era) {
             return Err(RecordStoreError(
                 "correction timestamp names multiple raw rate entries".into(),
             ));
         }
         captured = Some(era);
+    }
+    if adj.entry_id.is_some() && captured.is_none() {
+        return Err(RecordStoreError(
+            "correction names no matching exact metering rate entry".into(),
+        ));
     }
     Ok(captured.unwrap_or_else(|| RawRateEra::legacy(adj.entry_era)))
 }
@@ -517,7 +527,12 @@ fn check_metered(
     }
     let rows: Vec<_> = lane
         .into_iter()
-        .filter(|row| row.priced_from_ms == adj.entry_era)
+        .filter(|row| {
+            row.priced_from_ms == adj.entry_era
+                && adj.entry_id.is_none_or(|id| {
+                    EntryId::parse_metering_version(&row.pricing_version) == Some(Some(id))
+                })
+        })
         .collect();
     if rows.is_empty() {
         return Err(AdjustRefused::NotMetered { day });
