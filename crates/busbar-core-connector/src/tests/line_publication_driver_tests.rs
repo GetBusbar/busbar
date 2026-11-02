@@ -967,3 +967,158 @@ fn refusal_of_the_first_preaccepted_source_cancels_later_sources_without_crossin
     assert_eq!(pairing.publication_outcome(), outcome);
     assert_eq!(pairing.memory_account().used(), 0);
 }
+
+#[test]
+fn a_real_credit_refusal_cancels_a_partial_frontier_instead_of_waiting_on_queued_readers() {
+    const LIMIT: usize = 512 * 1024;
+    let caller = Arc::new(Script::default());
+    let upstream = Arc::new(Script::default());
+    let pairing = pairing_over(&caller, Some(LIMIT));
+    let now = Instant::now();
+    pairing.sort(Leg::Caller, vec![got(10, b"kind: opaque\r\n", true)], now);
+    pairing.sort(Leg::Upstream, vec![got(20, b"kind: opaque\r\n", true)], now);
+    pairing
+        .attach(upstream.clone() as Arc<dyn LegSink>)
+        .unwrap();
+    let memory = pairing.memory_account();
+    let mut retained = pairing.publish(
+        Leg::Caller,
+        {
+            let mut y = Yielded::default();
+            y.pieces = vec![got(99, &vec![b'x'; 4096], false), got(99, b"", false)];
+            y
+        },
+        now,
+    );
+    let readers = retained
+        .owners
+        .iter()
+        .map(|owner| owner.reader_on(Leg::Caller))
+        .collect::<Vec<_>>();
+    // This batch has completed its handoff: its queued readers own storage, but
+    // no active producer or consumption transfer can make independent progress.
+    retained.producer = crate::publication::ProducerCustody::default();
+    caller.then(|input| {
+        assert_eq!(input.unwrap().bytes, b"seed");
+        LineStep::Batch {
+            yielded: {
+                let mut y = Yielded::default();
+                y.pieces = vec![got(10, b"first", false), got(10, b"second", false)];
+                y
+            },
+            accepted: true,
+        }
+    });
+    upstream.then(|input| {
+        assert_eq!(input.unwrap().bytes, b"first");
+        LineStep::Batch {
+            yielded: {
+                let mut y = Yielded::default();
+                y.pieces = vec![got(20, b"feedback", false)];
+                y
+            },
+            accepted: true,
+        }
+    });
+    let pressure = Arc::new(Mutex::new(None));
+    let held = pressure.clone();
+    let credit = memory.clone();
+    upstream.then(move |input| {
+        assert_eq!(input.unwrap().bytes, b"second");
+        let overhead = crate::publication::Memory::reservation_size(0).unwrap();
+        let remaining = LIMIT - credit.used() - overhead;
+        *held.lock().unwrap() = Some(credit.reserve(remaining).unwrap());
+        assert!(
+            credit.reserve(1).is_none(),
+            "the next crossing genuinely has no storage credit"
+        );
+        LineStep::Credit
+    });
+    let custody = pairing.reserve_input_for(Leg::Caller, 4).unwrap();
+    pairing
+        .submit_owned(
+            Leg::Caller,
+            Across {
+                stream: 1,
+                bytes: b"seed".to_vec(),
+                end_of_frame: true,
+            },
+            false,
+            custody,
+        )
+        .unwrap();
+    let outcome = drive(&pairing, &caller);
+    assert_eq!(
+        outcome.failure.as_deref(),
+        Some(crate::datagram::LINE_MEMORY_EXHAUSTED)
+    );
+    assert_eq!(
+        (
+            outcome.original_bytes,
+            outcome.original_handed_bytes,
+            outcome.original_cancelled_bytes,
+            outcome.original_uncertain_bytes
+        ),
+        (4, 4, 0, 0)
+    );
+    assert_eq!(
+        (
+            outcome.accepted_frames,
+            outcome.handed_frames,
+            outcome.cancelled_frames,
+            outcome.uncertain_frames
+        ),
+        (3, 1, 2, 0)
+    );
+    assert_eq!(
+        (
+            outcome.accepted_bytes,
+            outcome.handed_bytes,
+            outcome.cancelled_bytes,
+            outcome.uncertain_bytes
+        ),
+        (19, 5, 14, 0)
+    );
+    assert_eq!(
+        outcome.accepted_frames,
+        outcome.handed_frames + outcome.cancelled_frames
+    );
+    assert_eq!(
+        outcome.accepted_bytes,
+        outcome.handed_bytes + outcome.cancelled_bytes
+    );
+    assert_eq!(
+        caller
+            .crossed()
+            .into_iter()
+            .flatten()
+            .map(|input| input.bytes)
+            .collect::<Vec<_>>(),
+        vec![b"seed".to_vec()],
+        "accepted source and cancelled feedback are never replayed"
+    );
+    assert_eq!(
+        upstream
+            .crossed()
+            .into_iter()
+            .flatten()
+            .map(|input| input.bytes)
+            .collect::<Vec<_>>(),
+        vec![b"first".to_vec(), b"second".to_vec()]
+    );
+    assert_eq!(retained.pieces[0].bytes, vec![b'x'; 4096]);
+    assert!(retained.pieces[1].bytes.is_empty());
+    assert!(memory.used() <= LIMIT);
+    assert!(pairing.closed());
+    assert_eq!(
+        (
+            caller.closed.load(Ordering::SeqCst),
+            upstream.closed.load(Ordering::SeqCst)
+        ),
+        (1, 1)
+    );
+    drop(pressure.lock().unwrap().take());
+    drop(readers);
+    drop(retained);
+    assert_eq!(memory.used(), 0);
+}
