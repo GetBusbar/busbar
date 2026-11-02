@@ -151,6 +151,7 @@ impl GovState {
                     .map(|t| busbar_contract::redacted::sha256_hex(t.as_bytes())),
             ),
             budget: Sharded::new(),
+            recovery_book: recovery::RecoveryBook::default(),
             correction_claims: claims::ClaimSet::new(),
             corrections: std::sync::Mutex::new(HashMap::new()),
             budget_flushes: std::sync::Mutex::new(std::collections::BTreeMap::new()),
@@ -1931,6 +1932,11 @@ impl GovState {
             }
         };
         let mut unresolved_corrections = self.retry_usage_corrections();
+        if self.recovery_enabled() {
+            if let Err(error) = self.resume_raw_recovery() {
+                unresolved_corrections.push(error.to_string());
+            }
+        }
 
         for mut map in self.budget.write_all() {
             for (id, cell) in map.iter_mut() {

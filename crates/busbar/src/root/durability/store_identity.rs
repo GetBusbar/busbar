@@ -381,12 +381,75 @@ pub fn take_node(calls: &dyn StoreCalls, host: &str) -> Result<TakenNode, String
 #[derive(Debug, Default)]
 pub struct HeldLease {
     lease: std::sync::Mutex<Option<NodeLease>>,
+    recovery_identity: std::sync::Mutex<Option<(u64, Predicate)>>,
     /// The checkpoint flush ticks counted since the lease was last refreshed.
     ticks: std::sync::atomic::AtomicU32,
     lost: std::sync::atomic::AtomicBool,
 }
 
 impl HeldLease {
+    pub(super) fn bind_recovery_identity(
+        &self,
+        calls: &dyn StoreCalls,
+        host: &str,
+        node: u64,
+    ) -> Result<(), String> {
+        let held = self.lock().clone();
+        if held.as_ref().is_some_and(|lease| lease.host != host) {
+            return Err("the recovery node belongs to another host lease".into());
+        }
+        let mut key = host_key(host);
+        if held.is_none() {
+            // take_node's existing fresh-node branch has an immutable, uniquely minted registry
+            // row rather than a host lease. Preserve that mode and bind its exact namespace.
+            key.push(0);
+            key.extend_from_slice(format!("{node:016x}").as_bytes());
+        }
+        let predicate = Predicate {
+            schema: NODE_SCHEMA.into(),
+            key,
+            expected: Expected::Bytes(node.to_be_bytes().to_vec()),
+        };
+        let actual = wait_for(calls.record_get(&predicate.schema, &predicate.key))
+            .map_err(|why| format!("the recovery node registry is unreadable: {why}"))?;
+        if actual.as_ref().map(RecordBytes::as_slice) != Some(node.to_be_bytes().as_slice()) {
+            return Err("the recovery journal node does not match its registry identity".into());
+        }
+        *self
+            .recovery_identity
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some((node, predicate));
+        Ok(())
+    }
+
+    pub(super) fn recovery_predicates(
+        &self,
+        calls: &dyn StoreCalls,
+        node: u64,
+    ) -> Result<Vec<Predicate>, String> {
+        let (bound, identity) = self
+            .recovery_identity
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+            .ok_or_else(|| "the recovery journal has no boot-bound node identity".to_string())?;
+        if node != bound {
+            return Err("the recovery record names another journal node".into());
+        }
+        let mut predicates = self.predicate(calls)?.into_iter().collect::<Vec<_>>();
+        let actual = wait_for(calls.record_get(&identity.schema, &identity.key))
+            .map_err(|why| format!("the recovery node registry is unreadable: {why}"))?;
+        if actual
+            .as_ref()
+            .map(|v| Expected::Bytes(v.as_slice().to_vec()))
+            != Some(identity.expected.clone())
+        {
+            return Err("the recovery journal's registered identity changed".into());
+        }
+        predicates.push(identity);
+        Ok(predicates)
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Option<NodeLease>> {
         self.lease
             .lock()

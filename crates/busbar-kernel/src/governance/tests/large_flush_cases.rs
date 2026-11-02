@@ -808,3 +808,6 @@ fn deletion_excludes_new_large_flight_capture_until_the_key_purge_finishes() {
     assert!(!gov.budget.read(&key.id).contains_key(&key.id));
     assert!(gov.deleting_budget_buckets.lock().unwrap().is_empty());
 }
+
+#[path = "budget_flusher_recovery_cases.rs"]
+mod budget_flusher_recovery_cases;

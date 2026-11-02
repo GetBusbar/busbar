@@ -92,6 +92,7 @@ pub enum Cond {
     GovernanceOff,
     NoSigningKey,
     IdempotencyInFlight,
+    RecoveryConflict,
     AtKeyCap,
     ParentWithoutGroup,
     KeyExpiryFields,
@@ -143,6 +144,7 @@ impl Cond {
             Cond::StillParent => "another group still names it as parent",
             Cond::GovernanceOff => "governance is not enabled on this server",
             Cond::NoSigningKey => "no signing key is configured for signed-token minting",
+            Cond::RecoveryConflict => "the retained operation, recovery version, verdict or resolution authority conflicts with the request",
             Cond::IdempotencyInFlight => "an `Idempotency-Key` request is already in flight",
             Cond::AtKeyCap => "the group is at the `limits.max_keys_per_principal` cap",
             Cond::ParentWithoutGroup => "`parent` was given without `group`",
@@ -257,6 +259,10 @@ pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
         };
     }
     match (method, rel) {
+        (Post, "/ledger/recovery/list") => de![Validation / MalformedBody],
+        (Post, "/ledger/recovery/resolve") => {
+            de![Validation / MalformedBody, Conflict / RecoveryConflict]
+        }
         (Post, "/hooks") => de![
             Validation / MalformedBody,
             Validation / MalformedIfMatch,

@@ -4,43 +4,24 @@
 use super::*;
 use std::collections::BTreeMap;
 
-#[derive(Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct ExactModelDelta {
     pub(super) model: String,
+    #[serde(with = "decimal_units")]
     pub(super) usage_units: BTreeMap<String, i128>,
 }
-#[derive(Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct ExactUsageDelta {
+    #[serde(with = "decimal_count")]
     pub(super) requests: i128,
+    #[serde(with = "decimal_count")]
     pub(super) billable_requests: i128,
     pub(super) models: Vec<ExactModelDelta>,
 }
 impl ExactUsageDelta {
-    fn chunk(&self) -> UsageDelta {
-        let part = |count: i128| count.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64;
-        UsageDelta {
-            requests: part(self.requests),
-            billable_requests: part(self.billable_requests),
-            models: self
-                .models
-                .iter()
-                .filter_map(|model| {
-                    let usage_units: BTreeMap<_, _> = model
-                        .usage_units
-                        .iter()
-                        .filter(|(_, count)| **count != 0)
-                        .map(|(unit, count)| (unit.clone(), part(*count)))
-                        .collect();
-                    (!usage_units.is_empty()).then(|| busbar_contract::records::ModelTokensDelta {
-                        model: model.model.clone(),
-                        usage_units,
-                    })
-                })
-                .collect(),
-        }
-    }
-
-    fn subtract(&mut self, chunk: &UsageDelta) {
+    pub(super) fn subtract(&mut self, chunk: &UsageDelta) {
         let mut acknowledged = Self::from_signed(chunk);
         acknowledged.requests = -acknowledged.requests;
         acknowledged.billable_requests = -acknowledged.billable_requests;
@@ -60,7 +41,7 @@ impl ExactUsageDelta {
                 .iter()
                 .all(|model| model.usage_units.values().all(|count| *count == 0))
     }
-    fn unit(&mut self, model: &str, unit: &str, change: i128) {
+    pub(super) fn unit(&mut self, model: &str, unit: &str, change: i128) {
         if change == 0 {
             return;
         }
@@ -184,6 +165,224 @@ impl ExactUsageDelta {
     }
 }
 
+mod decimal_count {
+    use serde::{Deserialize, Deserializer, Serializer};
+    pub fn serialize<S: Serializer>(count: &i128, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&count.to_string())
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<i128, D::Error> {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(serde::de::Error::custom)
+    }
+}
+mod decimal_units {
+    use super::BTreeMap;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    pub fn serialize<S: Serializer>(
+        units: &BTreeMap<String, i128>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        units
+            .iter()
+            .map(|(unit, count)| (unit, count.to_string()))
+            .collect::<BTreeMap<_, _>>()
+            .serialize(serializer)
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<BTreeMap<String, i128>, D::Error> {
+        BTreeMap::<String, String>::deserialize(deserializer)?
+            .into_iter()
+            .map(|(unit, count)| {
+                count
+                    .parse()
+                    .map(|count| (unit, count))
+                    .map_err(serde::de::Error::custom)
+            })
+            .collect()
+    }
+}
+
+/// The aggregate row and its dated siblings are two views of the same facts.
+/// Allocation and chunking operate on these signed era segments, including the
+/// exact undated remainder, then rebuild both views together.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum UsageSegment {
+    Requests,
+    Fee(Option<String>),
+    Unit {
+        model: String,
+        unit: String,
+        era: Option<String>,
+    },
+}
+
+#[derive(Clone, Default)]
+pub(super) struct SegmentedUsage(BTreeMap<UsageSegment, i128>);
+impl SegmentedUsage {
+    pub(super) fn of(plain: &ExactUsageDelta, dated: &ExactUsageDelta) -> RecordStoreResult<Self> {
+        let invalid = || RecordStoreError("invalid aggregate/dated raw usage segments".into());
+        if dated.requests != 0 || dated.billable_requests != 0 {
+            return Err(invalid());
+        }
+        let mut legacy = plain.clone();
+        let mut result = Self::default();
+        let mut names = std::collections::BTreeSet::new();
+        for model in &dated.models {
+            if !names.insert(&model.model) {
+                return Err(invalid());
+            }
+            if let Some((era, name)) = model.model.split_once(ERA_MODEL_SEP) {
+                if name.is_empty() || parse_era_tag(era)?.is_none() {
+                    return Err(invalid());
+                }
+                for (unit, count) in &model.usage_units {
+                    result.0.insert(
+                        UsageSegment::Unit {
+                            model: name.into(),
+                            unit: unit.clone(),
+                            era: Some(era.into()),
+                        },
+                        *count,
+                    );
+                    legacy.unit(name, unit, -*count);
+                }
+            } else {
+                if parse_era_tag(&model.model)?.is_none() {
+                    return Err(invalid());
+                }
+                for (unit, count) in &model.usage_units {
+                    if unit != ERA_FEE_UNIT {
+                        return Err(invalid());
+                    }
+                    result
+                        .0
+                        .insert(UsageSegment::Fee(Some(model.model.clone())), *count);
+                    legacy.billable_requests -= *count;
+                }
+            }
+        }
+        result.0.insert(UsageSegment::Requests, legacy.requests);
+        result
+            .0
+            .insert(UsageSegment::Fee(None), legacy.billable_requests);
+        names.clear();
+        for model in &legacy.models {
+            if !names.insert(&model.model) {
+                return Err(invalid());
+            }
+            for (unit, count) in &model.usage_units {
+                result.0.insert(
+                    UsageSegment::Unit {
+                        model: model.model.clone(),
+                        unit: unit.clone(),
+                        era: None,
+                    },
+                    *count,
+                );
+            }
+        }
+        Ok(result)
+    }
+
+    pub(super) fn deltas(&self) -> (ExactUsageDelta, ExactUsageDelta) {
+        let mut plain = ExactUsageDelta::default();
+        let mut dated = ExactUsageDelta::default();
+        for (segment, count) in &self.0 {
+            Self::add(&mut plain, &mut dated, segment, *count);
+        }
+        (plain, dated)
+    }
+    fn add(
+        plain: &mut ExactUsageDelta,
+        dated: &mut ExactUsageDelta,
+        segment: &UsageSegment,
+        count: i128,
+    ) {
+        match segment {
+            UsageSegment::Requests => plain.requests += count,
+            UsageSegment::Fee(era) => {
+                plain.billable_requests += count;
+                if let Some(era) = era {
+                    dated.unit(era, ERA_FEE_UNIT, count);
+                }
+            }
+            UsageSegment::Unit { model, unit, era } => {
+                plain.unit(model, unit, count);
+                if let Some(era) = era {
+                    dated.unit(&format!("{era}{ERA_MODEL_SEP}{model}"), unit, count);
+                }
+            }
+        }
+    }
+    pub(super) fn positive(&self) -> Self {
+        Self(
+            self.0
+                .iter()
+                .filter(|(_, count)| **count > 0)
+                .map(|(segment, count)| (segment.clone(), *count))
+                .collect(),
+        )
+    }
+    pub(super) fn merge(&mut self, other: &Self) {
+        for (segment, count) in &other.0 {
+            *self.0.entry(segment.clone()).or_default() += *count;
+        }
+    }
+    pub(super) fn take_negatives(&mut self, capacity: Option<&Self>) -> Self {
+        let mut taken = Self::default();
+        for (segment, count) in &mut self.0 {
+            if *count >= 0 {
+                continue;
+            }
+            let bound = capacity.map_or(i128::MAX, |capacity| {
+                capacity.0.get(segment).copied().unwrap_or(0).max(0)
+            });
+            let amount = count.saturating_neg().min(bound);
+            *count += amount;
+            if amount != 0 {
+                taken.0.insert(segment.clone(), -amount);
+            }
+        }
+        taken
+    }
+    pub(super) fn is_zero(&self) -> bool {
+        self.0.values().all(|count| *count == 0)
+    }
+
+    pub(super) fn chunk(&self) -> (UsageDelta, UsageDelta) {
+        let mut plain = ExactUsageDelta::default();
+        let mut dated = ExactUsageDelta::default();
+        for (segment, count) in &self.0 {
+            let current = match segment {
+                UsageSegment::Requests => plain.requests,
+                UsageSegment::Fee(_) => plain.billable_requests,
+                UsageSegment::Unit { model, unit, .. } => plain
+                    .models
+                    .iter()
+                    .find(|row| row.model == *model)
+                    .and_then(|row| row.usage_units.get(unit))
+                    .copied()
+                    .unwrap_or(0),
+            };
+            let count = (*count)
+                .clamp(i128::from(i64::MIN), i128::from(i64::MAX))
+                .clamp(
+                    i128::from(i64::MIN) - current,
+                    i128::from(i64::MAX) - current,
+                );
+            Self::add(&mut plain, &mut dated, segment, count);
+        }
+        (
+            plain.signed().expect("chunk aggregate bounded per field"),
+            dated
+                .signed()
+                .expect("chunk dated segments bounded per field"),
+        )
+    }
+}
+
 /// One immutable wire operation. Its identity remains paired with its body through errors,
 /// unwinding, caller cancellation and a later flusher invocation.
 #[derive(Clone)]
@@ -206,6 +405,7 @@ pub(super) struct BudgetFlushFlight {
     window: u64,
     debt: std::sync::Mutex<FlightDebt>,
     runner: BudgetFlushRunner,
+    durable: Option<super::raw_recovery::DurableUsageFlight>,
 }
 
 /// A runner's ownership marker, never a mutex held across a store call. Both a whole flush and
@@ -299,38 +499,97 @@ impl GovState {
         windows.extend(cell.rolled.iter().map(|(window, _)| *window));
         windows.extend(cell.rolled_eras.iter().map(|(window, _)| *window));
         for window in windows {
+            let correcting = cell
+                .correction
+                .as_ref()
+                .is_some_and(|branch| branch.window == window);
             if cell.flushing_windows.contains_key(&window)
-                || cell
-                    .correction
-                    .as_ref()
-                    .is_some_and(|branch| branch.window == window)
+                || (correcting && !self.recovery_enabled())
             {
                 continue;
             }
+            let original = correcting.then(|| cell.clone());
+            let correction_debt = if correcting {
+                match Self::take_correction_positives(cell, window) {
+                    Ok(Some(debt)) => Some(debt),
+                    Ok(None) | Err(_) => continue,
+                }
+            } else {
+                None
+            };
             let mut plain = ExactUsageDelta::default();
             let mut dated = ExactUsageDelta::default();
             let mut requires_chunks = false;
-            for (_, debt) in cell.rolled.iter().filter(|(at, _)| *at == window) {
-                requires_chunks |= debt.signed().is_none();
-                plain.merge(debt);
-            }
-            for (_, debt) in cell.rolled_eras.iter().filter(|(at, _)| *at == window) {
-                requires_chunks |= debt.signed().is_none();
-                dated.merge(debt);
-            }
-            if cell.window_start == window {
-                let current = ExactUsageDelta::of(cell, false);
-                let current_dated = ExactUsageDelta::of(cell, true);
-                requires_chunks |= current.signed().is_none() || current_dated.signed().is_none();
-                plain.merge(&current);
-                dated.merge(&current_dated);
+            if let Some((correction_plain, correction_dated)) = correction_debt {
+                plain = correction_plain;
+                dated = correction_dated;
+            } else {
+                for (_, debt) in cell.rolled.iter().filter(|(at, _)| *at == window) {
+                    requires_chunks |= debt.signed().is_none();
+                    plain.merge(debt);
+                }
+                for (_, debt) in cell.rolled_eras.iter().filter(|(at, _)| *at == window) {
+                    requires_chunks |= debt.signed().is_none();
+                    dated.merge(debt);
+                }
+                if cell.window_start == window {
+                    let current = ExactUsageDelta::of(cell, false);
+                    let current_dated = ExactUsageDelta::of(cell, true);
+                    requires_chunks |=
+                        current.signed().is_none() || current_dated.signed().is_none();
+                    plain.merge(&current);
+                    dated.merge(&current_dated);
+                }
             }
             requires_chunks |= plain.signed().is_none() || dated.signed().is_none();
             if (plain.is_zero() && dated.is_zero())
                 || (!requires_chunks && !self.store.supports_usage_batch_deduped())
             {
+                if let Some(original) = original {
+                    *cell = original;
+                }
                 continue;
             }
+            let durable = if self.recovery_enabled() {
+                let prepared = if correcting {
+                    Self::usage_recovery_child(bucket, window, plain.clone(), dated.clone())
+                        .and_then(|child| {
+                            let Some(child) = child else {
+                                return Ok(super::raw_recovery::DurableUsageFlight {
+                                    child: None,
+                                    prerequisite: None,
+                                    deferred_plain: ExactUsageDelta::default(),
+                                    deferred_dated: ExactUsageDelta::default(),
+                                });
+                            };
+                            let parent =
+                                self.stage_correction_handoff(bucket, cell, window, child.clone())?;
+                            Ok(super::raw_recovery::DurableUsageFlight {
+                                child: Some(child),
+                                prerequisite: Some(parent),
+                                deferred_plain: ExactUsageDelta::default(),
+                                deferred_dated: ExactUsageDelta::default(),
+                            })
+                        })
+                } else {
+                    self.capture_usage_recovery(bucket, window, plain.clone(), dated.clone())
+                };
+                match prepared {
+                    Ok(flight) => Some(flight),
+                    Err(_) => {
+                        if let Some(original) = original {
+                            *cell = original;
+                        }
+                        continue;
+                    }
+                }
+            } else {
+                None
+            };
+            let (deferred_plain, deferred_dated) = durable
+                .as_ref()
+                .map(|flight| (flight.deferred_plain.clone(), flight.deferred_dated.clone()))
+                .unwrap_or_default();
             let flight = Arc::new(BudgetFlushFlight {
                 bucket: bucket.into(),
                 window,
@@ -341,6 +600,7 @@ impl GovState {
                     finished: false,
                 }),
                 runner: BudgetFlushRunner::default(),
+                durable,
             });
             self.budget_flushes
                 .lock()
@@ -348,16 +608,20 @@ impl GovState {
                 .insert((bucket.into(), window), flight.clone());
             captured.push(flight);
             cell.mutate(|cell| {
-                cell.rolled.retain(|(at, _)| *at != window);
-                cell.rolled_eras.retain(|(at, _)| *at != window);
-                if cell.window_start == window {
-                    cell.flushed_requests = cell.requests;
-                    cell.flushed_billable_requests = cell.billable_requests;
-                    cell.flushed_fee_eras = cell.fee_eras.clone();
-                    for model in &mut cell.models {
-                        model.flushed = model.cur.clone();
-                        model.flushed_era = model.cur.clone();
+                if !correcting {
+                    cell.rolled.retain(|(at, _)| *at != window);
+                    cell.rolled_eras.retain(|(at, _)| *at != window);
+                    if cell.window_start == window {
+                        cell.flushed_requests = cell.requests;
+                        cell.flushed_billable_requests = cell.billable_requests;
+                        cell.flushed_fee_eras = cell.fee_eras.clone();
+                        for model in &mut cell.models {
+                            model.flushed = model.cur.clone();
+                            model.flushed_era = model.cur.clone();
+                        }
                     }
+                    park_window(&mut cell.rolled, window, deferred_plain.clone());
+                    park_window(&mut cell.rolled_eras, window, deferred_dated.clone());
                 }
                 cell.flushing += 1;
                 *cell.flushing_windows.entry(window).or_default() += 1;
@@ -377,6 +641,18 @@ impl GovState {
             Err(message) => return (0, Some(RecordStoreError(message.into()))),
         };
         let mut confirmed = 0;
+        if let Some(durable) = &flight.durable {
+            if let Err(error) = self.drive_durable_usage_flight(durable) {
+                return (0, Some(error));
+            }
+            let mut debt = flight.debt.lock().unwrap_or_else(|p| p.into_inner());
+            debt.plain = ExactUsageDelta::default();
+            debt.dated = ExactUsageDelta::default();
+            confirmed = usize::from(durable.child.as_ref().is_some_and(|child| {
+                self.recovery_event(child.operation_id)
+                    .is_some_and(|event| event.state == recovery::RecoveryState::Settled)
+            }));
+        }
         loop {
             let chunk = {
                 let mut debt = flight.debt.lock().unwrap_or_else(|p| p.into_inner());
@@ -424,13 +700,24 @@ impl GovState {
                     }
                     drop(flights);
                     drop(cells);
+                    if let Some(child) = flight
+                        .durable
+                        .as_ref()
+                        .and_then(|durable| durable.child.as_ref())
+                    {
+                        self.forget_confirmed_recovery(child.operation_id);
+                    }
                     return (confirmed, None);
                 }
                 if debt.chunk.is_none() {
+                    let (plain, dated) = match SegmentedUsage::of(&debt.plain, &debt.dated) {
+                        Ok(segments) => segments.chunk(),
+                        Err(error) => return (confirmed, Some(error)),
+                    };
                     debt.chunk = Some(Chunk {
                         op: crate::door::op_id(),
-                        plain: debt.plain.chunk(),
-                        dated: debt.dated.chunk(),
+                        plain,
+                        dated,
                         started: std::time::Instant::now(),
                     });
                 }
@@ -507,5 +794,91 @@ impl GovState {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod recovery_math_tests {
+    use super::*;
+
+    fn unit(model: &str, input: i128) -> ExactUsageDelta {
+        let mut delta = ExactUsageDelta::default();
+        delta.unit(model, "input", input);
+        delta
+    }
+    fn input(delta: &ExactUsageDelta, model: &str) -> i128 {
+        delta
+            .models
+            .iter()
+            .find(|row| row.model == model)
+            .and_then(|row| row.usage_units.get("input"))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn net_positive_aggregate_does_not_hide_a_dependent_negative_era() {
+        let era_a = RawRateEra::entry(10, EntryId([1; 12]));
+        let era_b = RawRateEra::entry(10, EntryId([2; 12]));
+        let a = era_model(era_a, "model");
+        let b = era_model(era_b, "model");
+        let mut dated = unit(&a, -3);
+        dated.merge(&unit(&b, 5));
+        let mut remaining = SegmentedUsage::of(&unit("model", 2), &dated).unwrap();
+        let capacity = SegmentedUsage::of(&unit("model", 7), &unit(&a, 7)).unwrap();
+        let held = remaining.take_negatives(Some(&capacity));
+        let (held_plain, held_dated) = held.deltas();
+        assert_eq!(input(&held_plain, "model"), -3);
+        assert_eq!(input(&held_dated, &a), -3);
+        let (send_plain, send_dated) = remaining.deltas();
+        assert_eq!(input(&send_plain, "model"), 5);
+        assert_eq!(input(&send_dated, &b), 5);
+        assert_eq!(input(&send_dated, &a), 0);
+    }
+
+    #[test]
+    fn signed_wire_chunks_preserve_era_cancellation_above_i64() {
+        let a = era_model(RawRateEra::legacy(1), "model");
+        let b = era_model(RawRateEra::legacy(2), "model");
+        let mut plain = unit("model", 2);
+        let mut dated = unit(&a, -i128::from(i64::MAX) - 7);
+        dated.merge(&unit(&b, i128::from(i64::MAX) + 9));
+        let mut posted_plain = ExactUsageDelta::default();
+        let mut posted_dated = ExactUsageDelta::default();
+        for _ in 0..3 {
+            if plain.is_zero() && dated.is_zero() {
+                break;
+            }
+            let (chunk_plain, chunk_dated) = SegmentedUsage::of(&plain, &dated).unwrap().chunk();
+            let raw_plain = ExactUsageDelta::from_signed(&chunk_plain);
+            let raw_dated = ExactUsageDelta::from_signed(&chunk_dated);
+            assert_eq!(
+                input(&raw_plain, "model"),
+                input(&raw_dated, &a) + input(&raw_dated, &b)
+            );
+            plain.subtract(&chunk_plain);
+            dated.subtract(&chunk_dated);
+            posted_plain.merge(&raw_plain);
+            posted_dated.merge(&raw_dated);
+        }
+        assert!(plain.is_zero() && dated.is_zero());
+        assert_eq!(input(&posted_plain, "model"), 2);
+        assert_eq!(input(&posted_dated, &a), -i128::from(i64::MAX) - 7);
+        assert_eq!(input(&posted_dated, &b), i128::from(i64::MAX) + 9);
+    }
+
+    #[test]
+    fn custody_json_preserves_full_signed_counts_through_origin_value_rewrite() {
+        let delta = ExactUsageDelta {
+            requests: i128::MAX,
+            billable_requests: i128::MIN,
+            ..unit("model", i128::MAX)
+        };
+        let encoded = serde_json::to_vec(&delta).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(value["requests"], i128::MAX.to_string());
+        assert_eq!(value["billable_requests"], i128::MIN.to_string());
+        let decoded: ExactUsageDelta = serde_json::from_value(value).unwrap();
+        assert_eq!(decoded, delta);
     }
 }

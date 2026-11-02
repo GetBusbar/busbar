@@ -14,6 +14,7 @@ pub mod idempotency;
 
 pub mod planeverbs;
 pub mod rate;
+mod recovery;
 pub mod refusal;
 
 #[cfg(any(test, feature = "test-support"))]
