@@ -66,7 +66,7 @@ async fn respond_maps_ok_and_err() {
 #[cfg(feature = "openapi-schema")]
 #[test]
 fn openapi_doc_is_31_and_v1_prefixed() {
-    let doc = openapi_doc_seamed();
+    let doc = openapi_doc();
     assert!(
         doc["openapi"].as_str().unwrap().starts_with("3.1"),
         "discovery doc is OpenAPI 3.1"
@@ -84,7 +84,7 @@ fn openapi_doc_is_31_and_v1_prefixed() {
 #[cfg(feature = "openapi-schema")]
 #[test]
 fn emit_openapi_artifact() {
-    let doc = openapi_doc_seamed();
+    let doc = openapi_doc();
     assert!(
         doc["openapi"]
             .as_str()
@@ -114,7 +114,7 @@ fn openapi_paths_annotate_required_scope() {
         "full"
     }
 
-    let doc = openapi_doc_seamed();
+    let doc = openapi_doc();
     let paths = doc["paths"].as_object().expect("paths object");
     assert!(!paths.is_empty());
     let mut checked = 0usize;
@@ -163,7 +163,7 @@ fn openapi_never_emits_a_boolean_items_subschema() {
             _ => {}
         }
     }
-    let doc = openapi_doc_seamed();
+    let doc = openapi_doc();
     let mut offenders = Vec::new();
     walk(&doc, "", &mut offenders);
     assert!(
@@ -176,7 +176,7 @@ fn openapi_never_emits_a_boolean_items_subschema() {
 #[test]
 fn openapi_error_enum_matches_admin_error_codes() {
     use std::collections::BTreeSet;
-    let doc = openapi_doc_seamed();
+    let doc = openapi_doc();
     let enum_codes: BTreeSet<String> = doc["components"]["schemas"]["Error"]["properties"]["error"]
         ["properties"]["code"]["enum"]
         .as_array()
@@ -215,7 +215,7 @@ fn openapi_error_enum_matches_admin_error_codes() {
 #[cfg(feature = "openapi-schema")]
 #[test]
 fn openapi_documents_the_loops_503_on_every_operation_it_walks() {
-    let doc = openapi_doc_seamed();
+    let doc = openapi_doc();
     let codes =
         &doc["components"]["schemas"]["Error"]["properties"]["error"]["properties"]["code"]["enum"];
     assert!(
@@ -258,7 +258,7 @@ fn openapi_documents_the_loops_503_on_every_operation_it_walks() {
 #[cfg(feature = "openapi-schema")]
 #[test]
 fn openapi_hook_escalation_endpoints_document_403() {
-    let doc = openapi_doc_seamed();
+    let doc = openapi_doc();
     let cases = [
         ("/api/v1/admin/hooks", "post"),
         ("/api/v1/admin/hooks/{name}", "put"),
@@ -278,12 +278,6 @@ const COMMITTED_OPENAPI_PATH: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/src/v1/json/openapi.json");
 
 #[cfg(feature = "openapi-schema")]
-fn openapi_doc_seamed() -> serde_json::Value {
-    crate::ensure_seam();
-    openapi_doc()
-}
-
-#[cfg(feature = "openapi-schema")]
 #[test]
 fn served_openapi_equals_committed_file() {
     let committed =
@@ -294,7 +288,7 @@ fn served_openapi_equals_committed_file() {
 #[cfg(feature = "openapi-schema")]
 #[test]
 fn restart_request_body_is_documented_optional() {
-    let doc = openapi_doc_seamed();
+    let doc = openapi_doc();
     let required = &doc["paths"]["/api/v1/admin/restart"]["post"]["requestBody"]["required"];
     assert_eq!(
         required.as_bool(),
@@ -307,7 +301,7 @@ fn restart_request_body_is_documented_optional() {
 #[cfg(feature = "openapi-schema")]
 #[test]
 fn openapi_every_operation_has_a_typed_response_schema() {
-    let doc = openapi_doc_seamed();
+    let doc = openapi_doc();
     let schemas = doc["components"]["schemas"].as_object().expect("schemas");
     let paths = doc["paths"].as_object().expect("paths");
     let mut op_count = 0usize;
@@ -414,7 +408,7 @@ fn err_kind_bridges_every_admin_error_variant() {
 #[test]
 fn declared_errors_is_total_and_well_formed() {
     use crate::v1::contract::taxonomy::{declared_errors, declared_responses, MethodTag};
-    let doc = openapi_doc_seamed();
+    let doc = openapi_doc();
     let prefix = crate::v1::contract::ADMIN_PREFIX;
     for (path, methods) in doc["paths"].as_object().expect("paths") {
         let rel = path.strip_prefix(prefix).unwrap_or(path);
@@ -463,7 +457,7 @@ fn declared_errors_is_total_and_well_formed() {
 #[cfg(feature = "openapi-schema")]
 #[test]
 fn openapi_summaries_do_not_advertise_forbidden_body_fields() {
-    let doc = openapi_doc_seamed();
+    let doc = openapi_doc();
     let schemas = doc["components"]["schemas"].as_object().expect("schemas");
     let paths = doc["paths"].as_object().expect("paths");
 
