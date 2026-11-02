@@ -1265,12 +1265,20 @@ fn open_unit(
     c: &crate::Connector,
     unit: u64,
 ) -> Result<busbar_contract::conn::ConnId, busbar_contract::conn::ConnError> {
+    open_unit_at(c, unit, "bytes://127.0.0.1:9")
+}
+
+fn open_unit_at(
+    c: &crate::Connector,
+    unit: u64,
+    target: &str,
+) -> Result<busbar_contract::conn::ConnId, busbar_contract::conn::ConnError> {
     use busbar_contract::conn::Conns as _;
     c.open(
         busbar_contract::conn::InstanceId(1),
         busbar_contract::conn::NeedId(0),
         &busbar_contract::conn::OpenDesc {
-            target: "bytes://127.0.0.1:9",
+            target,
             unit,
             ..busbar_contract::conn::OpenDesc::default()
         },
@@ -1301,7 +1309,9 @@ fn a_composed_dial_keeps_all_begin_batches_before_and_after_its_description() {
             Instant::now(),
         );
         c.pair(7, Arc::clone(&pairing)).unwrap();
-        let conn = open_unit(&c, 7).unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let target = format!("bytes://{}", listener.local_addr().unwrap());
+        let conn = open_unit_at(&c, 7, &target).unwrap();
         assert!(pairing.published().await.failure.is_none());
         assert_eq!(
             *sink.lines.lock().unwrap(),
@@ -1360,7 +1370,9 @@ fn closing_a_composed_dial_retires_unread_begin_output_before_the_exchange_answe
         let pairing =
             super::Pairing::with_memory_limit(sink.clone(), p("127.0.0.1:3478"), Some(usize::MAX));
         c.pair(7, Arc::clone(&pairing)).unwrap();
-        let conn = open_unit(&c, 7).unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let target = format!("bytes://{}", listener.local_addr().unwrap());
+        let conn = open_unit_at(&c, 7, &target).unwrap();
         assert!(pairing.memory_account().used() > 0);
         c.close(InstanceId(1), conn).unwrap();
         assert!(pairing.closed());
