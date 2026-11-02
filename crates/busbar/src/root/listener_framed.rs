@@ -1127,7 +1127,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
             }
         };
         self.established.claim = door.facts().claims.first().map(|c| (*c).to_owned());
-        match Framing::adopt_detached(door, SIDE_ACCEPT, leftover, &self.established) {
+        match Framing::adopt_detached_staged(door, SIDE_ACCEPT, leftover, &self.established) {
             Ok((framing, mut yielded)) => {
                 self.framing = Some(framing);
                 let accepted = !yielded.ended
