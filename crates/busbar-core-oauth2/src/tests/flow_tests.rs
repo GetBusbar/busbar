@@ -250,7 +250,7 @@ async fn serve() -> (String, Arc<busbar_kernel::state::App>) {
 /// route only refuses when there is something to refuse, so a test of that refusal needs a chain
 /// that actually demands one. Every other test here passes an empty chain and gets the open posture
 /// described above.
-async fn serve_with_admin_chain(
+pub(crate) async fn serve_with_admin_chain(
     admin_chain: Vec<String>,
 ) -> (String, Arc<busbar_kernel::state::App>) {
     serve_with_store(admin_chain, None).await
