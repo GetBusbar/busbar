@@ -8,7 +8,6 @@ use busbar_contract::auth::{AuthModule, AuthVerdict, Principal};
 use busbar_kernel::auth::{AdminAuthChain, Operator};
 use busbar_kernel::config::{self, AuthCfg, AuthChainEntry, RoleBindingCfg, SecretRef};
 use busbar_kernel::governance::GovState;
-use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 
 const TOKEN: &str = "admintok";
 
@@ -32,7 +31,7 @@ fn op() -> &'static str {
 
 fn app(chain: &[&str], extra: Vec<(&str, Box<dyn AuthModule>)>) -> Arc<busbar_kernel::state::App> {
     link();
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::root::real_store::records();
     let gov = Arc::new(GovState::new(store, Some(TOKEN.to_string())).expect("governance"));
     let mut app = busbar_kernel_testkit::test_support::TestApp::new()
         .governance(gov)
@@ -993,7 +992,7 @@ async fn the_data_listener_reads_the_three_1_5_5_lines_in_1_5_5_order() {
     use busbar_kernel::governance::signing::{TokenSigner, DEFAULT_KID};
     use busbar_kernel::governance::NewKeySpec;
     link();
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::root::real_store::records();
     let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
     let gov = Arc::new(
         GovState::new_with_signer(store, Some(TOKEN.to_string()), Some(signer)).expect("gov"),

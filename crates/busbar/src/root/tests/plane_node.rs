@@ -193,7 +193,7 @@ async fn rig_with_billing(fixture: Fixture, billed: bool) -> Rig {
         );
     }
 
-    let store = Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new());
+    let store = crate::root::real_store::records();
     if let Some(requests) = fixture.seeded_group_requests() {
         use busbar_contract::records::RecordStore as _;
         store
@@ -3681,7 +3681,7 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
         });
     }
     let server = MockServer::new(Arc::clone(&state)).await;
-    let store = Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new());
+    let store = crate::root::real_store::records();
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &SIGNING_SECRET,
         busbar_kernel::governance::signing::DEFAULT_KID,
@@ -4442,7 +4442,7 @@ async fn rig_over(
     );
     let gov = Arc::new(
         busbar_kernel::governance::GovState::new_with_signer(
-            Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new()),
+            crate::root::real_store::records(),
             None,
             Some(signer),
         )
@@ -4851,11 +4851,8 @@ async fn serve_rerank(
     }
     let server = MockServer::new(Arc::clone(&state)).await;
     let gov = Arc::new(
-        busbar_kernel::governance::GovState::new(
-            Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new()),
-            None,
-        )
-        .expect("governance"),
+        busbar_kernel::governance::GovState::new(crate::root::real_store::records(), None)
+            .expect("governance"),
     );
     let (key, _secret) = gov
         .create_key(

@@ -2063,7 +2063,6 @@ pub(crate) mod tool_door {
     use busbar_kernel::governance::signing::{TokenSigner, DEFAULT_KID};
     use busbar_kernel::governance::{GovState, NewKeySpec};
     use busbar_kernel::plane_driver::{refusal_status, EndPost, PlaneMoney};
-    use busbar_kernel_testkit::test_support::store_double::MemoryStore;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use crate::root::loader::dispatch::kinds::plane::Plane;
@@ -2649,7 +2648,7 @@ pub(crate) mod tool_door {
 
         pub(crate) audience: Option<String>,
 
-        pub(crate) store: Arc<busbar_kernel_testkit::test_support::store_double::MemoryStore>,
+        pub(crate) store: Arc<crate::root::loader::store_v3::LoadedStore>,
 
         pub(crate) tokens: Arc<super::TokenEndpoint>,
 
@@ -2727,7 +2726,7 @@ pub(crate) mod tool_door {
             let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
             let gov = Arc::new(
                 GovState::new_with_signer(
-                    Arc::new(MemoryStore::new()),
+                    crate::root::real_store::records(),
                     Some(ADMIN_TOKEN.to_string()),
                     Some(signer),
                 )
@@ -3103,9 +3102,9 @@ pub(crate) mod tool_door {
         dest: Arc<dyn busbar_kernel::host_services::DestJudge>,
     ) -> (
         Arc<crate::root::serve::LateServices>,
-        Arc<busbar_kernel_testkit::test_support::store_double::MemoryStore>,
+        Arc<crate::root::loader::store_v3::LoadedStore>,
     ) {
-        let store = Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new());
+        let store = crate::root::real_store::store();
         let (origin, ahead) = (std::time::Instant::now(), Arc::clone(clock));
         let wall_ahead = Arc::clone(wall);
         let kernel = busbar_kernel::host_services::KernelServices::new()
@@ -3127,7 +3126,7 @@ pub(crate) mod tool_door {
                 busbar_kernel::host_records::QUEUE_CAP,
             )));
         let kernel = Arc::new(match ledger {
-            Ledger::Memory => kernel.with_records(Arc::new(StoreRows(Arc::clone(&store)))),
+            Ledger::Memory => kernel.with_records(Arc::new(StoreRows(store.clone()))),
             Ledger::Store(claims) => {
                 kernel.with_records(Arc::new(ClaimsIn(Arc::new(Rows::default()), claims)))
             }
@@ -3480,51 +3479,7 @@ pub(crate) mod tool_door {
         Unbound,
     }
 
-    struct StoreRows(Arc<busbar_kernel_testkit::test_support::store_double::MemoryStore>);
-
-    impl busbar_kernel::host_records::RecordRows for StoreRows {
-        fn claim(
-            &self,
-            kind: &str,
-            token: &str,
-            expires_at: u64,
-            now: u64,
-        ) -> Result<bool, busbar_contract::kinds::StoreError> {
-            busbar_contract::records::RecordStore::redeem_plane_token(
-                &*self.0, kind, token, expires_at, now,
-            )
-            .map_err(|e| busbar_contract::kinds::StoreError::Rejected(e.0))
-        }
-        fn record_put(
-            &self,
-            schema: busbar_contract::ids::RecordSchemaId,
-            key: &[u8],
-            value: &busbar_contract::kinds::RecordBytes,
-        ) -> Result<(), busbar_contract::kinds::StoreError> {
-            self.0.record_put(schema, key, value)
-        }
-
-        fn record_get(
-            &self,
-            schema: busbar_contract::ids::RecordSchemaId,
-            key: &[u8],
-        ) -> Result<Option<busbar_contract::kinds::RecordBytes>, busbar_contract::kinds::StoreError>
-        {
-            self.0.record_get(schema, key)
-        }
-
-        fn record_scan(
-            &self,
-            schema: busbar_contract::ids::RecordSchemaId,
-            prefix: &[u8],
-            limit: u32,
-        ) -> Result<
-            Vec<(Vec<u8>, busbar_contract::kinds::RecordBytes)>,
-            busbar_contract::kinds::StoreError,
-        > {
-            self.0.record_scan(schema, prefix, limit)
-        }
-    }
+    use busbar_kernel::host_records::StoreRows;
 
     struct ClaimsIn(Arc<Rows>, Arc<dyn busbar_contract::records::RecordStore>);
 

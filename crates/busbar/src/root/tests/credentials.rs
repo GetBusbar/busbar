@@ -8,7 +8,6 @@ use busbar_contract::abi::host::service::{SECRET_LIVE, SECRET_NOT_LIVE};
 use busbar_contract::services::{CredentialRead, HostServices, Ran, Stored};
 use busbar_kernel::governance::{GovState, NewKeySpec};
 use busbar_kernel::host_services::{KernelServices, NOT_READABLE, NO_CREDENTIAL_SOURCE};
-use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 use busbar_kernel_testkit::test_support::TestApp;
 
 use super::AppCredentials;
@@ -24,7 +23,7 @@ fn signed_kind() -> String {
 }
 
 fn gov_with_key(name: &str) -> (Arc<GovState>, String, String) {
-    let gov = Arc::new(GovState::new(Arc::new(MemoryStore::new()), None).unwrap());
+    let gov = Arc::new(GovState::new(crate::root::real_store::records(), None).unwrap());
     let spec = NewKeySpec {
         name: name.to_string(),
         ..Default::default()

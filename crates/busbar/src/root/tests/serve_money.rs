@@ -10,7 +10,6 @@ use busbar_kernel::governance::signing::{TokenSigner, DEFAULT_KID};
 use busbar_kernel::governance::{GovState, NewKeySpec};
 use busbar_kernel::plane_driver::{EndPost, PlaneMoney};
 use busbar_kernel::state::App;
-use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 
 use super::planes_tests::{bound, composed_services, PUBLISHING};
 use super::{compose_planes, compose_served, data_routes, door_routes};
@@ -156,7 +155,7 @@ fn governed_full(
     let plane = bound(instance, &dispatcher);
     let signer = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
     let gov = Arc::new(
-        GovState::new_with_signer(Arc::new(MemoryStore::new()), None, Some(signer))
+        GovState::new_with_signer(crate::root::real_store::records(), None, Some(signer))
             .expect("governance"),
     );
     let groups: BTreeMap<String, busbar_kernel::config::GroupCfg> = budget
@@ -734,7 +733,7 @@ async fn the_boot_composition_serves_a_dropped_in_door_plane_in_every_build() {
     let plane = bound(instance, &dispatcher);
     let signer = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
     let gov = Arc::new(
-        GovState::new_with_signer(Arc::new(MemoryStore::new()), None, Some(signer))
+        GovState::new_with_signer(crate::root::real_store::records(), None, Some(signer))
             .expect("governance"),
     );
     let cost = CostModel::flat(1);

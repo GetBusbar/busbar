@@ -532,8 +532,7 @@ fn the_two_spellings_of_the_scope_split_agree() {
 
 #[test]
 fn a_replayed_idempotency_key_answers_the_first_answers_bytes() {
-    let store: Arc<dyn busbar_contract::records::RecordStore> =
-        Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new());
+    let store: Arc<dyn busbar_contract::records::RecordStore> = crate::root::real_store::records();
     let held = Arc::clone(&store);
     let replay_store: bound::ReplayStore = Arc::new(move || Some(Arc::clone(&held)));
     let request = AdminRequest {
@@ -1467,8 +1466,7 @@ fn answer_over_counts(
 fn the_ledger_paths_answer_counts_times_card_and_survive_a_restart() {
     use busbar_contract::records::RecordStore as _;
     use busbar_kernel::governance::{GovState, VirtualKey};
-    use busbar_kernel_testkit::test_support::store_double::MemoryStore;
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::root::real_store::records();
     let key = VirtualKey {
         id: "vk_one_ledger".to_string(),
         generation_hash: "h:vk_one_ledger".to_string(),
@@ -1592,7 +1590,7 @@ fn real_admin_dispatch() -> RouterDispatch {
     busbar_core_admin::install();
     let gov = Arc::new(
         busbar_kernel::governance::GovState::new(
-            Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new()),
+            crate::root::real_store::records(),
             Some("admin-token".into()),
         )
         .expect("governance"),
@@ -3570,8 +3568,7 @@ fn a_keyed_commit_with_a_late_store_ack_seals_one_policy() {
         .acked(journal.sealed_through())
         .expect("healthy journal");
     journal.admit().expect("admitted before the store pends");
-    let store: Arc<dyn busbar_contract::records::RecordStore> =
-        Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new());
+    let store: Arc<dyn busbar_contract::records::RecordStore> = crate::root::real_store::records();
     let replay_store: bound::ReplayStore = Arc::new(move || Some(Arc::clone(&store)));
     let mut request = a_request();
     request.method = "POST".into();
@@ -3671,8 +3668,7 @@ fn a_keyed_commit_with_a_late_store_ack_seals_one_policy() {
 fn a_keyed_commit_refused_before_sealing_accepts_corrected_input() {
     let book = a_memory_book();
     let journal = a_journal_over(&book);
-    let store: Arc<dyn busbar_contract::records::RecordStore> =
-        Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new());
+    let store: Arc<dyn busbar_contract::records::RecordStore> = crate::root::real_store::records();
     let replay_store: bound::ReplayStore = Arc::new(move || Some(Arc::clone(&store)));
     let cache = bound::ReplayCache::new();
     let mut request = a_request();
@@ -3729,8 +3725,7 @@ fn route_refuses_a_unit_whose_grant_was_never_recorded() {
 
 #[test]
 fn a_keyed_write_retried_after_a_restart_replays_and_runs_nothing_again() {
-    let store: Arc<dyn busbar_contract::records::RecordStore> =
-        Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new());
+    let store: Arc<dyn busbar_contract::records::RecordStore> = crate::root::real_store::records();
     let held = Arc::clone(&store);
     let replay_store: bound::ReplayStore = Arc::new(move || Some(Arc::clone(&held)));
     let request = AdminRequest {

@@ -682,11 +682,8 @@ async fn the_late_attach_binds_the_governance_store_as_the_record_store() {
         "the governance store is already the record store"
     );
 
-    let bare = busbar_kernel::governance::GovState::new(
-        Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new()),
-        None,
-    )
-    .expect("governance");
+    let bare = busbar_kernel::governance::GovState::new(crate::root::real_store::records(), None)
+        .expect("governance");
     let late = LateServices::new();
     let k = Arc::new(KernelServices::new());
     late.install_kernel(Arc::clone(&k), Arc::clone(&k) as Arc<dyn HostServices>)

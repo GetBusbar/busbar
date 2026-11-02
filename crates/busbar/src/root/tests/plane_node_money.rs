@@ -1028,11 +1028,8 @@ fn concurrent_unit_ends_land_their_money_while_the_book_is_held() {
     let book = crate::root::durability::node_book();
     let (node, post) = door_node(&book);
     let gov = Arc::new(
-        busbar_kernel::governance::GovState::new(
-            Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new()),
-            None,
-        )
-        .expect("governance builds"),
+        busbar_kernel::governance::GovState::new(crate::root::real_store::records(), None)
+            .expect("governance builds"),
     );
     let money = Arc::new(PlaneMoney::new(Arc::clone(&gov), Arc::new(post)));
     let rates = std::collections::BTreeMap::from([(

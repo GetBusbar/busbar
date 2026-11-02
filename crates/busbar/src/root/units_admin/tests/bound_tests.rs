@@ -46,9 +46,7 @@ const KERNEL_KINDS: &[&str] = &[
 ];
 
 fn store() -> Arc<dyn PlaneStore> {
-    PlaneStoreView::narrow(Arc::new(
-        busbar_kernel_testkit::test_support::store_double::MemoryStore::new(),
-    ))
+    PlaneStoreView::narrow(crate::root::real_store::records())
 }
 
 fn sink_into(store: &Arc<dyn PlaneStore>, landed: &Arc<Mutex<Vec<String>>>) -> PlaneRecordSink {
@@ -218,8 +216,7 @@ fn an_unknown_plane_write_keeps_its_exact_record_and_never_repeats_the_upsert() 
     use busbar_contract::records::RecordStore;
     use busbar_core_admin::idempotency::durable::{self, Refused};
 
-    let store: Arc<dyn RecordStore> =
-        Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new());
+    let store: Arc<dyn RecordStore> = crate::root::real_store::records();
     let replay_store: super::ReplayStore = {
         let store = Arc::clone(&store);
         Arc::new(move || Some(Arc::clone(&store)))
