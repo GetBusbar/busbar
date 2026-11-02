@@ -19,6 +19,66 @@ use super::*;
 
 const OWNER: u64 = 1;
 
+#[test]
+fn an_admitted_program_runs_in_its_configured_working_directory() {
+    worker().block_on(async {
+        let io = HostIo::new();
+        let directory = std::env::temp_dir().join(format!(
+            "busbar-program-cwd-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let directory = directory.canonicalize().unwrap();
+        let program = Program::of_member(&serde_json::json!({
+            "command": "/bin/pwd",
+            "cwd": directory.to_str().unwrap(),
+        }))
+        .unwrap()
+        .unwrap();
+        io.admit(
+            ticket(90),
+            Admission::Spawn(program, crate::spawn_env::HeldEnv::written_only()),
+        );
+        let handle = io
+            .spawn(
+                OWNER,
+                ticket(90),
+                &Spawn {
+                    program: "/bin/pwd",
+                    args: &[],
+                    env: &[],
+                },
+            )
+            .unwrap();
+        let output = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let mut output = Vec::new();
+            loop {
+                let mut bytes = [0; 256];
+                let length = poll_fn(|cx| io.read(OWNER, handle, &mut bytes, cx.waker()))
+                    .await
+                    .unwrap();
+                if length == 0 {
+                    break;
+                }
+                output.extend_from_slice(&bytes[..length]);
+            }
+            output
+        })
+        .await;
+        io.close(OWNER, handle).unwrap();
+        std::fs::remove_dir(&directory).unwrap();
+        assert_eq!(
+            String::from_utf8(output.unwrap()).unwrap().trim_end(),
+            directory.to_str().unwrap(),
+            "the host ignored the admitted working directory"
+        );
+    });
+}
+
 fn ticket(n: u32) -> Ticket {
     Ticket {
         slot: 0x00ff_0000 + n,
