@@ -104,3 +104,108 @@ fn facing_replaces_old_open_inputs_and_closes_its_last_probe() {
         );
     }
 }
+
+mod wrong_lifecycle_shape {
+    use super::*;
+    use crate::dispatch::{in_head, out_head, Frame};
+    use busbar_contract::abi::mechanism::call::Outcome;
+    use busbar_contract::abi::mechanism::door::Door;
+    use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
+    use busbar_contract::abi::sdk::door::{kind_op, Lifecycle, RawSlot};
+    struct LifecycleOpen;
+    impl RawSlot for LifecycleOpen {
+        type In = OpenIn;
+        type Out = OpenOut;
+        unsafe fn call(_: *mut std::ffi::c_void, _: &OpenIn, out: &mut OpenOut) -> Outcome {
+            out.instance = std::ptr::NonNull::<u8>::dangling().as_ptr().cast();
+            Outcome::Ready
+        }
+    }
+
+    static LIFECYCLE_CLOSES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+    struct LifecycleClose;
+    impl RawSlot for LifecycleClose {
+        type In = busbar_contract::abi::mechanism::call::InHead;
+        type Out = busbar_contract::abi::mechanism::call::OutHead;
+        unsafe fn call(
+            _: *mut std::ffi::c_void,
+            _: &busbar_contract::abi::mechanism::call::InHead,
+            _: &mut busbar_contract::abi::mechanism::call::OutHead,
+        ) -> Outcome {
+            LIFECYCLE_CLOSES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Outcome::Ready
+        }
+    }
+
+    struct TestCapture;
+    impl busbar_contract::abi::sdk::capture::CaptureHome for TestCapture {
+        fn retention() -> &'static busbar_contract::abi::sdk::capture::CaptureRetention {
+            static RETENTION: std::sync::OnceLock<
+                busbar_contract::abi::sdk::capture::CaptureRetention,
+            > = std::sync::OnceLock::new();
+            RETENTION.get_or_init(Default::default)
+        }
+        fn with<R>(f: impl FnOnce(&mut busbar_contract::abi::sdk::capture::CaptureSlot) -> R) -> R {
+            thread_local! {
+                static SLOT: std::cell::RefCell<busbar_contract::abi::sdk::capture::CaptureSlot> =
+                    std::cell::RefCell::new(busbar_contract::abi::sdk::capture::CaptureSlot::new());
+            }
+            SLOT.with(|s| f(&mut s.borrow_mut()))
+        }
+    }
+
+    extern "C" fn lifecycle_open_door() -> *const Door {
+        // SAFETY: the macro's `'static` door and its plane table.
+        let (d, ops) = unsafe {
+            let d = crate::actual_mcp::door();
+            (d, *d.ops().cast::<busbar_contract::abi::plane::Ops>())
+        };
+        let mut ops = ops;
+        ops.head.open = kind_op::<Lifecycle, LifecycleOpen, TestCapture, { life::OPEN }>();
+        ops.head.close = kind_op::<Lifecycle, LifecycleClose, TestCapture, { life::CLOSE }>();
+        let ops: &'static busbar_contract::abi::plane::Ops = Box::leak(Box::new(ops));
+        Box::leak(Box::new(unsafe {
+            Door::__from_parts(busbar_contract::abi::mechanism::door::DoorParts {
+                ops: std::ptr::from_ref(ops).cast(),
+                ..d.parts()
+            })
+        }))
+    }
+
+    #[test]
+    fn red_a_plane_open_over_the_lifecycle_structs_publishes_no_snapshot_and_faults() {
+        use busbar_contract::abi::mechanism::call::BLOB_JSON;
+        use busbar_contract::abi::plane::{PlaneOpenIn, PlaneOpenOut};
+        let red = load_linked::<Plane>(&LinkedRow::of_raw(lifecycle_open_door).unwrap(), binding())
+            .unwrap();
+        let blob = crate::dispatch::lifecycle::blob(b"{}", BLOB_JSON, 0);
+        let mut o = Frame::new(
+            PlaneOpenIn {
+                open: crate::dispatch::lifecycle::open_in(blob),
+                public_url: busbar_contract::abi::mechanism::call::AbiStr::ZERO,
+                owned: blob,
+                providers: std::ptr::null(),
+                providers_len: 0,
+            },
+            PlaneOpenOut {
+                open: crate::dispatch::lifecycle::open_out(),
+                snapshot: std::ptr::null(),
+            },
+        );
+        assert_eq!(red.call(life::OPEN, &mut o).outcome, Outcome::Fault);
+        assert!(o.out.snapshot.is_null(), "no snapshot reachedhost");
+        assert_eq!(
+            LIFECYCLE_CLOSES.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "host closed malformed-open instance"
+        );
+        assert!(!red.is_open());
+        let green = linked();
+        let snapshot = open_door(&green, b"{}", b"{}", None)
+            .expect("actual correct PlaneOPEN snapshot copies");
+        assert_eq!(snapshot.generation, 1);
+        let mut e = Frame::new(in_head(), out_head());
+        assert_eq!(green.call(life::CLOSE, &mut e).outcome, Outcome::Ready);
+    }
+}
