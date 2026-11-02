@@ -190,12 +190,7 @@ impl GovState {
         if children.is_empty() {
             return Ok(());
         }
-        if self
-            .recovery_ancestor(parent.operation_id, parent.fingerprint().map_err(invalid)?)
-            .is_none()
-        {
-            return Err(invalid("unselected parent cannot authorize a child"));
-        }
+        self.verify_recovery_checkpoint(parent)?;
         let current = self
             .recovery_event(parent.operation_id)
             .ok_or_else(|| invalid("parent selection disappeared"))?;
