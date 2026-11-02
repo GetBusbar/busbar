@@ -668,14 +668,13 @@ impl CallerLeg {
                 let out = lock(&self.outbound);
                 if out.closed {
                     Next::Closed
-                } else if out.channel.is_none() && out.held.len() == CALLER_QUEUE {
-                    Next::Full
-                } else if out.channel.is_none() {
-                    Next::Early
-                } else if out.draining {
-                    Next::Draining
                 } else {
-                    Next::Ready(out.channel.expect("the channel was selected"))
+                    match out.channel {
+                        None if out.held.len() == CALLER_QUEUE => Next::Full,
+                        None => Next::Early,
+                        Some(_) if out.draining => Next::Draining,
+                        Some(channel) => Next::Ready(channel),
+                    }
                 }
             };
             match next {

@@ -503,6 +503,10 @@ impl Bound {
     }
 }
 
+/// Spent budgets retain their originating breaker unit and translated destination for refunds.
+type SpentBudgets =
+    HashMap<DestinationId, Vec<(Arc<busbar_kernel_breaker::BreakerUnit>, DestinationId)>>;
+
 /// The kernel's breaker port over the live App's lane store, for one walk: a model-named direct
 /// route is mapped onto the lane-default cell, every read is the lane store's breaker unit's own,
 /// and every outcome is recorded through the store's own record calls (the lane's counters move
@@ -515,9 +519,7 @@ struct WalkCells {
     plan: Arc<CellPlan>,
     probes: std::sync::Mutex<HashMap<u64, HeldProbe>>,
     next_probe: std::sync::atomic::AtomicU64,
-    budgets: std::sync::Mutex<
-        HashMap<DestinationId, Vec<(Arc<busbar_kernel_breaker::BreakerUnit>, DestinationId)>>,
-    >,
+    budgets: std::sync::Mutex<SpentBudgets>,
 }
 
 struct HeldProbe {

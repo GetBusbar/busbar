@@ -825,8 +825,10 @@ impl busbar_core_admin::Governance for CoreGovernance {
                 return bound::replayable(
                     &self.replays,
                     self.replay_store.as_ref(),
-                    verb,
-                    &self.attribution.principal,
+                    bound::ReplayScope {
+                        verb,
+                        actor: &self.attribution.principal,
+                    },
                     &self.request,
                     request,
                     self.amendments.as_deref(),
@@ -844,8 +846,10 @@ impl busbar_core_admin::Governance for CoreGovernance {
                 return bound::replayable(
                     &self.replays,
                     self.replay_store.as_ref(),
-                    verb,
-                    &self.attribution.principal,
+                    bound::ReplayScope {
+                        verb,
+                        actor: &self.attribution.principal,
+                    },
                     &self.request,
                     request,
                     self.amendments.as_deref(),
