@@ -6,7 +6,7 @@
 //!
 //! Two layers, and only two. The MECHANISM's checks of every `out` head live here and run in every
 //! crossing: `OutHead.size` within `size_of::<OutHead>()..=` the host's `out`, the error text and
-//! the #85 arrays not NULL-with-length nor over-long, the outcome mirror, and PENDING on NONE (in
+//! the #85 arrays and extensions blob not NULL-with-length nor over-long, the outcome mirror, and PENDING on NONE (in
 //! `plugin::judge`). A KIND's reply fields (spans, counts, `written`, `needed_*`) are checked only
 //! by that kind's pure `check_<op>` in `abi/<kind>/`, reached through [`super::Kind::check`]
 //! (answer validators live with the shape); the dispatcher adds the one re-call
@@ -15,6 +15,7 @@
 use std::mem::size_of;
 
 use busbar_contract::abi::mechanism::call::{AbiStr, Envelope, OutHead, Outcome};
+use busbar_contract::abi::mechanism::check;
 
 use super::plugin::MAX_ENVELOPE_ENTRIES;
 
@@ -39,6 +40,8 @@ pub enum Violation {
     ErrorText(usize),
     /// An envelope array is NULL with a length, or longer than [`MAX_ENVELOPE_ENTRIES`].
     EnvelopeArray(usize),
+    /// The extensions blob is NULL with a length or exceeds the shared blob bound.
+    Extensions(check::Fault),
 }
 
 impl Violation {
@@ -49,7 +52,7 @@ impl Violation {
 }
 
 /// The mechanism's own checks of an `out` head, run on every crossing: its size, its error text
-/// and its #85 arrays.
+/// and its #85 arrays and bounded extensions blob.
 pub(crate) fn out_head(head: &OutHead, host_out_size: u32) -> Result<(), Violation> {
     let stated = head.size;
     if (stated as usize) < size_of::<OutHead>() || stated > host_out_size {
@@ -58,6 +61,12 @@ pub(crate) fn out_head(head: &OutHead, host_out_size: u32) -> Result<(), Violati
             host: host_out_size,
         });
     }
+    check::blob(
+        &head.extensions,
+        "out.extensions.null_with_len",
+        "out.extensions.over_max",
+    )
+    .map_err(Violation::Extensions)?;
     text(head.error)?;
     envelope(&head.envelope)
 }
