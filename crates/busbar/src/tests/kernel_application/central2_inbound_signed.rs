@@ -238,12 +238,10 @@ async fn actual_signed_reader_preserves_credential_body_gate_and_revocation_cust
     fields.push(("authorization".into(), format!(
         "AWS4-HMAC-SHA256 Credential={public_id}/{}/us-east-1/busbar/aws4_request, SignedHeaders={signed_headers}, Signature={signature}",
         &timestamp[..8]).into_bytes()));
-    let head = Head {
-        method: "POST".into(),
-        target: "/v1/messages".into(),
-        fields,
-        ..Head::default()
-    };
+    let mut head = Head::default();
+    head.method = "POST".into();
+    head.target = "/v1/messages".into();
+    head.fields = fields;
     let call_result = |head: Head, body: Option<Vec<u8>>, point, unit, stream| {
         let inbound = Arc::clone(&inbound);
         async move {
@@ -371,15 +369,13 @@ async fn actual_signed_reader_preserves_credential_body_gate_and_revocation_cust
         .expect("the kernel renders body-gate refusal");
     assert_eq!(refusal.status, 413);
     let token = bearer.expose(&busbar_kernel::seal::lend());
-    let bearer_head = Head {
-        method: "POST".into(),
-        target: "/v1/messages".into(),
-        fields: vec![(
-            "authorization".into(),
-            format!("Bearer {token}").into_bytes(),
-        )],
-        ..Head::default()
-    };
+    let mut bearer_head = Head::default();
+    bearer_head.method = "POST".into();
+    bearer_head.target = "/v1/messages".into();
+    bearer_head.fields = vec![(
+        "authorization".into(),
+        format!("Bearer {token}").into_bytes(),
+    )];
     assert_eq!(
         call(
             bearer_head.clone(),
