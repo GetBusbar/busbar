@@ -1238,10 +1238,7 @@ fn tls_fixture_bindings_preserve_unbound_and_missing_file_refusals() {
     let error = resolver
         .resolve_at_config(&unbound, &scope)
         .expect_err("an unbound module is refused");
-    assert!(
-        error.text.contains("unbound TLS fixture reference"),
-        "{error:?}"
-    );
+    assert!(error.contains("unbound TLS fixture reference"), "{error:?}");
 
     let missing_path = temp_pem("missing-cert", &cert_pem);
     std::fs::remove_file(&missing_path).unwrap();
@@ -1254,12 +1251,9 @@ fn tls_fixture_bindings_preserve_unbound_and_missing_file_refusals() {
     let error = missing_resolver
         .resolve_at_config(&missing.cert, &scope)
         .expect_err("a missing bound file is refused");
+    assert!(error.contains(missing_path.to_str().unwrap()), "{error:?}");
     assert!(
-        error.text.contains(missing_path.to_str().unwrap()),
-        "{error:?}"
-    );
-    assert!(
-        !error.text.contains("unbound TLS fixture reference"),
+        !error.contains("unbound TLS fixture reference"),
         "{error:?}"
     );
     assert!(busbar_core_connector::tls::prepare(
