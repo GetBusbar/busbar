@@ -12,18 +12,22 @@ mod plugins;
 #[tokio::test]
 async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
     crate::dist_root_install::install();
-    let response = Arc::new(std::sync::Mutex::new((serde_json::json!({}), 0u64)));
+    let response = Arc::new(std::sync::Mutex::new((
+        serde_json::json!({}),
+        0u64,
+        axum::http::StatusCode::OK,
+    )));
     let recorded = Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));
     let returning = response.clone();
     let recording = recorded.clone();
     let routes = axum::Router::new().route(
         "/hook",
         axum::routing::post(move |axum::Json(body): axum::Json<serde_json::Value>| {
-            let (reply, delay) = returning.lock().unwrap().clone();
+            let (reply, delay, status) = returning.lock().unwrap().clone();
             recording.lock().unwrap().push(body);
             async move {
                 tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
-                axum::Json(reply)
+                (status, axum::Json(reply))
             }
         }),
     );
@@ -98,6 +102,8 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
             "n": {"module": hook_module, "kind": "gate", "timeout_ms":5000, "on_error":"nothing", "settings":{"url":endpoint}},
             "c": {"module": hook_module, "kind": "gate", "timeout_ms":5000, "on_error":"first", "settings":{"url":endpoint}},
             "g": {"module": hook_module, "kind": "gate", "timeout_ms":5000, "on_error":"cheapest", "settings":{"url":endpoint}},
+            "closedrw": {"module": hook_module, "kind":"gate", "timeout_ms":5000,
+                         "prompt":"rw", "on_error":"reject", "settings":{"url":endpoint}},
             "rw": {"module": hook_module, "kind": "gate", "timeout_ms": 5000, "prompt": "rw",
                    "settings": {"url": endpoint}},
             "read": {"module": hook_module, "kind": "gate", "timeout_ms": 5000, "prompt": "ro",
@@ -106,6 +112,8 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
                       "settings": {"url": endpoint}}
         },
         "pools": {
+            "hooks": ["rw","closedrw"],
+            "closedrw": {"members":["local-model"],"hooks":["closedrw"]},
             "a": {"members":["local-model"], "hooks":["a"]},
             "n": {"members":["local-model"], "hooks":["n"]},
             "c": {"members":["local-model"], "hooks":["c"]},
@@ -290,7 +298,11 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
         "dlopen_decide_deadline_cuts_off_a_slow_gate",
         "dlopen_slow_gate_hits_the_deadline",
     ] {
-        *response.lock().unwrap() = (serde_json::json!({"order":[0]}), 2000);
+        *response.lock().unwrap() = (
+            serde_json::json!({"order":[0]}),
+            2000,
+            axum::http::StatusCode::OK,
+        );
         let started = std::time::Instant::now();
         let result = policy
             .decide(
@@ -568,5 +580,56 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
     assert!(
         busbar_kernel::hooks::resolve_pool_gates(&named_pool, &definitions, &empty, 0).is_empty()
     );
+    // Both actual global and pool wrappers preserve all four failed-call dispositions.
+    use busbar_contract::hooks::TransformOutcome;
+    for (on_error, call_failed, expect_refusal) in [
+        ("weighted", true, false),
+        ("reject", true, true),
+        ("weighted", false, false),
+        ("reject", false, false),
+    ] {
+        let name = if on_error == "reject" {
+            "closedrw"
+        } else {
+            "rw"
+        };
+        {
+            let mut reply = response.lock().unwrap();
+            reply.0 =
+                serde_json::json!({"rewrite":{"messages":[{"role":"user","content":"rewritten"}]}});
+            reply.2 = if call_failed {
+                axum::http::StatusCode::SERVICE_UNAVAILABLE
+            } else {
+                axum::http::StatusCode::OK
+            };
+        }
+        let global = app
+            .rewrite_hooks
+            .iter()
+            .find(|(_, policy)| policy.name() == name)
+            .expect("global rw gate");
+        let pool = app
+            .pool_rewrites(if on_error == "reject" {
+                "closedrw"
+            } else {
+                "rewrite"
+            })
+            .first()
+            .expect("pool rw gate");
+        for (which, policy) in [("global", &global.1), ("pool", &pool.1)] {
+            let outcome = policy.transform(&request("hello"), budget).await;
+            match (&outcome,expect_refusal,call_failed) {
+                (TransformOutcome::Reject {status,message},true,_)=>{
+                    assert_eq!(*status,busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS,
+                        "{which}: a failed load-bearing hook refuses with the shared status");
+                    assert_eq!(message,busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE,
+                        "{which}: and the shared, content-free message");
+                }
+                (TransformOutcome::Failed {..},false,true)=>{},
+                (TransformOutcome::Rewrite(_),false,false)=>{},
+                (other,_,_)=>panic!("{which}: on_error={on_error} call_failed={call_failed} expect_refusal={expect_refusal} got {other:?}"),
+            }
+        }
+    }
     server.abort();
 }
