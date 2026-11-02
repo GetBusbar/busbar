@@ -895,3 +895,45 @@ fn restarted_landed_correction_keeps_foreign_basis_and_does_not_reapply_the_old_
         CORRECTED_INPUT + CONCURRENT_INPUT + NEXT_WINDOW_INPUT
     );
 }
+
+#[test]
+fn a_known_correction_receipt_survives_a_lost_recovery_ack_without_backend_replay() {
+    let store = Arc::new(FlakyStore::new());
+    let journal = Arc::new(Journal::default());
+    let gov = GovState::new(store.clone(), None).unwrap();
+    gov.attach_recovery_sink(journal.clone()).unwrap();
+    let key = key("vk_correction_known_receipt", None);
+    store.put_key(&key).unwrap();
+    let cm = model(&[]);
+    let now = crate::store::now();
+    gov.record_usage(&cm, &key, "", MODEL, &toks(INITIAL_INPUT, 0), now);
+    metered(&gov, &key.id, MODEL, INITIAL_INPUT, now);
+    let fail_receipt_ack = journal.clone();
+    *store.before_add.lock().unwrap() = Some(Box::new(move || {
+        fail_receipt_ack
+            .fail_after_write
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }));
+    let delta = delta();
+    let adj = correction(&key, &delta, now);
+    assert!(gov.adjust_usage(&cm, &adj).is_err());
+    assert_eq!(
+        input(&store.get_usage(&key.id, 0).unwrap()),
+        CORRECTED_INPUT
+    );
+    assert_eq!(store.correction_calls.lock().unwrap().len(), 1);
+    store.set_down(true);
+    journal
+        .fail_after_write
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    gov.adjust_usage(&cm, &adj).unwrap().unwrap();
+    assert_eq!(
+        store.correction_calls.lock().unwrap().len(),
+        1,
+        "the definitive backend decision is retained while its immutable recovery event is retried"
+    );
+    assert_eq!(
+        journal.selected.lock().unwrap().last().unwrap().state,
+        RecoveryState::Settled
+    );
+}
