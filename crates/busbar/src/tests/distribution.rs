@@ -289,3 +289,18 @@ mod service_plane_usage;
 
 #[path = "admin_application/service_group_usage.rs"]
 mod service_group_usage;
+
+#[path = "kernel_application/misc_boot.rs"]
+mod misc_boot;
+
+#[path = "kernel_application/misc_ingress_terminal.rs"]
+mod misc_ingress_terminal;
+
+#[path = "kernel_application/misc_operation.rs"]
+mod misc_operation;
+
+#[path = "kernel_application/misc_router_door.rs"]
+mod misc_router_door;
+
+#[path = "kernel_application/misc_router_session.rs"]
+mod misc_router_session;
