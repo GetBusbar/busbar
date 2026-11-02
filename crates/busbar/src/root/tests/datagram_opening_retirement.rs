@@ -4,7 +4,7 @@
 #![cfg(feature = "transport-webrtc")]
 
 use std::future::Future;
-use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::task::{Context, Poll, Wake, Waker};
 use std::time::Instant;
@@ -27,6 +27,8 @@ type Callback = Arc<dyn Fn() + Send + Sync>;
 pub(crate) struct OpeningFramer {
     inner: Arc<dyn FramerDoor>,
     fault: AtomicU8,
+    self_retired: AtomicBool,
+    finish_attempts: AtomicUsize,
     pub(crate) finishes: AtomicUsize,
     pub(crate) on_finish: Mutex<Option<Callback>>,
 }
@@ -43,6 +45,8 @@ impl OpeningFramer {
                     .expect("real WebRTC door opens"),
             ),
             fault: AtomicU8::new(0),
+            self_retired: AtomicBool::new(false),
+            finish_attempts: AtomicUsize::new(0),
             finishes: AtomicUsize::new(0),
             on_finish: Mutex::new(None),
         })
@@ -55,21 +59,37 @@ impl FramerDoor for OpeningFramer {
     }
     fn cross(&self, call: Call<'_>) -> Crossed {
         if let Call::Finish(input, out) = call {
+            self.finish_attempts.fetch_add(1, Ordering::SeqCst);
             let callback = self.on_finish.lock().unwrap().clone();
             if let Some(callback) = callback {
                 callback();
             }
             let crossed = self.inner.cross(Call::Finish(input, out));
-            assert_eq!(
-                crossed.outcome,
-                busbar_contract::abi::mechanism::call::Outcome::Ready,
-                "the actual WebRTC product completed Finish"
-            );
-            self.finishes.fetch_add(1, Ordering::SeqCst);
+            if self.self_retired.load(Ordering::SeqCst) {
+                assert_eq!(
+                    crossed.outcome,
+                    busbar_contract::abi::mechanism::call::Outcome::Failed
+                );
+                assert_eq!(
+                    crossed.error.as_deref(),
+                    Some(b"finish: no such framing".as_slice()),
+                    "a malformed SDP was already retired by the actual product"
+                );
+            } else {
+                assert_eq!(
+                    crossed.outcome,
+                    busbar_contract::abi::mechanism::call::Outcome::Ready,
+                    "the actual WebRTC product completed Finish"
+                );
+                self.finishes.fetch_add(1, Ordering::SeqCst);
+            }
             return crossed;
         }
         if let Call::Ingest(input, out) = call {
             let crossed = self.inner.cross(Call::Ingest(input, out));
+            if crossed.outcome == busbar_contract::abi::mechanism::call::Outcome::Failed {
+                self.self_retired.store(true, Ordering::SeqCst);
+            }
             // Bounded malformed ABI replies for irreducible host cleanup negatives.
             // The product owns the actual resource in every case.
             match self.fault.swap(0, Ordering::SeqCst) {
@@ -273,7 +293,9 @@ async fn malformed_real_sdp_retires_the_actual_framing_once() {
         let door = door();
         let framer = OpeningFramer::new();
         assert!(Opened::open(&door, framer.clone(), description).is_err());
-        assert_eq!(framer.finishes.load(Ordering::SeqCst), 1);
+        assert!(framer.self_retired.load(Ordering::SeqCst));
+        assert_eq!(framer.finishes.load(Ordering::SeqCst), 0);
+        assert_eq!(framer.finish_attempts.load(Ordering::SeqCst), 1);
         assert!(lock(&door.legs).is_empty());
         assert!(door.assocs.is_empty());
         door.close();
@@ -363,7 +385,16 @@ async fn a_duplicate_local_user_refuses_only_the_second_real_opening() {
             }
         })
         .collect::<String>();
-    let second = Opened::open(&door, second_framer.clone(), offered.as_bytes()).unwrap();
+    let limits = LimitsResolved {
+        datagram_line_memory_bytes: Some(
+            4 * busbar_core_connector::test_support::datagram_output_reservation_bytes(),
+        ),
+        ..Default::default()
+    };
+    let second = {
+        let _scope = BuildScope::enter(&limits);
+        Opened::open(&door, second_framer.clone(), offered.as_bytes()).unwrap()
+    };
     let second_observed = Observed::new(&second);
     let refusal = only_joining(second).admit_into(2, &connector).unwrap_err();
     assert!(refusal.starts_with("the claim door refused"), "{refusal}");
