@@ -108,14 +108,7 @@ fn registry_at(ptr: *mut Registry) -> &'static Registry {
 }
 
 fn builtins() -> &'static [&'static ProtocolDecl] {
-    #[cfg(test)]
-    {
-        crate::testkit::neutral_protocols::NEUTRAL_PROTOCOLS
-    }
-    #[cfg(not(test))]
-    {
-        &[]
-    }
+    crate::testkit::neutral_protocols::NEUTRAL_PROTOCOLS
 }
 
 static INSTALLED: std::sync::OnceLock<Vec<&'static ProtocolDecl>> = std::sync::OnceLock::new();
