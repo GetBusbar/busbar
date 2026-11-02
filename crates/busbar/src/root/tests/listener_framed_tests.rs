@@ -1425,6 +1425,10 @@ async fn a_session_waits_for_its_parked_message_before_emitting_the_next() {
         "/first",
         axum::routing::get(
             |axum::Extension(session): axum::Extension<FramedSession>| async move {
+                assert!(
+                    session.admit().await,
+                    "the session adoption is explicitly committed"
+                );
                 let (from_caller, _incoming) = tokio::sync::mpsc::channel(1);
                 let (outgoing, to_caller) = tokio::sync::mpsc::channel(2);
                 outgoing
@@ -1477,6 +1481,11 @@ async fn a_session_waits_for_its_parked_message_before_emitting_the_next() {
     assert!(
         before_release.is_empty(),
         "no session message completes before its gate"
+    );
+    assert_eq!(
+        door.committed_heads(),
+        1,
+        "one accepted head commits the session"
     );
     let emitted = door.emitted();
     assert_eq!(
