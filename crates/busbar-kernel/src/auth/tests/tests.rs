@@ -1429,106 +1429,49 @@ async fn data_verifier_outcome_projection_preserves_the_503_and_401_envelopes() 
     // exchange_verifier_outcome_projection_preserves_failed_and_faulted_503.
 }
 
-struct LentCredentialDoor(busbar_contract::auth_calls::Verified);
-
-impl LentCredentialDoor {
-    fn answer(
-        &self,
-        r: &busbar_contract::auth_calls::VerifyRequest,
-    ) -> busbar_contract::auth_calls::VerifyAnswer {
-        use busbar_contract::auth_calls::{Verified, VerifiedIdentity};
-        match r
-            .credential
-            .as_ref()
-            .map(|c| c.expose(&crate::seal::lend()).as_slice())
-        {
-            Some(b"tok") => Verified::Identity(VerifiedIdentity {
-                subject: "ext:who".into(),
-                groups: vec!["ops".into()],
-                ..VerifiedIdentity::default()
-            })
-            .into(),
-            _ => self.0.clone().into(),
-        }
+#[test]
+fn external_admin_answer_projection_keeps_identity_and_all_refusal_types() {
+    use busbar_contract::auth_calls::{Verified, VerifiedIdentity};
+    // INTERNAL outcome/projection DATA. Actual OIDC requests from both credential carriers
+    // separately establish the selected-candidate loan; this does not assert sync I/O readiness.
+    let project = |verified: Verified| {
+        let answered = admin_verdict_of(verified.into(), false);
+        let verdict = complete_chain(chain_position_verdict("ext-door", answered.verdict));
+        let operator = Operator::new("operator-provider");
+        let cap = if matches!(&verdict, ChainVerdict::Identified { .. }) {
+            module_scope_cap(&Default::default(), &operator, "ext-door")
+        } else {
+            None
+        };
+        let door = admin_door_from_bindings(
+            &Default::default(),
+            &operator,
+            "operator",
+            verdict.clone(),
+            cap,
+            crate::admin::seam::admin_verb_rung,
+        );
+        ((verdict, cap), door)
+    };
+    for _ in 0..2 {
+        let (chain, door) = project(Verified::Identity(VerifiedIdentity {
+            subject: "ext:who".into(),
+            groups: vec!["ops".into()],
+            ..Default::default()
+        }));
+        assert!(
+            matches!(chain, (ChainVerdict::Identified { ref module, .. }, _) if module == "ext-door")
+        );
+        assert!(matches!(door, AdminDoor::Identified(..)));
     }
-}
-
-impl busbar_contract::auth_calls::AuthCalls for LentCredentialDoor {
-    fn name(&self) -> &str {
-        "lent-credential-door"
-    }
-    fn facts(&self) -> u32 {
-        busbar_contract::abi::auth::FACT_CACHEABLE
-    }
-    fn verify_now(
-        &self,
-        r: &busbar_contract::auth_calls::VerifyRequest,
-    ) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
-        Some(self.answer(r))
-    }
-    fn verify(
-        &self,
-        r: busbar_contract::auth_calls::VerifyRequest,
-    ) -> Box<dyn busbar_contract::auth_calls::Verifying> {
-        Box::new(OperatorAnswer(Some(self.answer(&r))))
-    }
-    fn refresh(&self) -> Result<u64, String> {
-        Ok(0)
-    }
-}
-
-fn external_door_app(
-    otherwise: busbar_contract::auth_calls::Verified,
-) -> std::sync::Arc<crate::state::App> {
-    let mut app = crate::test_support::TestApp::new()
-        .admin_chain(vec!["ext-door".to_string()])
-        .build();
-    let mut modules = std::collections::HashMap::new();
-    modules.insert(
-        "ext-door".to_string(),
-        AdminModule {
-            calls: std::sync::Arc::new(LentCredentialDoor(otherwise)),
-        },
-    );
-
-    let carriers = app.admin_modules.operator.carriers().to_vec();
-    std::sync::Arc::get_mut(&mut app)
-        .expect("freshly built App Arc is unshared")
-        .admin_modules = std::sync::Arc::new(AdminAuthChain {
-        modules,
-        operator: Operator::new(crate::config::operator_provider()).with_carriers(carriers),
-    });
-    app
-}
-
-#[tokio::test]
-async fn an_external_admin_door_is_lent_the_candidate_and_an_unjudged_verify_is_the_1_5_5_refusal()
-{
-    use busbar_contract::auth_calls::Verified;
-    for headers in [
-        admin_headers(Some("tok"), None),
-        admin_headers(None, Some("tok")),
-    ] {
-        let app = external_door_app(Verified::Reject);
-        assert!(matches!(
-            run_admin_chain(&app, "GET", "/", &headers, false, &mut Default::default()).await,
-            (ChainVerdict::Identified { ref module, .. }, _) if module == "ext-door"
-        ));
-        assert!(matches!(
-            admin_door(&app, "GET", "/", &headers),
-            AdminDoor::Identified(..)
-        ));
-    }
-    let wrong = admin_headers(Some("not-tok"), None);
     for otherwise in [
         Verified::Reject,
         Verified::Pass,
         Verified::Overloaded,
         Verified::Failed,
     ] {
-        let app = external_door_app(otherwise.clone());
         assert_eq!(
-            run_admin_chain(&app, "GET", "/", &wrong, false, &mut Default::default()).await,
+            project(otherwise.clone()).0,
             (ChainVerdict::Denied, None),
             "{otherwise:?}: the 1.5.5 refusal"
         );
