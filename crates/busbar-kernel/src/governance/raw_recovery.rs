@@ -495,7 +495,7 @@ impl GovState {
                 custody.absorbed_plain = ExactUsageDelta::default();
                 custody.absorbed_dated = ExactUsageDelta::default();
                 custody.verdict = Some(verdict);
-                encode(&custody).map_err(map)?
+                encode(&custody).map_err(map)
             }
             RecoveryKind::Metering => {
                 let mut custody: MeteringCustody = decode(&event.payload).map_err(map)?;
@@ -516,7 +516,7 @@ impl GovState {
                     });
                 }
                 custody.verdict = Some(verdict);
-                encode(&custody).map_err(map)?
+                encode(&custody).map_err(map)
             }
             _ => unreachable!(),
         }
@@ -845,7 +845,7 @@ impl GovState {
         Ok(())
     }
 
-    fn observed_child_receipt(
+    pub(super) fn observed_child_receipt(
         &self,
         parent: &RecoveryEvent,
         descriptor: &RecoveryChild,
