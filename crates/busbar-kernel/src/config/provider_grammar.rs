@@ -90,13 +90,20 @@ impl<'de> Visitor<'de> for Word<'_> {
     fn visit_enum<A: EnumAccess<'de>>(self, data: A) -> Result<Value, A::Error> {
         let (word, variant) = data.variant::<String>()?;
         if !self.0.contains(&word) {
+            let expected = match self.0 {
+                [only] => format!("expected `{only}`"),
+                [first, second] => format!("expected `{first}` or `{second}`"),
+                words => format!(
+                    "expected one of {}",
+                    words
+                        .iter()
+                        .map(|s| format!("`{s}`"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            };
             return Err(serde::de::Error::custom(format!(
-                "unknown variant `{word}`, expected one of {}",
-                self.0
-                    .iter()
-                    .map(|s| format!("`{s}`"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                "unknown variant `{word}`, {expected}"
             )));
         }
         variant.unit_variant()?;
@@ -236,7 +243,7 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(
-            error.contains("unknown variant `typo`, expected one of `first`, `second`"),
+            error.contains("unknown variant `typo`, expected `first` or `second`"),
             "{error}"
         );
     }
