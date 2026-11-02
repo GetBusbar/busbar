@@ -502,11 +502,12 @@ fn final_fields_keep_their_kind_and_custody_across_pending_and_drain() {
         inner: PendingDoor::new(TestDoor::identity("bytes"), 1),
         seen: Default::default(),
     });
-    let (mut framing, _) = Framing::begin(
+    let (mut framing, _) = Framing::begin_ticketed(
         door.clone(),
         SIDE_ACCEPT,
         "",
         &Established::plain_for_test(),
+        &[],
     )
     .unwrap();
     framing.bufs = Buffers::new(7, 5, 1);
