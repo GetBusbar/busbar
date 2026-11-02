@@ -700,13 +700,25 @@ pub fn load_dropped_bytes<K: Kind>(
     stated: &[u8],
     bind: Bind,
 ) -> Result<Plugin<K>, LoadError> {
+    prepare_dropped_bytes::<K>(bytes, display, stated)?.bind(bind)
+}
+
+pub(crate) fn prepare_dropped_bytes<K: Kind>(
+    bytes: &[u8],
+    display: &str,
+    stated: &[u8],
+) -> Result<AdmittedImage<K>, LoadError> {
     check_facts::<K>(stated)?;
     let (lib, staged) =
         crate::stage::load_library_from_bytes(bytes, display).map_err(LoadError::Open)?;
-    bind_library::<K>(Lib(Some(lib), Some(staged)), stated, bind)
+    admit_library::<K>(Lib(Some(lib), Some(staged)), stated)
 }
 
 fn bind_library<K: Kind>(lib: Lib, stated: &[u8], bind: Bind) -> Result<Plugin<K>, LoadError> {
+    admit_library::<K>(lib, stated)?.bind(bind)
+}
+
+fn admit_library<K: Kind>(lib: Lib, stated: &[u8]) -> Result<AdmittedImage<K>, LoadError> {
     let door = {
         let l = lib.0.as_ref().expect("an opened library");
         // SAFETY: `DOOR_SYMBOL` is typed `RawDoorFn` by the mechanism; the symbol is copied out as a
@@ -714,7 +726,36 @@ fn bind_library<K: Kind>(lib: Lib, stated: &[u8], bind: Bind) -> Result<Plugin<K
         unsafe { l.get::<RawDoorFn>(DOOR_SYMBOL).map(|s| *s) }
     };
     let door = door.map_err(|e| LoadError::NoDoor(e.to_string()))?;
-    Plugin::bind(admitted::<K>(door, stated)?, Some(lib), bind)
+    Ok(AdmittedImage {
+        validated: admitted::<K>(door, stated)?,
+        lib: Some(lib),
+        kind: std::marker::PhantomData,
+    })
+}
+
+pub(crate) struct AdmittedImage<K: Kind> {
+    validated: Validated,
+    lib: Option<Lib>,
+    kind: std::marker::PhantomData<K>,
+}
+
+impl<K: Kind> AdmittedImage<K> {
+    pub(crate) fn bind(self, bind: Bind) -> Result<Plugin<K>, LoadError> {
+        Plugin::bind(self.validated, self.lib, bind)
+    }
+}
+
+impl AdmittedImage<super::kinds::hook::Hook> {
+    pub(crate) fn routes(
+        &self,
+    ) -> Result<Vec<busbar_contract::abi::mechanism::route::Route>, LoadError> {
+        let context = super::kinds::hook::Hook::context(&self.validated.statement)
+            .map_err(LoadError::KindTail)?;
+        Ok(context
+            .as_deref()
+            .and_then(|context| context.downcast_ref::<super::kinds::hook::HookContext>())
+            .map_or_else(Vec::new, |context| context.routes.clone()))
+    }
 }
 
 fn check_facts<K: Kind>(stated: &[u8]) -> Result<(), LoadError> {
@@ -769,7 +810,15 @@ pub(crate) fn load_staged<K: Kind>(
 }
 
 pub fn load_linked<K: Kind>(row: &LinkedRow, bind: Bind) -> Result<Plugin<K>, LoadError> {
-    Plugin::bind(admitted::<K>(row.door, &row.statement)?, None, bind)
+    prepare_linked::<K>(row)?.bind(bind)
+}
+
+pub(crate) fn prepare_linked<K: Kind>(row: &LinkedRow) -> Result<AdmittedImage<K>, LoadError> {
+    Ok(AdmittedImage {
+        validated: admitted::<K>(row.door, &row.statement)?,
+        lib: None,
+        kind: std::marker::PhantomData,
+    })
 }
 
 fn admitted<K: Kind>(door: RawDoorFn, stated: &[u8]) -> Result<Validated, LoadError> {
