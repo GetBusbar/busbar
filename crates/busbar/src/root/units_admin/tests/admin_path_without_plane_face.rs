@@ -822,11 +822,12 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
     crate::dist_root_install::install();
     busbar_core_admin::install();
 
+    let configured_store = crate::root::real_store::store();
     let gov = Arc::new(
-        busbar_kernel::governance::GovState::new(crate::root::real_store::records(), None)
-            .expect("a governance over the memory store"),
+        busbar_kernel::governance::GovState::new(configured_store.clone(), None)
+            .expect("governance over the actual configured Store"),
     );
-    gov.attach_store_calls(crate::root::real_store::store());
+    gov.attach_store_calls(configured_store);
     crate::dist_root_install::install();
     let library_path = std::path::PathBuf::from(
         std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
