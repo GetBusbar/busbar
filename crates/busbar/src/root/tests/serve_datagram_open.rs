@@ -1,26 +1,24 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-#![cfg(feature = "transport-webrtc")]
+#![cfg(all(feature = "transport-webrtc", linked_section_streams))]
 
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
 use std::time::Instant;
 
-use busbar_contract::abi::mechanism::call::Outcome;
-use busbar_contract::abi::sdk::door::blank_in;
 use busbar_contract::transport::TransportSettings;
 use busbar_core_connector::datagram::{Across, LegSink, Pairing};
 use busbar_core_connector::framer::{Call, Crossed, DoorFacts, FramerDoor};
 use busbar_core_connector::udp::{bind, ReadyPort};
 
 use super::super::{self as serving, serve_datagram};
-use super::{governed, session_custody_request, session_custody_routes, Governed, PUBLISHING};
+use serving::planes_tests::PUBLISHING;
 
-const HEAD_PENDING: &str = "/open?head=pending";
-const HEAD_READY: &str = "/open?head=ready";
+const OPEN_CALL: &str = "/v1/realtime/calls";
 const CARRIER: &str = "webrtc";
 
 type Callback = Arc<dyn Fn() + Send + Sync>;
@@ -104,26 +102,295 @@ fn assert_description(bytes: &[u8]) {
     }
 }
 
-fn routes(g: &mut Governed) -> (Arc<serving::DataRoutes>, Arc<serve_datagram::ClaimDoor>) {
-    let mut routes = session_custody_routes(g, false);
-    let door = serve_datagram::ClaimDoor::serve(
-        ReadyPort::open(bind("127.0.0.1:0").expect("fixture port")).expect("ready port"),
+struct Deployment {
+    served: serving::Served,
+    app: Arc<busbar_kernel::state::App>,
+    key: busbar_contract::records::VirtualKey,
+    gov: Arc<busbar_kernel::governance::GovState>,
+    post: Arc<crate::root::plane_node::NodeEndPost>,
+    money: Arc<busbar_kernel::plane_driver::PlaneMoney>,
+    book: Arc<Mutex<crate::root::durability::Durability>>,
+    claim: Arc<serve_datagram::ClaimDoor>,
+    _connector: Arc<busbar_core_connector::Connector>,
+    peer: tokio::task::JoinHandle<()>,
+    provider_key: std::path::PathBuf,
+}
+impl Drop for Deployment {
+    fn drop(&mut self) {
+        self.peer.abort();
+        let _ = std::fs::remove_file(&self.provider_key);
+    }
+}
+impl Deployment {
+    fn requests(&self) -> u64 {
+        self.gov
+            .usage_for(&self.app.cost, &self.key.id, busbar_kernel::store::now())
+            .unwrap()
+            .unwrap()
+            .requests
+    }
+}
+
+// Assemble ordinary production objects around the actual registered streaming
+// plane. The loopback peer drains requests but leaves its response pending; it
+// introduces no plane, transport, protocol parser or manufactured plane output.
+async fn deployment(instance: &'static str) -> Deployment {
+    use crate::root::door_steps::{provider_routes, DoorReach, OutboundAuths};
+    use crate::root::loader::dispatch::kinds::plane::Plane;
+    use crate::root::loader::dispatch::{
+        load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink,
+    };
+    use busbar_contract::conn::{DeclaredConns, PollConns};
+    use busbar_kernel::governance::signing::{TokenSigner, DEFAULT_KID};
+    use busbar_kernel::governance::{GovState, NewKeySpec};
+    use busbar_kernel::plane_driver::{EndPost, PlaneMoney};
+    use tokio::io::AsyncReadExt;
+
+    crate::root::linked::register_stores(&crate::LINKED);
+    let provider_key = std::env::temp_dir().join(format!(
+        "busbar-datagram-provider-{instance}-{}.key",
+        std::process::id()
+    ));
+    std::fs::write(&provider_key, b"test-provider-key").unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let provider_addr = listener.local_addr().unwrap();
+    let peer = tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut bytes = [0; 4096];
+                while matches!(socket.read(&mut bytes).await, Ok(n) if n != 0) {}
+            });
+        }
+    });
+    let claim =
+        serve_datagram::ClaimDoor::serve(ReadyPort::open(bind("127.0.0.1:0").unwrap()).unwrap());
+    let judge = crate::root::connector::guard_for(&busbar_kernel::config::Destinations {
+        block_private_addresses: false,
+        ..Default::default()
+    })
+    .unwrap();
+    let connector = busbar_core_connector::process::build_with_secrets(
+        || {
+            crate::root::connector::entries(
+                crate::LINKED_TRANSPORT_DOORS,
+                &TransportSettings::default(),
+            )
+        },
+        judge,
+        &[],
+        Arc::new(|_, _| {}),
+        busbar_core_connector::pool::PoolPosture::NONE,
+        busbar_core_connector::spawn_env::linked_spawn_secret,
+    )
+    .unwrap();
+    let services = serving::planes_tests::composed_services();
+    let dispatcher = Arc::new(Dispatcher::with_services(
+        DispatchConfig::default(),
+        services.served(),
+    ));
+    let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
+    let plane = load_linked::<Plane>(
+        &LinkedRow::of(busbar_plane_streaming::door).unwrap(),
+        Bind {
+            instance: Arc::from(instance),
+            max_inflight_cap: 64,
+            sink: Arc::new(NoSink),
+            dispatcher: dispatcher.adopter(),
+            conns: crate::root::loader::dispatch::ConnTable::Host(
+                connector.clone() as Arc<dyn DeclaredConns>
+            ),
+        },
+    )
+    .unwrap();
+    let section = plane.served().section;
+    let protocol = {
+        let facts = plane.served();
+        facts
+            .dialect_auth
+            .iter()
+            .rev()
+            .filter(|(_, style, _)| *style == "bearer")
+            .find_map(|(dialect, _, _)| facts.dialects.get(*dialect as usize).copied())
+            .unwrap()
+    };
+    let gov = Arc::new(
+        GovState::new_with_signer(
+            Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new()),
+            None,
+            Some(TokenSigner::from_secret_bytes(&[9; 32], DEFAULT_KID)),
+        )
+        .unwrap(),
     );
-    Arc::get_mut(&mut routes)
-        .expect("unshared routes")
-        .served
-        .claim_doors
-        .insert(CARRIER, Arc::clone(&door));
-    (routes, door)
+    let (key, _) = gov
+        .mint_signed(
+            NewKeySpec {
+                name: "datagram caller".into(),
+                ..Default::default()
+            },
+            4_000_000_000,
+            1_700_000_000,
+        )
+        .unwrap();
+    let cost = busbar_kernel::cost::CostModel::flat(1);
+    gov.hydrate_budgets(&cost, 0).unwrap();
+    let book = Arc::new(Mutex::new(
+        crate::root::durability::build(
+            &crate::root::durability::DurabilityConfig { data_dir: None },
+            Box::new(busbar_kernel_wal::NullShipper::new()),
+        )
+        .unwrap(),
+    ));
+    let node = Arc::new(crate::root::plane_node::Node::new());
+    node.bind_book(book.clone());
+    let post = Arc::new(crate::root::plane_node::NodeEndPost::new(node));
+    let money = Arc::new(PlaneMoney::new(
+        gov.clone(),
+        post.clone() as Arc<dyn EndPost>,
+    ));
+    let tables = busbar_kernel::plane_driver::serve::ServeTables::default();
+    let app = busbar_kernel_testkit::test_support::TestApp::new()
+        .keys_chain()
+        .serve_tables(tables.clone())
+        .governance(gov.clone())
+        .cost(cost)
+        .build();
+    let provider = serde_yaml::from_str::<busbar_kernel::config::ProviderCfg>(&format!(
+        "protocol: {protocol}\nbase_url: 'http://{provider_addr}'\napi_key: {{file: '{}'}}\nerror_map: {{}}", provider_key.display()
+    )).unwrap();
+    let providers = provider_routes(
+        &std::collections::HashMap::from([(
+            "p".into(),
+            busbar_kernel::config::ResolvedProvider::from(provider),
+        )]),
+        &Default::default(),
+    );
+    let models_yaml = "{m-cap: {provider: p, upstream_model: gpt-realtime-wire}}";
+    let catalog = serde_yaml::from_str::<
+        std::collections::HashMap<String, busbar_contract::config::ModelCfg>,
+    >(models_yaml)
+    .unwrap();
+    let secrets: Arc<dyn busbar_contract::secret::SecretResolve> =
+        Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
+    let auths = OutboundAuths::new(
+        dispatcher.clone(),
+        crate::LINKED.auths,
+        None,
+        crate::root::loader::dispatch::ConnTable::Host(connector.clone() as Arc<dyn DeclaredConns>),
+        busbar_kernel::diagnostics::Catalogue::NEUTRAL,
+    );
+    let reach = DoorReach {
+        providers: &providers,
+        secrets,
+        auths: Arc::new(auths),
+        conns: connector.clone() as Arc<dyn PollConns>,
+        stream_ceiling_secs: 600,
+        catalog: Some(&catalog),
+        models: None,
+        upgrades: serving::upgrade_carriers(crate::LINKED.transports, &[]),
+    };
+    let sections = BTreeMap::from([
+        (
+            section,
+            serde_yaml::from_str(&format!(
+                "session: {{model: m-cap}}\nmedia: {{listen: '{}'}}",
+                claim.local()
+            ))
+            .unwrap(),
+        ),
+        (
+            busbar_contract::section::RESERVED_MODELS_KEY,
+            serde_yaml::from_str(models_yaml).unwrap(),
+        ),
+    ]);
+    let app_for_hooks = app.clone();
+    let hooks = serving::HookStage {
+        host: Arc::new(move || busbar_kernel::plane_driver::engine_host(&app_for_hooks)),
+        gov: gov.clone(),
+        journal: None,
+    };
+    let money_for_plane = money.clone();
+    let mut served = serving::compose_planes(
+        &[(instance.into(), Arc::new(plane))],
+        &dispatcher,
+        &services,
+        &sections,
+        Some("https://gw.example"),
+        &move || money_for_plane.clone(),
+        Some(&serving::DoorEgress {
+            reach: &reach,
+            journal: post.clone() as Arc<dyn busbar_kernel_egress::ports::Journal>,
+        }),
+        Some(&hooks),
+        &tables,
+    )
+    .unwrap();
+    served.post = Some(post.clone());
+    served.claim_doors.insert(CARRIER, claim.clone());
+    Deployment {
+        served,
+        app,
+        key,
+        gov,
+        post,
+        money,
+        book,
+        claim,
+        _connector: connector,
+        peer,
+        provider_key,
+    }
+}
+
+fn routes(g: &mut Deployment) -> (Arc<serving::DataRoutes>, Arc<serve_datagram::ClaimDoor>) {
+    let served = std::mem::take(&mut g.served);
+    let mut lines = Vec::new();
+    let mut of_line = std::collections::HashMap::new();
+    for (plane, served) in served.planes.iter().enumerate() {
+        for (claim, snapshot) in served
+            .snapshot
+            .claims
+            .iter()
+            .enumerate()
+            .filter(|(claim, _)| *claim == 1)
+        {
+            let claim = claim as u32;
+            let (line, _) =
+                serving::claim_line(&served.instance, claim, snapshot, &[], &[], &[]).unwrap();
+            of_line.insert((served.instance.clone(), claim), (plane, claim));
+            lines.push(line);
+        }
+    }
+    (
+        Arc::new(serving::DataRoutes {
+            served,
+            claim_doors: None,
+            post: g.post.clone(),
+            pin: || crate::root::kernel::ROOT_CARD.pin(),
+            guests: busbar_kernel::guest::GuestList::seal(lines).unwrap(),
+            of_line,
+            frames: Default::default(),
+        }),
+        g.claim.clone(),
+    )
 }
 
 fn arrival(
-    g: &Governed,
+    g: &Deployment,
     routes: &serving::DataRoutes,
     target: &str,
 ) -> (serving::SessionDoor, busbar_kernel::plane_driver::Arrival) {
-    let mut req = session_custody_request(g, target);
-    req.body = bytes::Bytes::from(offer());
+    let mut req = serving::DoorRequest {
+        method: axum::http::Method::POST,
+        uri: target.parse().unwrap(),
+        headers: Default::default(),
+        body: bytes::Bytes::from(offer()),
+        gov: Default::default(),
+        credential: None,
+        ticket: None,
+        app: g.app.clone(),
+        scheme: 0,
+        consumed_fields: Vec::new(),
+    };
     req.gov.key = Some(Arc::new(g.key.clone()));
     let (door, arrival, _) = routes.arrived(0, 1, req);
     (door, arrival)
@@ -139,7 +406,7 @@ async fn until(mut ready: impl FnMut() -> bool) {
     .expect("the real lifecycle reaches its expected state");
 }
 
-async fn cleaned(g: &Governed, routes: &serving::DataRoutes, framer: &OpeningFramer) -> u64 {
+async fn cleaned(g: &Deployment, routes: &serving::DataRoutes, framer: &OpeningFramer) -> u64 {
     until(|| {
         g.post.open_units() == 0
             && g.money.open_units() == 0
@@ -187,37 +454,13 @@ fn assert_book(unit: u64, occupied: bool) {
     }
 }
 
-fn on_pieces(routes: &serving::DataRoutes) -> u64 {
-    use busbar_contract::abi::mechanism::call::AbiStr;
-    use busbar_contract::abi::plane::{slot, ArriveIn, ArriveOut, UnitCount};
-    const ON_PIECES: usize = 0;
-    const STATS_TARGET: &[u8] = b"/stats";
-    let mut units = vec![UnitCount::ZERO; routes.served.planes[0].facts.classes.len()];
-    let method = axum::http::Method::POST;
-    let mut input: ArriveIn = blank_in();
-    input.method = AbiStr::over(method.as_str().as_bytes());
-    input.target = AbiStr::over(STATS_TARGET);
-    input.units_buf = units.as_mut_ptr();
-    input.units_cap = units.len();
-    let mut frame = serving::Frame::new(
-        input,
-        busbar_contract::abi::sdk::door::blank_out::<ArriveOut>(),
-    );
-    let called = routes.served.planes[0]
-        .live
-        .plugin
-        .call(slot::ARRIVE, &mut frame);
-    assert_eq!(called.outcome, Outcome::Ready);
-    units[ON_PIECES].amount
-}
-
 #[tokio::test]
 async fn dropping_the_datagram_opener_before_admission_retires_its_opening() {
     let _one = PUBLISHING.lock().await;
-    let mut g = governed("datagram-cancel-before-admit", true);
+    let mut g = deployment("datagram-cancel-before-admit").await;
     let (routes, _claim) = routes(&mut g);
     let framer = OpeningFramer::new();
-    let (door, arrival) = arrival(&g, &routes, HEAD_PENDING);
+    let (door, arrival) = arrival(&g, &routes, OPEN_CALL);
     let mut opening = Box::pin(Arc::clone(&routes).open_datagram(
         (framer.clone(), CARRIER.to_string()),
         door,
@@ -253,20 +496,21 @@ async fn dropping_the_datagram_opener_before_admission_retires_its_opening() {
 }
 
 #[tokio::test]
-async fn dropping_a_datagram_opener_waiting_for_the_planes_head_ends_its_session() {
+async fn dropping_an_admitted_datagram_opener_before_response_transfer_ends_its_session() {
     let _one = PUBLISHING.lock().await;
-    let mut g = governed("datagram-cancel-before-head", true);
+    let mut g = deployment("datagram-cancel-before-head").await;
     let (routes, _claim) = routes(&mut g);
     let framer = OpeningFramer::new();
-    let (door, arrival) = arrival(&g, &routes, HEAD_PENDING);
+    let (door, arrival) = arrival(&g, &routes, OPEN_CALL);
     let mut opening = Box::pin(Arc::clone(&routes).open_datagram(
         (framer.clone(), CARRIER.to_string()),
         door,
         arrival,
     ));
     tokio::select! {
-        _ = &mut opening => panic!("the plane has stated no head"),
-        () = until(|| on_pieces(&routes) > 0) => {}
+        biased;
+        () = until(|| g.money.open_units() == 1 && !routes.frames_lock().is_empty()) => {},
+        _ = &mut opening => panic!("custody transferred before the admission observation"),
     }
     assert_eq!(g.money.open_units(), 1);
     let unit = *routes.frames_lock().keys().next().expect("admitted frame");
@@ -280,7 +524,7 @@ async fn dropping_a_datagram_opener_waiting_for_the_planes_head_ends_its_session
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn abandonment_during_a_join_retires_the_late_pair_without_holding_the_state_lock() {
     let _one = PUBLISHING.lock().await;
-    let mut g = governed("datagram-cancel-during-join", true);
+    let mut g = deployment("datagram-cancel-during-join").await;
     let (routes, claim) = routes(&mut g);
     let framer = OpeningFramer::new();
     let serve_datagram::Opened {
@@ -316,7 +560,7 @@ async fn abandonment_during_a_join_retires_the_late_pair_without_holding_the_sta
         })),
         ended: Some(Box::new(|unit| crate::root::connector::the().unpair(unit))),
     };
-    let (door, arrival) = arrival(&g, &routes, HEAD_PENDING);
+    let (door, arrival) = arrival(&g, &routes, OPEN_CALL);
     let (verdict, said) = tokio::sync::oneshot::channel();
     let task = tokio::spawn(Arc::clone(&routes).session(door, caller, arrival, verdict, attach));
     let unit = tokio::time::timeout(serving::OPEN_HEAD_WAIT, joining)
@@ -346,7 +590,7 @@ async fn abandonment_during_a_join_retires_the_late_pair_without_holding_the_sta
 #[tokio::test]
 async fn abandoning_an_unjoined_opening_drops_its_pairing_outside_the_state_mutex() {
     let _one = PUBLISHING.lock().await;
-    let mut g = governed("datagram-drop-outside-lock", true);
+    let mut g = deployment("datagram-drop-outside-lock").await;
     let (_routes, claim) = routes(&mut g);
     let framer = OpeningFramer::new();
     let serve_datagram::Opened {
@@ -372,46 +616,100 @@ async fn abandoning_an_unjoined_opening_drops_its_pairing_outside_the_state_mute
 }
 
 #[tokio::test]
-async fn a_datagram_head_timeout_retires_its_session_but_a_ready_response_transfers_it() {
+async fn a_host_head_wait_timeout_retires_real_custody_and_a_ready_plane_response_transfers_it() {
     let _one = PUBLISHING.lock().await;
-    for target in [HEAD_PENDING, HEAD_READY] {
-        let mut g = governed("datagram-opening-response", true);
+    // Streaming states its real 201 head immediately. A bounded pending host
+    // receiver independently exercises the existing head-wait mechanism; this
+    // does not claim the real plane withholds a head or an end-to-end timeout.
+    {
+        let mut g = deployment("datagram-host-head-timeout").await;
+        let (routes, claim) = routes(&mut g);
+        let framer = OpeningFramer::new();
+        let serve_datagram::Opened {
+            description,
+            caller,
+            head,
+            joining,
+        } = serve_datagram::Opened::open(&claim, framer.clone(), &offer()).unwrap();
+        let opening = serving::DatagramOpening::new(joining);
+        let attach = serving::Attach {
+            answered: serving::CREATED,
+            admitted: Some(opening.admission()),
+            ended: Some(Box::new(|unit| crate::root::connector::the().unpair(unit))),
+        };
+        let (door, arrival) = arrival(&g, &routes, OPEN_CALL);
+        let (verdict, said) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(routes.clone().session(
+            door,
+            serving::ClosingCaller::new(caller),
+            arrival,
+            verdict,
+            attach,
+        ));
+        assert!(tokio::time::timeout(serving::OPEN_HEAD_WAIT, said)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_ok());
+        let actual = serve_datagram::plane_head(head, serving::OPEN_HEAD_WAIT)
+            .await
+            .unwrap();
+        assert_eq!(actual.0, 201, "the actual Streaming plane stated its head");
+        assert_eq!(g.post.open_units(), 1);
+        assert_eq!(g.money.open_units(), 1);
+        let unit = *routes.frames_lock().keys().next().unwrap();
+        assert_book(unit, true);
+        let (_held, pending) = tokio::sync::oneshot::channel::<(u32, serving::HeadFields)>();
+        assert_eq!(
+            serve_datagram::plane_head(pending, serving::OPEN_HEAD_WAIT).await,
+            None
+        );
+        drop(opening);
+        tokio::time::timeout(serving::OPEN_HEAD_WAIT, task)
+            .await
+            .unwrap()
+            .unwrap();
+        drop(description);
+        assert_eq!(cleaned(&g, &routes, &framer).await, unit);
+        assert_book(unit, false);
+    }
+    {
+        let mut g = deployment("datagram-actual-ready-head").await;
         let (routes, _claim) = routes(&mut g);
         let framer = OpeningFramer::new();
-        let (door, arrival) = arrival(&g, &routes, target);
-        let response = Arc::clone(&routes)
-            .open_datagram((framer.clone(), CARRIER.to_string()), door, arrival)
+        let (door, arrival) = arrival(&g, &routes, OPEN_CALL);
+        let response = routes
+            .clone()
+            .open_datagram((framer.clone(), CARRIER.into()), door, arrival)
             .await;
-        if target == HEAD_PENDING {
-            assert_eq!(
-                response.status().as_u16(),
-                serving::refusal_status(busbar_contract::caps::ReasonCode::PlanePanic) as u16
-            );
-            let unit = cleaned(&g, &routes, &framer).await;
-            assert_book(unit, false);
-        } else {
-            assert_eq!(response.status(), axum::http::StatusCode::OK);
-            assert_eq!(
-                framer.finishes.load(Ordering::SeqCst),
-                0,
-                "response readiness transferred custody to the live session"
-            );
-            assert_eq!(g.post.open_units(), 1);
-            assert_eq!(g.money.open_units(), 1);
-            let unit = *routes
-                .frames_lock()
-                .keys()
-                .next()
-                .expect("live session frame");
-            assert_book(unit, true);
-            let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
-                .await
-                .expect("description");
-            assert_description(&body);
-            assert_book(unit, true);
-            crate::root::connector::the().unpair(unit);
-            assert_eq!(cleaned(&g, &routes, &framer).await, unit);
-            assert_book(unit, false);
-        }
+        assert_eq!(response.status(), axum::http::StatusCode::CREATED);
+        assert!(response
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("/v1/realtime/calls/"));
+        assert_eq!(
+            framer.finishes.load(Ordering::SeqCst),
+            0,
+            "response readiness transfers custody to the actual live session"
+        );
+        assert_eq!(g.post.open_units(), 1);
+        assert_eq!(g.money.open_units(), 1);
+        let unit = *routes
+            .frames_lock()
+            .keys()
+            .next()
+            .expect("live session frame");
+        assert_book(unit, true);
+        let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        assert_description(&body);
+        assert_book(unit, true);
+        crate::root::connector::the().unpair(unit);
+        assert_eq!(cleaned(&g, &routes, &framer).await, unit);
+        assert_book(unit, false);
     }
 }
