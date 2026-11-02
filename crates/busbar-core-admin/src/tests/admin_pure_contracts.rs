@@ -11,7 +11,6 @@ fn test_existence_gate_is_claimable_without_runtime() {
     drop(again);
 }
 
-
 #[test]
 fn test_persist_root_without_an_overlay_errs() {
     let result = busbar_kernel::config::overlay::persist_root(
@@ -51,3 +50,16 @@ fn test_config_settings_scope_matrix() {
     );
 }
 
+// Keep the private cache namespace mapped to the actual HTTP sentinel controls.
+#[test]
+fn key_replay_names_match_the_actual_http_controls() {
+    assert_eq!(
+        crate::idempotency::create_replay_key("stuck-mint"),
+        "create:10:stuck-mint"
+    );
+    let id = "actual-key-id";
+    assert_eq!(
+        crate::idempotency::rotate_replay_key(id, "stuck-rotate"),
+        format!("rotate:{}:{id}:12:stuck-rotate", id.len())
+    );
+}
