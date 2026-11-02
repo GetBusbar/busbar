@@ -753,7 +753,10 @@ impl GovState {
         flight: &DurableUsageFlight,
     ) -> RecordStoreResult<()> {
         if let Some(parent) = &flight.prerequisite {
-            if self.recovery_event(parent.operation_id).as_ref() == Some(parent) {
+            let advanced = self
+                .recovery_event(parent.operation_id)
+                .is_some_and(|current| current.revision > parent.revision);
+            if !advanced {
                 self.keep_recovery_event(parent)?;
             } else {
                 // Another real driver may already have confirmed this exact
