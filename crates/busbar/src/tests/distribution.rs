@@ -109,3 +109,102 @@ mod endpoints_cross_plane;
 
 #[path = "../../../../dist/default/tests/product/residual_envelope_cross_plane.rs"]
 mod residual_envelope_cross_plane;
+
+#[path = "kernel_application/auth_diagnostic_tests.rs"]
+mod auth_diagnostic_tests;
+
+#[path = "kernel_application/auth_self_keys_tests.rs"]
+mod auth_self_keys_tests;
+
+#[path = "kernel_application/config_parser_deploy.rs"]
+mod config_parser_deploy;
+
+#[path = "kernel_application/config_parser_groups_collision.rs"]
+mod config_parser_groups_collision;
+
+#[path = "kernel_application/config_parser_legacy.rs"]
+mod config_parser_legacy;
+
+#[path = "kernel_application/config_parser_migration.rs"]
+mod config_parser_migration;
+
+#[path = "kernel_application/config_parser_named_map_replace.rs"]
+mod config_parser_named_map_replace;
+
+#[path = "kernel_application/config_parser_plane_sections.rs"]
+mod config_parser_plane_sections;
+
+#[path = "kernel_application/plane_driver_health.rs"]
+mod plane_driver_health;
+
+#[path = "kernel_application/plane_driver_hooks.rs"]
+mod plane_driver_hooks;
+
+#[path = "kernel_application/plane_driver_host.rs"]
+mod plane_driver_host;
+
+#[path = "kernel_application/plane_driver_serve.rs"]
+mod plane_driver_serve;
+
+#[path = "admin_application/admin_configuration_contracts.rs"]
+mod admin_configuration_contracts;
+
+#[path = "admin_application/admin_governance_api.rs"]
+mod admin_governance_api;
+
+#[path = "admin_application/admin_group_admission.rs"]
+mod admin_group_admission;
+
+#[path = "admin_application/admin_info_and_validation.rs"]
+mod admin_info_and_validation;
+
+#[path = "admin_application/admin_key_custody_surface.rs"]
+mod admin_key_custody_surface;
+
+#[path = "admin_application/admin_key_delete_contracts.rs"]
+mod admin_key_delete_contracts;
+
+#[path = "admin_application/admin_key_request_contracts.rs"]
+mod admin_key_request_contracts;
+
+#[path = "admin_application/admin_key_states_and_secrets.rs"]
+mod admin_key_states_and_secrets;
+
+#[path = "admin_application/admin_routing_contracts.rs"]
+mod admin_routing_contracts;
+
+#[path = "admin_application/admin_signed_key_lifecycle.rs"]
+mod admin_signed_key_lifecycle;
+
+#[path = "admin_application/admin_token_carriers.rs"]
+mod admin_token_carriers;
+
+#[path = "admin_application/admin_topology_live_status.rs"]
+mod admin_topology_live_status;
+
+#[path = "admin_application/config_boundaries.rs"]
+mod config_boundaries;
+
+#[path = "admin_application/config_store_overlay.rs"]
+mod config_store_overlay;
+
+#[path = "admin_application/config_transactions.rs"]
+mod config_transactions;
+
+#[path = "admin_application/custody_idempotency.rs"]
+mod custody_idempotency;
+
+#[path = "admin_application/custody_provision.rs"]
+mod custody_provision;
+
+#[path = "admin_application/custody_usage_range.rs"]
+mod custody_usage_range;
+
+#[path = "admin_application/key_revoke_tombstone_tests.rs"]
+mod key_revoke_tombstone_tests;
+
+#[path = "admin_application/plugin_inspect_envelope.rs"]
+mod plugin_inspect_envelope;
+
+#[path = "admin_application/split_admin_listener.rs"]
+mod split_admin_listener;
