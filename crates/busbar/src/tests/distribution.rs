@@ -40,3 +40,9 @@ mod central_router_headers;
 
 #[path = "kernel_application/central_rebuild.rs"]
 mod central_rebuild;
+
+#[path = "kernel_application/auth_carrier_tests.rs"]
+mod auth_carrier_tests;
+
+#[path = "kernel_application/config_validation_models.rs"]
+mod config_validation_models;
