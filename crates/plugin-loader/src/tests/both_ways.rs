@@ -5,32 +5,30 @@ use crate::sign::{sign, Manifest, SigningKey, TrustPolicy};
 use crate::PluginRegistry;
 use std::path::PathBuf;
 
-include!(concat!(env!("OUT_DIR"), "/both_ways.rs"));
-
+// The deleted fixture-crate generator is intentionally not reconstructed. Only
+// actual product rows belong here; callers of retired fixture rows must migrate
+// to their owning product's ordinary tests rather than silently selecting a fake.
 pub(crate) fn door_fixture(
     row: &str,
 ) -> (&'static str, busbar_contract::abi::mechanism::door::DoorFn) {
-    DOOR_FIXTURES
-        .iter()
-        .find(|(k, ..)| *k == row)
-        .map(|&(_, krate, door)| (krate, door))
-        .unwrap_or_else(|| {
-            panic!("no `{row}` memory-ABI row in Cargo.toml's [package.metadata.busbar.both-ways]")
-        })
+    match row {
+        "mcp" => ("busbar_plane_mcp", crate::actual_mcp::door),
+        _ => panic!("retired both-ways fixture row `{row}` has no actual product binding; migrate the caller to its owning product"),
+    }
 }
 
 pub(crate) fn fixture(row: &str) -> (&'static str, &'static str) {
-    FIXTURES
-        .iter()
-        .find(|(k, ..)| *k == row)
-        .map(|&(_, logic, cdylib)| (logic, cdylib))
-        .unwrap_or_else(|| {
-            panic!("no `{row}` row in Cargo.toml's [package.metadata.busbar.both-ways]")
-        })
+    match row {
+        "mcp" => ("busbar-plane-mcp", "busbar_plane_mcp"),
+        _ => panic!("retired both-ways fixture row `{row}` has no actual product binding; migrate the caller to its owning product"),
+    }
 }
 
 pub(crate) fn fixture_cdylib(row: &str) -> PathBuf {
-    cdylib(fixture(row).1)
+    match row {
+        "mcp" => crate::actual_mcp::cdylib(),
+        _ => panic!("retired both-ways fixture row `{row}` has no actual product binding; migrate the caller to its owning product"),
+    }
 }
 
 pub(crate) fn statement(kind: &str, name: &str, alias: &str, abi_version: u32) -> Manifest {
