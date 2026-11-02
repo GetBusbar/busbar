@@ -53,7 +53,7 @@ on:
         type: string
         default: "none"
       busbar_checkout:
-        description: "Check busbar out at the pin and export BUSBAR_CHECKOUT (the end-to-end tests build and boot a real busbar from it)"
+        description: "Use the nested SDK binary build profile settings; the exact SDK source checkout is always provided"
         required: false
         type: boolean
         default: false
@@ -276,9 +276,9 @@ jobs:
               *) echo "::error::unknown service '$SERVICE'" >&2; exit 1 ;;
             esac
             echo "BUSBAR_GOLDEN_DIR=$GITHUB_WORKSPACE/busbar/testing/shadow-oracle/golden"
+            echo "BUSBAR_CHECKOUT=$GITHUB_WORKSPACE/busbar"
+            echo "BUSBAR_TARGET_DIR=$CARGO_TARGET_DIR"
             if [ "$CHECKOUT" = true ]; then
-              echo "BUSBAR_CHECKOUT=$GITHUB_WORKSPACE/busbar"
-              echo "BUSBAR_TARGET_DIR=$CARGO_TARGET_DIR"
               # The nested busbar build is busbar's release profile; a CI leg needs it fast, not small.
               echo "CARGO_PROFILE_RELEASE_LTO=off"
               echo "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16"
@@ -459,22 +459,11 @@ jobs:
         with:
           path: plugin
       - name: busbar at the pin
-        if: inputs.busbar_checkout || inputs.plugin_lang == 'c'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: GetBusbar/busbar
           ref: ${{ needs.pin.outputs.sha }}
           path: busbar
-      # The linux job always has busbar at the pin (its golden cells); macOS gets the same cells,
-      # so a plugin test that reads BUSBAR_GOLDEN_DIR passes on both OSes with no per-plugin exception.
-      - name: busbar's golden cells at the pin
-        if: ${{ !(inputs.busbar_checkout || inputs.plugin_lang == 'c') }}
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          repository: GetBusbar/busbar
-          ref: ${{ needs.pin.outputs.sha }}
-          path: busbar
-          sparse-checkout: testing/shadow-oracle/golden
       - name: the backend, natively (macOS runners have no service containers)
         env:
           SERVICE: ${{ inputs.service }}
@@ -649,9 +638,9 @@ jobs:
           set -euo pipefail
           {
             echo "BUSBAR_GOLDEN_DIR=$GITHUB_WORKSPACE/busbar/testing/shadow-oracle/golden"
+            echo "BUSBAR_CHECKOUT=$GITHUB_WORKSPACE/busbar"
+            echo "BUSBAR_TARGET_DIR=$CARGO_TARGET_DIR"
             if [ "$CHECKOUT" = true ]; then
-              echo "BUSBAR_CHECKOUT=$GITHUB_WORKSPACE/busbar"
-              echo "BUSBAR_TARGET_DIR=$CARGO_TARGET_DIR"
               echo "CARGO_PROFILE_RELEASE_LTO=off"
               echo "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16"
             fi
