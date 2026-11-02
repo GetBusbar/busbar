@@ -3,7 +3,7 @@
 
 use std::future::Future;
 use std::sync::Arc;
-use std::task::{Context, Wake, Waker};
+use std::task::{Context, Waker};
 use std::time::{Duration, Instant};
 
 use busbar_core_connector::datagram::{DatagramFraming, LegSink, Pairing};
@@ -96,11 +96,6 @@ impl Drop for Association {
     fn drop(&mut self) {
         self.pair.close();
     }
-}
-
-struct Quiet;
-impl Wake for Quiet {
-    fn wake(self: Arc<Self>) {}
 }
 
 struct Parked {
@@ -240,7 +235,7 @@ async fn busy_raw_ingress_is_counted_without_blocking_the_shared_socket_or_trust
     let caller = a.caller();
     let (parked, inside) = Parked::start(&door, &a);
     let entered = inside.recv_timeout(WAIT);
-    let wake = Waker::from(Arc::new(Quiet));
+    let wake = Waker::noop().clone();
     let mut cx = Context::from_waker(&wake);
     let mut cancelled = Box::pin(CallerEnd::write(&caller, b"cancelled"));
     let cancelled_poll = cancelled.as_mut().poll(&mut cx);
@@ -321,7 +316,7 @@ async fn closing_a_busy_association_cancels_waiters_and_does_not_reuse_its_old_p
     let caller = a.caller();
     let (parked, inside) = Parked::start(&door, &a);
     let entered = inside.recv_timeout(WAIT);
-    let wake = Waker::from(Arc::new(Quiet));
+    let wake = Waker::noop().clone();
     let mut cx = Context::from_waker(&wake);
     let mut pending = Box::pin(CallerEnd::write(&caller, b"closed waiter"));
     let before = pending.as_mut().poll(&mut cx);
