@@ -280,3 +280,121 @@ async fn callback_nonce_mismatch_rejected() {
     assert_eq!(issuer::exchanges_for(&code),1,"the real plugin exchanges the callback once; start_cookie proved it received the core's nonce");
     handle.abort();
 }
+
+fn assert_branded_error_page(body: &str, heading: &str) {
+    assert!(
+        body.starts_with("<!doctype html>"),
+        "a browser-flow failure must be a full styled HTML document, not plain text: {body}"
+    );
+    assert!(
+        body.contains("class=\"wordmark\">Busbar"),
+        "the error card carries the Busbar brand lockup: {body}"
+    );
+    assert!(
+        body.contains("class=\"erricon\""),
+        "the error card shows the alert glyph: {body}"
+    );
+
+    let heading_esc = heading.replace('\'', "&#39;");
+    assert!(
+        body.contains(&heading_esc),
+        "the error card heading is human-readable ({heading}): {body}"
+    );
+    assert!(
+        body.contains("class=\"backlink\"") && body.contains("href=\"/auth/token\""),
+        "the error card links back to sign in: {body}"
+    );
+    assert!(
+        body.contains("Back to sign in"),
+        "the back link is labeled: {body}"
+    );
+}
+
+#[tokio::test]
+async fn browser_callback_failure_renders_branded_html() {
+    let (base, handle) = hosted(&[("microsoft", true)]).await;
+    let (raw, _decoded) = start_cookie(&base).await;
+    let response = client()
+        .get(format!("{base}/auth/token"))
+        .query(&[
+            ("code", "refused-branded-callback"),
+            ("state", "WRONG-STATE"),
+        ])
+        .header("cookie", format!("busbar_login={raw}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 400);
+    assert!(response
+        .headers()
+        .get_all(reqwest::header::SET_COOKIE)
+        .iter()
+        .any(|value| value.to_str().unwrap_or("").contains("Max-Age=0")));
+    let body = response.text().await.unwrap();
+    assert_branded_error_page(&body, "Sign-in couldn't be verified");
+    assert!(
+        !body.contains("state mismatch"),
+        "the internal reason is not leaked to the user: {body}"
+    );
+    handle.abort();
+}
+
+#[tokio::test]
+async fn no_self_serve_grant_renders_branded_html() {
+    let (base, handle) = hosted(&[("microsoft", true)]).await;
+    let (raw, decoded) = start_cookie(&base).await;
+    let response = client()
+        .get(format!("{base}/auth/token"))
+        .query(&[
+            ("code", decoded["nonce"].as_str().unwrap()),
+            ("state", decoded["state"].as_str().unwrap()),
+        ])
+        .header("cookie", format!("busbar_login={raw}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 403, "no grant ⇒ 403");
+    let body = response.text().await.unwrap();
+    assert_branded_error_page(&body, "No access yet");
+    assert!(
+        body.contains("admin"),
+        "the copy tells the user to ask their admin: {body}"
+    );
+    handle.abort();
+}
+#[tokio::test]
+async fn api_json_path_stays_json_not_html() {
+    let (base, handle) = hosted(&[("microsoft", true)]).await;
+    let client = reqwest::Client::new();
+    let r = client
+        .post(format!("{base}/auth/token"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        401,
+        "unauthenticated API exchange ⇒ 401"
+    );
+    let ctype = r
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    assert!(
+        ctype.contains("application/json"),
+        "the API path returns JSON, not text/html: {ctype}"
+    );
+    let body = r.text().await.unwrap();
+    assert!(
+        !body.contains("<!doctype") && !body.contains("class=\"backlink\""),
+        "the API path must NOT return the styled HTML error card: {body}"
+    );
+    let json: serde_json::Value = serde_json::from_str(&body).expect("API error is JSON");
+    assert!(
+        json.get("error").and_then(|e| e.as_str()).is_some(),
+        "the API keeps the {{\"error\":…}} shape: {body}"
+    );
+    handle.abort();
+}

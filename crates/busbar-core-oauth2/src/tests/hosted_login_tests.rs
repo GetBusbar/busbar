@@ -272,66 +272,6 @@ fn assert_branded_error_page(body: &str, heading: &str) {
 }
 
 #[tokio::test]
-async fn browser_callback_failure_renders_branded_html() {
-    let app = test_app_with_methods(vec![("microsoft", true)]);
-    let cookie = LoginCookie {
-        method: "microsoft".into(),
-        code_verifier: "v".into(),
-        state: "the-real-state".into(),
-        nonce: "n".into(),
-        refresh: false,
-    };
-    let resp = callback(
-        &app,
-        &cred_handle(&app),
-        Some(cookie.encode()),
-        "code123".into(),
-        Some("WRONG-STATE".into()),
-    )
-    .await;
-    assert_eq!(resp.status().as_u16(), 400);
-
-    assert!(resp
-        .headers()
-        .get_all(header::SET_COOKIE)
-        .iter()
-        .any(|v| v.to_str().unwrap_or("").contains("Max-Age=0")));
-    let body = body_of(resp);
-    assert_branded_error_page(&body, "Sign-in couldn't be verified");
-    assert!(
-        !body.contains("state mismatch"),
-        "the internal reason is not leaked to the user: {body}"
-    );
-}
-
-#[tokio::test]
-async fn no_self_serve_grant_renders_branded_html() {
-    let app = test_app_with_methods(vec![("microsoft", true)]);
-    let cookie = LoginCookie {
-        method: "microsoft".into(),
-        code_verifier: "v".into(),
-        state: "st".into(),
-        nonce: "match-nonce".into(),
-        refresh: false,
-    };
-    let resp = callback(
-        &app,
-        &cred_handle(&app),
-        Some(cookie.encode()),
-        "code123".into(),
-        Some("st".into()),
-    )
-    .await;
-    assert_eq!(resp.status().as_u16(), 403, "no grant ⇒ 403");
-    let body = body_of(resp);
-    assert_branded_error_page(&body, "No access yet");
-    assert!(
-        body.contains("admin"),
-        "the copy tells the user to ask their admin: {body}"
-    );
-}
-
-#[tokio::test]
 async fn credential_reject_renders_branded_html() {
     let app = cred_app();
     let form = vec![
@@ -343,44 +283,6 @@ async fn credential_reject_renders_branded_html() {
         credential_submit(&app, &cred_handle(&app), cred_cookie("csrf-1", false), form).await;
     assert_eq!(resp.status().as_u16(), 401);
     assert_branded_error_page(&body_of(resp), "Sign-in was declined");
-}
-
-#[tokio::test]
-async fn api_json_path_stays_json_not_html() {
-    let app = test_app_with_methods(vec![("microsoft", true)]);
-    let (base, handle) = serve(app).await;
-    let client = reqwest::Client::new();
-    let r = client
-        .post(format!("{base}/auth/token"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        r.status().as_u16(),
-        401,
-        "unauthenticated API exchange ⇒ 401"
-    );
-    let ctype = r
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-    assert!(
-        ctype.contains("application/json"),
-        "the API path returns JSON, not text/html: {ctype}"
-    );
-    let body = r.text().await.unwrap();
-    assert!(
-        !body.contains("<!doctype") && !body.contains("class=\"backlink\""),
-        "the API path must NOT return the styled HTML error card: {body}"
-    );
-    let json: serde_json::Value = serde_json::from_str(&body).expect("API error is JSON");
-    assert!(
-        json.get("error").and_then(|e| e.as_str()).is_some(),
-        "the API keeps the {{\"error\":…}} shape: {body}"
-    );
-    handle.abort();
 }
 
 fn cred_login() -> std::sync::Arc<DoorLogin> {
