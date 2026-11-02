@@ -1799,13 +1799,14 @@ async fn a_silent_connection_is_closed_at_the_first_byte_bound() {
 #[tokio::test]
 async fn a_parked_response_head_keeps_its_body_until_the_head_resumes() {
     let _publishing = anonymous_policy().await;
-    let door = Arc::new(busbar_test_kit::root_door_fixtures::pending_h1_accept::parked_head());
-    let entry: Arc<dyn FramerDoor> = door.clone();
-    let framer = data_framer(Arc::new(move |scheme: &str| {
-        (scheme == DATA_SCHEME).then(|| Arc::clone(&entry))
+    let observed = ObservedDoor::new(actual_transport(busbar_transport_http::door::door));
+    let door: Arc<dyn FramerDoor> = observed.clone();
+    let framer = data_framer(Arc::new(move |scheme| {
+        (scheme == DATA_SCHEME).then(|| door.clone())
     }))
-    .expect("the accepting fixture is found");
-    let (mut client, server) = tokio::io::duplex(4096);
+    .unwrap();
+    // A one-byte real pipe leaves the actual HTTP head waiting for the peer to read.
+    let (mut client, server) = tokio::io::duplex(1);
     let (stop, stopped) = tokio::sync::watch::channel(false);
     let router = Router::new().route("/hello", axum::routing::get(|| async { "hi" }));
     let mut served = tokio::spawn(super::serve(
@@ -1820,25 +1821,26 @@ async fn a_parked_response_head_keeps_its_body_until_the_head_resumes() {
         .write_all(b"GET /hello HTTP/1.1\r\nhost: t\r\n\r\n")
         .await
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(10), door.wait_for_head())
-        .await
-        .expect("the response head is parked");
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while observed.count(|call| matches!(call, ObservedCall::Emit { status: 200, .. })) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the actual response head reaches the blocked wire");
     assert!(
-        tokio::time::timeout(Duration::from_millis(500), &mut served)
+        tokio::time::timeout(Duration::from_millis(20), &mut served)
             .await
             .is_err(),
-        "a parked response head must not let its following body fail the connection"
+        "a blocked response head keeps its following body and connection alive"
     );
-    door.release();
     let got = tokio::time::timeout(Duration::from_secs(10), async {
         let mut got = Vec::new();
-        let mut buf = [0; 4096];
         loop {
-            let n = client.read(&mut buf).await.unwrap();
-            if n == 0 {
-                break;
-            }
-            got.extend_from_slice(&buf[..n]);
+            let mut byte = [0; 1];
+            assert_eq!(client.read(&mut byte).await.unwrap(), 1);
+            got.push(byte[0]);
+            assert!(got.len() <= 16 * 1024, "bounded HTTP response");
             if got.ends_with(b"\r\n\r\nhi") {
                 break;
             }
@@ -1846,135 +1848,110 @@ async fn a_parked_response_head_keeps_its_body_until_the_head_resumes() {
         String::from_utf8(got).unwrap()
     })
     .await
-    .expect("the resumed head and body arrive");
+    .expect("reading the real pipe releases the head and body");
     assert!(got.starts_with("HTTP/1.1 200 OK\r\n"), "{got:?}");
     assert!(got.contains("content-length: 2\r\n"), "{got:?}");
     assert!(got.ends_with("\r\n\r\nhi"), "{got:?}");
-    assert_eq!(door.statuses(), vec![200]);
-    drop(client);
+    assert_eq!(
+        observed.count(|call| matches!(call, ObservedCall::Emit { status: 200, .. })),
+        1,
+        "the actual response head is emitted once"
+    );
     stop.send(true).unwrap();
     tokio::time::timeout(Duration::from_secs(10), served)
         .await
-        .expect("the connection drains")
-        .expect("the serving task joins");
+        .unwrap()
+        .unwrap();
+    let mut rest = Vec::new();
+    client.read_to_end(&mut rest).await.unwrap();
+    assert!(
+        rest.is_empty(),
+        "drain produces no duplicate response or body"
+    );
 }
 
 #[tokio::test]
 async fn a_final_body_emit_remains_alive_through_graceful_drain() {
     let _publishing = anonymous_policy().await;
-    use std::future::Future as _;
-    use std::pin::Pin;
-    use std::task::{Context, Poll};
-
-    struct ObservedBody {
-        inner: axum::body::Body,
-        done: Option<tokio::sync::oneshot::Sender<()>>,
-    }
-
-    impl http_body::Body for ObservedBody {
-        type Data = bytes::Bytes;
-        type Error = axum::Error;
-
-        fn poll_frame(
-            self: Pin<&mut Self>,
-            cx: &mut Context<'_>,
-        ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
-            http_body::Body::poll_frame(Pin::new(&mut self.get_mut().inner), cx)
-        }
-
-        fn size_hint(&self) -> http_body::SizeHint {
-            http_body::Body::size_hint(&self.inner)
-        }
-
-        fn is_end_stream(&self) -> bool {
-            http_body::Body::is_end_stream(&self.inner)
-        }
-    }
-
-    impl Drop for ObservedBody {
-        fn drop(&mut self) {
-            if let Some(done) = self.done.take() {
-                let _ = done.send(());
-            }
-        }
-    }
-
-    let door =
-        Arc::new(busbar_test_kit::root_door_fixtures::pending_h1_accept::parked_final_body());
-    let entry: Arc<dyn FramerDoor> = door.clone();
-    let framer = data_framer(Arc::new(move |scheme: &str| {
-        (scheme == DATA_SCHEME).then(|| Arc::clone(&entry))
+    let observed = ObservedDoor::new(actual_transport(busbar_transport_http::door::door));
+    let door: Arc<dyn FramerDoor> = observed.clone();
+    let framer = data_framer(Arc::new(move |scheme| {
+        (scheme == DATA_SCHEME).then(|| door.clone())
     }))
-    .expect("the accepting fixture is found");
-    let (mut client, server) = tokio::io::duplex(4096);
+    .unwrap();
+    let (mut client, server) = tokio::io::duplex(1);
     let (stop, stopped) = tokio::sync::watch::channel(false);
-    let (done, produced) = tokio::sync::oneshot::channel();
-    let done = Arc::new(std::sync::Mutex::new(Some(done)));
-    let router = Router::new().route(
-        "/hello",
-        axum::routing::get(move || {
-            let done = done.lock().unwrap().take();
-            async move {
-                axum::response::Response::new(axum::body::Body::new(ObservedBody {
-                    inner: axum::body::Body::from("hi"),
-                    done,
-                }))
-            }
-        }),
-    );
-    let served = super::serve(
+    let router = Router::new().route("/hello", axum::routing::get(|| async { "hi" }));
+    let mut served = tokio::spawn(super::serve(
         server,
         framer,
         router,
         false,
         Duration::from_secs(30),
         stopped,
-    );
-    tokio::pin!(served);
+    ));
     client
         .write_all(b"GET /hello HTTP/1.1\r\nhost: t\r\n\r\n")
         .await
         .unwrap();
+    let mut got = Vec::new();
     tokio::time::timeout(Duration::from_secs(10), async {
-        tokio::select! {
-            () = door.wait_for_emit() => {},
-            () = &mut served => panic!("the connection ended before the final body emit parked"),
+        while !got.ends_with(b"\r\n\r\n") {
+            let mut byte = [0; 1];
+            assert_eq!(client.read(&mut byte).await.unwrap(), 1);
+            got.push(byte[0]);
+            assert!(got.len() < 16 * 1024, "bounded response head");
         }
-        tokio::select! {
-            result = produced => result.expect("the response producer has finished"),
-            () = &mut served => panic!("the parked final emit ended its connection"),
+        while observed.count(|call| {
+            matches!(
+                call,
+                ObservedCall::Emit {
+                    status: 0,
+                    end: true,
+                    ..
+                }
+            )
+        }) == 0
+        {
+            tokio::task::yield_now().await;
         }
     })
     .await
-    .expect("the final emit parks and its producer finishes");
-    assert_eq!(door.completions(), 0);
+    .expect("the real final body reaches the one-byte wire");
     stop.send(true).unwrap();
-    std::future::poll_fn(|cx| {
-        let mut drain = std::pin::pin!(tokio::task::unconstrained(served.as_mut()));
-        assert!(
-            drain.as_mut().poll(cx).is_pending(),
-            "graceful drain must await the final parked body emit"
-        );
-        Poll::Ready(())
-    })
-    .await;
-    door.release();
-    tokio::time::timeout(Duration::from_secs(10), &mut served)
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), &mut served)
+            .await
+            .is_err(),
+        "graceful drain waits for the final body still held by the real pipe"
+    );
+    tokio::time::timeout(Duration::from_secs(10), client.read_to_end(&mut got))
         .await
-        .expect("the released final emit allows graceful drain");
-    let mut got = String::new();
-    tokio::time::timeout(Duration::from_secs(10), client.read_to_string(&mut got))
-        .await
-        .expect("the drained connection closes")
+        .expect("the drained connection closes after the peer reads")
         .unwrap();
+    tokio::time::timeout(Duration::from_secs(10), served)
+        .await
+        .unwrap()
+        .unwrap();
+    let got = String::from_utf8(got).unwrap();
     assert!(got.starts_with("HTTP/1.1 200 OK\r\n"), "{got:?}");
     assert!(got.contains("content-length: 2\r\n"), "{got:?}");
     assert!(got.ends_with("\r\n\r\nhi"), "{got:?}");
-    assert_eq!(door.statuses(), vec![200]);
     assert_eq!(
-        door.completions(),
+        observed.count(|call| matches!(call, ObservedCall::Emit { status: 200, .. })),
+        1
+    );
+    assert_eq!(
+        observed.count(|call| matches!(
+            call,
+            ObservedCall::Emit {
+                status: 0,
+                end: true,
+                ..
+            }
+        )),
         1,
-        "the final emit completed exactly once"
+        "the actual final body is accepted once and survives shutdown custody"
     );
 }
 
