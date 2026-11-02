@@ -943,18 +943,16 @@ fn effective_access_warns_on_inert_read_grants_only() {
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let sub = LineCapturingSubscriber(events.clone());
 
-    let env = test_env_needs(
-        "inert-prompt",
-        crate::test_support::HookNeeds {
-            prompt: NeedLevel::No,
-            user: NeedLevel::No,
-        },
-    );
+    let env_needs = Needs {
+        prompt: NeedLevel::No,
+        user: NeedLevel::No,
+    };
+    let env_banners = std::sync::Mutex::new(HashSet::new());
     let mut h = base_gate();
     h.plugin = "inert-prompt".to_string();
     h.prompt = PromptAccess::Ro;
     tracing::subscriber::with_default(sub, || {
-        let _ = effective_access("h", &h, &env);
+        let _ = access_from_intent("h", &h, env_needs, &env_banners);
     });
     let seen = events.lock().unwrap().clone();
     assert_eq!(
@@ -966,18 +964,16 @@ fn effective_access_warns_on_inert_read_grants_only() {
     let events2: std::sync::Arc<std::sync::Mutex<Vec<u32>>> =
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let sub2 = LineCapturingSubscriber(events2.clone());
-    let env2 = test_env_needs(
-        "matched-prompt",
-        crate::test_support::HookNeeds {
-            prompt: NeedLevel::Ro,
-            user: NeedLevel::No,
-        },
-    );
+    let env2_needs = Needs {
+        prompt: NeedLevel::Ro,
+        user: NeedLevel::No,
+    };
+    let env2_banners = std::sync::Mutex::new(HashSet::new());
     let mut h2 = base_gate();
     h2.plugin = "matched-prompt".to_string();
     h2.prompt = PromptAccess::Ro;
     tracing::subscriber::with_default(sub2, || {
-        let _ = effective_access("h2", &h2, &env2);
+        let _ = access_from_intent("h2", &h2, env2_needs, &env2_banners);
     });
     assert!(
         events2.lock().unwrap().is_empty(),
@@ -988,18 +984,16 @@ fn effective_access_warns_on_inert_read_grants_only() {
     let events3: std::sync::Arc<std::sync::Mutex<Vec<u32>>> =
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let sub3 = LineCapturingSubscriber(events3.clone());
-    let env3 = test_env_needs(
-        "inert-user",
-        crate::test_support::HookNeeds {
-            prompt: NeedLevel::No,
-            user: NeedLevel::No,
-        },
-    );
+    let env3_needs = Needs {
+        prompt: NeedLevel::No,
+        user: NeedLevel::No,
+    };
+    let env3_banners = std::sync::Mutex::new(HashSet::new());
     let mut h3 = base_gate();
     h3.plugin = "inert-user".to_string();
     h3.user = UserAccess::Ro;
     tracing::subscriber::with_default(sub3, || {
-        let _ = effective_access("h3", &h3, &env3);
+        let _ = access_from_intent("h3", &h3, env3_needs, &env3_banners);
     });
     let seen3 = events3.lock().unwrap().clone();
     assert_eq!(
@@ -1011,18 +1005,16 @@ fn effective_access_warns_on_inert_read_grants_only() {
     let events4: std::sync::Arc<std::sync::Mutex<Vec<u32>>> =
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let sub4 = LineCapturingSubscriber(events4.clone());
-    let env4 = test_env_needs(
-        "matched-user",
-        crate::test_support::HookNeeds {
-            prompt: NeedLevel::No,
-            user: NeedLevel::Ro,
-        },
-    );
+    let env4_needs = Needs {
+        prompt: NeedLevel::No,
+        user: NeedLevel::Ro,
+    };
+    let env4_banners = std::sync::Mutex::new(HashSet::new());
     let mut h4 = base_gate();
     h4.plugin = "matched-user".to_string();
     h4.user = UserAccess::Ro;
     tracing::subscriber::with_default(sub4, || {
-        let _ = effective_access("h4", &h4, &env4);
+        let _ = access_from_intent("h4", &h4, env4_needs, &env4_banners);
     });
     assert!(
         events4.lock().unwrap().is_empty(),
@@ -1039,26 +1031,24 @@ fn effective_access_inert_gate_rewrite_banner_fires_once_per_hook_name() {
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let sub = LineCapturingSubscriber(events.clone());
 
-    let env = test_env_needs(
-        "inert-rewrite",
-        crate::test_support::HookNeeds {
-            prompt: NeedLevel::Ro,
-            user: NeedLevel::No,
-        },
-    );
+    let env_needs = Needs {
+        prompt: NeedLevel::Ro,
+        user: NeedLevel::No,
+    };
+    let env_banners = std::sync::Mutex::new(HashSet::new());
     let mut h = base_gate();
     h.plugin = "inert-rewrite".to_string();
     h.prompt = PromptAccess::Rw;
 
     assert!(
-        !env.banner_seen.lock().unwrap().contains("h"),
+        !env_banners.lock().unwrap().contains("h"),
         "banner_seen must start empty for this name"
     );
     tracing::subscriber::with_default(sub, || {
-        let _ = effective_access("h", &h, &env);
+        let _ = access_from_intent("h", &h, env_needs, &env_banners);
     });
     assert!(
-        env.banner_seen.lock().unwrap().contains("h"),
+        env_banners.lock().unwrap().contains("h"),
         "the FIRST call for an inert-rewrite gate must record the hook name in banner_seen \
          (proves the dedup guard's `.insert()` actually ran)"
     );
@@ -1074,7 +1064,7 @@ fn effective_access_inert_gate_rewrite_banner_fires_once_per_hook_name() {
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let sub2 = LineCapturingSubscriber(events2.clone());
     tracing::subscriber::with_default(sub2, || {
-        let _ = effective_access("h", &h, &env);
+        let _ = access_from_intent("h", &h, env_needs, &env_banners);
     });
     assert!(
         events2.lock().unwrap().is_empty(),
@@ -1085,21 +1075,19 @@ fn effective_access_inert_gate_rewrite_banner_fires_once_per_hook_name() {
     let events3: std::sync::Arc<std::sync::Mutex<Vec<u32>>> =
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let sub3 = LineCapturingSubscriber(events3.clone());
-    let env3 = test_env_needs(
-        "matched-rewrite",
-        crate::test_support::HookNeeds {
-            prompt: NeedLevel::Rw,
-            user: NeedLevel::No,
-        },
-    );
+    let env3_needs = Needs {
+        prompt: NeedLevel::Rw,
+        user: NeedLevel::No,
+    };
+    let env3_banners = std::sync::Mutex::new(HashSet::new());
     let mut h3 = base_gate();
     h3.plugin = "matched-rewrite".to_string();
     h3.prompt = PromptAccess::Rw;
     tracing::subscriber::with_default(sub3, || {
-        let _ = effective_access("clean", &h3, &env3);
+        let _ = access_from_intent("clean", &h3, env3_needs, &env3_banners);
     });
     assert!(
-        !env3.banner_seen.lock().unwrap().contains("clean"),
+        !env3_banners.lock().unwrap().contains("clean"),
         "a gate whose manifest matches its grant must never enter banner_seen"
     );
     assert!(
@@ -1310,38 +1298,28 @@ fn native_resolve_forces_opt_in_flags_off() {
 
 #[test]
 fn gate_grants_pass_through_as_projection_flags() {
-    let env = test_env();
-    let hooks = registry(
+    let hook = HookCfg {
+        prompt: PromptAccess::Ro,
+        user: UserAccess::Ro,
+        ..base_gate()
+    };
+    let (prompt, user) = access_from_intent(
         "h",
-        HookCfg {
-            prompt: PromptAccess::Ro,
-            user: UserAccess::Ro,
-            ..base_gate()
+        &hook,
+        Needs {
+            prompt: busbar_contract::plugin_rows::NeedLevel::Rw,
+            user: busbar_contract::plugin_rows::NeedLevel::Ro,
         },
+        &std::sync::Mutex::new(HashSet::new()),
     );
-    match resolve_pool_gates(&pool_with_hook("h"), &hooks, &env, 0)
-        .into_iter()
-        .next()
-    {
-        Some((
-            _,
-            ResolvedPolicy::Policy {
-                send_prompt,
-                send_user,
-                ..
-            },
-        )) => {
-            assert!(
-                send_prompt,
-                "prompt:ro grant + manifest need must pass send_prompt through"
-            );
-            assert!(
-                send_user,
-                "user:ro grant + manifest need must pass send_user through"
-            );
-        }
-        None => panic!("gate must resolve to a policy"),
-    }
+    assert!(
+        prompt.sends_prompt(),
+        "prompt:ro grant + manifest need must pass send_prompt through"
+    );
+    assert!(
+        user.sends_user(),
+        "user:ro grant + manifest need must pass send_user through"
+    );
 }
 
 #[test]
@@ -1361,13 +1339,10 @@ fn manifest_intent_and_grant_projection_matrix() {
     ];
     for (idx, (need, grant, want_prompt)) in prompt_cases.into_iter().enumerate() {
         let alias = format!("mtx-{idx}");
-        let env = test_env_needs(
-            &alias,
-            crate::test_support::HookNeeds {
-                prompt: need,
-                user: NeedLevel::No,
-            },
-        );
+        let needs = Needs {
+            prompt: need,
+            user: NeedLevel::No,
+        };
         let hooks = registry(
             "h",
             HookCfg {
@@ -1376,11 +1351,13 @@ fn manifest_intent_and_grant_projection_matrix() {
                 ..base_gate()
             },
         );
-        let Some(ResolvedPolicy::Policy { send_prompt, .. }) =
-            resolve_gate_transport("h", &hooks["h"], &hooks, &env, 0)
-        else {
-            panic!("gate must resolve for case {idx}");
-        };
+        let (prompt, _) = access_from_intent(
+            "h",
+            &hooks["h"],
+            needs,
+            &std::sync::Mutex::new(HashSet::new()),
+        );
+        let send_prompt = prompt.sends_prompt();
         assert_eq!(
             send_prompt, want_prompt,
             "case {idx}: manifest {need:?} × grant {grant:?} → send_prompt {want_prompt}"
@@ -1395,13 +1372,10 @@ fn manifest_intent_and_grant_projection_matrix() {
     ];
     for (idx, (need, grant, want_user)) in user_cases.into_iter().enumerate() {
         let alias = format!("mtx-user-{idx}");
-        let env = test_env_needs(
-            &alias,
-            crate::test_support::HookNeeds {
-                prompt: NeedLevel::No,
-                user: need,
-            },
-        );
+        let needs = Needs {
+            prompt: NeedLevel::No,
+            user: need,
+        };
         let hooks = registry(
             "h",
             HookCfg {
@@ -1410,11 +1384,13 @@ fn manifest_intent_and_grant_projection_matrix() {
                 ..base_gate()
             },
         );
-        let Some(ResolvedPolicy::Policy { send_user, .. }) =
-            resolve_gate_transport("h", &hooks["h"], &hooks, &env, 0)
-        else {
-            panic!("gate must resolve for user case {idx}");
-        };
+        let (_, user) = access_from_intent(
+            "h",
+            &hooks["h"],
+            needs,
+            &std::sync::Mutex::new(HashSet::new()),
+        );
+        let send_user = user.sends_user();
         assert_eq!(
             send_user, want_user,
             "user case {idx}: manifest {need:?} × grant {grant:?} → send_user {want_user}"
@@ -1566,7 +1542,10 @@ async fn dlopen_configure_acks_exact_version() {
         if resolution::published(key) {
             break;
         }
-        if gate_transport_offloaded("h", &hook, &env, 0).await.is_some() {
+        if gate_transport_offloaded("h", &hook, &env, 0)
+            .await
+            .is_some()
+        {
             break;
         }
         // A timed-out resolver retains its claim until it publishes. Only a finished,
@@ -1843,34 +1822,27 @@ async fn dlopen_decide_raw_reply_is_fail_closed() {
 
 #[tokio::test]
 async fn dlopen_user_identity_projection_rides_the_wire() {
-    use crate::test_support::HookNeeds;
     use busbar_contract::plugin_rows::NeedLevel;
-    let env = test_env_needs(
-        "user-hook",
-        HookNeeds {
+    let hook = HookCfg {
+        plugin: "user-hook".into(),
+        user: UserAccess::Ro,
+        ..base_gate()
+    };
+    let (prompt, user) = access_from_intent(
+        "h",
+        &hook,
+        Needs {
             prompt: NeedLevel::No,
             user: NeedLevel::Ro,
         },
+        &std::sync::Mutex::new(HashSet::new()),
     );
-    let hooks = registry(
-        "h",
-        HookCfg {
-            plugin: "user-hook".to_string(),
-            user: UserAccess::Ro,
-            ..base_gate()
-        },
-    );
-    let Some(ResolvedPolicy::Policy {
-        send_user,
-        send_prompt,
-        ..
-    }) = resolve_gate_transport("h", &hooks["h"], &hooks, &env, 0)
-    else {
-        panic!("gate must resolve");
-    };
-    assert!(send_user, "user:ro grant + manifest user need → send_user");
     assert!(
-        !send_prompt,
+        user.sends_user(),
+        "user:ro grant + manifest user need → send_user"
+    );
+    assert!(
+        !prompt.sends_prompt(),
         "no prompt grant/need → prompt content stays withheld"
     );
 }
@@ -1974,7 +1946,6 @@ fn offload_bounded_returns_none_when_the_work_outlives_the_deadline() {
 
 #[test]
 fn offload_bounded_logs_when_the_blocking_task_panics() {
-
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

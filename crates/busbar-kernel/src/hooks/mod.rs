@@ -597,6 +597,7 @@ fn hook_inert_gate_banner(
     ))
 }
 
+#[derive(Clone, Copy)]
 struct Needs {
     prompt: busbar_contract::plugin_rows::NeedLevel,
     user: busbar_contract::plugin_rows::NeedLevel,
@@ -613,18 +614,31 @@ fn effective_access(
     hook: &crate::config::HookCfg,
     env: &HookEnv,
 ) -> (crate::config::PromptAccess, crate::config::UserAccess) {
+    let Some(p) = env.registry.resolve(&hook.plugin) else {
+        return (hook.prompt, hook.user);
+    };
+    access_from_intent(
+        name,
+        hook,
+        Needs {
+            prompt: p.needs_prompt,
+            user: p.needs_user,
+        },
+        &env.banner_seen,
+    )
+}
+
+fn access_from_intent(
+    name: &str,
+    hook: &crate::config::HookCfg,
+    needs: Needs,
+    banner_seen: &std::sync::Mutex<std::collections::HashSet<String>>,
+) -> (crate::config::PromptAccess, crate::config::UserAccess) {
     use crate::config::{PromptAccess, UserAccess};
     use busbar_contract::plugin_rows::NeedLevel;
 
     let grant_prompt = hook.prompt;
     let grant_user = hook.user;
-    let Some(p) = env.registry.resolve(&hook.plugin) else {
-        return (grant_prompt, grant_user);
-    };
-    let needs = Needs {
-        prompt: p.needs_prompt,
-        user: p.needs_user,
-    };
 
     let eff_prompt = match (grant_prompt, needs.prompt) {
         (PromptAccess::No, _) | (_, NeedLevel::No) => PromptAccess::No,
@@ -647,8 +661,7 @@ fn effective_access(
     if grant_prompt.can_rewrite() && !needs.prompt.wants_rewrite() {
         match hook_inert_gate_banner(name, &hook.plugin, hook.kind, needs.prompt) {
             Some(banner)
-                if env
-                    .banner_seen
+                if banner_seen
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
                     .insert(name.to_string()) =>
