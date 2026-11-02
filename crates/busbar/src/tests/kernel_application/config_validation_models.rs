@@ -100,7 +100,6 @@ fn make_provider(protocol: &str, base_url: &str, api_key_env: &str) -> config::P
 
 fn shipped_protocol(nth: usize) -> &'static str {
     crate::dist_root_install::install();
-    crate::register_planes();
     busbar_kernel::plane_driver::dispatch::provider_dialects()
         .into_iter()
         .nth(nth)
