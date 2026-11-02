@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use axum::Router;
 use busbar_core_connector::framer::FramerDoor;
-use busbar_test_kit::root_door_fixtures::h1_accept::H1Accept;
+
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 use super::{data_framer, DataFramer, DATA_SCHEME};
@@ -2447,40 +2447,6 @@ async fn stopping_eof_and_timeout_abandon_uncommitted_sessions_without_wire() {
     }
 }
 
-fn accepted_session_route() -> (
-    Router,
-    tokio::sync::oneshot::Receiver<()>,
-    tokio::sync::mpsc::Sender<busbar_kernel::plane_routes::SessionOut>,
-) {
-    use busbar_kernel::plane_routes::{FramedSession, SessionPipe};
-    let (entered, admitted) = tokio::sync::oneshot::channel();
-    let entered = Arc::new(std::sync::Mutex::new(Some(entered)));
-    let (outgoing, to_caller) = tokio::sync::mpsc::channel(2);
-    let to_caller = Arc::new(std::sync::Mutex::new(Some(to_caller)));
-    let router = Router::new().route(
-        "/first",
-        axum::routing::get(
-            move |axum::Extension(session): axum::Extension<FramedSession>| {
-                let entered = entered.lock().unwrap().take().unwrap();
-                let to_caller = to_caller.lock().unwrap().take().unwrap();
-                async move {
-                    if !session.admit().await {
-                        return axum::http::StatusCode::REQUEST_TIMEOUT;
-                    }
-                    let (from_caller, _incoming) = tokio::sync::mpsc::channel(1);
-                    session.put(SessionPipe {
-                        from_caller,
-                        to_caller,
-                    });
-                    let _ = entered.send(());
-                    axum::http::StatusCode::SWITCHING_PROTOCOLS
-                }
-            },
-        ),
-    );
-    (router, admitted, outgoing)
-}
-
 #[tokio::test]
 #[cfg(feature = "transport-ws")]
 async fn a_pending_session_adoption_admits_only_after_its_original_ticket_is_ready() {
@@ -3077,160 +3043,271 @@ async fn eof_errors_an_unfinished_body_without_invalidating_a_piece_end_body() {
     );
 }
 
-#[derive(Default)]
-struct EofGate {
-    released: std::sync::atomic::AtomicBool,
-    wake: std::sync::Mutex<Option<std::task::Waker>>,
-}
-
-struct EofSide(Arc<EofGate>);
-impl busbar_core_connector::carrier::Side for EofSide {
-    fn ticket(&self) -> busbar_contract::abi::mechanism::ticket::Ticket {
-        busbar_contract::abi::mechanism::ticket::Ticket {
-            slot: 1,
-            generation: 1,
-        }
-    }
-    fn register(&self, waker: &std::task::Waker) {
-        *self.0.wake.lock().unwrap() = Some(waker.clone());
-    }
-}
-
-struct ParkedEof {
-    inner: H1Accept,
-    gate: Arc<EofGate>,
-    // The controlled wire input is owned while the real HTTP fixture's decode is deferred.
-    wire: Vec<u8>,
-    eof: std::sync::atomic::AtomicBool,
-}
-impl FramerDoor for ParkedEof {
-    fn facts(&self) -> &busbar_core_connector::framer::DoorFacts {
-        self.inner.facts()
-    }
-    fn accepts(&self) -> bool {
-        self.inner.accepts()
-    }
-    fn instance(&self) -> Option<u64> {
-        self.inner.instance()
-    }
-    fn cross(
-        &self,
-        call: busbar_core_connector::framer::Call<'_>,
-    ) -> busbar_core_connector::framer::Crossed {
-        self.inner.cross(call)
-    }
-    fn framing_side(&self) -> Option<Box<dyn busbar_core_connector::carrier::Side>> {
-        Some(Box::new(EofSide(Arc::clone(&self.gate))))
-    }
-    fn cross_on(
-        &self,
-        _: &dyn busbar_core_connector::carrier::Side,
-        resume: bool,
-        call: busbar_core_connector::framer::Call<'_>,
-    ) -> busbar_core_connector::framer::Crossed {
-        use busbar_contract::abi::mechanism::call::Outcome;
-        use busbar_core_connector::framer::{Call, Crossed};
-        match call {
-            Call::Ingest(input, out) => {
-                if !resume && input.end == 0 {
-                    assert_eq!(input.len, self.wire.len());
-                    return Crossed {
-                        outcome: Outcome::Ready,
-                        error: None,
-                    };
-                }
-                if !resume {
-                    assert_ne!(input.end, 0);
-                    self.eof.store(true, std::sync::atomic::Ordering::SeqCst);
-                }
-                assert!(self.eof.load(std::sync::atomic::Ordering::SeqCst));
-                if !self.gate.released.load(std::sync::atomic::Ordering::SeqCst) {
-                    return Crossed {
-                        outcome: Outcome::Pending,
-                        error: None,
-                    };
-                }
-                assert!(resume, "EOF completion must resume the parked crossing");
-                let original = (input.bytes, input.len, input.end);
-                input.bytes = self.wire.as_ptr();
-                input.len = self.wire.len();
-                input.end = 1;
-                let result = self.inner.cross(Call::Ingest(input, out));
-                input.bytes = original.0;
-                input.len = original.1;
-                input.end = original.2;
-                result
-            }
-            other => self.inner.cross(other),
-        }
-    }
-}
-
 #[tokio::test]
 async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
-    let _publishing = anonymous_policy().await;
-    let wire = b"POST /capture HTTP/1.1\r\nhost: t\r\ncontent-length: 5\r\n\r\nwhole";
-    let gate = Arc::new(EofGate::default());
-    let door: Arc<dyn FramerDoor> = Arc::new(ParkedEof {
-        inner: H1Accept::new(true),
-        gate: Arc::clone(&gate),
-        wire: wire.to_vec(),
-        eof: std::sync::atomic::AtomicBool::new(false),
-    });
-    let framer = data_framer(Arc::new(move |scheme: &str| {
-        (scheme == DATA_SCHEME).then(|| Arc::clone(&door))
-    }))
+    use base64::Engine as _;
+    use busbar_contract::abi::auth::{AuthPoints, POINT_HEAD, POINT_HEAD_BODY};
+    use busbar_contract::abi::transport::route::{METHOD_POST, PATH_CONTAINS};
+    use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
+    use ring::signature::KeyPair as _;
+    let _publishing = crate::root::PUBLISHING.lock().await;
+    crate::dist_root_install::install();
+    let certificate = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()]).unwrap();
+    let key = ring::signature::EcdsaKeyPair::from_pkcs8(
+        &ring::signature::ECDSA_P256_SHA256_FIXED_SIGNING,
+        &certificate.signing_key.serialize_der(),
+        &ring::rand::SystemRandom::new(),
+    )
     .unwrap();
+    let point = key.public_key().as_ref();
+    let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let jwks = serde_json::json!({"keys": [{
+        "kty": "EC", "crv": "P-256", "kid": "listener-eof", "alg": "ES256", "use": "sig",
+        "x": b64.encode(&point[1..33]), "y": b64.encode(&point[33..65]),
+    }]})
+    .to_string();
+    let cert_pem = certificate.cert.pem();
+    let tls = Arc::new(
+        rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![certificate.cert.der().clone()],
+            rustls_pki_types::PrivateKeyDer::Pkcs8(rustls_pki_types::PrivatePkcs8KeyDer::from(
+                certificate.signing_key.serialize_der(),
+            )),
+        )
+        .unwrap(),
+    );
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let jwks_url = format!("https://{}/jwks", listener.local_addr().unwrap());
+    let (entered, waiting) = tokio::sync::oneshot::channel();
+    let (release, held) = std::sync::mpsc::channel();
+    let peer = std::thread::spawn(move || {
+        use std::io::{Read as _, Write as _};
+        let mut entered = Some(entered);
+        for attempt in 0..2 {
+            let (socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            socket
+                .set_write_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let session = rustls::ServerConnection::new(tls.clone()).unwrap();
+            let mut socket = rustls::StreamOwned::new(session, socket);
+            let mut head = Vec::new();
+            while !head.ends_with(b"\r\n\r\n") {
+                let mut byte = [0; 1];
+                socket.read_exact(&mut byte).unwrap();
+                head.push(byte[0]);
+                assert!(head.len() <= 8192, "bounded JWKS request");
+            }
+            assert!(head.starts_with(b"GET /jwks HTTP/1.1\r\n"));
+            // READY's best-effort warm-up receives an actual outage. The first VERIFY must
+            // fetch its real key document, and this peer withholds that response until EOF.
+            let (status, body) = if attempt == 0 {
+                ("503 Service Unavailable", "{}")
+            } else {
+                entered.take().unwrap().send(()).unwrap();
+                held.recv_timeout(Duration::from_secs(10)).unwrap();
+                ("200 OK", jwks.as_str())
+            };
+            write!(socket, "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).unwrap();
+            socket.flush().unwrap();
+            socket.conn.send_close_notify();
+            let _ = socket.flush();
+        }
+    });
+    let now = busbar_kernel::store::now();
+    let header = b64.encode(
+        serde_json::to_vec(
+            &serde_json::json!({"alg": "ES256", "typ": "JWT", "kid": "listener-eof"}),
+        )
+        .unwrap(),
+    );
+    let claims = b64.encode(
+        serde_json::to_vec(&serde_json::json!({
+            "iss": "https://listener-eof.invalid", "aud": "listener-eof", "sub": "listener-client",
+            "roles": ["reader"], "exp": now + 3600, "nbf": now.saturating_sub(10),
+        }))
+        .unwrap(),
+    );
+    let signed = format!("{header}.{claims}");
+    let signature = key
+        .sign(&ring::rand::SystemRandom::new(), signed.as_bytes())
+        .unwrap();
+    let token = format!("{signed}.{}", b64.encode(signature.as_ref()));
+    let directory = crate::root::test_plugins::scratch(&format!(
+        "listener-real-eof-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
+    let mut store_module = None;
+    let mut auth_module = None;
+    for (kind, variable) in [
+        ("store", "BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN"),
+        ("auth", "BUSBAR_TEST_OIDC_CDYLIB"),
+    ] {
+        let path = std::path::PathBuf::from(
+            std::env::var_os(variable)
+                .unwrap_or_else(|| panic!("{variable} names the actual built product")),
+        );
+        let statement = crate::root::loader::dispatch::rendering_of_library(&path)
+            .unwrap()
+            .unwrap();
+        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+            .unwrap()
+            .name;
+        let mut manifest = crate::root::test_plugins::manifest(
+            kind,
+            &module,
+            crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+        );
+        manifest.statement = Some(hex::encode(statement));
+        let bytes = std::fs::read(path).unwrap();
+        let archive = crate::root::test_plugins::signed(
+            &crate::dist_root_install::release_key(),
+            manifest,
+            &bytes,
+        );
+        std::fs::write(directory.join(format!("{kind}.tar.gz")), archive).unwrap();
+        if kind == "auth" {
+            auth_module = Some(module);
+        } else {
+            store_module = Some(module);
+        }
+    }
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .unwrap();
+    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+        "providers": {}, "models": {},
+        "store": {"module": store_module.unwrap(), "settings": settings},
+        "identity-providers": {"held": {"module": auth_module.unwrap(), "settings": {
+            "issuer": "https://listener-eof.invalid", "audience": "listener-eof",
+            "jwks_url": jwks_url, "ca_cert_pem": cert_pem, "role_claim": "roles",
+            "jwks_min_refetch_secs": 0,
+        }}},
+        "auth": {"chain": ["held"], "admin_auth": [], "role_bindings": {"held": {"reader": {"allowed_pools": []}}}},
+        "advanced": {"allow_destinations": ["127.0.0.1"]},
+    })).unwrap();
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
+    let plugins = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: directory.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let rules = Arc::new(crate::root::door_steps::Rules::default())
+        as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+        config,
+        plugins,
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+    )
+    .expect("the real root opens the product OIDC verifier and Store");
+    drop(limits);
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+    let app = Arc::new(app);
+    let points = app.auth.position_points("held");
+    assert!(points.has(busbar_contract::abi::auth::AuthPoint::Head));
+    let guests = GuestList::seal(vec![Line {
+        route: Route {
+            methods: METHOD_POST,
+            path_form: PATH_CONTAINS,
+            path: "/".into(),
+            fields: Vec::new(),
+            rung: 0,
+        },
+        claimant: Claimant::Plane("listener-real-eof".into()),
+        dialect: 0,
+        auth: LineAuth::Chain(vec!["held".into()], points),
+        upgrade: None,
+        offered: AuthPoints(POINT_HEAD | POINT_HEAD_BODY),
+    }])
+    .unwrap();
+    crate::root::inbound::stage(guests, Vec::new());
+    assert!(crate::root::inbound::publish(&app).is_some());
     let (answers, mut received) = tokio::sync::mpsc::unbounded_channel();
     let router = Router::new().route(
         "/capture",
         axum::routing::post(move |body: axum::body::Body| {
             let answers = answers.clone();
             async move {
-                let result = axum::body::to_bytes(body, usize::MAX)
-                    .await
-                    .map_err(|error| error.to_string());
-                answers.send(result).unwrap();
+                answers
+                    .send(
+                        axum::body::to_bytes(body, usize::MAX)
+                            .await
+                            .map_err(|error| error.to_string()),
+                    )
+                    .unwrap();
                 "done"
             }
         }),
     );
-    let (mut client, mut conn) = custody_conn_with_framer(router, framer);
-    custody_head(&mut conn, 1, "/capture");
-    client.write_all(wire).await.unwrap();
+    let (mut client, mut conn) = custody_conn(router);
+    let wire = format!("POST /capture HTTP/1.1\r\nhost: t\r\nauthorization: Bearer {token}\r\ncontent-length: 5\r\n\r\nwhole");
+    client.write_all(wire.as_bytes()).await.unwrap();
     std::future::poll_fn(|cx| {
         assert!(conn.read(cx));
         Poll::Ready(())
     })
     .await;
+    tokio::time::timeout(Duration::from_secs(10), waiting)
+        .await
+        .expect("the actual OIDC VERIFY reaches its held JWKS peer")
+        .unwrap();
+    assert!(
+        conn.framing.as_ref().unwrap().parked(),
+        "the actual auth.call owns a pending decoder ticket"
+    );
+    assert!(
+        received.try_recv().is_err(),
+        "no body is published before authentication"
+    );
     client.shutdown().await.unwrap();
     std::future::poll_fn(|cx| {
         assert!(conn.read(cx));
         Poll::Ready(())
     })
     .await;
-    assert!(conn.framing.as_ref().unwrap().parked());
+    assert!(conn.read_done);
     assert!(
-        conn.inflows[&1].body.is_some(),
-        "EOF must not finish a still-parked ingest's body"
+        conn.framing.as_ref().unwrap().parked(),
+        "EOF preserves the genuinely parked ingest"
     );
-    gate.released
-        .store(true, std::sync::atomic::Ordering::SeqCst);
-    if let Some(wake) = gate.wake.lock().unwrap().take() {
-        wake.wake();
-    }
-    std::future::poll_fn(|cx| {
-        assert!(conn.parked(cx));
-        Poll::Ready(())
-    })
-    .await;
-    let result = tokio::time::timeout(Duration::from_secs(5), received.recv())
+    release.send(()).unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        std::future::poll_fn(|cx| {
+            if conn.parked(cx) {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        }),
+    )
+    .await
+    .expect("the real JWKS reply wakes and resumes the original decoder ticket");
+    let result = tokio::time::timeout(Duration::from_secs(10), received.recv())
         .await
         .unwrap()
         .unwrap();
     assert_eq!(
         result.unwrap().as_ref(),
         b"whole",
-        "the resumed real decoder's PIECE_END completes the body"
+        "the actual decoder's PIECE_END remains whole across pending authentication and EOF"
     );
+    peer.join()
+        .expect("the real TLS peer completes both requests");
 }
