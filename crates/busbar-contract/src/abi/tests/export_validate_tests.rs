@@ -395,7 +395,13 @@ fn a_well_formed_tail_passes() {
     let routes = [route("/metrics", "GET", super::super::ROUTE_AUTH_KEY)];
     let t = tail(&[0], &routes);
     assert_eq!(check_tail(&t), Ok(()));
-    assert_eq!(check_tail_entries(&[0, 1], &routes), Ok(()));
+    assert_eq!(
+        {
+            // SAFETY: every non-NULL path in this fixture borrows a live string literal; nulls are rejected before reading.
+            unsafe { check_tail_entries(&[0, 1], &routes) }
+        },
+        Ok(())
+    );
 }
 
 #[test]
@@ -431,7 +437,10 @@ fn a_tail_with_too_many_routes_faults() {
 #[test]
 fn a_stream_byte_outside_the_frozen_list_faults() {
     assert_eq!(
-        check_tail_entries(&[9], &[]),
+        {
+            // SAFETY: every non-NULL path in this fixture borrows a live string literal; nulls are rejected before reading.
+            unsafe { check_tail_entries(&[9], &[]) }
+        },
         red(Rule::UnknownCode, "tail.streams.code")
     );
 }
@@ -439,7 +448,10 @@ fn a_stream_byte_outside_the_frozen_list_faults() {
 #[test]
 fn a_repeated_stream_faults() {
     assert_eq!(
-        check_tail_entries(&[1, 1], &[]),
+        {
+            // SAFETY: every non-NULL path in this fixture borrows a live string literal; nulls are rejected before reading.
+            unsafe { check_tail_entries(&[1, 1], &[]) }
+        },
         red(Rule::Contradiction, "tail.streams.repeat")
     );
 }
@@ -449,13 +461,19 @@ fn a_route_text_counted_behind_null_faults() {
     let mut r = route("/metrics", "GET", 0);
     r.path.ptr = std::ptr::null();
     assert_eq!(
-        check_tail_entries(&[], &[r]),
+        {
+            // SAFETY: every non-NULL path in this fixture borrows a live string literal; nulls are rejected before reading.
+            unsafe { check_tail_entries(&[], &[r]) }
+        },
         red(Rule::NullWithCount, "tail.routes.path")
     );
     let mut r = route("/metrics", "GET", 0);
     r.method.ptr = std::ptr::null();
     assert_eq!(
-        check_tail_entries(&[], &[r]),
+        {
+            // SAFETY: every non-NULL path in this fixture borrows a live string literal; nulls are rejected before reading.
+            unsafe { check_tail_entries(&[], &[r]) }
+        },
         red(Rule::NullWithCount, "tail.routes.method")
     );
 }
@@ -463,7 +481,10 @@ fn a_route_text_counted_behind_null_faults() {
 #[test]
 fn a_route_path_not_rooted_faults() {
     assert_eq!(
-        check_tail_entries(&[], &[route("metrics", "GET", 0)]),
+        {
+            // SAFETY: every non-NULL path in this fixture borrows a live string literal; nulls are rejected before reading.
+            unsafe { check_tail_entries(&[], &[route("metrics", "GET", 0)]) }
+        },
         red(Rule::Missing, "tail.routes.path.root")
     );
 }
@@ -471,7 +492,10 @@ fn a_route_path_not_rooted_faults() {
 #[test]
 fn a_route_without_a_method_faults() {
     assert_eq!(
-        check_tail_entries(&[], &[route("/metrics", "", 0)]),
+        {
+            // SAFETY: every non-NULL path in this fixture borrows a live string literal; nulls are rejected before reading.
+            unsafe { check_tail_entries(&[], &[route("/metrics", "", 0)]) }
+        },
         red(Rule::Missing, "tail.routes.method.empty")
     );
 }
@@ -479,7 +503,10 @@ fn a_route_without_a_method_faults() {
 #[test]
 fn a_route_auth_outside_its_vocabulary_faults() {
     assert_eq!(
-        check_tail_entries(&[], &[route("/metrics", "GET", 3)]),
+        {
+            // SAFETY: every non-NULL path in this fixture borrows a live string literal; nulls are rejected before reading.
+            unsafe { check_tail_entries(&[], &[route("/metrics", "GET", 3)]) }
+        },
         red(Rule::UnknownCode, "tail.routes.auth")
     );
 }
