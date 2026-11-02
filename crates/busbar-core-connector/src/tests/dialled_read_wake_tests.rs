@@ -460,7 +460,10 @@ fn the_existing_datagram_drive_bound_wakes_once_with_an_unread_packet_remaining(
         rig.send(&[0x80, 3]);
         loop {
             rig.woke.clear();
-            rig.pending(false);
+            // Tokio's readiness polls also consume its cooperative task budget, which is
+            // smaller than READS_PER_DRIVE. Isolate this drive's own fairness bound;
+            // a cooperative yield otherwise stops early and defers its wake until yield.
+            tokio::task::unconstrained(async { rig.pending(false) }).await;
             let mut next = [0; 2];
             if rig.socket.peek_from(&mut next).unwrap().0 == 2 {
                 assert_eq!(next, [0xff, 1]);
