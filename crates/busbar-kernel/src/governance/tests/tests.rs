@@ -1141,17 +1141,19 @@ fn test_metering_accumulator_is_bounded_and_lossless_under_sustained_store_outag
         "no billable input tokens lost across the failed flush"
     );
 
-    let rendered = crate::snapshot::render();
+    let rendered = crate::snapshot::snapshot().expect("the actual recorder is installed");
     let coalesced = rendered
-        .lines()
-        .find(|l| l.starts_with("busbar_metering_pending_coalesced_total "))
-        .and_then(|l| l.rsplit(' ').next())
-        .and_then(|v| v.parse::<u64>().ok())
+        .iter()
+        .flat_map(|family| &family.samples)
+        .find(|sample| {
+            sample.name == "busbar_metering_pending_coalesced_total" && sample.labels.is_empty()
+        })
+        .and_then(|sample| sample.value.parse::<u64>().ok())
         .unwrap_or(0);
     assert!(
         coalesced > 0,
         "coalesced cells are exported on busbar_metering_pending_coalesced_total so the degradation \
-         is observable; got:\n{rendered}"
+         is observable; got:\n{rendered:?}"
     );
 }
 
