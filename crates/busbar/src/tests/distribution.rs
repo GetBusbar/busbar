@@ -421,3 +421,21 @@ mod kernel_application_export_scrape_crossings;
 
 #[path = "kernel_application/external_preflight.rs"]
 mod kernel_application_external_preflight;
+
+#[path = "admin_application/admin_credential_cache.rs"]
+mod admin_application_admin_credential_cache;
+
+#[path = "admin_application/admin_hook_settings_ack.rs"]
+mod admin_application_admin_hook_settings_ack;
+
+#[path = "admin_application/admin_openapi_route_parity.rs"]
+mod admin_application_admin_openapi_route_parity;
+
+#[path = "admin_application/admin_stuck_key_sentinel.rs"]
+mod admin_application_admin_stuck_key_sentinel;
+
+#[path = "kernel_application/auth_login_tests.rs"]
+mod kernel_application_auth_login_tests;
+
+#[path = "kernel_application/central2_config_export.rs"]
+mod kernel_application_central2_config_export;
