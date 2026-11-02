@@ -2010,7 +2010,7 @@ impl Inbound {
         let providers = ordered(names);
 
         let peer = point == AuthPoint::Peer;
-        if peer && !peer_payload_empty(call.unit, &call.head, body.as_deref()) {
+        if peer && !peer_payload_empty(call.unit, &call.head, body.as_deref().map(Vec::as_slice)) {
             return Err(PEER_BYTES);
         }
         if body
