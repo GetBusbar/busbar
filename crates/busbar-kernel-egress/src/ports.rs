@@ -113,13 +113,13 @@ pub use busbar_contract::upstream::Disposition;
 
 /// `// contract:` the breaker unit, as this unit needs it.
 ///
-/// Bound by the integrator to `busbar-unit-breaker`. Six of the eight methods below map one to one
-/// onto that crate's own surface; `ready` and `admissible` are the side-effect-free peeks the
-/// order needs, which the breaker unit answers from `state`.
+/// Bound by the integrator to `busbar-unit-breaker`. `ready`, `admissible`, and `unavailable`
+/// are side-effect-free peeks at destination and cell facts: the order filters on the first two,
+/// and health-only exhaustion is explained by the last without attempting admission.
 ///
 /// The division of labour is the design's: this unit decides WHO is asked first, the breaker
 /// decides WHO IS ALLOWED. Nothing in the order may mutate a cell — that is what keeps the order
-/// from being a second selection loop — so `ready` and `admissible` must not transition anything.
+/// from being a second selection loop — so these peeks must not transition anything.
 pub trait Breaker: Send + Sync {
     /// Mutating admission: win or lose the single-flight probe on this cell. This is the ONE call
     /// in the walk that can change a cell's state before the request is sent.
@@ -133,6 +133,19 @@ pub trait Breaker: Send + Sync {
         destination: DestinationId,
         now: u64,
     ) -> Result<Admit, Unavailable>;
+
+    /// Side-effect-free reason this member cannot admit now, or `None` if it is ready.
+    ///
+    /// Reads the same destination and cell facts as admission without creating a cell,
+    /// transitioning its state, winning a probe, or taking capacity. Used only to explain a
+    /// pick exhausted entirely by the order's health filter.
+    fn unavailable(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        now: u64,
+        token: &Pass<Route>,
+    ) -> Option<Unavailable>;
 
     /// Side-effect-free: could this cell take a request right now? The order's own filter, and the
     /// same predicate the weighted walk applies before its credit walk.

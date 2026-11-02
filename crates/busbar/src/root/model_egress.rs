@@ -627,6 +627,20 @@ impl Breaker for WalkCells {
         Ok(admit)
     }
 
+    fn unavailable(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        now: u64,
+        token: &Pass<Route>,
+    ) -> Option<Unavailable> {
+        let bound = self.bound();
+        let Some(translated) = self.destination(&bound, destination) else {
+            return Some(Unavailable::Dead);
+        };
+        adapters::unavailable(&bound.unit, self.cell(pool), translated, now, token)
+    }
+
     fn ready(&self, pool: &str, destination: DestinationId, now: u64, token: &Pass<Route>) -> bool {
         let bound = self.bound();
         self.destination(&bound, destination)

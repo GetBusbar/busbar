@@ -336,6 +336,22 @@ impl Breaker for Book {
             None => Ok(Admit { probe_epoch: None }),
         }
     }
+    fn unavailable(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        now: u64,
+        token: &Pass<Route>,
+    ) -> Option<Unavailable> {
+        let _ = (pool, now, token);
+        self.cooldown
+            .lock()
+            .unwrap()
+            .get(&destination)
+            .copied()
+            .map(|until| Unavailable::BreakerOpen { until })
+    }
+
     fn ready(&self, _: &str, _: DestinationId, _: u64, _: &Pass<Route>) -> bool {
         true
     }

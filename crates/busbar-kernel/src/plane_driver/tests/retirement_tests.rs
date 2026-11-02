@@ -282,6 +282,17 @@ impl Breaker for WatchingBreaker {
         self.probe.check("admit");
         self.inner.try_admit(pool, destination, now)
     }
+    fn unavailable(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        now: u64,
+        token: &Pass<Route>,
+    ) -> Option<Unavailable> {
+        self.probe.check("unavailable");
+        self.inner.unavailable(pool, destination, now, token)
+    }
+
     fn ready(&self, pool: &str, destination: DestinationId, now: u64, token: &Pass<Route>) -> bool {
         self.probe.check("ready");
         self.inner.ready(pool, destination, now, token)

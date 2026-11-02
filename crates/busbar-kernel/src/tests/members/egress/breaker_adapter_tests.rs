@@ -76,6 +76,23 @@ impl Breaker for BreakerAdapter {
         })
     }
 
+    fn unavailable(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        now: u64,
+        token: &Pass<Route>,
+    ) -> Option<Unavailable> {
+        match busbar_kernel_breaker::Breaker::state(&self.0, pool, destination, now, token) {
+            busbar_kernel_breaker::LaneState::Ready => None,
+            busbar_kernel_breaker::LaneState::Suppressed { until } => {
+                Some(Unavailable::BreakerOpen { until })
+            }
+            busbar_kernel_breaker::LaneState::BudgetExhausted => Some(Unavailable::BudgetExhausted),
+            busbar_kernel_breaker::LaneState::ProbeInFlight => Some(Unavailable::ProbeInFlight),
+        }
+    }
+
     fn ready(&self, pool: &str, destination: DestinationId, now: u64, token: &Pass<Route>) -> bool {
         matches!(
             self.0.state(pool, destination, now, token),

@@ -272,6 +272,86 @@ fn a_suppressed_member_is_recorded_with_its_own_reason() {
 }
 
 #[test]
+fn health_only_exhaustion_records_exact_reasons_without_admission_or_a_rotation_turn() {
+    let (node, members) = three_lanes();
+    for (destination, health) in [
+        Health {
+            dead: true,
+            ..Health::default()
+        },
+        Health {
+            budget_exhausted: true,
+            ..Health::default()
+        },
+        Health {
+            probe_in_flight: true,
+            ..Health::default()
+        },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        node.breaker
+            .set(DestinationId::new(destination as u64), health);
+    }
+    let mut ctx = node.request_ctx();
+    assert!(node.pick("p", &members, &mut ctx).is_none());
+    assert_eq!(
+        ctx.excluded_reasons(),
+        &[
+            (DestinationId::new(0), Unavailable::Dead),
+            (DestinationId::new(1), Unavailable::BudgetExhausted),
+            (DestinationId::new(2), Unavailable::ProbeInFlight),
+        ]
+    );
+    assert!(node.breaker.admission_attempts.lock().unwrap().is_empty());
+    assert!(node
+        .capacity
+        .acquisition_attempts
+        .lock()
+        .unwrap()
+        .is_empty());
+    assert!(node.breaker.log.lock().unwrap().is_empty());
+
+    // The read did not spend a credit: recovery follows exactly a fresh pool's rotation.
+    let (fresh, _) = three_lanes();
+    for destination in 0..3 {
+        node.breaker
+            .set(DestinationId::new(destination), Health::default());
+    }
+    for _ in 0..6 {
+        let picked = node.pick("p", &members, &mut node.request_ctx()).unwrap();
+        let expected = fresh.pick("p", &members, &mut fresh.request_ctx()).unwrap();
+        assert_eq!(picked.destination, expected.destination);
+    }
+}
+
+#[test]
+fn health_only_reasons_omit_drained_and_already_tried_members_and_expired_picks() {
+    let (node, mut members) = three_lanes();
+    for destination in 0..3 {
+        node.breaker.set(
+            DestinationId::new(destination),
+            Health {
+                probe_in_flight: true,
+                ..Health::default()
+            },
+        );
+    }
+    members[0].weight = 0;
+    let mut ctx = node.request_ctx();
+    ctx.exclude(DestinationId::new(1));
+    assert!(node.pick("p", &members, &mut ctx).is_none());
+    assert_eq!(
+        ctx.excluded_reasons(),
+        &[(DestinationId::new(2), Unavailable::ProbeInFlight)]
+    );
+    let mut expired = busbar_kernel_egress::RequestCtx::new(0, 0, 0);
+    assert!(node.pick("p", &members, &mut expired).is_none());
+    assert!(expired.excluded_reasons().is_empty());
+}
+
+#[test]
 fn only_a_member_at_capacity_spends_a_turn_of_the_rotation() {
     // Two members. One is suppressed, so it is filtered before the rotation and can never spend a
     // turn; the other is at capacity, so it is selected and only then refused, which is what

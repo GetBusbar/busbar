@@ -137,6 +137,24 @@ pub(crate) fn try_admit(
         })
 }
 
+/// The cell's exact refusal reason, read without attempting admission.
+pub(crate) fn unavailable(
+    unit: &BreakerUnit,
+    pool: &str,
+    destination: DestinationId,
+    now: u64,
+    token: &Pass<Route>,
+) -> Option<Unavailable> {
+    match busbar_kernel_breaker::Breaker::state(unit, pool, destination, now, token) {
+        busbar_kernel_breaker::LaneState::Ready => None,
+        busbar_kernel_breaker::LaneState::Suppressed { until } => {
+            Some(Unavailable::BreakerOpen { until })
+        }
+        busbar_kernel_breaker::LaneState::BudgetExhausted => Some(Unavailable::BudgetExhausted),
+        busbar_kernel_breaker::LaneState::ProbeInFlight => Some(Unavailable::ProbeInFlight),
+    }
+}
+
 /// Whether the cell would admit now: the unit's own read-only state.
 pub(crate) fn ready(
     unit: &BreakerUnit,
@@ -202,6 +220,16 @@ impl Breaker for BreakerAdapter {
         now: u64,
     ) -> Result<Admit, Unavailable> {
         try_admit(&self.unit, pool, destination, now)
+    }
+
+    fn unavailable(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        now: u64,
+        token: &Pass<Route>,
+    ) -> Option<Unavailable> {
+        unavailable(&self.unit, pool, destination, now, token)
     }
 
     fn ready(&self, pool: &str, destination: DestinationId, now: u64, token: &Pass<Route>) -> bool {

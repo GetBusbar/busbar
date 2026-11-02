@@ -132,6 +132,17 @@ impl Breaker for Book {
     fn try_admit(&self, _: &str, _: DestinationId, _: u64) -> Result<Admit, Unavailable> {
         Ok(Admit { probe_epoch: None })
     }
+    fn unavailable(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        now: u64,
+        token: &busbar_contract::caps::Pass<Route>,
+    ) -> Option<Unavailable> {
+        let _ = (pool, destination, now, token);
+        None
+    }
+
     fn ready(
         &self,
         _: &str,

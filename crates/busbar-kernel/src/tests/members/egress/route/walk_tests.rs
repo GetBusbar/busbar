@@ -710,6 +710,26 @@ impl Breaker for RealBreaker {
             })
     }
 
+    fn unavailable(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        now: u64,
+        token: &Pass<Route>,
+    ) -> Option<Unavailable> {
+        if self.is_dead(destination) {
+            return Some(Unavailable::Dead);
+        }
+        match busbar_kernel_breaker::Breaker::state(&self.unit, pool, destination, now, token) {
+            busbar_kernel_breaker::LaneState::Ready => None,
+            busbar_kernel_breaker::LaneState::Suppressed { until } => {
+                Some(Unavailable::BreakerOpen { until })
+            }
+            busbar_kernel_breaker::LaneState::BudgetExhausted => Some(Unavailable::BudgetExhausted),
+            busbar_kernel_breaker::LaneState::ProbeInFlight => Some(Unavailable::ProbeInFlight),
+        }
+    }
+
     fn ready(&self, pool: &str, destination: DestinationId, now: u64, token: &Pass<Route>) -> bool {
         !self.is_dead(destination)
             && busbar_kernel_breaker::Breaker::state(&self.unit, pool, destination, now, token)

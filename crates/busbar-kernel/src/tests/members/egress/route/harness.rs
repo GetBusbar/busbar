@@ -141,6 +141,8 @@ pub struct TestBreaker {
     pub log: Mutex<Vec<Recorded>>,
     /// Cells that were admitted, in order, so a test can read the pick order off the breaker.
     pub admitted: Mutex<Vec<(String, DestinationId)>>,
+    /// Every mutating admission call, including refusals.
+    pub admission_attempts: Mutex<Vec<DestinationId>>,
     /// Every status the walk actually handed the classifier, in order — the only way a test can
     /// see WHAT crossed the seam rather than only what came back across it.
     pub classified: Mutex<Vec<UpstreamStatus>>,
@@ -239,6 +241,7 @@ impl Breaker for TestBreaker {
         destination: DestinationId,
         _now: u64,
     ) -> Result<Admit, Unavailable> {
+        self.admission_attempts.lock().unwrap().push(destination);
         let health = self.health_of(destination);
         if health.dead {
             return Err(Unavailable::Dead);
@@ -272,6 +275,30 @@ impl Breaker for TestBreaker {
         Ok(Admit {
             probe_epoch: health.offers_probe,
         })
+    }
+
+    fn unavailable(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        now: u64,
+        token: &busbar_contract::caps::Pass<busbar_contract::caps::Route>,
+    ) -> Option<Unavailable> {
+        let _ = (pool, now, token);
+        let health = self.health_of(destination);
+        if health.dead {
+            Some(Unavailable::Dead)
+        } else if health.budget_exhausted {
+            Some(Unavailable::BudgetExhausted)
+        } else if health.probe_in_flight {
+            Some(Unavailable::ProbeInFlight)
+        } else if health.cooldown > 0 && health.offers_probe.is_none() {
+            Some(Unavailable::BreakerOpen {
+                until: health.cooldown,
+            })
+        } else {
+            None
+        }
     }
 
     fn ready(
@@ -427,6 +454,8 @@ impl Drop for TestPermit {
 /// A permit store with a ceiling per member.
 #[derive(Debug, Default)]
 pub struct TestCapacity {
+    /// Every capacity acquisition attempt, including refusals.
+    pub acquisition_attempts: Mutex<Vec<DestinationId>>,
     ceilings: Mutex<HashMap<DestinationId, usize>>,
     held: Arc<Mutex<HashMap<DestinationId, usize>>>,
     /// Slots that are released at the moment a waiter first asks for one, and not before.
@@ -471,6 +500,7 @@ impl TestCapacity {
 
 impl Capacity for TestCapacity {
     fn try_acquire(&self, destination: DestinationId) -> Option<Permit> {
+        self.acquisition_attempts.lock().unwrap().push(destination);
         let ceiling = self
             .ceilings
             .lock()

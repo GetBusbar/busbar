@@ -332,6 +332,25 @@ pub fn pick_among<'a>(input: &PickInput<'a, '_>, ctx: &mut RequestCtx) -> Option
         }
     };
 
+    // When the health filter left nobody to offer, admission supplied no reasons. Explain
+    // that exhaustion by reading health alone: probing admission here could win a recovery
+    // probe even though this pick will dispatch nothing. Keep actual admission refusals (in
+    // particular at-capacity reasons consumed by the wait terminal) exactly as recorded.
+    if picked.is_none() && passed_over.is_empty() && !ctx.expired(input.now) {
+        for member in input.members {
+            if member.weight == 0 || ctx.is_excluded(member.destination) {
+                continue;
+            }
+            if let Some(why) =
+                input
+                    .breaker
+                    .unavailable(input.pool, member.destination, input.now, input.token)
+            {
+                passed_over.push((member.destination, why));
+            }
+        }
+    }
+
     // The exclusion record is this pick's own, replaced wholesale: a spill that re-runs the pick
     // against another pool must report that pool's exhaustion, never the primary's.
     ctx.excluded_reasons = passed_over;
