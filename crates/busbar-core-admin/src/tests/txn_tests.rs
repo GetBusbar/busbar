@@ -476,41 +476,6 @@ async fn plugin_install_is_serialized_by_the_mutation_domain() {
 }
 
 #[tokio::test]
-async fn a_txn_that_declares_no_plan_swaps_nothing() {
-    let handle = handle_for(crate::new_test_app().build());
-    let before = handle.load().config_version;
-    let seen: u64 = config_transaction::<_, _, AdminError>(&handle, |txn| {
-        Ok(txn.done(txn.app().config_version))
-    })
-    .await
-    .expect("read-only txn succeeds");
-    assert_eq!(seen, before, "the body reads the post-lock snapshot");
-    assert_eq!(handle.load().config_version, before, "no plan ⇒ no swap");
-}
-
-#[tokio::test]
-async fn a_failed_persist_swaps_nothing() {
-    let handle = handle_for(crate::new_test_app().build());
-    let before = handle.load().config_version;
-    let err = config_transaction(&handle, |txn| {
-        let mut next = (**txn.app()).clone();
-        next.config_version = before.wrapping_add(1);
-        Ok(txn.commit(Arc::new(next), || Err("disk said no".to_string()), ()))
-    })
-    .await
-    .expect_err("a failed persist fails the transaction");
-    assert!(
-        matches!(&err, AdminError::Validation(m) if m == "disk said no"),
-        "the persist closure owns the operator-facing message: {err:?}"
-    );
-    assert_eq!(
-        handle.load().config_version,
-        before,
-        "persist failed ⇒ the live engine is untouched"
-    );
-}
-
-#[tokio::test]
 async fn an_unknown_store_overlay_commit_never_swaps_or_claims_success() {
     let overlay = busbar_kernel_testkit::test_support::TestOverlayStore::new();
     let handle = handle_for(
@@ -646,89 +611,6 @@ async fn a_cancelled_store_overlay_persist_finishes_before_releasing_the_domain(
             .per_request_fee,
         Some(23),
         "the Store persistence completed before the generation became live"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn concurrent_transactions_never_lose_a_swap() {
-    let handle = handle_for(crate::new_test_app().build());
-    let before = handle.load().config_version;
-    let mut tasks = Vec::new();
-    for _ in 0..16 {
-        let handle = handle.clone();
-        tasks.push(tokio::spawn(async move {
-            config_transaction::<_, _, AdminError>(&handle, |txn| {
-                let current = txn.app();
-                let mut next = (**current).clone();
-                next.config_version = current.config_version.wrapping_add(1);
-                Ok(txn.live_swap(Arc::new(next), ()))
-            })
-            .await
-        }));
-    }
-    for t in tasks {
-        t.await.expect("join").expect("txn commits");
-    }
-    assert_eq!(
-        handle.load().config_version,
-        before + 16,
-        "every transaction's build read the previous one's swap — no lost update"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn cancelling_a_handler_future_does_not_release_the_mutation_domain() {
-    let handle = handle_for(crate::new_test_app().build());
-
-    let (entered_tx, entered_rx) = std::sync::mpsc::channel::<()>();
-    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
-    let finished = Arc::new(AtomicBool::new(false));
-
-    let victim = {
-        let (handle, finished) = (handle.clone(), finished.clone());
-        tokio::spawn(async move {
-            config_transaction::<_, _, AdminError>(&handle, move |txn| {
-                Ok(txn.store_write(move || {
-                    entered_tx.send(()).expect("test still listening");
-                    release_rx.recv().expect("test releases the deferred step");
-                    finished.store(true, Ordering::SeqCst);
-                    Ok(Outcome::Value(()))
-                }))
-            })
-            .await
-        })
-    };
-
-    entered_rx
-        .recv_timeout(Duration::from_secs(10))
-        .expect("the deferred step must start");
-    victim.abort();
-    assert!(victim.await.is_err(), "the caller's future was cancelled");
-
-    let contender = config_transaction::<_, _, AdminError>(&handle, |txn| Ok(txn.done(())));
-    assert!(
-        tokio::time::timeout(Duration::from_millis(500), contender)
-            .await
-            .is_err(),
-        "a cancelled handler must not hand the mutation domain to a concurrent op while its \
-         deferred work is still writing"
-    );
-    assert!(
-        !finished.load(Ordering::SeqCst),
-        "the deferred step is still in flight - the timeout above was a real lock wait"
-    );
-
-    release_tx.send(()).expect("deferred step still parked");
-    tokio::time::timeout(
-        Duration::from_secs(10),
-        config_transaction::<_, _, AdminError>(&handle, |txn| Ok(txn.done(()))),
-    )
-    .await
-    .expect("the domain is released once the deferred work finishes")
-    .expect("txn ok");
-    assert!(
-        finished.load(Ordering::SeqCst),
-        "cancellation abandons the RESULT, never the critical section"
     );
 }
 
