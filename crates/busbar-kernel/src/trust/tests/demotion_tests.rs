@@ -2,7 +2,60 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use crate::store::plane_view::{decode, KIND_DEMOTION};
-use crate::test_support::durable_store::{durable_cfg, open_durable};
+use busbar_plugin_loader::dispatch::kinds::store::Store;
+use busbar_plugin_loader::dispatch::{
+    load_dropped, rendering_of_library, Bind, ConnTable, DispatchConfig, Dispatcher, NoSink,
+};
+use busbar_plugin_loader::store_v3::LoadedStore;
+use std::path::PathBuf;
+use std::sync::Arc;
+
+fn durable_cfg(label: &str) -> (PathBuf, String) {
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-demotion-{}-{}-{}",
+        std::process::id(),
+        label,
+        crate::door::op_id().counter()
+    ));
+    std::fs::create_dir_all(&dir).expect("create the actual SQLite database directory");
+    let file = dir.join("demotions.sqlite3");
+    let cfg = serde_json::json!({"db_path": file}).to_string();
+    (file, cfg)
+}
+
+fn open_durable(settings: &str) -> Arc<LoadedStore> {
+    let path = PathBuf::from(
+        std::env::var_os("BUSBAR_TEST_SQLITE_CDYLIB")
+            .expect("BUSBAR_TEST_SQLITE_CDYLIB names the actual built SQLite product"),
+    );
+    let stated = rendering_of_library(&path)
+        .expect("read SQLite statement")
+        .expect("SQLite exports a statement");
+    let module = busbar_contract::abi::mechanism::rendering::read(&stated)
+        .expect("valid SQLite statement")
+        .name;
+    assert_eq!(
+        module, "busbar-store-sqlite",
+        "durability requires the actual SQLite product"
+    );
+    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let plugin = load_dropped::<Store>(
+        &path,
+        &stated,
+        Bind {
+            instance: format!("demotion-{}", crate::door::op_id().counter()).into(),
+            max_inflight_cap: 1024,
+            sink: Arc::new(NoSink),
+            dispatcher: dispatcher.adopter(),
+            conns: ConnTable::NoNeeds,
+        },
+    )
+    .expect("load the actual SQLite store through its ABI");
+    Arc::new(
+        LoadedStore::open(plugin, dispatcher, settings.as_bytes(), crate::door::op_id)
+            .expect("open the same actual SQLite database"),
+    )
+}
 use crate::trust::demotion::{DemotionRecord, DemotionRow};
 use busbar_contract::records::{PlaneSelector, RecordStore, RecordStoreResult};
 
@@ -40,7 +93,7 @@ fn a_recorded_demotion_is_found_by_a_second_handle_on_the_same_store() {
         "ONE demotion for one demoted upstream. Zero here is the defect the record exists for — the \
          write returned `Ok(())` and the row is nowhere. The store at {} holds: {}",
         file.display(),
-        std::fs::read_to_string(&file).unwrap_or_else(|_| "<no file at all>".into())
+        format!("{:?}", std::fs::metadata(&file).map(|m| m.len()))
     );
     assert_eq!(rows[0].upstream, "fs");
     assert_eq!(
