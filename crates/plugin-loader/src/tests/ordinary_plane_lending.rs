@@ -31,7 +31,9 @@ fn bound(door: DoorFn, d: &Dispatcher, label: &str) -> Plugin<Plane> {
             max_inflight_cap: 8,
             sink: Arc::new(NoSink),
             dispatcher: d.adopter(),
-            conns: ConnTable::NoNeeds,
+            // This is a raw ABI loan-lifetime probe, not a serving host. MCP declares
+            // HTTP/stdio needs; no network operation is invoked by the hostile SERVE slot.
+            conns: ConnTable::Probe,
         },
     )
     .expect("actual MCP instance binds");
