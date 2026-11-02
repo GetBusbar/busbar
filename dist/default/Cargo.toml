@@ -856,7 +856,7 @@ members = ["."]
 # THE LLM PLANE, pinned from its own repo like every other plane. da2ab5f (stuck3-1427-journal) is
 # e154678 plus its held-cell test reading the rig's node journal (busbar #1427: the node amendment
 # journal is an instance the node owns; `node_recent` is gone).
-busbar-plane-llm = { git = "https://git.getbusbar.dev/GetBusbar/busbar-plane-llm", rev = "9f11b668699db3fb4d3f4934fc8541a617f8e108" }
+busbar-plane-llm = { git = "https://git.getbusbar.dev/GetBusbar/busbar-plane-llm", rev = "dc34fa5a9c77016e59457de71a15568ce0988373" }
 # ── External plugin crates: ONE pin each (ONE HOME PER FACT); members use `workspace = true` ──
 busbar-auth-admin-tokens = { git = "https://git.getbusbar.dev/GetBusbar/busbar-auth-admin-tokens", rev = "e7b24d8ac7bed190f74d65c155311966a0d4278e" }
 busbar-auth-admin-tokens-plugin = { git = "https://git.getbusbar.dev/GetBusbar/busbar-auth-admin-tokens", rev = "e7b24d8ac7bed190f74d65c155311966a0d4278e" }
@@ -888,7 +888,7 @@ busbar-export-webhook = { git = "https://git.getbusbar.dev/GetBusbar/busbar-expo
 # failure is the system's words alone, no op prefix), moved past
 # 12b0783's behaviour in its own PR with its own oracle verdict (FLEET.md transport-http rule). The
 # door claims `https` again (the transport fold's row).
-busbar-transport-http = { git = "https://git.getbusbar.dev/GetBusbar/busbar-transport-http", rev = "2f09ff97340941d0cd83eecb7bf2272194d72ba0" }
+busbar-transport-http = { git = "https://git.getbusbar.dev/GetBusbar/busbar-transport-http", rev = "f589151bb903e20b737dad5bba44511372d1fea7" }
 # THE GRPC TRANSPORT: the gRPC framer door (kind: transport), pulled at a pinned rev; the logic crate the root
 # links on the transport-door axis (the gRPC module left busbar-transport-http for it).
 busbar-transport-grpc = { git = "https://git.getbusbar.dev/GetBusbar/busbar-transport-grpc", rev = "9c913b75a43fee32630f4753977473e43f9384d8" }
@@ -955,11 +955,11 @@ busbar-transport-webrtc = { git = "https://git.getbusbar.dev/GetBusbar/busbar-tr
 # (oracle BOOT-W15). d7a62c4 is 5927d5e plus the upsert-by-id fix (492c728, busbar-store-memory fj#44):
 # a parented upserted plane record is keyed on its own id, so get/delete by (kind, id) reach it.
 # Explicit usage cleanup preserves billing; unsigned expiry cells retain permanent node claims.
-busbar-store-memory = { git = "https://git.getbusbar.dev/GetBusbar/busbar-store-memory", rev = "ebc983d66dd7f246c9c2a6b0ffe271d3a20a89f1" }
+busbar-store-memory = { git = "https://git.getbusbar.dev/GetBusbar/busbar-store-memory", rev = "40fc66a27e12de9120eee16d36cb68e09987ace6" }
 # THE MCP PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the mcp plane's
 # door row (`plane-mcp-door`, `busbar_plane_mcp::tool_door::door`) and installs in every build's tests.
 # Its dropped-in cdylib twin (`busbar-plane-mcp-plugin`) and its gates live in that repo's plugin CI.
-busbar-plane-mcp = { git = "https://git.getbusbar.dev/GetBusbar/busbar-plane-mcp", rev = "a92c65a64b7a354f5e369b1870f7b56e79dd8811" }
+busbar-plane-mcp = { git = "https://git.getbusbar.dev/GetBusbar/busbar-plane-mcp", rev = "767bd573409a01a09a91b018e16e629acb3282f2" }
 # THE DECISIONS PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the
 # decisions plane's door row (`plane-decisions`, `busbar_plane_decisions::plane_door::door`). Its
 # dropped-in cdylib twin (`busbar-plane-decisions-plugin`) and its gates live in that repo's plugin CI.
@@ -968,7 +968,7 @@ busbar-plane-decisions = { git = "https://git.getbusbar.dev/GetBusbar/busbar-pla
 # plane's door row (`plane-a2a-door`, `busbar_plane_a2a::agent_door::door`), whose own root cells it
 # states under its `links` name. Its dropped-in cdylib twin (`busbar-plane-a2a-plugin`) and its gates
 # live in that repo's plugin CI.
-busbar-plane-a2a = { git = "https://git.getbusbar.dev/GetBusbar/busbar-plane-a2a", rev = "7bf96a4313f4d21edddb5cbe1d93f69b7f559b03" }
+busbar-plane-a2a = { git = "https://git.getbusbar.dev/GetBusbar/busbar-plane-a2a", rev = "5498aee8316e4854944893e12b1698f2fc012f3c" }
 # THE STREAMING PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the
 # streaming plane's door row (`plane-streaming`, `busbar_plane_streaming::door::door`), whose own root
 # cells it states under its `links` name, and the voice conformance harness drives. Its dropped-in
