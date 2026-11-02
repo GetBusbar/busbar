@@ -277,3 +277,15 @@ mod service_named_defs;
 
 #[path = "admin_application/service_plugin_policy.rs"]
 mod service_plugin_policy;
+
+#[path = "admin_application/service_hook_probe.rs"]
+mod service_hook_probe;
+
+#[path = "admin_application/service_plugin_integration.rs"]
+mod service_plugin_integration;
+
+#[path = "admin_application/service_plane_usage.rs"]
+mod service_plane_usage;
+
+#[path = "admin_application/service_group_usage.rs"]
+mod service_group_usage;
