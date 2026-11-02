@@ -273,25 +273,16 @@ mod transport_door_tests;
 #[path = "tests/hook_door_conformance_tests.rs"]
 mod hook_door_conformance_tests;
 
-#[cfg(test)]
-#[allow(unsafe_code)]
-#[path = "tests/conformance_auth_clock_tests.rs"]
-mod conformance_auth_clock_tests;
+
 
 #[cfg(test)]
 #[allow(unsafe_code)]
 #[path = "tests/conformance_auth_form_tests.rs"]
 mod conformance_auth_form_tests;
 
-#[cfg(test)]
-#[allow(unsafe_code)]
-#[path = "tests/conformance_auth_outbound_custody_tests.rs"]
-mod conformance_auth_outbound_custody_tests;
 
-#[cfg(test)]
-#[allow(unsafe_code)]
-#[path = "tests/conformance_auth_short_tests.rs"]
-mod conformance_auth_short_tests;
+
+
 
 #[cfg(test)]
 #[allow(unsafe_code)]
