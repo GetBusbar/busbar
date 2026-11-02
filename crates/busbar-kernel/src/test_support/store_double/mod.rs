@@ -151,7 +151,9 @@ pub struct MemoryStore {
 }
 
 impl MemoryStore {
-    pub(crate) fn pin_token_clock(&self, now: u64) {
+    /// Set this test double's authoritative token clock for deterministic expiry fixtures.
+    /// This fixture module is absent from production; request timestamps never set its clock.
+    pub fn pin_token_clock(&self, now: u64) {
         *self.token_clock.write().unwrap_or_else(|e| e.into_inner()) = Some(now);
     }
 

@@ -14,6 +14,13 @@ fn key(actor: &str, header: &str) -> (String, String) {
     (actor.to_string(), header.to_string())
 }
 
+/// Match the fixture's authoritative Store clock to the synthetic claim timestamps below.
+fn durable_store() -> MemoryStore {
+    let store = MemoryStore::new();
+    store.pin_token_clock(1_000);
+    store
+}
+
 #[test]
 fn first_sighting_reserves_and_replay_returns_committed_value_verbatim() {
     let cache: IdempotencyCache<String> = IdempotencyCache::new();
@@ -164,7 +171,7 @@ fn create_and_rotate_claims_are_disjoint_after_cache_loss() {
     let rotate = key("alice", &rotate_replay_key("x", "h"));
     let create = key("alice", &create_replay_key("rotate:1:x:1:h"));
     for (first, second) in [(&create, &rotate), (&rotate, &create)] {
-        let store = MemoryStore::new();
+        let store = durable_store();
         let claim = durable::claim(&store, first, 1_000).expect("first operation claims");
         durable::settle(&store, &claim, 1_001, &Settled::Applied("key".into()))
             .expect("first operation settles");
@@ -208,7 +215,7 @@ fn a_reservation_marked_in_flight_survives_a_drop_and_still_commits() {
 /// to the next process on the same store, naming what was made: never run a second time.
 #[test]
 fn an_applied_claim_is_refused_after_a_restart_not_run_again() {
-    let store = MemoryStore::new();
+    let store = durable_store();
     let k = key("alice", "restart-1");
     let claim = durable::claim(&store, &k, 1_000).expect("the first claim is granted");
     durable::settle(&store, &claim, 1_001, &Settled::Applied("key:vk_1".into())).unwrap();
@@ -224,7 +231,7 @@ fn an_applied_claim_is_refused_after_a_restart_not_run_again() {
 /// An answer settled in the store replays to the next claimer, byte for byte.
 #[test]
 fn a_settled_answer_is_handed_to_the_next_claimer() {
-    let store = MemoryStore::new();
+    let store = durable_store();
     let k = key("alice", "answer-1");
     let claim = durable::claim(&store, &k, 1_000).unwrap();
     durable::settle(&store, &claim, 1_000, &Settled::Answer(b"first".to_vec())).unwrap();
@@ -237,7 +244,7 @@ fn a_settled_answer_is_handed_to_the_next_claimer() {
 /// A claim released with nothing done opens the next generation, once.
 #[test]
 fn a_released_claim_frees_the_key_for_exactly_one_retry() {
-    let store = MemoryStore::new();
+    let store = durable_store();
     let k = key("alice", "released-1");
     let first = durable::claim(&store, &k, 1_000).unwrap();
     durable::settle(&store, &first, 1_001, &Settled::Released).unwrap();
@@ -249,19 +256,20 @@ fn a_released_claim_frees_the_key_for_exactly_one_retry() {
 /// A claim nobody settled (its holder died) is in flight until it lapses with the replay window.
 #[test]
 fn an_unsettled_claim_is_in_flight_until_it_lapses() {
-    let store = MemoryStore::new();
+    let store = durable_store();
     let k = key("alice", "unsettled-1");
     durable::claim(&store, &k, 1_000).unwrap();
     assert_eq!(durable::claim(&store, &k, 1_001), Err(Refused::InFlight));
     // A store may extend a claim on every attempt that loses it: the claim lapses one window after
     // the LAST attempt, never before.
+    store.pin_token_clock(1_001 + IDEMPOTENCY_TTL_SECS);
     assert!(durable::claim(&store, &k, 1_001 + IDEMPOTENCY_TTL_SECS).is_ok());
 }
 
 /// Two principals presenting the same header never share a claim.
 #[test]
 fn claims_are_scoped_to_the_principal() {
-    let store = MemoryStore::new();
+    let store = durable_store();
     durable::claim(&store, &key("alice", "same"), 1_000).unwrap();
     assert!(durable::claim(&store, &key("bob", "same"), 1_000).is_ok());
 }
@@ -342,7 +350,7 @@ fn a_late_predecessor_settlement_cannot_replace_a_successor_receipt() {
 
 #[test]
 fn a_legacy_refusal_cannot_hide_its_pending_successor_during_migration() {
-    let store = MemoryStore::new();
+    let store = durable_store();
     let k = key("alice", "legacy-pending-successor");
     let first = durable::claim(&store, &k, 1_000).unwrap();
     durable::settle(&store, &first, 1_000, &Settled::Released).unwrap();
