@@ -373,8 +373,10 @@ fn refused_vault_refresh_preserves_the_committed_connector_binding() {
     .expect("actual Vault admitted with production DeclaredConns");
     let owner = plugin.instance();
     let settings =
-        serde_json::to_vec(&serde_json::json!({"addr":first.addr,"timeout_secs":5})).unwrap();
+        serde_json::to_vec(&serde_json::json!({"addr":first.addr,"token":"s.x","timeout_secs":5}))
+            .unwrap();
     let token = token();
+    let mut open_reason = [0u8; 4096];
     let mut open = Frame::new(
         OpenIn {
             head: in_head(),
@@ -383,8 +385,8 @@ fn refused_vault_refresh_preserves_the_committed_connector_binding() {
             secrets: &token,
             secrets_len: 1,
             generation: 1,
-            err_buf: std::ptr::null_mut(),
-            err_cap: 0,
+            err_buf: open_reason.as_mut_ptr(),
+            err_cap: open_reason.len(),
         },
         OpenOut {
             head: out_head(),
@@ -394,7 +396,12 @@ fn refused_vault_refresh_preserves_the_committed_connector_binding() {
     );
     let opened = plugin.call(life::slot::OPEN, &mut open);
     release(&plugin, opened.lease);
-    assert_eq!(opened.outcome, Outcome::Ready, "actual Vault opens");
+    assert_eq!(
+        opened.outcome,
+        Outcome::Ready,
+        "actual Vault opens: {}",
+        String::from_utf8_lossy(&open_reason[..open.out.err_len.min(open_reason.len())])
+    );
     let mut vault = OpenVault {
         plugin,
         closed: false,
@@ -409,7 +416,7 @@ fn refused_vault_refresh_preserves_the_committed_connector_binding() {
         assert_eq!(first.requests.load(Ordering::SeqCst), expected);
     }
     assert_eq!(
-        refresh(&vault.plugin, br#"{"addr":""}"#, 2),
+        refresh(&vault.plugin, br#"{"addr":"","token":"s.x"}"#, 2),
         Outcome::Failed
     );
     assert_eq!(
@@ -432,7 +439,8 @@ fn refused_vault_refresh_preserves_the_committed_connector_binding() {
     assert_eq!(second.requests.load(Ordering::SeqCst), 0);
 
     let moved =
-        serde_json::to_vec(&serde_json::json!({"addr":second.addr,"timeout_secs":5})).unwrap();
+        serde_json::to_vec(&serde_json::json!({"addr":second.addr,"token":"s.x","timeout_secs":5}))
+            .unwrap();
     assert_eq!(refresh(&vault.plugin, &moved, 3), Outcome::Ready);
     assert!(
         resolve(&vault.plugin, &dispatcher) == b"moved",
