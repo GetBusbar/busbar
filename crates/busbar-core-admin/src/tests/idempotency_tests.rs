@@ -7,7 +7,7 @@
 //! honoured exactly.
 
 use crate::idempotency::durable::{self, Refused, Settled};
-use crate::idempotency::{IdempotencyCache, Probe, IDEMPOTENCY_TTL_SECS};
+use crate::idempotency::{IDEMPOTENCY_TTL_SECS, IdempotencyCache, Probe};
 use busbar_kernel::governance::MemoryStore;
 
 fn key(actor: &str, header: &str) -> (String, String) {
@@ -285,6 +285,38 @@ fn an_old_held_refusal_cannot_skip_a_newer_in_flight_generation() {
     assert_ne!(second, third, "only a definite answer expires normally");
     assert_eq!(
         durable::claim_held(&store, &k, later + 1),
+        Err(Refused::InFlight)
+    );
+}
+
+#[test]
+fn a_late_predecessor_settlement_cannot_replace_a_successor_receipt() {
+    let store = MemoryStore::new();
+    let k = key("alice", "late-settlement");
+    let first = durable::claim_held(&store, &k, 1_000).unwrap();
+    durable::settle(&store, &first, 1_000, &Settled::Released).unwrap();
+    let second = durable::claim_held(&store, &k, 1_001).unwrap();
+    let receipt = Settled::Retained(b"exact successor operation and answer".to_vec());
+    durable::settle(&store, &second, 1_001, &receipt).unwrap();
+    // The first upsert had timed out, and its delayed retry lands after generation1 settled.
+    durable::settle(&store, &first, 1_000, &Settled::Released).unwrap();
+    assert_eq!(
+        durable::claim_held(&store, &k, 10_000),
+        Err(Refused::Retained(
+            b"exact successor operation and answer".to_vec()
+        ))
+    );
+}
+
+#[test]
+fn a_legacy_refusal_cannot_hide_its_pending_successor_during_migration() {
+    let store = MemoryStore::new();
+    let k = key("alice", "legacy-pending-successor");
+    let first = durable::claim(&store, &k, 1_000).unwrap();
+    durable::settle(&store, &first, 1_000, &Settled::Released).unwrap();
+    let _pending = durable::claim(&store, &k, 1_001).unwrap();
+    assert_eq!(
+        durable::claim_held(&store, &k, 1_002),
         Err(Refused::InFlight)
     );
 }

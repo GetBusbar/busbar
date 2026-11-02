@@ -286,6 +286,12 @@ pub mod durable {
         format!("{id}:{generation}")
     }
 
+    /// Held outcomes have immutable generation addresses. A timed-out upsert of G0 may still
+    /// land after G1 settled; it must never replace G1's answer or retained effect receipt.
+    fn held_record_id(id: &str, generation: u32) -> String {
+        format!("held:{id}:{generation}")
+    }
+
     fn encode(generation: u32, written_at: u64, settled: &Settled) -> Vec<u8> {
         let mut bytes = vec![LAYOUT];
         bytes.extend_from_slice(&generation.to_be_bytes());
@@ -398,8 +404,9 @@ pub mod durable {
     /// Claim a root write whose unknown result can outlive the replay window. The token is held
     /// before invoking the effect and never lapses, including if settlement fails or the process
     /// dies. Only a recorded definite refusal or an expired, definite answer opens a successor.
-    /// Held settlement rows stay active: their generation is needed to distinguish a successor
-    /// still running from its predecessor's settled answer. A stale predecessor cannot skip it.
+    /// Held settlement rows stay active at a separate address per generation. Walk only definite
+    /// refusals/expired answers; a missing outcome behind an already-spent token stays in flight.
+    /// Neither a stale predecessor nor its late upsert can replace/skip the successor's receipt.
     ///
     /// # Errors
     ///
@@ -412,27 +419,38 @@ pub mod durable {
         let id = record_id(key);
         let mut generation = 0;
         loop {
-            match read_any(store, &id)? {
-                Some((held, written_at, settled)) if held >= generation => match settled {
-                    Settled::Retained(receipt) => return Err(Refused::Retained(receipt)),
-                    Settled::Answer(answer)
-                        if now.saturating_sub(written_at) < IDEMPOTENCY_TTL_SECS =>
-                    {
-                        return Err(Refused::Answer(answer));
+            let row = held_record_id(&id, generation);
+            if let Some((held, written_at, settled)) = read_any(store, &row)? {
+                if held != generation {
+                    return Err(Refused::Unavailable(format!(
+                        "the held idempotency record `{row}` names a different generation"
+                    )));
+                }
+                advance_held(settled, written_at, now)?;
+                generation = generation.checked_add(1).ok_or(Refused::InFlight)?;
+                continue;
+            }
+            if generation == 0 {
+                // Compatibility with the former single-row layout. Once the new generation0
+                // exists, late writes to that old address cannot replace any successor outcome.
+                let legacy_generation = match read_any(store, &id)? {
+                    Some((held, written_at, settled)) => {
+                        advance_held(settled, written_at, now)?;
+                        held.checked_add(1).ok_or(Refused::InFlight)?
                     }
-                    Settled::Applied(what)
-                        if now.saturating_sub(written_at) < IDEMPOTENCY_TTL_SECS =>
-                    {
-                        return Err(Refused::Applied(what));
-                    }
-                    _ => {
-                        generation = held.checked_add(1).ok_or(Refused::InFlight)?;
-                    }
-                },
-                _ => {}
+                    None => 0,
+                };
+                // Fence the next legacy generation too: an older process may already own it
+                // while the preceding Released/expired Answer is still the only visible row.
+                let first = store
+                    .redeem_plane_token(REPLAY_KIND, &token(&id, legacy_generation), u64::MAX, now)
+                    .map_err(|e| Refused::Unavailable(e.to_string()))?;
+                if !first {
+                    return Err(Refused::InFlight);
+                }
             }
             let first = store
-                .redeem_plane_token(REPLAY_KIND, &token(&id, generation), u64::MAX, now)
+                .redeem_plane_token(REPLAY_KIND, &row, u64::MAX, now)
                 .map_err(|e| Refused::Unavailable(e.to_string()))?;
             if first {
                 return Ok(Claim {
@@ -441,12 +459,24 @@ pub mod durable {
                     held: true,
                 });
             }
-            // Re-read only to notice this generation settling while the claim was attempted.
-            // An older Released/Answer is not permission to claim another generation.
-            match read_any(store, &id)? {
-                Some((held, _, _)) if held >= generation => {}
-                _ => return Err(Refused::InFlight),
+            // A settlement racing this failed claim is read on the next pass at this exact
+            // generation. No earlier row can stand in for an outcome still owed here.
+            if read_any(store, &row)?.is_none() {
+                return Err(Refused::InFlight);
             }
+        }
+    }
+
+    fn advance_held(settled: Settled, written_at: u64, now: u64) -> Result<(), Refused> {
+        match settled {
+            Settled::Retained(receipt) => Err(Refused::Retained(receipt)),
+            Settled::Answer(answer) if now.saturating_sub(written_at) < IDEMPOTENCY_TTL_SECS => {
+                Err(Refused::Answer(answer))
+            }
+            Settled::Applied(what) if now.saturating_sub(written_at) < IDEMPOTENCY_TTL_SECS => {
+                Err(Refused::Applied(what))
+            }
+            _ => Ok(()),
         }
     }
 
@@ -464,10 +494,15 @@ pub mod durable {
         settled: &Settled,
     ) -> Result<(), String> {
         let body = encode(claim.generation, now, settled);
+        let id = if claim.held {
+            held_record_id(&claim.id, claim.generation)
+        } else {
+            claim.id.clone()
+        };
         store
             .upsert_plane_record(PlaneRecordRef {
                 kind: REPLAY_KIND,
-                id: &claim.id,
+                id: &id,
                 parent: None,
                 seq: 0,
                 ts: now,
