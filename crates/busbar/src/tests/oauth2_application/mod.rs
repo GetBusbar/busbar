@@ -14,6 +14,7 @@ use busbar_kernel::state::App;
 mod plugins;
 
 mod browser;
+mod code_flow_tests;
 mod consent_tests;
 mod directory;
 mod fapi2_tests;
