@@ -1998,6 +1998,36 @@ fn consumed_from_carriers(
 }
 
 #[allow(clippy::result_large_err)]
+async fn ticket_verdict(
+    signed: bool,
+    keys_in_chain: bool,
+    prefix: Option<&str>,
+    token: Option<&str>,
+    gov: Option<&std::sync::Arc<crate::governance::GovState>>,
+    now: u64,
+) -> Result<Option<(ChainVerdict, Vec<u8>)>, ()> {
+    match (!signed, prefix, token) {
+        (true, Some(prefix), Some(token)) if keys_in_chain && token.starts_with(prefix) => {
+            let admitted = match gov {
+                Some(gov) => gov.admit_ticket_async(prefix, token, now).await,
+                None => None,
+            };
+            match admitted {
+                Some((key, record)) => Ok(Some((
+                    ChainVerdict::Identified {
+                        module: crate::config::KEYS_MODULE.to_string(),
+                        principal: principal_from_vkey(&key),
+                        resolved: Some(key),
+                    },
+                    record,
+                ))),
+                None => Err(()),
+            }
+        }
+        _ => Ok(None),
+    }
+}
+
 pub(crate) async fn auth_middleware(
     crate::state::CurrentApp(app): crate::state::CurrentApp,
 
@@ -2285,34 +2315,22 @@ pub(crate) async fn auth_middleware(
         }
     };
 
-    let ticketed = match (
-        signed.is_none(),
+    let ticketed = match ticket_verdict(
+        signed.is_some(),
+        app.auth.keys_in_chain,
         core_routes.door_ticket(&path, req.method()),
         client_token.as_deref(),
-    ) {
-        (true, Some(prefix), Some(token))
-            if app.auth.keys_in_chain && token.starts_with(prefix) =>
-        {
-            let admitted = match app.governance.as_ref() {
-                Some(gov) => {
-                    gov.admit_ticket_async(prefix, token, busbar_kernel::store::now())
-                        .await
-                }
-                None => None,
-            };
-            match admitted {
-                Some((key, record)) => {
-                    consumed.ticket = Some(record);
-                    Some(ChainVerdict::Identified {
-                        module: crate::config::KEYS_MODULE.to_string(),
-                        principal: principal_from_vkey(&key),
-                        resolved: Some(key),
-                    })
-                }
-                None => return Err(unauthorized_response(&app, &path, door.as_ref())),
-            }
+        app.governance.as_ref(),
+        busbar_kernel::store::now(),
+    )
+    .await
+    {
+        Ok(Some((verdict, record))) => {
+            consumed.ticket = Some(record);
+            Some(verdict)
         }
-        _ => None,
+        Ok(None) => None,
+        Err(()) => return Err(unauthorized_response(&app, &path, door.as_ref())),
     };
     let verdict = if let Some(verdict) = signed {
         verdict
