@@ -1,4 +1,5 @@
-//! A per-thread allocation counter, installed only by binaries that declare [`Counting`] as their
+//! Test-only observation of contract allocation counts and owned payload destruction.
+//! Installed by this crate's unit-test binary; never included in the contract API.
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::{Cell, RefCell};
 use std::marker::PhantomData;
@@ -25,7 +26,7 @@ struct LifetimeState {
 /// Allocator metadata from one exact-size observation window. No allocation contents or addresses
 /// are exposed. A unique allocation freed without resizing requires exactly `1`, `1`, and `0`.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct AllocationLifetimeObservations {
+pub(crate) struct AllocationLifetimeObservations {
     /// Successful `alloc` or `alloc_zeroed` calls whose `Layout::size()` exactly matched the size.
     /// Multiple matches invalidate attribution, even if the allocator reused the same address.
     pub allocations: u64,
@@ -44,14 +45,14 @@ pub struct AllocationLifetimeObservations {
 /// The observer never reads payloads, padding, or spare capacity and allocates no bookkeeping.
 /// Allocations and their destruction must occur on this thread to be observed.
 #[derive(Debug)]
-pub struct AllocationLifetimeProbe {
+pub(crate) struct AllocationLifetimeProbe {
     _thread_bound: PhantomData<Rc<()>>,
 }
 
 impl AllocationLifetimeProbe {
     /// Observe allocations whose complete `Layout::size()` equals `size` on this thread.
     #[must_use]
-    pub fn start_exact_size(size: usize) -> Self {
+    pub(crate) fn start_exact_size(size: usize) -> Self {
         assert!(
             size != 0,
             "a lifetime probe requires a nonzero allocation size"
@@ -72,7 +73,7 @@ impl AllocationLifetimeProbe {
 
     /// Disarm the observer and return only allocator metadata for this window.
     #[must_use]
-    pub fn finish(self) -> AllocationLifetimeObservations {
+    pub(crate) fn finish(self) -> AllocationLifetimeObservations {
         LIFETIME.with(|lifetime| lifetime.take().expect("active lifetime probe").observations)
     }
 }
@@ -154,14 +155,14 @@ struct ProbeState {
 
 /// The system allocator, counting every allocation and reallocation on the calling thread.
 #[derive(Debug)]
-pub struct Counting {
+pub(crate) struct Counting {
     _private: (),
 }
 
 impl Counting {
     /// The counter, for a `#[global_allocator]` static.
     #[must_use]
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self { _private: () }
     }
 }
@@ -174,7 +175,7 @@ impl Default for Counting {
 
 /// The destruction of one explicitly registered initialized payload prefix.
 #[derive(Debug)]
-pub struct ObservedPayload {
+pub(crate) struct ObservedPayload {
     address: usize,
     /// The initialized prefix length, excluding spare capacity.
     pub len: usize,
@@ -194,7 +195,7 @@ pub struct ObservedPayload {
 
 /// The complete observation scope, including allocator reentry during an OS read.
 #[derive(Debug)]
-pub struct PayloadObservations {
+pub(crate) struct PayloadObservations {
     /// Every explicitly registered allocation, including those not freed in the scope.
     pub payloads: Vec<ObservedPayload>,
     /// Whether the OS reader reentered the allocator. A true value invalidates memory proof.
@@ -203,7 +204,7 @@ pub struct PayloadObservations {
 
 /// A thread-bound observation scope. Dropping it disarms observation, including on panic.
 #[derive(Debug)]
-pub struct InitializedPayloadProbe {
+pub(crate) struct InitializedPayloadProbe {
     _thread_bound: PhantomData<Rc<()>>,
 }
 
@@ -225,7 +226,7 @@ impl InitializedPayloadProbe {
     /// On Linux, opening `/proc/self/mem` must succeed before observation is armed. Other platforms
     /// still record registrations and frees, but report `Unsupported` instead of memory proof.
     #[allow(unsafe_code)]
-    pub unsafe fn start() -> std::io::Result<Self> {
+    pub(crate) unsafe fn start() -> std::io::Result<Self> {
         #[cfg(target_os = "linux")]
         let memory = File::open("/proc/self/mem")?;
         PAYLOADS.with(|payloads| {
@@ -245,7 +246,7 @@ impl InitializedPayloadProbe {
 
     /// End observation and return the registered payloads and their destruction results.
     #[must_use]
-    pub fn finish(self) -> PayloadObservations {
+    pub(crate) fn finish(self) -> PayloadObservations {
         let state =
             PAYLOADS.with(|payloads| payloads.borrow_mut().take().expect("active payload probe"));
         PayloadObservations {
@@ -270,7 +271,7 @@ impl Drop for InitializedPayloadProbe {
 /// `bytes` must start at the base of a live allocation. Its bytes must remain initialized and
 /// exclusively owned until that allocation is freed on this thread or the active probe ends.
 #[allow(unsafe_code)]
-pub unsafe fn watch_initialized_payload(bytes: &[u8]) {
+pub(crate) unsafe fn watch_initialized_payload(bytes: &[u8]) {
     if bytes.is_empty() {
         return;
     }
@@ -457,22 +458,22 @@ unsafe impl GlobalAlloc for Counting {
 
 /// Allocations counted on THIS thread since it started or last [`reset`].
 #[must_use]
-pub fn allocations() -> u64 {
+pub(crate) fn allocations() -> u64 {
     ALLOCS.with(Cell::get)
 }
 
 /// Zero this thread's counter, returning what it held.
-pub fn reset() -> u64 {
+pub(crate) fn reset() -> u64 {
     ALLOCS.with(|c| c.replace(0))
 }
 
 /// How many allocations `f` made on this thread.
-pub fn allocations_of(f: impl FnOnce()) -> u64 {
+pub(crate) fn allocations_of(f: impl FnOnce()) -> u64 {
     allocations_with(f).0
 }
 
 /// How many allocations `f` made on this thread, and what it returned.
-pub fn allocations_with<R>(f: impl FnOnce() -> R) -> (u64, R) {
+pub(crate) fn allocations_with<R>(f: impl FnOnce() -> R) -> (u64, R) {
     let before = allocations();
     let r = f();
     (allocations() - before, r)
@@ -480,5 +481,5 @@ pub fn allocations_with<R>(f: impl FnOnce() -> R) -> (u64, R) {
 
 #[cfg(test)]
 #[allow(unsafe_code)]
-#[path = "tests/alloc_counter_tests.rs"]
+#[path = "allocation_observer_tests.rs"]
 mod tests;

@@ -10,6 +10,79 @@ mod fanout_waker_tests;
 #[path = "pool_retirement_tests.rs"]
 mod pool_retirement_tests;
 
+// These four listener/target diagnostic tests inspect actual connector events on their own
+// thread. Keep their dispatchers serialized while tracing rebuilds its callsite interest cache.
+static DIAGNOSTICS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[derive(Clone)]
+struct ConnectorDiagnostics {
+    level: tracing::Level,
+    events: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl ConnectorDiagnostics {
+    fn new(level: tracing::Level) -> Self {
+        Self {
+            level,
+            events: Arc::default(),
+        }
+    }
+
+    fn messages(&self) -> Vec<String> {
+        self.events.lock().unwrap().clone()
+    }
+
+    fn contains(&self, text: &str) -> bool {
+        self.events.lock().unwrap().iter().any(|s| s.contains(text))
+    }
+
+    fn count(&self, text: &str) -> usize {
+        self.events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| s.contains(text))
+            .count()
+    }
+}
+
+impl tracing::Subscriber for ConnectorDiagnostics {
+    fn register_callsite(
+        &self,
+        _: &'static tracing::Metadata<'static>,
+    ) -> tracing::subscriber::Interest {
+        // Keep diagnostic callsites available even when another test first visits one.
+        tracing::subscriber::Interest::always()
+    }
+
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+
+    fn event(&self, event: &tracing::Event<'_>) {
+        if *event.metadata().level() > self.level {
+            return;
+        }
+        struct Fields(String);
+        impl tracing::field::Visit for Fields {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                use std::fmt::Write;
+                write!(&mut self.0, "{}={value:?} ", field.name()).unwrap();
+            }
+        }
+        let mut fields = Fields(String::new());
+        event.record(&mut fields);
+        self.events.lock().unwrap().push(fields.0);
+    }
+}
+
 const OWNER: InstanceId = InstanceId(1);
 const OTHER: InstanceId = InstanceId(2);
 
@@ -1599,7 +1672,8 @@ fn a_configured_mint_endpoint_takes_loopback_plaintext_and_nothing_else_in_plain
 
 #[test]
 fn a_host_bind_failure_keeps_its_cause_without_echoing_the_configured_input() {
-    let cap = crate::warn_capture::WarnCapture::default();
+    let _diagnostics = DIAGNOSTICS.lock().unwrap_or_else(|e| e.into_inner());
+    let cap = ConnectorDiagnostics::new(tracing::Level::WARN);
     tracing::subscriber::with_default(cap.clone(), || {
         worker().block_on(async {
             let c = literal_connector();
@@ -1631,7 +1705,8 @@ fn a_host_bind_failure_keeps_its_cause_without_echoing_the_configured_input() {
 #[cfg(unix)]
 #[test]
 fn an_address_in_use_keeps_the_actual_host_os_cause() {
-    let cap = crate::warn_capture::WarnCapture::default();
+    let _diagnostics = DIAGNOSTICS.lock().unwrap_or_else(|e| e.into_inner());
+    let cap = ConnectorDiagnostics::new(tracing::Level::WARN);
     tracing::subscriber::with_default(cap.clone(), || {
         worker().block_on(async {
             let occupied = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1693,7 +1768,8 @@ impl FramerDoor for FailingBindCarrier {
 
 #[test]
 fn a_carrier_bind_failure_identifies_the_need_without_printing_its_failure_text() {
-    let cap = crate::warn_capture::WarnCapture::default();
+    let _diagnostics = DIAGNOSTICS.lock().unwrap_or_else(|e| e.into_inner());
+    let cap = ConnectorDiagnostics::new(tracing::Level::WARN);
     tracing::subscriber::with_default(cap.clone(), || {
         worker().block_on(async {
             let view = Transports::new(vec![Entry {
@@ -2014,7 +2090,8 @@ fn a_target_not_from_its_own_settings_carrying_a_userinfo_is_still_refused() {
 fn a_settings_derived_target_is_declared_without_its_userinfo() {
     const USER: &str = "the-user";
     const SECRET: &str = "s3cret-pw";
-    let cap = crate::warn_capture::WarnCapture::capturing_debug();
+    let _diagnostics = DIAGNOSTICS.lock().unwrap_or_else(|e| e.into_inner());
+    let cap = ConnectorDiagnostics::new(tracing::Level::DEBUG);
     let mut said: Vec<String> = Vec::new();
     tracing::subscriber::with_default(cap.clone(), || {
         worker().block_on(async {

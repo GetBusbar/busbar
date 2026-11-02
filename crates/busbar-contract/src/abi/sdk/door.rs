@@ -822,8 +822,7 @@ pub type RawDoorFn = extern "C" fn() -> *const Door;
 /// its backing storage.
 /// THE SAFE SURFACE OF THE MACRO DOOR, PROVED IN PAIRS. Each `compile_fail` below has a twin that
 /// differs from it in the one forbidden spelling and MUST compile, so the failure is the guard's
-/// and nothing else's (stable rustdoc checks no error code). The test support's own pairs
-/// (`DoorView`, the fake host) are on `busbar_test_kit::test_support`.
+/// and nothing else's (stable rustdoc checks no error code).
 ///
 /// A literal is refused (its field is private); the macro's own value is not:
 ///
@@ -1205,8 +1204,7 @@ macro_rules! plugin_door {
             __DOOR
         }
 
-        /// This plugin's door as the door macro built it: the one value the contract's test
-        /// support (`busbar_test_kit::test_support::DoorView`) reads a door through.
+        /// This plugin's door as the door macro built it.
         #[allow(dead_code)]
         pub const MACRO_DOOR: $crate::abi::sdk::door::MacroDoor =
             // SAFETY: `door` is the function this macro expanded just above: it answers the
