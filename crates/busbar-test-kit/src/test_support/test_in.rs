@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A SLOT'S `in`, BUILT FOR A TEST AND BORROWING WHAT IT NAMES. An `in` struct
-//! keeps its fields pub for the host, so a hand-built one can name any pointer; once #1471 lands,
-//! [`reply::call`] does not take one. It takes a [`TestIn<'a, I>`], which only this module makes
-//! (here first, so a test builds its `in` this way before the switch): it starts all
-//! zero (every pointer NULL, every list empty) and each builder sets a pointer only over memory
-//! borrowed for `'a` (a string, a payload, a list, a buffer, a nested `in` built the same way) or
-//! held by the `TestIn` itself. So every pointer the slot receives is live for the whole call, and
-//! the `TestIn` cannot outlive the bytes it names.
+//! A slot's input built for a test owns or borrows everything it names. Only this module constructs [`TestIn<'a, I>`]. It starts zeroed, with null pointers and empty lists. Each builder then points only to memory borrowed for `'a` or held by the `TestIn` itself, including strings, payloads, lists, buffers, and nested inputs. The safe typed crossing uses this backing information so no input pointer outlives its storage.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 //!
 //! ```
 //! use busbar_contract::abi::mechanism::lifecycle::OpenIn;
@@ -113,9 +113,9 @@ settled!(
     busbar_contract::abi::secret::CheckIn => settings,
 );
 
-/// A slot's `in` built for a test: every pointer in it borrows memory that lives for `'a`, or is
-/// held by the `TestIn` itself. Only this module makes one; [`super::reply::call`] takes it once
-/// #1471 lands.
+/// A test input whose pointers borrow memory for `'a` or name backing held by the `TestIn` itself. Only this module constructs it; safe typed crossings validate that backing.
+///
+///
 #[derive(Debug)]
 pub struct TestIn<'a, I> {
     pub(crate) input: I,

@@ -487,10 +487,10 @@ pub fn call_in<'h, I: AbiIn, O: Reply>(
     )
 }
 
-/// [`call_in`] over an `open` `in` a [`FakeHost`](super::fake::FakeHost) lent its tables to
-/// ([`FakeHost::lend_in`](super::fake::FakeHost::lend_in)): the borrow of the host and of every
-/// byte the `in` names lasts the whole call. #1471 states its `call_hosted` as this, under this
-/// name too.
+/// [`call_in`] over an open input whose tables are lent by a [`FakeHost`](super::fake::FakeHost) through [`FakeHost::lend_in`](super::fake::FakeHost::lend_in). Both the host borrow and every input-byte borrow last for the entire call.
+///
+///
+///
 ///
 /// # Panics
 ///

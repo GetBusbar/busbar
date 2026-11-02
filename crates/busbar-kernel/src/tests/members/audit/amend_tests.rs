@@ -392,9 +392,9 @@ fn the_sealed_digest_of_an_amendment_is_the_frozen_hex() {
          the encoding; do not re-capture this constant."
     );
     assert_eq!(
-        // RE-DERIVED, NOT RE-CAPTURED (item 404, owner ruling Q9): the adjustment's shape changed from
+        // Independently derived amendment digest. The adjustment's shape changed from
         // one money figure to counts per class plus the card epoch, and at that change NO adjustment
-        // had ever been sealed in production (the item's own measurement: zero construction sites),
+        // had ever been sealed in production (zero production construction sites),
         // so no stored correction carries the previous encoding. The value is computed independently
         // of this crate, by hashing the length-prefixed framing of the fixture by hand
         // (`amend_digest.py`, at 6fac14e479 in busbar-kernel-audit's tests/, which also reproduces the

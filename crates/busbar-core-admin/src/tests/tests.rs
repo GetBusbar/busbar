@@ -4758,9 +4758,9 @@ async fn test_admin_v1_config_effective_snapshot_no_secrets() {
 /// document the node actually SERVES (`GET /openapi.json`, every plane configured so nothing is
 /// filtered out) — never a hand-kept list of paths.
 ///
-/// It used to walk the 14-entry `V1_GET_PATHS` constant, so every non-GET verb, every named-map
-/// section route and every plane trust verb had no proof it resolved, and nothing checked that the
-/// router serves nothing the document omits. Now:
+/// The test checks that every documented operation resolves on its method, including named-map section routes and plane trust verbs, and that the router exposes no undocumented operation:
+///
+///
 ///
 /// 1. DOCUMENT → ROUTER: every documented `(method, path)` this crate's router answers is asked
 ///    live, and must answer neither the router's unmatched-path fallback nor a 405 — and the status

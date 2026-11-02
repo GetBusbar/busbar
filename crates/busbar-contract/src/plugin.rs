@@ -220,13 +220,13 @@ pub trait Plugin: Send + Sync + 'static {
 /// constructors take a reference to one, the capability crate's tokens implement it, and a plugin
 /// crate cannot name that crate at all under the manifest allow-list.
 ///
-/// **This trait is SEALED** (#65). It is implementable only by the capability tokens in
-/// [`crate::caps::token`], because its supertrait [`sealed::KernelSealed`] lives in a `pub(crate)`
-/// module: a crate outside this one cannot name that trait, and what cannot be named cannot be
-/// implemented. The earlier text here claimed sealing was impossible because "the capability crate
-/// sits ABOVE this one" — that was true when the tokens lived in a separate crate. They do not:
-/// `caps` is a MODULE of this crate, so the ordinary private-supertrait pattern reaches them and
-/// locks everyone else out. The claim below is now the type system's, not a scan's.
+/// This trait is sealed to the capability tokens in [`crate::caps::token`]. Its supertrait [`sealed::KernelSealed`] is in a private module, so external crates cannot name or implement it. The capability tokens live in this crate's `caps` module and can implement that private supertrait.
+///
+///
+///
+///
+///
+///
 ///
 /// So the populations collapse to one rule:
 ///
@@ -290,10 +290,10 @@ pub trait KernelSeal: sealed::KernelSealed {
 ///   this workspace turns that feature on**. In a release build this type does not exist, so
 ///   nothing shipped can name it.
 /// - A crate must opt in LOUDLY, in its own `[dev-dependencies]`, under a feature whose name says
-///   what it is. That is an edit a reviewer sees, unlike the old `struct FakeSeal; impl KernelSeal
-///   for FakeSeal` which any file could write silently.
+///   what it is. This keeps the dev-only construction opt-in explicit.
 /// - The trait stays sealed. This is one more in-crate implementor, not a re-opened trait: an
 ///   outside crate still cannot implement [`KernelSeal`], with or without the feature.
+///
 ///
 /// The TYPE is declared here so a plane can NAME it (`busbar_contract::plugin::TestKernelSeal`);
 /// its two `impl` blocks live in [`crate::caps::token`] with every other implementor of this

@@ -1,10 +1,10 @@
 //! THE ADMIN REQUEST CHAIN, END TO END, WITH NO PLANE ENTRY FACE ANYWHERE ON IT.
 //!
-//! `busbar-core-admin` used to carry an `impl Plane for AdminPlane`. It is gone: a `Plane` is how
-//! TRAFFIC enters the dispatch loop, and the administrative surface serves OPERATORS, on its own
-//! listener (#3/#5 — admin is a compiled-in cleanliness crate, not a plugin, and there is no
-//! `control` kind; #83 def 11 — "the operator-facing verbs and their HTTP/OpenAPI surface. Serves
-//! operators, never traffic").
+//! The administrative surface serves operators on its own listener. It is a compiled-in core-admin surface, not a plugin or traffic `Plane`, and there is no `control` kind.
+//!
+//!
+//!
+//!
 //!
 //! Nothing ever dispatched through that face. The chain an administrative request actually takes,
 //! which is what this file drives:

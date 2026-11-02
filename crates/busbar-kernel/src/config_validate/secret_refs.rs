@@ -16,13 +16,13 @@ use busbar_contract::plugin_rows::PluginRows;
 /// module-existence check in `registry_refusal` (deferred until the plugin registry exists)
 /// both walk this list, so a new secret-bearing field is covered by both the moment it is added here.
 ///
-/// THIS FUNCTION USED TO FAIL OPEN. It was a hand-written list of config paths, and a secret-bearing
-/// field that nobody remembered to add here was SILENTLY SKIPPED: no compile error, no test failure,
-/// and `--validate` printed `ok: config valid` for a config whose credential could not resolve.
-/// That was not hypothetical. `identity-providers.<name>.browser_login.client_secret` (a confidential
-/// client secret the core itself presents during a code-to-token exchange) had been
-/// absent from the list since the block was introduced, so a deployment whose confidential-client
-/// secret env var was unset was told its config was good and then failed every hosted login at runtime.
+/// Every secret-bearing config field must be visited by credential validation. A missing reference must fail validation before runtime, including `identity-providers.<name>.browser_login.client_secret`, which the core presents during confidential-client code-to-token exchange. Exhaustive typed traversal prevents a field from being silently skipped by a hand-maintained path list.
+///
+///
+///
+///
+///
+///
 ///
 /// TWO LAYERS NOW MAKE OMISSION IMPOSSIBLE RATHER THAN REMEMBERED, because each layer catches a
 /// different way of introducing one:

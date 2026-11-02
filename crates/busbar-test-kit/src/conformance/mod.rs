@@ -2573,9 +2573,9 @@ pub fn profile(debug: bool) {
     );
 }
 
-/// THE DOOR A SUITE NAMES, as either form a plugin states it: its
-/// `door` function, or the `MACRO_DOOR` `plugin_door!` expands beside it. #1469 makes the suite take the `MacroDoor` alone; a plugin moves to `door:
-/// plugin::MACRO_DOOR` first, and the same line compiles before and after.
+/// A suite accepts either a plugin's `door` function or the `MACRO_DOOR` produced beside it by `plugin_door!`.
+///
+///
 ///
 /// The two forms are told apart by method resolution: a `MacroDoor` answers its door function by
 /// value (`MacroDoorArg`); any other value (a door function) answers itself through a reference
@@ -2652,7 +2652,7 @@ macro_rules! conformance_suite {
         $crate::conformance_suite!(@tests);
     };
     // A door named by a `LoadedDoor` (a crate that exports its `door` function alone restates it:
-    // `loaded: unsafe { LoadedDoor::from_raw(plugin::door) }`), the name #1469 keeps.
+    // `loaded: unsafe { LoadedDoor::from_raw(plugin::door) }`).
     (
         loaded: $loaded:expr,
         cdylib: $cdylib:expr,

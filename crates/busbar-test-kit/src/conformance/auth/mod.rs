@@ -6,9 +6,9 @@
 //! one declaring `CAP_INBOUND` or `CAP_LOGIN` by this one, one declaring `CAP_OUTBOUND` by the
 //! outbound one, one declaring both by both (each then skips the other family's "undeclared" steps).
 //!
-//! THE INBOUND AND LOGIN SCRIPT. Ported from the auth both-ways proofs (#439's
-//! `auth_door_conformance_tests`, the predev `auth_verify_conformance_tests`, and the token cases of
-//! the static-token verifier's own conformance test), over the one loader and the one dispatcher.
+//! The inbound and login conformance script runs over the loader and dispatcher.
+//!
+//!
 //!
 //! The script drives the INBOUND family, `verify`, the way the host's identity chain calls it
 //! (`busbar_contract::auth_calls::AuthCalls`): ON THE SPOT (ticket-less, on the caller's thread),

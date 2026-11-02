@@ -258,13 +258,13 @@ pub fn sole_of(names: &'static [&'static str]) -> Option<&'static str> {
 ///
 /// ## WHY A PLANE MAY CLAIM MORE THAN ONE PATH
 ///
-/// A plane's paths used to be one `Option<String>` each, which was right while every plane spoke one
-/// binding over one channel. A plane with a second binding broke that, and not by preference: a
-/// client for that second binding derives the request path from its own service description and
-/// can be handed nothing else — it takes an AUTHORITY, never a path prefix — so that binding is
-/// served at its own dedicated path and cannot be served under the plane's primary mount. (The
-/// primary binding needed no second claim: its paths hang under the plane's own mount, which the
-/// first claim already covers at a segment boundary.)
+/// A plane can serve multiple bindings at distinct paths. A client that derives a secondary binding's path from its service description takes an authority, not an arbitrary path prefix, so that binding requires its own dedicated path. The primary binding's paths remain under the plane's mount and are covered by its first segment-boundary claim.
+///
+///
+///
+///
+///
+///
 ///
 /// The alternative was to leave that path unclaimed, and it is worth naming what that would have
 /// cost, because it is a security property rather than a tidiness one: [`Self::admission_for`]
@@ -278,14 +278,14 @@ pub fn sole_of(names: &'static [&'static str]) -> Option<&'static str> {
 ///
 /// ## Why the table is keyed by plane KEY rather than by a typed field per plane
 ///
-/// It used to be a fixed set of typed fields, one per plane plus an admission each, and that was
-/// the same closed set the `Plane` enum is: a plane not named here could not be dispatched, no
-/// matter who linked what. The claims and admission a plane contributes are now DATA, folded in
-/// from each plane's [`registry::PlaneDecl`] against that plane's own runtime object, so a plane
-/// extracted to a crate registers its door the same way it registers its vocabulary. The map is
-/// keyed by the plane's own registry key — the one stable string every other plane surface is
-/// already keyed by — so a registered plane with no enum variant still has exactly one row here
-/// and exactly one audience.
+/// Each plane contributes claims and admission data from its [`registry::PlaneDecl`], folded against that plane's runtime object. The map uses the plane's registry key, so every registered plane has one row and one audience without needing an enum variant or per-plane typed fields.
+///
+///
+///
+///
+///
+///
+///
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PlaneDispatch {
     /// The paths each plane answers on, keyed by plane key, canonical claim first. A key is present

@@ -127,9 +127,6 @@ fn a_leased_string_is_held_until_release_and_named_in_the_head() {
     );
 }
 
-/// RED (REVIEWER's MEDIUM): an answer that leases twice names ONE lease, and the host's one
-/// release of it frees both; across N requests nothing is left held. Overwriting `head.lease`
-/// instead of chaining leaves one orphaned part per request.
 #[test]
 fn an_answer_that_leases_twice_is_freed_by_its_one_release_across_requests() {
     let leases = Leases::default();

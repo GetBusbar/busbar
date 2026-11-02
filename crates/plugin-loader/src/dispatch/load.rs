@@ -127,11 +127,11 @@ impl LinkedRow {
     }
 }
 
-/// A DOOR THE LOADER MAY ENTER: a [`MacroDoor`] the contract's macro
-/// built, or a door a test or harness restates by hand through the `unsafe`
-/// [`LoadedDoor::from_raw`]. #1469 makes [`LinkedRow::of`] take the `MacroDoor` alone and keeps
-/// this type for the rest; a hand-built door reaches a row through `LinkedRow::of_loaded(unsafe {
-/// LoadedDoor::from_raw(door) })` before and after.
+/// A door the loader may enter: either a [`MacroDoor`] built by the contract macro, or a door restated explicitly by a test or harness through unsafe [`LoadedDoor::from_raw`]. A hand-built door reaches a linked row through `LinkedRow::of_loaded(unsafe { LoadedDoor::from_raw(door) })`.
+///
+///
+///
+///
 ///
 /// [`MacroDoor`]: busbar_contract::abi::sdk::door::MacroDoor
 #[derive(Debug, Clone, Copy)]

@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! `SecretRef` — the SECRET REFERENCE type, extracted out of `busbar`'s crate-private
-//! `crates/busbar-core/src/config/secret.rs` into its own tiny crate, and since merged into the
-//! contract (DECISIONS #83: contract = shapes). It is the ONE `SecretRef`: the placeholder
-//! `kinds::SecretRef(String)` the secret kind's trait used to take is gone, and a secret plugin
-//! resolves this type.
+//! `SecretRef` is the shared secret-reference type in the contract. Secret plugins resolve this type.
+//!
+//!
+//!
+//!
 //!
 //! Every secret/external value in busbar config is `{ module: <secret-module>, settings: {…} }` — a
 //! reference to a SECRET MODULE (`kind: secret` plugin), never the secret itself. The built-in
@@ -19,15 +19,15 @@
 //! cert:    { file: /run/secrets/tls-cert.pem } # ⇒ { module: file, settings: { path: /run/secrets/tls-cert.pem } }
 //! ```
 //!
-//! **Why this left the binary.** `SecretRef` used to live `pub(crate)` inside the `busbar` binary
-//! crate — unreachable from `busbar-plugin-pack` or any future schema-generation tooling. The
-//! `x-busbar-secret` schema vocabulary entry's `oneOf` (the reference shape busbar-ui composes for a
-//! secret field) must be generated FROM this real type, not hand-written as a parallel copy that can
-//! drift from the actual deserializer. [`oneof_schema`] is that derivation, straight from the same
-//! `Deserialize` impl `busbar`'s engine uses to parse a live config. The two are written by hand
-//! against each other, not generated one from the other, so what actually keeps them in step is the
-//! round-trip test that runs the same table of shapes through both and demands the same verdict —
-//! the drift it caught first was a whitespace-only value the schema accepted and the visitor did not.
+//! The `x-busbar-secret` schema entry's `oneOf` describes this real reference type for busbar-ui and other schema consumers. [`oneof_schema`] and the `Deserialize` implementation are written against the same shape vocabulary. A round-trip test runs the same input table through both and requires identical verdicts, including rejection of whitespace-only values, to prevent a hand-written schema from drifting from the live config parser.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 //!
 //! `{ literal: <value> }` (the escape hatch for a plugin whose own legitimately-shaped config field
 //! collides with a reference shape) is **not** part of `SecretRef` and never was — it is handled one

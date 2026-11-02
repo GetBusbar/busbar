@@ -157,8 +157,8 @@ impl AbiStr {
     }
 }
 
-/// HOW AN `AbiStr` IS MADE AND READ, through methods rather than its pointer and
-/// length fields, which #1471 makes private:
+/// Construct and read an `AbiStr` through its methods rather than its pointer and length fields:
+///
 ///
 /// * [`AbiStr::of`] / [`AbiStr::of_bytes`] — memory that lives for the program (a Statement's
 ///   strings, a row's, a `'static` answer);

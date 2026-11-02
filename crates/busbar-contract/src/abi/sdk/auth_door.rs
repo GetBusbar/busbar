@@ -270,10 +270,10 @@ pub const fn strip_field(name: &'static str) -> Strip {
     }
 }
 
-/// `VerifyOp` over the host services a real host's `open` handed. #1471 ties
-/// `VerifyOp` to the tables its services were read from (`VerifyOp<'t>`) and states this alias as
-/// `VerifyOp<'static>`; a plugin names it where it names the op's type, and the same spelling
-/// compiles before and after.
+/// `VerifyOp` over the host services supplied by the instance's `open`; a plugin can use this alias where it names the operation type.
+///
+///
+///
 pub type StaticVerifyOp = VerifyOp;
 
 /// ONE `verify`'S HOST CALLS, on its ticket: what [`VerifyPlugin::verify_ticketed`] is handed. Each

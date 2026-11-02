@@ -23,15 +23,15 @@
 // the unverified receipt defaults only on the final dist/default executable compiler invocation,
 // using resolved rustc argv for LTO/codegen units and Git source identity at that invocation.
 // PGO IS DETECTED ONE WAY, AND ONLY ONE: the `-Cprofile-use` flag appearing in
-// CARGO_ENCODED_RUSTFLAGS — the flags cargo ACTUALLY applied. It used to be an OR with an explicit
-// `BUSBAR_PGO=1` env var, described here as "belt and suspenders"; that description went stale.
-// scripts/pgo-build.sh (see its note above the optimized build) stopped exporting BUSBAR_PGO
-// precisely so the stamp would be the COMPILER's account of what it was given rather than a build
-// script's account of what it meant to send, and no shipping path has set it since. What was left
-// was an escape hatch nothing used and nothing validated: `BUSBAR_PGO=1 cargo build --release`
-// produced a binary self-reporting `pgo=true` with no profile data anywhere near it, which is
-// EXACTLY the misdiagnosis this whole file exists to make impossible. A plain
-// `cargo build --release` carries no -Cprofile-use, so it reports `pgo=false` — the whole point.
+// CARGO_ENCODED_RUSTFLAGS, the effective compiler flags, is the sole PGO source.
+// An environment hint cannot attest that profile data reached the compiler.
+// A plain release build without -Cprofile-use therefore reports pgo=false.
+//
+//
+//
+//
+//
+//
 //
 // The derivation itself lives in src/build_stamp.rs, `include!`d below and mounted by main.rs under
 // `#[cfg(test)]`, so the functions that decide what the stamp says are unit-testable rather than

@@ -384,16 +384,16 @@ fn test_translation_bank_counts_known_protocol_pair() {
 /// THE CLASS INVARIANT: an observation costs BOUNDED memory whether or not anyone ever scrapes
 /// `/metrics`, and the memory it does cost is RELEASED once the traffic stops.
 ///
-/// REGRESSION THIS PINS. Both buffering layers on the way from a per-request observation to its
-/// aggregate form — the bank's per-thread sample `Vec` and, behind it,
-/// `metrics-exporter-prometheus`'s `AtomicBucket` of raw `(value, timestamp)` pairs — used to be
-/// drained ONLY inside `metrics::render()`, i.e. only when a scrape arrived. A gateway nobody
-/// scrapes therefore parked ~24 B per request FOREVER. Measured on the released 1.4.1 image under a
-/// fixed load, peak RSS grew strictly linearly with total requests served — 2.16 M requests →
-/// +60 MiB, 4.58 M → +113 MiB, 9.32 M → +212 MiB, 18.13 M → +389 MiB — with no plateau at any
-/// duration, and only ~8% given back after the load stopped, because the samples were LIVE data that
-/// no allocator could reclaim. The same binary scraped every 10 s peaked at 46.8 MiB and fell to
-/// 22.7 MiB, which isolates the drain as the only variable.
+/// Per-request observations must be drained into bounded aggregates even when no metrics scrape arrives. Both the bank's per-thread sample `Vec` and the exporter's `AtomicBucket` of raw `(value, timestamp)` pairs need an independent drain; retaining either raw-sample layer would let memory grow with total requests instead of reaching a plateau. The test exercises that unscripted-scrape case.
+///
+///
+///
+///
+///
+///
+///
+///
+///
 ///
 /// WHAT IT ASSERTS — the benchmark's own shape, not a ceiling. A ceiling assertion ("stayed under
 /// N MiB") would pass on a build that plateaus high and never recovers, which is the reported bug.

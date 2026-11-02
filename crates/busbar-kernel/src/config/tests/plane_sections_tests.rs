@@ -3,8 +3,8 @@
 
 //! THE ONE PARSE-TIME PLANE-BOUNDARY RULE, and the proof that it is one.
 //!
-//! Two questions are asked here, and each of them used to be unanswerable because the rule
-//! existed twice:
+//! This module checks two properties:
+//!
 //!
 //!   1. Is the section list DERIVED, and is there exactly one of it? A list written twice agrees
 //!      only by accident, and the accident ends the day somebody adds a section.

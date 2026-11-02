@@ -69,9 +69,6 @@ fn the_nano_scale_keeps_sub_micro_precision() {
     );
 }
 
-/// A lane a present card does not name REFUSES (#42, items 25/31). This derivation used to SKIP the
-/// lane — a million tokens derived as nothing, "the designed behaviour" — which is the silent zero
-/// #42 confines to a card that is ABSENT. It is the one function now, and the one function refuses.
 #[test]
 fn an_unknown_lane_with_a_card_is_unpriced_and_refuses() {
     let c = card("lane-5", 1.0, 1.0, 0);
@@ -105,9 +102,6 @@ fn repricing_on_read_recomputes_the_derived_spend() {
     );
 }
 
-/// A total past the top of the range REFUSES (item 28). It used to pin at `i64::MAX` — never
-/// wrapping toward free, which was right, but billing a ceiling nobody consumed, which is a wrong
-/// bill wearing a right bill's clothes. Neither a wrap nor a pin: `Err(Overflow)`.
 #[test]
 fn the_derivation_refuses_an_overflow_and_never_pins_or_wraps() {
     let c = card("m", 1e15, 0.0, 0);

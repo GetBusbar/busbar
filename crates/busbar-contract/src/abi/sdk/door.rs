@@ -1016,11 +1016,11 @@ impl MacroDoor {
     ///
     /// # Safety
     ///
-    /// `door` answers a pointer to a `'static`, fully initialised `Door` the SDK built (the `const`
-    /// items [`plugin_door!`](crate::plugin_door) lays out), whose Statement lists point at their
-    /// stated counts of live `'static` entries. That last part is the content of the Statement the
-    /// macro's caller wrote as its own `const` data; the ABI does not yet enforce it, and the root
-    /// unsafe-ABI change on branch `lane-row159-abi-unsafe-fn` closes it.
+    /// `door` answers a pointer to a fully initialized static `Door` built by the SDK, using the const items laid out by [`plugin_door!`](crate::plugin_door). Its Statement lists must point to their stated counts of live static entries. The macro caller supplies that const data and must ensure these counts match their backing storage; the ABI does not enforce this obligation.
+    ///
+    ///
+    ///
+    ///
     #[doc(hidden)]
     #[must_use]
     pub const unsafe fn __from_door_macro(door: DoorFn) -> Self {
@@ -1037,13 +1037,13 @@ impl MacroDoor {
 /// THE DOOR MACRO. The door, Statement and table are `const` items: `'static`, but Rust does not
 /// promise one address per `const`, so a host compares a door's contents, never its address.
 ///
-/// Beside `door` it expands `MACRO_DOOR`, the [`MacroDoor`] the contract's test support reads the
-/// door through. The `statement` it is given is the caller's own `const` data: its lists, strings,
-/// blobs and kind tail are stated through the ABI's public pointer/length fields, which the
-/// root unsafe-ABI change on branch `lane-row159-abi-unsafe-fn` puts behind `const` constructors
-/// from `'static` slices and strs.
-/// Invoked once, in a plugin's LOGIC crate; expands there to
-/// `pub extern "C" fn door() -> &'static Door` over a `'static` door, Statement and ops table.
+/// Beside `door`, this macro expands `MACRO_DOOR`, the [`MacroDoor`] used by the contract's test support. The caller supplies the const Statement, including its lists, strings, blobs, and kind tail through the ABI's pointer/length fields, and must keep their backing valid. Invoke it once in a plugin's logic crate; it expands to `pub extern "C" fn door() -> &'static Door` over a static door, Statement, and operation table.
+///
+///
+///
+///
+///
+///
 ///
 /// ```ignore
 /// busbar_contract::plugin_door! {

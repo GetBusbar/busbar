@@ -2091,8 +2091,6 @@ fn a_perturbed_auth_golden_line_fails_the_comparator() {
     assert!(err.contains("AuthOps.fields=112"), "{err}");
 }
 
-/// RED ARM (M3-SHAPES, secret B.2): a perturbed `ResolveOut.error_kind` offset fails the
-/// comparator.
 #[test]
 fn a_perturbed_secret_golden_line_fails_the_comparator() {
     let actual = compute_layout();
@@ -2103,7 +2101,6 @@ fn a_perturbed_secret_golden_line_fails_the_comparator() {
     assert!(err.contains("SecretResolveOut.error_kind=124"), "{err}");
 }
 
-/// RED ARM (M3-SHAPES, export B.5): a perturbed `DeliverIn.batch` offset fails the comparator.
 #[test]
 fn a_perturbed_export_golden_line_fails_the_comparator() {
     let actual = compute_layout();
@@ -2114,8 +2111,6 @@ fn a_perturbed_export_golden_line_fails_the_comparator() {
     assert!(err.contains("ExportDeliverIn.batch=120"), "{err}");
 }
 
-/// RED ARM (M3-SHAPES, hook B.4): a perturbed `DecideOut.order_written` offset fails the
-/// comparator.
 #[test]
 fn a_perturbed_hook_golden_line_fails_the_comparator() {
     let actual = compute_layout();

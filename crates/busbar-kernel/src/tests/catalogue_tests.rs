@@ -9,7 +9,7 @@
 //!    data-exposure surface. Each rule this module owns — the fail-closed floor, the
 //!    entitlement-before-fitness ordering, the inventory order, the render-after-filter rule — is
 //!    produced HERE by actually violating it, so a rule that stopped being applied is named by the
-//!    failure rather than left to a reviewer. Every one was blinded singly and observed RED.
+//!    failure rather than left to manual review.
 //!
 //!    The entitlement DECISION itself is not tested here, because it is not this module's: it
 //!    belongs to `crate::trust::validate`, which has its own battery. What IS tested here is that

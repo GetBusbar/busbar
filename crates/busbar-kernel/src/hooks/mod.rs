@@ -135,13 +135,13 @@ pub struct HookEnv {
     /// Declared paths read once outside cache admission. Reading a linked row's Statement may
     /// invoke its door, so the cache key must consult this snapshot instead of the registry.
     resolution_paths: Arc<resolution::Paths>,
-    /// The secret resolver used to turn any SecretRef-typed hook setting (e.g. a `licenseKey`) into
-    /// its raw value BEFORE the settings cross the ABI at open/configure (ADR-0010). Shared with the
-    /// store/auth open paths; the same fail-closed resolver. Held behind the NEUTRAL
-    /// [`busbar_contract::secret::SecretResolve`] trait — not the engine's concrete `config::secret::SecretResolver`
-    /// — so `hooks` no longer names a `busbar-core::config` type (DECISION #19: busbar-core dissolves).
-    /// The concrete resolver impls the trait (same crate), so the wiring hands the identical instance;
-    /// only the static type at this boundary is narrowed (DECISION #9: byte-identity, behavior identical).
+    /// The secret resolver turns typed hook references, such as a `licenseKey`, into their raw values before settings cross the ABI at open/configure. It is the same fail-closed resolver shared with store and auth opens, held through the neutral [`busbar_contract::secret::SecretResolve`] trait rather than the concrete engine resolver. Wiring supplies the identical resolver instance; only the static type at the hook boundary is narrowed.
+    ///
+    ///
+    ///
+    ///
+    ///
+    ///
     pub secret_resolver: std::sync::Arc<dyn busbar_contract::secret::SecretResolve>,
     /// Names of hooks that have already emitted the loud [`hook_inert_gate_banner`] THIS build. A
     /// gate named in several pools' `hooks:` lists (and/or `global_hooks`) resolves once per
@@ -1597,19 +1597,19 @@ pub async fn fetch_status(
 ///
 /// TWO PROBLEMS ARE CLOSED HERE, and they are the same problem seen from two sides.
 ///
-/// 1. NEITHER BAG MAY GO ON THE WIRE. The endpoint used to serialize `reported.settings` verbatim,
-///    which is the hook's ECHO of the SECRET-RESOLVED bag: `configure_hook` pushes
-///    `resolve_hook_settings(&hook.plugin, &hook.settings)`, so the plugin receives — and echoes back — the
-///    PLAINTEXT of every `SecretRef`. That is resolved secret material, at READ-ONLY admin scope.
-///    So the comparison happens in here rather than at the endpoint, and the caller gets
-///    KEY NAMES (which it is already free to serve) and a boolean.
-/// 2. A `SecretRef` FIELD MUST NOT REPORT DRIFT ON EVERY POLL. The comparison ran the reported
-///    (resolved) values against `hook.settings` (UNRESOLVED), so any `SecretRef` field drifted
-///    forever — a permanent false positive that trains an operator to ignore the one signal this
-///    endpoint exists to raise. Such a field is now simply NOT COMPARED: its desired value is a
-///    reference, its observed value is that reference's plaintext, and the two are not comparable
-///    without resolving. "Cannot compare" is reported as "not drifted", which is the same
-///    fail-open posture the rest of this function already takes.
+/// 1. Neither settings bag may cross the wire. `configure_hook` supplies secret-resolved settings, so `reported.settings` can echo plaintext credentials. Compare them inside this function and expose only key names and a boolean to the endpoint.
+/// 2. Do not report reference fields as drift on every poll. Desired settings hold a reference while observed settings hold its resolved plaintext, so they cannot be compared without resolution. Skip those fields and report them as not drifted, preserving this function's fail-open comparison posture.
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
 ///
 /// NO SECRET RESOLUTION HAPPENS HERE, DELIBERATELY. This runs on an async admin GET that a
 /// dashboard polls (5s is typical). Resolving the desired bag — the first shape of this fix — made

@@ -5,10 +5,10 @@
 use super::*;
 use crate::ir::subscribe::SubscribeIntent;
 
-/// `facts()` used to deep-clone the whole request — the caller's arguments `Value` and all — on
-/// every call, to answer a read-only question. It must SHARE the one allocation instead: the
-/// refcount goes up, and the handle still points at the SAME arguments `Value` afterwards,
-/// which is only true if nothing was cloned.
+/// `facts()` shares the request's allocation instead of cloning the arguments `Value`. The refcount rises while the handle continues to point to the same arguments.
+///
+///
+///
 #[test]
 fn invoke_facts_share_the_request_rather_than_cloning_it() {
     let req = Arc::new(InvokeReq {

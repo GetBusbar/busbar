@@ -42,12 +42,12 @@ pub struct HookDefCfg {
     /// group (e.g. `user:bob`); membership walks the `groups:` tree (self OR any ancestor).
     #[serde(default)]
     pub groups: Vec<String>,
-    /// PHASE: the pipeline stages this hook fires at (generalizes the single tap `at:` to a list).
-    /// Omit = THE FOUR CORE STAGES and only those, never "every stage that will ever exist" (the
-    /// frozen meaning of an omitted `phase:`, see the FREEZE BLOCKER on [`CORE_HOOK_PHASES`]; this
-    /// doc line used to say "all stages", which is the reading that note exists to rule out).
-    /// A named definition never carries the legacy `at:`, so the resolved set is readable over the
-    /// admin API as `fires_at` (see [`HookCfg::resolved_stages`]).
+    /// PHASE: the pipeline stages this hook fires at, generalizing the tap's single `at:` value to a list. An omitted `phase:` means only the four fixed [`CORE_HOOK_PHASES`], never every future stage. A named definition carries no legacy `at:`, and the resolved set is exposed as `fires_at` through [`HookCfg::resolved_stages`].
+    ///
+    ///
+    ///
+    ///
+    ///
     #[serde(default)]
     pub phase: Vec<HookStage>,
     /// The hook's MODE: `gate` (fire-and-wait) or `tap` (fire-and-forget). Default `gate` (a named

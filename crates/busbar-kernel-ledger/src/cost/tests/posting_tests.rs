@@ -173,8 +173,6 @@ fn the_neutral_tier_moves_no_ordinary_amount() {
     assert_eq!(checked, 479, "the sweep must actually have run");
 }
 
-/// **FIFTEEN NANO-UNITS AT 5,000 BP BILL SEVEN** (#44, #81; the case the tier's doc used to get
-/// wrong).
 ///
 /// The tier is #44's per-N-units division term and rounds half-to-even, but it rounds at the scale
 /// the one function computes it at: the exact scale-15 accumulator ([`Tally::exact`]). Fifteen

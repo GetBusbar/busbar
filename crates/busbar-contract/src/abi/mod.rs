@@ -88,7 +88,7 @@ macro_rules! slot_table {
 /// * `with_raw_name(ptr, len)` — `unsafe`: a list stated unchecked, as a host's own test states
 ///   what a foreign plugin could, for the host's checks to judge;
 /// * `name()` — the items, `unsafe` while the fields are pub (safe code could state any pointer by
-///   hand); #1471 makes the fields private and this reader safe;
+///   hand);
 /// * `name_ptr()` / `name_len()` — the raw pointer and length, which a host reads a foreign
 ///   struct by, under its own checks.
 macro_rules! abi_lists {

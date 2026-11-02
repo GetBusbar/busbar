@@ -130,13 +130,13 @@ pub struct App {
     /// `ro`/`no` hook can never rewrite (the bidirectional grant holds by construction). Each entry is
     /// `(per-hook transform deadline, transport)`.
     pub rewrite_hooks: Vec<(std::time::Duration, Arc<dyn crate::hooks::RoutingPolicy>)>,
-    /// GLOBAL request-stage TAP hooks — the `kind: tap` hooks in `global_hooks` observing at the
-    /// `request` stage, resolved to their transports. Fired FIRE-AND-FORGET (spawned off the request
-    /// path) before dispatch — a tap can never delay or fail the request. Empty (the default) = no
-    /// taps, zero cost. Each entry is `(per-hook deadline, send_prompt, transport)`: `send_prompt`
-    /// carries the tap's `prompt: ro` grant so a granted tap receives the prompt-content projection and
-    /// a `prompt: no` tap receives shape-only. Other stages (candidate/routing/response + synthetic
-    /// rejected-completion) are follow-ups.
+    /// Global request-stage taps from `global_hooks` are resolved to transports and spawned off the request path before dispatch. A tap cannot delay or fail the request. The default empty list has zero cost. Entries are `(per-hook deadline, send_prompt, transport)`; `send_prompt` carries the tap's `prompt: ro` grant, so granted taps receive prompt content and `prompt: no` taps receive only shape. This list serves the request stage.
+    ///
+    ///
+    ///
+    ///
+    ///
+    ///
     pub tap_hooks: Vec<crate::hooks::TapEntry>,
     /// GLOBAL taps observing at the CANDIDATE stage (`at: candidate`) — fired once per request when the
     /// decision reconcile has produced the final candidate set. Same triple shape as `tap_hooks`.

@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE EXPORT KIND'S ABI: its version and its table (the design's locked plugin ABI: one
-//! mechanism, every shape in `abi/`). M0 landed the skeleton; this is M3-SHAPES
-//! (`abi-v2-perkind.md` B.5): `deliver`, `scrape`, `status`, `check` and `serve`, and the frozen
-//! [`ExportStream`] tail. The one dispatcher calls this table (`busbar-plugin-loader`,
-//! `dispatch::kinds::export`).
+//! The export ABI defines its version, table, `deliver`, `scrape`, `status`, `check`, `serve`, and the frozen [`ExportStream`] tail. Its shapes share the mechanism in `abi/`. The dispatcher calls this table through `busbar-plugin-loader::dispatch::kinds::export`.
+//!
+//!
+//!
+//!
 //!
 //! # Host-owned scrape buffers
 //!
@@ -47,17 +47,17 @@
 //!   a new export op). The JSON contract's `Host` and `Started` response variants are retired: `deliver` answers
 //!   only READY/PENDING/FAILED/REFUSED/FAULT, with no host-op round trip and no separate `start`.
 //!
-//! ASSUMPTIONS (M3-SHAPES, noted for the SLOT-LOG; none are money- or customer-visible, so none is
-//! an owner question):
-//! - `deliver` is OFF-PATH, `may_pend`, [`DeadlineClass::WriteBehind`](super::mechanism::call::DeadlineClass::WriteBehind)
-//!   (a sink write, coalesced like a store batch write, never on a request's critical path).
-//! - `scrape` is REQUEST-PATH (P) — `/metrics` is answered per HTTP request — `may_pend`,
-//!   [`DeadlineClass::Call`](super::mechanism::call::DeadlineClass::Call).
-//! - `status` and `check` are OFF-PATH (O), not `may_pend` (fast, in-memory).
-//! - `serve` is OFF-PATH (O) per B.4's hook precedent for a plugin's own HTTP surface, `may_pend`,
-//!   [`DeadlineClass::Call`](super::mechanism::call::DeadlineClass::Call).
-//! - No Statement tail beyond `streams[]` is stated for export; `check`'s phases (`limits` /
-//!   `instances`, [`CheckPhase`]) are carried as a `u32` `in` field rather than a new type.
+//! Operational classes:
+//! - `deliver` is off-path, may pend, and uses [`DeadlineClass::WriteBehind`](super::mechanism::call::DeadlineClass::WriteBehind): coalesced sink writes are outside the request critical path.
+//! - `scrape` is request-path, may pend, and uses [`DeadlineClass::Call`](super::mechanism::call::DeadlineClass::Call), because `/metrics` answers each HTTP request.
+//! - `status` and `check` are off-path, fast in-memory operations that never pend.
+//! - `serve` is off-path, may pend, and uses [`DeadlineClass::Call`](super::mechanism::call::DeadlineClass::Call).
+//! - The export Statement tail declares `streams[]`; the `limits` and `instances` [`CheckPhase`] values travel as a `u32` input field.
+//!
+//!
+//!
+//!
+//!
 
 use super::mechanism::call::{AbiStr, Blob, InHead, Op, OutHead};
 use serde::{Deserialize, Serialize};
@@ -752,9 +752,9 @@ pub struct ScrapeFamily {
 pub struct ScrapeIn {
     /// The head.
     pub head: InHead,
-    /// The host recorder's WHOLE snapshot (the SEH fix-forward ruling, 2026-09-27) — every
-    /// family, not filtered to this instance's Statement — in the recorder's render order,
-    /// kind-then-name.
+    /// The host recorder's complete snapshot: every family, without filtering by this instance's Statement, in recorder render order, kind then name.
+    ///
+    ///
     pub families: *const ScrapeFamily,
     /// How many.
     pub families_len: usize,

@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE HOOK KIND'S ABI: its version and its table (the design's locked plugin ABI: one
-//! mechanism, every shape in `abi/`). M0 landed the skeleton; this is M3-SHAPES
-//! (`abi-v2-perkind.md` B.4): `decide`, `transform`, `notify`, `configure`, `status`, `describe`
-//! and `serve`, the fixed views, the Statement tail and the `CancelOut` disposition vocabulary.
-//! The one dispatcher calls this table (`busbar-plugin-loader`, `dispatch::kinds::hook`); the
-//! layout golden pins its layout. 1.5.5 behaviour stays byte-identical (a 1.6.0 FUNCTIONAL FIXED
-//! POINT); this transcribes the OLD `busbar-contract::hooks`/`busbar-kernel::hooks::wire` shapes
-//! (`RoutingRequest`, `Candidate`, `PromptProjection`, `CallerIdentity`, `SignalBag`,
-//! `RoutingDecision`, `TransformOutcome`, `HookStageProjection`, `HookContext`,
-//! `BudgetBucketState`) into fixed C layout, unchanged in meaning.
+//! The hook ABI defines its version, table, `decide`, `transform`, `notify`, `configure`, `status`, `describe`, `serve`, fixed views, Statement tail, and `CancelOut` disposition vocabulary. The dispatcher calls it through `busbar-plugin-loader::dispatch::kinds::hook`, and the layout golden pins its layout. The fixed C views preserve the meaning of `RoutingRequest`, `Candidate`, `PromptProjection`, `CallerIdentity`, `SignalBag`, `RoutingDecision`, `TransformOutcome`, `HookStageProjection`, `HookContext`, and `BudgetBucketState`, with byte-identical 1.5.5 behavior.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 //!
 //! # Host-owned request results
 //!
@@ -52,8 +52,8 @@
 //!    collision key the kernel checks at load (the same shape B.5 gives export's routes).
 //! 10. [`ConfigureIn`] gains `name`, echoing the OLD `ConfigureBody`'s instance name.
 //! 11. Hook words are Statement word marks
-//!    ([`MARK_WORD_HOOK`](crate::abi::mechanism::door::MARK_WORD_HOOK)): STATIC, a Statement fact (see the ASSUMPTIONS
-//!    section below, now a ruling rather than an assumption).
+//!    ([`MARK_WORD_HOOK`](crate::abi::mechanism::door::MARK_WORD_HOOK)): STATIC, a Statement fact.
+//!
 //!
 //! **OFF-WORKER (OWNER RULING, decided 2026-09-27, abi-brief.md section 4 item 1):** every hook call
 //! (`decide`/`transform`/`notify`/`configure`/`status`/`describe`/`serve`) runs OFF the request's
@@ -114,9 +114,7 @@
 //! - **Acceptance:** 181 v1.5.5 hook tests ported verbatim, plus memory-form RED tests for each
 //!   malformed class (M4 HOOK-PARITY, after this shape lands).
 //!
-//! ASSUMPTIONS (M3-SHAPES, noted for the SLOT-LOG; none are money- or customer-visible — 1.5.5
-//! Reply behavior is unchanged; the wire
-//! shape uses fixed C layout:
+//! Hook words, routes, signals, and cancellation use these fixed-layout rules:
 //! - "hook words" (B.4's tail bullet) are Statement word marks,
 //!   [`MARK_WORD_HOOK`](crate::abi::mechanism::door::MARK_WORD_HOOK): static Statement data, not
 //!   a per-call answer. A native
@@ -136,6 +134,8 @@
 //! - The `CancelOut` disposition vocabulary ([`cancel`]) is not stated in B.4; `decide`/`transform`/
 //!   `serve` are this kind's `may_pend` ops, and the two dispositions below cover a cancelled
 //!   verdict/response uniformly (nothing partial is ever committed for a hook reply).
+//!
+//!
 
 use super::mechanism::call::{AbiStr, Blob, InHead, Op, OutHead};
 
@@ -637,9 +637,9 @@ pub const VERB_RESTRICT: u32 = 1 << 3;
 /// ruling 7).
 pub const VERB_HAS_REJECT_STATUS: u32 = 1 << 4;
 
-/// `decide`'s `out`. Exactly one of [`VERB_PREFER`], [`VERB_ABSTAIN`], [`VERB_REJECT`],
-/// [`VERB_RESTRICT`] must be set (H1: SEH fix-forward ruling, 2026-09-27); the validator FAULTs on
-/// 0 or 2+ bits.
+/// `decide`'s output sets exactly one of [`VERB_PREFER`], [`VERB_ABSTAIN`], [`VERB_REJECT`], or [`VERB_RESTRICT`]. The validator faults on zero or multiple bits.
+///
+///
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct DecideOut {

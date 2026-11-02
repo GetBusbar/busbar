@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE TRANSPORT KIND'S SCRIPT: a claim/frame script any transport answers, driven as the kernel
-//! drives a transport door (`busbar_core_connector::doors::Dispatched`: `open`, the awaited `ready`, then every
-//! framer op through `Plugin::call`). Ported from lane-conf-transport's
-//! `transport_door_conformance_tests.rs` (one script of the whole table, a TIGHT sink re-driven on
-//! `YIELD_MORE`, equal transcripts, exact crossings) with every byte and every expected framing
-//! moved into the plugin's inputs. Inputs (`conformance.json`):
+//! The transport conformance script drives each claim/frame case as the kernel does: `busbar_core_connector::doors::Dispatched` opens the door, awaits `ready`, then enters framer operations through `Plugin::call`. It uses a tight sink re-driven on `YIELD_MORE` and checks equal transcripts and exact crossing counts. The plugin's inputs specify all bytes and expected framing in `conformance.json`:
+//!
+//!
+//!
+//!
+//!
 //!
 //! A byte input is a JSON string (its UTF-8 bytes) or `{ "hex": "<bytes>" }`.
 //!

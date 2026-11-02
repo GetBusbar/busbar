@@ -955,8 +955,6 @@ fn a_pending_op_resumes_what_it_parked_and_only_its_own_type() {
     assert_eq!(close(inst), Outcome::Ready);
 }
 
-/// REVIEWER's MEDIUM: what an op parked must never reach the next op on its ticket once the op is
-/// over. Each arm goes RED with its clear removed from `Safe::enter`.
 #[test]
 fn a_recycled_ticket_never_resumes_a_finished_ops_parked_state() {
     let t = Ticket {

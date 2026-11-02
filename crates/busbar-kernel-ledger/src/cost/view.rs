@@ -35,11 +35,8 @@
 //! 2. **No card at all is billing OFF** — every line prices at nothing and the entry contributes
 //!    zero (#42). This is the one and only circumstance in which a silent zero is the right answer.
 //! 3. **A card present but silent is a REFUSAL** (#42). An unnamed lane, an unnamed class: each
-//!    refuses. Money-sacred means never inventing a zero. The FLAT FEE used to be a third member of
-//!    that list — it read its figure out of a per-denomination map with `unwrap_or(0)`, so a card
-//!    that priced its rates in one denomination and was never given a fee in it billed every flat
-//!    fee at nothing, here, in silence. #66 removed the denomination axis, so the map is a single
-//!    field and the hole it could carry no longer exists to be guarded.
+//!    refuses rather than inventing a zero. The flat fee is a single field, without a
+//!    per-denomination map that could silently default an omitted fee to zero.
 //! 4. **Multiply and add, exactly** — a count at scale 6 times a rate in nano-units per whole unit
 //!    accumulates at scale 15, in `i128`, CHECKED. Nothing here saturates: a saturated total is a
 //!    wrong total wearing a right total's clothes.
@@ -51,6 +48,9 @@
 //! 7. **Exactly one truncation, at the very end**, projecting scale 15 to the scale-6 [`Money`].
 //!    [`price_exact`] is the same computation with that last step withheld, for a caller that wants
 //!    the untruncated figure.
+//!
+//!
+//!
 //!
 //! # No binary floating point, anywhere on this path
 //!
