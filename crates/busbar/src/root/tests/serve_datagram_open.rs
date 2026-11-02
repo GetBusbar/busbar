@@ -213,14 +213,48 @@ async fn deployment(instance: &'static str) -> Deployment {
             .find_map(|(dialect, _, _)| facts.dialects.get(*dialect as usize).copied())
             .unwrap()
     };
+    let store = crate::root::real_store::store();
+    let records: Arc<dyn busbar_contract::records::RecordStore> = store.clone();
+    let calls: Arc<dyn busbar_contract::store_calls::StoreCalls> = store.clone();
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .expect("the actual Store settings are JSON");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+        "providers": {},
+        "models": {},
+        "auth": {"chain": ["keys"], "admin_auth": []},
+        "store": {"module": store.name(), "settings": settings},
+    }))
+    .expect("the ordinary governed deployment parses");
+    let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the ordinary governed deployment resolves");
+    let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
+        Arc::new(crate::root::door_steps::Rules::default());
+    let (mut app, _rotation, _limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+        cfg,
+        Default::default(),
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+        Some(busbar_contract::store_calls::OpenedStore {
+            records: records.clone(),
+            calls: Some(calls.clone()),
+        }),
+    )
+    .expect("the production builder owns the supplied actual Store");
     let gov = Arc::new(
         GovState::new_with_signer(
-            Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new()),
+            records.clone(),
             None,
             Some(TokenSigner::from_secret_bytes(&[9; 32], DEFAULT_KID)),
         )
         .unwrap(),
     );
+    assert!(gov.attach_store_calls(calls.clone()));
     let (key, _) = gov
         .mint_signed(
             NewKeySpec {
@@ -248,12 +282,13 @@ async fn deployment(instance: &'static str) -> Deployment {
         post.clone() as Arc<dyn EndPost>,
     ));
     let tables = busbar_kernel::plane_driver::serve::ServeTables::default();
-    let app = busbar_kernel_testkit::test_support::TestApp::new()
-        .keys_chain()
-        .serve_tables(tables.clone())
-        .governance(gov.clone())
-        .cost(cost)
-        .build();
+    // These tests supply an already authenticated Arrival directly. Keep the
+    // same signed-key governance and concrete cost in that owned App; router
+    // authentication and durable boot publication are separate boundaries.
+    app.governance = Some(gov.clone());
+    app.cost = Arc::new(cost);
+    app.serve_tables = tables.clone();
+    let app = Arc::new(app);
     let provider = serde_yaml::from_str::<busbar_kernel::config::ProviderCfg>(&format!(
         "protocol: {protocol}\nbase_url: 'http://{provider_addr}'\napi_key: {{file: '{}'}}\nerror_map: {{}}", provider_key.display()
     )).unwrap();
