@@ -701,9 +701,14 @@ get code executed, and a compromised or replayed plugin must not load.
 7. **The engine stays memory-safe.** The engine crate compiles under `forbid(unsafe_code)`; all
    FFI lives in `busbar-plugin-loader`. The loader also bounds every plugin response (a buggy or
    hostile plugin cannot force an unbounded allocation).
-8. **The pre-flight gate is the boot gate.** `busbar --validate` runs the same
-   consistency-policy-scan-resolution pipeline boot runs, so it cannot drift: if `--validate`
-   passes, the plugin half of boot succeeds; if it fails, it names exactly what is wrong.
+8. **Pre-flight checks are shared; boot checks the effective runtime configuration.**
+   `busbar --validate` reads the selected config and provider catalog, checks consistency and
+   trust policy, scans locally available plugin artifacts, plans their selection, and resolves
+   built-in `env:` / `file:` secret references. It does not download plugins, open a Store,
+   recover its admin config overlay, or prove plugin `open`/readiness or backend reachability.
+   Boot recovers the overlay from the base Store (unless config is locked or safe mode skips
+   recovery), validates the resulting effective configuration, and opens its dependencies. A
+   successful offline validation therefore does not guarantee that the plugin half of boot succeeds.
 
 What signing does NOT do: a trusted plugin still runs with Busbar's privileges, exactly like a
 compiled-in backend would. Signing answers "is this the artifact its publisher shipped, unmodified,

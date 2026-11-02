@@ -249,15 +249,14 @@ Or the container, which ships a bootable default config, so one line is the whol
 docker run --rm -p 8080:8080 -e ANTHROPIC_KEY -e BUSBAR_ADMIN_TOKEN getbusbar/busbar
 ```
 
-`busbar --validate` parses your config and every provider reference and exits non-zero on anything wrong, with no server, no network and no state, so it belongs in CI. Full walkthrough: [Getting started](https://getbusbar.com/docs/getting-started/).
+`busbar --validate` checks the selected config and provider catalog, plugin declarations and local artifacts, and built-in `env:` / `file:` secret references without starting the server or opening a Store. It makes no network calls and does not read the Store-backed admin overlay. A pass checks those operator inputs; boot separately recovers and validates the effective configuration and opens its runtime dependencies. Full walkthrough: [Getting started](https://getbusbar.com/docs/getting-started/).
 
 Runs on x86_64 and 64-bit ARM (Linux, macOS, Windows, Docker). On ARM Linux there are two builds of equal standing: the default (ARMv8.1+ — any cloud ARM, Raspberry Pi 5) and an `-armv8.0` compat build for Raspberry Pi 4-class boards — the ["which ARM build?" table](docs/getting-started.md#step-1-get-the-binary) picks for you in one glance.
 
 ### Persistence
 
 A `store:` block is required (1.6.0; `busbar --migrate-config` inserts `store: {module: memory}`), and `memory` is in-memory:
-keys, usage counters, ledgers and the audit trail all reset on restart (one WARN at boot says so). The admin-API config overlay is separate and persists on its
-own writable path regardless. Durable keys/usage/ledgers/audit need a store plugin (`sqlite`,
+keys, usage counters, ledgers, the audit trail and rate-card history all reset on restart (one WARN at boot says so). The admin-API config overlay is anchored in the base configuration's Store, so it also resets with a memory Store. There is no independent writable overlay file. Durable keys/usage/ledgers/audit, card history and admin config edits need a durable Store plugin (`sqlite`,
 `postgres`, `mysql` or `valkey`, each its own signed release) wired up with four config keys, not
 just a mounted volume — see [Durable store: giving persistence a writable
 volume](docs/getting-started.md#durable-store-giving-persistence-a-writable-volume) for the

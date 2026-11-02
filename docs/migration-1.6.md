@@ -81,8 +81,11 @@ over: a rebuilt store plugin opens its own database and upgrades it with its own
 - **Store plugins are replaced, not carried.** The four published 1.5.5 store plugins
   (`abi_version: 2`) do not load; `--migrate-config` pins their 1.6.0 releases, which open the same
   database. See [Plugins](plugins.md#plugins-and-160).
-- **Validation is the same gate.** `--validate` resolves the same `env:` / `file:` references
-  boot reads, and no others, exactly as 1.5.5 did. A CI job that passed on 1.5.5 passes on 1.6.0.
+- **Validation remains offline.** `--validate` checks the selected config and provider catalog,
+  semantic rules, plugin declarations and local artifacts, and built-in `env:` / `file:` secret
+  references. It opens no Store and reads no Store-backed admin overlay. Boot separately recovers
+  that overlay, validates the effective configuration, and opens runtime dependencies. An offline
+  pass is useful in CI; it does not prove overlay compatibility, plugin readiness or backend access.
 - **The reserved name `admin`** is still refused for a model, pool or provider, with the 1.5.5
   message.
 
@@ -364,10 +367,11 @@ Likewise, a nonzero `<section>.fees` key for a unit the plane does not count (fo
 `streams.fees.per_request`: a voice session pays `per_session`) refuses boot, naming the key and the
 units the plane counts. `fees:` is 1.6.0 config, so no 1.5.5 config is affected.
 
-**Cards survive a restart.** On a node with a data directory, every applied rate card is journalled
-and a restart rebuilds the dated history; a journal written before this upgrade starts its history
-at the boot card from instant zero. A node with no data directory keeps no journal: after a restart
-its history is the boot card from instant zero, as in 1.5.5.
+**Card-history durability follows the Store.** Applied rate cards and their dated history are
+Store-backed; no `data_dir` or host journal file participates in their recovery. A durable Store
+restores the recorded history on restart. When the Store history is empty, boot writes an opening
+entry from the configured card at instant zero. A memory Store loses that history on restart and
+starts with a new opening entry.
 
 **No currencies.** Rate-card figures are abstract cost units with no currency and no conversion. A
 correction body that names a `currency` is refused.
