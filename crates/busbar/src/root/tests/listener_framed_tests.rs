@@ -299,6 +299,117 @@ async fn an_unread_body_is_refused_at_the_existing_limit_without_refusing_its_si
     conn.tasks.abort_all();
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn abort_before_first_poll_retires_the_inflow_while_its_sibling_stays_live() {
+    let _publishing = anonymous_policy().await;
+    for reset in [false, true] {
+        let routed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = Arc::clone(&routed);
+        let router = Router::new().route(
+            "/stall",
+            axum::routing::post(move || {
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                std::future::pending::<&'static str>()
+            }),
+        );
+        let (_client, mut conn) = custody_conn(router);
+        custody_head(&mut conn, 3, "/stall");
+        custody_head(&mut conn, 5, "/stall");
+        conn.inflows.get_mut(&3).unwrap().body_limit = 1;
+        let mut terminal = custody_piece(3, b"xx".to_vec(), false, reset);
+        terminal.failed = reset;
+        conn.piece(terminal);
+        assert_eq!(routed.load(std::sync::atomic::Ordering::SeqCst), 0);
+        // Joining the aborted task drops the future even though it was never first-polled.
+        let joined = conn.tasks.join_next().await.unwrap();
+        assert!(joined.unwrap_err().is_cancelled());
+        let (stream, op) = conn
+            .ops
+            .recv()
+            .await
+            .expect("the aborted future owns retirement");
+        assert_eq!(stream, 3);
+        assert!(matches!(op, super::Op::Ended { .. }));
+        conn.pending.push_back((stream, op));
+        while !conn.pending.is_empty() {
+            assert!(matches!(conn.apply_front(), super::Step::Done));
+        }
+        assert!(!conn.inflows.contains_key(&3));
+        assert!(conn.inflows.contains_key(&5));
+        assert!(conn.framing.is_some());
+        assert!(conn.ops.try_recv().is_err(), "retirement is queued once");
+        conn.tasks.abort_all();
+    }
+}
+
+#[tokio::test]
+async fn final_fields_follow_data_and_are_acknowledged_before_the_producer_returns() {
+    use axum::http::{HeaderMap, HeaderValue};
+    use bytes::Bytes;
+
+    struct Frames(std::collections::VecDeque<http_body::Frame<Bytes>>);
+    impl http_body::Body for Frames {
+        type Data = Bytes;
+        type Error = std::convert::Infallible;
+        fn poll_frame(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Result<http_body::Frame<Bytes>, Self::Error>>> {
+            std::task::Poll::Ready(self.get_mut().0.pop_front().map(Ok))
+        }
+    }
+
+    for final_status in ["0", "7", "13", "1"] {
+        let mut trailers = HeaderMap::new();
+        trailers.append("final-status", HeaderValue::from_static(final_status));
+        trailers.append("final-detail", HeaderValue::from_static("one"));
+        trailers.append("final-detail", HeaderValue::from_static("two"));
+        let body = Frames(
+            [
+                http_body::Frame::data(Bytes::from_static(b"reply")),
+                http_body::Frame::trailers(trailers.clone()),
+            ]
+            .into(),
+        );
+        let (tx, mut ops) = tokio::sync::mpsc::unbounded_channel();
+        let out = super::Emitter { stream: 3, tx };
+        let producer = tokio::spawn(async move {
+            super::respond(&out, axum::http::Response::new(axum::body::Body::new(body))).await;
+        });
+        match ops.recv().await.unwrap().1 {
+            super::Op::Head { end, done, .. } => {
+                assert!(!end);
+                done.send(true).unwrap();
+            }
+            _ => panic!("head precedes body"),
+        }
+        match ops.recv().await.unwrap().1 {
+            super::Op::Data { bytes, end, done } => {
+                assert_eq!(bytes, b"reply".as_slice());
+                assert!(!end);
+                done.send(true).unwrap();
+            }
+            _ => panic!("data precedes final fields"),
+        }
+        match ops.recv().await.unwrap().1 {
+            super::Op::Trailers { fields, done } => {
+                assert_eq!(fields, super::field_block(&trailers));
+                assert!(
+                    !producer.is_finished(),
+                    "trailer custody awaits acknowledgement"
+                );
+                done.send(true).unwrap();
+            }
+            _ => panic!("the terminal frame remains fields"),
+        }
+        producer.await.unwrap();
+        assert!(
+            ops.recv().await.is_none(),
+            "no successful empty data ending follows trailers"
+        );
+    }
+}
+
 #[tokio::test]
 async fn a_full_session_pipe_stops_socket_reads_until_its_reader_takes_a_message() {
     let _publishing = anonymous_policy().await;
@@ -699,6 +810,91 @@ async fn reset_before_any_head_releases_the_old_app_but_body_end_keeps_its_loan(
         conn.framing.is_some(),
         "retiring one stream leaves the connection live"
     );
+
+    // Hand in and admit a real unit, then abort its task before this current-thread test yields.
+    // Its retained table/App must leave with the stream, while another generation's sibling and
+    // the same framing remain alive.
+    let hand_in = |conn: &mut super::Conn<tokio::io::DuplexStream>, stream| {
+        scope
+            .open_stream(
+                Ticket::NONE,
+                Open {
+                    stream,
+                    known_generation: 0,
+                },
+            )
+            .unwrap();
+        let generation = scope.policy_generation(stream, false).unwrap();
+        let guests = conn.framer.guests().unwrap();
+        inbound::host()
+            .hand_in(busbar_kernel::inbound::HandIn {
+                owner: scope.owner(),
+                generation,
+                auth: guests.lines()[0].auth.id,
+                unit: busbar_contract::abi::host::service::UnitRef::NONE,
+                line: 0,
+                conn: conn.framing.as_ref().unwrap().token(),
+                stream,
+                framing: Some(scope.leg()),
+                head: busbar_kernel::inbound::Head {
+                    method: "POST".into(),
+                    target: "/".into(),
+                    authority: String::new(),
+                    query: None,
+                    fields: Vec::new(),
+                },
+            })
+            .unwrap();
+        custody_head(conn, stream, "/");
+        assert!(
+            conn.inflows.contains_key(&stream),
+            "the actual hand-in was claimed"
+        );
+        scope.operation_finished(Ticket::NONE, false);
+    };
+    hand_in(&mut conn, 7);
+    let admitted_app = Arc::downgrade(&new_app);
+    drop(new_app);
+    let latest = TestApp::new().build();
+    for _ in 0..3 {
+        assert!(inbound::publish(&latest).is_some());
+    }
+    hand_in(&mut conn, 9);
+    assert!(
+        admitted_app.upgrade().is_some(),
+        "the admitted unit retains its App"
+    );
+    let mut reset = custody_piece(7, Vec::new(), false, true);
+    reset.failed = true;
+    conn.piece(reset);
+    assert!(conn
+        .tasks
+        .join_next()
+        .await
+        .unwrap()
+        .unwrap_err()
+        .is_cancelled());
+    let (stream, op) = conn
+        .ops
+        .recv()
+        .await
+        .expect("the never-polled owner retires");
+    assert_eq!(stream, 7);
+    assert!(matches!(op, super::Op::Ended { .. }));
+    conn.pending.push_back((stream, op));
+    assert!(matches!(conn.apply_front(), super::Step::Done));
+    assert_eq!(scope.policy_generation(7, false), None);
+    assert!(!conn.inflows.contains_key(&7));
+    assert!(
+        admitted_app.upgrade().is_none(),
+        "the actual unit/table App is released"
+    );
+    assert!(
+        conn.inflows.contains_key(&9),
+        "the sibling remains admitted"
+    );
+    assert!(conn.framing.is_some());
+    conn.tasks.abort_all();
 }
 
 /// The data listener's framer as the boot finds it: the one answering [`DATA_SCHEME`].
