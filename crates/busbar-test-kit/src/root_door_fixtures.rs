@@ -867,20 +867,32 @@ pub mod pending_h1_accept {
         }
         impl Drop for Reentrant {
             fn drop(&mut self) {
-                assert!(self.gate.waker.try_lock().is_ok(), "waker drop under gate lock");
+                assert!(
+                    self.gate.waker.try_lock().is_ok(),
+                    "waker drop under gate lock"
+                );
                 self.retired.store(true, Ordering::SeqCst);
             }
         }
         #[test]
         fn release_and_replacement_run_waker_callbacks_outside_the_gate() {
             let gate = Arc::new(HeadGate::default());
-            let ticket = HeadTicket { ticket: busbar_contract::abi::mechanism::ticket::Ticket::NONE, gate: Arc::clone(&gate) };
+            let ticket = HeadTicket {
+                ticket: busbar_contract::abi::mechanism::ticket::Ticket::NONE,
+                gate: Arc::clone(&gate),
+            };
             let retired = Arc::new(AtomicBool::new(false));
-            let old = Waker::from(Arc::new(Reentrant { gate: Arc::clone(&gate), retired: Arc::clone(&retired) }));
+            let old = Waker::from(Arc::new(Reentrant {
+                gate: Arc::clone(&gate),
+                retired: Arc::clone(&retired),
+            }));
             ticket.register(&old);
             drop(old);
             let next_retired = Arc::new(AtomicBool::new(false));
-            let next = Waker::from(Arc::new(Reentrant { gate: Arc::clone(&gate), retired: next_retired }));
+            let next = Waker::from(Arc::new(Reentrant {
+                gate: Arc::clone(&gate),
+                retired: next_retired,
+            }));
             ticket.register(&next);
             assert!(retired.load(Ordering::SeqCst));
             drop(next);
@@ -1098,16 +1110,23 @@ pub mod pending_mux_accept {
         use std::task::{Wake, Waker};
         struct Reentrant(Arc<Gate>);
         impl Wake for Reentrant {
-            fn wake(self: Arc<Self>) { assert!(self.0.wake.try_lock().is_ok()); }
+            fn wake(self: Arc<Self>) {
+                assert!(self.0.wake.try_lock().is_ok());
+            }
         }
         impl Drop for Reentrant {
-            fn drop(&mut self) { assert!(self.0.wake.try_lock().is_ok()); }
+            fn drop(&mut self) {
+                assert!(self.0.wake.try_lock().is_ok());
+            }
         }
         #[test]
         fn replacement_and_release_retire_after_unlocking() {
             let fixture = Mux::default();
             let gate = Arc::clone(&fixture.gate);
-            let side = Side { ticket: busbar_contract::abi::mechanism::ticket::Ticket::NONE, gate: Arc::clone(&gate) };
+            let side = Side {
+                ticket: busbar_contract::abi::mechanism::ticket::Ticket::NONE,
+                gate: Arc::clone(&gate),
+            };
             let old = Waker::from(Arc::new(Reentrant(Arc::clone(&gate))));
             side.register(&old);
             drop(old);

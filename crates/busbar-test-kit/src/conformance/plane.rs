@@ -168,8 +168,9 @@ use busbar_contract::abi::plane::{
 use serde_json::Value;
 
 use super::{
-    answered, called, close, crossings, dispatcher, dispatcher_serving, input, json, load, on_ticket_frame, output,
-    ready_step, release, submit_on, validate, Fold, Leg, Recorder, Subject,
+    answered, called, close, crossings, dispatcher, dispatcher_serving, input, json, load,
+    on_ticket_frame, output, ready_step, release, submit_on, validate, Fold, Leg, Recorder,
+    Subject,
 };
 use crate::dispatch::kinds::plane::{OwnedSnapshot, Plane, ServedFacts};
 use crate::dispatch::{now_ns, Called, Dispatcher, Frame, Lent, Plugin};
@@ -1535,7 +1536,9 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     r.line("hydrate", 1, || generation(&p, slot::HYDRATE, 1));
     r.line("start", 1, || generation(&p, slot::START, 1));
     for (n, first) in k.serve_first.iter().enumerate() {
-        r.line(&format!("serve first #{n}"), 1, || serve(&p, &d, Some(first)));
+        r.line(&format!("serve first #{n}"), 1, || {
+            serve(&p, &d, Some(first))
+        });
     }
     r.line("arrive claimed", 1, || arrive(&p, &k.claimed, &k.request));
     r.line("arrive unclaimed", 1, || {

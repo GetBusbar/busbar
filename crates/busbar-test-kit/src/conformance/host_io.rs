@@ -85,7 +85,11 @@ fn socket_ready(stream: &TcpStream, direction: u32) -> bool {
     use std::os::fd::AsRawFd;
     let mut fd = libc::pollfd {
         fd: stream.as_raw_fd(),
-        events: if direction == DIR_WRITE { libc::POLLOUT } else { libc::POLLIN },
+        events: if direction == DIR_WRITE {
+            libc::POLLOUT
+        } else {
+            libc::POLLIN
+        },
         revents: 0,
     };
     // SAFETY: one live pollfd, a socket borrowed for this nonblocking call, and no callbacks.
@@ -98,10 +102,14 @@ fn socket_ready(stream: &TcpStream, direction: u32) -> bool {
 #[cfg(windows)]
 fn socket_ready(stream: &TcpStream, direction: u32) -> bool {
     use std::os::windows::io::AsRawSocket;
-    use windows_sys::Win32::Networking::WinSock::{WSAPoll, WSAPOLLFD, POLLRDNORM, POLLWRNORM};
+    use windows_sys::Win32::Networking::WinSock::{WSAPoll, POLLRDNORM, POLLWRNORM, WSAPOLLFD};
     let mut fd = WSAPOLLFD {
         fd: stream.as_raw_socket() as _,
-        events: if direction == DIR_WRITE { POLLWRNORM } else { POLLRDNORM },
+        events: if direction == DIR_WRITE {
+            POLLWRNORM
+        } else {
+            POLLRDNORM
+        },
         revents: 0,
     };
     // SAFETY: one initialized WSAPOLLFD borrows a live socket for this nonblocking call.
@@ -483,7 +491,9 @@ mod tests {
     #[derive(Default)]
     struct Wakes(AtomicUsize);
     impl Wake for Wakes {
-        fn wake(self: Arc<Self>) { self.0.fetch_add(1, Ordering::SeqCst); }
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
     }
 
     #[test]
@@ -507,7 +517,10 @@ mod tests {
                 Poll::Pending => break,
                 other => panic!("write: {other:?}"),
             }
-            assert!(sent < 64 * 1024 * 1024, "the peer must eventually apply backpressure");
+            assert!(
+                sent < 64 * 1024 * 1024,
+                "the peer must eventually apply backpressure"
+            );
         }
         assert!(io.read(7, id, &mut [0; 1], &reader).is_pending());
         let until = Instant::now() + Duration::from_secs(5);
@@ -521,7 +534,10 @@ mod tests {
                 }
             }
             io.pump();
-            assert!(Instant::now() < until, "a writable socket never woke its writer");
+            assert!(
+                Instant::now() < until,
+                "a writable socket never woke its writer"
+            );
             std::thread::sleep(Duration::from_millis(1));
         }
         assert_eq!(reads.0.load(Ordering::SeqCst), 0, "the peer sent no input");
