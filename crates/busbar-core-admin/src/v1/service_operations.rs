@@ -809,12 +809,9 @@ impl AdminService {
         let (manifest, judged) = admission
             .inspect(tarball, &self.app.plugins_cfg)
             .map_err(refused)?;
-        let restart_required_default = admission.restart_default(&manifest.kind);
-        Ok(inspect_plugin_view(
-            manifest,
-            judged,
-            restart_required_default,
-        ))
+        Ok(inspect_plugin_view(manifest, judged, |kind| {
+            admission.restart_default(kind)
+        }))
     }
 
     pub(crate) fn remove_store_plugin(

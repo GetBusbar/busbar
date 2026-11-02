@@ -332,7 +332,7 @@ fn inspect_reports_the_admissions_verdict_in_the_catalog_vocabulary() {
             abi_version: 3,
             settings_schema: None,
         };
-        let view = inspect_plugin_view(manifest, judged, true);
+        let view = inspect_plugin_view(manifest, judged, |_| true);
         assert_eq!(view["trust"], word, "{word}");
         assert_eq!(view["name"], "acme-store-v");
         assert_eq!(view["kind"], "store");

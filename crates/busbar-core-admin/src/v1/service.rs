@@ -835,7 +835,7 @@ fn check_inspect_tarball_size(size: usize, cap: u64) -> Result<(), AdminError> {
 fn inspect_plugin_view(
     manifest: busbar_kernel::admission::Stated,
     judged: busbar_kernel::admission::Judged,
-    restart_required_default: bool,
+    restart_default: impl FnOnce(&str) -> bool,
 ) -> serde_json::Value {
     use busbar_kernel::admission::Judged;
     let trust = match judged {
@@ -866,7 +866,7 @@ fn inspect_plugin_view(
         "schema_error": schema_error,
         "trust": trust,
         "source": "manifest",
-        "restart_required_default": restart_required_default,
+        "restart_required_default": restart_default(&manifest.kind),
     })
 }
 
