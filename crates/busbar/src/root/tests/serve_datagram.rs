@@ -567,12 +567,28 @@ async fn boot_binds_a_claim_door_for_the_actual_datagram_product_and_no_stream_l
             _ => None,
         }
     }
+    let root = crate::root::loader::boot::InboundBind {
+        owner: crate::root::loader::boot::BindOwner::Root,
+        transport: String::new(),
+        at: "listen".into(),
+        listen: "127.0.0.1:0".parse().unwrap(),
+        tls: None,
+        max_conns: u64::MAX,
+    };
     let doors = ClaimDoors::bind(
-        &[need("http", "127.0.0.1:0"), need("webrtc", "127.0.0.1:0")],
+        &[
+            root,
+            need("http", "127.0.0.1:0"),
+            need("webrtc", "127.0.0.1:0"),
+        ],
         framers,
     )
     .unwrap();
     assert!(doors.get("http").is_none());
+    assert!(
+        doors.get("").is_none(),
+        "the root own listener is not a claim door"
+    );
     let door = doors.get("webrtc").unwrap();
     assert!(door.local().ip().is_loopback());
     assert_ne!(door.local().port(), 0);
