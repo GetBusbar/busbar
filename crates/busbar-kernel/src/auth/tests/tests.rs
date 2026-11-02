@@ -1855,16 +1855,9 @@ fn naming_chain(
 }
 
 fn replay_gov() -> std::sync::Arc<crate::governance::GovState> {
-    use busbar_contract::store_calls::StoreDoor;
-    let opened = crate::test_support::store_axis_stand_in()
-        .open(
-            StoreDoor::Linked(crate::test_support::store_double::door),
-            crate::test_support::store_double::NAME,
-            b"{}",
-        )
-        .expect("the store double opens through its door");
-    let gov = crate::governance::GovState::new(opened.records, None).expect("gov");
-    assert!(gov.attach_store_calls(opened.calls.expect("a door-opened store has its calls")));
+    let actual = crate::real_store::store();
+    let gov = crate::governance::GovState::new(actual.clone(), None).expect("gov");
+    assert!(gov.attach_store_calls(actual));
     std::sync::Arc::new(gov)
 }
 
