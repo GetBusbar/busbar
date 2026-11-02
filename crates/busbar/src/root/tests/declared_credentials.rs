@@ -21,7 +21,18 @@ fn fixture() -> &'static serde_json::Value {
     })
 }
 
+fn fixture_boot() {
+    static BOOT: std::sync::Once = std::sync::Once::new();
+    BOOT.call_once(|| {
+        crate::register_diagnostics();
+        busbar_kernel::preflight::install_declared_styles(
+            crate::root::door_steps::declared_styles(),
+        );
+    });
+}
+
 fn axis() -> Arc<dyn busbar_contract::auth_calls::AuthAxis> {
+    fixture_boot();
     crate::root::dispatch::auth_axis(Arc::new(crate::root::loader::PluginRegistry::empty()))
 }
 
@@ -1209,6 +1220,7 @@ fn each_dialects_declared_scheme_maps_to_its_recorded_binding() {
 #[cfg(all(linked_driver_proofs, feature = "auth-header"))]
 #[test]
 fn a_configured_api_key_override_presents_the_api_key_header_on_every_dialect() {
+    fixture_boot();
     use busbar_contract::auth_calls::{Fields, FieldsRequest};
     const KEY: &str = "operator-key-0123456789";
     let served = served_pools_door();
@@ -1220,9 +1232,6 @@ fn a_configured_api_key_override_presents_the_api_key_header_on_every_dialect() 
         "the door states an outbound need serving the `api-key` override: {:?}",
         served.need_auths
     );
-    let key_file =
-        std::env::temp_dir().join(format!("busbar-declared-override-{}", std::process::id()));
-    std::fs::write(&key_file, KEY).expect("the key");
     for dialect in &served.dialects {
         let entry: busbar_kernel::config::ProviderCfg = serde_yaml::from_str(&format!(
             "{{protocol: {dialect}, base_url: 'http://127.0.0.1:9', api_key: none, \
@@ -1238,8 +1247,11 @@ fn a_configured_api_key_override_presents_the_api_key_header_on_every_dialect() 
         );
         let route = providers.get_mut("p").expect("the provider's route");
         assert_eq!(route.style.as_deref(), Some("api-key"), "{dialect}");
-        route.credential =
-            busbar_contract::secret_ref::SecretRef::file(key_file.display().to_string());
+        route.credential = serde_json::from_value(serde_json::json!({
+            "module": "override-fixture",
+            "settings": {"id": "declared-override"}
+        }))
+        .expect("the explicit fixture reference");
         let section: serde_yaml::Value =
             serde_yaml::from_str("models: {m: {provider: p}}").expect("yaml");
         let dispatcher = Arc::new(crate::root::loader::dispatch::Dispatcher::new(
@@ -1248,7 +1260,17 @@ fn a_configured_api_key_override_presents_the_api_key_header_on_every_dialect() 
         crate::root::connector::install_io(&dispatcher);
         let reach = crate::root::door_steps::DoorReach {
             providers: &providers,
-            secrets: Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only()),
+            secrets: Arc::new(busbar_kernel::config::secret::SecretResolver::with_plugin(
+                Box::new(|module, settings| {
+                    if module == "override-fixture" && settings == r#"{"id":"declared-override"}"# {
+                        Ok(busbar_kernel::config::secret::Held::new(
+                            KEY.as_bytes().to_vec(),
+                        ))
+                    } else {
+                        Err("unbound override fixture reference".into())
+                    }
+                }),
+            )),
             auths: Arc::new(crate::root::door_steps::OutboundAuths::new(
                 dispatcher,
                 crate::LINKED.auths,
@@ -1296,7 +1318,6 @@ fn a_configured_api_key_override_presents_the_api_key_header_on_every_dialect() 
             "{dialect}: `auth: api-key` presents the credential in `api-key` alone"
         );
     }
-    let _ = std::fs::remove_file(&key_file);
 }
 
 #[test]
