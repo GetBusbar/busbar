@@ -66,3 +66,115 @@ async fn an_unpolled_worker_cancel_keeps_its_disposition_and_record_writes() {
 async fn an_unpolled_worker_cancel_fault_is_not_cancelled_again() {
     worker_cancel_before_caller_poll("cancel-fault").await;
 }
+
+#[tokio::test]
+async fn the_first_checkpoint_prices_its_answer_lane_on_the_admitted_card() {
+    use busbar_kernel::config::groups::{
+        ExhaustionMode, GroupCfg, LimitCfg, LimitMetric, LimitWindow,
+    };
+    use busbar_kernel::plane_driver::{EndPost, FeeRefund, PlaneMoney, UnitMoney};
+    struct NoPost;
+    impl EndPost for NoPost {
+        fn post(&self, _: &busbar_kernel::teller::UnitCtx, _: busbar_kernel::teller::Ended) {}
+    }
+    const AT: u64 = 1_700_000_000;
+    for (explicit, expensive) in [(true, false), (true, true), (false, false), (false, true)] {
+        let lane = if explicit { "tool_x" } else { "ok" };
+        let groups = std::collections::BTreeMap::from([(
+            "g".to_string(),
+            GroupCfg {
+                enabled: true,
+                limits: vec![LimitCfg {
+                    metric: LimitMetric::Budget,
+                    amount: 1,
+                    per: Some(LimitWindow::Month),
+                    scope: None,
+                    on_exhaust: None,
+                    downgrade_to: None,
+                    admission: None,
+                    on_exhaustion: None,
+                }],
+                ..Default::default()
+            },
+        )]);
+        let rate = |expensive| busbar_kernel::config::RateEntryCfg {
+            input_utok: if expensive { 100_000.0 } else { 1.0 },
+            output_utok: 1.0,
+            ..Default::default()
+        };
+        let card = std::collections::BTreeMap::from([
+            ("m".to_string(), rate(!expensive)),
+            (lane.to_string(), rate(expensive)),
+        ]);
+        let cost = Arc::new(busbar_kernel::cost::CostModel::resolve_parts(
+            Some(&card),
+            0,
+            &groups,
+        ));
+        let gov = Arc::new(
+            busbar_kernel::governance::GovState::new(Arc::new(MemoryStore::new()), None)
+                .expect("governance"),
+        );
+        let key = Arc::new(busbar_contract::records::VirtualKey {
+            id: "k".into(),
+            generation_hash: "h:k".into(),
+            name: "k".into(),
+            enabled: true,
+            group: Some("g".into()),
+            revision: 1,
+            ..Default::default()
+        });
+        let grant = gov.try_admit(&cost, &key, "", AT).expect("real admission");
+        let money = Arc::new(PlaneMoney::new(gov, Arc::new(NoPost)));
+        money.open(
+            common::ctx(7).key,
+            UnitMoney {
+                key,
+                cost,
+                pool: String::new(),
+                lane: "m".to_string(),
+                classes: Arc::from(vec!["input".to_string()]),
+                arrived: AT,
+                mode: ExhaustionMode::CutStream,
+                fee: FeeRefund::CallerStatus,
+                charge: grant.charge().clone(),
+            },
+        );
+        let r = rig(
+            Way::Double,
+            BufferCaps::default(),
+            cases::Book::forwarding(money.clone()),
+        );
+        let (steps, far, caller) = (
+            common::TestUnits::passing(),
+            if explicit {
+                cases::Far::new(&[], &[])
+            } else {
+                cases::Far::new(&["ok"], cases::CHUNKS)
+            },
+            cases::Caller::default(),
+        );
+        let target = if explicit { "/audit" } else { "/call" };
+        let units = r
+            .driver
+            .unit(&steps, &far, &caller, cases::arrival(target, b"x"), 0);
+        let outcome = cases::drive(&units).await;
+        assert_eq!(money.serving(common::ctx(7).key).as_deref(), Some(lane));
+        if expensive {
+            assert!(
+                matches!(
+                    outcome,
+                    busbar_contract::caps::Outcome::Failed(
+                        _,
+                        busbar_contract::caps::ReasonCode::OverBudget
+                    )
+                ),
+                "{outcome:?}"
+            );
+        } else {
+            assert_eq!(outcome, busbar_contract::caps::Outcome::Completed);
+        }
+        money.settle_end(common::ctx(7).key, if expensive { 429 } else { 200 });
+        assert_eq!(money.open_units(), 0);
+    }
+}
