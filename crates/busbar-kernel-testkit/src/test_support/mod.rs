@@ -1,15 +1,6 @@
-// Compiled three ways: under this crate's own cfg(test) (users: the in-crate test trees), under
-// the `test-support` FEATURE (users: a dependent crate's tests — the bin's), and never in a
-// production build. In the feature-only build the in-crate users are absent, so the fixture set
-// reads as dead to rustc; that is the compilation mode, not rot.
+// Dev-only fixture implementation, also mounted privately by kernel unit tests.
+// Kernel features expose only narrow real-behavior hooks, never this module.
 #![cfg_attr(not(test), allow(dead_code))]
-// This is the crate's TEST-FIXTURE surface (compiled only under `cfg(test)` or the `test-support`
-// feature, never in production). Its public builders legitimately name crate-internal config/state
-// types in their signatures — that is the whole point of a fixture: it hands a test the engine's real
-// inner types. Allowing `private_interfaces` here keeps those builders `pub` (reachable from a
-// dependent crate's tests — the plane suites) WITHOUT widening the engine's production config/state
-// types to `pub`. The types a dependent test must NAME to call a builder are widened individually.
-#![allow(private_interfaces)]
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
@@ -1882,6 +1873,8 @@ pub fn hook_axis_stand_in(
 pub mod audit;
 pub mod auth_helpers;
 pub mod governance;
+pub mod hooks;
+pub mod inbound;
 pub mod migration;
 pub use governance::GovStateFixtures;
 /// THE HOOK DOUBLE (OWNER 2026-10-03, no test plugins): the kernel's hook port answered in
