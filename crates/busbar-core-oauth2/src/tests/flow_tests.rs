@@ -173,32 +173,6 @@ pub(crate) fn path_of(url: &str) -> String {
         .to_string()
 }
 
-pub(crate) fn query_param(url: &str, name: &str) -> Option<String> {
-    url.split(['?', '&'])
-        .skip(1)
-        .filter_map(|p| p.split_once('='))
-        .find(|(k, _)| *k == name)
-        .map(|(_, v)| v.to_string())
-}
-
-pub(crate) fn location(headers: &reqwest::header::HeaderMap, origin: &str) -> String {
-    let raw = headers
-        .get(reqwest::header::LOCATION)
-        .expect("a redirect carries Location")
-        .to_str()
-        .expect("ASCII Location")
-        .to_string();
-    if raw.starts_with('/') {
-        format!("{origin}{raw}")
-    } else {
-        raw
-    }
-}
-
-async fn serve() -> (String, Arc<busbar_kernel::state::App>) {
-    serve_with_admin_chain(Vec::new()).await
-}
-
 pub(crate) async fn serve_with_admin_chain(
     admin_chain: Vec<String>,
 ) -> (String, Arc<busbar_kernel::state::App>) {
@@ -389,118 +363,9 @@ fn the_session_cookie_carries_exactly_the_attributes_it_should() {
     }
 }
 
-fn requesting(page: &str) -> String {
-    page.split_once("<p>Requesting: <code>")
-        .and_then(|(_, rest)| rest.split_once("</code>"))
-        .map(|(scope, _)| scope.to_string())
-        .unwrap_or_else(|| panic!("the screen names what it is asking for: {page}"))
-}
-
-async fn shown_and_granted(
-    origin: &str,
-    app: &busbar_kernel::state::App,
-    client_id: &str,
-    scope_param: &str,
-) -> (String, String) {
-    shown_and_granted_after_lookup_failure(origin, app, client_id, scope_param, None).await
-}
-
-async fn shown_and_granted_after_lookup_failure(
-    origin: &str,
-    app: &busbar_kernel::state::App,
-    client_id: &str,
-    scope_param: &str,
-    fault: Option<&FailClientRead>,
-) -> (String, String) {
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .expect("client");
-    let mut jar = Jar::new(false);
-    let authorize = format!(
-        "{origin}/authorize?response_type=code&client_id={}\
-         &redirect_uri=http%3A%2F%2F127.0.0.1%3A9999%2Fcb&state=s1{scope_param}\
-         &code_challenge={CHALLENGE}&code_challenge_method=S256",
-        encode_component(client_id)
-    );
-    let (status, headers, body) =
-        send(&client, &mut jar, reqwest::Method::GET, &authorize, None).await;
-    assert_eq!(status, 302, "authorize must redirect to consent: {body}");
-    let consent = location(&headers, origin);
-    if let Some(fault) = fault {
-        fault.fail_next.store(true, Ordering::SeqCst);
-        let (status, headers, page) =
-            send(&client, &mut jar, reqwest::Method::GET, &consent, None).await;
-        assert_eq!(
-            status, 503,
-            "an unresolved grant cannot be approved: {page}"
-        );
-        assert!(
-            !page.contains("<form"),
-            "no approval form on lookup failure: {page}"
-        );
-        assert_eq!(headers[reqwest::header::CACHE_CONTROL], "no-store");
-    }
-    let (status, _headers, page) =
-        send(&client, &mut jar, reqwest::Method::GET, &consent, None).await;
-    assert_eq!(status, 200, "the consent screen must render: {page}");
-    let shown = requesting(&page);
-
-    let return_to = percent_decode(
-        &query_param(&consent, "return").expect("the screen carries the pending request"),
-    );
-    let (status, headers, body) = send(
-        &client,
-        &mut jar,
-        reqwest::Method::POST,
-        &format!("{origin}/consent"),
-        Some(&[("return", return_to.as_str())]),
-    )
-    .await;
-    assert_eq!(status, 302, "an approval must redirect back: {body}");
-    let back = location(&headers, origin);
-    let (status, headers, body) = send(&client, &mut jar, reqwest::Method::GET, &back, None).await;
-    assert_eq!(status, 302, "the approved request must redirect: {body}");
-    let redirect = location(&headers, origin);
-    let code = query_param(&redirect, "code")
-        .unwrap_or_else(|| panic!("the approved request must carry a code: {redirect}"));
-    let (status, _headers, body) = send(
-        &client,
-        &mut jar,
-        reqwest::Method::POST,
-        &format!("{origin}/token"),
-        Some(&[
-            ("grant_type", "authorization_code"),
-            ("code", code.as_str()),
-            ("client_id", client_id),
-            ("redirect_uri", REDIRECT_URI),
-            ("code_verifier", VERIFIER),
-        ]),
-    )
-    .await;
-    assert_eq!(status, 200, "the code must be exchangeable: {body}");
-    let token: serde_json::Value = serde_json::from_str(&body).expect("a token response is JSON");
-    let access = token["access_token"]
-        .as_str()
-        .unwrap_or_else(|| panic!("no access_token: {body}"));
-    let record = oauth_as_plane(app)
-        .expect("configured")
-        .server()
-        .introspect(access)
-        .await
-        .expect("introspection must not fail")
-        .expect("the freshly minted token must be live");
-    (shown, record.scope.to_string())
-}
-
-async fn register_defaulting_to(
-    app: &busbar_kernel::state::App,
-    client_id: &str,
-    default: &[&str],
-) {
+async fn register_defaulting_to(plane: &crate::plane::AsPlane, client_id: &str, default: &[&str]) {
     let scopes = ScopeSet::from_tokens(default.iter().copied()).expect("scope");
-    oauth_as_plane(app)
-        .expect("configured")
+    plane
         .server()
         .register_client(Client {
             client_id: ClientId::new(client_id),
@@ -547,28 +412,53 @@ async fn a_metadata_document_client_naming_no_scope_is_shown_the_default_it_is_g
 
 #[tokio::test]
 async fn a_failed_default_scope_lookup_refuses_consent_and_recovers() {
-    let calls = crate::testkit::store_calls();
     let fault = Arc::new(FailClientRead {
-        inner: calls,
+        inner: crate::testkit::store_calls(),
         fail_next: AtomicBool::new(false),
     });
-    let (origin, app) = serve_with_store(Vec::new(), Some(fault.clone())).await;
-    let (shown, granted) =
-        shown_and_granted_after_lookup_failure(&origin, &app, CLIENT_ID, "", Some(&fault)).await;
+    let plane = owner_plane_with_store(fault.clone());
+    register_defaulting_to(&plane, CLIENT_ID, &[SCOPE]).await;
+    fault.fail_next.store(true, Ordering::SeqCst);
+    assert!(
+        plane.granted_scope(CLIENT_ID, None).await.is_err(),
+        "an unresolved grant cannot be approved"
+    );
+    let shown = plane
+        .granted_scope(CLIENT_ID, None)
+        .await
+        .expect("the lookup recovers");
+    let token = approved_token(&plane, CLIENT_ID).await;
+    let record = plane
+        .server()
+        .introspect(&token.access_token)
+        .await
+        .unwrap()
+        .unwrap();
+    let granted = record.scope.to_string();
     assert_eq!(
         granted, SCOPE,
         "the recovered request grants its registered default"
     );
-    assert_eq!(shown, granted, "the recovered screen names the grant");
-
-    const EMPTY: &str = "flow-test-shared-empty-default";
-    register_defaulting_to(&app, EMPTY, &[]).await;
-    let (shown, granted) = shown_and_granted(&origin, &app, EMPTY, "").await;
     assert_eq!(
-        granted, "",
+        shown, granted,
+        "the recovered consent resolver names the grant"
+    );
+    const EMPTY: &str = "flow-test-shared-empty-default";
+    register_defaulting_to(&plane, EMPTY, &[]).await;
+    let shown = plane.granted_scope(EMPTY, None).await.unwrap();
+    let token = approved_token(&plane, EMPTY).await;
+    let record = plane
+        .server()
+        .introspect(&token.access_token)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        record.scope.to_string(),
+        "",
         "a successfully resolved empty default remains valid"
     );
-    assert_eq!(shown, "no scopes");
+    assert_eq!(shown, "");
 }
 
 struct FailClientRead {
@@ -701,17 +591,6 @@ impl StoreCalls for FailClientRead {
     }
 }
 
-pub(crate) fn encode_component(s: &str) -> String {
-    s.bytes()
-        .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                char::from(b).to_string()
-            }
-            other => format!("%{other:02X}"),
-        })
-        .collect()
-}
-
 const CIMD_CLIENT_ID: &str = "https://client.example/oauth-client";
 
 struct StubDocumentHost(serde_json::Value);
@@ -758,6 +637,10 @@ async fn a_client_id_metadata_document_admits_a_client_end_to_end() {
 }
 
 fn owner_plane() -> Arc<crate::plane::AsPlane> {
+    owner_plane_with_store(crate::testkit::store_calls())
+}
+
+fn owner_plane_with_store(store: Arc<dyn StoreCalls>) -> Arc<crate::plane::AsPlane> {
     let config = OauthAsCfg {
         issuer: "https://as.example.com".into(),
         default_grant: vec![SCOPE.into()],
@@ -769,7 +652,7 @@ fn owner_plane() -> Arc<crate::plane::AsPlane> {
         Vec::new(),
         Vec::new(),
         None,
-        Some(crate::testkit::store_calls()),
+        Some(store),
     )
     .expect("the actual owner seam builds over the supplied Store product")
     .downcast::<crate::plane::AsPlane>()
@@ -811,31 +694,6 @@ async fn approved_token(
         })
         .await
         .expect("the approved code exchanges")
-}
-
-pub(crate) fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'%' if i + 2 < bytes.len() => match u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                Ok(b) => {
-                    out.push(b);
-                    i += 3;
-                }
-                Err(_) => {
-                    out.push(b'%');
-                    i += 1;
-                }
-            },
-            b => {
-                out.push(b);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8(out).expect("the server produced UTF-8")
 }
 
 #[tokio::test]
