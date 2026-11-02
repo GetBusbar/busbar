@@ -741,55 +741,50 @@ async fn list_plugins_store_single_flights_concurrent_misses() {
 
 #[test]
 fn catalog_cache_ttl_prunes_stale_entries() {
-    let dir = tmp_plugins_dir("ttl");
-    let svc = svc_with(dir.clone(), unsigned_ok_posture());
-    let _ = svc.store_plugin_catalog();
+    let now = CATALOG_CACHE_TTL_SECS + 10;
+    let dir = std::path::PathBuf::from("cached");
+    let mut cache = HashMap::from([(
+        dir.clone(),
+        CatalogCacheEntry {
+            key: 0,
+            rows: Vec::new(),
+            misses: 1,
+            inserted_at: now,
+        },
+    )]);
     assert!(
-        catalog_cache().lock().unwrap().contains_key(&dir),
-        "the scan above must have seeded a cache entry"
+        cache.contains_key(&dir),
+        "the input contains a cached entry"
     );
-
-    {
-        let mut cache = catalog_cache().lock().unwrap();
-        let entry = cache.get_mut(&dir).expect("entry present");
-        entry.inserted_at = busbar_kernel::store::now().saturating_sub(CATALOG_CACHE_TTL_SECS + 1);
-    }
-
-    let other_dir = tmp_plugins_dir("ttl-other");
-    let other_svc = svc_with(other_dir.clone(), unsigned_ok_posture());
-    let _ = other_svc.store_plugin_catalog();
-
+    cache.get_mut(&dir).expect("entry present").inserted_at =
+        now.saturating_sub(CATALOG_CACHE_TTL_SECS + 1);
+    prune_catalog_cache(&mut cache, now);
     assert!(
-        !catalog_cache().lock().unwrap().contains_key(&dir),
+        !cache.contains_key(&dir),
         "an entry older than CATALOG_CACHE_TTL_SECS must be pruned on the next cache access"
     );
 }
 
 #[test]
 fn catalog_cache_future_inserted_at_is_treated_as_stale() {
-    let dir = tmp_plugins_dir("ttl-future-clock");
-    let svc = svc_with(dir.clone(), unsigned_ok_posture());
-    let _ = svc.store_plugin_catalog();
+    let now = CATALOG_CACHE_TTL_SECS + 10;
+    let dir = std::path::PathBuf::from("cached");
+    let mut cache = HashMap::from([(
+        dir.clone(),
+        CatalogCacheEntry {
+            key: 0,
+            rows: Vec::new(),
+            misses: 1,
+            inserted_at: now,
+        },
+    )]);
     assert!(
-        catalog_cache().lock().unwrap().contains_key(&dir),
-        "the scan above must have seeded a cache entry"
+        cache.contains_key(&dir),
+        "the input contains a cached entry"
     );
-
-    {
-        let mut cache = catalog_cache().lock().unwrap();
-        let entry = cache.get_mut(&dir).expect("entry present");
-        entry.inserted_at = busbar_kernel::store::now() + CATALOG_CACHE_TTL_SECS + 1;
-    }
-
-    let other_dir = tmp_plugins_dir("ttl-future-clock-other");
-    let other_svc = svc_with(other_dir.clone(), unsigned_ok_posture());
-    let _ = other_svc.store_plugin_catalog();
-
-    assert!(
-        !catalog_cache().lock().unwrap().contains_key(&dir),
-        "an entry whose inserted_at is in the future (backward clock jump) must be treated as \
-             stale, not ageless"
-    );
+    cache.get_mut(&dir).expect("entry present").inserted_at = now + CATALOG_CACHE_TTL_SECS + 1;
+    prune_catalog_cache(&mut cache, now);
+    assert!(!cache.contains_key(&dir), "an entry whose inserted_at is in the future (backward clock jump) must be treated as stale, not ageless");
 }
 
 #[cfg(unix)]

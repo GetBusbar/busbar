@@ -331,6 +331,12 @@ const CATALOG_CACHE_TTL_SECS: u64 = 120;
 
 static CATALOG_CACHE: OnceLock<Mutex<HashMap<PathBuf, CatalogCacheEntry>>> = OnceLock::new();
 
+fn prune_catalog_cache(cache: &mut HashMap<PathBuf, CatalogCacheEntry>, now: u64) {
+    cache.retain(|_, entry| {
+        entry.inserted_at <= now && now.saturating_sub(entry.inserted_at) < CATALOG_CACHE_TTL_SECS
+    });
+}
+
 fn catalog_cache() -> &'static Mutex<HashMap<PathBuf, CatalogCacheEntry>> {
     CATALOG_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }

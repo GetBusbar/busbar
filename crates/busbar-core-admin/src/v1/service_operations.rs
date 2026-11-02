@@ -499,9 +499,7 @@ impl AdminService {
 
         let now = busbar_kernel::store::now();
 
-        catalog_cache().lock().unwrap().retain(|_, e| {
-            e.inserted_at <= now && now.saturating_sub(e.inserted_at) < CATALOG_CACHE_TTL_SECS
-        });
+        prune_catalog_cache(&mut catalog_cache().lock().unwrap(), now);
 
         static FINGERPRINT_WARNED: std::sync::atomic::AtomicBool =
             std::sync::atomic::AtomicBool::new(false);
