@@ -431,6 +431,11 @@ fn the_last_resort_owns_no_probe() {
             },
         );
     }
+    // This assertion checks the exact HTTP status as well as the neutral success class.
+    for lane in ["a", "b", "c"] {
+        node.conns
+            .script(lane, Script::Frames(super::walk_tests::answer(200)));
+    }
     let taken = node.walker("primary").take();
     assert!(taken.degraded, "the fixture must reach the last resort");
     assert_eq!(taken.probe, None, "the bypass owns no probe");

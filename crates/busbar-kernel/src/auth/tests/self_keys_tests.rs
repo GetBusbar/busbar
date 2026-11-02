@@ -1547,9 +1547,11 @@ async fn proof_self_mint_disabled_refuses_self_serve() {
     crate::snapshot::init();
     for self_mint in [Some(true), Some(false), None] {
         let gov = gov();
+        let overlay = crate::test_support::TestOverlayStore::new();
         let app = crate::test_support::TestApp::new()
             .idp_chain()
             .governance(gov.clone())
+            .overlay_backend(overlay.backend())
             .group("team", GroupCfg::default())
             .role_bindings(bindings("test-idp-module", "idp-user", Some("team")))
             .mint_policy(crate::governance::mint_policy::MintPolicy {

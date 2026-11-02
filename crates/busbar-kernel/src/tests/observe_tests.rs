@@ -206,7 +206,10 @@ fn observer_histograms_reserve_generated_quantiles_before_cardinality_and_snapsh
             if sample.name == name {
                 assert_eq!(quantiles.len(), 1, "{sample:?}");
                 assert!(["0", "0.5", "0.9", "0.95", "0.99", "0.999", "1"].contains(&quantiles[0]));
-                assert_eq!(sample.value, "2");
+                // Summary quantiles use the recorder's approximate sketch. Preserve the value
+                // check within its default relative accuracy; sum/count below stay exact.
+                let value: f64 = sample.value.parse().expect("a numeric quantile");
+                assert!((value - 2.0).abs() <= 0.002, "{sample:?}");
             } else {
                 assert!(quantiles.is_empty(), "{sample:?}");
                 let audit = sample

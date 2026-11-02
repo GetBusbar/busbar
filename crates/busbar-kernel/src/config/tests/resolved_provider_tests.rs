@@ -5,12 +5,10 @@
 //! BUSBAR-1.6.0.md #49 (the kernel names no plane string), THE DESIGN §4 ("its dialect fields go to
 //! the planes that use the provider").
 
-use std::collections::HashMap;
-
 use serde_json::json;
 
 use super::providers::{merge_tables, ProviderTable, CORE_PROVIDER_KEYS};
-use super::{resolve, ProviderDef, ProviderDeploy};
+use super::{ProviderDef, ProviderDeploy, ResolvedProvider};
 
 fn table(value: serde_json::Value) -> ProviderTable {
     match value {
@@ -35,10 +33,9 @@ fn the_resolved_provider_carries_the_plane_keys_as_one_table_merged_by_the_neutr
          model_capabilities: [{models: [m2*]}]\npath: /v1/x\n",
     )
     .expect("a deployment");
-    let mut deploy = super::tests::base_deploy();
-    deploy.providers.insert("p".to_string(), dep);
-    let cfg = resolve(&deploy, &HashMap::from([("p".to_string(), def)])).expect("it resolves");
-    let p = &cfg.providers["p"];
+    // Exercise the neutral merge directly. Boot additionally judges opaque options through a
+    // loaded plane; this unit test deliberately has no provider-speaking plane installed.
+    let p = ResolvedProvider::merge(&def, &dep);
     assert_eq!(
         serde_json::Value::Object(p.table.clone()),
         json!({
