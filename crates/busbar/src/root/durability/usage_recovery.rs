@@ -106,6 +106,15 @@ fn selected(
         if !chains.contains_key(&at.node) {
             let records = read_chain(calls, at.node).map_err(unavailable)?;
             let decoded = busbar_kernel_wal::decode_run(&records).map_err(invalid)?;
+            if records
+                .iter()
+                .zip(&decoded)
+                .any(|(outer, inner)| outer.identity() != inner.identity())
+            {
+                return Err(invalid(
+                    "recovery journal key and sealed record identity differ",
+                ));
+            }
             busbar_kernel_wal::verify_journal(&decoded).map_err(invalid)?;
             chains.insert(at.node, decoded);
         }
@@ -724,5 +733,42 @@ mod tests {
         independent
             .expect("unrelated operation must finish while the first Store call is pending")
             .unwrap();
+    }
+
+    #[test]
+    fn a_valid_sealed_record_under_another_store_sequence_is_not_replay_evidence() {
+        use super::super::store_chain::{part_key, JOURNAL_SCHEMA};
+        let slots = RecordSlots::new();
+        let book = opened(&slots, "recovery-key-identity");
+        let sink = usage_recovery_sink(&book);
+        sink.persist(&intent()).unwrap();
+        let calls = slots.calls();
+        let (tip, raw) = head(calls.as_ref(), &[1; 16]).unwrap().unwrap();
+        let prefix = part_key(tip.node, tip.sequence, 0);
+        let parts = wait_for(calls.record_scan(JOURNAL_SCHEMA, &prefix[..16], 65_536)).unwrap();
+        let mut mutations = vec![Mutation::DeleteRange {
+            schema: JOURNAL_SCHEMA.into(),
+            prefix: prefix[..16].to_vec(),
+            exact_key_length: 18,
+        }];
+        for (index, (_, value)) in parts.into_iter().enumerate() {
+            mutations.push(Mutation::Put {
+                schema: JOURNAL_SCHEMA.into(),
+                key: part_key(tip.node, tip.sequence + 1, index as u16).to_vec(),
+                value: value.as_slice().to_vec(),
+            });
+        }
+        let rewrite = super::super::conditional::candidate(
+            vec![Predicate {
+                schema: HEAD_SCHEMA.into(),
+                key: vec![1; 16],
+                expected: Expected::Bytes(raw),
+            }],
+            mutations,
+        );
+        wait_for(calls.record_transaction(&rewrite)).unwrap();
+        assert!(
+            matches!(sink.replay(), Err(RecoveryError::Invalid(reason)) if reason.contains("key and sealed record identity"))
+        );
     }
 }
