@@ -50,7 +50,29 @@ pub fn validate_groups(
     pool_exists: &dyn Fn(&str) -> bool,
     errors: &mut Vec<String>,
 ) {
+    // Metrics of one logical bucket intentionally merge, but distinct component tuples must
+    // never share the persisted string used by governance and the Store.
+    let mut identities: BTreeMap<String, (&str, &str, Option<&ScopeRef>)> = BTreeMap::new();
     for (name, group) in groups {
+        for limit in &group.limits {
+            if limit.metric == LimitMetric::Concurrent {
+                continue;
+            }
+            let Some(window) = limit.per else { continue };
+            let components = (name.as_str(), window.as_str(), limit.scope.as_ref());
+            let id = crate::cost::group_bucket_id(components.0, components.1, components.2);
+            if let Some(previous) = identities.get(&id) {
+                if previous != &components {
+                    errors.push(format!(
+                        "groups.{name}.limits has enforcement bucket identity `{id}` also used by \
+                         distinct limits of group `{}`; rename the group or its pool to keep usage separate",
+                        previous.0
+                    ));
+                }
+            } else {
+                identities.insert(id, components);
+            }
+        }
         // A pool-qualified limit against a pool that doesn't exist would silently never match any
         // traffic (an unenforced budget) - reject it at the door instead.
         let own = group.limits.iter().map(|l| (l, "limits"));

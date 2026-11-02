@@ -352,3 +352,85 @@ fn provision_child_builds_leaf_from_nearest_default() {
     assert_eq!(unknown.parent.as_deref(), Some("nope"));
     assert!(unknown.limits.is_empty());
 }
+
+/// Candidate validation sees exactly the identities governance will use, including ambiguous
+/// boundaries between a group's name, its window and a pool containing a window suffix.
+#[test]
+fn distinct_groups_cannot_share_a_generated_enforcement_identity() {
+    let mut groups: BTreeMap<String, GroupCfg> = serde_yaml::from_str(
+        r#"
+a:
+  limits:
+    - { requests: 2, per: day, pool: 'x@day' }
+    - { tokens: 9, per: day, pool: 'x@day' }
+'a@day#pool:x':
+  limits: [{ budget: 4, per: day }]
+"#,
+    )
+    .unwrap();
+    let mut errors = Vec::new();
+    validate_groups(&groups, &|p| p == "x@day", &mut errors);
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(errors[0].contains("group:a@day#pool:x@day"), "{errors:?}");
+
+    // Repeated metrics of the same bucket keep their existing merge behavior. Punctuation is
+    // allowed where it does not make an actual collision, and existing bucket IDs stay stable.
+    let other = groups.remove("a@day#pool:x").unwrap();
+    groups.insert("a@day#pool:other".into(), other);
+    errors.clear();
+    validate_groups(&groups, &|p| p == "x@day", &mut errors);
+    assert!(errors.is_empty(), "{errors:?}");
+    let cost = crate::cost::CostModel::resolve_parts(None, 0, &groups);
+    let bucket = &cost.group_named("a").unwrap().buckets[0];
+    assert_eq!(bucket.bucket_id, "group:a@day#pool:x@day");
+    assert_eq!(cost.group_named("a").unwrap().buckets.len(), 1);
+}
+
+#[test]
+fn boot_group_updates_and_self_mint_all_refuse_bucket_identity_collisions() {
+    use crate::governance::group_provision::{build_with_group, plan_mint_group};
+    use crate::test_support::{LaneSpec, TestApp};
+    use std::sync::Arc;
+
+    let groups: BTreeMap<String, GroupCfg> = serde_yaml::from_str(
+        r#"
+a:
+  limits: [{ requests: 2, per: day, pool: 'x@day' }]
+parent:
+  child_default:
+    limits: [{ budget: 4, per: day }]
+"#,
+    )
+    .unwrap();
+    let conflicting: GroupCfg = serde_yaml::from_str("limits: [{ budget: 4, per: day }]").unwrap();
+    let app = TestApp::new()
+        .lane(LaneSpec::new("m", "proto-a", "http://127.0.0.1:1"))
+        .pool("x@day", &[(0, 1)])
+        .build();
+    let mut app = (*app).clone();
+    app.groups_registry = groups.clone();
+    app.cost = Arc::new(app.cost.with_groups(&groups));
+    let current = Arc::new(app);
+    let id = "group:a@day#pool:x@day";
+    match build_with_group(&current, "a@day#pool:x", conflicting.clone()) {
+        Err(crate::config::transaction::TxnError::Validation(why)) => {
+            assert!(why.contains(id), "{why}")
+        }
+        _ => panic!("an admin group candidate must refuse the shared bucket"),
+    }
+    match plan_mint_group(&current, "a@day#pool:x", Some("parent"), "fixture") {
+        Err(crate::config::transaction::TxnError::Validation(why)) => {
+            assert!(why.contains(id), "{why}")
+        }
+        _ => panic!("self-mint must refuse the shared bucket before provisioning"),
+    }
+    assert!(!current.groups_registry.contains_key("a@day#pool:x"));
+
+    let mut cfg = crate::test_support::cfg_with_provider_api_key(crate::config::SecretRef::none());
+    cfg.pools.insert("x@day".into(), Default::default());
+    cfg.groups = groups;
+    cfg.groups.insert("a@day#pool:x".into(), conflicting);
+    let errors =
+        crate::config_validate::validate(&cfg).expect_err("boot must refuse the shared bucket");
+    assert!(errors.iter().any(|why| why.contains(id)), "{errors:?}");
+}
