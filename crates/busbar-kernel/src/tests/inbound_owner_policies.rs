@@ -381,11 +381,11 @@ fn verifier_projection_lends_the_original_candidate_and_unrewritten_request_valu
     );
     assert_eq!(
         (
-            projected.method,
-            projected.authority,
-            projected.path,
-            projected.query,
-            projected.body
+            projected.method.clone(),
+            projected.authority.clone(),
+            projected.path.clone(),
+            projected.query.clone(),
+            projected.body.clone()
         ),
         (
             head.method.clone(),
