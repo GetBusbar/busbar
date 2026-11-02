@@ -92,8 +92,12 @@
 //! stream's FIRST, carrying the status where the wire reports one there; it is framed even when no
 //! field is left in it (an EMPTY fields piece, with [`PIECE_END_OF_FRAME`], is an empty head, never
 //! the stream's end), so the head always precedes the first payload piece and a later fields frame
-//! is the far end's fields after its body (trailers). The block's bytes are [`fields`]' rendering;
-//! hop-by-hop fields never enter it: the framer drops them. A pseudo-field (`:method`, `:path`,
+//! is the far end's fields after its body (trailers). The block's bytes are [`fields`]' rendering.
+//! A DIALLED response drops hop-by-hop fields. An ACCEPTED request retains every decoded field
+//! left after auth-declared stripping: the host must claim the exact head that `unit.hand_in`
+//! admitted, including any framing fields covered by authentication. Its body is still unframed
+//! into payload pieces; retaining these fields does not forward their original wire framing.
+//! A pseudo-field (`:method`, `:path`,
 //! `:authority`, `:status`) never does either: on an ACCEPTED stream the request's method, target
 //! and authority are typed [`HeadSlots`], a dialled answer's reason phrase too, and the answer's
 //! number is the piece's own `code`.
@@ -1173,8 +1177,9 @@ pub struct FramerSink {
 
 /// A STREAM'S HEAD TYPED SLOTS: what a head says that is never a field. A framer yields at most
 /// ONE per stream, in the same answer as that stream's first [`PIECE_FIELDS`] frame (the ordinary
-/// fields; a pseudo-field such as `:path` never enters a field block, and hop-by-hop fields, `te`
-/// among them, are dropped). Each slot's bytes are in [`FramerSink::frame`].
+/// fields; a pseudo-field such as `:path` never enters a field block). An ACCEPTED request keeps
+/// the exact decoded fields admitted after auth stripping; a DIALLED response drops hop-by-hop
+/// fields, `te` among them. Each slot's bytes are in [`FramerSink::frame`].
 ///
 /// * An ACCEPTED stream ([`SIDE_ACCEPT`]) fills `method`, `target` and, where the caller named one,
 ///   `authority`: the kernel fills the plane's `ArriveIn::method` and target from these slots, never

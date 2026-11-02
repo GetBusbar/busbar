@@ -3179,3 +3179,68 @@ async fn a_host_receipt_forwards_only_the_verifiers_credential_through_the_opaqu
         );
     }
 }
+
+/// Transport framing cannot delete a field after authentication or hand-in, even when that
+/// field described the original HTTP framing or was named by Connection. Accepted request blocks
+/// must preserve these bytes rather than borrowing the dialled-response header filter.
+#[test]
+fn authenticated_framing_fields_cannot_disappear_before_hand_in_or_claim() {
+    let script = Script::new(
+        AuthPoints::HEAD,
+        identity("signed-caller", "credential"),
+        vec![Strip::field("authorization".to_string())],
+    );
+    let k = kit(&[("a", Arc::clone(&script))]);
+    let listener = k.inbound.table(OWNER, GEN).unwrap().listener.clone();
+    k.inbound.install_at(OWNER, 71, GEN, listener).unwrap();
+    k.inbound.framing_started(OWNER, 71, 1, GEN).unwrap();
+    k.inbound.grant_stream(OWNER, 1, 1, GEN).unwrap();
+    let original = post(
+        MESSAGES,
+        &[
+            ("authorization", "credential"),
+            ("connection", "close, x-signed"),
+            ("content-length", "3"),
+            ("x-signed", "first"),
+            ("x-signed", "second"),
+        ],
+        Some("x=1"),
+    );
+    let answer = k
+        .call(MESSAGES, UnitRef::NONE, POINT_HEAD, original.clone())
+        .unwrap();
+    assert_eq!(answer.flow, FLOW_CONTINUE);
+    let admitted = original.stripped(&answer.strips).unwrap();
+    for removed in ["connection", "content-length", "x-signed"] {
+        let mut changed = admitted.clone();
+        changed.fields.retain(|(name, _)| name != removed);
+        assert_eq!(
+            k.hand_in(MESSAGES, MESSAGES, answer.unit, changed).0,
+            FLOW_STOP,
+            "auth permits only its own declared credential strip: {removed}"
+        );
+    }
+    assert_eq!(
+        k.hand_in(MESSAGES, MESSAGES, answer.unit, admitted.clone())
+            .0,
+        FLOW_CONTINUE
+    );
+    for removed in ["connection", "content-length", "x-signed"] {
+        let mut changed = admitted.clone();
+        changed.fields.retain(|(name, _)| name != removed);
+        assert!(
+            k.inbound.claim_request(OWNER, 1, 1, &changed).is_err(),
+            "emission cannot delete an admitted field: {removed}"
+        );
+    }
+    let receipt = k.inbound.claim_request(OWNER, 1, 1, &admitted).unwrap();
+    assert!(
+        matches!(receipt.verdict(), crate::auth::ChainVerdict::Identified { principal, .. }
+        if principal.id == "signed-caller")
+    );
+    assert_eq!(script.calls(), 1);
+    assert!(
+        k.inbound.claim_request(OWNER, 1, 1, &admitted).is_err(),
+        "claim remains single-use"
+    );
+}

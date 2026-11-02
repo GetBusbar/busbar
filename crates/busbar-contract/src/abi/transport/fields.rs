@@ -11,9 +11,11 @@
 //!   the order each first arrived, and a repeated name's values each on their OWN line, in arrival
 //!   order, directly after its first; never joined into one value.
 //! * A value is the far end's bytes, unaltered (a field value never holds CR or LF).
-//! * [`HOP_BY_HOP`] fields, and every field a `connection` field names, never enter the block: the
-//!   framer drops them ([`hop_by_hop`]). Nor does `content-length`: the pieces carry the body the
-//!   framer already unframed.
+//! * A dialled response drops [`HOP_BY_HOP`] fields, every field a `connection` field names
+//!   ([`hop_by_hop`]), and `content-length`: pieces carry its unframed body. An accepted request
+//!   instead retains every decoded field left after auth-declared stripping. Its host claims the
+//!   exact request accepted by `unit.hand_in`; dropping framing or signed fields after that
+//!   boundary would change the authenticated request. Payload pieces still carry its body.
 //!
 //! A writer renders the block with [`SEPARATOR`] and [`LINE_END`]; a reader splits it with
 //! [`lines`].
@@ -24,7 +26,7 @@ pub const SEPARATOR: &[u8] = b": ";
 /// After a field's value.
 pub const LINE_END: &[u8] = b"\r\n";
 
-/// The fields that never enter a field block, the ONE list (K2's `NEVER_KEPT` names its hop half
+/// The fields dropped from a dialled response block, the ONE list (K2's `NEVER_KEPT` names its hop half
 /// by this constant): HTTP's connection-specific fields, and `te`, `trailer`, `upgrade`,
 /// `proxy-connection`, `proxy-authenticate` and `proxy-authorization`. 1.5.5 had no generic strip;
 /// customer bytes are fixed by K2's keep allowlist (`Need::keep_response_headers`).
