@@ -73,6 +73,23 @@ impl ReleaseKey {
         }
     }
 
+    /// Why this public key is permanently retired, in every release-trust role.
+    /// Delegating a compromised key in a new keys document never restores its authority.
+    #[must_use]
+    pub fn retired_reason(&self) -> Option<&'static str> {
+        let ReleaseKey::Ed25519(key) = self else {
+            return None;
+        };
+        crate::sign::RETIRED_RELEASE_KEYS
+            .iter()
+            .find_map(|(hex, why)| {
+                crate::sign::public_key_from_hex(hex)
+                    .ok()
+                    .filter(|retired| retired == key)
+                    .map(|_| *why)
+            })
+    }
+
     /// A P-256 public key from the hex of its 65-byte uncompressed SEC1 point. The point's place on
     /// the curve is checked by every verification (`ring` refuses an off-curve key there), so a
     /// malformed point verifies nothing: it fails closed.
@@ -217,6 +234,8 @@ pub enum SealRefusal {
     KeysSignature { roots: Vec<String> },
     /// A retired root signed the keys document, and current roots did not meet the threshold.
     RetiredRoot { id: String, why: String },
+    /// A permanently retired delegated signer signed, and current signers missed the threshold.
+    RetiredSigner { id: String, why: String },
     /// The keys document has expired.
     KeysExpired {
         version: u64,
@@ -270,6 +289,7 @@ impl SealRefusal {
             SealRefusal::Malformed { .. } => "release-seal-malformed",
             SealRefusal::KeysSignature { .. } => "keys-signature",
             SealRefusal::RetiredRoot { .. } => "retired-root",
+            SealRefusal::RetiredSigner { .. } => "retired-signer",
             SealRefusal::KeysExpired { .. } => "keys-expired",
             SealRefusal::KeysRollback { .. } => "keys-rollback",
             SealRefusal::NoRole { .. } => "keys-no-role",
@@ -303,6 +323,11 @@ impl std::fmt::Display for SealRefusal {
                 f,
                 "the keys document is signed by retired root '{id}': {why}; install a release \
                  sealed under a current busbar root"
+            ),
+            SealRefusal::RetiredSigner { id, why } => write!(
+                f,
+                "the release manifest is signed by permanently retired signer '{id}': {why}; \
+                 install a release sealed by a current release signer"
             ),
             SealRefusal::KeysExpired {
                 version,
@@ -492,6 +517,7 @@ pub fn verify_release(
         });
     }
     let (mut signers, mut revoked): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
+    let mut retired_signer = None;
     for (keyid, sig) in &targets.signatures {
         if signers.contains(keyid) || revoked.contains(keyid) || !role.keyids.contains(keyid) {
             continue;
@@ -500,7 +526,12 @@ pub fn verify_release(
             continue;
         };
         if wire::verify(key, &targets.signed_bytes, sig) {
-            if kd.revoked_keyids.contains(keyid) {
+            if let Some(why) = key.retired_reason() {
+                retired_signer.get_or_insert_with(|| SealRefusal::RetiredSigner {
+                    id: keyid.clone(),
+                    why: why.to_string(),
+                });
+            } else if kd.revoked_keyids.contains(keyid) {
                 revoked.push(keyid.clone());
             } else {
                 signers.push(keyid.clone());
@@ -508,6 +539,9 @@ pub fn verify_release(
         }
     }
     if (signers.len() as u64) < role.threshold {
+        if let Some(retired) = retired_signer {
+            return Err(retired);
+        }
         return Err(if revoked.is_empty() {
             SealRefusal::TargetsSignature {
                 role: PLUGINS_ROLE.to_string(),

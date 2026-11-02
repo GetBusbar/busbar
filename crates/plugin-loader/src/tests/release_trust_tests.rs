@@ -524,6 +524,52 @@ fn a_release_signed_by_a_revoked_signer_is_refused() {
 }
 
 #[test]
+fn the_permanently_retired_public_key_stays_retired_when_delegated() {
+    let w = World::new();
+    let (retired_hex, why) = crate::sign::RETIRED_RELEASE_KEYS[0];
+    let retired_key = ReleaseKey::Ed25519(crate::sign::public_key_from_hex(retired_hex).unwrap());
+    let retired_id = wire::key_id(&retired_key);
+    let mut doc = keys_doc(&[&w.signer]);
+    doc.keys.insert(retired_id.clone(), retired_key.clone());
+    doc.roles
+        .get_mut(PLUGINS_ROLE)
+        .unwrap()
+        .keyids
+        .push(retired_id.clone());
+    let keys = seal_keys(&doc, &[&w.kms]);
+    let decoded = wire::read_keys(&keys).unwrap().doc;
+    assert!(!decoded.revoked_keyids.contains(&retired_id));
+    assert_eq!(decoded.keys[&retired_id].retired_reason(), Some(why));
+    assert_eq!(w.signer.key().retired_reason(), None);
+
+    // No retired private material is available. A forged key id must not authenticate retirement.
+    let targets = seal_targets(
+        &targets_doc(vec![entry(NAME, VERSION, PLUGIN_TARGET, &artefact())]),
+        &[&w.signer],
+    );
+    let mut forged: serde_json::Value = serde_json::from_slice(&targets).unwrap();
+    forged["signatures"][0]["keyid"] = serde_json::json!(retired_id);
+    let forged_bytes = serde_json::to_vec(&forged).unwrap();
+    assert!(matches!(
+        w.verify(&keys, &forged_bytes, &artefact(), checks()),
+        Err(SealRefusal::TargetsSignature { valid: 0, .. })
+    ));
+
+    let mut valid: serde_json::Value = serde_json::from_slice(&targets).unwrap();
+    valid["signatures"]
+        .as_array_mut()
+        .unwrap()
+        .push(forged["signatures"][0].clone());
+    w.verify(
+        &keys,
+        &serde_json::to_vec(&valid).unwrap(),
+        &artefact(),
+        checks(),
+    )
+    .expect("a forged retired signer id cannot poison a valid current signer");
+}
+
+#[test]
 fn a_revoked_digest_is_refused_though_the_release_lists_it() {
     let w = World::new();
     let mut doc = keys_doc(&[&w.signer]);
@@ -601,6 +647,10 @@ fn every_refusal_is_explained_and_coded() {
         },
         SealRefusal::RetiredRoot {
             id: "retired-root".into(),
+            why: "compromised release key".into(),
+        },
+        SealRefusal::RetiredSigner {
+            id: "retired-signer".into(),
             why: "compromised release key".into(),
         },
         SealRefusal::KeysExpired {
