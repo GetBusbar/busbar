@@ -11,8 +11,10 @@ use busbar_kernel::rate_apply::RateEpoch;
 use busbar_kernel_ledger::cost::{
     price_in_view, Author, CardEntryDraft, History, LaneClass, LedgerEntry, RateCard,
 };
-use busbar_kernel_testkit::test_support::rate_holders::install_rate_epoch;
-use busbar_kernel_testkit::test_support::store_double::MemoryStore;
+use busbar_kernel::door;
+
+#[path = "../src/tests/real_store.rs"]
+mod real_store;
 
 struct Holder(Mutex<Arc<History>>, std::sync::atomic::AtomicBool);
 
@@ -43,7 +45,7 @@ impl RateEpoch for Holder {
 
 static SERIAL: Mutex<()> = Mutex::new(());
 
-#[path = "dated_budget/raw_provenance.rs"]
+#[path = "../../busbar/src/tests/kernel_application/external_dated_budget_raw.rs"]
 mod raw_provenance;
 
 fn holder_opening(card: RateCard) -> (&'static Holder, std::sync::MutexGuard<'static, ()>) {
@@ -55,7 +57,10 @@ fn holder_opening(card: RateCard) -> (&'static Holder, std::sync::MutexGuard<'st
             Mutex::new(opening),
             std::sync::atomic::AtomicBool::new(false),
         )));
-        install_rate_epoch(holder);
+        busbar_kernel::preflight::publish_root_rows(busbar_kernel::preflight::RootInstall {
+            rate_epoch: Some(holder),
+            ..Default::default()
+        });
         holder
     });
     *holder.0.lock().unwrap() = Arc::new(History::opening(card, 0));
@@ -104,7 +109,7 @@ fn input(n: u64) -> BTreeMap<String, u64> {
 fn a_card_edit_mid_window_prices_every_budget_read_and_the_gate_at_the_card_in_force() {
     let (holder, _serial) = holder_opening(history_card(20.0));
 
-    let store: Arc<dyn RecordStore> = Arc::new(MemoryStore::new());
+    let store: Arc<dyn RecordStore> = real_store::store();
     let key = VirtualKey {
         id: "vk_dated".to_string(),
         generation_hash: "hash-dated".to_string(),
@@ -223,7 +228,7 @@ fn edit_card(holder: &Holder, card: RateCard) {
 #[test]
 fn a_clean_restart_after_a_card_edit_keeps_identical_money_and_headroom() {
     let (holder, _serial) = holder_opening(history_card(20.0));
-    let store: Arc<dyn RecordStore> = Arc::new(MemoryStore::new());
+    let store: Arc<dyn RecordStore> = real_store::store();
     let key = team_key(store.as_ref(), "vk_restart");
     let now = busbar_kernel::store::now();
     let reads = |gov: &GovState, cost: &CostModel| {
@@ -276,7 +281,7 @@ fn row(tokens: u64) -> busbar_contract::records::UsageLedger {
 fn a_durable_row_prices_as_the_cell_hydrated_from_it_after_a_card_edit() {
     let (holder, _serial) = holder_opening(history_card(20.0));
 
-    let store: Arc<dyn RecordStore> = Arc::new(MemoryStore::new());
+    let store: Arc<dyn RecordStore> = real_store::store();
     let key = VirtualKey {
         id: "vk_durable".to_string(),
         generation_hash: "hash-durable".to_string(),
@@ -366,7 +371,7 @@ fn fee_card(fee_cents: i64) -> RateCard {
 fn a_fee_refund_returns_the_fee_of_the_era_its_request_was_charged_in() {
     let (holder, _serial) = holder_opening(fee_card(5));
 
-    let store: Arc<dyn RecordStore> = Arc::new(MemoryStore::new());
+    let store: Arc<dyn RecordStore> = real_store::store();
     let key = VirtualKey {
         id: "vk_era_refund".to_string(),
         generation_hash: "hash-era-refund".to_string(),
@@ -436,7 +441,7 @@ fn a_plane_fee_edit_prices_each_admission_at_the_plane_fee_in_force() {
     };
     let (holder, _serial) = holder_opening(card(1));
 
-    let store: Arc<dyn RecordStore> = Arc::new(MemoryStore::new());
+    let store: Arc<dyn RecordStore> = real_store::store();
     let key = VirtualKey {
         id: "vk_plane_fee_epoch".to_string(),
         generation_hash: "hash-plane-fee-epoch".to_string(),
@@ -530,7 +535,7 @@ fn a_correction_lands_in_its_units_own_window_and_card_entry() {
     use busbar_kernel::governance::{metering_bucket, Adjustment, UsageAdjustment};
     let (holder, _serial) = holder_opening(history_card(20.0));
 
-    let store: Arc<dyn RecordStore> = Arc::new(MemoryStore::new());
+    let store: Arc<dyn RecordStore> = real_store::store();
     let key = team_key(store.as_ref(), "vk_own_epoch");
     let gov = GovState::new(store.clone(), None).unwrap();
     let today = busbar_kernel::store::now();
@@ -625,7 +630,7 @@ fn a_correction_whose_window_no_longer_holds_its_segment_is_refused_and_moves_no
     use busbar_kernel::governance::{metering_bucket, Adjustment};
     let (_holder, _serial) = holder_opening(history_card(20.0));
 
-    let store: Arc<dyn RecordStore> = Arc::new(MemoryStore::new());
+    let store: Arc<dyn RecordStore> = real_store::store();
     let key = team_key(store.as_ref(), "vk_gone_epoch");
     let gov = GovState::new(store.clone(), None).unwrap();
     let today = busbar_kernel::store::now();
