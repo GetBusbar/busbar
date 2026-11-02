@@ -340,7 +340,9 @@ mod typed_transport_cancellation {
             // SAFETY: the test retains an independent safety owner even if dispatcher custody
             // fails; strong counts independently assert the dispatcher's original loan remains.
             assert_eq!(unsafe { std::slice::from_raw_parts(bytes as *const u8, len) }, b"original framing loan");
-            let outcome = (product().cancel)(instance, input, out);
+            // SAFETY: this delegates the original product callback with its actual instance
+            // and the same live CancelIn/output frames supplied by the Transport dispatcher.
+            let outcome = unsafe { (product().cancel)(instance, input, out) };
             control.cancel_completions.fetch_add(1, Ordering::SeqCst);
             outcome
         }
