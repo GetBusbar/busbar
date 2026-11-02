@@ -13,3 +13,6 @@ mod admin_cross_plane;
 
 #[path = "oauth2_application/mod.rs"]
 mod oauth2_application;
+
+#[path = "kernel_application/state.rs"]
+mod kernel_state;
