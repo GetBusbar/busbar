@@ -2240,4 +2240,99 @@ pub(in crate::governance) mod tests {
             "matching initial/current identity cannot replace full legal predecessor verification"
         );
     }
+    #[test]
+    fn admin_resume_can_advance_a_captured_prerequisite_without_wedging_its_flight() {
+        use super::super::{GovState, RecordStore};
+        let store = crate::real_store::store();
+        let sink = Arc::new(Journal::default());
+        let first = GovState::new(store.clone(), None).unwrap();
+        first.attach_recovery_sink(sink.clone()).unwrap();
+        let admin = GovState::usage_recovery_child(
+            "admin-bucket",
+            0,
+            super::super::ExactUsageDelta {
+                requests: 1,
+                ..Default::default()
+            },
+            Default::default(),
+        )
+        .unwrap()
+        .unwrap();
+        let admin_intent = first
+            .new_recovery_event(
+                admin.operation_id,
+                admin.kind,
+                admin.body_fingerprint,
+                RecoveryState::Intent,
+                admin.first_sent_at_ms,
+                admin.payload,
+            )
+            .unwrap();
+        first.keep_recovery_event(&admin_intent).unwrap();
+        drop(first);
+        let gov = GovState::new(store.clone(), None).unwrap();
+        gov.attach_recovery_sink(sink.clone()).unwrap();
+        gov.resume_raw_recovery().unwrap();
+        let admin_unknown = gov.recovery_event(admin_intent.operation_id).unwrap();
+        assert_eq!(admin_unknown.state, RecoveryState::LandedUnknown);
+        let owner = raw_intent(&gov, 7);
+        let captured = gov
+            .capture_usage_recovery(
+                "recovery-bucket",
+                0,
+                super::super::ExactUsageDelta {
+                    requests: -3,
+                    ..Default::default()
+                },
+                Default::default(),
+            )
+            .unwrap();
+        let prerequisite = captured.prerequisite.as_ref().unwrap().clone();
+        assert_eq!(prerequisite.operation_id, owner.operation_id);
+        assert!(captured.child.is_none());
+        assert!(gov.recovery_event(owner.operation_id).unwrap().revision < prerequisite.revision);
+
+        // This public admin operation really calls the global raw resumer. It
+        // confirms the captured candidate and settles its owner before its
+        // original budget-flight driver gets control again.
+        gov.recovery()
+            .resolve(
+                &crate::cost::CostModel::flat(0),
+                RecoveryResolution {
+                    operation_id: admin_unknown.operation_id,
+                    body_fingerprint: admin_unknown.body_fingerprint,
+                    expected_revision: admin_unknown.revision,
+                    verdict: RecoveryVerdict::NotLanded,
+                    sender_quiesced: true,
+                    backend_quiesced: true,
+                    actor: "operator".into(),
+                    reason: "admin operation independently confirmed not landed".into(),
+                },
+            )
+            .unwrap();
+        let settled = gov.recovery_event(owner.operation_id).unwrap();
+        assert_eq!(settled.state, RecoveryState::Settled);
+        assert!(settled.revision > prerequisite.revision);
+        assert!(
+            gov.keep_recovery_event(&prerequisite).is_err(),
+            "Book.keep never rewinds a selected head"
+        );
+        let count = sink.selected.lock().unwrap().len();
+        gov.drive_durable_usage_flight(&captured).unwrap();
+        assert_eq!(sink.selected.lock().unwrap().len(), count);
+        assert_eq!(gov.recovery_event(owner.operation_id), Some(settled));
+        assert_eq!(store.get_usage("recovery-bucket", 0).unwrap().requests, 4);
+        assert_eq!(store.get_usage("admin-bucket", 0).unwrap().requests, 1);
+
+        let mut forged = captured;
+        let parent = forged.prerequisite.as_mut().unwrap();
+        let mut payload: serde_json::Value = serde_json::from_slice(&parent.payload).unwrap();
+        payload["absorbed_plain"]["requests"] = serde_json::Value::String("-2".into());
+        parent.payload = serde_json::to_vec(&payload).unwrap();
+        assert!(
+            gov.drive_durable_usage_flight(&forged).is_err(),
+            "a different legal candidate at that revision is not selected ancestry"
+        );
+        assert_eq!(store.get_usage("recovery-bucket", 0).unwrap().requests, 4);
+    }
 }
