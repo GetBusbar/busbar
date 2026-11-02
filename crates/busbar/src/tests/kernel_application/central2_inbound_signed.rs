@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-#![cfg(feature = "auth-sigv4")]
+#![cfg(all(distribution_root, linked_every_auth))]
 
 use busbar_contract::abi::auth::{AuthPoints, POINT_HEAD, POINT_HEAD_BODY};
 use busbar_contract::abi::host::service::{
