@@ -1146,16 +1146,20 @@ async fn drive_keys_error_surface() {
 async fn admin_error_surface_witnesses_every_declared_response() {
     if std::env::var_os("BUSBAR_ADMIN_ERROR_UNSUPERVISED_PROCESS").is_none() {
         let current = std::thread::current();
-        let status = std::process::Command::new(std::env::current_exe().expect("test executable"))
+        let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
             .args(["--exact", current.name().expect("test name"), "--nocapture"])
             .env("BUSBAR_ADMIN_ERROR_UNSUPERVISED_PROCESS", "1")
             .env_remove("INVOCATION_ID")
             .env_remove("KUBERNETES_SERVICE_HOST")
-            .status()
+            .output()
             .expect("run the restart assertions in an unsupervised process");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            status.success(),
-            "unsupervised restart assertions failed: {status}"
+            output.status.success()
+                && stdout.contains("test result: ok. 1 passed; 0 failed; 0 ignored;"),
+            "unsupervised restart assertions failed: {}\n{stdout}\n{stderr}",
+            output.status
         );
         return;
     }
@@ -2155,16 +2159,20 @@ async fn drive_plugin_inspect_errors() {
 async fn every_admin_error_surface_answers_its_declared_status() {
     if std::env::var_os("BUSBAR_ADMIN_ERROR_UNSUPERVISED_PROCESS").is_none() {
         let current = std::thread::current();
-        let status = std::process::Command::new(std::env::current_exe().expect("test executable"))
+        let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
             .args(["--exact", current.name().expect("test name"), "--nocapture"])
             .env("BUSBAR_ADMIN_ERROR_UNSUPERVISED_PROCESS", "1")
             .env_remove("INVOCATION_ID")
             .env_remove("KUBERNETES_SERVICE_HOST")
-            .status()
+            .output()
             .expect("run the restart assertions in an unsupervised process");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            status.success(),
-            "unsupervised restart assertions failed: {status}"
+            output.status.success()
+                && stdout.contains("test result: ok. 1 passed; 0 failed; 0 ignored;"),
+            "unsupervised restart assertions failed: {}\n{stdout}\n{stderr}",
+            output.status
         );
         return;
     }
