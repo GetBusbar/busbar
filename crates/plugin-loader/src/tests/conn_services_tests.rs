@@ -674,7 +674,7 @@ fn a_trust_from_need_is_declared_with_its_settings_ca_at_open_and_every_refresh(
     let declared = table.declared.lock().unwrap().clone();
     let seen: Vec<(Option<String>, Option<String>)> = declared
         .iter()
-        .filter(|(owner, need, ..)| belongs_to(p, *owner) && *need == NeedId(0))
+        .filter(|(owner, need, ..)| belongs_to(&p, *owner) && *need == NeedId(0))
         .map(|(_, _, spec, target, trust)| {
             assert_eq!(
                 spec.trust_from, "settings.ca",
@@ -826,7 +826,7 @@ fn an_owned_trust_from_resolves_against_the_owned_sections_alone() {
     );
     let seen: Vec<Option<String>> = declared
         .iter()
-        .filter(|(owner, need, ..)| belongs_to(p, *owner) && *need == NeedId(0))
+        .filter(|(owner, need, ..)| belongs_to(&p, *owner) && *need == NeedId(0))
         .map(|(_, _, spec, _, trust)| {
             assert_eq!(spec.trust_from, "owned.agent_push.ca");
             trust.clone()
@@ -2851,6 +2851,26 @@ fn refreshed_connection_authorities_are_each_forgotten_once() {
     );
 }
 
+/// A failed open retires its initial authority. A retry on the same bound export must mint
+/// a fresh authority that is independently retired when the instance is dropped.
+#[test]
+fn retrying_a_failed_export_open_retires_its_new_authority() {
+    let table = Arc::new(Recording::default());
+    let p = bound(Box::leak(Box::new(TRUSTING)), &table);
+    let original = p.instance();
+    assert_eq!(open_with(&p, br#"{"ca":"NOT-A-PEM"}"#), Outcome::Failed);
+    assert_eq!(table.forgotten.lock().unwrap().clone(), vec![original]);
+    assert_eq!(open_with(&p, br#"{"ca":"PEM-A"}"#), Outcome::Ready);
+    let replacement = table.declared.lock().unwrap().last().unwrap().0;
+    assert_ne!(original, replacement);
+    assert!(belongs_to(&p, replacement));
+    drop(p);
+    assert_eq!(
+        table.forgotten.lock().unwrap().clone(),
+        vec![original, replacement]
+    );
+}
+
 /// The connector's `RANDOM` slot is RETIRED and served by no host: `random.fill`, a host service,
 /// is the one random service.
 #[test]
@@ -3611,7 +3631,7 @@ fn an_unwritten_settings_trust_is_refused_but_not_audited() {
         .lock()
         .unwrap()
         .iter()
-        .filter(|(owner, need, ..)| belongs_to(p, *owner) && *need == NeedId(0))
+        .filter(|(owner, need, ..)| belongs_to(&p, *owner) && *need == NeedId(0))
         .map(|(.., trust)| trust.clone())
         .collect();
     assert_generation_owners(&table, &p, 2);

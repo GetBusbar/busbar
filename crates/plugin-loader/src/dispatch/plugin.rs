@@ -1371,7 +1371,9 @@ impl Instance {
     ) -> Result<Arc<super::export_bindings::Generation>, String> {
         let conn = match self.wake.conn.get() {
             Some((owner, table)) => {
-                let owner = if initial {
+                // A failed initial open can retire its generation before a retry. Reuse the
+                // original authority only while it is live; retries mint a fresh generation.
+                let owner = if initial && !self.wake.conn_forgotten.load(Ordering::Acquire) {
                     *owner
                 } else {
                     super::handle::mint(self.wake)
