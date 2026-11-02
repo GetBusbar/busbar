@@ -2304,6 +2304,7 @@ struct ParkedEof {
     gate: Arc<EofGate>,
     // The controlled wire input is owned while the real HTTP fixture's decode is deferred.
     wire: Vec<u8>,
+    eof: std::sync::atomic::AtomicBool,
 }
 impl FramerDoor for ParkedEof {
     fn facts(&self) -> &busbar_core_connector::framer::DoorFacts {
@@ -2334,14 +2335,18 @@ impl FramerDoor for ParkedEof {
         use busbar_core_connector::framer::{Call, Crossed};
         match call {
             Call::Ingest(input, out) => {
-                if input.end == 0 {
-                    assert!(!resume);
+                if !resume && input.end == 0 {
                     assert_eq!(input.len, self.wire.len());
                     return Crossed {
                         outcome: Outcome::Ready,
                         error: None,
                     };
                 }
+                if !resume {
+                    assert_ne!(input.end, 0);
+                    self.eof.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+                assert!(self.eof.load(std::sync::atomic::Ordering::SeqCst));
                 if !self.gate.released.load(std::sync::atomic::Ordering::SeqCst) {
                     return Crossed {
                         outcome: Outcome::Pending,
@@ -2349,12 +2354,14 @@ impl FramerDoor for ParkedEof {
                     };
                 }
                 assert!(resume, "EOF completion must resume the parked crossing");
-                let original = (input.bytes, input.len);
+                let original = (input.bytes, input.len, input.end);
                 input.bytes = self.wire.as_ptr();
                 input.len = self.wire.len();
+                input.end = 1;
                 let result = self.inner.cross(Call::Ingest(input, out));
                 input.bytes = original.0;
                 input.len = original.1;
+                input.end = original.2;
                 result
             }
             other => self.inner.cross(other),
@@ -2371,6 +2378,7 @@ async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
         inner: H1Accept::new(true),
         gate: Arc::clone(&gate),
         wire: wire.to_vec(),
+        eof: std::sync::atomic::AtomicBool::new(false),
     });
     let framer = data_framer(Arc::new(move |scheme: &str| {
         (scheme == DATA_SCHEME).then(|| Arc::clone(&door))
