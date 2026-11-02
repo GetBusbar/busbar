@@ -849,10 +849,11 @@ async fn run(
 
     drop(served);
     let app_handle = Arc::new(busbar_kernel::state::AppHandle::new(app));
-    let admin_router = busbar_kernel::router::build_admin_router_on(
+    let admin_router = busbar_kernel::router::build_admin_router_on_with_dispatch_layer(
         &app_handle,
         req_body_max,
         response_headers_cfg.server_timing,
+        root::listener::deferred_dispatch_layer,
     );
     let data_router = listener_plan.router(
         &app_handle,

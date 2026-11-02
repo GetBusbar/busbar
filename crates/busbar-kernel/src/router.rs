@@ -1017,6 +1017,30 @@ pub fn build_admin_router_on(
     request_body_max_bytes: usize,
     server_timing_enabled: bool,
 ) -> Router {
+    build_admin_router_on_with_dispatch_layer(
+        handle,
+        request_body_max_bytes,
+        server_timing_enabled,
+        unchanged_dispatch_layer,
+    )
+}
+
+/// A composition-owned layer applied inside authentication and inbound admission.
+pub type DispatchLayer =
+    fn(Router<std::sync::Arc<state::AppHandle>>) -> Router<std::sync::Arc<state::AppHandle>>;
+
+fn unchanged_dispatch_layer(
+    router: Router<std::sync::Arc<state::AppHandle>>,
+) -> Router<std::sync::Arc<state::AppHandle>> {
+    router
+}
+
+pub fn build_admin_router_on_with_dispatch_layer(
+    handle: &std::sync::Arc<state::AppHandle>,
+    request_body_max_bytes: usize,
+    server_timing_enabled: bool,
+    dispatch_layer: DispatchLayer,
+) -> Router {
     let plugin_routes = handle.load().plugin_routes.clone();
 
     let (admin, admin_core_routes) = crate::core_routes::CoreRouter::new()
@@ -1030,7 +1054,7 @@ pub fn build_admin_router_on(
     let admin = crate::admin::seam::mount_admin(admin);
     let admin = crate::plugin_routes::mount_plugin_routes(admin, &plugin_routes, true);
     apply_common_layers(
-        admin,
+        dispatch_layer(admin),
         admin_core_routes,
         handle,
         request_body_max_bytes,
@@ -1084,6 +1108,7 @@ pub struct PreparedListener {
     pub refusals: Vec<crate::plane_routes::PlaneRefusalSpec>,
     refuse_by_path: Option<crate::plane_routes::PlaneRefuseByPathFn>,
     root_surface: bool,
+    dispatch_layer: DispatchLayer,
 }
 
 impl std::fmt::Debug for PreparedListener {
@@ -1132,7 +1157,14 @@ impl PreparedListener {
             refusals,
             refuse_by_path,
             root_surface,
+            dispatch_layer: unchanged_dispatch_layer,
         })
+    }
+
+    /// Apply the composition's dispatch preparation after auth, under the listener's one cap.
+    pub fn with_dispatch_layer(mut self, layer: DispatchLayer) -> Self {
+        self.dispatch_layer = layer;
+        self
     }
 
     fn bind(
@@ -1147,7 +1179,7 @@ impl PreparedListener {
             .as_ref()
             .map_or(body_limit, |limits| limits.request_body_max_bytes);
         let router = apply_common_layers_for_mounts(
-            self.router.clone(),
+            (self.dispatch_layer)(self.router.clone()),
             self.core_routes.clone(),
             handle,
             body_limit,

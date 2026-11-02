@@ -571,34 +571,45 @@ impl hyper::service::Service<hyper::Request<hyper::body::Incoming>> for BodyTime
         let timeout = self.timeout;
         let inner = self.inner.clone();
         let scheme = self.scheme;
-        if !defers_dispatch(&req) {
-            let mut req = req.map(|body| TimeoutBody::new(body, timeout));
-            req.extensions_mut().insert(scheme);
-            return Box::pin(inner.call(req));
-        }
-        Box::pin(async move {
-            let (mut parts, body) = req.into_parts();
-            parts.extensions.insert(scheme);
-            let mut body = TimeoutBody::new(body, timeout);
-            match read_whole(
-                &mut body,
-                busbar_kernel_egress::upstream::max_translate_body_bytes(),
-            )
-            .await
-            {
-                Ok(bytes) => {
-                    let req = hyper::Request::from_parts(parts, axum::body::Body::from(bytes));
-                    inner.call(req).await
-                }
-
-                Err(status) => Ok(status_response(status)),
-            }
-        })
+        let mut req = req.map(|body| TimeoutBody::new(body, timeout));
+        req.extensions_mut().insert(scheme);
+        Box::pin(inner.call(req))
     }
 }
 
-fn defers_dispatch(req: &hyper::Request<hyper::body::Incoming>) -> bool {
-    use hyper::body::Body as _;
+pub(crate) fn deferred_dispatch_layer<S>(router: Router<S>) -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    router.layer(axum::middleware::from_fn(deferred_dispatch))
+}
+
+async fn deferred_dispatch(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    if !defers_dispatch(&req) {
+        return next.run(req).await;
+    }
+    let (parts, body) = req.into_parts();
+    match read_whole(
+        body,
+        busbar_kernel_egress::upstream::max_translate_body_bytes(),
+    )
+    .await
+    {
+        Ok(bytes) => {
+            next.run(hyper::Request::from_parts(
+                parts,
+                axum::body::Body::from(bytes),
+            ))
+            .await
+        }
+        Err(status) => status_response(status),
+    }
+}
+
+fn defers_dispatch<B: Body>(req: &hyper::Request<B>) -> bool {
     req.version() == hyper::Version::HTTP_2
         && !req.body().is_end_stream()
         && matches!(
@@ -611,12 +622,12 @@ fn defers_dispatch(req: &hyper::Request<hyper::body::Incoming>) -> bool {
 }
 
 async fn read_whole(
-    body: &mut TimeoutBody<hyper::body::Incoming>,
+    mut body: axum::body::Body,
     cap: usize,
 ) -> Result<bytes::Bytes, hyper::StatusCode> {
     let mut whole = bytes::BytesMut::new();
     loop {
-        match std::future::poll_fn(|cx| Pin::new(&mut *body).poll_frame(cx)).await {
+        match std::future::poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)).await {
             None => return Ok(whole.freeze()),
             Some(Err(_)) => return Err(hyper::StatusCode::BAD_REQUEST),
             Some(Ok(frame)) => {
@@ -886,3 +897,7 @@ mod h2_tests;
 #[cfg(test)]
 #[path = "tests/listener_h2_early_dispatch_tests.rs"]
 mod h2_early_dispatch_tests;
+
+#[cfg(test)]
+#[path = "tests/listener_admission_tests.rs"]
+mod admission_tests;

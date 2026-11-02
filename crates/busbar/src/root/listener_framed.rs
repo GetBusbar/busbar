@@ -1019,22 +1019,9 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                     .insert(super::listener_scheme(self.secured));
                 req.extensions_mut().insert(slot.clone());
 
-                let defer = h2
-                    && !end
-                    && matches!(
-                        *req.method(),
-                        Method::GET | Method::HEAD | Method::OPTIONS | Method::TRACE
-                    );
-
                 let end = StreamEnd(out.clone(), scope);
-                self.tasks.spawn(serve_stream(
-                    self.router.clone(),
-                    req,
-                    defer,
-                    slot,
-                    out,
-                    end,
-                ))
+                self.tasks
+                    .spawn(serve_stream(self.router.clone(), req, slot, out, end))
             }
             None => {
                 out.send(Op::Refuse {
@@ -1428,23 +1415,10 @@ fn request_of(
 async fn serve_stream(
     router: Router,
     req: Request<AxumBody>,
-    defer: bool,
     slot: SessionSlot,
     out: Emitter,
     _end: StreamEnd,
 ) {
-    let req = if defer {
-        let (parts, body) = req.into_parts();
-        match read_whole(body).await {
-            Ok(bytes) => Request::from_parts(parts, AxumBody::from(bytes)),
-            Err(status) => {
-                respond(&out, super::status_response(status)).await;
-                return;
-            }
-        }
-    } else {
-        req
-    };
     let Ok(response) = {
         use hyper::service::Service as _;
         hyper_util::service::TowerToHyperService::new(router)
@@ -1458,25 +1432,6 @@ async fn serve_stream(
         }
     }
     respond(&out, response).await;
-}
-
-async fn read_whole(mut body: AxumBody) -> Result<Bytes, axum::http::StatusCode> {
-    let cap = busbar_kernel_egress::upstream::max_translate_body_bytes();
-    let mut whole = bytes::BytesMut::new();
-    loop {
-        match std::future::poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)).await {
-            None => return Ok(whole.freeze()),
-            Some(Err(_)) => return Err(axum::http::StatusCode::BAD_REQUEST),
-            Some(Ok(frame)) => {
-                if let Ok(data) = frame.into_data() {
-                    if whole.len() + data.len() > cap {
-                        return Err(axum::http::StatusCode::PAYLOAD_TOO_LARGE);
-                    }
-                    whole.extend_from_slice(&data);
-                }
-            }
-        }
-    }
 }
 
 fn head_block(status: u16, headers: &HeaderMap, exact: Option<u64>) -> Vec<u8> {

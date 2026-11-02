@@ -2454,7 +2454,8 @@ impl ListenerPlan {
                 refusals,
                 refuse_by_path,
                 at == "listen",
-            )?;
+            )?
+            .with_dispatch_layer(crate::root::listener::deferred_dispatch_layer);
             prepared.insert(at, Arc::new(router));
         }
 
