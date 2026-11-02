@@ -11,20 +11,22 @@ async fn rollback_refuses_the_anchor_below_its_operator_bootstrap_floor_before_a
 {
     crate::dist_root_install::install();
     let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
+        std::env::var_os("BUSBAR_BOOTSTRAP_TEST_STORE_PLUGIN")
+            .expect("BUSBAR_BOOTSTRAP_TEST_STORE_PLUGIN names the actual built store"),
     );
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
+    let store = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid");
+    let module = store.name;
+    let module_version = store.version;
     let mut manifest = plugins::manifest(
         "store",
         &module,
         busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
     );
+    manifest.version = module_version.clone();
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
@@ -38,10 +40,8 @@ async fn rollback_refuses_the_anchor_below_its_operator_bootstrap_floor_before_a
     );
     std::fs::write(directory.join("store.tar.gz"), &archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let settings =
+        serde_json::json!({"db_path":directory.join("bootstrap.sqlite"), "busy_timeout_ms":2000});
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -69,6 +69,7 @@ async fn rollback_refuses_the_anchor_below_its_operator_bootstrap_floor_before_a
     let plugin_config = busbar_kernel::config::PluginsCfg {
         enabled: true,
         dir: directory.to_string_lossy().into_owned(),
+        fetch: vec![serde_json::from_value(serde_json::json!({"url":"https://plugins.example/store.tar.gz", "sha256":busbar_contract::redacted::sha256_hex(&archive)})).unwrap()],
         ..Default::default()
     };
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -88,11 +89,14 @@ async fn rollback_refuses_the_anchor_below_its_operator_bootstrap_floor_before_a
     if let Some(rotate) = rotate {
         rotate();
     }
-    let target_name = "acme-anchor".to_string();
-    let target_alias = "anchor-alias".to_string();
-    document["store"]["module"] = serde_json::json!(target_alias);
-    let base_floor = "2.0.0";
-    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
+    let target_name = module.clone();
+    let target_version = module_version.clone();
+    let major: u64 = target_version.split('.').next().unwrap().parse().unwrap();
+    let base_floor = format!("{}.0.0", major.checked_add(1).unwrap());
+    assert!(
+        busbar_contract::plugin::valid_semver(&target_version),
+        "the actual target states its version"
+    );
     let publisher_key = plugins::key(68);
     let publisher_hex = hex::encode(publisher_key.verifying_key().to_bytes());
     app.plugins_cfg
@@ -104,33 +108,31 @@ async fn rollback_refuses_the_anchor_below_its_operator_bootstrap_floor_before_a
         });
     app.plugins_cfg
         .min_versions
-        .insert(target_name.clone(), "1.4.0".into());
-    manifest.name = target_name.clone();
-    manifest.alias = target_alias.clone();
+        .insert(target_name.clone(), target_version.clone());
     manifest.publisher = "acme".into();
-    manifest.version = "1.4.0".into();
-    let target = plugins::signed(&publisher_key, manifest.clone(), &library);
-    if target_name == "acme-anchor" {
+    let target = plugins::signed(&publisher_key, manifest, &library);
+    if target_name == module {
         std::fs::remove_file(directory.join("store.tar.gz")).unwrap();
     }
     std::fs::write(directory.join("target.tar.gz"), &target).unwrap();
+    let mut fetch = vec![
+        serde_json::json!({"url":"https://plugins.example/target.tar.gz", "sha256":busbar_contract::redacted::sha256_hex(&target)}),
+    ];
+    if directory.join("store.tar.gz").exists() {
+        fetch.push(serde_json::json!({"url":"https://plugins.example/store.tar.gz", "sha256":busbar_contract::redacted::sha256_hex(&archive)}));
+    }
     document["plugins"] = serde_json::json!({
         "enabled":true, "dir":directory,
         "trust":{"publishers":[{"name":"acme", "public_key":publisher_hex}]},
-        "min_versions":{(target_name.clone()):base_floor},
-        "fetch":[{"url":"https://plugins.example/target.tar.gz", "sha256":busbar_contract::redacted::sha256_hex(&target)}]
+        "min_versions":{(target_name.clone()):base_floor}, "fetch":fetch
     });
     let config_path = directory.join("config.yaml");
     let providers_path = directory.join("providers.yaml");
     std::fs::write(&config_path, serde_yaml::to_string(&document).unwrap()).unwrap();
-    std::fs::write(
-        &providers_path,
-        "{}
-",
-    )
-    .unwrap();
+    std::fs::write(&providers_path, "{}\n").unwrap();
     app.config_path = Some(config_path);
     app.providers_path = Some(providers_path);
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let calls = app
         .governance
         .as_ref()
@@ -189,20 +191,23 @@ async fn safe_anchor_and_nonanchor_rollbacks_preserve_the_existing_pin_merge() {
     for anchor_target in [true, false] {
         crate::dist_root_install::install();
         let library_path = std::path::PathBuf::from(
-            std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-                .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
+            std::env::var_os("BUSBAR_BOOTSTRAP_TEST_STORE_PLUGIN")
+                .expect("BUSBAR_BOOTSTRAP_TEST_STORE_PLUGIN names the actual built store"),
         );
         let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
             .expect("the actual store statement reads")
             .expect("the actual store exports its statement");
-        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual store statement is valid")
-            .name;
+        let store = busbar_contract::abi::mechanism::rendering::read(&statement)
+            .expect("the actual store statement is valid");
+        let module = store.name;
+        let module_version = store.version;
         let mut manifest = plugins::manifest(
             "store",
             &module,
             busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
         );
+        manifest.version = module_version.clone();
+        manifest.version = module_version.clone();
         manifest.statement = Some(hex::encode(statement));
         let library = std::fs::read(library_path).expect("the actual store library reads");
         let directory = plugins::scratch(&format!(
@@ -216,10 +221,7 @@ async fn safe_anchor_and_nonanchor_rollbacks_preserve_the_existing_pin_merge() {
         );
         std::fs::write(directory.join("store.tar.gz"), &archive)
             .expect("stage the actual store archive");
-        let settings: serde_json::Value = serde_json::from_str(
-            &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-        )
-        .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+        let settings = serde_json::json!({"db_path":directory.join("bootstrap.sqlite"), "busy_timeout_ms":2000});
         assert!(
             settings.is_object(),
             "the actual store settings are an object"
@@ -245,10 +247,11 @@ async fn safe_anchor_and_nonanchor_rollbacks_preserve_the_existing_pin_merge() {
         let config = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the product deployment resolves");
         let plugin_config = busbar_kernel::config::PluginsCfg {
-            enabled: true,
-            dir: directory.to_string_lossy().into_owned(),
-            ..Default::default()
-        };
+        enabled: true,
+        dir: directory.to_string_lossy().into_owned(),
+        fetch: vec![serde_json::from_value(serde_json::json!({"url":"https://plugins.example/store.tar.gz", "sha256":busbar_contract::redacted::sha256_hex(&archive)})).unwrap()],
+        ..Default::default()
+    };
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn busbar_kernel::appbuild::RootRules>;
         let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
@@ -266,21 +269,48 @@ async fn safe_anchor_and_nonanchor_rollbacks_preserve_the_existing_pin_merge() {
         if let Some(rotate) = rotate {
             rotate();
         }
-        let target_name = if anchor_target {
-            "acme-anchor".to_string()
+        let (target_name, target_version, library, manifest) = if anchor_target {
+            (module.clone(), module_version.clone(), library, manifest)
         } else {
-            "other-store".to_string()
+            let target_path = std::path::PathBuf::from(
+                std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+                    .expect("the actual distinct memory Store artifact is available"),
+            );
+            let target_statement =
+                busbar_plugin_loader::dispatch::rendering_of_library(&target_path)
+                    .expect("the actual nonanchor Store Statement reads")
+                    .expect("the actual nonanchor Store exports its Statement");
+            let read = busbar_contract::abi::mechanism::rendering::read(&target_statement)
+                .expect("the nonanchor Statement is valid");
+            assert_eq!(
+                read.kind,
+                busbar_contract::abi::mechanism::KindCode::Store as u32
+            );
+            assert_ne!(
+                read.name, module,
+                "anchor and nonanchor are actual distinct Store implementations"
+            );
+            let mut manifest = plugins::manifest("store", &read.name, "acme");
+            manifest.version = read.version.clone();
+            manifest.statement = Some(hex::encode(target_statement));
+            (
+                read.name,
+                read.version,
+                std::fs::read(target_path).unwrap(),
+                manifest,
+            )
         };
-        let target_alias = if anchor_target {
-            "anchor-alias".to_string()
+        let mut manifest = manifest;
+        let major: u64 = target_version.split('.').next().unwrap().parse().unwrap();
+        let base_floor = if anchor_target {
+            target_version.clone()
         } else {
-            "other".to_string()
+            format!("{}.0.0", major.checked_add(1).unwrap())
         };
-        if anchor_target {
-            document["store"]["module"] = serde_json::json!(target_alias);
-        }
-        let base_floor = if anchor_target { "1.4.0" } else { "2.0.0" };
-        busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
+        assert!(
+            busbar_contract::plugin::valid_semver(&target_version),
+            "the actual target states its version"
+        );
         let publisher_key = plugins::key(68);
         let publisher_hex = hex::encode(publisher_key.verifying_key().to_bytes());
         app.plugins_cfg
@@ -292,33 +322,31 @@ async fn safe_anchor_and_nonanchor_rollbacks_preserve_the_existing_pin_merge() {
             });
         app.plugins_cfg
             .min_versions
-            .insert(target_name.clone(), "1.4.0".into());
-        manifest.name = target_name.clone();
-        manifest.alias = target_alias.clone();
+            .insert(target_name.clone(), target_version.clone());
         manifest.publisher = "acme".into();
-        manifest.version = "1.4.0".into();
-        let target = plugins::signed(&publisher_key, manifest.clone(), &library);
-        if anchor_target {
+        let target = plugins::signed(&publisher_key, manifest, &library);
+        if target_name == module {
             std::fs::remove_file(directory.join("store.tar.gz")).unwrap();
         }
         std::fs::write(directory.join("target.tar.gz"), &target).unwrap();
+        let mut fetch = vec![
+            serde_json::json!({"url":"https://plugins.example/target.tar.gz", "sha256":busbar_contract::redacted::sha256_hex(&target)}),
+        ];
+        if directory.join("store.tar.gz").exists() {
+            fetch.push(serde_json::json!({"url":"https://plugins.example/store.tar.gz", "sha256":busbar_contract::redacted::sha256_hex(&archive)}));
+        }
         document["plugins"] = serde_json::json!({
             "enabled":true, "dir":directory,
             "trust":{"publishers":[{"name":"acme", "public_key":publisher_hex}]},
-            "min_versions":{(target_name.clone()):base_floor},
-            "fetch":[{"url":"https://plugins.example/target.tar.gz", "sha256":busbar_contract::redacted::sha256_hex(&target)}]
+            "min_versions":{(target_name.clone()):base_floor}, "fetch":fetch
         });
         let config_path = directory.join("config.yaml");
         let providers_path = directory.join("providers.yaml");
         std::fs::write(&config_path, serde_yaml::to_string(&document).unwrap()).unwrap();
-        std::fs::write(
-            &providers_path,
-            "{}
-",
-        )
-        .unwrap();
+        std::fs::write(&providers_path, "{}\n").unwrap();
         app.config_path = Some(config_path);
         app.providers_path = Some(providers_path);
+        busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
         let calls = app
             .governance
             .as_ref()
@@ -357,8 +385,8 @@ async fn safe_anchor_and_nonanchor_rollbacks_preserve_the_existing_pin_merge() {
         let persisted = overlay
             .read_required()
             .unwrap()
-            .expect("the real Store has the persisted pin merge");
-        assert_eq!(persisted.plugin_versions[&target_name], "1.4.0");
+            .expect("the actual Store has the persisted pin merge");
+        assert_eq!(persisted.plugin_versions[&target_name], target_version);
         assert_eq!(persisted.plugin_versions["prior-plugin"], "3.0.0");
         server.abort();
     }
@@ -368,20 +396,22 @@ async fn safe_anchor_and_nonanchor_rollbacks_preserve_the_existing_pin_merge() {
 async fn an_upload_cannot_replace_the_anchor_with_a_target_only_the_running_pin_admits() {
     crate::dist_root_install::install();
     let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
+        std::env::var_os("BUSBAR_BOOTSTRAP_TEST_STORE_PLUGIN")
+            .expect("BUSBAR_BOOTSTRAP_TEST_STORE_PLUGIN names the actual built store"),
     );
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
+    let store = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid");
+    let module = store.name;
+    let module_version = store.version;
     let mut manifest = plugins::manifest(
         "store",
         &module,
         busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
     );
+    manifest.version = module_version.clone();
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
@@ -395,10 +425,8 @@ async fn an_upload_cannot_replace_the_anchor_with_a_target_only_the_running_pin_
     );
     std::fs::write(directory.join("store.tar.gz"), &archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let settings =
+        serde_json::json!({"db_path":directory.join("bootstrap.sqlite"), "busy_timeout_ms":2000});
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -426,6 +454,7 @@ async fn an_upload_cannot_replace_the_anchor_with_a_target_only_the_running_pin_
     let plugin_config = busbar_kernel::config::PluginsCfg {
         enabled: true,
         dir: directory.to_string_lossy().into_owned(),
+        fetch: vec![serde_json::from_value(serde_json::json!({"url":"https://plugins.example/store.tar.gz", "sha256":busbar_contract::redacted::sha256_hex(&archive)})).unwrap()],
         ..Default::default()
     };
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -445,11 +474,14 @@ async fn an_upload_cannot_replace_the_anchor_with_a_target_only_the_running_pin_
     if let Some(rotate) = rotate {
         rotate();
     }
-    let target_name = "acme-anchor".to_string();
-    let target_alias = "anchor-alias".to_string();
-    document["store"]["module"] = serde_json::json!(target_alias);
-    let base_floor = "2.0.0";
-    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
+    let target_name = module.clone();
+    let target_version = module_version.clone();
+    let major: u64 = target_version.split('.').next().unwrap().parse().unwrap();
+    let base_floor = format!("{}.0.0", major.checked_add(1).unwrap());
+    assert!(
+        busbar_contract::plugin::valid_semver(&target_version),
+        "the actual target states its version"
+    );
     let publisher_key = plugins::key(68);
     let publisher_hex = hex::encode(publisher_key.verifying_key().to_bytes());
     app.plugins_cfg
@@ -461,33 +493,31 @@ async fn an_upload_cannot_replace_the_anchor_with_a_target_only_the_running_pin_
         });
     app.plugins_cfg
         .min_versions
-        .insert(target_name.clone(), "1.4.0".into());
-    manifest.name = target_name.clone();
-    manifest.alias = target_alias.clone();
+        .insert(target_name.clone(), target_version.clone());
     manifest.publisher = "acme".into();
-    manifest.version = "1.4.0".into();
-    let target = plugins::signed(&publisher_key, manifest.clone(), &library);
-    if target_name == "acme-anchor" {
+    let target = plugins::signed(&publisher_key, manifest, &library);
+    if target_name == module {
         std::fs::remove_file(directory.join("store.tar.gz")).unwrap();
     }
     std::fs::write(directory.join("target.tar.gz"), &target).unwrap();
+    let mut fetch = vec![
+        serde_json::json!({"url":"https://plugins.example/target.tar.gz", "sha256":busbar_contract::redacted::sha256_hex(&target)}),
+    ];
+    if directory.join("store.tar.gz").exists() {
+        fetch.push(serde_json::json!({"url":"https://plugins.example/store.tar.gz", "sha256":busbar_contract::redacted::sha256_hex(&archive)}));
+    }
     document["plugins"] = serde_json::json!({
         "enabled":true, "dir":directory,
         "trust":{"publishers":[{"name":"acme", "public_key":publisher_hex}]},
-        "min_versions":{(target_name.clone()):base_floor},
-        "fetch":[{"url":"https://plugins.example/target.tar.gz", "sha256":busbar_contract::redacted::sha256_hex(&target)}]
+        "min_versions":{(target_name.clone()):base_floor}, "fetch":fetch
     });
     let config_path = directory.join("config.yaml");
     let providers_path = directory.join("providers.yaml");
     std::fs::write(&config_path, serde_yaml::to_string(&document).unwrap()).unwrap();
-    std::fs::write(
-        &providers_path,
-        "{}
-",
-    )
-    .unwrap();
+    std::fs::write(&providers_path, "{}\n").unwrap();
     app.config_path = Some(config_path);
     app.providers_path = Some(providers_path);
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let calls = app
         .governance
         .as_ref()
@@ -501,8 +531,11 @@ async fn an_upload_cannot_replace_the_anchor_with_a_target_only_the_running_pin_
     let overlay = busbar_kernel::config::overlay::OverlayStore::new(calls)
         .expect("the actual Store opens its overlay");
     app.overlay_path = Some(overlay.clone());
-    manifest.version = "2.0.0".into();
-    let original = plugins::signed(&publisher_key, manifest, &library);
+    let original = archive;
+    assert_ne!(
+        original, target,
+        "the attempted replacement differs from the installed signed archive"
+    );
     std::fs::write(directory.join("target.tar.gz"), &original).unwrap();
     let router = busbar_kernel::build_router(Arc::new(app));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -523,7 +556,7 @@ async fn an_upload_cannot_replace_the_anchor_with_a_target_only_the_running_pin_
     assert_eq!(
         std::fs::read(directory.join("target.tar.gz")).unwrap(),
         original,
-        "the actual currently installed archive is unchanged"
+        "the actual installed archive is unchanged"
     );
 
     server.abort();
@@ -539,14 +572,16 @@ async fn a_secret_plugin_needed_to_open_the_anchor_cannot_rely_on_its_unread_sto
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
+    let store = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid");
+    let module = store.name;
+    let module_version = store.version;
     let mut manifest = plugins::manifest(
         "store",
         &module,
         busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
     );
+    manifest.version = module_version.clone();
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
