@@ -1906,6 +1906,8 @@ pub const NO_RANDOMNESS: &str = "the OS randomness source failed";
 fn failed(why: &'static str) -> Stored {
     Stored {
         outcome: Outcome::Failed,
+        bytes: Vec::new(),
+        spans: Vec::new(),
         ..Stored::refused(why)
     }
 }
@@ -2397,6 +2399,7 @@ impl HostServices for KernelServices {
         match press.mint(&key.id, &prefix, ttl_secs, record, now) {
             Ok((ticket, expires_at)) => Stored {
                 bytes: ticket.into_bytes(),
+                spans: Vec::new(),
                 ..Stored::ready(expires_at)
             },
             Err(why) => Stored::refused(why),
@@ -2407,6 +2410,7 @@ impl HostServices for KernelServices {
         match unit.and_then(|u| self.units.take_ticket(u)) {
             Some(Some(record)) => Stored {
                 bytes: record,
+                spans: Vec::new(),
                 ..Stored::ready(svc::TICKET_TAKEN)
             },
             Some(None) => Stored::ready(svc::TICKET_NONE),
@@ -2424,6 +2428,7 @@ impl HostServices for KernelServices {
         }
         Stored {
             bytes,
+            spans: Vec::new(),
             ..Stored::ready(0)
         }
     }
@@ -2609,6 +2614,7 @@ impl HostServices for KernelServices {
             .unwrap_or((svc::SIGNED_VERIFIED, String::new()));
         Stored {
             bytes: named.into_bytes(),
+            spans: Vec::new(),
             ..Stored::ready(value)
         }
     }
@@ -2904,10 +2910,12 @@ impl HostServices for KernelServices {
                     StageAnswer::Pass => Stored::ready(0),
                     StageAnswer::Rewrote { index, rewrite } => Stored {
                         bytes: rewrite,
+                        spans: Vec::new(),
                         ..Stored::ready(1 + u64::from(index))
                     },
                     StageAnswer::Stop { status, words } => Stored {
                         bytes: words.into_bytes(),
+                        spans: Vec::new(),
                         ..Stored::ready(u64::from(status))
                     },
                     StageAnswer::Failed(why) => failed(why),

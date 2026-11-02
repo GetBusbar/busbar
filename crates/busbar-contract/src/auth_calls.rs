@@ -600,7 +600,8 @@ impl std::fmt::Debug for OutboundServing {
 /// One attempt's fixed facts at one AUTH POINT, as the kernel hands them to `fields` (THE
 /// DESIGN, "Auth points and guest lists", step 4: outbound sign is the same kind's other op, made
 /// at the points the style states). Owned: the answer may be awaited, so nothing here borrows the
-/// request.
+/// request. Every owned input buffer is wiped when its final owner drops it, including a
+/// crossing's deep copy retained past a cancellation or watchdog answer.
 pub struct FieldsRequest {
     /// The point the call is made at: one of the style's `StyleDecl::points`.
     pub point: AuthPoint,
@@ -630,6 +631,23 @@ pub struct FieldsRequest {
     /// The call's extensions blob (`abi::mechanism::extensions`), lent as `FieldsIn::head.extensions`:
     /// the per-call scope under `abi::auth::EXT_SCOPE` when the request stated one. Empty = absent.
     pub extensions: Vec<u8>,
+}
+
+impl Drop for FieldsRequest {
+    fn drop(&mut self) {
+        use zeroize::Zeroize as _;
+        self.body.zeroize();
+        self.method.zeroize();
+        self.authority.zeroize();
+        self.path.zeroize();
+        self.query.zeroize();
+        self.extensions.zeroize();
+        for (name, value) in &mut self.headers {
+            name.zeroize();
+            value.zeroize();
+        }
+        // The caller credential is a Secret and wipes in its own drop.
+    }
 }
 
 impl Default for FieldsRequest {

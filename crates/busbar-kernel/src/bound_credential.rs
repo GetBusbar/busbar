@@ -170,6 +170,7 @@ impl BoundCredential {
             timestamp: ctx.timestamp_epoch,
             headers: self.headers.clone(),
             caller_credential: passthrough.then(|| Secret::new(key.as_bytes().to_vec())),
+            extensions: Default::default(),
             ..FieldsRequest::default()
         }
     }

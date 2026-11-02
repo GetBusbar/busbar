@@ -629,7 +629,7 @@ async fn the_late_attach_serves_sign_and_writes_trust_changes_down() {
     );
     let signed = late.served().sign(&caller, b"data");
     assert_eq!(
-        (signed.outcome, signed.bytes),
+        (signed.outcome, signed.bytes.as_slice()),
         (Outcome::Ready, b"k:kiddata".to_vec())
     );
     assert_eq!(
