@@ -22,8 +22,8 @@
 //!
 //! ```text
 //! descriptor = { "catalog": table, "deployment": table, "entry": table }
-//! table      = { "deny_unknown": bool, "keys": [ key, ... ] }
-//! key        = { "name": string, "shape": shape, "required": bool }
+//! table      = { "deny_unknown": bool, "keys": [ key, ... ], "name"?: string }
+//! key        = { "name": string, "shape": shape, "required": bool, "nullable"?: bool }
 //! shape      = "str" | "int" | "bool" | "str-map"
 //!            | { "one-of": [ string, ... ] } | { "list": shape } | { "table": table }
 //! ```
@@ -31,8 +31,8 @@
 //! Every object holds exactly its stated members; a key name is stated once per table; a `one-of`
 //! lists at least one word, each once.
 //!
-//! DORMANT: the loader reads the descriptor into `PlaneRegistration::provider_keys` and the kernel's
-//! door fold keeps it; nothing parses a provider entry from it yet (unwired seam, wiring owner B1c-2).
+//! The loader reads this into `PlaneRegistration::provider_keys`; the kernel parses plane-owned
+//! provider values against these neutral shapes and carries the resulting values unread.
 
 use serde_json::{Map, Value};
 
@@ -88,6 +88,8 @@ pub enum Shape {
 /// A STRUCT'S KEYS: in their frozen order, and whether a key it does not name is refused.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Table {
+    /// Optional plane-supplied record name for stable parser diagnostics.
+    pub name: Option<String>,
     /// Whether a key this table does not name is refused (otherwise it is passed over).
     pub deny_unknown: bool,
     /// Its keys, in their frozen order.
@@ -103,6 +105,9 @@ pub struct Key {
     pub shape: Shape,
     /// Whether an entry that omits it is refused.
     pub required: bool,
+    /// Whether an explicit null is accepted. Absent: optional keys accept null.
+    /// This distinguishes an optional value from a defaulted, non-null collection.
+    pub nullable: Option<bool>,
 }
 
 /// THE PLANE'S PROVIDER KEYS, per form.
@@ -162,6 +167,9 @@ pub fn stated(extensions: &[u8]) -> Result<Option<ProviderKeys>, String> {
 
 fn table_value(t: &Table) -> Value {
     let mut out = Map::new();
+    if let Some(name) = &t.name {
+        out.insert("name".into(), Value::String(name.clone()));
+    }
     out.insert("deny_unknown".into(), Value::Bool(t.deny_unknown));
     out.insert(
         "keys".into(),
@@ -175,6 +183,9 @@ fn key_value(k: &Key) -> Value {
     out.insert("name".into(), Value::String(k.name.clone()));
     out.insert("shape".into(), shape_value(&k.shape));
     out.insert("required".into(), Value::Bool(k.required));
+    if let Some(nullable) = k.nullable {
+        out.insert("nullable".into(), Value::Bool(nullable));
+    }
     Value::Object(out)
 }
 
@@ -223,7 +234,13 @@ fn bool_of(v: &Value, at: &str) -> Result<bool, String> {
 }
 
 fn table_of(v: &Value, at: &str) -> Result<Table, String> {
-    let m = members(v, at, &["deny_unknown", "keys"])?;
+    let mut base = v.clone();
+    let name = match base.as_object_mut().and_then(|m| m.remove("name")) {
+        Some(Value::String(name)) if !name.is_empty() => Some(name),
+        Some(_) => return Err(format!("`{at}.name` is not a non-empty string")),
+        None => None,
+    };
+    let m = members(&base, at, &["deny_unknown", "keys"])?;
     let Value::Array(list) = m[1] else {
         return Err(format!("`{at}.keys` is not a list"));
     };
@@ -236,13 +253,19 @@ fn table_of(v: &Value, at: &str) -> Result<Table, String> {
         keys.push(key);
     }
     Ok(Table {
+        name,
         deny_unknown: bool_of(m[0], &format!("{at}.deny_unknown"))?,
         keys,
     })
 }
 
 fn key_of(v: &Value, at: &str) -> Result<Key, String> {
-    let m = members(v, at, &["name", "shape", "required"])?;
+    let mut base = v.clone();
+    let nullable = match base.as_object_mut().and_then(|m| m.remove("nullable")) {
+        Some(value) => Some(bool_of(&value, &format!("{at}.nullable"))?),
+        None => None,
+    };
+    let m = members(&base, at, &["name", "shape", "required"])?;
     let name = m[0]
         .as_str()
         .filter(|n| !n.is_empty())
@@ -251,6 +274,7 @@ fn key_of(v: &Value, at: &str) -> Result<Key, String> {
         name: name.to_string(),
         shape: shape_of(m[1], &format!("{at}.shape"))?,
         required: bool_of(m[2], &format!("{at}.required"))?,
+        nullable,
     })
 }
 

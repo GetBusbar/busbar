@@ -1,0 +1,258 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! Read plane-owned provider values from a plane's neutral descriptor. No request-shape
+//! key, model capability, or wire spelling is part of this parser.
+
+use busbar_contract::provider_keys::{Key, ProviderKeys, Shape, Table};
+use serde::de::{DeserializeSeed, EnumAccess, MapAccess, SeqAccess, VariantAccess, Visitor};
+use serde::Deserialize;
+use serde_json::{Map, Value};
+use std::fmt;
+
+#[derive(Clone, Copy)]
+pub(super) enum Form {
+    Catalog,
+    Deployment,
+    Entry,
+}
+impl Form {
+    pub(super) fn table(self, keys: &ProviderKeys) -> &Table {
+        match self {
+            Self::Catalog => &keys.catalog,
+            Self::Deployment => &keys.deployment,
+            Self::Entry => &keys.entry,
+        }
+    }
+}
+
+pub(super) struct ValueSeed<'a> {
+    shape: &'a Shape,
+    nullable: bool,
+}
+impl<'a> ValueSeed<'a> {
+    pub(super) fn field(key: &'a Key) -> Self {
+        Self {
+            shape: &key.shape,
+            nullable: key.nullable.unwrap_or(!key.required),
+        }
+    }
+    fn value(shape: &'a Shape) -> Self {
+        Self {
+            shape,
+            nullable: false,
+        }
+    }
+}
+impl<'de> DeserializeSeed<'de> for ValueSeed<'_> {
+    type Value = Value;
+    fn deserialize<D: serde::Deserializer<'de>>(self, de: D) -> Result<Value, D::Error> {
+        if self.nullable {
+            return de.deserialize_option(OptionalValue(self.shape));
+        }
+        match self.shape {
+            Shape::Str => String::deserialize(de).map(Value::String),
+            Shape::Bool => bool::deserialize(de).map(Value::Bool),
+            Shape::Int => i64::deserialize(de).map(Value::from),
+            Shape::StrMap => {
+                std::collections::BTreeMap::<String, String>::deserialize(de).map(|m| {
+                    Value::Object(m.into_iter().map(|(k, v)| (k, Value::String(v))).collect())
+                })
+            }
+            Shape::OneOf(words) => de.deserialize_enum("", &[], Word(words)),
+            Shape::List(shape) => de.deserialize_seq(List(shape)),
+            Shape::Table(table) => de.deserialize_map(Fields(table)),
+        }
+    }
+}
+struct OptionalValue<'a>(&'a Shape);
+impl<'de> Visitor<'de> for OptionalValue<'_> {
+    type Value = Value;
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("an optional value")
+    }
+    fn visit_none<E: serde::de::Error>(self) -> Result<Value, E> {
+        Ok(Value::Null)
+    }
+    fn visit_unit<E: serde::de::Error>(self) -> Result<Value, E> {
+        Ok(Value::Null)
+    }
+    fn visit_some<D: serde::Deserializer<'de>>(self, de: D) -> Result<Value, D::Error> {
+        ValueSeed::value(self.0).deserialize(de)
+    }
+}
+struct Word<'a>(&'a [String]);
+impl<'de> Visitor<'de> for Word<'_> {
+    type Value = Value;
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("string or map")
+    }
+    fn visit_enum<A: EnumAccess<'de>>(self, data: A) -> Result<Value, A::Error> {
+        let (word, variant) = data.variant::<String>()?;
+        if !self.0.contains(&word) {
+            return Err(serde::de::Error::custom(format!(
+                "unknown variant `{word}`, expected one of {}",
+                self.0
+                    .iter()
+                    .map(|s| format!("`{s}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
+        }
+        variant.unit_variant()?;
+        Ok(Value::String(word))
+    }
+}
+struct List<'a>(&'a Shape);
+impl<'de> Visitor<'de> for List<'_> {
+    type Value = Value;
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a sequence")
+    }
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Value, A::Error> {
+        let mut values = Vec::new();
+        while let Some(value) = seq.next_element_seed(ValueSeed::value(self.0))? {
+            values.push(value);
+        }
+        Ok(Value::Array(values))
+    }
+}
+struct Fields<'a>(&'a Table);
+impl<'de> Visitor<'de> for Fields<'_> {
+    type Value = Value;
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.0.name {
+            Some(name) => write!(f, "struct {name}"),
+            None => f.write_str("a map"),
+        }
+    }
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
+        let mut values = Map::new();
+        while let Some(name) = map.next_key::<String>()? {
+            let key = self.0.keys.iter().find(|k| k.name == name);
+            let value = if let Some(key) = key {
+                if values.contains_key(&name) {
+                    return Err(serde::de::Error::custom(format!(
+                        "duplicate field `{name}`"
+                    )));
+                }
+                map.next_value_seed(ValueSeed::field(key))?
+            } else if self.0.deny_unknown {
+                return Err(serde::de::Error::custom(format!(
+                    "unknown field `{name}`, expected one of {}",
+                    self.0
+                        .keys
+                        .iter()
+                        .map(|k| format!("`{}`", k.name))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )));
+            } else {
+                map.next_value::<Value>()?
+            };
+            values.insert(name, value);
+        }
+        for key in &self.0.keys {
+            if key.required && !values.contains_key(&key.name) {
+                return Err(serde::de::Error::custom(format!(
+                    "missing field `{}`",
+                    key.name
+                )));
+            }
+        }
+        Ok(Value::Object(values))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn field(name: &str, shape: Shape, required: bool) -> Key {
+        Key {
+            name: name.into(),
+            shape,
+            required,
+            nullable: None,
+        }
+    }
+    fn rule() -> Shape {
+        Shape::List(Box::new(Shape::Table(Table {
+            name: None,
+            deny_unknown: true,
+            keys: vec![
+                field("globs", Shape::List(Box::new(Shape::Str)), true),
+                field("enabled", Shape::Bool, false),
+                field(
+                    "spelling",
+                    Shape::OneOf(vec!["first".into(), "second".into()]),
+                    false,
+                ),
+            ],
+        })))
+    }
+    fn read(key: &Key, text: &str) -> Result<Value, serde_yaml::Error> {
+        ValueSeed::field(key).deserialize(serde_yaml::Deserializer::from_str(text))
+    }
+
+    #[test]
+    fn a_new_descriptor_key_needs_no_kernel_grammar_change() {
+        let key = field("a-new-plane-setting", rule(), false);
+        assert_eq!(
+            read(
+                &key,
+                "[{globs: ['wire-*'], enabled: false, spelling: second}]"
+            )
+            .unwrap(),
+            json!([{"globs":["wire-*"],"enabled":false,"spelling":"second"}])
+        );
+        let error = read(&key, "[{globs: [], unexpected: true}]")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains(
+                "unknown field `unexpected`, expected one of `globs`, `enabled`, `spelling`"
+            ),
+            "{error}"
+        );
+        let error = read(&key, "[{enabled: true}]").unwrap_err().to_string();
+        assert!(error.contains("missing field `globs`"), "{error}");
+        let error = read(&key, "[{globs: [], enabled: perhaps}]")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("expected a boolean"), "{error}");
+        let error = read(&key, "[{globs: [], spelling: typo}]")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("unknown variant `typo`, expected one of `first`, `second`"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn explicit_null_distinguishes_optional_values_from_defaulted_collections() {
+        let mut key = field("rules", rule(), false);
+        assert_eq!(read(&key, "null").unwrap(), Value::Null);
+        key.nullable = Some(false);
+        let error = read(&key, "null").unwrap_err().to_string();
+        assert!(error.contains("expected a sequence"), "{error}");
+        assert_eq!(read(&key, "[]").unwrap(), json!([]));
+    }
+
+    #[test]
+    fn required_nested_list_and_optional_scalar_keep_distinct_null_semantics() {
+        let key = field("rules", rule(), false);
+        assert_eq!(
+            read(&key, "[{globs: [], enabled: null}]").unwrap(),
+            json!([{"globs":[],"enabled":null}])
+        );
+        let error = read(&key, "[{globs: null}]").unwrap_err().to_string();
+        assert!(error.contains("expected a sequence"), "{error}");
+        let error = read(&key, "[{globs: [], enabled: true, enabled: false}]")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("duplicate field `enabled`"), "{error}");
+    }
+}

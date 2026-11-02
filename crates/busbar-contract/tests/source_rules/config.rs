@@ -123,12 +123,63 @@ fn accepted_keys(sources: &[walk::Source]) -> BTreeMap<String, BTreeSet<String>>
     out
 }
 
+/// A provider_entry! declaration does not discard fields absent from the core struct:
+/// OptionsAside reads every such key into its ProviderTable with a plane-described seed.
+/// Recognize that actual parser delegation, rather than requiring plane keys to remain
+/// duplicated as core Rust fields. The snapshot itself remains the frozen evidence.
+fn descriptor_provider_entries(sources: &[walk::Source]) -> BTreeSet<String> {
+    let parser = sources
+        .iter()
+        .find(|s| s.rel == "crates/busbar-kernel/src/config/providers.rs");
+    let Some(parser) = parser else {
+        return BTreeSet::new();
+    };
+    let mut entries = BTreeSet::new();
+    for item in &parser.file.items {
+        let syn::Item::Macro(m) = item else { continue };
+        if !m.mac.path.is_ident("provider_entry") {
+            continue;
+        }
+        let args: Vec<String> = m
+            .mac
+            .tokens
+            .clone()
+            .into_iter()
+            .filter_map(|t| match t {
+                TokenTree::Ident(id) => Some(id.to_string()),
+                _ => None,
+            })
+            .collect();
+        if args.len() != 4 {
+            continue;
+        }
+        let fields = accepted_keys(sources);
+        if !fields.get(&args[0]).is_some_and(|f| f.contains("options")) {
+            continue;
+        }
+        entries.insert(args[0].clone());
+    }
+    if !entries.is_empty() {
+        // These calls distinguish active typed validation plus opaque carriage from
+        // merely declaring an unused descriptor or skipping the old fields.
+        let syntax = parser.file.clone();
+        let tokens = quote::quote!(#syntax).to_string();
+        assert!(tokens.contains("door :: provider_keys"));
+        assert!(tokens.contains("next_value_seed (ValueSeed :: field (field))"));
+        assert!(tokens.contains("options . insert"));
+        assert!(tokens.contains("entry . options = options"));
+    }
+    entries
+}
+
 #[test]
 fn every_core_config_struct_keeps_every_key_the_frozen_snapshot_records() {
     let text = std::fs::read_to_string(walk::repo().join(SNAPSHOT)).expect("the snapshot");
     let snapshot: serde_json::Value = serde_json::from_str(&text).expect("the snapshot is JSON");
     let types = snapshot["types"].as_object().expect("`types`");
-    let declared = accepted_keys(&walk::production(CORE_SRC));
+    let sources = walk::production(CORE_SRC);
+    let declared = accepted_keys(&sources);
+    let descriptor_entries = descriptor_provider_entries(&sources);
     let mut checked = 0usize;
     let mut removed = Vec::new();
     for (name, ty) in types {
@@ -140,7 +191,10 @@ fn every_core_config_struct_keeps_every_key_the_frozen_snapshot_records() {
         };
         checked += 1;
         for field in ty["fields"].as_object().expect("`fields`").keys() {
-            if !keys.contains(field) && !PLANE_SECTIONS.contains(&(name.as_str(), field.as_str())) {
+            if !keys.contains(field)
+                && !PLANE_SECTIONS.contains(&(name.as_str(), field.as_str()))
+                && !descriptor_entries.contains(name)
+            {
                 removed.push(format!("{name}.{field}"));
             }
         }

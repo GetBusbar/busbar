@@ -231,19 +231,23 @@ fn the_provider_keys_a_door_states_are_kept_by_the_fold() {
     let keyless = fold(registration("door-keyless-row", "door_keyless_row")).expect("folds");
     let keys = ProviderKeys {
         catalog: Table {
+            name: None,
             deny_unknown: false,
             keys: vec![Key {
                 name: "shade".into(),
                 shape: Shape::OneOf(vec!["light".into(), "dark".into()]),
                 required: true,
+                nullable: None,
             }],
         },
         deployment: Table {
+            name: None,
             deny_unknown: true,
             keys: vec![Key {
                 name: "weights".into(),
                 shape: Shape::StrMap,
                 required: false,
+                nullable: None,
             }],
         },
         entry: Table::default(),

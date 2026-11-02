@@ -158,8 +158,8 @@ pub fn streaming_content_types(decl: &PlaneDecl) -> &'static [&'static str] {
 /// shape vocabulary; the first door row that states one, `None` when none does. The kernel names
 /// none of those keys: this is their only source.
 ///
-/// DORMANT: an unwired seam, read by nothing yet (wiring owner B1c-2, whose provider-entry parse
-/// reads its keys from here).
+/// Provider-entry parsing reads these shapes for plane-owned fields before carrying their
+/// values into the resolved opaque provider table.
 #[must_use]
 pub fn provider_keys(
     decls: &[&'static PlaneDecl],

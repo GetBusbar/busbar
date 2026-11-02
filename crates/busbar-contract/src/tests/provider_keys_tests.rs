@@ -9,12 +9,14 @@ fn key(name: &str, shape: Shape, required: bool) -> Key {
         name: name.to_string(),
         shape,
         required,
+        nullable: None,
     }
 }
 
 /// A descriptor naming every one of the seven neutral shapes, nested where a shape nests.
 fn every_shape() -> ProviderKeys {
     let nested = Table {
+        name: None,
         deny_unknown: true,
         keys: vec![
             key("globs", Shape::List(Box::new(Shape::Str)), true),
@@ -27,6 +29,7 @@ fn every_shape() -> ProviderKeys {
     };
     ProviderKeys {
         catalog: Table {
+            name: None,
             deny_unknown: false,
             keys: vec![
                 key("color", Shape::Str, true),
@@ -41,6 +44,7 @@ fn every_shape() -> ProviderKeys {
             ],
         },
         deployment: Table {
+            name: None,
             deny_unknown: true,
             keys: vec![
                 key("color", Shape::Str, false),
@@ -48,6 +52,7 @@ fn every_shape() -> ProviderKeys {
             ],
         },
         entry: Table {
+            name: None,
             deny_unknown: true,
             keys: vec![key("weights", Shape::StrMap, true)],
         },
@@ -182,4 +187,30 @@ fn the_encoding_states_exactly_its_members() {
         assert!(err.contains(why), "{why}: {err}");
     }
     assert!(decode(br#"{"catalog": {"deny_unknown": false, "keys": []}}"#).is_err());
+}
+
+#[test]
+fn optional_nullability_and_record_names_round_trip_without_changing_old_descriptors() {
+    let mut keys = every_shape();
+    assert!(keys.catalog.name.is_none());
+    assert!(keys.catalog.keys.iter().all(|key| key.nullable.is_none()));
+    keys.catalog.name = Some("Record".into());
+    keys.catalog.keys[0].nullable = Some(false);
+    keys.deployment.keys[0].nullable = Some(true);
+    assert_eq!(decode(&encode(&keys)), Ok(keys));
+}
+
+#[test]
+fn malformed_optional_diagnostic_and_nullability_metadata_is_refused() {
+    let keys = every_shape();
+    let mut value: serde_json::Value = serde_json::from_slice(&encode(&keys)).unwrap();
+    value["catalog"]["name"] = serde_json::json!(7);
+    assert!(decode(&serde_json::to_vec(&value).unwrap())
+        .unwrap_err()
+        .contains("name"));
+    value["catalog"]["name"] = serde_json::json!("Record");
+    value["catalog"]["keys"][0]["nullable"] = serde_json::json!("yes");
+    assert!(decode(&serde_json::to_vec(&value).unwrap())
+        .unwrap_err()
+        .contains("nullable"));
 }

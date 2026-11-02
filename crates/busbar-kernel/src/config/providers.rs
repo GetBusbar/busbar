@@ -6,8 +6,8 @@
 //! config.yaml), the frozen whole-entry parse shape (`ProviderCfg`), the active-health block and the
 //! per-provider auth-style selector (`ProviderAuth`); and the RESOLVED provider the runtime reads
 //! ([`ResolvedProvider`]), which is not config grammar. The kernel parses the section into these and
-//! merges each catalog entry with its deployment (`resolve`); the lane-capability keys they carry
-//! are [`crate::ir::lane_caps`]'s.
+//! merges each catalog entry with its deployment (`resolve`). Plane-owned request-shape keys
+//! are parsed from the consuming plane's neutral provider descriptor.
 //!
 //! THE SPLIT (row 155 B1; BUSBAR-1.6.0.md #49, THE DESIGN §4 "its `api_key`, `auth`, `token_url`,
 //! `scope` and `subject` bind the auth object (§6); its dialect fields go to the planes that use the
@@ -37,9 +37,9 @@ use serde_json::Value;
 
 use busbar_contract::secret_ref::SecretRef;
 
-use crate::ir::lane_caps::{MaxOutputKeyCfg, ModelCapabilities};
+use super::provider_grammar::{Form, ValueSeed};
 
-#[derive(Deserialize, Serialize)]
+#[derive(Serialize)]
 #[serde(deny_unknown_fields)] // a typo'd provider key must fail boot, not be silently ignored.
 pub struct ProviderCfg {
     /// The dialect the provider speaks, as the catalog (or a deployment override) names it, carried
@@ -77,23 +77,6 @@ pub struct ProviderCfg {
     /// Optional auth-style override (see ProviderDef::auth).
     #[serde(default)]
     pub auth: Option<ProviderAuth>,
-    /// The key this provider's upstream expects a CROSS-PROTOCOL output-token cap under, for the
-    /// dialect with two spellings (OpenAI Chat Completions: `max_tokens` | `max_completion_tokens`).
-    /// Omitted = `max_tokens`, what 1.5.5 wrote and what every OpenAI-compatible host accepts; set
-    /// `max_completion_tokens` for OpenAI's own API (its o-series / gpt-5 models reject `max_tokens`).
-    pub max_output_key: Option<MaxOutputKeyCfg>,
-    /// The upstream accepts Anthropic ADAPTIVE thinking (`thinking:{type:"adaptive"}` +
-    /// `output_config.effort`). Omitted = false: a reasoning ask is written as
-    /// `thinking.budget_tokens`, the form every other Claude model accepts.
-    pub anthropic_adaptive_thinking: Option<bool>,
-    /// The upstream accepts NATIVE structured outputs (`output_config.format`). Omitted = false: a
-    /// structured-output directive takes the dialect's pre-capability form (a forced tool).
-    pub native_structured_output: Option<bool>,
-    /// Per-MODEL overrides of the three capabilities above, for a provider that serves models of
-    /// several generations: the FIRST rule whose `models` glob list matches the lane's wire model
-    /// sets every capability it names. Evaluated after the provider-level values.
-    #[serde(default)]
-    pub model_capabilities: Vec<ModelCapabilities>,
     /// Per-provider SURGICAL escape hatch: the cloud-metadata hosts/IPs to UNBLOCK for THIS
     /// provider's `base_url` (and path-override composition) only. Each entry carves a single
     /// exception out of the metadata denylist (hardcoded ∪ `security.blocked_metadata_hosts`) — e.g.
@@ -116,6 +99,35 @@ pub struct ProviderCfg {
     /// position.
     #[serde(skip)]
     pub options: ProviderTable,
+}
+
+#[derive(Deserialize)]
+#[serde(remote = "ProviderCfg", deny_unknown_fields)]
+struct ProviderCfgCore {
+    #[serde(default)]
+    protocol: String,
+    base_url: String,
+    api_key: SecretRef,
+    #[serde(default)]
+    health: Option<HealthCfg>,
+    // error_map is REQUIRED on every provider — NO default (fail loud if missing)
+    error_map: HashMap<String, String>,
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    path_base: Option<String>,
+    #[serde(default)]
+    token_url: Option<String>,
+    #[serde(default)]
+    scope: Option<String>,
+    #[serde(default)]
+    subject: Option<String>,
+    #[serde(default)]
+    auth: Option<ProviderAuth>,
+    #[serde(default)]
+    allow_metadata_hosts: Vec<String>,
+    #[serde(skip)]
+    options: ProviderTable,
 }
 
 /// Active health-probe mode for a provider's lanes.
@@ -151,7 +163,7 @@ pub struct HealthCfg {
 
 /// Provider definition - vetted knowledge shipped in providers.yaml (no keys). Read by [`catalog`]:
 /// its typed keys ([`CATALOG_KEYS`]) here, every other key into [`Self::options`].
-#[derive(Deserialize, Serialize, Clone)]
+#[derive(Serialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderDef {
     pub protocol: String,
@@ -197,23 +209,6 @@ pub struct ProviderDef {
     /// Omitted, the protocol's native auth.
     #[serde(default)]
     pub auth: Option<ProviderAuth>,
-    /// The key this provider's upstream expects a CROSS-PROTOCOL output-token cap under, for the
-    /// dialect with two spellings (OpenAI Chat Completions: `max_tokens` | `max_completion_tokens`).
-    /// Omitted = `max_tokens`, what 1.5.5 wrote and what every OpenAI-compatible host accepts; set
-    /// `max_completion_tokens` for OpenAI's own API (its o-series / gpt-5 models reject `max_tokens`).
-    pub max_output_key: Option<MaxOutputKeyCfg>,
-    /// The upstream accepts Anthropic ADAPTIVE thinking (`thinking:{type:"adaptive"}` +
-    /// `output_config.effort`). Omitted = false: a reasoning ask is written as
-    /// `thinking.budget_tokens`, the form every other Claude model accepts.
-    pub anthropic_adaptive_thinking: Option<bool>,
-    /// The upstream accepts NATIVE structured outputs (`output_config.format`). Omitted = false: a
-    /// structured-output directive takes the dialect's pre-capability form (a forced tool).
-    pub native_structured_output: Option<bool>,
-    /// Per-MODEL overrides of the three capabilities above, for a provider that serves models of
-    /// several generations: the FIRST rule whose `models` glob list matches the lane's wire model
-    /// sets every capability it names. Evaluated after the provider-level values.
-    #[serde(default)]
-    pub model_capabilities: Vec<ModelCapabilities>,
     /// Catalog default for the per-provider metadata allow-override (see
     /// `ProviderCfg::allow_metadata_hosts`). A deployment's `allow_metadata_hosts` (`Some`) replaces
     /// this; `None` falls back to the catalog list. Default empty (all metadata blocked).
@@ -226,8 +221,35 @@ pub struct ProviderDef {
     pub options: ProviderTable,
 }
 
+#[derive(Deserialize)]
+#[serde(remote = "ProviderDef", deny_unknown_fields)]
+struct ProviderDefCore {
+    protocol: String,
+    base_url: String,
+    #[serde(default)]
+    error_map: HashMap<String, String>,
+    #[serde(default)]
+    health: Option<HealthCfg>,
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    path_base: Option<String>,
+    #[serde(default)]
+    token_url: Option<String>,
+    #[serde(default)]
+    scope: Option<String>,
+    #[serde(default)]
+    subject: Option<String>,
+    #[serde(default)]
+    auth: Option<ProviderAuth>,
+    #[serde(default)]
+    allow_metadata_hosts: Vec<String>,
+    #[serde(skip)]
+    options: ProviderTable,
+}
+
 /// Provider deployment - operator config in config.yaml (names provider + supplies key).
-#[derive(Deserialize, Serialize, Clone)]
+#[derive(Serialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderDeploy {
     /// The provider credential as a SECRET REFERENCE. Replaces the removed `api_key_env:`
@@ -259,23 +281,6 @@ pub struct ProviderDeploy {
     /// Optional auth-style override (see ProviderDef::auth).
     #[serde(default)]
     pub auth: Option<ProviderAuth>,
-    /// The key this provider's upstream expects a CROSS-PROTOCOL output-token cap under, for the
-    /// dialect with two spellings (OpenAI Chat Completions: `max_tokens` | `max_completion_tokens`).
-    /// Omitted = `max_tokens`, what 1.5.5 wrote and what every OpenAI-compatible host accepts; set
-    /// `max_completion_tokens` for OpenAI's own API (its o-series / gpt-5 models reject `max_tokens`).
-    pub max_output_key: Option<MaxOutputKeyCfg>,
-    /// The upstream accepts Anthropic ADAPTIVE thinking (`thinking:{type:"adaptive"}` +
-    /// `output_config.effort`). Omitted = false: a reasoning ask is written as
-    /// `thinking.budget_tokens`, the form every other Claude model accepts.
-    pub anthropic_adaptive_thinking: Option<bool>,
-    /// The upstream accepts NATIVE structured outputs (`output_config.format`). Omitted = false: a
-    /// structured-output directive takes the dialect's pre-capability form (a forced tool).
-    pub native_structured_output: Option<bool>,
-    /// Per-MODEL overrides of the three capabilities above, for a provider that serves models of
-    /// several generations: the FIRST rule whose `models` glob list matches the lane's wire model
-    /// sets every capability it names. Evaluated after the provider-level values. `Some` REPLACES the
-    /// catalog list; each provider-level value above overrides the catalog's when set.
-    pub model_capabilities: Option<Vec<ModelCapabilities>>,
     /// Per-provider metadata allow-override (see `ProviderCfg::allow_metadata_hosts`). `Some` REPLACES
     /// the catalog default; `None` falls back to the catalog's `allow_metadata_hosts`.
     #[serde(default)]
@@ -292,6 +297,36 @@ pub struct ProviderDeploy {
     /// position.
     #[serde(skip)]
     pub options: ProviderTable,
+}
+
+#[derive(Deserialize)]
+#[serde(remote = "ProviderDeploy", deny_unknown_fields)]
+struct ProviderDeployCore {
+    api_key: SecretRef,
+    #[serde(default)]
+    protocol: Option<String>,
+    #[serde(default)]
+    base_url: Option<String>,
+    #[serde(default)]
+    error_map: Option<HashMap<String, String>>,
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    path_base: Option<String>,
+    #[serde(default)]
+    token_url: Option<String>,
+    #[serde(default)]
+    scope: Option<String>,
+    #[serde(default)]
+    subject: Option<String>,
+    #[serde(default)]
+    auth: Option<ProviderAuth>,
+    #[serde(default)]
+    allow_metadata_hosts: Option<Vec<String>>,
+    #[serde(default)]
+    health: Option<HealthCfg>,
+    #[serde(skip)]
+    options: ProviderTable,
 }
 
 /// Per-provider auth-style override: an OPAQUE style word (BUSBAR-1.6.0.md #50: "the auth style
@@ -423,8 +458,17 @@ pub fn plane_table<T: Serialize>(entry: &T) -> ProviderTable {
 /// operator wrote.
 fn with_options<T: Serialize>(entry: &T, options: &ProviderTable) -> ProviderTable {
     let mut table = plane_table(entry);
+    let descriptor =
+        crate::plane_driver::door::provider_keys(crate::plane_driver::registry::plane_decls());
     for (name, value) in options {
-        table.insert(name.clone(), value.clone());
+        let declared = descriptor.is_some_and(|d| {
+            [&d.catalog, &d.deployment, &d.entry]
+                .iter()
+                .any(|t| t.keys.iter().any(|k| k.name == *name))
+        });
+        if !(declared && value.is_null()) {
+            table.insert(name.clone(), value.clone());
+        }
     }
     table
 }
@@ -442,10 +486,6 @@ pub const DEPLOY_KEYS: &[&str] = &[
     "scope",
     "subject",
     "auth",
-    "max_output_key",
-    "anthropic_adaptive_thinking",
-    "native_structured_output",
-    "model_capabilities",
     "allow_metadata_hosts",
     "health",
 ];
@@ -460,40 +500,8 @@ pub const DEPLOY_KEYS: &[&str] = &[
 pub fn deployments<'de, D: serde::Deserializer<'de>>(
     de: D,
 ) -> Result<HashMap<String, ProviderDeploy>, D::Error> {
-    let entries: HashMap<String, Deployment> = unique_entries(de)?;
-    Ok(entries.into_iter().map(|(k, v)| (k, v.0)).collect())
-}
-
-/// One deployment entry read by [`deployments`].
-struct Deployment(ProviderDeploy);
-
-impl<'de> Deserialize<'de> for Deployment {
-    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
-        de.deserialize_map(DeploymentVisitor)
-    }
-}
-
-struct DeploymentVisitor;
-
-impl<'de> serde::de::Visitor<'de> for DeploymentVisitor {
-    type Value = Deployment;
-
-    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("struct ProviderDeploy")
-    }
-
-    fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<Deployment, A::Error> {
-        let mut options = ProviderTable::new();
-        let mut deploy = ProviderDeploy::deserialize(
-            serde::de::value::MapAccessDeserializer::new(OptionsAside {
-                inner: map,
-                keys: DEPLOY_KEYS,
-                options: &mut options,
-            }),
-        )?;
-        deploy.options = options;
-        Ok(Deployment(deploy))
-    }
+    let entries: HashMap<String, ProviderDeploy> = unique_entries(de)?;
+    Ok(entries)
 }
 
 /// THE KEYS A CATALOG ENTRY'S TYPED GRAMMAR READS ([`ProviderDef`]), in its order; every other key
@@ -509,10 +517,6 @@ pub const CATALOG_KEYS: &[&str] = &[
     "scope",
     "subject",
     "auth",
-    "max_output_key",
-    "anthropic_adaptive_thinking",
-    "native_structured_output",
-    "model_capabilities",
     "allow_metadata_hosts",
 ];
 
@@ -526,8 +530,8 @@ pub const CATALOG_KEYS: &[&str] = &[
 pub fn catalog<'de, D: serde::Deserializer<'de>>(
     de: D,
 ) -> Result<HashMap<String, ProviderDef>, D::Error> {
-    let entries: HashMap<String, CatalogEntry> = unique_entries(de)?;
-    Ok(entries.into_iter().map(|(k, v)| (k, v.0)).collect())
+    let entries: HashMap<String, ProviderDef> = unique_entries(de)?;
+    Ok(entries)
 }
 
 /// Keep the entry-name boundary strict too: HashMap's ordinary reader silently replaces a
@@ -573,42 +577,67 @@ pub fn catalog_from_str(text: &str) -> Result<HashMap<String, ProviderDef>, serd
     catalog(serde_yaml::Deserializer::from_str(text))
 }
 
-/// One catalog entry read by [`catalog`].
-struct CatalogEntry(ProviderDef);
-
-impl<'de> Deserialize<'de> for CatalogEntry {
-    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
-        de.deserialize_map(CatalogEntryVisitor)
-    }
+// Remote derives retain the core fields' streaming serde errors. Plane-owned fields are
+// consumed beside them, using the owning plane's neutral descriptor, before its values
+// enter the opaque options table. Direct entry parsing follows this same path.
+macro_rules! provider_entry {
+    ($ty:ident, $core:ident, $keys:ident, $form:ident) => {
+        impl<'de> Deserialize<'de> for $ty {
+            fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+                struct EntryVisitor;
+                impl<'de> serde::de::Visitor<'de> for EntryVisitor {
+                    type Value = $ty;
+                    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                        f.write_str(concat!("struct ", stringify!($ty)))
+                    }
+                    fn visit_map<A: serde::de::MapAccess<'de>>(
+                        self,
+                        map: A,
+                    ) -> Result<$ty, A::Error> {
+                        let mut options = ProviderTable::new();
+                        let mut entry = $core::deserialize(
+                            serde::de::value::MapAccessDeserializer::new(OptionsAside {
+                                inner: map,
+                                keys: $keys,
+                                form: Form::$form,
+                                options: &mut options,
+                            }),
+                        )?;
+                        entry.options = options;
+                        Ok(entry)
+                    }
+                }
+                de.deserialize_map(EntryVisitor)
+            }
+        }
+    };
 }
 
-struct CatalogEntryVisitor;
+provider_entry!(ProviderCfg, ProviderCfgCore, ENTRY_KEYS, Entry);
+provider_entry!(ProviderDef, ProviderDefCore, CATALOG_KEYS, Catalog);
+provider_entry!(ProviderDeploy, ProviderDeployCore, DEPLOY_KEYS, Deployment);
 
-impl<'de> serde::de::Visitor<'de> for CatalogEntryVisitor {
-    type Value = CatalogEntry;
-
-    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("struct ProviderDef")
-    }
-
-    fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<CatalogEntry, A::Error> {
-        let mut options = ProviderTable::new();
-        let mut def =
-            ProviderDef::deserialize(serde::de::value::MapAccessDeserializer::new(OptionsAside {
-                inner: map,
-                keys: CATALOG_KEYS,
-                options: &mut options,
-            }))?;
-        def.options = options;
-        Ok(CatalogEntry(def))
-    }
-}
+const ENTRY_KEYS: &[&str] = &[
+    "protocol",
+    "base_url",
+    "api_key",
+    "health",
+    "error_map",
+    "path",
+    "path_base",
+    "token_url",
+    "scope",
+    "subject",
+    "auth",
+    "allow_metadata_hosts",
+];
 
 /// A map read that hands the typed grammar only the keys it reads ([`DEPLOY_KEYS`]) and sets every
 /// other key, with its value, aside.
 struct OptionsAside<'a, A> {
     inner: A,
     keys: &'static [&'static str],
+    form: Form,
     options: &'a mut ProviderTable,
 }
 
@@ -629,7 +658,29 @@ impl<'de, A: serde::de::MapAccess<'de>> serde::de::MapAccess<'de> for OptionsAsi
                     .deserialize(IntoDeserializer::<A::Error>::into_deserializer(key))
                     .map(Some);
             }
-            let value: Value = self.inner.next_value()?;
+            let descriptor = crate::plane_driver::door::provider_keys(
+                crate::plane_driver::registry::plane_decls(),
+            );
+            let field =
+                descriptor.and_then(|d| self.form.table(d).keys.iter().find(|k| k.name == key));
+            let mut value = match field {
+                Some(field) => self.inner.next_value_seed(ValueSeed::field(field))?,
+                None => self.inner.next_value::<Value>()?,
+            };
+            // Only descriptor-owned values had optional members normalized by their
+            // former typed serialization. An unknown wire option, including null,
+            // must still reach the plane's option judge unchanged.
+            if field.is_some() {
+                if let Value::Object(inner) = &mut value {
+                    drop_unset(inner);
+                } else if let Value::Array(items) = &mut value {
+                    for item in items {
+                        if let Value::Object(inner) = item {
+                            drop_unset(inner);
+                        }
+                    }
+                }
+            }
             if self.options.insert(key.clone(), value).is_some() {
                 return Err(<A::Error as Error>::custom(format!(
                     "duplicate field `{key}`"
@@ -854,10 +905,6 @@ impl std::fmt::Debug for ProviderCfg {
             scope,
             subject,
             auth,
-            max_output_key,
-            anthropic_adaptive_thinking,
-            native_structured_output,
-            model_capabilities,
             allow_metadata_hosts,
             options,
         } = self;
@@ -873,10 +920,6 @@ impl std::fmt::Debug for ProviderCfg {
             .field("scope", scope)
             .field("subject", subject)
             .field("auth", auth)
-            .field("max_output_key", max_output_key)
-            .field("anthropic_adaptive_thinking", anthropic_adaptive_thinking)
-            .field("native_structured_output", native_structured_output)
-            .field("model_capabilities", model_capabilities)
             .field("allow_metadata_hosts", allow_metadata_hosts)
             // The names alone: a value is the plane's to judge, and is never printed.
             .field("options", &options.keys().collect::<Vec<_>>())
@@ -897,10 +940,6 @@ impl std::fmt::Debug for ProviderDef {
             scope,
             subject,
             auth,
-            max_output_key,
-            anthropic_adaptive_thinking,
-            native_structured_output,
-            model_capabilities,
             allow_metadata_hosts,
             options,
         } = self;
@@ -915,10 +954,6 @@ impl std::fmt::Debug for ProviderDef {
             .field("scope", scope)
             .field("subject", subject)
             .field("auth", auth)
-            .field("max_output_key", max_output_key)
-            .field("anthropic_adaptive_thinking", anthropic_adaptive_thinking)
-            .field("native_structured_output", native_structured_output)
-            .field("model_capabilities", model_capabilities)
             .field("allow_metadata_hosts", allow_metadata_hosts)
             // The names alone: a value is the plane's to judge, and is never printed.
             .field("options", &options.keys().collect::<Vec<_>>())
@@ -939,10 +974,6 @@ impl std::fmt::Debug for ProviderDeploy {
             scope,
             subject,
             auth,
-            max_output_key,
-            anthropic_adaptive_thinking,
-            native_structured_output,
-            model_capabilities,
             allow_metadata_hosts,
             health,
             options,
@@ -958,10 +989,6 @@ impl std::fmt::Debug for ProviderDeploy {
             .field("scope", scope)
             .field("subject", subject)
             .field("auth", auth)
-            .field("max_output_key", max_output_key)
-            .field("anthropic_adaptive_thinking", anthropic_adaptive_thinking)
-            .field("native_structured_output", native_structured_output)
-            .field("model_capabilities", model_capabilities)
             .field("allow_metadata_hosts", allow_metadata_hosts)
             .field("health", health)
             // The names alone: a value is the plane's to judge, and is never printed.
