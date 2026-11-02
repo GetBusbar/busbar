@@ -7,7 +7,10 @@ use std::sync::{Arc, Mutex};
 use busbar_contract::abi::sdk::store::conditional::{Expected, Mutation, Predicate};
 use busbar_contract::caps::{DurableWrite, Grant, StepName};
 use busbar_contract::store_calls::StoreCalls;
-use busbar_kernel::governance::recovery::{RecoveryError, RecoveryEvent, RecoverySink};
+use busbar_kernel::governance::recovery::{
+    RecoveryError, RecoveryEvent, RecoveryInspection, RecoveryResolution, RecoverySink,
+    RecoveryState, RecoveryVerdict,
+};
 use busbar_kernel_wal::{BodyReader, BodyWriter, Entry, JournalRecord, Record, RecordClass};
 use serde::{Deserialize, Serialize};
 
@@ -33,6 +36,113 @@ struct Head {
 struct Candidate {
     event: RecoveryEvent,
     previous_head: Option<Head>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    adoption: Option<AdoptionProof>,
+}
+
+/// Operator attestations are audited facts, never inferred from a node lease. The selected
+/// verdict digest makes an intermediate unknown checkpoint inert until that verdict is selected.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AdoptionProof {
+    version: u8,
+    operation_id: [u8; 16],
+    body_fingerprint: [u8; 32],
+    foreign_head: Head,
+    final_event_digest: [u8; 32],
+    landed: bool,
+    sender_quiesced: bool,
+    backend_quiesced: bool,
+    actor: String,
+    reason: String,
+}
+
+impl AdoptionProof {
+    fn validate(
+        &self,
+        previous: &(Head, Candidate),
+        current: &(Head, Candidate),
+        descendants: &[(Head, Candidate)],
+    ) -> Result<(), RecoveryError> {
+        if self.version != 1
+            || self.operation_id != current.1.event.operation_id
+            || self.body_fingerprint != current.1.event.body_fingerprint
+            || self.foreign_head != previous.0
+            || previous.0.node == current.0.node
+            || !self.sender_quiesced
+            || !self.backend_quiesced
+            || self.actor.trim().is_empty()
+            || self.actor.len() > 256
+            || self.reason.trim().is_empty()
+            || self.reason.len() > 4096
+        {
+            return Err(invalid("invalid attested recovery handover proof"));
+        }
+        let verdict_state = if self.landed {
+            RecoveryState::VerdictLanded
+        } else {
+            RecoveryState::VerdictNotLanded
+        };
+        let decision = match previous.1.event.state {
+            RecoveryState::LandedUnknown if current.1.event.state == verdict_state => current,
+            state
+                if state == verdict_state
+                    && current.1.event.state == state
+                    && current.1.event.payload == previous.1.event.payload =>
+            {
+                current
+            }
+            RecoveryState::Applied
+                if self.landed
+                    && current.1.event.state == RecoveryState::Applied
+                    && current.1.event.payload == previous.1.event.payload =>
+            {
+                current
+            }
+            RecoveryState::ConditionConflict
+                if !self.landed
+                    && current.1.event.state == RecoveryState::ConditionConflict
+                    && current.1.event.payload == previous.1.event.payload =>
+            {
+                current
+            }
+            RecoveryState::Intent if current.1.event.state == RecoveryState::LandedUnknown => {
+                descendants
+                    .first()
+                    .ok_or_else(|| invalid("handover verdict is not selected"))?
+            }
+            _ => {
+                return Err(invalid(
+                    "handover does not end an unresolved foreign operation",
+                ))
+            }
+        };
+        let expected = match previous.1.event.state {
+            RecoveryState::Applied => RecoveryState::Applied,
+            RecoveryState::ConditionConflict => RecoveryState::ConditionConflict,
+            _ => verdict_state,
+        };
+        if decision.0.node != current.0.node
+            || decision.1.event.state != expected
+            || decision.1.event.fingerprint()? != self.final_event_digest
+        {
+            return Err(invalid(
+                "attested handover verdict differs from selected ancestry",
+            ));
+        }
+        Ok(())
+    }
+
+    fn matches(&self, resolution: &RecoveryResolution) -> bool {
+        self.operation_id == resolution.operation_id
+            && self.body_fingerprint == resolution.body_fingerprint
+            && self.foreign_head.revision == resolution.expected_revision
+            && self.landed == (resolution.verdict == RecoveryVerdict::Landed)
+            && self.sender_quiesced == resolution.sender_quiesced
+            && self.backend_quiesced == resolution.backend_quiesced
+            && self.actor == resolution.actor
+            && self.reason == resolution.reason
+    }
 }
 
 fn unavailable(why: impl ToString) -> RecoveryError {
@@ -97,10 +207,26 @@ fn selected(
     owner: u64,
     chains: &mut Chains,
 ) -> Result<Vec<RecoveryEvent>, RecoveryError> {
+    Ok(selected_chain(calls, operation, tip, owner, chains)?
+        .into_iter()
+        .map(|(_, candidate)| candidate.event)
+        .collect())
+}
+
+fn selected_chain(
+    calls: &dyn StoreCalls,
+    operation: &[u8; 16],
+    tip: &Head,
+    owner: u64,
+    chains: &mut Chains,
+) -> Result<Vec<(Head, Candidate)>, RecoveryError> {
+    if tip.node != owner {
+        return Err(invalid("recovery selection is not owned by this node"));
+    }
     let mut next = Some(tip.clone());
     let mut backwards = Vec::new();
     while let Some(at) = next {
-        if at.version != 1 || at.node != owner || at.sequence == 0 {
+        if at.version != 1 || at.node == 0 || at.sequence == 0 {
             return Err(invalid("invalid recovery predecessor pointer"));
         }
         if !chains.contains_key(&at.node) {
@@ -142,12 +268,28 @@ fn selected(
             None if at.revision == 0 && candidate.event.previous_event.is_none() => {}
             _ => return Err(invalid("invalid selected recovery predecessor")),
         }
-        next = candidate.previous_head;
-        backwards.push(candidate.event);
+        next = candidate.previous_head.clone();
+        backwards.push((at, candidate));
     }
     backwards.reverse();
-    for (index, event) in backwards.iter().enumerate() {
-        event.follows(index.checked_sub(1).map(|previous| &backwards[previous]))?;
+    for (index, current) in backwards.iter().enumerate() {
+        let previous = index.checked_sub(1).map(|previous| &backwards[previous]);
+        current
+            .1
+            .event
+            .follows(previous.map(|(_, candidate)| &candidate.event))?;
+        match (previous, &current.1.adoption) {
+            (Some(previous), Some(proof)) if previous.0.node != current.0.node => {
+                proof.validate(previous, current, &backwards[index + 1..])?;
+            }
+            (Some(previous), None) if previous.0.node == current.0.node => {}
+            (None, None) => {}
+            _ => {
+                return Err(invalid(
+                    "recovery ownership changed without an attested verdict",
+                ))
+            }
+        }
     }
     Ok(backwards)
 }
@@ -188,6 +330,40 @@ fn heads(calls: &dyn StoreCalls) -> Result<Vec<([u8; 16], Head)>, RecoveryError>
     Ok(out)
 }
 
+fn adopted_history(
+    calls: &dyn StoreCalls,
+    node: u64,
+    tip: &Head,
+    resolution: &RecoveryResolution,
+    transitions: &[RecoveryEvent],
+) -> Result<Vec<RecoveryEvent>, RecoveryError> {
+    let chain = selected_chain(
+        calls,
+        &resolution.operation_id,
+        tip,
+        node,
+        &mut Chains::new(),
+    )?;
+    let last = transitions
+        .last()
+        .ok_or_else(|| invalid("handover has no verdict"))?;
+    if chain.last().map(|(_, candidate)| &candidate.event) != Some(last)
+        || !chain.iter().any(|(_, candidate)| {
+            candidate.adoption.as_ref().is_some_and(|proof| {
+                proof.final_event_digest == tip.event_digest && proof.matches(resolution)
+            })
+        })
+    {
+        return Err(RecoveryError::Conflict(
+            "selected handover differs from this attested decision".into(),
+        ));
+    }
+    Ok(chain
+        .into_iter()
+        .map(|(_, candidate)| candidate.event)
+        .collect())
+}
+
 #[derive(Clone)]
 struct Pending {
     event: RecoveryEvent,
@@ -205,7 +381,16 @@ struct StoreRecovery {
 #[derive(Default)]
 struct DriverState {
     pending: BTreeMap<[u8; 16], Pending>,
+    adoptions: BTreeMap<[u8; 16], PendingAdoption>,
     driving: BTreeSet<[u8; 16]>,
+}
+
+#[derive(Clone)]
+struct PendingAdoption {
+    proof: AdoptionProof,
+    transitions: Vec<RecoveryEvent>,
+    records: Vec<Pending>,
+    predecessor: Vec<u8>,
 }
 
 struct Driving<'a> {
@@ -225,6 +410,60 @@ impl Drop for Driving<'_> {
 }
 
 impl StoreRecovery {
+    fn drive(&self, operation: [u8; 16]) -> Result<Driving<'_>, RecoveryError> {
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        if !state.driving.insert(operation) {
+            return Err(unavailable(
+                "this recovery operation already has an active driver",
+            ));
+        }
+        Ok(Driving {
+            sink: self,
+            operation,
+        })
+    }
+
+    fn append_candidate(
+        &self,
+        lane: &JournalLane,
+        node: u64,
+        candidate: Candidate,
+    ) -> Result<Pending, RecoveryError> {
+        let encoded = body(&candidate)?;
+        lane.validate_recovery_frame(node, encoded.len())
+            .map_err(invalid)?;
+        let sealed = {
+            let mut book = self.book.lock().unwrap_or_else(|p| p.into_inner());
+            let ack = book
+                .journal
+                .append(
+                    &self.token,
+                    StepName::Meter,
+                    &[Entry::new(RecordClass::Reconciliation, encoded)
+                        .at(busbar_kernel::store::now_ms() / 1_000, 0)],
+                )
+                .map_err(|_| {
+                    unavailable("recovery candidate remains unconfirmed in the journal")
+                })?;
+            ack.sealed
+                .into_iter()
+                .last()
+                .ok_or_else(|| invalid("recovery append sealed no record"))?
+        };
+        Ok(Pending {
+            head: Head {
+                version: 1,
+                node,
+                sequence: sealed.node_seq,
+                revision: candidate.event.revision,
+                event_digest: candidate.event.fingerprint()?,
+            },
+            event: candidate.event,
+            record: Record::new(node, sealed.node_seq, sealed.encode()),
+            predecessor: None,
+        })
+    }
+
     fn inputs(&self) -> Result<(JournalLane, u64), RecoveryError> {
         let book = self.book.lock().unwrap_or_else(|p| p.into_inner());
         if !book.durable_in_store() {
@@ -238,19 +477,261 @@ impl StoreRecovery {
         ))
     }
 
-    fn persist_at(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
-        {
-            let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
-            if !state.driving.insert(event.operation_id) {
-                return Err(unavailable(
-                    "this recovery operation already has an active driver",
-                ));
+    fn inspect_foreign_at(&self) -> Result<Vec<RecoveryInspection>, RecoveryError> {
+        let (lane, node) = self.inputs()?;
+        let fences = lane.recovery_predicates(node).map_err(unavailable)?;
+        let calls = lane.calls();
+        let mut chains = Chains::new();
+        let mut tips = Vec::new();
+        for (operation, tip) in heads(calls.as_ref())? {
+            if tip.node != node {
+                if let Some(event) =
+                    selected(calls.as_ref(), &operation, &tip, tip.node, &mut chains)?.pop()
+                {
+                    tips.push(RecoveryInspection {
+                        owner_node: tip.node,
+                        event,
+                    });
+                }
             }
         }
-        let _driving = Driving {
-            sink: self,
-            operation: event.operation_id,
+        if lane.recovery_predicates(node).map_err(unavailable)? != fences {
+            return Err(unavailable(
+                "the local node fence changed during foreign inspection",
+            ));
+        }
+        Ok(tips)
+    }
+
+    fn adopt_verdict_at(
+        &self,
+        resolution: &RecoveryResolution,
+        transitions: &[RecoveryEvent],
+    ) -> Result<Vec<RecoveryEvent>, RecoveryError> {
+        if !resolution.sender_quiesced
+            || !resolution.backend_quiesced
+            || resolution.actor.trim().is_empty()
+            || resolution.actor.len() > 256
+            || resolution.reason.trim().is_empty()
+            || resolution.reason.len() > 4096
+            || !(1..=2).contains(&transitions.len())
+        {
+            return Err(invalid("handover requires explicit sender/backend quiescence, actor, reason and a legal verdict chain"));
+        }
+        let verdict = if resolution.verdict == RecoveryVerdict::Landed {
+            RecoveryState::VerdictLanded
+        } else {
+            RecoveryState::VerdictNotLanded
         };
+        let last = transitions.last().unwrap();
+        if transitions.iter().any(|event| {
+            event.operation_id != resolution.operation_id
+                || event.body_fingerprint != resolution.body_fingerprint
+        }) {
+            return Err(invalid(
+                "handover verdict does not match its operation identity",
+            ));
+        }
+        let _driving = self.drive(resolution.operation_id)?;
+        let (lane, node) = self.inputs()?;
+        let fences = lane.recovery_predicates(node).map_err(unavailable)?;
+        let calls = lane.calls();
+        let (current, raw) = head(calls.as_ref(), &resolution.operation_id)?
+            .ok_or_else(|| invalid("foreign recovery operation does not exist"))?;
+        let digest = last.fingerprint()?;
+        if current.node == node {
+            let run = adopted_history(calls.as_ref(), node, &current, resolution, transitions)?;
+            if head(calls.as_ref(), &resolution.operation_id)?
+                .as_ref()
+                .map(|(_, value)| value)
+                != Some(&raw)
+                || lane.recovery_predicates(node).map_err(unavailable)? != fences
+            {
+                return Err(unavailable(
+                    "handover authority changed during confirmation",
+                ));
+            }
+            self.state
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .adoptions
+                .remove(&resolution.operation_id);
+            return Ok(run);
+        }
+        let run = selected(
+            calls.as_ref(),
+            &resolution.operation_id,
+            &current,
+            current.node,
+            &mut Chains::new(),
+        )?;
+        let foreign = run
+            .last()
+            .ok_or_else(|| invalid("foreign recovery history is empty"))?;
+        if foreign.revision != resolution.expected_revision
+            || foreign.body_fingerprint != resolution.body_fingerprint
+        {
+            return Err(RecoveryError::Conflict(
+                "foreign recovery head differs from the attested revision".into(),
+            ));
+        }
+        let legal_shape = match foreign.state {
+            RecoveryState::Intent => {
+                transitions.len() == 2
+                    && transitions[0].state == RecoveryState::LandedUnknown
+                    && last.state == verdict
+            }
+            RecoveryState::LandedUnknown => transitions.len() == 1 && last.state == verdict,
+            state if state == verdict => {
+                transitions.len() == 1 && last.state == state && last.payload == foreign.payload
+            }
+            RecoveryState::Applied => {
+                resolution.verdict == RecoveryVerdict::Landed
+                    && transitions.len() == 1
+                    && last.state == RecoveryState::Applied
+                    && last.payload == foreign.payload
+            }
+            RecoveryState::ConditionConflict => {
+                resolution.verdict == RecoveryVerdict::NotLanded
+                    && transitions.len() == 1
+                    && last.state == RecoveryState::ConditionConflict
+                    && last.payload == foreign.payload
+            }
+            _ => false,
+        };
+        if !legal_shape {
+            return Err(RecoveryError::Conflict(
+                "foreign recovery decision cannot be changed by handover".into(),
+            ));
+        }
+        let mut previous = foreign;
+        for event in transitions {
+            event.follows(Some(previous))?;
+            previous = event;
+        }
+        let proof = AdoptionProof {
+            version: 1,
+            operation_id: resolution.operation_id,
+            body_fingerprint: resolution.body_fingerprint,
+            foreign_head: current.clone(),
+            final_event_digest: digest,
+            landed: resolution.verdict == RecoveryVerdict::Landed,
+            sender_quiesced: resolution.sender_quiesced,
+            backend_quiesced: resolution.backend_quiesced,
+            actor: resolution.actor.clone(),
+            reason: resolution.reason.clone(),
+        };
+        let saved = self
+            .state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .adoptions
+            .get(&resolution.operation_id)
+            .cloned();
+        let pending = if let Some(saved) = saved {
+            if saved.proof != proof
+                || saved.transitions.as_slice() != transitions
+                || saved.predecessor != raw
+            {
+                return Err(RecoveryError::Conflict(
+                    "another immutable attested handover is pending".into(),
+                ));
+            }
+            saved
+        } else {
+            let mut previous_head = current;
+            let mut records = Vec::with_capacity(transitions.len());
+            for (index, event) in transitions.iter().enumerate() {
+                let candidate = self.append_candidate(
+                    &lane,
+                    node,
+                    Candidate {
+                        event: event.clone(),
+                        previous_head: Some(previous_head),
+                        adoption: (index == 0).then(|| proof.clone()),
+                    },
+                )?;
+                previous_head = candidate.head.clone();
+                records.push(candidate);
+            }
+            let pending = PendingAdoption {
+                proof,
+                transitions: transitions.to_vec(),
+                records,
+                predecessor: raw,
+            };
+            self.state
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .adoptions
+                .insert(resolution.operation_id, pending.clone());
+            pending
+        };
+        let target = &pending.records.last().unwrap().head;
+        let _ = lane.wait_acked(node, target.sequence, ACK_DEADLINE);
+        for record in &pending.records {
+            lane.confirm_recovery_record(&record.record)
+                .map_err(unavailable)?;
+        }
+        let fences = lane.recovery_predicates(node).map_err(unavailable)?;
+        let mut predicates = fences.clone();
+        predicates.push(Predicate {
+            schema: HEAD_SCHEMA.into(),
+            key: resolution.operation_id.to_vec(),
+            expected: Expected::Bytes(pending.predecessor.clone()),
+        });
+        let value = serde_json::to_vec(target).map_err(invalid)?;
+        let request = super::conditional::candidate(
+            predicates,
+            vec![Mutation::Put {
+                schema: HEAD_SCHEMA.into(),
+                key: resolution.operation_id.to_vec(),
+                value,
+            }],
+        );
+        drop(request.encode_held().map_err(invalid)?);
+        // One head CAS selects the complete verdict chain; an intermediate unknown checkpoint
+        // can never transfer custody by itself. Attestations authorize this explicit path only.
+        let decision = wait_for(calls.record_transaction(&request));
+        let observed = head(calls.as_ref(), &resolution.operation_id)?;
+        if let Some((tip, observed_raw)) = &observed {
+            if tip.node == node && tip.event_digest == digest {
+                let run = adopted_history(calls.as_ref(), node, tip, resolution, transitions)?;
+                if head(calls.as_ref(), &resolution.operation_id)?
+                    .as_ref()
+                    .map(|(_, value)| value)
+                    != Some(observed_raw)
+                    || lane.recovery_predicates(node).map_err(unavailable)? != fences
+                {
+                    return Err(unavailable(
+                        "handover authority changed during confirmation",
+                    ));
+                }
+                self.state
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .adoptions
+                    .remove(&resolution.operation_id);
+                return Ok(run);
+            }
+        }
+        if observed.as_ref().map(|(_, value)| value) != Some(&pending.predecessor) {
+            self.state
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .adoptions
+                .remove(&resolution.operation_id);
+            return Err(RecoveryError::Conflict(
+                "another recovery decision won the handover CAS".into(),
+            ));
+        }
+        Err(unavailable(format!(
+            "attested handover selection is unconfirmed: {decision:?}"
+        )))
+    }
+
+    fn persist_at(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
+        let _driving = self.drive(event.operation_id)?;
         let (lane, node) = self.inputs()?;
         let calls = lane.calls();
         let initial_fences = lane.recovery_predicates(node).map_err(unavailable)?;
@@ -337,6 +818,7 @@ impl StoreRecovery {
             let candidate = Candidate {
                 event: event.clone(),
                 previous_head: previous.cloned(),
+                adoption: None,
             };
             let encoded = body(&candidate)?;
             lane.validate_recovery_frame(node, encoded.len())
@@ -459,6 +941,18 @@ impl StoreRecovery {
 }
 
 impl RecoverySink for StoreRecovery {
+    fn inspect_foreign(&self) -> Result<Vec<RecoveryInspection>, RecoveryError> {
+        off_runtime(|| self.inspect_foreign_at())
+    }
+
+    fn adopt_verdict(
+        &self,
+        resolution: &RecoveryResolution,
+        transitions: &[RecoveryEvent],
+    ) -> Result<Vec<RecoveryEvent>, RecoveryError> {
+        off_runtime(|| self.adopt_verdict_at(resolution, transitions))
+    }
+
     fn persist(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
         off_runtime(|| self.persist_at(event))
     }
@@ -542,6 +1036,42 @@ mod tests {
             previous_event: Some(previous.fingerprint().unwrap()),
             state,
             ..previous.clone()
+        }
+    }
+
+    fn attestation(event: &RecoveryEvent, verdict: RecoveryVerdict) -> RecoveryResolution {
+        RecoveryResolution {
+            operation_id: event.operation_id,
+            body_fingerprint: event.body_fingerprint,
+            expected_revision: event.revision,
+            verdict,
+            sender_quiesced: true,
+            backend_quiesced: true,
+            actor: "operator".into(),
+            reason: "old per-operation senders retired; outstanding backend mutations settled"
+                .into(),
+        }
+    }
+
+    fn retire(book: &Arc<Mutex<Durability>>) {
+        let lane = book.lock().unwrap().lane().unwrap().clone();
+        assert!(lane.drain(ACK_DEADLINE));
+        lane.release_held_lease();
+    }
+
+    fn handover_events(previous: &RecoveryEvent, verdict: RecoveryVerdict) -> Vec<RecoveryEvent> {
+        let state = if verdict == RecoveryVerdict::Landed {
+            RecoveryState::VerdictLanded
+        } else {
+            RecoveryState::VerdictNotLanded
+        };
+        match previous.state {
+            RecoveryState::Intent => {
+                let unknown = transition(previous, RecoveryState::LandedUnknown);
+                vec![unknown.clone(), transition(&unknown, state)]
+            }
+            RecoveryState::LandedUnknown => vec![transition(previous, state)],
+            state => vec![transition(previous, state)],
         }
     }
 
@@ -775,5 +1305,286 @@ mod tests {
         assert!(
             matches!(sink.replay(), Err(RecoveryError::Invalid(reason)) if reason.contains("key and sealed record identity"))
         );
+    }
+
+    #[test]
+    fn foreign_metadata_does_not_authorize_handover_without_both_attestations() {
+        let slots = RecordSlots::new();
+        let old = opened(&slots, "handover-alive-old");
+        let new = opened(&slots, "handover-alive-new");
+        let old_sink = usage_recovery_sink(&old);
+        let new_sink = usage_recovery_sink(&new);
+        let sent = intent();
+        old_sink.persist(&sent).unwrap();
+        assert_eq!(
+            new_sink.inspect_foreign().unwrap(),
+            vec![RecoveryInspection {
+                owner_node: old.lock().unwrap().journal.node(),
+                event: sent.clone(),
+            }]
+        );
+        assert!(new_sink.replay().unwrap().is_empty());
+        let events = handover_events(&sent, RecoveryVerdict::NotLanded);
+        let before = new.lock().unwrap().journal.next_seq();
+        let original = head(slots.calls().as_ref(), &sent.operation_id).unwrap();
+        for (sender_quiesced, backend_quiesced) in [(false, false), (true, false), (false, true)] {
+            let request = RecoveryResolution {
+                sender_quiesced,
+                backend_quiesced,
+                ..attestation(&sent, RecoveryVerdict::NotLanded)
+            };
+            assert!(matches!(
+                new_sink.adopt_verdict(&request, &events),
+                Err(RecoveryError::Invalid(_))
+            ));
+        }
+        assert_eq!(new.lock().unwrap().journal.next_seq(), before);
+        assert_eq!(
+            head(slots.calls().as_ref(), &sent.operation_id).unwrap(),
+            original
+        );
+        assert!(matches!(
+            new_sink.persist(&events[0]),
+            Err(RecoveryError::Conflict(_))
+        ));
+    }
+
+    #[test]
+    fn attested_retired_foreign_states_preserve_decisions_and_replay_across_restart() {
+        for (state, choice) in [
+            (RecoveryState::Intent, RecoveryVerdict::NotLanded),
+            (RecoveryState::LandedUnknown, RecoveryVerdict::Landed),
+            (RecoveryState::VerdictLanded, RecoveryVerdict::Landed),
+            (RecoveryState::VerdictNotLanded, RecoveryVerdict::NotLanded),
+            (RecoveryState::Applied, RecoveryVerdict::Landed),
+            (RecoveryState::ConditionConflict, RecoveryVerdict::NotLanded),
+        ] {
+            let slots = RecordSlots::new();
+            let old = opened(&slots, "handover-retired-old");
+            let new = opened(&slots, "handover-retired-new");
+            let old_sink = usage_recovery_sink(&old);
+            let new_sink = usage_recovery_sink(&new);
+            let sent = intent();
+            old_sink.persist(&sent).unwrap();
+            let foreign = match state {
+                RecoveryState::Intent => sent,
+                RecoveryState::VerdictLanded | RecoveryState::VerdictNotLanded => {
+                    let unknown = transition(&sent, RecoveryState::LandedUnknown);
+                    old_sink.persist(&unknown).unwrap();
+                    transition(&unknown, state)
+                }
+                _ => transition(&sent, state),
+            };
+            if foreign.revision > 0 {
+                old_sink.persist(&foreign).unwrap();
+            }
+            let (foreign_head, _) = head(slots.calls().as_ref(), &foreign.operation_id)
+                .unwrap()
+                .unwrap();
+            retire(&old);
+            let events = handover_events(&foreign, choice);
+            let request = attestation(&foreign, choice);
+            let selected = new_sink.adopt_verdict(&request, &events).unwrap();
+            assert_eq!(selected.last(), events.last(), "state {state:?}");
+            assert_eq!(new_sink.replay().unwrap(), selected);
+            assert!(new_sink.inspect_foreign().unwrap().is_empty());
+            let (tip, _) = head(slots.calls().as_ref(), &foreign.operation_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(tip.node, new.lock().unwrap().journal.node());
+            let chain = selected_chain(
+                slots.calls().as_ref(),
+                &foreign.operation_id,
+                &tip,
+                tip.node,
+                &mut Chains::new(),
+            )
+            .unwrap();
+            let proof = chain
+                .iter()
+                .find_map(|(_, candidate)| candidate.adoption.as_ref())
+                .unwrap();
+            assert_eq!(proof.foreign_head, foreign_head);
+            assert!(proof.matches(&request));
+            let opposite = RecoveryResolution {
+                verdict: if choice == RecoveryVerdict::Landed {
+                    RecoveryVerdict::NotLanded
+                } else {
+                    RecoveryVerdict::Landed
+                },
+                ..request.clone()
+            };
+            assert!(matches!(
+                new_sink.adopt_verdict(&opposite, &events),
+                Err(RecoveryError::Conflict(_))
+            ));
+            retire(&new);
+            let restarted = opened(&slots, "handover-retired-new");
+            assert_eq!(usage_recovery_sink(&restarted).replay().unwrap(), selected);
+        }
+    }
+
+    #[test]
+    fn competing_attested_verdicts_have_one_foreign_head_cas_winner() {
+        let slots = RecordSlots::new();
+        let old = opened(&slots, "handover-race-old");
+        let one = opened(&slots, "handover-race-one");
+        let two = opened(&slots, "handover-race-two");
+        let old_sink = usage_recovery_sink(&old);
+        let sent = intent();
+        let foreign = transition(&sent, RecoveryState::LandedUnknown);
+        old_sink.persist(&sent).unwrap();
+        old_sink.persist(&foreign).unwrap();
+        retire(&old);
+        let first = usage_recovery_sink(&one);
+        let second = usage_recovery_sink(&two);
+        let landed = handover_events(&foreign, RecoveryVerdict::Landed);
+        let not_landed = handover_events(&foreign, RecoveryVerdict::NotLanded);
+        let yes = attestation(&foreign, RecoveryVerdict::Landed);
+        let no = attestation(&foreign, RecoveryVerdict::NotLanded);
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        slots.on_transaction(move |request| {
+            if request
+                .mutations
+                .iter()
+                .any(|m| m.address().0 == HEAD_SCHEMA)
+            {
+                barrier.wait();
+            }
+            None
+        });
+        let first = std::thread::spawn(move || first.adopt_verdict(&yes, &landed));
+        let second = std::thread::spawn(move || second.adopt_verdict(&no, &not_landed));
+        let results = [first.join().unwrap(), second.join().unwrap()];
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(result, Err(RecoveryError::Conflict(_))))
+                .count(),
+            1
+        );
+        let tip = head(slots.calls().as_ref(), &foreign.operation_id)
+            .unwrap()
+            .unwrap()
+            .0;
+        let owner = if results[0].is_ok() { one } else { two };
+        assert_eq!(tip.node, owner.lock().unwrap().journal.node());
+        assert_eq!(
+            usage_recovery_sink(&owner).replay().unwrap(),
+            *results
+                .iter()
+                .find_map(|result| result.as_ref().ok())
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn unknown_adoption_selects_no_intermediate_head_and_retains_exact_candidates() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let slots = RecordSlots::new();
+        let old = opened(&slots, "handover-unknown-old");
+        let new = opened(&slots, "handover-unknown-new");
+        let sent = intent();
+        usage_recovery_sink(&old).persist(&sent).unwrap();
+        retire(&old);
+        let sink = usage_recovery_sink(&new);
+        let request = attestation(&sent, RecoveryVerdict::NotLanded);
+        let events = handover_events(&sent, RecoveryVerdict::NotLanded);
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&attempts);
+        slots.on_transaction(move |request| {
+            for mutation in &request.mutations {
+                if let Mutation::Put { schema, value, .. } = mutation {
+                    if schema == HEAD_SCHEMA {
+                        assert_eq!(serde_json::from_slice::<Head>(value).unwrap().revision, 2);
+                        if count.fetch_add(1, Ordering::Relaxed) == 0 {
+                            return Some(busbar_contract::store_calls::StoreFailure::Failed(
+                                "unknown".into(),
+                            ));
+                        }
+                    }
+                }
+            }
+            None
+        });
+        assert!(matches!(
+            sink.adopt_verdict(&request, &events),
+            Err(RecoveryError::Unavailable(_))
+        ));
+        let sequence = new.lock().unwrap().journal.next_seq();
+        assert!(sink.replay().unwrap().is_empty());
+        assert_eq!(sink.inspect_foreign().unwrap().last().unwrap().event, sent);
+        sink.adopt_verdict(&request, &events).unwrap();
+        assert_eq!(new.lock().unwrap().journal.next_seq(), sequence);
+        assert_eq!(attempts.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn committed_handover_retries_after_foreign_inspection_disappears() {
+        let slots = RecordSlots::new();
+        let old = opened(&slots, "handover-receipt-old");
+        let new = opened(&slots, "handover-receipt-new");
+        let sent = intent();
+        usage_recovery_sink(&old).persist(&sent).unwrap();
+        retire(&old);
+        let sink = usage_recovery_sink(&new);
+        let request = attestation(&sent, RecoveryVerdict::Landed);
+        let events = handover_events(&sent, RecoveryVerdict::Landed);
+        let fail_readback = slots.clone();
+        slots.on_transaction(move |request| {
+            if request
+                .mutations
+                .iter()
+                .any(|m| m.address().0 == HEAD_SCHEMA)
+            {
+                fail_readback.fail_reads(true);
+            }
+            None
+        });
+        assert!(matches!(
+            sink.adopt_verdict(&request, &events),
+            Err(RecoveryError::Unavailable(_))
+        ));
+        slots.fail_reads(false);
+        assert!(sink.inspect_foreign().unwrap().is_empty());
+        let sequence = new.lock().unwrap().journal.next_seq();
+        let selected = sink.adopt_verdict(&request, &events).unwrap();
+        assert_eq!(selected.last(), events.last());
+        assert_eq!(new.lock().unwrap().journal.next_seq(), sequence);
+    }
+
+    #[test]
+    fn retired_fresh_node_orphan_is_visible_and_requires_explicit_attested_handover() {
+        let slots = RecordSlots::new();
+        let host_owner = opened(&slots, "handover-shared-host");
+        let orphan = opened(&slots, "handover-shared-host");
+        let recipient = opened(&slots, "handover-orphan-recipient");
+        let orphan_node = orphan.lock().unwrap().journal.node();
+        assert_ne!(orphan_node, host_owner.lock().unwrap().journal.node());
+        let old_sink = usage_recovery_sink(&orphan);
+        let sink = usage_recovery_sink(&recipient);
+        let sent = intent();
+        let unknown = transition(&sent, RecoveryState::LandedUnknown);
+        old_sink.persist(&sent).unwrap();
+        old_sink.persist(&unknown).unwrap();
+        retire(&orphan);
+        assert!(sink.replay().unwrap().is_empty());
+        assert_eq!(
+            sink.inspect_foreign().unwrap(),
+            vec![RecoveryInspection {
+                owner_node: orphan_node,
+                event: unknown.clone(),
+            }]
+        );
+        let request = attestation(&unknown, RecoveryVerdict::NotLanded);
+        let events = handover_events(&unknown, RecoveryVerdict::NotLanded);
+        let selected = sink.adopt_verdict(&request, &events).unwrap();
+        assert_eq!(selected, sink.replay().unwrap());
+        assert!(usage_recovery_sink(&host_owner)
+            .replay()
+            .unwrap()
+            .is_empty());
+        assert!(sink.inspect_foreign().unwrap().is_empty());
     }
 }
