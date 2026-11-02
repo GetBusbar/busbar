@@ -586,6 +586,7 @@ fn final_fields_keep_their_kind_and_custody_across_pending_and_drain() {
     )
     .unwrap();
     framing.bufs = Buffers::new(7, 5, 1);
+    framing.bufs.side = SIDE_ACCEPT;
     let fields = b"final-status: 7\r\n";
     assert!(framing.emit_trailers(1, fields).unwrap().wire.is_empty());
     assert!(framing.holds(1));
