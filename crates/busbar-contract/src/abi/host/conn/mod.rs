@@ -689,7 +689,11 @@ unsafe extern "C" fn host_wait(
     })
 }
 
-unsafe extern "C" fn host_facts(ctx: ConnCtx, conn: u64, out_facts: *mut WireConnFacts) -> RawConnOutcome {
+unsafe extern "C" fn host_facts(
+    ctx: ConnCtx,
+    conn: u64,
+    out_facts: *mut WireConnFacts,
+) -> RawConnOutcome {
     hosted(ctx, |host| {
         // The out-slot is required: checked before the backend is asked or anything is held.
         if out_facts.is_null() {
