@@ -1474,22 +1474,17 @@ impl TestApp {
         // index, and a lane-idx→model resolver — so `AppSlots::build` banks the label space without
         // naming `Lane`/`WeightedLane`. Borrows `self.pools`/`by_model`/`lanes` before they move into
         // the runtime bundle below (NLL releases the borrows at the build call).
-        let ts_pools: Vec<(&str, Vec<usize>)> = self
+        let ts_pools_owned: Vec<(String, Vec<usize>)> = self
             .pools
             .iter()
-            .map(|(name, members)| (name.as_str(), members.iter().map(|(idx, _)| *idx).collect()))
+            .map(|(name, members)| (name.clone(), members.iter().map(|(idx, _)| *idx).collect()))
             .collect();
-        let ts_by_model: Vec<(&str, usize)> = by_model
+        let ts_by_model_owned: Vec<(String, usize)> = by_model
             .iter()
-            .map(|(model, &idx)| (model.as_str(), idx))
+            .map(|(model, &idx)| (model.clone(), idx))
             .collect();
-        let mut app = fixture_app_base();
-        app.set_test_telemetry(
-            &ts_pools,
-            &ts_by_model,
-            |idx| lane_inputs.get(idx).map(|lane| lane.model.as_str()),
-            crate::plane_driver::dispatch::fallback_key(),
-        );
+        let ts_lane_models: Vec<String> =
+            lane_inputs.iter().map(|lane| lane.model.clone()).collect();
         let store = std::sync::Arc::new(crate::store::HealthState::new(lane_data));
         // THE LLM DATA-PLANE RUNTIME slot (R3/R4 sub-phase B) — the successor to the flat `llm_runtime`
         // field every fixture used to set. Built here (AFTER `tslots`' `&lanes`/`&self.pools`/
@@ -1680,145 +1675,163 @@ impl TestApp {
             Vec::new()
         };
 
-        app.serve_tables = serve_tables;
-        // No authorization server unless a test asked for one with `TestApp::oauth_as`, which is
-        // the production default and is what keeps every existing test's route table unchanged
-        // by this plane's arrival.
-        app.oauth_as = self.oauth_as.clone();
-        // THE LLM DATA-PLANE RUNTIME'S SLOT KEY (R3/R4 sub-phase B) — the bundle itself was composed
-        // above into `plane_slots` under this interned key; the snapshot names only the key, and
-        // `App::llm_runtime` downcasts the slot on the money path.
-        app.fallback_runtime_key = fallback_runtime_key;
-        // The kernel's own tables over the fixture's lanes and pools (built above when a fallback
-        // plane is registered), read when that plane contributes no runtime of its own.
-        app.config_tables = config_tables;
-        app.root_rules = std::sync::Arc::new(crate::appbuild::AcceptAll);
-        app.config_projection = None;
-        app.store = store.clone();
-        // A hand-built generation publishes no limits: a test's own posture stays in force.
-        app.limits = None;
-        app.session_store = std::sync::Arc::new(crate::session::SessionStore::new(1024, None));
-        app.incremental_scan = false;
-        // Each plane's pools under its decl key — resolved from the registry, never spelled as a
-        // literal — exactly as production `appbuild` keys them. A section no registered plane
-        // declares contributes nothing.
-        app.plane_pools = self
-            .plane_pools_by_section
-            .into_iter()
-            .filter_map(|(section, pools)| {
-                crate::plane_driver::registry::plane_decl_for_config_section(section)
-                    .map(|decl| (decl.key, pools))
-            })
-            .collect();
-        app.auth = auth;
-        app.rewrite_hooks = Vec::new();
-        app.tap_hooks = Vec::new();
-        app.tap_hooks_candidate = Vec::new();
-        app.tap_hooks_routing = Vec::new();
-        app.tap_hooks_response = Vec::new();
-        app.global_gates = global_gates;
-        // The pool-hook facade maps (money-path Phase 3-4 C): the resolved per-pool routing policy /
-        // decision gates / rewrite chains the relocated engine reads via `App::pool_*`. Populated by
-        // the policy-exercising fixtures through `.pool_policy_resolved(...)` etc.; empty otherwise.
-        app.pool_orderings = self.pool_orderings;
-        app.pool_decision_gates = self.pool_decision_gates;
-        app.pool_rewrite_chains = self.pool_rewrite_chains;
-        app.plane_gates = plane_gates_map;
-        app.plane_rewrites = plane_rewrites_map;
-        app.hook_env = hook_env;
-        app.hook_registry = self.hook_registry;
-        app.requested_signals = requested_signals;
-        app.any_content_hook = any_content_hook;
-        app.global_hooks = self.global_hooks;
-        app.groups_registry = self.groups_registry;
-        app.base_group_names = self.base_group_names;
-        app.identity_providers = self.identity_providers.clone();
-        app.export_defs = self.export_defs;
-        app.admin = std::sync::Arc::new(crate::admin::seam::AdminSlot::default());
-        app.base_hook_names = self.base_hook_names;
-        app.admin_chain = self
-            .admin_chain
-            .clone()
-            .unwrap_or_else(crate::config::default_admin_auth_names);
-        app.admin_modules = {
-            // The operator credential answers over the fixture's governance token, through
-            // whatever auth row the test binary links (none, in this crate's own tests).
-            let mut chain = self
-                .admin_modules
-                .unwrap_or_else(crate::auth::AdminAuthChain::empty);
-            // The admin group module answers under its own name in every fixture, so a chain
-            // that names it (set here, after the build, or by `PUT /admin-auth`) reaches it.
-            if let Some(module) = auth_modules::open(auth_modules::TEST_SCOPE_MODULE) {
-                chain
-                    .modules
-                    .entry(auth_modules::TEST_SCOPE_MODULE.to_string())
-                    .or_insert_with(|| crate::test_support::auth_helpers::in_process(module));
-            }
-            let digest = self.governance.as_ref().and_then(|g| g.admin_token_hash());
-            let reg = crate::preflight::linked().expect("the linked registry");
-            chain.operator = crate::auth::open_operator(&reg, digest, &self.identity_providers)
-                .expect("the linked operator credential opens");
-            std::sync::Arc::new(chain)
+        let parts = crate::state::AppParts {
+            serve_tables,
+            // No authorization server unless a test asked for one with `TestApp::oauth_as`, which is
+            // the production default and is what keeps every existing test's route table unchanged
+            // by this plane's arrival.
+            oauth_as: self.oauth_as.clone(),
+            // THE LLM DATA-PLANE RUNTIME'S SLOT KEY (R3/R4 sub-phase B) — the bundle itself was composed
+            // above into `plane_slots` under this interned key; the snapshot names only the key, and
+            // `App::llm_runtime` downcasts the slot on the money path.
+            fallback_runtime_key,
+            // The kernel's own tables over the fixture's lanes and pools (built above when a fallback
+            // plane is registered), read when that plane contributes no runtime of its own.
+            config_tables,
+            root_rules: std::sync::Arc::new(crate::appbuild::AcceptAll),
+            config_projection: None,
+            store: store.clone(),
+            // A hand-built generation publishes no limits: a test's own posture stays in force.
+            limits: None,
+            session_store: std::sync::Arc::new(crate::session::SessionStore::new(1024, None)),
+            incremental_scan: false,
+            // Each plane's pools under its decl key — resolved from the registry, never spelled as a
+            // literal — exactly as production `appbuild` keys them. A section no registered plane
+            // declares contributes nothing.
+            plane_pools: self
+                .plane_pools_by_section
+                .into_iter()
+                .filter_map(|(section, pools)| {
+                    crate::plane_driver::registry::plane_decl_for_config_section(section)
+                        .map(|decl| (decl.key, pools))
+                })
+                .collect(),
+            auth,
+            rewrite_hooks: Vec::new(),
+            tap_hooks: Vec::new(),
+            tap_hooks_candidate: Vec::new(),
+            tap_hooks_routing: Vec::new(),
+            tap_hooks_response: Vec::new(),
+            global_gates,
+            // The pool-hook facade maps (money-path Phase 3-4 C): the resolved per-pool routing policy /
+            // decision gates / rewrite chains the relocated engine reads via `App::pool_*`. Populated by
+            // the policy-exercising fixtures through `.pool_policy_resolved(...)` etc.; empty otherwise.
+            pool_orderings: self.pool_orderings,
+            pool_decision_gates: self.pool_decision_gates,
+            pool_rewrite_chains: self.pool_rewrite_chains,
+            plane_gates: plane_gates_map,
+            plane_rewrites: plane_rewrites_map,
+            hook_env,
+            hook_registry: self.hook_registry,
+            requested_signals,
+            any_content_hook,
+            global_hooks: self.global_hooks,
+            groups_registry: self.groups_registry,
+            base_group_names: self.base_group_names,
+            identity_providers: self.identity_providers.clone(),
+            export_defs: self.export_defs,
+            admin: std::sync::Arc::new(crate::admin::seam::AdminSlot::default()),
+            base_hook_names: self.base_hook_names,
+            admin_chain: self
+                .admin_chain
+                .clone()
+                .unwrap_or_else(crate::config::default_admin_auth_names),
+            admin_modules: {
+                // The operator credential answers over the fixture's governance token, through
+                // whatever auth row the test binary links (none, in this crate's own tests).
+                let mut chain = self
+                    .admin_modules
+                    .unwrap_or_else(crate::auth::AdminAuthChain::empty);
+                // The admin group module answers under its own name in every fixture, so a chain
+                // that names it (set here, after the build, or by `PUT /admin-auth`) reaches it.
+                if let Some(module) = auth_modules::open(auth_modules::TEST_SCOPE_MODULE) {
+                    chain
+                        .modules
+                        .entry(auth_modules::TEST_SCOPE_MODULE.to_string())
+                        .or_insert_with(|| crate::test_support::auth_helpers::in_process(module));
+                }
+                let digest = self.governance.as_ref().and_then(|g| g.admin_token_hash());
+                let reg = crate::preflight::linked().expect("the linked registry");
+                chain.operator = crate::auth::open_operator(&reg, digest, &self.identity_providers)
+                    .expect("the linked operator credential opens");
+                std::sync::Arc::new(chain)
+            },
+            public_url: self.public_url,
+            // THE NEUTRAL DISPATCH TABLE, described by each plane's test-kit through `mount_plane` /
+            // `admit_plane` — so a router-walking test sees the surface a deployment would have while
+            // `build()` names no plane type to assemble it.
+            planes: std::sync::Arc::new(plane_dispatch),
+            // THE TYPE-ERASED SLOT MAP, filled from outside core through [`TestApp::install_plane_runtime`]
+            // by each plane's test-kit and MOVED in here — so a fixture-built App has the same "one
+            // object, downcast by the plane's own accessor" property `build_app_from_config` gives
+            // production, and `build()` names no slot key or plane runtime type.
+            plane_slots,
+            plane_sections: self.plane_sections,
+            demotion_record: Default::default(),
+            // The node journal the fixture's governance owns, else one of the fixture's own.
+            amendments: self
+                .governance
+                .as_ref()
+                .map_or_else(Default::default, |g| std::sync::Arc::clone(g.amendments())),
+            auth_scope_caps: std::collections::HashMap::new(),
+            role_bindings: self.role_bindings.unwrap_or_default(),
+            config_path: self.disk_paths.as_ref().map(|(c, _)| c.clone()),
+            providers_path: self.disk_paths.as_ref().map(|(_, p)| p.clone()),
+            // 1.5.3 durable-by-default: unless a test explicitly asked for a LOCKED app
+            // (`.no_overlay()`), give it an isolated Store overlay so config mutations persist — the same
+            // guarantee production boot enforces via the `locked` XOR overlay invariant. An explicit
+            // `.overlay_backend(...)` still wins.
+            overlay_path: self.overlay_path.or_else(|| {
+                if self.explicit_no_overlay {
+                    None
+                } else {
+                    Some(new_test_overlay())
+                }
+            }),
+            config_version: 0,
+            max_keys_per_principal: 0,
+            max_auto_provisioned_groups: 0,
+            governance: self.governance,
+            secret_resolver: std::sync::Arc::new(
+                crate::config::secret::SecretResolver::builtins_only(),
+            ),
+            cost: self
+                .cost
+                .unwrap_or_else(|| std::sync::Arc::new(crate::cost::CostModel::flat(1))),
+            plugins_dir: self
+                .plugins_dir
+                .unwrap_or_else(|| std::path::PathBuf::from("plugins")),
+            plugins_cfg: self.plugins_cfg.unwrap_or_default(),
+            plugin_admission: Some(self.plugin_admission.unwrap_or(&AdmissionStandIn)),
+            self_key_ttl_secs: crate::governance::mint_policy::DEFAULT_KEY_TTL_SECS,
+            mint_policy: std::sync::Arc::new(self.mint_policy.unwrap_or_default()),
+            request_id_counter: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(
+                crate::state::seed_request_id_counter(),
+            )),
+            // Mirror production: `/metrics` is served via the built-in `prometheus` exporter's plugin
+            // route. The test harness has no `export:` config, so synthesize the
+            // prometheus route whenever the recorder is installed (`metrics::init()`/`init_with` — the
+            // test's "metrics on" signal), preserving the auth-gated `/metrics` behavior these tests
+            // exercise. Recorder not installed ⇒ empty table (no `/metrics`), as when metrics are off.
+            plugin_routes,
+            boot_route_paths,
+            planes_awaiting_restart: Vec::new(),
         };
-        app.public_url = self.public_url;
-        // THE NEUTRAL DISPATCH TABLE, described by each plane's test-kit through `mount_plane` /
-        // `admit_plane` — so a router-walking test sees the surface a deployment would have while
-        // `build()` names no plane type to assemble it.
-        app.planes = std::sync::Arc::new(plane_dispatch);
-        // THE TYPE-ERASED SLOT MAP, filled from outside core through [`TestApp::install_plane_runtime`]
-        // by each plane's test-kit and MOVED in here — so a fixture-built App has the same "one
-        // object, downcast by the plane's own accessor" property `build_app_from_config` gives
-        // production, and `build()` names no slot key or plane runtime type.
-        app.plane_slots = plane_slots;
-        app.plane_sections = self.plane_sections;
-        app.demotion_record = Default::default();
-        // The node journal the fixture's governance owns, else one of the fixture's own.
-        app.amendments = self
-            .governance
-            .as_ref()
-            .map_or_else(Default::default, |g| std::sync::Arc::clone(g.amendments()));
-        app.auth_scope_caps = std::collections::HashMap::new();
-        app.role_bindings = self.role_bindings.unwrap_or_default();
-        app.config_path = self.disk_paths.as_ref().map(|(c, _)| c.clone());
-        app.providers_path = self.disk_paths.as_ref().map(|(_, p)| p.clone());
-        // 1.5.3 durable-by-default: unless a test explicitly asked for a LOCKED app
-        // (`.no_overlay()`), give it an isolated Store overlay so config mutations persist — the same
-        // guarantee production boot enforces via the `locked` XOR overlay invariant. An explicit
-        // `.overlay_backend(...)` still wins.
-        app.overlay_path = self.overlay_path.or_else(|| {
-            if self.explicit_no_overlay {
-                None
-            } else {
-                Some(new_test_overlay())
-            }
-        });
-        app.config_version = 0;
-        app.max_keys_per_principal = 0;
-        app.max_auto_provisioned_groups = 0;
-        app.governance = self.governance;
-        app.secret_resolver =
-            std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only());
-        app.cost = self
-            .cost
-            .unwrap_or_else(|| std::sync::Arc::new(crate::cost::CostModel::flat(1)));
-        app.plugins_dir = self
-            .plugins_dir
-            .unwrap_or_else(|| std::path::PathBuf::from("plugins"));
-        app.plugins_cfg = self.plugins_cfg.unwrap_or_default();
-        app.plugin_admission = Some(self.plugin_admission.unwrap_or(&AdmissionStandIn));
-        app.self_key_ttl_secs = crate::governance::mint_policy::DEFAULT_KEY_TTL_SECS;
-        app.mint_policy = std::sync::Arc::new(self.mint_policy.unwrap_or_default());
-        app.request_id_counter = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(
-            crate::state::seed_request_id_counter(),
-        ));
-        // Mirror production: `/metrics` is served via the built-in `prometheus` exporter's plugin
-        // route. The test harness has no `export:` config, so synthesize the
-        // prometheus route whenever the recorder is installed (`metrics::init()`/`init_with` — the
-        // test's "metrics on" signal), preserving the auth-gated `/metrics` behavior these tests
-        // exercise. Recorder not installed ⇒ empty table (no `/metrics`), as when metrics are off.
-        app.plugin_routes = plugin_routes;
-        app.boot_route_paths = boot_route_paths;
-        app.planes_awaiting_restart = Vec::new();
+        let mut app = crate::state::App::from_test_parts(parts);
+        let ts_pools: Vec<(&str, Vec<usize>)> = ts_pools_owned
+            .iter()
+            .map(|(name, lanes)| (name.as_str(), lanes.clone()))
+            .collect();
+        let ts_by_model: Vec<(&str, usize)> = ts_by_model_owned
+            .iter()
+            .map(|(name, lane)| (name.as_str(), *lane))
+            .collect();
+        app.set_test_telemetry(
+            &ts_pools,
+            &ts_by_model,
+            |idx| ts_lane_models.get(idx).map(String::as_str),
+            crate::plane_driver::dispatch::fallback_key(),
+        );
         for (name, calls, kind, button) in self.login_methods {
             crate::auth::login::install_method(&mut app, &name, calls, kind, button);
         }
@@ -2410,24 +2423,4 @@ impl crate::durable::DurableFs for DurableStandIn {
 #[must_use]
 pub fn auth_chain_module_stand_in(door: busbar_contract::abi::mechanism::door::DoorFn) -> bool {
     outbound_auth::declares_chain_module(door)
-}
-
-/// Initialize private App state through the production builder without committing global effects.
-fn fixture_app_base() -> crate::state::App {
-    root::ensure();
-    let (app, rotation, staged) = busbar_kernel::build_app_from_config(
-        empty_cfg(),
-        crate::config::PluginsCfg::default(),
-        None,
-        Default::default(),
-        Default::default(),
-        (None, None),
-        None,
-        &(std::sync::Arc::new(crate::appbuild::AcceptAll)
-            as std::sync::Arc<dyn crate::appbuild::RootRules>),
-    )
-    .expect("the neutral fixture baseline builds through the production path");
-    drop(rotation);
-    drop(staged);
-    app
 }
