@@ -987,7 +987,9 @@ fn compute_layout() -> String {
             metric_lanes,
             metric_lanes_len,
             record_retentions,
-            record_retentions_len
+            record_retentions_len,
+            streaming_content_types,
+            streaming_content_types_len
         ]
     );
     record!(

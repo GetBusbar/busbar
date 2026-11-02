@@ -239,7 +239,7 @@ pub const ABI_VERSION: u32 = 1;
 /// the plane table. A door states it as built
 /// ([`Door::layout`](crate::abi::mechanism::door::Door::layout)) and the loader refuses another;
 /// `tests/layout_fingerprint.rs` holds it to its fold.
-pub const LAYOUT_FINGERPRINT: u64 = 0x344ee53291ab670c;
+pub const LAYOUT_FINGERPRINT: u64 = 0xded167218e200fce;
 
 /// The plane kind's shapes, in fold order ([`crate::layout_shape!`]): every `#[repr(C)]` struct
 /// crossing its table, each with every field. A struct `abi/plane/` gains is listed here (gate
