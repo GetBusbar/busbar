@@ -482,7 +482,8 @@ fn a_refused_fields_is_refused_on_a_ticket_and_left_to_it_on_the_spot() {
         Fields::Refused
     );
     assert_eq!(
-        futures_lite_block_on(a.fields(9, request(), 0)),
+        // Handle 9 is the leased secure-field fixture; use an actually unserved handle.
+        futures_lite_block_on(a.fields(99, request(), 0)),
         Fields::Failed
     );
 }

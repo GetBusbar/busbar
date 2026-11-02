@@ -6,7 +6,9 @@ use super::*;
 use crate::conformance::{
     dispatcher, load, open, test_door, test_op, Leg, Subject, TestDoor, TestOp,
 };
-use busbar_contract::abi::auth::{AuthPoints, AuthTail, Ops, CAP_INBOUND, CAP_LOGIN};
+use busbar_contract::abi::auth::{
+    AuthPoints, AuthTail, Ops, CAP_INBOUND, CAP_LOGIN, LOGIN_KIND_REDIRECT,
+};
 use busbar_contract::abi::mechanism::call::{Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::door::{Door, DoorParts};
 use busbar_contract::abi::sdk::auth_door::{verify_tail, with_tail, VerifyPlugin};
@@ -23,6 +25,7 @@ mod base {
     use super::*;
     const TAIL: &AuthTail = &AuthTail {
         caps: CAP_INBOUND | CAP_LOGIN,
+        login_kind: LOGIN_KIND_REDIRECT,
         ..verify_tail(0, AuthPoints::HEAD)
     };
     busbar_contract::auth_verify_door!(

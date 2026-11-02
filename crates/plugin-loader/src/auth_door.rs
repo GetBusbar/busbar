@@ -1044,7 +1044,10 @@ impl AuthCalls for AuthInstance {
             },
             out_head(),
         );
-        let was_valid = self.metadata_valid.swap(false, Ordering::AcqRel);
+        // Keep the last validated selection available while plugin code is in flight. Each
+        // verify owns that selection's snapshot; only a completed refresh publishes replacement
+        // metadata (or invalidates it), without holding other callers behind the lifecycle lock.
+        let was_valid = self.metadata_valid.load(Ordering::Acquire);
         let called = self.shared.plugin.call(lc::REFRESH, &mut f);
         if called.outcome != Outcome::Ready {
             // A refusal/failure leaves the previous selection in force. FAULT (including a
