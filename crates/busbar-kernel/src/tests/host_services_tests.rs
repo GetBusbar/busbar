@@ -56,52 +56,9 @@ use std::sync::atomic::AtomicU64;
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::kinds::{RecordBytes, StoreError};
 
-use crate::governance::MemoryStore;
-use crate::host_records::{WRITE_DROPPED, WRITE_FAILED};
+use crate::host_records::{StoreRows, WRITE_DROPPED, WRITE_FAILED};
 use crate::trust::reverify::Policy;
 use crate::trust::section::{DeclaredPin, TrustEntry};
-
-pub(crate) struct Mem(pub(crate) Arc<MemoryStore>);
-
-impl RecordRows for Mem {
-    fn claim(
-        &self,
-        kind: &str,
-        token: &str,
-        expires_at: u64,
-        now: u64,
-    ) -> Result<bool, StoreError> {
-        busbar_contract::records::RecordStore::redeem_plane_token(
-            &*self.0, kind, token, expires_at, now,
-        )
-        .map_err(|e| StoreError::Rejected(e.0))
-    }
-    fn record_put(
-        &self,
-        schema: RecordSchemaId,
-        key: &[u8],
-        value: &RecordBytes,
-    ) -> Result<(), StoreError> {
-        self.0.record_put(schema, key, value)
-    }
-
-    fn record_get(
-        &self,
-        schema: RecordSchemaId,
-        key: &[u8],
-    ) -> Result<Option<RecordBytes>, StoreError> {
-        self.0.record_get(schema, key)
-    }
-
-    fn record_scan(
-        &self,
-        schema: RecordSchemaId,
-        prefix: &[u8],
-        limit: u32,
-    ) -> Result<Vec<(Vec<u8>, RecordBytes)>, StoreError> {
-        self.0.record_scan(schema, prefix, limit)
-    }
-}
 
 struct Inline;
 
@@ -133,17 +90,16 @@ pub(crate) fn caller(instance: &str) -> Caller {
 
 struct Rig {
     s: KernelServices,
-    store: Arc<MemoryStore>,
+    store: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
     clock: Arc<AtomicU64>,
 }
 
 fn rig() -> Rig {
-    let store = Arc::new(MemoryStore::new());
-    let clock = Arc::new(AtomicU64::new(1_000_000));
-    store.pin_token_clock(clock.load(Ordering::SeqCst) / 1_000);
+    let store = crate::real_store::store();
+    let clock = Arc::new(AtomicU64::new(crate::store::now() * 1_000));
     let c = Arc::clone(&clock);
     let s = KernelServices::new()
-        .with_records(Arc::new(Mem(Arc::clone(&store))))
+        .with_records(Arc::new(StoreRows(store.clone())))
         .with_pool(Arc::new(Inline))
         .with_signer(Arc::new(FixedKey))
         .with_demotions(demotions(&store), SECTION_KEY)
@@ -184,7 +140,7 @@ fn rig() -> Rig {
     Rig { s, store, clock }
 }
 
-fn demotions(store: &Arc<MemoryStore>) -> Arc<DemotionRecord> {
+fn demotions(store: &Arc<busbar_plugin_loader::store_v3::LoadedStore>) -> Arc<DemotionRecord> {
     let d = DemotionRecord::default();
     d.set_sink(crate::store::plane_view::PlaneStoreView::narrow(
         store.clone(),
@@ -200,13 +156,14 @@ fn run(f: impl FnOnce(Later) -> Ran) -> Stored {
     }
 }
 
-fn put(into: &MemoryStore, key: &str, value: &str) {
-    into.record_put(
-        KIND,
-        &record_key("inst", key.as_bytes()),
-        &RecordBytes::new(value.as_bytes().to_vec()).unwrap(),
-    )
-    .unwrap();
+fn put(into: &Arc<busbar_plugin_loader::store_v3::LoadedStore>, key: &str, value: &str) {
+    StoreRows(into.clone())
+        .record_put(
+            KIND,
+            &record_key("inst", key.as_bytes()),
+            &RecordBytes::new(value.as_bytes().to_vec()).unwrap(),
+        )
+        .unwrap();
 }
 
 #[test]
@@ -337,8 +294,15 @@ fn a_claim_is_won_once_and_taken_after_until_it_lapses() {
     .unwrap();
     assert_eq!(claim(&caller("other")).value, svc::CLAIM_WON);
     r.clock.fetch_add(3_000, Ordering::SeqCst);
-    r.store
-        .pin_token_clock(r.clock.load(Ordering::SeqCst) / 1_000);
+    let until = r.clock.load(Ordering::SeqCst) / 1_000;
+    let deadline = std::time::Instant::now() + Duration::from_secs(8);
+    while crate::store::now() < until {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the backend claim expiry arrives"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
     assert_eq!(claim(&me).value, svc::CLAIM_WON);
 }
 
@@ -1089,7 +1053,7 @@ fn a_burst_of_writes_is_one_batch_and_the_writer_reads_it_at_once() {
     let r = rig();
     let held = Arc::new(Held::default());
     let s = KernelServices::new()
-        .with_records(Arc::new(Mem(Arc::clone(&r.store))))
+        .with_records(Arc::new(StoreRows(r.store.clone())))
         .with_pool(Arc::new(Arc::clone(&held)));
     let declares = || InstanceFacts {
         record_kinds: vec![KIND],
@@ -1116,7 +1080,7 @@ fn a_burst_of_writes_is_one_batch_and_the_writer_reads_it_at_once() {
         b"v7"
     );
     let stored = |who: &str, key: &[u8]| {
-        r.store
+        StoreRows(r.store.clone())
             .record_get(KIND, &record_key(who, key))
             .unwrap()
             .map(|v| v.as_slice().to_vec())
@@ -1150,9 +1114,9 @@ fn a_flush_the_pool_refuses_leaves_the_writes_readable_and_queued_for_the_next()
         .worker_threads(1)
         .build()
         .unwrap();
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let s = KernelServices::new()
-        .with_records(Arc::new(Mem(Arc::clone(&store))))
+        .with_records(Arc::new(StoreRows(store.clone())))
         .with_pool(Arc::new(BlockingPool::new(rt.handle().clone(), 64)));
     s.admit(
         "inst",
@@ -1300,7 +1264,7 @@ fn a_call_past_the_pools_bound_answers_failed_at_once() {
     }
 }
 
-struct Refusing(Mem);
+struct Refusing(StoreRows);
 
 impl RecordRows for Refusing {
     fn claim(
@@ -1355,7 +1319,7 @@ fn a_write_is_answered_only_once_the_store_took_it() {
     let r = rig();
     let held = Arc::new(Held::default());
     let s = KernelServices::new()
-        .with_records(Arc::new(Mem(Arc::clone(&r.store))))
+        .with_records(Arc::new(StoreRows(r.store.clone())))
         .with_pool(Arc::new(Arc::clone(&held)));
     s.admit(
         "inst",
@@ -1373,16 +1337,18 @@ fn a_write_is_answered_only_once_the_store_took_it() {
     assert!(got.lock().unwrap().is_empty());
     assert_eq!(held.drain(), 1);
     assert_eq!(*got.lock().unwrap(), vec![Ok(())]);
-    let stored = r.store.record_get(KIND, &record_key("inst", b"k")).unwrap();
+    let stored = StoreRows(r.store.clone())
+        .record_get(KIND, &record_key("inst", b"k"))
+        .unwrap();
     assert!(stored.is_some());
 }
 
 #[test]
 fn a_write_the_store_refuses_answers_failed_and_leaves_the_overlay() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let held = Arc::new(Held::default());
     let s = KernelServices::new()
-        .with_records(Arc::new(Refusing(Mem(Arc::clone(&store)))))
+        .with_records(Arc::new(Refusing(StoreRows(store.clone()))))
         .with_pool(Arc::new(Arc::clone(&held)));
     s.admit(
         "inst",
@@ -1408,9 +1374,12 @@ fn a_write_dropped_before_any_flush_answers_dropped() {
     assert_eq!(*got.lock().unwrap(), vec![Err(WRITE_DROPPED)]);
 }
 
-fn writer(store: &Arc<MemoryStore>, pool: Arc<dyn Offload>) -> KernelServices {
+fn writer(
+    store: &Arc<busbar_plugin_loader::store_v3::LoadedStore>,
+    pool: Arc<dyn Offload>,
+) -> KernelServices {
     let s = KernelServices::new()
-        .with_records(Arc::new(Mem(Arc::clone(store))))
+        .with_records(Arc::new(StoreRows(store.clone())))
         .with_pool(pool);
     s.admit(
         "inst",
@@ -1435,7 +1404,7 @@ fn every_answered_write_is_durable_once_across_a_graceful_restart() {
         .build()
         .unwrap();
     let pool = || -> Arc<dyn Offload> { Arc::new(BlockingPool::new(rt.handle().clone(), 64)) };
-    let backing = Arc::new(MemoryStore::new());
+    let backing = crate::real_store::store();
     let s = writer(&backing, pool());
     let me = caller("inst");
     let (got, acked) = answers();
@@ -1475,7 +1444,7 @@ fn every_answered_write_is_durable_once_across_a_graceful_restart() {
 
 #[test]
 fn a_write_past_the_queue_bound_is_refused_and_leaves_the_queued_value() {
-    let backing = Arc::new(MemoryStore::new());
+    let backing = crate::real_store::store();
     let held = Arc::new(Held::default());
     let s = writer(&backing, Arc::new(Arc::clone(&held)));
     let me = caller("inst");
@@ -1501,13 +1470,15 @@ fn a_write_past_the_queue_bound_is_refused_and_leaves_the_queued_value() {
 
     assert_eq!(held.drain(), 1);
     assert_eq!(s.pending().queued(), 0);
-    let stored = backing.record_get(KIND, &record_key("inst", b"k")).unwrap();
+    let stored = StoreRows(backing.clone())
+        .record_get(KIND, &record_key("inst", b"k"))
+        .unwrap();
     assert_eq!(stored.map(|v| v.as_slice().to_vec()), Some(b"v1".to_vec()));
 }
 
 #[test]
 fn the_tick_restarts_a_flush_the_pool_did_not_run() {
-    let backing = Arc::new(MemoryStore::new());
+    let backing = crate::real_store::store();
     let held = Arc::new(Held::default());
     let s = writer(&backing, Arc::new(Arc::clone(&held)));
     let (got, acked) = answers();
@@ -2070,7 +2041,7 @@ fn a_purge_runs_under_the_rule_the_instance_declared_for_the_kind() {
     assert_eq!(s.record_retention("inst", "aged"), Retention::Age);
     assert_eq!(s.record_retention("other", "kept"), Retention::Age);
 
-    let store = MemoryStore::new();
+    let store = crate::real_store::store();
     let rows = [
         ("old-active", 10, PlaneDisposition::Active),
         ("old-terminal", 10, PlaneDisposition::Terminal),
@@ -2093,7 +2064,8 @@ fn a_purge_runs_under_the_rule_the_instance_declared_for_the_kind() {
     let held = |kind: &str, id: &str| store.get_plane_record(kind, id).unwrap().is_some();
 
     assert_eq!(
-        s.purge_records_before(&store, "inst", "kept", 100).unwrap(),
+        s.purge_records_before(&*store, "inst", "kept", 100)
+            .unwrap(),
         1
     );
     assert!(
@@ -2104,7 +2076,8 @@ fn a_purge_runs_under_the_rule_the_instance_declared_for_the_kind() {
     assert!(held("kept", "new-terminal"), "a row after the cutoff stays");
 
     assert_eq!(
-        s.purge_records_before(&store, "inst", "aged", 100).unwrap(),
+        s.purge_records_before(&*store, "inst", "aged", 100)
+            .unwrap(),
         2
     );
     assert!(
@@ -2146,7 +2119,7 @@ struct Probe {
     decision_read: OnceLock<Arc<DecisionRead>>,
     decision_write: OnceLock<Arc<DecisionWrite>>,
     demotion_write: OnceLock<Arc<DecisionWrite>>,
-    record_store: OnceLock<Arc<MemoryStore>>,
+    record_store: OnceLock<Arc<busbar_plugin_loader::store_v3::LoadedStore>>,
 }
 
 type DecisionRead =
@@ -2380,7 +2353,7 @@ fn a_ticket_is_minted_for_the_units_principal_under_the_declared_prefix() {
     assert_eq!(minted.bytes, b"tk_vk_caller:600");
     assert_eq!(
         minted.value,
-        1_000 + 600,
+        r.clock.load(Ordering::SeqCst) / 1_000 + 600,
         "the wall clock's seconds plus the lifetime"
     );
     assert_eq!(
@@ -2598,7 +2571,14 @@ fn record_claim_replay_uses_store_time_when_the_host_clock_runs_ahead() {
     r.clock.fetch_add(HOST_SKEW_MS, Ordering::SeqCst);
     assert_eq!(claim().value, svc::CLAIM_TAKEN);
 
-    r.store
-        .pin_token_clock(r.clock.load(Ordering::SeqCst) / 1_000);
+    let until = r.clock.load(Ordering::SeqCst) / 1_000;
+    let deadline = std::time::Instant::now() + Duration::from_secs(8);
+    while crate::store::now() < until {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the backend claim expiry arrives"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
     assert_eq!(claim().value, svc::CLAIM_WON);
 }

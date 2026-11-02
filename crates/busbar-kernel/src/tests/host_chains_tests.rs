@@ -3,15 +3,13 @@
 
 use std::time::Duration;
 
-use super::tests::Mem;
 use super::*;
+use crate::host_records::StoreRows;
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::plane::{
     RecordChain, CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED, CHAIN_PIPE_SEPARATED,
 };
 use busbar_contract::kinds::RecordBytes;
-
-use crate::governance::MemoryStore;
 
 struct Inline;
 
@@ -33,9 +31,13 @@ fn me() -> Caller {
     }
 }
 
-fn services_over(store: &Arc<MemoryStore>, framing: u32, flags: u32) -> KernelServices {
+fn services_over(
+    store: &Arc<busbar_plugin_loader::store_v3::LoadedStore>,
+    framing: u32,
+    flags: u32,
+) -> KernelServices {
     let s = KernelServices::new()
-        .with_records(Arc::new(Mem(Arc::clone(store))))
+        .with_records(Arc::new(StoreRows(store.clone())))
         .with_pool(Arc::new(Inline));
     s.admit(
         INST,
@@ -54,8 +56,11 @@ fn services_over(store: &Arc<MemoryStore>, framing: u32, flags: u32) -> KernelSe
     s
 }
 
-fn rig() -> (KernelServices, Arc<MemoryStore>) {
-    let store = Arc::new(MemoryStore::new());
+fn rig() -> (
+    KernelServices,
+    Arc<busbar_plugin_loader::store_v3::LoadedStore>,
+) {
+    let store = crate::real_store::store();
     let s = services_over(&store, CHAIN_PIPE_SEPARATED, CHAIN_DIGESTS_SCOPE);
     (s, store)
 }
@@ -114,8 +119,13 @@ fn stored_at(scope: &str, seq: u64) -> Vec<u8> {
     record_key(INST, &record_of(scope, seq))
 }
 
-fn tamper(store: &MemoryStore, key: &[u8], from: &[u8], to: &[u8]) {
-    let held = store
+fn tamper(
+    store: &Arc<busbar_plugin_loader::store_v3::LoadedStore>,
+    key: &[u8],
+    from: &[u8],
+    to: &[u8],
+) {
+    let held = StoreRows(store.clone())
         .record_get(EV, key)
         .unwrap()
         .expect("the record is in the store")
@@ -128,7 +138,7 @@ fn tamper(store: &MemoryStore, key: &[u8], from: &[u8], to: &[u8]) {
     let mut edited = held[..at].to_vec();
     edited.extend_from_slice(to);
     edited.extend_from_slice(&held[at + from.len()..]);
-    store
+    StoreRows(store.clone())
         .record_put(EV, key, &RecordBytes::new(edited).unwrap())
         .unwrap();
 }
@@ -201,7 +211,7 @@ fn a_tampered_chain_is_resumed_on_restore_and_still_reported() {
 
 #[test]
 fn a_length_prefixed_chain_without_its_scope_verifies_and_reports_an_edit() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let s = services_over(&store, CHAIN_LENGTH_PREFIXED, 0);
     append(&s, b"log", b"\0\0\0\0\0\0\0\x01x").unwrap();
     append(&s, b"log", b"\0\0\0\0\0\0\0\x01y").unwrap();
@@ -223,7 +233,7 @@ fn the_host_seals_each_record_over_the_declared_prelude() {
     })
     .unwrap();
     let read = |seq| {
-        let body = store
+        let body = StoreRows(store.clone())
             .record_get(EV, &stored_at("a11ce/t1", seq))
             .unwrap()
             .unwrap();
@@ -265,10 +275,18 @@ fn a_dropped_chain_scans_empty_in_the_store() {
     let (s, store) = rig();
     append(&s, b"t1", b"|1|a").unwrap();
     append(&s, b"t1", b"|2|b").unwrap();
-    assert_eq!(store.record_scan(EV, b"", u32::MAX).unwrap().len(), 2);
+    assert_eq!(
+        StoreRows(store.clone())
+            .record_scan(EV, b"", u32::MAX)
+            .unwrap()
+            .len(),
+        2
+    );
     append(&s, b"t1", b"").unwrap();
     assert_eq!(
-        store.record_scan(EV, b"", u32::MAX).unwrap(),
+        StoreRows(store.clone())
+            .record_scan(EV, b"", u32::MAX)
+            .unwrap(),
         Vec::new(),
         "the dropped chain's rows are gone from the store"
     );
@@ -286,7 +304,7 @@ fn a_chain_dropped_and_begun_again_never_meets_its_old_claims() {
     })
     .unwrap();
     let first = |what: &str| {
-        let body = store
+        let body = StoreRows(store.clone())
             .record_get(EV, &stored_at("t1", 1))
             .unwrap()
             .unwrap_or_else(|| panic!("{what}: record 1 is in the store"));
@@ -296,11 +314,13 @@ fn a_chain_dropped_and_begun_again_never_meets_its_old_claims() {
     let old = position_token(INST, EV, "t1", 0, &first("the old chain"));
     append(&s, b"t1", b"").unwrap();
     assert_eq!(
-        store.record_scan(EV, b"", u32::MAX).unwrap(),
+        StoreRows(store.clone())
+            .record_scan(EV, b"", u32::MAX)
+            .unwrap(),
         Vec::new(),
         "the drop leaves nothing in the plane's kind"
     );
-    let life = store
+    let life = StoreRows(store.clone())
         .record_get(CHAIN_LIFE_SCHEMA, &life_key(INST, EV, "t1"))
         .unwrap()
         .expect("the drop raised the chain's life in the store");
@@ -314,7 +334,7 @@ fn a_chain_dropped_and_begun_again_never_meets_its_old_claims() {
     );
     let now = busbar_kernel::store::now();
     assert!(
-        !Mem(Arc::clone(&store))
+        !StoreRows(store.clone())
             .claim(
                 crate::host_records::CLAIM_KIND,
                 &old,
@@ -340,7 +360,7 @@ fn a_chain_dropped_and_begun_again_never_meets_its_old_claims() {
 
 #[test]
 fn a_chain_dropped_on_one_node_is_begun_again_on_another() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let a = services_over(&store, CHAIN_PIPE_SEPARATED, CHAIN_DIGESTS_SCOPE);
     let b = services_over(&store, CHAIN_PIPE_SEPARATED, CHAIN_DIGESTS_SCOPE);
     append(&a, b"t1", b"|1|a").unwrap();
@@ -426,21 +446,21 @@ fn two_instances_never_share_a_chain_and_an_undeclared_kind_is_not_chained() {
     assert!(s.drain(Duration::from_secs(5)));
     assert_eq!(got.lock().unwrap().take(), Some(Ok(())));
     assert!(
-        store
+        StoreRows(store.clone())
             .record_get(EV, &stored_at("ref", 1))
             .unwrap()
             .is_some(),
         "this instance's first record"
     );
     assert!(
-        store
+        StoreRows(store.clone())
             .record_get(EV, &record_key("other", &record_of("ref", 1)))
             .unwrap()
             .is_some(),
         "the other instance's chain starts at 1 under its own label"
     );
     assert!(
-        store
+        StoreRows(store.clone())
             .record_get(EV, &stored_at("ref", 2))
             .unwrap()
             .is_none(),
@@ -461,15 +481,17 @@ fn two_instances_never_share_a_chain_and_an_undeclared_kind_is_not_chained() {
         .unwrap();
     assert!(plain.drain(Duration::from_secs(5)));
     assert_eq!(got.lock().unwrap().take(), Some(Ok(())));
-    assert!(store
+    assert!(StoreRows(store.clone())
         .record_get(RecordSchemaId::new("plain"), &record_key(INST, b"ref"))
         .unwrap()
         .is_some());
 }
 
-fn services_with_plain_kind(store: &Arc<MemoryStore>) -> KernelServices {
+fn services_with_plain_kind(
+    store: &Arc<busbar_plugin_loader::store_v3::LoadedStore>,
+) -> KernelServices {
     let s = KernelServices::new()
-        .with_records(Arc::new(Mem(Arc::clone(store))))
+        .with_records(Arc::new(StoreRows(store.clone())))
         .with_pool(Arc::new(Inline));
     s.admit(
         INST,
@@ -484,7 +506,7 @@ fn services_with_plain_kind(store: &Arc<MemoryStore>) -> KernelServices {
 
 #[test]
 fn two_nodes_appending_to_one_chain_continue_each_other_and_never_overwrite() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let a = services_over(&store, CHAIN_PIPE_SEPARATED, CHAIN_DIGESTS_SCOPE);
     let b = services_over(&store, CHAIN_PIPE_SEPARATED, CHAIN_DIGESTS_SCOPE);
     append(&a, b"t1", b"|1|a").unwrap();
@@ -505,7 +527,7 @@ fn two_nodes_appending_to_one_chain_continue_each_other_and_never_overwrite() {
 fn malformed_persisted_chain_life_refuses_append_without_reinterpreting_it_as_genesis() {
     let (services, store) = rig();
     let key = crate::host_chains::life_key(INST, EV, "broken-life");
-    store
+    StoreRows(store.clone())
         .record_put(
             crate::host_chains::CHAIN_LIFE_SCHEMA,
             &key,
@@ -513,12 +535,12 @@ fn malformed_persisted_chain_life_refuses_append_without_reinterpreting_it_as_ge
         )
         .unwrap();
     assert!(append(&services, b"broken-life", b"event").is_err());
-    assert!(store
+    assert!(StoreRows(store.clone())
         .record_get(EV, &stored_at("broken-life", 1))
         .unwrap()
         .is_none());
     assert_eq!(
-        store
+        StoreRows(store.clone())
             .record_get(crate::host_chains::CHAIN_LIFE_SCHEMA, &key)
             .unwrap()
             .unwrap()
@@ -532,7 +554,7 @@ fn exhausted_chain_life_refuses_drop_without_deleting_its_records() {
     let (services, store) = rig();
     append(&services, b"last-life", b"event").unwrap();
     let key = crate::host_chains::life_key(INST, EV, "last-life");
-    store
+    StoreRows(store.clone())
         .record_put(
             crate::host_chains::CHAIN_LIFE_SCHEMA,
             &key,
@@ -540,12 +562,12 @@ fn exhausted_chain_life_refuses_drop_without_deleting_its_records() {
         )
         .unwrap();
     assert!(append(&services, b"last-life", b"").is_err());
-    assert!(store
+    assert!(StoreRows(store.clone())
         .record_get(EV, &stored_at("last-life", 1))
         .unwrap()
         .is_some());
     assert_eq!(
-        store
+        StoreRows(store.clone())
             .record_get(crate::host_chains::CHAIN_LIFE_SCHEMA, &key)
             .unwrap()
             .unwrap()
@@ -556,7 +578,7 @@ fn exhausted_chain_life_refuses_drop_without_deleting_its_records() {
 
 #[test]
 fn a_cached_writer_observes_a_remote_completed_drop() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let a = services_over(&store, CHAIN_PIPE_SEPARATED, CHAIN_DIGESTS_SCOPE);
     let b = services_over(&store, CHAIN_PIPE_SEPARATED, CHAIN_DIGESTS_SCOPE);
     append(&a, b"t1", b"|old").unwrap();
@@ -572,7 +594,7 @@ fn a_cached_writer_observes_a_remote_completed_drop() {
 fn an_unreadable_occupied_tail_does_not_wedge_future_evidence() {
     let (s, store) = rig();
     append(&s, b"t1", b"|first").unwrap();
-    store
+    StoreRows(store.clone())
         .record_put(
             EV,
             &stored_at("t1", 2),
@@ -583,7 +605,7 @@ fn an_unreadable_occupied_tail_does_not_wedge_future_evidence() {
     let restarted = services_over(&store, CHAIN_PIPE_SEPARATED, CHAIN_DIGESTS_SCOPE);
     append(&restarted, b"t1", b"|after unreadable").unwrap();
     assert_eq!(
-        store
+        StoreRows(store.clone())
             .record_get(EV, &stored_at("t1", 2))
             .unwrap()
             .unwrap()
@@ -601,7 +623,7 @@ fn an_unreadable_occupied_tail_does_not_wedge_future_evidence() {
 #[test]
 fn an_unreadable_genesis_does_not_reuse_its_occupied_key() {
     let (s, store) = rig();
-    store
+    StoreRows(store.clone())
         .record_put(
             EV,
             &stored_at("t1", 1),
