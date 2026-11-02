@@ -820,3 +820,232 @@ fn inspection_carriers_are_instance_owned_point_in_time_observations_without_cal
         "the old observation is a copied fact, not a lease"
     );
 }
+
+/// One exact queued crossing; independent later jobs still run so an open can race its settlement.
+#[derive(Default)]
+struct HoldNext {
+    armed: AtomicBool,
+    job: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+}
+
+impl Offload for HoldNext {
+    fn run(&self, job: Box<dyn FnOnce() + Send>) {
+        if self.armed.swap(false, Ordering::SeqCst) {
+            assert!(self.job.lock().unwrap().replace(job).is_none());
+        } else {
+            job();
+        }
+    }
+}
+
+struct SettlementRows {
+    rows: Mem,
+    mode: Arc<AtomicU64>,
+}
+
+impl RecordRows for SettlementRows {
+    fn record_put(
+        &self,
+        schema: RecordSchemaId,
+        key: &[u8],
+        value: &RecordBytes,
+    ) -> Result<(), StoreError> {
+        match self.mode.load(Ordering::SeqCst) {
+            1 => Err(StoreError::Unavailable),
+            2 => {
+                self.rows.record_put(schema, key, value)?;
+                Err(StoreError::Timeout) // The Store committed, but the caller has no confirmation.
+            }
+            3 => panic!("settlement Store unwound"),
+            _ => self.rows.record_put(schema, key, value),
+        }
+    }
+    fn record_get(
+        &self,
+        schema: RecordSchemaId,
+        key: &[u8],
+    ) -> Result<Option<RecordBytes>, StoreError> {
+        self.rows.record_get(schema, key)
+    }
+    fn record_scan(
+        &self,
+        schema: RecordSchemaId,
+        prefix: &[u8],
+        limit: u32,
+    ) -> Result<Vec<(Vec<u8>, RecordBytes)>, StoreError> {
+        self.rows.record_scan(schema, prefix, limit)
+    }
+    fn claim(
+        &self,
+        kind: &str,
+        token: &str,
+        expires_at: u64,
+        now: u64,
+    ) -> Result<bool, StoreError> {
+        self.rows.claim(kind, token, expires_at, now)
+    }
+}
+
+/// Pending settlement never lends its live slot to another open, even at zero retention.
+/// Completion, unavailable/unknown Store results, unwind and an unrun job all retire ownership;
+/// only confirmed completion publishes the settled record and releases capacity.
+#[test]
+fn pending_settlement_keeps_capacity_and_survives_sweep_until_store_confirmation() {
+    for mode in 0..=4 {
+        let r = rig_over(
+            Arc::new(MemoryStore::new()),
+            WorkBounds {
+                max_live: 1,
+                retain_ms: 0,
+            },
+        );
+        let (handle, reference) = open(&r, 1, b"working");
+        let held = Arc::new(HoldNext::default());
+        let store_mode = Arc::new(AtomicU64::new(0));
+        let s =
+            r.s.with_records(Arc::new(SettlementRows {
+                rows: Mem(r.store.clone()),
+                mode: store_mode.clone(),
+            }))
+            .with_pool(held.clone());
+        held.armed.store(true, Ordering::SeqCst);
+        let answer: Arc<Mutex<Option<Stored>>> = Arc::default();
+        let put = answer.clone();
+        assert!(matches!(
+            s.work_settle(
+                &caller("inst"),
+                Some(1),
+                handle,
+                b"done",
+                Box::new(move |value| *put.lock().unwrap() = Some(value))
+            ),
+            Ran::Later
+        ));
+        assert!(answer.lock().unwrap().is_none());
+        let found = run(|later| s.work_find(&caller("inst"), Some(2), &reference, later));
+        assert_eq!(
+            state_and_record(&found),
+            (WORK_LIVE, b"working".to_vec()),
+            "mode {mode}"
+        );
+        assert_eq!(
+            run(|later| s.work_settle(&caller("inst"), Some(1), handle, b"again", later)).error,
+            refusal::SETTLED,
+            "a second settlement cannot own the same handle"
+        );
+        assert_eq!(
+            run(|later| s.work_resume(&caller("inst"), Some(2), handle, later)).outcome,
+            Outcome::Ready
+        );
+        let attempted = run(|later| s.work_open(&caller("inst"), Some(1), "job", b"second", later));
+        assert_eq!(
+            (attempted.outcome, attempted.error),
+            (Outcome::Refused, refusal::AT_BOUND),
+            "mode {mode}"
+        );
+        assert_eq!(
+            s.work().held(),
+            1,
+            "a zero-retention submit cannot sweep pending work"
+        );
+        let booked = s.work().get("inst", handle).unwrap();
+        assert!(booked.live);
+        assert_eq!(booked.bound, Some(2));
+
+        let job = held.job.lock().unwrap().take().unwrap();
+        store_mode.store(mode, Ordering::SeqCst);
+        if mode == 4 {
+            drop(job);
+        } else {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
+            assert_eq!(result.is_err(), mode == 3);
+        }
+        let answered = answer
+            .lock()
+            .unwrap()
+            .take()
+            .expect("every exit answers its caller");
+        assert_eq!(
+            answered.outcome,
+            if mode == 0 {
+                Outcome::Ready
+            } else {
+                Outcome::Failed
+            }
+        );
+        let booked = s.work().get("inst", handle).unwrap();
+        assert_eq!(
+            booked.bound,
+            Some(2),
+            "the intervening resume binding survives"
+        );
+        assert_eq!(booked.live, mode != 0);
+        assert_eq!(
+            booked.record.as_slice(),
+            if mode == 0 {
+                b"done".as_slice()
+            } else {
+                b"working".as_slice()
+            }
+        );
+        store_mode.store(0, Ordering::SeqCst);
+        if mode != 0 {
+            assert_eq!(
+                run(|later| s.work_open(&caller("inst"), Some(1), "job", b"second", later)).error,
+                refusal::AT_BOUND,
+                "an unconfirmed settlement never releases capacity"
+            );
+            assert_eq!(
+                run(|later| s.work_settle(&caller("inst"), Some(2), handle, b"retried", later))
+                    .outcome,
+                Outcome::Ready,
+                "ownership retired for a real retry"
+            );
+        }
+        assert_eq!(
+            run(|later| s.work_open(&caller("inst"), Some(1), "job", b"second", later)).outcome,
+            Outcome::Ready,
+            "only a confirmed settlement releases capacity"
+        );
+    }
+}
+
+#[test]
+fn dropping_a_queued_settlement_retires_ownership_before_its_callback_retries() {
+    let r = rig();
+    let (handle, _) = open(&r, 1, b"working");
+    let held = Arc::new(HoldNext::default());
+    let s = Arc::new(r.s.with_pool(held.clone()));
+    held.armed.store(true, Ordering::SeqCst);
+    let retry = s.clone();
+    let answered = Arc::new(AtomicBool::new(false));
+    let seen = answered.clone();
+    assert!(matches!(
+        s.work_settle(
+            &caller("inst"),
+            Some(1),
+            handle,
+            b"done",
+            Box::new(move |value| {
+                assert_eq!(
+                    (value.outcome, value.error),
+                    (Outcome::Failed, POOL_REFUSED)
+                );
+                let retried = run(|later| {
+                    retry.work_settle(&caller("inst"), Some(1), handle, b"retry", later)
+                });
+                assert_eq!(
+                    retried.outcome,
+                    Outcome::Ready,
+                    "callback observes retired ownership"
+                );
+                seen.store(true, Ordering::SeqCst);
+            })
+        ),
+        Ran::Later
+    ));
+    let job = held.job.lock().unwrap().take().unwrap();
+    drop(job); // The callback re-enters outside the offload's lock.
+    assert!(answered.load(Ordering::SeqCst));
+    assert_eq!(s.work().get("inst", handle).unwrap().record, b"retry");
+}

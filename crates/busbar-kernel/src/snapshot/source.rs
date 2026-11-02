@@ -32,7 +32,7 @@ const QUANTILES: [f64; 7] = [0.0, 0.5, 0.9, 0.95, 0.99, 0.999, 1.0];
 
 /// Prometheus text-format summary fields (exposition_formats/#text-format-details), retained
 /// byte-for-byte from the historical recorder's presentation.
-const QUANTILE_LABEL: &str = "quantile";
+pub(super) const QUANTILE_LABEL: &str = "quantile";
 const SUMMARY_SUM_SUFFIX: &str = "_sum";
 const SUMMARY_COUNT_SUFFIX: &str = "_count";
 

@@ -282,6 +282,9 @@ struct Book {
     handles: HashMap<u64, Work>,
     by_ref: HashMap<(Arc<str>, Reference), u64>,
     loaded: HashSet<Arc<str>>,
+    /// A settlement owns its handle until its Store call confirms or retires. The published
+    /// Work stays live during that interval, retaining its capacity and excluding it from sweep.
+    settling: HashSet<u64>,
 }
 
 impl Book {
@@ -300,6 +303,7 @@ impl Book {
     fn remove(&mut self, handle: u64) -> Option<Work> {
         let w = self.handles.remove(&handle)?;
         self.by_ref.remove(&(Arc::clone(&w.instance), w.reference));
+        self.settling.remove(&handle);
         Some(w)
     }
 }
@@ -431,8 +435,9 @@ impl WorkBook {
             .cloned()
     }
 
-    /// Mark `instance`'s live handle `handle` settled with `record` at `now_ms`, answering the
-    /// handle as it stood (to restore if the store refuses), or the refusal.
+    /// Prepare `instance`'s live handle `handle` for settlement, answering the proposed durable
+    /// state. Until `commit_settle`, readers and capacity admission keep its current live state.
+    /// Only one settlement owns the handle; `cancel_settle` retires an unconfirmed proposal.
     ///
     /// THE SETTLE IS SCOPED WHILE THE HANDLE'S UNIT RUNS (ARCHITECT 2026-10-07 K4-11 (B)): while
     /// the unit that opened the handle, or the unit that last resumed it, is in flight by the
@@ -452,8 +457,9 @@ impl WorkBook {
         in_flight: &dyn Fn(u64) -> bool,
         record: Vec<u8>,
         now_ms: u64,
-    ) -> Result<(Work, Work), &'static str> {
+    ) -> Result<Work, &'static str> {
         let mut book = self.lock();
+        let settling = book.settling.contains(&handle);
         let w = book
             .handles
             .get_mut(&handle)
@@ -463,24 +469,35 @@ impl WorkBook {
         if unit_runs && owner != Some(&w.owner) {
             return Err(refusal::NOT_A_HANDLE);
         }
-        if !w.live {
+        if !w.live || settling {
             return Err(refusal::SETTLED);
         }
-        let before = w.clone();
-        w.live = false;
-        w.settled_ms = now_ms;
-        w.record = record;
-        Ok((before, w.clone()))
+        let mut settled = w.clone();
+        settled.live = false;
+        settled.settled_ms = now_ms;
+        settled.record = record;
+        book.settling.insert(handle);
+        Ok(settled)
     }
 
-    /// Put `work`'s settle back as it stood before a settle the store refused (its state, its
-    /// settle stamp and its record; a unit that resumed it meanwhile stays bound).
-    pub fn restore(&self, handle: u64, work: Work) {
-        if let Some(w) = self.lock().handles.get_mut(&handle) {
-            w.live = work.live;
-            w.settled_ms = work.settled_ms;
-            w.record = work.record;
+    /// Publish a Store-confirmed settlement and release its live reservation together. A unit
+    /// that resumed the live handle while the Store call ran keeps its binding.
+    pub fn commit_settle(&self, handle: u64, settled: Work) {
+        let mut book = self.lock();
+        if !book.settling.remove(&handle) {
+            return;
         }
+        if let Some(w) = book.handles.get_mut(&handle) {
+            w.live = settled.live;
+            w.settled_ms = settled.settled_ms;
+            w.record = settled.record;
+        }
+    }
+
+    /// Retire a refused, dropped, unwound or unknown Store settlement without changing the
+    /// published Work or releasing the live reservation. A later retry may own it again.
+    pub fn cancel_settle(&self, handle: u64) {
+        self.lock().settling.remove(&handle);
     }
 
     /// Bind `instance`'s handle `handle` to `unit`, when `owner` is the handle's: the handle as it

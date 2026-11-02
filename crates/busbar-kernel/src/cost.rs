@@ -54,6 +54,18 @@ pub use busbar_kernel_ledger::cost::{
 /// since no store persists this literal string durably yet.)
 pub const GROUP_BUCKET_PREFIX: &str = "group:";
 
+/// The persisted enforcement identity, shared with candidate validation. Existing unambiguous
+/// identities stay stable; validation refuses distinct components that would spell one identity.
+pub(crate) fn group_bucket_id(name: &str, window: &str, scope: Option<&ScopeRef>) -> String {
+    match scope {
+        Some(scope) => format!(
+            "{GROUP_BUCKET_PREFIX}{name}@{window}#{}:{}",
+            scope.kind, scope.value
+        ),
+        None => format!("{GROUP_BUCKET_PREFIX}{name}@{window}"),
+    }
+}
+
 /// One model's per-token rates in integer NANO-units per token (config micro-units x 1000, rounded
 /// once at resolve). All hot-path math is integer over these.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -426,15 +438,7 @@ impl CostModel {
                             {
                                 Some(b) => b,
                                 None => {
-                                    let bucket_id = match &l.scope {
-                                        Some(s) => {
-                                            format!(
-                                                "{GROUP_BUCKET_PREFIX}{name}@{w}#{}:{}",
-                                                s.kind, s.value
-                                            )
-                                        }
-                                        None => format!("{GROUP_BUCKET_PREFIX}{name}@{w}"),
-                                    };
+                                    let bucket_id = group_bucket_id(name, w, l.scope.as_ref());
                                     buckets.push(GroupBucket {
                                         bucket_id,
                                         window: w,
