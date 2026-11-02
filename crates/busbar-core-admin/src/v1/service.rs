@@ -216,6 +216,8 @@ pub fn row_lane<'a>(model: &'a str, provider: &str) -> std::borrow::Cow<'a, str>
 /// slot, or a count it takes below zero): the read refuses it rather than serve counts nobody
 /// recorded. The adjust verb refuses such an adjustment when it is made, so this is a store that
 /// lost rows under it.
+/// Exact entry provenance also participates in the slot: two entries can share a timestamp,
+/// and adjusting one must not move the other's counts or an undated legacy row.
 pub fn fold_adjustments(
     rows: &mut [busbar_kernel::governance::MeteringRow],
     adjustments: &[busbar_kernel::governance::UsageAdjustment],
@@ -233,8 +235,17 @@ pub fn fold_adjustments(
         let slot: Vec<usize> = (0..rows.len())
             .filter(|&i| {
                 let r = &rows[i];
+                let same_entry = match (
+                    adj.entry_id,
+                    busbar_kernel::cost::EntryId::parse_metering_version(&r.pricing_version),
+                ) {
+                    (Some(expected), Some(Some(actual))) => expected == actual,
+                    (None, None) => true,
+                    _ => false,
+                };
                 r.key_id == adj.key_id
                     && r.priced_from_ms == adj.era
+                    && same_entry
                     && row_lane(&r.model, &r.provider) == adj.lane.as_str()
             })
             .collect();
@@ -326,29 +337,36 @@ fn dated_rate_history() -> Option<Arc<busbar_kernel::cost::History>> {
     busbar_kernel::rate_apply::dated_history()
 }
 
-/// **THE INSTANT A METERING ROW RESOLVES AT**: its own FIRST instant — the later of the bucket's
-/// start and the price era the row was accrued in.
+/// The row's first wall-clock instant: the later of its bucket start and its accrued era.
+/// Corrections resolve at this instant; configuration selection also retains the row's era or
+/// exact entry identity, since a later activation can become visible after the row was served.
 ///
-/// Both halves are load-bearing and each alone is wrong.
-///
-/// The ERA (`priced_from_ms`, the `effective_from` of the entry in force at accrual) is what picks
-/// the right CARD: it is why a card published at noon splits the day, and why the afternoon's
-/// counts do not price at the morning's rate.
-///
-/// The CLIP to the bucket is what keeps the instant INSIDE the row's own wall-clock span, and
-/// without it a back-dated correction cannot reach the row at all. An entry effective from instant
-/// zero dates every row it covers at zero, however many days later those rows were earned; a signed
-/// correction over `[effective_from, effective_until)` is a WINDOW IN WALL-CLOCK TIME, and zero
-/// falls outside every window an operator would ever name. Resolving at the era start alone
-/// therefore made the sanctioned repair path a no-op for exactly the rows it was meant to repair —
-/// which a red test caught, and which is the reason this function exists rather than a bare field
-/// read at the call site.
-///
-/// A row whose era is zero because the field predates it lands on its own bucket's start, which is
-/// the honest reading for a row nothing dated: the card in force at the beginning of the day it was
-/// earned in, never the newest card ever authored.
+/// Clipping to the bucket keeps a back-dated amendment inside the row's wall-clock span even when
+/// its configuration era began days earlier. An untracked legacy zero era uses that same bucket
+/// instant for its temporal lookup; a known opening entry retains its exact identity separately.
 pub fn row_priced_at_ms(bucket_start_secs: u64, priced_from_ms: u64) -> u64 {
     bucket_start_secs.saturating_mul(1_000).max(priced_from_ms)
+}
+
+fn row_card<'a>(
+    view: &'a busbar_kernel::cost::HistoryView<'_>,
+    row: &busbar_contract::records::MeteringRow,
+    wall_at: u64,
+) -> Result<
+    (
+        busbar_kernel::cost::HistorySeq,
+        &'a busbar_kernel::cost::RateCard,
+    ),
+    busbar_kernel::cost::MoneyError,
+> {
+    use busbar_kernel::cost::{EntryId, MoneyError, RawRateEra};
+    let era = match EntryId::parse_metering_version(&row.pricing_version) {
+        Some(Some(id)) => RawRateEra::entry(row.priced_from_ms, id),
+        Some(None) => return Err(MoneyError::NoCardInForce { at: wall_at }),
+        None => RawRateEra::legacy(row.priced_from_ms),
+    };
+    view.card_for_raw_era(era, wall_at)
+        .ok_or(MoneyError::NoCardInForce { at: wall_at })
 }
 
 /// The row's flat tier fields under the reserved class spellings a card entry is written against,
@@ -438,11 +456,25 @@ pub fn derive_spend_micros_row_classes_at_card(
     metered_row(cost, model, b, classes).spend_micros_in_view(arrived_ms, view)
 }
 
+/// Price at the entry already resolved for this row's configuration era and correction window.
+/// The cost unit owns the projection and arithmetic; it must not resolve the wall instant again
+/// and accidentally replace the pinned configuration with a later activation.
+pub fn derive_spend_micros_row_classes_at_entry(
+    seq: busbar_kernel::cost::HistorySeq,
+    card: &busbar_kernel::cost::RateCard,
+    cost: &busbar_kernel::cost::CostModel,
+    model: &str,
+    b: &UsageBreakdown,
+    classes: &std::collections::BTreeMap<String, u64>,
+) -> Result<i64, busbar_kernel::cost::MoneyError> {
+    metered_row(cost, model, b, classes).spend_micros_at_card_seq(seq, card)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// THE READ PATH'S THREE MONEY DERIVATIONS, REACHABLE BY NAME (test-support only)
+// THE READ PATH'S MONEY DERIVATIONS, REACHABLE BY NAME (test-support only)
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
-/// The three functions `GET /api/v1/admin/usage` derives a figure with, named so that a test in
+/// The functions `GET /api/v1/admin/usage` derives a figure with, named so that a test in
 /// ANOTHER crate can CALL them instead of reproducing them.
 ///
 /// This module exists because of a proven defect, not for convenience. The composition root's
@@ -469,7 +501,8 @@ pub fn derive_spend_micros_row_classes_at_card(
 pub mod read_path_money {
     pub use super::{
         derive_spend_micros_row, derive_spend_micros_row_at_card, derive_spend_micros_row_classes,
-        derive_spend_micros_row_classes_at_card, row_lane, row_priced_at_ms,
+        derive_spend_micros_row_classes_at_card, derive_spend_micros_row_classes_at_entry,
+        row_lane, row_priced_at_ms,
     };
     /// The usage row the derivations above read, through the same door.
     pub use crate::v1::contract::UsageBreakdown;

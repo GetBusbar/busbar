@@ -1560,7 +1560,7 @@ impl AdminService {
         });
         // THE VERSION THE RESPONSE WAS PRICED AT (#44, Q93): the highest history seq among the
         // cards that priced its rows. It is RECORDED as each row's card resolves and never read back
-        // by the pricing: a row's card is resolved by its own instant (#79). `?as_of=<it>` re-derives
+        // by the pricing: a row retains its served era and its amendment instant. `?as_of=<it>` re-derives
         // every figure below, and a card published after these rows were earned leaves it as it was.
         let mut priced_by: Option<u64> = None;
         // THE ROWS AS ADJUSTED: every root `adjust` of the day moves its rows' counts before any is
@@ -1598,13 +1598,9 @@ impl AdminService {
                 spend_micros: 0,
                 classes: std::collections::BTreeMap::new(),
             };
-            // **THE RESOLUTION**, and the key is the ROW'S OWN FIRST INSTANT (see
-            // `row_priced_at_ms`): the row prices against the card it was earned under rather than
-            // the newest card ever authored, and a card edit inside the day opened a second row at
-            // the edit so the two halves resolve to the two cards. Never
-            // `PostingStamp::rate_card_version` — that is reporting provenance (#44), and a
-            // version resolves only forward, which is what would put a back-dated correction out
-            // of reach.
+            // Resolve the row's served configuration era separately from its wall-clock correction
+            // instant. A late activation must not steal old-served counts in a later bucket, while
+            // deliberate amendments still resolve at that bucket's own first instant.
             //
             // ONE WAY TO FALL BACK: no source installed or no history resolved (a build with no
             // root ledger in it) prices through the derivation this read has always used. A HOLE —
@@ -1613,25 +1609,25 @@ impl AdminService {
             // item 374). Pricing a hole at the current card would answer for an instant with a
             // card nobody put in force for it; the record has a gap and the read says so.
             //
-            // THE PRICING ITSELF IS NOT HERE AND IS NOT THIS CRATE'S: the row is handed to
-            // the ledger's `cost::price_in_view`, THE ONE FUNCTION, which resolves the
-            // card at the instant below and prices against it. See
-            // `derive_spend_micros_row_at_card`.
+            // The ledger resolves the entry and owns all pricing arithmetic. Both total and
+            // itemized classes use that same pinned entry without a second temporal lookup.
             let at = row_priced_at_ms(window.start, r.priced_from_ms);
+            let resolved = view
+                .as_ref()
+                .map(|v| row_card(v, r, at))
+                .transpose()
+                .map_err(|e| usage_refusal("usage.price", &e))?;
             // THE ROW'S LEDGERED CLASSES (`usage_units`) — every count the budget book holds that the
             // token split does not (a plane's declared classes, a pools open class, a plane's session
             // count) — price on the row's lane beside its tokens, as the budget book prices them.
             let classes: &std::collections::BTreeMap<String, u64> = &r.usage_units;
-            let row_spend = match view.as_ref() {
-                Some(v) => match v.card_at(at) {
-                    Some((card_seq, card)) => {
-                        priced_by = priced_by.max(Some(card_seq.get()));
-                        derive_spend_micros_row_classes_at_card(
-                            v, at, card, &cost, &lane, &row_view, classes,
-                        )
-                    }
-                    None => Err(busbar_kernel::cost::MoneyError::NoCardInForce { at }),
-                },
+            let row_spend = match resolved {
+                Some((card_seq, card)) => {
+                    priced_by = priced_by.max(Some(card_seq.get()));
+                    derive_spend_micros_row_classes_at_entry(
+                        card_seq, card, &cost, &lane, &row_view, classes,
+                    )
+                }
                 None => derive_spend_micros_row_classes(&cost, &lane, &row_view, classes),
             };
             // A REFUSED figure fails the read (#42, items 31 and 374): the card is present and
@@ -1657,13 +1653,10 @@ impl AdminService {
             };
             for (class, count) in itemized {
                 let one = std::collections::BTreeMap::from([(class.clone(), *count)]);
-                let class_cost = match view.as_ref() {
-                    Some(v) => match v.card_at(at) {
-                        Some((_card_seq, card)) => derive_spend_micros_row_classes_at_card(
-                            v, at, card, &cost, &lane, &none, &one,
-                        ),
-                        None => Err(busbar_kernel::cost::MoneyError::NoCardInForce { at }),
-                    },
+                let class_cost = match resolved {
+                    Some((card_seq, card)) => derive_spend_micros_row_classes_at_entry(
+                        card_seq, card, &cost, &lane, &none, &one,
+                    ),
                     None => derive_spend_micros_row_classes(&cost, &lane, &none, &one),
                 }
                 .map_err(|e| usage_refusal("usage.price", &e))?;
