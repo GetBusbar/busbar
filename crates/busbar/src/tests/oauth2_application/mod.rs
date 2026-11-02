@@ -15,7 +15,9 @@ mod plugins;
 
 mod browser;
 mod fapi2_tests;
+mod hosted_routes_tests;
 mod mount_tests;
+mod registration_tests;
 
 fn oauth_as_plane(app: &App) -> Option<Arc<busbar_core_oauth2::plane::AsPlane>> {
     app.oauth_as_any()?
@@ -34,6 +36,19 @@ fn application_with_resource_auth(
     oauth_as: Option<&OauthAsCfg>,
     prior: Option<&App>,
     resource_auth: bool,
+) -> Arc<App> {
+    build_application(oauth_as, prior, resource_auth, None)
+}
+
+fn application_with_document(document: serde_json::Value) -> Arc<App> {
+    build_application(None, None, false, Some(document))
+}
+
+fn build_application(
+    oauth_as: Option<&OauthAsCfg>,
+    prior: Option<&App>,
+    resource_auth: bool,
+    document: Option<serde_json::Value>,
 ) -> Arc<App> {
     static BUILDING: Mutex<()> = Mutex::new(());
     let _building = BUILDING
@@ -72,13 +87,15 @@ fn application_with_resource_auth(
         settings.is_object(),
         "the actual store settings are an object"
     );
-    let mut document = serde_json::json!({
-        "providers": {},
-        "models": {},
-        "store": { "module": module, "settings": settings },
-        "auth": { "chain": [], "admin_auth": [] },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+    let mut document = document.unwrap_or_else(|| {
+        serde_json::json!({
+            "providers": {},
+            "models": {},
+            "auth": { "chain": [], "admin_auth": [] },
+            "advanced": { "allow_destinations": ["127.0.0.1"] },
+        })
     });
+    document["store"] = serde_json::json!({"module":module,"settings":settings});
     if let Some(block) = oauth_as {
         document["oauth_as"] = serde_json::to_value(block).expect("the OAuth config serializes");
     }
