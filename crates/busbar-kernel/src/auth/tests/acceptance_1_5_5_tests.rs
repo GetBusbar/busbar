@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The auth acceptance suite: black-box pins for 1.5.5 auth behaviour that the scattered
+//! The auth acceptance suite: diagnostic and continuation pins for 1.5.5 auth behaviour that the scattered
 //! unit suites (`tests.rs`, `plugin_chain_tests.rs`, `self_keys_tests.rs`, `token_tests.rs`,
 //! the identity crate's `operator_tests`, and each auth plugin's own suite) do not directly assert. This file does not re-port behaviour those
 //! suites already pin byte-for-byte against v1.5.5 (fail-closed mapping, warn-once latch, chain
@@ -12,9 +12,9 @@
 //!    anywhere asserting their (code, slug) or that they actually fire on their documented trigger
 //!    — a silent rename or a dropped `diag_*!` call at a refactor would go unnoticed.
 //!
-//! Every test here goes through a public (or `pub(crate)`, crate-internal-but-not-implementation-
-//! private) entry point, never a store internal type. The inbound credential cache lives in the
-//! plugins (THE DESIGN 11.11 R3); the kernel keeps none.
+//! Ordinary internal tests exercise production continuations with explicit outcome DATA.
+//! Real product I/O is covered separately by root composition tests. The inbound credential
+//! cache lives in the plugins (THE DESIGN 11.11 R3); the kernel keeps none.
 
 use super::*;
 use crate::diagnostics::{
@@ -352,7 +352,7 @@ fn the_door_path_diagnostics_warn_once_then_debug_as_1_5_5() {
 }
 
 #[test]
-fn the_admin_credential_never_reaches_a_log_line() {
+fn admin_request_debug_and_outcome_diagnostics_redact_credentials() {
     use busbar_contract::auth_calls::{Verified, VerifiedIdentity};
     const BEARER: &str = "secret-bearer-value-7f3a";
     const HEADER: &str = "secret-header-value-91cc";
@@ -366,10 +366,24 @@ fn the_admin_credential_never_reaches_a_log_line() {
         Verified::Overloaded,
         Verified::Failed,
     ] {
-        let app = super::tests::operator_app(verified);
-        let (_, buf) =
-            capture(|| super::tests::run_admin_chain_on(&app, Some(BEARER), Some(HEADER)));
+        // INTERNAL formatter/diagnostic continuation. Real operator requests have a
+        // separate root log control; DATA here also covers unavailable outcome branches.
+        let headers = super::tests::admin_headers(Some(BEARER), Some(HEADER));
+        let mut request = admin_head("GET", "/api/v1/admin/keys", &headers, 1);
+        request.credential = Some(busbar_contract::redacted::Secret::new(
+            BEARER.as_bytes().to_vec(),
+        ));
+        let (_, buf) = capture(|| {
+            tracing::debug!(?request, "admin-redaction-capture-live");
+            let mut carried = AdminCarried::default();
+            let _ = carry_admin_outcome(
+                &mut carried,
+                "operator-provider",
+                Judgement::answered(verified.into()),
+            );
+        });
         let text = buf.text();
+        assert!(text.contains("admin-redaction-capture-live"), "{text}");
         assert!(
             !text.contains(BEARER) && !text.contains(HEADER),
             "a credential reached a log line: {text}"

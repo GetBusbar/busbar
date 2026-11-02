@@ -1270,6 +1270,19 @@ pub(crate) struct AdminCarried {
     no_verdict: bool,
 }
 
+fn carry_admin_outcome(
+    carried: &mut AdminCarried,
+    name: &str,
+    outcome: Judgement,
+) -> (AuthVerdict, Option<Box<Replay>>) {
+    carried.strips.extend(outcome.strips);
+    if outcome.no_verdict {
+        verify_without_verdict("admin", name, "no verdict");
+        carried.no_verdict = true;
+    }
+    (outcome.verdict, outcome.replay)
+}
+
 fn unresolved_admin_module(name: &str) -> Judgement {
     diag_error!(
         ADMIN_MODULE_UNRESOLVED,
@@ -1321,14 +1334,10 @@ async fn run_admin_chain(
             }
         }
         .unwrap_or_else(|| unresolved_admin_module(name));
-        carried.strips.extend(outcome.strips);
-        if outcome.no_verdict {
-            verify_without_verdict("admin", name, "no verdict");
-            carried.no_verdict = true;
-        }
-        if let Some(verdict) = chain_position_verdict(name, outcome.verdict) {
+        let (verdict, replay) = carry_admin_outcome(carried, name, outcome);
+        if let Some(verdict) = chain_position_verdict(name, verdict) {
             if matches!(verdict, ChainVerdict::Identified { .. }) {
-                carried.replay = outcome.replay.map(|r| (name.clone(), r));
+                carried.replay = replay.map(|r| (name.clone(), r));
                 let cap = module_admin_scope_cap(app, name);
                 return (complete_chain(Some(verdict)), cap);
             }

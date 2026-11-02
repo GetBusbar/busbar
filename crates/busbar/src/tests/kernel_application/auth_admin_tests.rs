@@ -851,3 +851,154 @@ async fn the_admin_gate_admits_only_the_listed_verbs() {
             "the actual refusal keeps the existing scope envelope byte for byte");
     }
 }
+
+#[test]
+fn actual_operator_requests_keep_credentials_out_of_core_logs() {
+    use std::io::Write;
+    use std::sync::Mutex;
+    const EXPECTED: &str = "configured-operator-secret-46da";
+    const BEARER: &str = "secret-bearer-value-7f3a";
+    const HEADER: &str = "secret-header-value-91cc";
+    // Test-local passive log sink. Only current-thread boot/request core events are claimed.
+    #[derive(Clone, Default)]
+    struct LogBytes(Arc<Mutex<Vec<u8>>>);
+    impl Write for LogBytes {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let logs = LogBytes::default();
+    let writer = logs.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(move || writer.clone())
+        .with_target(false)
+        .with_ansi(false)
+        .with_max_level(tracing::Level::DEBUG)
+        .finish();
+    tracing::subscriber::with_default(subscriber, || {
+        tracing::callsite::rebuild_interest_cache();
+        tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime").block_on(async {
+            crate::dist_root_install::install();
+            let library_path = std::path::PathBuf::from(
+                std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+                    .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
+            );
+            let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
+                .expect("the actual store statement reads")
+                .expect("the actual store exports its statement");
+            let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+                .expect("the actual store statement is valid")
+                .name;
+            let mut manifest = plugins::manifest(
+                "store",
+                &module,
+                busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+            );
+            manifest.statement = Some(hex::encode(statement));
+            let library = std::fs::read(library_path).expect("the actual store library reads");
+            let directory = plugins::scratch("auth-admin-logs");
+            let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
+            std::fs::write(directory.join("store.tar.gz"), archive)
+                .expect("stage the actual store archive");
+            let settings: serde_json::Value = serde_json::from_str(
+                &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+            )
+            .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+            assert!(
+                settings.is_object(),
+                "the actual store settings are an object"
+            );
+            let operator = busbar_kernel::config::operator_provider();
+            assert!(!operator.is_empty(), "the actual root registers its operator product");
+            let credential = directory.join("operator-credential");
+            std::fs::write(&credential, EXPECTED).expect("write the normal operator secret file");
+            let signing = directory.join("signing-key");
+            std::fs::write(&signing, hex::encode([9u8; 32]))
+                .expect("write the actual configured signing key");
+            let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+                "providers": {},
+                "models": {},
+                "identity-providers": {
+                    (operator): { "module": operator, "token": { "file": credential } }
+                },
+                "auth": {
+                    "chain": [], "admin_auth": [operator], "signing_key": { "file": signing },
+                    "key_ttl": "1h",
+                    "role_bindings": {}
+                },
+                "groups": { "team": { "child_default": { "limits": [{ "budget": 500, "per": "month" }] } } },
+                "store": { "module": module, "settings": settings },
+                "advanced": { "allow_destinations": ["127.0.0.1"] },
+            }))
+            .expect("the product deployment parses");
+            let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+                .expect("the product deployment resolves");
+            let plugin_config = busbar_kernel::config::PluginsCfg {
+                enabled: true,
+                dir: directory.to_string_lossy().into_owned(),
+                ..Default::default()
+            };
+            let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+                .expect("the actual Store bootstraps its config authority");
+            let overlay = busbar_kernel::config::overlay::OverlayStore::new(
+                anchor
+                    .calls
+                    .as_ref()
+                    .cloned()
+                    .expect("the actual Store exposes typed calls"),
+            )
+            .expect("the actual Store supports conditional config records");
+            let rules = Arc::new(crate::root::door_steps::Rules::default())
+                as Arc<dyn busbar_kernel::appbuild::RootRules>;
+            let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+                config,
+                plugin_config,
+                Some(overlay.clone()),
+                Default::default(),
+                Default::default(),
+                (None, None),
+                None,
+                &rules,
+                Some(anchor),
+            )
+            .expect("the actual product builds the session deployment");
+            limits.keep().expect("the product limits commit");
+            if let Some(rotate) = rotate {
+                rotate();
+            }
+            let app = Arc::new(app);
+            let router = busbar_kernel::build_router(app);
+            for (bearer, header, expected_status) in [(EXPECTED, None, 200), (BEARER, Some(HEADER), 401)] {
+                let mut request = axum::http::Request::builder()
+                    .uri("/api/v1/admin/keys")
+                    .header("authorization", format!("Bearer {bearer}"));
+                if let Some(header) = header {
+                    request = request.header("x-admin-token", header);
+                }
+                let response = tokio::time::timeout(std::time::Duration::from_secs(10),
+                    tower::ServiceExt::oneshot(router.clone(), request.body(axum::body::Body::empty()).unwrap()))
+                    .await.expect("the actual operator request is bounded").unwrap();
+                assert_eq!(response.status().as_u16(), expected_status);
+                tokio::time::timeout(std::time::Duration::from_secs(10),
+                    axum::body::to_bytes(response.into_body(), 64 * 1024))
+                    .await.expect("the actual operator response body is bounded").unwrap();
+            }
+            tracing::debug!("actual-operator-core-redaction-capture-live");
+        });
+    });
+    let text = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+    assert!(
+        text.contains("actual-operator-core-redaction-capture-live"),
+        "{text}"
+    );
+    for secret in [EXPECTED, BEARER, HEADER] {
+        assert!(
+            !text.contains(secret),
+            "a credential reached a core log line: {text}"
+        );
+    }
+}

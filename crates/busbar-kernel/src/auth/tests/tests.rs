@@ -1052,30 +1052,6 @@ pub(super) fn admin_headers(bearer: Option<&str>, header: Option<&str>) -> Heade
     headers
 }
 
-pub(super) fn run_admin_chain_on(
-    app: &crate::state::App,
-    bearer: Option<&str>,
-    header: Option<&str>,
-) -> (ChainVerdict, Option<busbar_contract::authz::Scope>) {
-    let headers = admin_headers(bearer, header);
-    let mut carried = AdminCarried::default();
-    let walk = std::pin::pin!(run_admin_chain(
-        app,
-        "GET",
-        "/",
-        &headers,
-        true,
-        &mut carried
-    ));
-    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-    match std::future::Future::poll(walk, &mut cx) {
-        std::task::Poll::Ready(answer) => answer,
-        std::task::Poll::Pending => (ChainVerdict::Denied, None),
-    }
-}
-
-struct OperatorDouble(busbar_contract::auth_calls::Verified);
-
 struct OperatorAnswer(Option<busbar_contract::auth_calls::VerifyAnswer>);
 
 impl std::future::Future for OperatorAnswer {
@@ -1092,55 +1068,6 @@ impl busbar_contract::auth_calls::Verifying for OperatorAnswer {
     fn settled(&mut self) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
         self.0.take()
     }
-}
-
-impl busbar_contract::auth_calls::AuthCalls for OperatorDouble {
-    fn name(&self) -> &str {
-        "operator-double"
-    }
-    fn facts(&self) -> u32 {
-        0
-    }
-    fn verify_now(
-        &self,
-        _: &busbar_contract::auth_calls::VerifyRequest,
-    ) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
-        Some(self.0.clone().into())
-    }
-    fn verify(
-        &self,
-        _: busbar_contract::auth_calls::VerifyRequest,
-    ) -> Box<dyn busbar_contract::auth_calls::Verifying> {
-        Box::new(OperatorAnswer(Some(self.0.clone().into())))
-    }
-    fn refresh(&self) -> Result<u64, String> {
-        Ok(0)
-    }
-}
-
-pub(super) fn operator_app(
-    verified: busbar_contract::auth_calls::Verified,
-) -> std::sync::Arc<crate::state::App> {
-    let op = crate::config::operator_provider();
-    let mut app = crate::test_support::TestApp::new()
-        .admin_chain(vec![op.to_string()])
-        .build();
-    let operator = Operator::open(
-        op,
-        std::iter::empty(),
-        &|m: &str| crate::config::names_operator(m),
-        true,
-        Some("digest".to_string()),
-        |_| Ok(std::sync::Arc::new(OperatorDouble(verified))),
-    )
-    .expect("opens");
-    std::sync::Arc::get_mut(&mut app)
-        .expect("freshly built App Arc is unshared")
-        .admin_modules = std::sync::Arc::new(AdminAuthChain {
-        modules: std::collections::HashMap::new(),
-        operator,
-    });
-    app
 }
 
 #[test]
