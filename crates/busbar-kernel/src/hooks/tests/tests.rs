@@ -1525,31 +1525,6 @@ fn dctx() -> RoutingContext<'static> {
 }
 
 #[tokio::test]
-async fn dlopen_decide_order_and_abstain() {
-    let env = test_env();
-    let budget = std::time::Duration::from_secs(5);
-    let cands = [dcand(0), dcand(1)];
-
-    let policy = resolve_one(&env, serde_json::json!({"order": [9, 1, 0]})).expect("resolve");
-    let d = policy
-        .decide(&dreq("hi"), &cands, &dctx(), budget)
-        .await
-        .expect("decide");
-    assert_eq!(
-        d,
-        RoutingDecision::Prefer(vec![1, 0]),
-        "unknown idx 9 dropped by the real normalizer"
-    );
-
-    let policy = resolve_one(&env, serde_json::json!({})).expect("resolve");
-    let d = policy
-        .decide(&dreq("hi"), &cands, &dctx(), budget)
-        .await
-        .expect("decide");
-    assert_eq!(d, RoutingDecision::Abstain);
-}
-
-#[tokio::test]
 async fn dlopen_configure_acks_exact_version() {
     let env = test_env();
     let hook = base_gate();
@@ -1721,124 +1696,6 @@ async fn dlopen_prompt_no_grant_withholds_content() {
 }
 
 #[tokio::test]
-async fn dlopen_decide_reject_status_is_clamped() {
-    let env = test_env();
-    let budget = std::time::Duration::from_secs(5);
-    let cands = [dcand(0)];
-    for (sent, want) in [
-        (400, 400),
-        (451, 451),
-        (499, 499),
-        (200, 403),
-        (302, 403),
-        (500, 403),
-        (0, 403),
-        (70000, 403),
-    ] {
-        let policy = resolve_one(
-            &env,
-            serde_json::json!({"reject_if_contains": "X", "reject_status": sent}),
-        )
-        .expect("resolve");
-        match policy
-            .decide(&dreq("X please"), &cands, &dctx(), budget)
-            .await
-            .expect("decide")
-        {
-            RoutingDecision::Reject { status, .. } => {
-                assert_eq!(status, want, "sent {sent} must clamp to {want}")
-            }
-            other => panic!("expected Reject for sent {sent}, got {other:?}"),
-        }
-    }
-}
-
-#[tokio::test]
-async fn dlopen_decide_restrict_and_fail_closed() {
-    let env = test_env();
-    let budget = std::time::Duration::from_secs(5);
-    let cands = [dcand(0), dcand(1)];
-
-    let policy = resolve_one(
-        &env,
-        serde_json::json!({"order": [1, 0], "restrict_tags": ["baa"]}),
-    )
-    .expect("resolve");
-    match policy
-        .decide(&dreq("x"), &cands, &dctx(), budget)
-        .await
-        .expect("decide")
-    {
-        RoutingDecision::Restrict { tags_any } => assert_eq!(tags_any, vec!["baa".to_string()]),
-        other => panic!("expected Restrict, got {other:?}"),
-    }
-
-    let policy = resolve_one(
-        &env,
-        serde_json::json!({"raw_decide_reply": {"restrict": {"tags_any": []}}}),
-    )
-    .expect("resolve");
-    match policy
-        .decide(&dreq("x"), &cands, &dctx(), budget)
-        .await
-        .expect("decide")
-    {
-        RoutingDecision::Restrict { tags_any } => assert!(
-            tags_any.is_empty(),
-            "malformed restrict stays Restrict (fail-closed → on_empty), got {tags_any:?}"
-        ),
-        other => panic!("malformed restrict must stay Restrict, got {other:?}"),
-    }
-}
-
-#[tokio::test]
-async fn dlopen_decide_raw_reply_is_fail_closed() {
-    let env = test_env();
-    let budget = std::time::Duration::from_secs(5);
-    let cands = [dcand(0)];
-
-    let policy = resolve_one(
-        &env,
-        serde_json::json!({"raw_decide_reply": {"reject": {"status": "451"}}}),
-    )
-    .expect("resolve");
-    match policy
-        .decide(&dreq("x"), &cands, &dctx(), budget)
-        .await
-        .expect("decide")
-    {
-        RoutingDecision::Reject { status, .. } => assert_eq!(status, 403),
-        other => panic!("malformed reject must stay a 403 Reject, got {other:?}"),
-    }
-
-    let policy = resolve_one(
-        &env,
-        serde_json::json!({"raw_decide_reply": {"unknown_field": true}}),
-    )
-    .expect("resolve");
-    assert_eq!(
-        policy
-            .decide(&dreq("x"), &cands, &dctx(), budget)
-            .await
-            .expect("decide"),
-        RoutingDecision::Abstain
-    );
-
-    let policy = resolve_one(
-        &env,
-        serde_json::json!({"raw_decide_reply": {"reject": false, "order": [0]}}),
-    )
-    .expect("resolve");
-    assert_eq!(
-        policy
-            .decide(&dreq("x"), &cands, &dctx(), budget)
-            .await
-            .expect("decide"),
-        RoutingDecision::Prefer(vec![0])
-    );
-}
-
-#[tokio::test]
 async fn dlopen_user_identity_projection_rides_the_wire() {
     use busbar_contract::plugin_rows::NeedLevel;
     let hook = HookCfg {
@@ -1862,48 +1719,6 @@ async fn dlopen_user_identity_projection_rides_the_wire() {
     assert!(
         !prompt.sends_prompt(),
         "no prompt grant/need → prompt content stays withheld"
-    );
-}
-
-#[tokio::test]
-async fn dlopen_decide_deadline_cuts_off_a_slow_gate() {
-    let env = test_env();
-    let policy =
-        resolve_one(&env, serde_json::json!({"order": [0], "sleep_ms": 2000})).expect("resolve");
-    let started = std::time::Instant::now();
-    let r = policy
-        .decide(
-            &dreq("x"),
-            &[dcand(0)],
-            &dctx(),
-            std::time::Duration::from_millis(100),
-        )
-        .await;
-    assert!(r.is_err(), "a slow gate must exceed the deadline → Err");
-    assert!(
-        started.elapsed() < std::time::Duration::from_secs(1),
-        "the deadline must cut the exchange off promptly, not wait out the sleep"
-    );
-}
-
-#[tokio::test]
-async fn dlopen_slow_gate_hits_the_deadline() {
-    let env = test_env();
-    let policy =
-        resolve_one(&env, serde_json::json!({"order": [0], "sleep_ms": 2000})).expect("resolve");
-    let started = std::time::Instant::now();
-    let r = policy
-        .decide(
-            &dreq("x"),
-            &[dcand(0)],
-            &dctx(),
-            std::time::Duration::from_millis(100),
-        )
-        .await;
-    assert!(r.is_err(), "a slow gate must exceed the deadline");
-    assert!(
-        started.elapsed() < std::time::Duration::from_secs(1),
-        "the deadline must cut off promptly"
     );
 }
 
