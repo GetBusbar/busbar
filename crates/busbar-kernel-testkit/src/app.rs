@@ -29,6 +29,7 @@ pub fn build_once_under(
     prior: Option<&busbar_kernel::state::App>,
     rules: &std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>,
 ) -> Result<busbar_kernel::state::App, String> {
+    crate::test_support::root::ensure();
     // The build installs `cfg.limits` process-wide and KEEPS them (below), so it is a writer of the
     // slot `LIMITS_TEST_LOCK` serializes: without the lock, a build in a sibling test lands mid-way
     // through a test that holds it (e.g. the root listener's total-deadline test, which installs a

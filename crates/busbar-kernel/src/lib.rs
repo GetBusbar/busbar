@@ -296,6 +296,9 @@ pub mod telemetry;
 pub mod timing;
 // Fixture implementations belong to the dev-only kernel testkit. Unit tests mount the
 // same sources privately for their access to the kernel's own internals; features expose no kit.
+/// Narrow real-behavior injection and authority construction, with no fixture state.
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_hooks;
 #[cfg(test)]
 #[path = "../../busbar-kernel-testkit/src/test_support/mod.rs"]
 mod test_support;
