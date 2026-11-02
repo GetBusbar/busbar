@@ -8,9 +8,14 @@ use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::transport::{
     FramePiece, FrameSpan, FramerOut, FramerSink, HeadSlots, PIECE_END, PIECE_END_OF_FRAME,
-    PIECE_FIELDS, PIECE_HAS_CODE, ROLE_FRAMER, STATUS_SUCCESS, YIELD_MORE,
+    PIECE_FIELDS, PIECE_HAS_CODE, ROLE_FRAMER, STATUS_SUCCESS, YIELD_ENDED, YIELD_MORE,
 };
 use busbar_core_connector::framer::{Call, Crossed, DoorFacts, FramerDoor};
+
+pub const SESSION_ACCEPT_WIRE: &[u8] = b"HTTP/1.1 101 Switching Protocols\r\n\r\n";
+pub const SESSION_REFUSE_WIRE: &[u8] =
+    b"HTTP/1.1 400 Bad Request\r\ncontent-length: 12\r\n\r\nstage denied";
+const SESSION_FINISH_WIRE: &[u8] = b"SESSION-CLOSE";
 
 #[derive(Default)]
 struct Gate {
@@ -47,6 +52,11 @@ pub struct Emitted {
 pub struct Mux {
     facts: DoorFacts,
     session: bool,
+    refuse_adopt: bool,
+    response_started: AtomicBool,
+    response_done: tokio::sync::Notify,
+    responses: Mutex<Vec<Emitted>>,
+    finishes: AtomicU32,
     accepted_head_pending: AtomicBool,
     committed_heads: AtomicU32,
     gate: Arc<Gate>,
@@ -61,6 +71,11 @@ impl Default for Mux {
     fn default() -> Self {
         Self {
             session: false,
+            refuse_adopt: false,
+            response_started: AtomicBool::new(false),
+            response_done: tokio::sync::Notify::new(),
+            responses: Mutex::new(Vec::new()),
+            finishes: AtomicU32::new(0),
             accepted_head_pending: AtomicBool::new(false),
             committed_heads: AtomicU32::new(0),
             facts: DoorFacts {
@@ -91,6 +106,25 @@ impl Mux {
         };
         fixture.facts.claims.push("ws");
         fixture
+    }
+
+    pub fn with_refused_session() -> Self {
+        Self {
+            refuse_adopt: true,
+            ..Self::with_session()
+        }
+    }
+
+    pub fn responses(&self) -> Vec<Emitted> {
+        self.responses.lock().unwrap().clone()
+    }
+
+    pub fn session_finishes(&self) -> u32 {
+        self.finishes.load(Ordering::SeqCst)
+    }
+
+    pub async fn wait_for_response_end(&self) {
+        self.response_done.notified().await;
     }
 
     pub async fn wait_for_head(&self) {
@@ -153,18 +187,38 @@ fn request(stream: u64, sink: &FramerSink, out: &mut FramerOut) {
     out.yielded.pieces_len = 1;
 }
 
-/// Adoption's accepted session head is a typed response, independent of application messages.
-fn accepted_head(sink: &FramerSink, out: &mut FramerOut) -> bool {
-    if sink.heads_cap == 0 || sink.pieces_cap == 0 {
+fn wire(bytes: &[u8], sink: &FramerSink, out: &mut FramerOut) {
+    if bytes.is_empty() {
+        return;
+    }
+    assert!(
+        sink.wire_cap >= bytes.len(),
+        "the fixture response fits the bounded host wire loan"
+    );
+    // SAFETY: the exclusively loaned wire buffer covers the bounded bytes above.
+    unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), sink.wire, bytes.len()) };
+    out.yielded.wire_len = bytes.len() as u64;
+}
+
+/// Adoption reports either typed session acceptance or its complete refused wire response.
+/// Accepted bytes remain provisional until the actor commits the plane's result.
+fn stage_head(sink: &FramerSink, out: &mut FramerOut, refused: bool) -> bool {
+    let bytes = if refused {
+        SESSION_REFUSE_WIRE
+    } else {
+        SESSION_ACCEPT_WIRE
+    };
+    if sink.wire_cap < bytes.len() || (!refused && sink.pieces_cap == 0) {
         out.yielded.flags = YIELD_MORE;
         return false;
     }
-    // SAFETY: both sink arrays have room for one entry, exclusively loaned for this crossing.
+    wire(bytes, sink, out);
+    if refused {
+        out.yielded.flags = YIELD_ENDED;
+        return true;
+    }
+    // SAFETY: the piece array has room for one entry, exclusively loaned for this crossing.
     unsafe {
-        sink.heads.write(HeadSlots {
-            stream: 1,
-            ..HeadSlots::default()
-        });
         sink.pieces.write(FramePiece {
             stream: 1,
             code: 101,
@@ -173,7 +227,6 @@ fn accepted_head(sink: &FramerSink, out: &mut FramerOut) -> bool {
             ..FramePiece::default()
         });
     }
-    out.yielded.heads_len = 1;
     out.yielded.pieces_len = 1;
     true
 }
@@ -230,7 +283,7 @@ impl FramerDoor for Mux {
                     && input.framing == 2
                     && self.accepted_head_pending.load(Ordering::SeqCst)
                 {
-                    if accepted_head(&input.sink, out) {
+                    if stage_head(&input.sink, out, self.refuse_adopt) {
                         self.accepted_head_pending.store(false, Ordering::SeqCst);
                     }
                     return ready;
@@ -242,10 +295,28 @@ impl FramerDoor for Mux {
                     request(u64::from(byte - b'0'), &input.sink, out);
                 }
             }
-            Call::Emit(input, _) => {
+            Call::Emit(input, out) => {
                 if self.session && input.status == 101 && input.len == 0 && input.end_of_frame != 0
                 {
                     self.committed_heads.fetch_add(1, Ordering::SeqCst);
+                    return ready;
+                }
+                if self.session
+                    && (input.status >= 200 || self.response_started.load(Ordering::SeqCst))
+                {
+                    self.response_started.store(true, Ordering::SeqCst);
+                    let value = Emitted {
+                        stream: input.stream,
+                        status: input.status,
+                        bytes: copied(input.bytes, input.len),
+                        end: input.end_of_frame != 0,
+                    };
+                    wire(&value.bytes, &input.sink, out);
+                    let done = value.end;
+                    self.responses.lock().unwrap().push(value);
+                    if done {
+                        self.response_done.notify_one();
+                    }
                     return ready;
                 }
                 let value = if resume {
@@ -291,8 +362,15 @@ impl FramerDoor for Mux {
             Call::Detach(_, _) if self.session => {}
             Call::Adopt(input, out) if self.session => {
                 out.framing = 2;
-                self.accepted_head_pending
-                    .store(!accepted_head(&input.sink, out), Ordering::SeqCst);
+                self.accepted_head_pending.store(
+                    !stage_head(&input.sink, out, self.refuse_adopt),
+                    Ordering::SeqCst,
+                );
+            }
+            Call::Finish(input, out) if self.session && input.framing == 2 => {
+                self.finishes.fetch_add(1, Ordering::SeqCst);
+                wire(SESSION_FINISH_WIRE, &input.sink, out);
+                out.yielded.flags = YIELD_ENDED;
             }
             Call::Locate(_, _) | Call::Timer(_, _) | Call::Refuse(_, _) | Call::Finish(_, _) => {}
             Call::Encode(_, _) | Call::Detach(_, _) | Call::Adopt(_, _) => {
