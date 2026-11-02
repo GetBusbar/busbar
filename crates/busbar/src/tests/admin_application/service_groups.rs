@@ -75,7 +75,10 @@ async fn list_groups_projects_the_limit_tree() {
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
-    let directory = plugins::scratch("admin-service-groups");
+    let directory = plugins::scratch(&format!(
+        "admin-service-groups-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
@@ -197,7 +200,10 @@ async fn list_groups_is_cursor_paginated() {
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
-    let directory = plugins::scratch("admin-service-groups");
+    let directory = plugins::scratch(&format!(
+        "admin-service-groups-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
@@ -343,7 +349,10 @@ async fn get_group_by_name_and_not_found() {
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
-    let directory = plugins::scratch("admin-service-groups");
+    let directory = plugins::scratch(&format!(
+        "admin-service-groups-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
@@ -458,7 +467,10 @@ fn build_with_group_creates_leaf_and_rebuilds_cost() {
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
-    let directory = plugins::scratch("admin-service-groups");
+    let directory = plugins::scratch(&format!(
+        "admin-service-groups-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
@@ -550,7 +562,10 @@ fn build_with_group_rejects_dangling_parent() {
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
-    let directory = plugins::scratch("admin-service-groups");
+    let directory = plugins::scratch(&format!(
+        "admin-service-groups-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
@@ -637,7 +652,10 @@ fn build_with_group_rejects_empty_name() {
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
-    let directory = plugins::scratch("admin-service-groups");
+    let directory = plugins::scratch(&format!(
+        "admin-service-groups-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
@@ -720,7 +738,10 @@ fn build_with_group_name_length_boundary_is_exact() {
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
-    let directory = plugins::scratch("admin-service-groups");
+    let directory = plugins::scratch(&format!(
+        "admin-service-groups-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
@@ -804,7 +825,10 @@ async fn healthz_returns_a_real_response_not_the_default() {
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
-    let directory = plugins::scratch("admin-service-groups");
+    let directory = plugins::scratch(&format!(
+        "admin-service-groups-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");

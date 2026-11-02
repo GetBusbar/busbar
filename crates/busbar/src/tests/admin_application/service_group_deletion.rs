@@ -58,7 +58,10 @@ async fn build_without_group_removes_leaf() {
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
-    let directory = plugins::scratch("admin-service-group-delete");
+    let directory = plugins::scratch(&format!(
+        "admin-service-group-delete-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
@@ -180,7 +183,10 @@ async fn build_without_group_conflict_when_still_a_parent() {
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
-    let directory = plugins::scratch("admin-service-group-delete");
+    let directory = plugins::scratch(&format!(
+        "admin-service-group-delete-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
@@ -299,7 +305,10 @@ async fn build_without_group_not_found() {
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
-    let directory = plugins::scratch("admin-service-group-delete");
+    let directory = plugins::scratch(&format!(
+        "admin-service-group-delete-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
@@ -421,7 +430,10 @@ async fn build_without_group_conflict_when_keys_still_bound() {
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
-    let directory = plugins::scratch("admin-service-group-delete");
+    let directory = plugins::scratch(&format!(
+        "admin-service-group-delete-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
