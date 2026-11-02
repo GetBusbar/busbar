@@ -33,7 +33,13 @@
 // is the one crate that generates a linked table: no cleanliness crate has a build script that names
 // a plugin, and their tests link the kernel's kind-neutral doubles instead.
 
+
+
+
+
 pub(crate) const NODE_UNIT: &str = "node";
+
+
 
 pub(crate) const AXES: &[(&str, &str, &str)] = &[
     ("protocols", "protocols", "PROTOCOLS"),
@@ -43,29 +49,64 @@ pub(crate) const AXES: &[(&str, &str, &str)] = &[
     ("compose", "compose", "compose"),
     ("cli-help", "cli_help", "CLI_HELP"),
     ("stores", "stores", "STORE"),
+
+
     ("hooks", "hook_doors", "door"),
+
     ("node", "node", "install_node"),
 ];
 
+
+
+
+
+
 const TRANSPORT_AXIS: &str = "transport";
+
+
+
 
 pub(crate) const DOOR_AXIS: &str = "transport-door";
 
+
+
+
+
 pub(crate) const CONNECTOR_DOOR_AXIS: &str = "connector-door";
+
+
+
+
 
 pub(crate) const PLANE_DOOR_AXIS: &str = "plane-door";
 
+
+
 pub(crate) const EXPORT_DOOR_AXIS: &str = "export-doors";
+
+
 
 const CLAIMS_AXIS: &str = "claims";
 
+
+
 const SECRET_AXIS: &str = "secret-doors";
 
+
+
+
+
+
+
 const AUTH_AXIS: &str = "auths";
+
+
+
 
 pub(crate) fn linked_hook_names_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> String {
     let plugins = metadata_map(manifest, "package.metadata.busbar.linked");
     let axes = metadata_map(manifest, "package.metadata.busbar.linked-axes");
+
 
     let hook_axis = AXES
         .iter()
@@ -98,6 +139,8 @@ pub(crate) fn linked_hook_names_source(manifest: &str, enabled: &dyn Fn(&str) ->
     out
 }
 
+
+
 fn metadata_value(manifest: &str, table: &str, key: &str) -> Option<String> {
     let header = format!("[{table}]");
     let mut in_table = false;
@@ -116,7 +159,12 @@ fn metadata_value(manifest: &str, table: &str, key: &str) -> Option<String> {
     None
 }
 
+
+
 pub(crate) const SEAMS: &[(&str, &str)] = &[("egress", "linked_egress")];
+
+
+
 
 pub(crate) fn metadata_map(manifest: &str, table: &str) -> Vec<(String, String)> {
     let header = format!("[{table}]");
@@ -147,6 +195,7 @@ pub(crate) fn metadata_map(manifest: &str, table: &str) -> Vec<(String, String)>
     rows
 }
 
+
 pub(crate) fn declared_features(manifest: &str) -> Vec<String> {
     let mut in_table = false;
     let mut out = Vec::new();
@@ -164,6 +213,8 @@ pub(crate) fn declared_features(manifest: &str) -> Vec<String> {
     }
     out
 }
+
+
 
 pub(crate) fn required_deps(manifest: &str) -> Vec<String> {
     let mut in_table = false;
@@ -183,13 +234,19 @@ pub(crate) fn required_deps(manifest: &str) -> Vec<String> {
     out
 }
 
+
 pub(crate) fn ident(krate: &str) -> String {
     krate.replace('-', "_")
 }
 
+
 pub(crate) fn seam_cfgs() -> Vec<&'static str> {
     SEAMS.iter().map(|(_, cfg)| *cfg).collect()
 }
+
+
+
+
 
 pub(crate) fn linked_source(
     manifest: &str,
@@ -201,6 +258,7 @@ pub(crate) fn linked_source(
     let axes = metadata_map(manifest, "package.metadata.busbar.linked-axes");
     let entries = metadata_map(manifest, "package.metadata.busbar.linked-entry");
     let units = metadata_map(manifest, "package.metadata.busbar.root-units");
+
 
     let always = |key: &str, krate: &str| {
         !features.iter().any(|f| f == key) && required.iter().any(|d| d == krate)
@@ -317,6 +375,7 @@ pub(crate) fn linked_source(
             continue;
         }
 
+
         out.push_str(&format!(
             "busbar_kernel::preflight::StoreRow({entry}::STORE).linked(), "
         ));
@@ -349,11 +408,15 @@ pub(crate) fn linked_source(
     }
     out.push_str("],\n");
 
+
     out.push_str("    secrets: &[");
     for door in doors_on(SECRET_AXIS) {
         out.push_str(&format!("{door}, "));
     }
     out.push_str("],\n");
+
+
+
 
     out.push_str("    secret_declares: &[");
     for (((_, list), door), (feature, _)) in linked.iter().zip(&doors).zip(&on) {
@@ -367,6 +430,10 @@ pub(crate) fn linked_source(
         }
     }
     out.push_str("],\n");
+
+
+
+
 
     out.push_str("    plane_door_declares: &[");
     for ((feature, krate), door) in on.iter().zip(&doors) {
@@ -389,11 +456,16 @@ pub(crate) fn linked_source(
         .zip(&doors)
         .filter(|((_, a), _)| a.iter().any(|x| x == TRANSPORT_AXIS))
     {
+
+
+
         assert!(
             axes.iter().any(|x| x == DOOR_AXIS),
             "Cargo.toml: `{e}` is on the `{TRANSPORT_AXIS}` axis but not the `{DOOR_AXIS}` axis; a \
              transport is linked only as its memory-ABI door"
         );
+
+
 
         out.push_str(&format!("crate::root::linked::linked_transport!({door}), "));
     }
@@ -421,6 +493,7 @@ pub(crate) fn linked_source(
     }
     out.push_str("],\n");
 
+
     let operator = metadata_value(manifest, "package.metadata.busbar.operator-auth", "row")
         .and_then(|row| metadata_value(manifest, "package.metadata.busbar.linked-name", &row))
         .unwrap_or_default();
@@ -436,6 +509,7 @@ pub(crate) fn linked_source(
     }
     out.push_str("],\n");
     for (axis, field, item) in AXES {
+
         if matches!(*field, "stores" | "protocols") {
             continue;
         }
@@ -446,6 +520,7 @@ pub(crate) fn linked_source(
                 continue;
             }
             if *item == "door" {
+
                 out.push_str(&format!("{door}, "));
             } else {
                 out.push_str(&format!("{e}::{item}, "));
@@ -454,6 +529,11 @@ pub(crate) fn linked_source(
         out.push_str("],\n");
     }
     out.push_str("};\n");
+
+
+
+
+
 
     out.push_str(
         "/// Every linked memory-ABI transport door, by the key its Statement states, read on first use.\n\
