@@ -2796,92 +2796,28 @@ fn a_signed_verify_keeps_the_lines_its_auth_named_whatever_its_verdict() {
     assert_eq!(strips, named, "a faulted verify's named lines are kept");
 }
 
-struct OtherStyle;
-
-impl busbar_contract::abi::sdk::auth_door::VerifyPlugin for OtherStyle {
-    fn validate(settings: &[u8]) -> Result<(), busbar_contract::abi::sdk::life::Refusal> {
-        busbar_contract::abi::sdk::auth_door::validate_by_opening::<Self>(settings)
-    }
-
-    fn open_refusing(
-        _settings: &[u8],
-        _secrets: &[&[u8]],
-    ) -> Result<Self, busbar_contract::abi::sdk::life::Refusal> {
-        Ok(Self)
-    }
-
-    fn verify(
-        &self,
-        _request: &busbar_contract::abi::sdk::auth_door::VerifyView<'_>,
-    ) -> busbar_contract::abi::sdk::auth_door::Answer {
-        busbar_contract::abi::sdk::auth_door::Verdict::Pass.into()
-    }
-}
-
-const OTHER_LINES: [&str; 2] = ["x-other-key", "authorization"];
-
-const OTHER_MARKS: &[busbar_contract::abi::mechanism::door::MarkWord] = &[
-    busbar_contract::abi::sdk::auth_door::carrier(OTHER_LINES[0]),
-    busbar_contract::abi::sdk::auth_door::carrier(OTHER_LINES[1]),
-];
-
-const OTHER_TAIL: &busbar_contract::abi::auth::AuthTail =
-    &busbar_contract::abi::sdk::auth_door::verify_tail(
-        busbar_contract::abi::auth::FACT_DEFAULT_INBOUND_STYLE,
-        busbar_contract::abi::auth::AuthPoints::HEAD,
-    );
-
-mod other_style {
-    busbar_contract::auth_verify_door!(
-        super::OtherStyle,
-        busbar_contract::abi::sdk::auth_door::with_tail(
-            busbar_contract::abi::mechanism::door::Statement {
-                mark_words: super::OTHER_MARKS.as_ptr(),
-                mark_words_len: super::OTHER_MARKS.len(),
-                ..busbar_contract::abi::sdk::door::statement("other-style", "1.0.0", 4)
-            },
-            super::OTHER_TAIL,
-        )
-    );
-}
-
-fn other_style_chain() -> AuthMiddleware {
-    let registry = crate::test_support::rows::Rows::new()
-        .with_linked_style(
-            crate::preflight::LinkedRow::Auth(("other-style", "other-style", other_style::door)),
-            &OTHER_LINES,
-        )
-        .into_rows();
-    AuthMiddleware::new(
-        &chain_cfg(&["keys"]),
-        &registry,
-        &crate::config::secret::SecretResolver::builtins_only(),
-    )
-    .expect("the chain builds")
-}
-
 #[test]
-fn the_client_token_is_read_off_the_default_inbound_styles_own_lines() {
-    let mw = other_style_chain();
+fn declared_carrier_order_selects_only_its_own_header_lines() {
+    // INTERNAL carrier-selection continuation over metadata DATA, including an arbitrary
+    // first carrier. The actual root's separate statement test pins installed metadata.
+    let carriers = ["x-other-key", "authorization"].map(HeaderName::from_static);
     let mut headers = HeaderMap::new();
     headers.insert("x-api-key", HeaderValue::from_static("from-x-api-key"));
-    assert_eq!(mw.extract_client_token(&headers), None);
+    assert_eq!(carried_credential(&carriers, &headers), None);
     headers.insert(
         "authorization",
         HeaderValue::from_static("Bearer from-bearer"),
     );
     assert_eq!(
-        mw.extract_client_token(&headers),
+        carried_credential(&carriers, &headers),
         Some("from-bearer".to_string())
     );
     headers.insert("x-other-key", HeaderValue::from_static("from-other"));
     assert_eq!(
-        mw.extract_client_token(&headers),
+        carried_credential(&carriers, &headers),
         Some("from-other".to_string()),
         "the style's first line wins"
     );
-    let names: Vec<&str> = mw.carriers().iter().map(HeaderName::as_str).collect();
-    assert_eq!(names, ["x-other-key", "authorization"]);
 }
 
 #[test]

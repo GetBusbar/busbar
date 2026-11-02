@@ -241,3 +241,17 @@ fn test_extract_admin_header_token_empty_filtered() {
         .expect("test request must build");
     assert_eq!(carried_credential(&carriers, absent.headers()), None);
 }
+
+#[test]
+fn actual_default_inbound_carriers_preserve_statement_order() {
+    crate::dist_root_install::install();
+    let registry =
+        busbar_kernel::preflight::linked().expect("the actual root registry is installed");
+    let axis = crate::root::dispatch::auth_axis(registry);
+    assert_eq!(
+        axis.default_inbound_style()
+            .expect("one actual default inbound style"),
+        ["authorization", "x-api-key", "x-goog-api-key"],
+        "the current actual header product's statement order reaches the root metadata"
+    );
+}
