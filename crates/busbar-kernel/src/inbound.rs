@@ -788,6 +788,21 @@ fn fixed_answer_at(
     Some(Fixed::Denied)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PositionWork {
+    Finished,
+    Answered,
+    Verify,
+}
+
+fn position_work(fixed: Option<Fixed>, answer: Option<Judged>) -> PositionWork {
+    match (fixed, answer) {
+        (Some(_), _) => PositionWork::Finished,
+        (None, Some(_)) => PositionWork::Answered,
+        (None, None) => PositionWork::Verify,
+    }
+}
+
 struct Table {
     listener: Listener,
     doors: crate::core_routes::CoreRouteTable,
@@ -2189,16 +2204,15 @@ impl Inbound {
                 }
             }
             for p in positions {
-                let undecided = me
+                let position = me
                     .with_state(target, |u| {
-                        (u.fixed_at(peer).is_none())
-                            .then(|| u.answers.get(p.index).copied().flatten())
+                        position_work(u.fixed_at(peer), u.answers.get(p.index).copied().flatten())
                     })
                     .ok_or(UNIT_FOREIGN)?;
-                match undecided {
-                    None => break,
-                    Some(Some(_)) => continue,
-                    Some(None) => {}
+                match position {
+                    PositionWork::Finished => break,
+                    PositionWork::Answered => continue,
+                    PositionWork::Verify => {}
                 }
                 if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
                     me.record(target, p.index, &p.provider, Judging::Nothing, &table);

@@ -173,3 +173,27 @@ async fn a_deadline_cancels_the_owned_pending_verification_and_leaves_the_reacto
         "the same-thread reactor remains live while verification waits"
     );
 }
+
+#[test]
+fn a_settled_list_never_dispatches_a_later_position_and_an_answer_is_not_repeated() {
+    for settled in [Fixed::Admitted(0), Fixed::Denied, Fixed::Overloaded] {
+        for answer in [
+            None,
+            Some(Judged::Pass),
+            Some(Judged::Identity),
+            Some(Judged::Denied),
+            Some(Judged::Overloaded),
+        ] {
+            assert_eq!(position_work(Some(settled), answer), PositionWork::Finished);
+        }
+    }
+    for answered in [
+        Judged::Pass,
+        Judged::Identity,
+        Judged::Denied,
+        Judged::Overloaded,
+    ] {
+        assert_eq!(position_work(None, Some(answered)), PositionWork::Answered);
+    }
+    assert_eq!(position_work(None, None), PositionWork::Verify);
+}
