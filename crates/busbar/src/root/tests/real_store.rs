@@ -48,24 +48,5 @@ pub(crate) fn store() -> Arc<LoadedStore> {
 }
 
 pub(crate) fn records() -> Arc<dyn busbar_contract::records::RecordStore> {
-    let axis = crate::root::loader::store_v3::DoorStoreAxis {
-        dispatcher: Arc::new(Dispatcher::new(DispatchConfig::default())),
-        logs: crate::root::boot::plugin_logs().clone(),
-        conns: ConnTable::NoNeeds,
-        mint: busbar_kernel::door::op_id,
-    };
-    let door = crate::LINKED
-        .stores
-        .iter()
-        .find(|row| row.1)
-        .expect("the product links an ephemeral store")
-        .2;
-    busbar_contract::store_calls::StoreAxis::open(
-        &axis,
-        busbar_contract::store_calls::StoreDoor::Linked(door),
-        "governance-test",
-        b"{}",
-    )
-    .expect("the actual linked product store opens")
-    .records
+    store()
 }

@@ -612,7 +612,6 @@ busbar-kernel = { path = "../../crates/busbar-kernel", features = ["test-support
 busbar-kernel-audit = { path = "../../crates/busbar-kernel-audit", features = ["test-support"] }
 # The core test kit: the local token issuer, the connection-table doubles, the auth axis's stand-in
 # and the root's door fixtures.
-busbar-test-kit = { path = "../../crates/busbar-test-kit" }
 # THE EQUIVALENCE PROOF CALLS THE ADMIN READ RATHER THAN REPRODUCING IT.
 # `tests/money_one_function_equivalence.rs` runs every implementation of `money = f(ledger, card)`
 # side by side, and `GET /api/v1/admin/usage` is one of them. Its three derivations are crate-private

@@ -10,3 +10,6 @@ mod plugin_preflight_scan;
 #[cfg(feature = "auth-admin-tokens")]
 #[path = "../../../../dist/default/tests/admin_cross_plane/main.rs"]
 mod admin_cross_plane;
+
+#[path = "oauth2_application/mod.rs"]
+mod oauth2_application;
