@@ -103,6 +103,7 @@ fn app(provider: &Arc<Provider>) -> Arc<busbar_kernel::state::App> {
             records: store.clone(),
             calls: Some(store),
         }),
+        false,
     )
     .expect("the production builder owns the supplied actual Store");
     // Only the host policy value varies between these Apps. The HTTP product
