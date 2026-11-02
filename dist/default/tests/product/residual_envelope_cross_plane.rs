@@ -12,7 +12,7 @@ mod linked {
     }
 }
 
-#[path = "../../../crates/busbar/src/root/tests/test_plugins.rs"]
+#[path = "../../../../crates/busbar/src/root/tests/test_plugins.rs"]
 mod plugins;
 use std::sync::Arc;
 

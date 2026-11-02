@@ -3,7 +3,7 @@
 
 use std::sync::{Arc, Mutex};
 
-#[path = "../../../crates/busbar/src/root/tests/test_plugins.rs"]
+#[path = "../../../../crates/busbar/src/root/tests/test_plugins.rs"]
 mod plugins;
 
 use busbar_kernel::rate_apply::{PreparedRates, RateApply, RateCommit, RawRates};

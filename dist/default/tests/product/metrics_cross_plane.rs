@@ -16,7 +16,7 @@ fn register_planes() {
     crate::dist_root_install::install();
 }
 
-#[path = "../../../crates/busbar/src/root/tests/test_plugins.rs"]
+#[path = "../../../../crates/busbar/src/root/tests/test_plugins.rs"]
 mod plugins;
 
 fn init() {

@@ -70,3 +70,42 @@ mod auth_scope_tests;
 
 #[path = "kernel_application/central_config_recovery_boot.rs"]
 mod central_config_recovery_boot;
+
+#[path = "../../../../dist/default/tests/product/store_adapter_verb_seam.rs"]
+mod store_adapter_verb_seam;
+
+#[path = "../../../../dist/default/tests/product/auth_cross_plane.rs"]
+mod auth_cross_plane;
+
+#[path = "../../../../dist/default/tests/product/admin_planeverbs_cross_plane.rs"]
+mod admin_planeverbs_cross_plane;
+
+#[path = "../../../../dist/default/tests/product/ledger_admin_views_legacy_leg.rs"]
+mod ledger_admin_views_legacy_leg;
+
+#[path = "../../../../dist/default/tests/product/money_one_function_equivalence.rs"]
+mod money_one_function_equivalence;
+
+#[path = "../../../../dist/default/tests/product/rate_apply_commit.rs"]
+mod rate_apply_commit;
+
+#[path = "../../../../dist/default/tests/product/registry_cross_plane.rs"]
+mod registry_cross_plane;
+
+#[path = "../../../../dist/default/tests/product/plugins_logs_preflight.rs"]
+mod plugins_logs_preflight;
+
+#[path = "../../../../dist/default/tests/product/metrics_cross_plane.rs"]
+mod metrics_cross_plane;
+
+#[path = "../../../../dist/default/tests/product/plane_integration.rs"]
+mod plane_integration;
+
+#[path = "../../../../dist/default/tests/product/law7_plane_gating.rs"]
+mod law7_plane_gating;
+
+#[path = "../../../../dist/default/tests/product/endpoints_cross_plane.rs"]
+mod endpoints_cross_plane;
+
+#[path = "../../../../dist/default/tests/product/residual_envelope_cross_plane.rs"]
+mod residual_envelope_cross_plane;
