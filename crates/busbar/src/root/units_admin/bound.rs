@@ -22,7 +22,8 @@
 //!   a `Policy` record, that the fleet commits to the release THIS binary is. The body names the
 //!   release; one this binary is not is refused, so a commit can never name a version nobody runs.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use busbar_contract::plane::PlaneDeclaration;
 use busbar_contract::records::{PlaneDisposition, PlaneRecord};
@@ -45,8 +46,74 @@ pub fn no_planes() -> PlaneLookup {
 
 /// Where `plane_record_write` lands one record: the plane-facing store seam
 /// (`busbar_kernel::store::plane_view::PlaneStore::upsert_plane_record`). `Err` carries the store's own
-/// words, for the node's log only.
-pub type PlaneRecordSink = Arc<dyn Fn(&PlaneRecord) -> Result<(), String> + Send + Sync>;
+/// typed refusal or unknown outcome, without treating a lost acknowledgement as no effect.
+pub type PlaneRecordSink = Arc<
+    dyn Fn(&PlaneRecord) -> Result<(), busbar_contract::store_calls::StoreFailure> + Send + Sync,
+>;
+
+/// The operation already sealed, or submitted with an unknown Store outcome. These bytes and
+/// metadata belong to the first request; reconciliation must never reconstruct them from a retry.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum EffectReceipt {
+    CommitUpgrade {
+        node: u64,
+        seq: u64,
+        hash: [u8; 32],
+        body: Vec<u8>,
+    },
+    PlaneRecordWrite {
+        record: PlaneRecord,
+    },
+}
+
+/// Whether an answered write definitely did nothing, completed, or still owns an effect receipt.
+#[derive(Debug, Clone)]
+enum EffectDisposition {
+    Unapplied,
+    Applied,
+    Retained(EffectReceipt),
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct EffectAnswer {
+    pub(crate) answer: AdminAnswer,
+    disposition: EffectDisposition,
+}
+
+impl EffectAnswer {
+    pub(crate) fn applied(answer: AdminAnswer) -> Self {
+        Self {
+            answer,
+            disposition: EffectDisposition::Applied,
+        }
+    }
+
+    fn unapplied(answer: AdminAnswer) -> Self {
+        Self {
+            answer,
+            disposition: EffectDisposition::Unapplied,
+        }
+    }
+
+    fn retained(answer: AdminAnswer, receipt: EffectReceipt) -> Self {
+        Self {
+            answer,
+            disposition: EffectDisposition::Retained(receipt),
+        }
+    }
+}
+
+impl std::ops::Deref for EffectAnswer {
+    type Target = AdminAnswer;
+
+    fn deref(&self) -> &AdminAnswer {
+        &self.answer
+    }
+}
+
+fn refused_effect(status: u16, code: &str, message: &str) -> EffectAnswer {
+    EffectAnswer::unapplied(refused(status, code, message))
+}
 
 /// The kernel's host services, whose trust book the three trust verbs read and decide over
 /// (ARCHITECT 2026-10-06): `None` until the root composed them, and on a node that composed none —
@@ -235,7 +302,7 @@ pub(crate) fn plane_record_write_effect(
     at: u64,
     planes: &dyn Fn(&str) -> Option<PlaneDeclaration>,
     sink: Option<&PlaneRecordSink>,
-) -> Result<AdminAnswer, GovernanceError> {
+) -> Result<EffectAnswer, GovernanceError> {
     let doc: serde_json::Value =
         serde_json::from_slice(body).map_err(|_| GovernanceError::Validation)?;
     let obj = doc.as_object().ok_or(GovernanceError::Validation)?;
@@ -245,17 +312,17 @@ pub(crate) fn plane_record_write_effect(
             .filter(|s| !s.trim().is_empty())
     };
     let Some(plane) = text("plane") else {
-        return Ok(refused(400, "invalid_request", "plane is required"));
+        return Ok(refused_effect(400, "invalid_request", "plane is required"));
     };
     let Some(kind) = text("kind") else {
-        return Ok(refused(400, "invalid_request", "kind is required"));
+        return Ok(refused_effect(400, "invalid_request", "kind is required"));
     };
     let Some(id) = text("id") else {
-        return Ok(refused(400, "invalid_request", "id is required"));
+        return Ok(refused_effect(400, "invalid_request", "id is required"));
     };
     let row = match obj.get("body") {
         None | Some(serde_json::Value::Null) => {
-            return Ok(refused(400, "invalid_request", "body is required"));
+            return Ok(refused_effect(400, "invalid_request", "body is required"));
         }
         Some(row) => row,
     };
@@ -263,7 +330,7 @@ pub(crate) fn plane_record_write_effect(
         None | Some(serde_json::Value::Null) => None,
         Some(serde_json::Value::String(p)) if !p.trim().is_empty() => Some(p.clone()),
         Some(_) => {
-            return Ok(refused(
+            return Ok(refused_effect(
                 400,
                 "invalid_request",
                 "parent must be a non-empty string or null",
@@ -274,7 +341,7 @@ pub(crate) fn plane_record_write_effect(
         None | Some(serde_json::Value::Null) => false,
         Some(serde_json::Value::Bool(b)) => *b,
         Some(_) => {
-            return Ok(refused(
+            return Ok(refused_effect(
                 400,
                 "invalid_request",
                 "terminal must be a boolean",
@@ -282,7 +349,7 @@ pub(crate) fn plane_record_write_effect(
         }
     };
     let Some(decl) = planes(plane) else {
-        return Ok(refused(
+        return Ok(refused_effect(
             404,
             "not_found",
             &format!("plane `{plane}` not found"),
@@ -291,7 +358,7 @@ pub(crate) fn plane_record_write_effect(
     // The plane's own declaration is the verdict (ARCHITECT RULING (b)): a record lands only under
     // a kind the named plane declares it keeps, never under another plane's kind or one nobody reads.
     if !busbar_contract::plane::declares_record_kind(&decl, kind) {
-        return Ok(refused(
+        return Ok(refused_effect(
             403,
             "forbidden",
             &format!("plane `{plane}` may not write record kind `{kind}`"),
@@ -309,7 +376,7 @@ pub(crate) fn plane_record_write_effect(
             "an admin plane record write named a record kind the kernel keeps its own records \
              under: refused, nothing written"
         );
-        return Ok(refused(
+        return Ok(refused_effect(
             403,
             "forbidden",
             &format!(
@@ -320,7 +387,7 @@ pub(crate) fn plane_record_write_effect(
     // THE PLANE'S OWN ROWS, keyed by the plane: two planes declaring one kind never land on (or
     // read) each other's rows, and no plane's row is a kernel kind's.
     let Some(owned) = busbar_kernel::store::plane_view::plane_owned_kind(plane, kind) else {
-        return Ok(refused(
+        return Ok(refused_effect(
             400,
             "invalid_request",
             "plane and kind must not hold a control character",
@@ -340,15 +407,31 @@ pub(crate) fn plane_record_write_effect(
         },
         body: serde_json::to_vec(row).map_err(|_| GovernanceError::Validation)?,
     };
-    sink(&record).map_err(|_| GovernanceError::Store)?;
-    answer(&serde_json::json!({
+    // Render before submission: every error returned by this function proves no effect started.
+    let applied = answer(&serde_json::json!({
         "plane": plane,
         "kind": kind,
         "id": record.id,
         "parent": record.parent,
         "terminal": terminal,
         "written_at": at,
-    }))
+    }))?;
+    use busbar_contract::store_calls::StoreFailure;
+    match sink(&record) {
+        Ok(()) => Ok(EffectAnswer::applied(applied)),
+        Err(
+            why @ (StoreFailure::Refused(_) | StoreFailure::Overloaded | StoreFailure::Conflict),
+        ) => Ok(EffectAnswer::unapplied(journal_unavailable(
+            &why.to_string(),
+        ))),
+        Err(why @ (StoreFailure::Failed(_) | StoreFailure::Fault(_))) => {
+            tracing::error!(reason = %why, "the plane record write has an unknown outcome; its exact record remains in custody");
+            Ok(EffectAnswer::retained(
+                journal_unavailable("the store did not acknowledge this record write; its outcome is unknown; do not re-submit"),
+                EffectReceipt::PlaneRecordWrite { record },
+            ))
+        }
+    }
 }
 
 /// `POST /api/v1/admin/commit-upgrade` — the fleet commits to the release this binary is.
@@ -364,7 +447,7 @@ pub(crate) fn commit_upgrade_effect(
     at: u64,
     principal: &str,
     journal: Option<&AmendmentJournal>,
-) -> Result<AdminAnswer, GovernanceError> {
+) -> Result<EffectAnswer, GovernanceError> {
     let doc: serde_json::Value =
         serde_json::from_slice(body).map_err(|_| GovernanceError::Validation)?;
     let obj = doc.as_object().ok_or(GovernanceError::Validation)?;
@@ -373,10 +456,14 @@ pub(crate) fn commit_upgrade_effect(
         .and_then(serde_json::Value::as_str)
         .filter(|s| !s.trim().is_empty())
     else {
-        return Ok(refused(400, "invalid_request", "version is required"));
+        return Ok(refused_effect(
+            400,
+            "invalid_request",
+            "version is required",
+        ));
     };
     if version != RUNNING_RELEASE {
-        return Ok(refused(
+        return Ok(refused_effect(
             409,
             "conflict",
             &format!("this node runs `{RUNNING_RELEASE}`; it cannot commit `{version}`"),
@@ -384,26 +471,50 @@ pub(crate) fn commit_upgrade_effect(
     }
     let journal = journal.ok_or(GovernanceError::Store)?;
     if let Err(why) = journal.admit() {
-        return Ok(journal_unavailable(&why));
+        return Ok(EffectAnswer::unapplied(journal_unavailable(&why)));
     }
     let mut record = busbar_kernel_wal::BodyWriter::new();
     record.text(COMMIT_UPGRADE_RECORD_TAG);
     record.text(version);
     record.num(at);
     record.text(principal);
-    let (node_seq, hash) = journal.seal_policy(record.finish(), at)?;
+    let body = record.finish();
+    let node = journal
+        .book
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .journal
+        .node();
+    let (node_seq, hash) = journal.seal_policy(body.clone(), at)?;
+    let receipt = EffectReceipt::CommitUpgrade {
+        node,
+        seq: node_seq,
+        hash,
+        body,
+    };
     if let Err(why) = journal.acked(node_seq) {
-        return Ok(journal_unavailable(&format!(
+        return Ok(EffectAnswer::retained(
+            journal_unavailable(&format!(
             "the commit is sealed at journal position {node_seq} and not yet kept by the store: \
              {why}; do not re-submit"
-        )));
+        )),
+            receipt,
+        ));
     }
-    answer(&serde_json::json!({
+    match answer(&serde_json::json!({
         "committed": version,
         "committed_at": at,
         "seq": node_seq,
         "hash": hex::encode(hash),
-    }))
+    })) {
+        Ok(answer) => Ok(EffectAnswer::applied(answer)),
+        Err(_) => Ok(EffectAnswer::retained(
+            journal_unavailable(
+                "the commit is sealed but its answer could not be encoded; do not re-submit",
+            ),
+            receipt,
+        )),
+    }
 }
 
 /// One trust key's row as the trust verbs write it.
@@ -536,17 +647,115 @@ pub fn live_records(app: Arc<busbar_kernel::state::AppHandle>) -> PlaneRecordSin
             .governance
             .as_ref()
             .and_then(|gov| gov.store_calls())
-            .ok_or_else(|| "no record store is configured".to_string())?;
+            .ok_or_else(|| {
+                busbar_contract::store_calls::StoreFailure::Refused(
+                    "no record store is configured".to_string(),
+                )
+            })?;
         crate::root::durability::off_runtime(|| {
             crate::root::durability::wait_for(calls.upsert_plane_record(record.view()))
         })
-        .map_err(|e| e.to_string())
     })
 }
 
 /// THE REPLAY CACHE the two Q71(2) writes share (contract D-3): per `(actor, "<verb>:<key>")`, the
-/// SHA-256 of the body the first call carried and the answer it produced.
-pub type ReplayCache = busbar_core_admin::idempotency::IdempotencyCache<([u8; 32], AdminAnswer)>;
+/// SHA-256 of the body the first call carried and the answer it produced. Unresolved receipts
+/// have separate custody: the ordinary answer TTL cannot release an effect still owed or unknown.
+#[derive(Default)]
+pub struct ReplayCache {
+    answers: busbar_core_admin::idempotency::IdempotencyCache<ReplayValue>,
+    retained: Mutex<HashMap<(String, String), HeldReplay>>,
+}
+
+impl ReplayCache {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn retain(&self, key: (String, String), held: HeldReplay) {
+        let previous = self
+            .retained
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(key, held);
+        drop(previous);
+    }
+}
+
+#[derive(Clone)]
+struct ReplayValue {
+    digest: [u8; 32],
+    answer: AdminAnswer,
+    receipt: Option<EffectReceipt>,
+}
+
+#[derive(Clone)]
+struct HeldReplay {
+    value: ReplayValue,
+    settlement: Option<Arc<HeldSettlement>>,
+}
+
+struct HeldSettlement {
+    store: Arc<dyn busbar_contract::records::RecordStore>,
+    claim: busbar_core_admin::idempotency::durable::Claim,
+    at: u64,
+    settled: busbar_core_admin::idempotency::durable::Settled,
+}
+
+impl HeldSettlement {
+    fn retry(&self) {
+        if let Err(why) = busbar_core_admin::idempotency::durable::settle(
+            &*self.store,
+            &self.claim,
+            self.at,
+            &self.settled,
+        ) {
+            tracing::error!(reason = %why, "the store did not acknowledge the retained Idempotency-Key receipt; its original claim remains held");
+        }
+    }
+}
+
+impl HeldReplay {
+    fn replay(&self, journal: Option<&AmendmentJournal>) -> AdminAnswer {
+        if let Some(settlement) = &self.settlement {
+            settlement.retry();
+        }
+        if let (
+            Some(EffectReceipt::CommitUpgrade {
+                node,
+                seq,
+                hash,
+                body,
+            }),
+            Some(journal),
+        ) = (&self.value.receipt, journal)
+        {
+            // A sibling's same-numbered journal position proves nothing. Match the full sealed
+            // receipt on the originating node before asking for its acknowledgement. Store reads
+            // and acknowledgement waits happen after releasing the book's lock.
+            let chain = {
+                let book = journal.book.lock().unwrap_or_else(|p| p.into_inner());
+                (book.journal.node() == *node).then(|| book.chain_at())
+            };
+            if let Some(Ok(Ok(records))) = chain.map(|chain| chain.read()) {
+                if records.iter().any(|record| {
+                    record.node == *node
+                        && record.node_seq == *seq
+                        && record.hash == *hash
+                        && record.class == busbar_kernel_wal::RecordClass::Policy
+                        && record.body == *body
+                }) {
+                    let _acknowledged = journal.acked(*seq);
+                }
+            }
+        }
+        // Upsert has neither an op-id receipt nor a metadata read. Body equality is not proof
+        // that this exact write applied; retain it without issuing another upsert. A sealed
+        // commit likewise keeps its first answer byte for byte after an acknowledgement retry.
+        self.value.answer.clone()
+    }
+}
 
 /// The configured store a key is claimed in, read when the claim is taken.
 pub type ReplayStore =
@@ -561,14 +770,15 @@ pub fn live_replay_store(app: Arc<busbar_kernel::state::AppHandle>) -> ReplaySto
 /// A first answer as the store keeps it: the body's digest, then the whole answer — status, every
 /// header in emission order, body — length-prefixed, so a header value or a body may hold any byte
 /// and come back identical. The store boundary is the only place an answer is bytes.
-fn stored_answer(digest: &[u8; 32], answer: &AdminAnswer) -> Vec<u8> {
+fn stored_answer(value: &ReplayValue) -> Vec<u8> {
     fn push(out: &mut Vec<u8>, bytes: &[u8]) {
         let len = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
         out.extend_from_slice(&len.to_be_bytes());
         out.extend_from_slice(&bytes[..len as usize]);
     }
+    let answer = &value.answer;
     let mut out = Vec::with_capacity(32 + 6 + answer.body.len() + 64);
-    out.extend_from_slice(digest);
+    out.extend_from_slice(&value.digest);
     out.extend_from_slice(&answer.status.to_be_bytes());
     let count = u32::try_from(answer.headers.len()).unwrap_or(u32::MAX);
     out.extend_from_slice(&count.to_be_bytes());
@@ -577,13 +787,18 @@ fn stored_answer(digest: &[u8; 32], answer: &AdminAnswer) -> Vec<u8> {
         push(&mut out, value.as_bytes());
     }
     push(&mut out, &answer.body);
+    if let Some(receipt) = &value.receipt {
+        let receipt = serde_json::to_vec(receipt)
+            .expect("an effect receipt contains only serializable strings, integers and bytes");
+        push(&mut out, &receipt);
+    }
     out
 }
 
 /// What [`stored_answer`] wrote, read back: the first body's digest and the first answer. `None`
 /// on anything that is not exactly that framing. The header count is a claim the bytes make about
 /// themselves, so nothing is reserved on it: each header is read off the bytes actually held.
-fn kept_answer(kept: &[u8]) -> Option<([u8; 32], AdminAnswer)> {
+fn kept_answer(kept: &[u8]) -> Option<ReplayValue> {
     fn take<'b>(bytes: &'b [u8], cursor: &mut usize, n: usize) -> Option<&'b [u8]> {
         let end = cursor.checked_add(n)?;
         let slice = bytes.get(*cursor..end)?;
@@ -605,17 +820,23 @@ fn kept_answer(kept: &[u8]) -> Option<([u8; 32], AdminAnswer)> {
         headers.push((name, value));
     }
     let body = pull(kept, &mut cursor)?.to_vec();
+    let receipt = if cursor == kept.len() {
+        None
+    } else {
+        Some(serde_json::from_slice(pull(kept, &mut cursor)?).ok()?)
+    };
     if cursor != kept.len() {
         return None;
     }
-    Some((
+    Some(ReplayValue {
         digest,
-        AdminAnswer {
+        answer: AdminAnswer {
             status,
             headers,
             body,
         },
-    ))
+        receipt,
+    })
 }
 
 /// The request header carrying the client-chosen idempotency token (names arrive lowercased).
@@ -624,8 +845,9 @@ const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
 /// Run a write under contract D-3's `Idempotency-Key` replay — the same cache, TTL, in-flight
 /// sentinel and per-principal key scoping the key mint and rotate use.
 ///
-/// No header: the effect runs, nothing is reserved. First sighting: the effect runs, and a `2xx`
-/// answer is committed under the key (a refusal clears the reservation, so a corrected retry runs).
+/// No header: the effect runs, nothing is reserved. First sighting: the effect states whether it
+/// definitely did nothing, completed, or retained an exact receipt. Only definitely unapplied
+/// outcomes release the key. Sealed/unknown outcomes survive the ordinary replay window.
 /// A replay with the SAME body answers the committed bytes verbatim and runs nothing; the same key
 /// with a DIFFERENT body is `409 conflict`, and a key whose first call is still running is the
 /// existing `409 conflict` "a request with this Idempotency-Key is already in flight".
@@ -636,7 +858,8 @@ pub(crate) fn replayable(
     actor: &str,
     unit: &super::AdminRequest,
     body: &[u8],
-    effect: impl FnOnce() -> Result<AdminAnswer, GovernanceError>,
+    journal: Option<&AmendmentJournal>,
+    effect: impl FnOnce() -> Result<EffectAnswer, GovernanceError>,
 ) -> Result<AdminAnswer, GovernanceError> {
     use busbar_core_admin::idempotency::Probe;
 
@@ -647,7 +870,7 @@ pub(crate) fn replayable(
         .map(|(_, value)| value.as_str())
         .filter(|value| !value.is_empty())
     else {
-        return effect();
+        return effect().map(|outcome| outcome.answer);
     };
     let name = busbar_core_admin::verb_name(verb).unwrap_or_default();
     let digest: [u8; 32] = busbar_contract::abi::sdk::digest::sha256(body);
@@ -669,23 +892,51 @@ pub(crate) fn replayable(
             "a request with this Idempotency-Key is already in flight",
         ))
     };
-    match cache.probe((actor.to_string(), format!("{name}:{header}")), unit.at) {
-        Probe::Replay((first, answer)) if first == digest => Ok(answer),
+    let key = (actor.to_string(), format!("{name}:{header}"));
+    let held = cache
+        .retained
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(&key)
+        .cloned();
+    if let Some(held) = held {
+        return if held.value.digest == digest {
+            Ok(held.replay(journal))
+        } else {
+            other_body()
+        };
+    }
+    match cache.answers.probe(key.clone(), unit.at) {
+        Probe::Replay(value) if value.digest == digest => Ok(value.answer),
         Probe::Replay(_) => other_body(),
         Probe::InFlight => in_flight(),
-        Probe::NoKey => effect(),
-        Probe::Reserved(reservation) => {
+        Probe::NoKey => effect().map(|outcome| outcome.answer),
+        Probe::Reserved(mut reservation) => {
             // Claimed in the store before the effect runs, so a retry after a restart or on another
             // node replays the first answer or is refused: it never runs the effect again.
             let store = store.and_then(|store| store());
             let claim = match &store {
-                Some(store) => match durable::claim(&**store, reservation.key(), unit.at) {
+                Some(store) => match durable::claim_held(&**store, reservation.key(), unit.at) {
                     Ok(claim) => Some(claim),
-                    Err(Refused::Answer(kept)) => {
+                    Err(Refused::Answer(kept) | Refused::Retained(kept)) => {
                         // The first answer, whole and byte for byte — status, headers and body: a
                         // re-render would mint a second one-time secret over one identity.
                         return match kept_answer(&kept) {
-                            Some((first, answer)) if first == digest => Ok(answer),
+                            Some(value) if value.digest == digest => {
+                                if value.receipt.is_some() {
+                                    let held = HeldReplay {
+                                        value,
+                                        settlement: None,
+                                    };
+                                    cache.retain(key, held.clone());
+                                    reservation.in_flight();
+                                    Ok(held.replay(journal))
+                                } else {
+                                    let answer = value.answer.clone();
+                                    reservation.commit(value, unit.at);
+                                    Ok(answer)
+                                }
+                            }
                             Some(_) => other_body(),
                             None => {
                                 tracing::error!("the store keeps an Idempotency-Key's first answer in a form this node cannot read");
@@ -707,20 +958,59 @@ pub(crate) fn replayable(
                 },
                 None => None,
             };
+            // Unwind or cancellation after entering the effect cannot free a live mutation.
+            // Every returned Err is contractually before submission/sealing.
+            reservation.in_flight();
             let (answer, settled) = match effect() {
-                Ok(answer) if (200..300).contains(&answer.status) => {
-                    let settled = Settled::Answer(stored_answer(&digest, &answer));
-                    reservation.commit((digest, answer.clone()), unit.at);
+                Ok(EffectAnswer {
+                    answer,
+                    disposition: EffectDisposition::Applied,
+                }) => {
+                    let value = ReplayValue {
+                        digest,
+                        answer: answer.clone(),
+                        receipt: None,
+                    };
+                    let settled = Settled::Answer(stored_answer(&value));
+                    reservation.commit(value, unit.at);
                     (Ok(answer), settled)
                 }
-                other => {
+                Ok(EffectAnswer {
+                    answer,
+                    disposition: EffectDisposition::Retained(receipt),
+                }) => {
+                    let value = ReplayValue {
+                        digest,
+                        answer: answer.clone(),
+                        receipt: Some(receipt),
+                    };
+                    let settled = Settled::Retained(stored_answer(&value));
+                    let settlement = store.as_ref().zip(claim.as_ref()).map(|(store, claim)| {
+                        Arc::new(HeldSettlement {
+                            store: Arc::clone(store),
+                            claim: claim.clone(),
+                            at: unit.at,
+                            settled: settled.clone(),
+                        })
+                    });
+                    cache.retain(key, HeldReplay { value, settlement });
+                    (Ok(answer), settled)
+                }
+                Ok(EffectAnswer {
+                    answer,
+                    disposition: EffectDisposition::Unapplied,
+                }) => {
                     reservation.clear();
-                    (other, Settled::Released)
+                    (Ok(answer), Settled::Released)
+                }
+                Err(error) => {
+                    reservation.clear();
+                    (Err(error), Settled::Released)
                 }
             };
             if let (Some(store), Some(claim)) = (&store, &claim) {
                 if let Err(why) = durable::settle(&**store, claim, unit.at, &settled) {
-                    tracing::error!(reason = %why, "the store did not keep an Idempotency-Key's outcome; a retry is refused as in flight until the claim lapses");
+                    tracing::error!(reason = %why, "the store did not keep an Idempotency-Key's outcome; its original claim remains held");
                 }
             }
             answer

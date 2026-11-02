@@ -233,3 +233,58 @@ fn claims_are_scoped_to_the_principal() {
     durable::claim(&store, &key("alice", "same"), 1_000).unwrap();
     assert!(durable::claim(&store, &key("bob", "same"), 1_000).is_ok());
 }
+
+#[test]
+fn a_held_claim_never_expires_while_its_effect_or_settlement_is_unknown() {
+    let store = MemoryStore::new();
+    let k = key("alice", "held-without-settlement");
+    let first = durable::claim_held(&store, &k, 1_000).unwrap();
+    let later = 1_000 + IDEMPOTENCY_TTL_SECS * 3;
+    // Death or a failed settlement after the effect leaves no record. Its permanent token still
+    // prevents both the same node and a fresh caller from starting another effect.
+    assert_eq!(
+        durable::claim_held(&store, &k, later),
+        Err(Refused::InFlight)
+    );
+    let receipt = b"the exact first operation, metadata, body and 503".to_vec();
+    durable::settle(&store, &first, 1_000, &Settled::Retained(receipt.clone())).unwrap();
+    // An unrelated settle sweeps old terminal rows; the retained row remains active.
+    let other = durable::claim_held(&store, &key("alice", "unrelated-held"), later).unwrap();
+    durable::settle(&store, &other, later, &Settled::Answer(b"done".to_vec())).unwrap();
+    assert_eq!(
+        durable::claim_held(&store, &k, later),
+        Err(Refused::Retained(receipt))
+    );
+}
+
+#[test]
+fn an_old_held_refusal_cannot_skip_a_newer_in_flight_generation() {
+    let store = MemoryStore::new();
+    let k = key("alice", "held-released");
+    let first = durable::claim_held(&store, &k, 1_000).unwrap();
+    durable::settle(&store, &first, 1_000, &Settled::Released).unwrap();
+    let second = durable::claim_held(&store, &k, 1_001).unwrap();
+    assert_ne!(first, second);
+    assert_eq!(
+        durable::claim_held(&store, &k, 1_002),
+        Err(Refused::InFlight)
+    );
+    let later = 1_000 + IDEMPOTENCY_TTL_SECS * 3;
+    assert_eq!(
+        durable::claim_held(&store, &k, later),
+        Err(Refused::InFlight)
+    );
+    durable::settle(
+        &store,
+        &second,
+        1_001,
+        &Settled::Answer(b"completed".to_vec()),
+    )
+    .unwrap();
+    let third = durable::claim_held(&store, &k, later).unwrap();
+    assert_ne!(second, third, "only a definite answer expires normally");
+    assert_eq!(
+        durable::claim_held(&store, &k, later + 1),
+        Err(Refused::InFlight)
+    );
+}
