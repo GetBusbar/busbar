@@ -683,6 +683,59 @@ fn a_snapshot_from_before_listed_reads_as_listing_none() {
 }
 
 #[test]
+fn snapshot_arrival_spans_require_alignment_before_copying() {
+    use busbar_contract::abi::plane::check::check_snapshot;
+    use busbar_contract::abi::plane::Claim;
+
+    let text = |value: &'static str| AbiStr {
+        ptr: value.as_ptr(),
+        len: value.len(),
+    };
+    let claims = [Claim {
+        verb: text("chat"),
+        target: text("/chat"),
+        carrier: text("carrier"),
+        ..Claim::ZERO
+    }];
+    let spans = [text("request_arrived"), AbiStr::ZERO];
+    let mut snapshot = snap(7);
+    snapshot.claims = claims.as_ptr();
+    snapshot.claims_len = claims.len();
+    snapshot.arrival_spans = spans.as_ptr();
+    snapshot.arrival_spans_len = 1;
+    assert_eq!(check_snapshot(&snapshot, 7), Ok(()));
+    let copied = crate::dispatch::kinds::plane::copy_snapshot(&snapshot, 0)
+        .expect("a valid aligned arrival span is copied");
+    assert_eq!(copied.claims[0].arrival_span, "request_arrived");
+
+    // Offset within live backing storage, but never form or dereference an AbiStr at this address.
+    // This runs only with the loader's alignment refusal in place, never against the old raw read.
+    let misaligned = spans.as_ptr().cast::<u8>().wrapping_add(1).cast::<AbiStr>();
+    assert!(!misaligned.is_aligned());
+    snapshot.arrival_spans = misaligned;
+    assert_eq!(
+        check_snapshot(&snapshot, 7),
+        Ok(()),
+        "the existing snapshot size/count/NULL checks accept this pointer shape"
+    );
+    assert!(crate::dispatch::kinds::plane::copy_snapshot(&snapshot, 0).is_none());
+
+    snapshot.arrival_spans_len = 0;
+    for pointer in [null(), misaligned] {
+        snapshot.arrival_spans = pointer;
+        let copied = crate::dispatch::kinds::plane::copy_snapshot(&snapshot, 0)
+            .expect("an empty arrival span list ignores its pointer");
+        assert_eq!(copied.claims[0].arrival_span, "");
+    }
+    snapshot.arrival_spans_len = 1;
+    snapshot.arrival_spans = null();
+    assert!(crate::dispatch::kinds::plane::copy_snapshot(&snapshot, 0).is_none());
+    snapshot.arrival_spans = spans.as_ptr();
+    snapshot.arrival_spans_len = crate::dispatch::validate::MAX_LENT_BYTES / size_of::<AbiStr>() + 1;
+    assert!(crate::dispatch::kinds::plane::copy_snapshot(&snapshot, 0).is_none());
+}
+
+#[test]
 fn red_a_claim_whose_target_breaks_the_grammar_refuses_the_snapshot() {
     use busbar_contract::abi::plane::{
         Claim, CLAIM_CATALOG, CLAIM_PATTERN, CLAIM_RAW_AFFIX, CLAIM_SIGNED_INGRESS,
