@@ -1341,6 +1341,11 @@ pub fn book(
         })?;
     gov.hydrate_budgets(&app.cost, now)
         .map_err(|why| format!("budget hydration after usage recovery failed: {why}"))?;
+    if let Err(why) = gov.resume_correction_verdicts(&app.cost) {
+        use busbar_kernel::diagnostics::{diag_warn, BUDGET_FLUSH_PARTIAL_FAILURE};
+        diag_warn!(BUDGET_FLUSH_PARTIAL_FAILURE, error = %why,
+            "usage correction recovery remains retained after boot; background continuation will retry");
+    }
 
     super::durability::bind_amendments(&durability, &app.amendments);
 

@@ -83,6 +83,9 @@ pub(crate) enum StateView {
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct ItemView {
+    /// The foreign sender's node as exact lower-case hex; omitted for this node's own work.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    owner_node: Option<String>,
     operation_id: String,
     body_fingerprint: String,
     recovery_version: u64,
@@ -111,6 +114,7 @@ fn hex(bytes: &[u8]) -> String {
 impl From<RecoveryItem> for ItemView {
     fn from(item: RecoveryItem) -> Self {
         Self {
+            owner_node: item.owner_node.map(|node| format!("{node:016x}")),
             operation_id: hex(&item.operation_id),
             body_fingerprint: hex(&item.body_fingerprint),
             recovery_version: item.revision,

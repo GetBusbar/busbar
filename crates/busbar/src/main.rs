@@ -1044,6 +1044,7 @@ async fn run(
         std::mem::drop(busbar_kernel::governance::spawn_budget_flusher(
             gov,
             shutdown_tx.subscribe(),
+            Some(app_handle.clone()),
         ));
     }
 

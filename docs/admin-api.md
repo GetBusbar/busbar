@@ -157,6 +157,9 @@ require explicit fencing; observing them in a list cannot bypass it.
 
 Both `sender_quiesced: true` and `backend_quiesced: true` are required explicit operator attestations: all senders for this operation have been retired or disarmed, and all outstanding backend mutations for it have settled. The durable verdict records both attestations and its operator evidence. A node lease or recovery-head change does not cancel an already-running backend write; a disconnect or matching aggregate count does not prove quiescence or whether the operation landed. A local in-flight sender still prevents resolution even when the operator attests quiescence.
 
+A foreign entry includes `owner_node` as 16 lower-case hexadecimal characters, so its sender can be identified without JSON integer rounding. Foreign inspection is read-only. Explicit resolution can adopt its selected custody under the new node only after both quiescence attestations; ordinary replay never adopts another live node's operations. Handover of an already definitive outcome preserves that outcome and its original audit; an opposite verdict is refused. A journal ownership change never proves that a backend call stopped.
+
+
 
 The Store confirms the durable, attributed verdict before the kernel can repost retained work or
 release a dependent negative correction. Retrying the same resolution returns its durable outcome;
