@@ -113,26 +113,24 @@ extern "C" fn observed_store() -> &'static Door {
 }
 #[test]
 fn the_store_host_lends_nothing_and_hands_the_settings_as_resolved() {
-    use busbar_contract::abi::mechanism::call::{Blob, Outcome, BLOB_JSON};
-    let plugin = load(observed_store);
+    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let plugin = load_linked::<Store>(
+        &LinkedRow::of(observed_store).expect("observed actual Store descriptor"),
+        Bind {
+            instance: Arc::from("observed-store-open"),
+            max_inflight_cap: 8,
+            sink: Arc::new(NoSink),
+            dispatcher: dispatcher.adopter(),
+            conns: ConnTable::NoNeeds,
+        },
+    )
+    .expect("actual Store operation table loads");
     let settings = actual_store::settings();
-    let mut frame = crate::dispatch::lifecycle::open_frame(Blob {
-        ptr: settings.as_ptr(),
-        len: settings.len(),
-        fmt: BLOB_JSON,
-        flags: 0,
-    });
-    assert_eq!(
-        plugin
-            .call(
-                busbar_contract::abi::mechanism::lifecycle::slot::OPEN,
-                &mut frame
-            )
-            .outcome,
-        Outcome::Ready
-    );
+    let opened =
+        crate::store_v3::LoadedStore::open(plugin, dispatcher, &settings, actual_store::mint)
+            .expect("the production Store host opens its actual SQLite database");
     assert_eq!(*OPENED.lock().unwrap(), Some((settings, 0)));
-    crate::dispatch::lifecycle::close(&plugin);
+    drop(opened);
 }
 
 extern "C" fn referencing() -> &'static Door {
