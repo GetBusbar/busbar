@@ -1144,6 +1144,21 @@ async fn drive_keys_error_surface() {
 
 #[tokio::test]
 async fn admin_error_surface_witnesses_every_declared_response() {
+    if std::env::var_os("BUSBAR_ADMIN_ERROR_UNSUPERVISED_PROCESS").is_none() {
+        let current = std::thread::current();
+        let status = std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .args(["--exact", current.name().expect("test name"), "--nocapture"])
+            .env("BUSBAR_ADMIN_ERROR_UNSUPERVISED_PROCESS", "1")
+            .env_remove("INVOCATION_ID")
+            .env_remove("KUBERNETES_SERVICE_HOST")
+            .status()
+            .expect("run the restart assertions in an unsupervised process");
+        assert!(
+            status.success(),
+            "unsupervised restart assertions failed: {status}"
+        );
+        return;
+    }
     drive_admin_error_surface().await;
 }
 
@@ -1911,12 +1926,7 @@ async fn drive_admin_error_surface() {
                 req = req.header("content-type", "application/json").body(*b);
             }
 
-            let resp = if *label == "restart_no_supervisor" {
-                busbar_core_admin_testkit::with_forced_unsupervised(|| req.send()).await
-            } else {
-                req.send().await
-            }
-            .unwrap();
+            let resp = req.send().await.unwrap();
             let status = resp.status().as_u16();
             let parsed: serde_json::Value = resp.json().await.unwrap();
             assert_eq!(
@@ -2143,6 +2153,21 @@ async fn drive_plugin_inspect_errors() {
 
 #[tokio::test]
 async fn every_admin_error_surface_answers_its_declared_status() {
+    if std::env::var_os("BUSBAR_ADMIN_ERROR_UNSUPERVISED_PROCESS").is_none() {
+        let current = std::thread::current();
+        let status = std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .args(["--exact", current.name().expect("test name"), "--nocapture"])
+            .env("BUSBAR_ADMIN_ERROR_UNSUPERVISED_PROCESS", "1")
+            .env_remove("INVOCATION_ID")
+            .env_remove("KUBERNETES_SERVICE_HOST")
+            .status()
+            .expect("run the restart assertions in an unsupervised process");
+        assert!(
+            status.success(),
+            "unsupervised restart assertions failed: {status}"
+        );
+        return;
+    }
     drive_admin_error_surface().await;
     drive_keys_error_surface().await;
     drive_plugin_rollback_errors().await;

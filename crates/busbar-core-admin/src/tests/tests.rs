@@ -9298,6 +9298,21 @@ fn test_config_settings_scope_matrix() {
 
 #[tokio::test]
 async fn test_admin_v1_restart_refuses_when_it_cannot_restart() {
+    if std::env::var_os("BUSBAR_ADMIN_RESTART_UNSUPERVISED_PROCESS").is_none() {
+        let current = std::thread::current();
+        let status = std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .args(["--exact", current.name().expect("test name"), "--nocapture"])
+            .env("BUSBAR_ADMIN_RESTART_UNSUPERVISED_PROCESS", "1")
+            .env_remove("INVOCATION_ID")
+            .env_remove("KUBERNETES_SERVICE_HOST")
+            .status()
+            .expect("run the restart assertions in an unsupervised process");
+        assert!(
+            status.success(),
+            "unsupervised restart assertions failed: {status}"
+        );
+        return;
+    }
     busbar_kernel_testkit::test_support::metrics::init();
 
     let baseline_seq = busbar_kernel::audit::auditlog::AUDIT_LOG
@@ -9324,9 +9339,7 @@ async fn test_admin_v1_restart_refuses_when_it_cannot_restart() {
         "unknown field must not restart"
     );
 
-    let resp = crate::restart_fixture::with_forced_unsupervised(|| admin(client.post(&url)).send())
-        .await
-        .unwrap();
+    let resp = admin(client.post(&url)).send().await.unwrap();
     assert_eq!(
         resp.status().as_u16(),
         409,
