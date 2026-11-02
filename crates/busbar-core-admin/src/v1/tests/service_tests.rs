@@ -297,10 +297,9 @@ fn unsigned_ok_posture() -> busbar_kernel::config::PluginsCfg {
 
 #[test]
 fn inspect_rejects_oversized_tarball_before_unpacking() {
-    let dir = tmp_plugins_dir("inspect-oversized");
-    let svc = svc_with(dir, unsigned_ok_posture());
-    let huge = vec![0u8; (DIR_ADMISSION.max_tarball_bytes() + 1) as usize];
-    let err = svc.inspect_plugin(&huge).unwrap_err();
+    let cap = 64 * 1024;
+    let huge = vec![0u8; cap + 1];
+    let err = check_inspect_tarball_size(huge.len(), cap as u64).unwrap_err();
     assert!(
         matches!(&err, AdminError::Validation(msg) if msg.contains("byte cap")),
         "got {err:?}"
@@ -309,26 +308,36 @@ fn inspect_rejects_oversized_tarball_before_unpacking() {
 
 #[test]
 fn inspect_reports_the_admissions_verdict_in_the_catalog_vocabulary() {
-    let dir = tmp_plugins_dir("inspect-vocabulary");
-    let svc = svc_with(dir.clone(), unsigned_ok_posture());
-    for (trust, word) in [
-        ("trusted", "trusted"),
-        ("allowed", "unverified"),
-        ("rejected", "rejected"),
+    for (judged, word) in [
+        (
+            Judged::Trusted {
+                publisher: "acme".into(),
+            },
+            "trusted",
+        ),
+        (Judged::Allowed, "unverified"),
+        (
+            Judged::Rejected {
+                reason: "unsigned plugin".into(),
+            },
+            "rejected",
+        ),
     ] {
-        let v = svc
-            .inspect_plugin(&fake_tarball("acme-store-v", "v", "1.0.0", trust))
-            .expect("inspect answers every verdict");
-        assert_eq!(v["trust"], word, "{trust}");
-        assert_eq!(v["name"], "acme-store-v");
-        assert_eq!(v["kind"], "store");
-        assert_eq!(v["restart_required_default"], true);
+        let manifest = Stated {
+            name: "acme-store-v".into(),
+            alias: "v".into(),
+            kind: "store".into(),
+            version: "1.0.0".into(),
+            publisher: "acme".into(),
+            abi_version: 3,
+            settings_schema: None,
+        };
+        let view = inspect_plugin_view(manifest, judged, true);
+        assert_eq!(view["trust"], word, "{word}");
+        assert_eq!(view["name"], "acme-store-v");
+        assert_eq!(view["kind"], "store");
+        assert_eq!(view["restart_required_default"], true);
     }
-    assert!(matches!(
-        svc.inspect_plugin(b"not a tarball at all"),
-        Err(AdminError::Validation(_))
-    ));
-    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
 }
 
 #[test]

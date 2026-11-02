@@ -822,6 +822,54 @@ fn manifest_schema_url_and_error(
     }
 }
 
+fn check_inspect_tarball_size(size: usize, cap: u64) -> Result<(), AdminError> {
+    if size as u64 > cap {
+        return Err(AdminError::Validation(format!(
+            "decoded tarball is {} bytes, exceeding the {cap}-byte cap",
+            size
+        )));
+    }
+    Ok(())
+}
+
+fn inspect_plugin_view(
+    manifest: busbar_kernel::admission::Stated,
+    judged: busbar_kernel::admission::Judged,
+    restart_required_default: bool,
+) -> serde_json::Value {
+    use busbar_kernel::admission::Judged;
+    let trust = match judged {
+        Judged::Trusted { .. } => "trusted",
+        Judged::Allowed => "unverified",
+        Judged::Rejected { .. } => "rejected",
+    };
+
+    let (schema, schema_error) = match manifest.settings_schema.as_deref() {
+        None => (None, None),
+        Some(s) => match schema_json_within_bounds(s) {
+            Err(reason) => (None, Some(reason)),
+            Ok(()) => match serde_json::from_str::<serde_json::Value>(s) {
+                Ok(v) => (Some(v), None),
+                Err(e) => (
+                    None,
+                    Some(format!("manifest settings_schema is not valid JSON: {e}")),
+                ),
+            },
+        },
+    };
+
+    serde_json::json!({
+        "name": manifest.name,
+        "version": manifest.version,
+        "kind": manifest.kind,
+        "schema": schema,
+        "schema_error": schema_error,
+        "trust": trust,
+        "source": "manifest",
+        "restart_required_default": restart_required_default,
+    })
+}
+
 pub(crate) struct AdminService {
     app: Arc<App>,
 

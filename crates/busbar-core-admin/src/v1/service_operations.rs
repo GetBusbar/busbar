@@ -804,46 +804,17 @@ impl AdminService {
     pub(crate) fn inspect_plugin(&self, tarball: &[u8]) -> Result<serde_json::Value, AdminError> {
         let admission = admission(&self.app).map_err(AdminError::Validation)?;
         let cap = admission.max_tarball_bytes();
-        if tarball.len() as u64 > cap {
-            return Err(AdminError::Validation(format!(
-                "decoded tarball is {} bytes, exceeding the {cap}-byte cap",
-                tarball.len()
-            )));
-        }
+        check_inspect_tarball_size(tarball.len(), cap)?;
 
         let (manifest, judged) = admission
             .inspect(tarball, &self.app.plugins_cfg)
             .map_err(refused)?;
-        let trust = match judged {
-            Judged::Trusted { .. } => "trusted",
-            Judged::Allowed => "unverified",
-            Judged::Rejected { .. } => "rejected",
-        };
-
-        let (schema, schema_error) = match manifest.settings_schema.as_deref() {
-            None => (None, None),
-            Some(s) => match schema_json_within_bounds(s) {
-                Err(reason) => (None, Some(reason)),
-                Ok(()) => match serde_json::from_str::<serde_json::Value>(s) {
-                    Ok(v) => (Some(v), None),
-                    Err(e) => (
-                        None,
-                        Some(format!("manifest settings_schema is not valid JSON: {e}")),
-                    ),
-                },
-            },
-        };
-
-        Ok(serde_json::json!({
-            "name": manifest.name,
-            "version": manifest.version,
-            "kind": manifest.kind,
-            "schema": schema,
-            "schema_error": schema_error,
-            "trust": trust,
-            "source": "manifest",
-            "restart_required_default": admission.restart_default(&manifest.kind),
-        }))
+        let restart_required_default = admission.restart_default(&manifest.kind);
+        Ok(inspect_plugin_view(
+            manifest,
+            judged,
+            restart_required_default,
+        ))
     }
 
     pub(crate) fn remove_store_plugin(
