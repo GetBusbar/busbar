@@ -690,12 +690,11 @@ pub(crate) fn build_without_group(
     Ok(next)
 }
 
-pub(crate) fn build_with_registry(
-    current: &App,
-    registry: std::collections::HashMap<String, HookCfg>,
-    global_hooks: Vec<String>,
-) -> Result<App, AdminError> {
-    for (name, cfg) in &registry {
+fn validate_hook_registry(
+    registry: &std::collections::HashMap<String, HookCfg>,
+    global_hooks: &[String],
+) -> Result<(), AdminError> {
+    for (name, cfg) in registry {
         if cfg.plugin.trim().is_empty() {
             return Err(AdminError::Validation(format!(
                 "hook `{name}` must name a `kind: hook` plugin via `module:`"
@@ -718,13 +717,22 @@ pub(crate) fn build_with_registry(
             defaults.join(", ")
         )));
     }
-    for g in &global_hooks {
+    for g in global_hooks {
         if !registry.contains_key(g) {
             return Err(AdminError::Validation(format!(
                 "snapshot wires unknown global hook `{g}`"
             )));
         }
     }
+    Ok(())
+}
+
+pub(crate) fn build_with_registry(
+    current: &App,
+    registry: std::collections::HashMap<String, HookCfg>,
+    global_hooks: Vec<String>,
+) -> Result<App, AdminError> {
+    validate_hook_registry(&registry, &global_hooks)?;
     let mut next = current.clone();
     next.config_version = current.config_version.wrapping_add(1);
     next.hook_registry = registry;

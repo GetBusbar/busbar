@@ -1425,15 +1425,12 @@ async fn probe_transport_distinguishes_wrong_kind_from_unresolved() {
 
 #[test]
 fn build_with_registry_rejects_more_than_one_default_but_allows_exactly_one() {
-    let env =
-        busbar_kernel_testkit::test_support::test_hook_env(&["test-hook"], Default::default());
-    let app = crate::new_test_app().hook_env(env).build();
     let mut one_default = hook(HookKind::Tap, false);
     one_default.default = true;
     let mut registry = HashMap::new();
     registry.insert("a".to_string(), one_default.clone());
     assert!(
-        build_with_registry(&app, registry.clone(), vec![]).is_ok(),
+        validate_hook_registry(&registry, &[]).is_ok(),
         "exactly one default: true hook must be accepted"
     );
 
@@ -1441,26 +1438,23 @@ fn build_with_registry_rejects_more_than_one_default_but_allows_exactly_one() {
     second_default.default = true;
     registry.insert("b".to_string(), second_default);
     assert!(
-        build_with_registry(&app, registry, vec![]).is_err(),
+        validate_hook_registry(&registry, &[]).is_err(),
         "more than one default: true hook must be rejected"
     );
 }
 
 #[test]
 fn build_with_registry_rejects_a_dangling_global_hook_reference() {
-    let env =
-        busbar_kernel_testkit::test_support::test_hook_env(&["test-hook"], Default::default());
-    let app = crate::new_test_app().hook_env(env).build();
     let mut registry = HashMap::new();
     registry.insert("logger".to_string(), hook(HookKind::Tap, true));
 
     assert!(
-        build_with_registry(&app, registry.clone(), vec!["logger".to_string()]).is_ok(),
+        validate_hook_registry(&registry, &["logger".to_string()]).is_ok(),
         "a global_hooks entry that IS in the registry must be accepted"
     );
 
     assert!(
-        build_with_registry(&app, registry, vec!["ghost".to_string()]).is_err(),
+        validate_hook_registry(&registry, &["ghost".to_string()]).is_err(),
         "a global_hooks entry naming an unregistered hook must be rejected"
     );
 }
