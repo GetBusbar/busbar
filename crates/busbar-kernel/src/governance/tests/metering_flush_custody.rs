@@ -1,5 +1,5 @@
 use super::*;
-use busbar_contract::abi::{sdk::store::SyncStore, store::OpId};
+use busbar_contract::abi::store::OpId;
 use std::collections::VecDeque;
 use std::sync::{atomic::AtomicUsize, Barrier, Mutex};
 
@@ -43,8 +43,7 @@ impl UncertainStore {
         if matches!(reply, Some(Reply::Unknown)) {
             return Err(RecordStoreError("still unknown".into()));
         }
-        SyncStore::add_metering_batch(&self.inner, op, deltas)
-            .map_err(|e| RecordStoreError(format!("{e:?}")))?;
+        RecordStore::add_metering_batch_deduped(&*self.inner, op, deltas)?;
         match reply {
             Some(Reply::Lost) => Err(RecordStoreError("applied, acknowledgement lost".into())),
             Some(Reply::Unwind) => panic!("applied, caller unwound before acknowledgement"),
