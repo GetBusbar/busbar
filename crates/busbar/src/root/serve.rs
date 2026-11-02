@@ -4378,6 +4378,7 @@ impl DataRoutes {
         let head: Vec<(Vec<u8>, Vec<u8>)> = req
             .headers
             .iter()
+            .filter(|(n, _)| !NEVER_KEPT.contains(&n.as_str()))
             .map(|(n, v)| (n.as_str().as_bytes().to_vec(), v.as_bytes().to_vec()))
             .collect();
         let rendered = self.served.planes[plane].driver.catalog_unitless(
@@ -4524,11 +4525,15 @@ impl DataRoutes {
                     self.post.stopped(unit, reason);
                     None
                 }
-                Ok(()) => attach
-                    .admitted
-                    .take()
-                    .is_none_or(|admitted| admitted(unit.get()).is_ok())
-                    .then_some((route, destinations)),
+                Ok(()) => match attach.admitted.take().map(|admitted| admitted(unit.get())) {
+                    Some(Err(reason)) => {
+                        tracing::warn!(plane = %served.instance, unit = unit.get(), error = ?reason,
+                            "session carrier could not attach to its admitted unit");
+                        self.post.stopped(unit, ReasonCode::HandoffMismatch);
+                        None
+                    }
+                    None | Some(Ok(())) => Some((route, destinations)),
+                },
             },
             SessionOpen::Refused => None,
         };
@@ -4927,7 +4932,7 @@ impl DataRoutes {
         let response = reply.answer(Box::pin(unit)).await;
         let (parts, body) = response.into_parts();
         let Ok(body) = axum::body::to_bytes(body, NEST_REPLY_MAX).await else {
-            return NestReply::Unserved(NEST_UNREAD);
+            return NestReply::Failed(NEST_UNREAD);
         };
         NestReply::Answered {
             status: u32::from(parts.status.as_u16()),
