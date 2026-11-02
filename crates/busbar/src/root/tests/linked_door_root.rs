@@ -11,14 +11,14 @@ use busbar_test_kit::root_door_fixtures::{layered, misnamed};
 
 #[test]
 fn a_door_root_row_links_with_the_key_layers_and_session_its_statement_states() {
-    let row = linked_transport!(busbar_transport_tcp::door::door);
+    let row = linked_transport!(busbar_transport_tcp::door);
     assert_eq!((row.key)(), "tcp", "the key is the door's own claim");
     assert!(
         (row.composes_over)().is_empty(),
         "the layers are the tail's: none"
     );
     assert_eq!(
-        row_facts(busbar_transport_tcp::door::door),
+        row_facts(busbar_transport_tcp::door),
         RowFacts {
             key: "tcp",
             composes_over: Vec::new(),

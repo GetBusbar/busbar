@@ -1422,7 +1422,7 @@ async fn the_data_listener_is_served_through_its_framers_accept_side() {
 
 #[test]
 fn a_framer_that_does_not_accept_is_not_the_data_listeners() {
-    let carrier = actual_transport(busbar_transport_tcp::door::door);
+    let carrier = actual_transport(busbar_transport_tcp::door);
     assert!(
         !carrier.accepts(),
         "the actual TCP carrier has no accept framer"
