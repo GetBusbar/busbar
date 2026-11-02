@@ -117,7 +117,7 @@ impl busbar_contract::auth_calls::AuthAxis for Around {
     ) -> Result<std::sync::Arc<dyn busbar_contract::auth_calls::AuthCalls>, String> {
         match open(module) {
             Some(m) => Ok(std::sync::Arc::new(
-                crate::auth::stand_in::InProcessAuth::new(m),
+                crate::test_support::auth_stand_in::InProcessAuth::new(m),
             )),
             None => self.0.open(module, label, settings),
         }

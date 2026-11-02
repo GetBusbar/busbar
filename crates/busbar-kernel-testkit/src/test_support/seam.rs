@@ -3,7 +3,7 @@
 
 //! THE TEST-APP SEAM — the object-safe doorway onto the engine's OWN test fixture, so a caller
 //! builds/drives the test App without naming `busbar_kernel::state::App` or
-//! `busbar_kernel::test_support::TestApp` concretely.
+//! `crate::test_support::TestApp` concretely.
 //!
 //! IT IS NOT A "TESTKIT". This module used to live at `busbar_kernel::testkit` — a name that claimed
 //! the kernel ships a test product FOR a plugin. 1.6.0 Locked Decision #33 says that thing does not

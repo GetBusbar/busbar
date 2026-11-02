@@ -6,7 +6,7 @@
 //! l.179-181: "Kernel tests use kind-neutral doubles ... The cleanliness crates (§8) obey the same
 //! rule").
 //!
-//! It states itself under the stand-in operator words (`busbar_kernel_identity::operator::STAND_IN`)
+//! It states itself under the stand-in operator words (`busbar_kernel_identity::operator::OperatorWords { provider: "test-operator-double", principal_id: "admin" }`)
 //! and answers the operator credential's contract, nothing more: opened with the configured token's
 //! SHA-256 digest (64 hex characters, as the operator `token:` resolves), it identifies the
 //! operator principal when a bearer or an `x-admin-token` line hashes to that digest, refuses a
@@ -37,7 +37,10 @@ use busbar_contract::redacted::{constant_time_eq, sha256_hex};
 
 /// The stand-in operator words the double answers to.
 const WORDS: busbar_kernel_identity::operator::OperatorWords =
-    busbar_kernel_identity::operator::STAND_IN;
+    busbar_kernel_identity::operator::OperatorWords {
+        provider: "test-operator-double",
+        principal_id: "admin",
+    };
 
 /// The bearer carrier.
 const AUTHORIZATION: &str = "authorization";

@@ -42,3 +42,6 @@ impl Drop for InstallGuard {
         }
     }
 }
+
+/// Serialize tests that temporarily install process-wide limits.
+pub static LIMITS_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());

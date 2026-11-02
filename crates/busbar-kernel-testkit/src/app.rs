@@ -35,7 +35,7 @@ pub fn build_once_under(
     // 2 KiB cap and reads it live for seconds) and swaps the value it is asserting on. Spun on
     // `try_lock`, not `blocking_lock`, because callers run inside a tokio runtime as often as not.
     let _limits_lock = loop {
-        if let Ok(guard) = busbar_kernel::config::limits::LIMITS_TEST_LOCK.try_lock() {
+        if let Ok(guard) = limits_lock().try_lock() {
             break guard;
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
@@ -71,4 +71,15 @@ pub fn from_cfg(cfg: busbar_kernel::config::RootCfg) -> std::sync::Arc<busbar_ke
     std::sync::Arc::new(
         build_once(cfg, None).unwrap_or_else(|e| panic!("the fixture's configuration builds: {e}")),
     )
+}
+
+fn limits_lock() -> &'static tokio::sync::Mutex<()> {
+    #[cfg(test)]
+    {
+        &busbar_kernel::config::limits::LIMITS_TEST_LOCK
+    }
+    #[cfg(not(test))]
+    {
+        &crate::limits::LIMITS_TEST_LOCK
+    }
 }

@@ -30,7 +30,7 @@
 //! them back, and a double that claimed to keep what it does not would be the defect it exists to
 //! catch.
 
-use crate::governance::MemoryStore;
+use crate::test_support::store_double::MemoryStore;
 use busbar_contract::records::{
     MeteringDelta, MeteringRow, PlaneRecord, PlaneRecordRef, PlaneSelector, RecordStore,
     RecordStoreError, RecordStoreResult, Retention, UsageLedger, VirtualKey,

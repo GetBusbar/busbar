@@ -1124,7 +1124,7 @@ pub fn snapshot() -> Option<Vec<Family>> {
 /// ([`crate::test_support::export_axis::lines`]), so a test asserts on observations by line;
 /// empty before the recorder is installed. Never served — what an operator scrapes is the export
 /// plugin's rendering.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub fn render() -> String {
     crate::test_support::export_axis::lines(&snapshot().unwrap_or_default())
 }

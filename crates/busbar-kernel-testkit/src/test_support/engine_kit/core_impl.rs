@@ -2,11 +2,11 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE ENGINE'S IMPLEMENTATION of the neutral engine test-kit seam
-//! (`busbar_kernel::test_support::engine_kit`): every verb is a thin delegate to the fixture or
+//! (`crate::test_support::engine_kit`): every verb is a thin delegate to the fixture or
 //! process-wide service a plane's tests used to name directly (`TestApp`, `GovState`, `metrics::init`,
 //! the call log, the audit ring, the admin contract table, the store-plugin fixture, `build_router`,
 //! `plane_host::engine_host`, `AppHandle`). A plane's test tree binds [`CORE_ENGINE_KIT`] in one
-//! function and reaches all of it through `busbar_kernel::test_support::engine_kit::EngineTestKit` —
+//! function and reaches all of it through `crate::test_support::engine_kit::EngineTestKit` —
 //! the plane names this crate in exactly that one binding line and nowhere else.
 
 use super::{
@@ -62,7 +62,7 @@ impl EngineTestKit for CoreEngineKit {
     }
 
     fn scratch_store(&self) -> Arc<dyn RecordStore> {
-        Arc::new(crate::governance::MemoryStore::new())
+        Arc::new(crate::test_support::store_double::MemoryStore::new())
     }
 
     fn cost_flat(&self, price_per_request_cents: i64) -> Arc<dyn CostKit> {

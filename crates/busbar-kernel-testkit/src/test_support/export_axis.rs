@@ -432,3 +432,8 @@ pub(crate) fn lines_scrape_routes() -> Vec<crate::plugin_routes::RouteDecl> {
         })
         .collect()
 }
+
+/// The recorder's snapshot as fixture exposition lines, without an export plugin.
+pub fn render() -> String {
+    lines(&busbar_kernel::snapshot::snapshot().unwrap_or_default())
+}

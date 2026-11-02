@@ -10,7 +10,7 @@
 //! doorways a plane's TEST-KIT (its fluent builder extension) drives while the App is being built and
 //! the doorway a test generic over `A: BuiltAppSeam` drives on the App that came out. They still
 //! leave the plane's tests CONSTRUCTING the fixture by its core name
-//! (`busbar_kernel::test_support::TestApp::new()`) and reaching the engine's process-wide services
+//! (`crate::test_support::TestApp::new()`) and reaching the engine's process-wide services
 //! (`metrics::init`, the call log, the audit ring, the governance registry, the admin scope table)
 //! by theirs. This kit closes that gap: every one of those is a method on a trait object the engine
 //! PROVIDES and the plane only CONSUMES.

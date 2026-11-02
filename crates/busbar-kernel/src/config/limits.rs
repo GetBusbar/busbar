@@ -600,8 +600,8 @@ pub fn publish(resolved: &LimitsResolved) {
 /// `await_holding_lock`, `-D warnings` here), and it does not poison, so one failing test does not
 /// cascade into every other test that wants the lock. Synchronous tests take it with
 /// `blocking_lock()`, which is legal precisely because a plain `#[test]` fn has no runtime.
-#[cfg(any(test, feature = "test-support"))]
-pub static LIMITS_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+#[cfg(test)]
+pub use install_guard::LIMITS_TEST_LOCK;
 
 /// Install (or RE-install) the resolved limits process-wide, unconditionally and with no rollback.
 ///
@@ -627,10 +627,10 @@ pub fn swap_installed(slot: Option<LimitsResolved>) -> Option<LimitsResolved> {
 }
 
 /// The kernel testkit's guard, mounted for the kernel's own test fixtures.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 #[path = "../../../busbar-kernel-testkit/src/limits.rs"]
 mod install_guard;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub use install_guard::InstallGuard;
 
 /// Mirror the egress translate-body cap AND the hook content ceiling

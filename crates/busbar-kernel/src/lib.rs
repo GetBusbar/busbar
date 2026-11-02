@@ -294,18 +294,14 @@ pub mod telemetry;
 // Debug-only, feature-gated per-method micro-timing (`timeit!`), folded in from the former
 // `busbar-timing` crate (OWNER Q70). Default OFF: every entry point is a zero-sized no-op.
 pub mod timing;
-// `testkit` IS GONE (1.6.0 Locked Decision #33: "there is NO testkit ... the kernel tests no
-// plugin"). What it held has gone two ways: the three concrete doubles a PLUGIN drove (the in-memory
-// engine-host, the loopback HTTP provider, the metrics capture) moved DOWN to the plane crates that
-// drive them, because a plugin tests itself; what was left is the kernel's own fixture seen through
-// its own object-safe seam, and that is not a kit the kernel ships — it is `test_support`, below,
-// where it now lives (`test_support::seam`, `test_support::engine_kit`).
-#[cfg(any(test, feature = "test-support"))]
-pub mod test_support;
-/// The kernel's neutral test seam: a test-support consumer that links no plane installs it, and the
-/// kernel's own test binary reads its protocol set.
-#[cfg(any(test, feature = "test-support"))]
-pub mod testkit;
+// Fixture implementations belong to the dev-only kernel testkit. Unit tests mount the
+// same sources privately for their access to the kernel's own internals; features expose no kit.
+#[cfg(test)]
+#[path = "../../busbar-kernel-testkit/src/test_support/mod.rs"]
+mod test_support;
+#[cfg(test)]
+#[path = "../../busbar-kernel-testkit/src/testkit.rs"]
+mod testkit;
 pub mod topology;
 /// The channel axis (`Transport`), the contract's.
 pub use busbar_contract::transport::transport;
