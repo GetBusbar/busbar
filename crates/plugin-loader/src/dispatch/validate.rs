@@ -140,3 +140,7 @@ fn envelope(e: &Envelope) -> Result<(), Violation> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "validate_tests.rs"]
+mod tests;
