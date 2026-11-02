@@ -954,7 +954,8 @@ impl GovState {
             ));
         }
         self.authorize_correction_parent(pending)?;
-        if let Some(decision) = *pending.settled.lock().unwrap_or_else(|p| p.into_inner()) {
+        let settled = *pending.settled.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(decision) = settled {
             if decision == Decision::ConditionConflict && self.recovery_enabled() {
                 let event = self
                     .recovery_event(pending.request.op_id.0)
