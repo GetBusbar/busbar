@@ -771,3 +771,35 @@ fn selection_preserves_fresh_proof_and_recent_probe_cadence() {
     assert!(!std::iter::from_fn(|| t.s.poll_wire()).any(|(_, bytes)| is_probe(&bytes)));
     assert_eq!(t.s.next_consent, Some(sent + CONSENT_INTERVAL));
 }
+
+#[test]
+fn expired_cached_proof_refuses_bind_and_rebind_without_reporting_success() {
+    for rebind in [false, true] {
+        let mut t = pair(false);
+        if rebind {
+            let old = t.c_path;
+            prove_unselected(&mut t, old);
+            assert_eq!(t.s.bind_path(old, t.now), Ok(Bind::Now));
+            while t.s.poll_wire().is_some() {}
+        }
+        let path = if rebind {
+            p("203.0.113.10:50001")
+        } else {
+            t.c_path
+        };
+        prove_unselected(&mut t, path);
+        let proved = t.now;
+        let bound = t.s.bound_path();
+        t.now += CONSENT_TIMEOUT;
+        let result = if rebind {
+            t.s.rebind_path(t.c_path, path, t.now)
+        } else {
+            t.s.bind_path(path, t.now)
+        };
+        assert_eq!(result, Err(BindRefused::Failed));
+        assert_eq!(t.s.failure(), Some(&Failure::ConsentExpired));
+        assert_eq!(t.s.bound_path(), bound);
+        assert_eq!(t.s.proven.get(&path), Some(&proved));
+        assert!(t.s.poll_wire().is_none());
+    }
+}
