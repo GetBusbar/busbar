@@ -55,6 +55,64 @@ fn render_metrics() -> String {
     .expect("the actual exporter emits UTF-8")
 }
 
+fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteTable> {
+    use crate::root::loader::dispatch::{
+        kinds::export::{Export, ExportFacts},
+        load_dropped, rendering_of_library, Bind, ConnTable, DispatchConfig, Dispatcher, NoSink,
+    };
+    let path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_TEST_PROMETHEUS_CDYLIB")
+            .expect("BUSBAR_TEST_PROMETHEUS_CDYLIB names the actual built metrics exporter"),
+    );
+    let statement = rendering_of_library(&path)
+        .expect("the actual exporter statement reads")
+        .expect("the actual exporter carries its statement");
+    let dispatcher = std::sync::Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let plugin = load_dropped::<Export>(
+        &path,
+        &statement,
+        Bind {
+            instance: "serve-http-metrics".into(),
+            max_inflight_cap: 64,
+            sink: std::sync::Arc::new(NoSink),
+            dispatcher: dispatcher.adopter(),
+            conns: ConnTable::NoNeeds,
+        },
+    )
+    .expect("the actual HTTP exporter loads through its memory ABI");
+    let routes = plugin
+        .context::<ExportFacts>()
+        .expect("the actual exporter declares its routes")
+        .routes
+        .clone();
+    assert!(
+        routes.iter().any(|route| route.path == "/metrics"),
+        "the actual exporter declares the scrape route"
+    );
+    let exporter = std::sync::Arc::new(
+        crate::root::loader::export_door::ExportInstance::open(plugin, dispatcher, b"{}")
+            .expect("the actual HTTP exporter opens"),
+    );
+    let dispatch = busbar_kernel::export::serve_test_sink(exporter);
+    let declarations = routes
+        .into_iter()
+        .map(|route| busbar_kernel::plugin_routes::RouteDecl {
+            owner: "serve-http-metrics".into(),
+            source_instance: "serve-http-metrics".into(),
+            dispatch_available: true,
+            kind: busbar_kernel::plugin_routes::RouteKind::Export,
+            scrape: route.path == "/metrics",
+            persistent: false,
+            route,
+            dispatch: dispatch.clone(),
+        })
+        .collect();
+    std::sync::Arc::new(
+        busbar_kernel::plugin_routes::build_route_table(declarations)
+            .expect("the actual export routes obey the product namespace rules"),
+    )
+}
+
 #[cfg(linked_driver_proofs)]
 #[derive(Clone)]
 enum ProviderReply {
@@ -1846,6 +1904,7 @@ pub(super) mod session_door {
         app.governance = Some(Arc::clone(&gov));
         app.cost = Arc::new(cost);
         app.serve_tables = tables.clone();
+        app.plugin_routes = super::metrics_routes();
         let app = std::sync::Arc::new(app);
         let _ = live_app.set(Arc::clone(&app));
 
@@ -5749,6 +5808,7 @@ async fn serve_configured(
     }
     app.governance = Some(Arc::clone(&gov));
     app.cost = Arc::new(cost);
+    app.plugin_routes = metrics_routes();
     let app = std::sync::Arc::new(app);
     let doors = door_routes(served, || CARD.pin(), &[], &[]).expect("its claims mount");
     let (router, _admin, handle) =
