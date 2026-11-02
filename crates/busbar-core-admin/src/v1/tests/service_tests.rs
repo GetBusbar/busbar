@@ -2344,11 +2344,9 @@ mod usage_as_of {
         );
     }
 
-    #[tokio::test]
-    async fn an_unknown_snapshot_key_is_refused_on_either_side_of_known_entries() {
+    #[test]
+    fn an_unknown_snapshot_key_is_refused_on_either_side_of_known_entries() {
         use busbar_kernel::cost::EntryKey;
-        let (payg, _, _) = windows();
-        let gov = gov_with_rows(&[(payg, 0)]);
         let mut history = History::new();
         for at in [100, 300] {
             history.insert(
@@ -2362,11 +2360,10 @@ mod usage_as_of {
                 },
             );
         }
-        let src = source(history);
+        let src = history;
         for at in [50, 200, 400] {
             let unknown = EntryKey::new(at, [1; 8], 0);
-            let err = read_as_of(gov.clone(), src, payg, Some(unknown))
-                .await
+            let err = validated_snapshot(Some(&src), unknown)
                 .expect_err("a snapshot key that does not exist is a refusal");
             let crate::v1::contract::AdminError::Validation(msg) = &err else {
                 panic!("expected a client-safe validation refusal, got {err:?}");
@@ -2378,17 +2375,10 @@ mod usage_as_of {
         }
     }
 
-    #[tokio::test]
-    async fn a_snapshot_of_a_history_that_does_not_exist_is_refused() {
-        let (payg, _, _) = windows();
-        let gov = gov_with_rows(&[(payg, 0)]);
-        let err = read_no_source_as_of(
-            gov,
-            payg,
-            Some(busbar_kernel::cost::EntryKey::new(0, [0; 8], 0)),
-        )
-        .await
-        .expect_err("there is no snapshot of a history that does not exist");
+    #[test]
+    fn a_snapshot_of_a_history_that_does_not_exist_is_refused() {
+        let err = validated_snapshot(None, busbar_kernel::cost::EntryKey::new(0, [0; 8], 0))
+            .expect_err("there is no snapshot of a history that does not exist");
         let crate::v1::contract::AdminError::Validation(msg) = &err else {
             panic!("expected a client-safe validation refusal, got {err:?}");
         };

@@ -978,29 +978,6 @@ impl AdminService {
         })
     }
 
-    fn validated_snapshot(
-        history: Option<&busbar_kernel::cost::History>,
-        key: busbar_kernel::cost::EntryKey,
-    ) -> Result<busbar_kernel::cost::EntryKey, AdminError> {
-        let history = history
-            .filter(|history| !history.is_empty())
-            .ok_or_else(|| {
-                AdminError::Validation(
-                    "as_of names a rate-card history snapshot; this node has resolved no \
-                 rate-card history to snapshot"
-                        .into(),
-                )
-            })?;
-        if history.entry(&key).is_none() {
-            return Err(AdminError::Validation(format!(
-                "as_of {} does not name a known rate-card history entry; an unknown snapshot \
-                 is refused, never interpreted as a list position",
-                key.hex()
-            )));
-        }
-        Ok(key)
-    }
-
     pub(crate) async fn get_usage(
         &self,
         window: Option<u64>,
@@ -1032,7 +1009,7 @@ impl AdminService {
 
         let snapshot = match as_of {
             None => None,
-            Some(key) => Some(Self::validated_snapshot(history.as_deref(), key)?),
+            Some(key) => Some(validated_snapshot(history.as_deref(), key)?),
         };
         let empty = || UsageView {
             window,

@@ -953,6 +953,29 @@ fn catalog_rows_of_kind(
     rows.into_iter().filter(move |row| row.r#type == kind)
 }
 
+fn validated_snapshot(
+    history: Option<&busbar_kernel::cost::History>,
+    key: busbar_kernel::cost::EntryKey,
+) -> Result<busbar_kernel::cost::EntryKey, AdminError> {
+    let history = history
+        .filter(|history| !history.is_empty())
+        .ok_or_else(|| {
+            AdminError::Validation(
+                "as_of names a rate-card history snapshot; this node has resolved no \
+             rate-card history to snapshot"
+                    .into(),
+            )
+        })?;
+    if history.entry(&key).is_none() {
+        return Err(AdminError::Validation(format!(
+            "as_of {} does not name a known rate-card history entry; an unknown snapshot \
+             is refused, never interpreted as a list position",
+            key.hex()
+        )));
+    }
+    Ok(key)
+}
+
 pub(crate) struct AdminService {
     app: Arc<App>,
 
