@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use crate::test_support::{LaneSpec, TestApp};
 
 fn metric_sum(name: &str, labels: &[(&str, &str)]) -> f64 {
     crate::snapshot::snapshot()
@@ -27,16 +26,65 @@ fn metric_sum(name: &str, labels: &[(&str, &str)]) -> f64 {
         .sum()
 }
 
+static TELEMETRY_PLANE: crate::plane_driver::registry::PlaneDecl =
+    crate::plane_driver::registry::PlaneDecl {
+        declaration: crate::plane_driver::registry::PlaneDeclaration {
+            key: "telemetry-slots-data",
+            fallback: true,
+            config_section: "streams",
+            scope_kinds: &[],
+            subject_noun: "stream",
+            admin_noun: "stream",
+            audit_kind: "stream",
+            card_signing_domain: None,
+            card_kid_prefix: None,
+            owned_config_sections: &[],
+            billable_classes: &[],
+            fee_units: &[],
+            metric_families: &[],
+            record_kinds: &[],
+            required_config_sections: &[],
+            trust_keys: &[],
+            served_op_classes: &[],
+            caller_credential_refusal: None,
+        },
+        wire_format_names: |_| &["telemetry-a", "telemetry-b"],
+        provider_dialects: |_| &[],
+        claims: |_| Vec::new(),
+        admission: |_| None,
+        build: |_, _| None,
+        routes: None,
+        admin_routes: None,
+        openapi: None,
+        hydrate: None,
+        start: None,
+        config_validate: None,
+        named_def_list: None,
+        named_def_get: None,
+        registry_contains: None,
+        reresolve_gates: None,
+        openapi_schemas: None,
+        on_swap: None,
+        parse_section: None,
+        parse_endpoint: None,
+        lower_endpoint: None,
+        build_runtime: None,
+        viewer: None,
+        retain_verify_gates: None,
+        default_section: None,
+        resolve_provider: None,
+        door: None,
+    };
+
 fn model_plane_key() -> &'static str {
-    crate::test_support::register_neutral_test_plane();
-    crate::plane_driver::dispatch::fallback_key()
+    TELEMETRY_PLANE.key
 }
 
 fn shipped_protocols() -> (&'static str, &'static str) {
-    let known = crate::ingress::protocols::known_protocols();
+    let known = declared_dialects(model_plane_key());
     assert!(
         known.len() >= 2,
-        "the test binary's protocol registry must ship at least two codecs; got {known:?}"
+        "the actual slot metadata must declare at least two dialects; got {known:?}"
     );
     (known[0], known[1])
 }
@@ -111,19 +159,42 @@ fn test_reregistration_same_labels_resolves_same_slot() {
 
 #[test]
 fn test_config_reapply_accumulates_across_generations() {
+    const CHILD: &str = "BUSBAR_TELEMETRY_OWNER_TEST_CONFIG_REAPPLY_ACCUMULATES_ACROSS_GENERATIONS";
+    if std::env::var_os(CHILD).is_none() {
+        let full = concat!(
+            module_path!(),
+            "::test_config_reapply_accumulates_across_generations"
+        );
+        let (_, name) = full.split_once("::").expect("the crate prefix");
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args(["--exact", name, "--nocapture"])
+            .env(CHILD, "1")
+            .output()
+            .expect("run the owner metadata case in a fresh process");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    crate::plane_driver::registry::publish_planes(&[&TELEMETRY_PLANE]);
     crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let build = || {
-        TestApp::new()
-            .lane(LaneSpec::new("tel-gen-model", lane_protocol(), "http://m"))
-            .pool("tel-gen-pool", &[(0, 1)])
-            .build()
+        AppSlots::build(
+            &[("tel-gen-pool", vec![0])],
+            &[("tel-gen-model", 0)],
+            |index| (index == 0).then_some("tel-gen-model"),
+            model_plane_key(),
+        )
     };
     let gen1 = build();
     let gen2 = build();
 
     let labels = [("pool", "tel-gen-pool"), ("outcome", "ok")];
     let before = metric_sum(crate::snapshot::REQUESTS_TOTAL, &labels);
-    request_finished(
+    request_finished_in(
         &gen1,
         model_plane_key(),
         lane_protocol(),
@@ -131,7 +202,7 @@ fn test_config_reapply_accumulates_across_generations() {
         "ok",
         0.001,
     );
-    request_finished(
+    request_finished_in(
         &gen2,
         model_plane_key(),
         lane_protocol(),
@@ -149,18 +220,38 @@ fn test_config_reapply_accumulates_across_generations() {
 
 #[test]
 fn test_request_finished_renders_premigration_names_and_labels() {
+    const CHILD: &str =
+        "BUSBAR_TELEMETRY_OWNER_TEST_REQUEST_FINISHED_RENDERS_PREMIGRATION_NAMES_AND_LABELS";
+    if std::env::var_os(CHILD).is_none() {
+        let full = concat!(
+            module_path!(),
+            "::test_request_finished_renders_premigration_names_and_labels"
+        );
+        let (_, name) = full.split_once("::").expect("the crate prefix");
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args(["--exact", name, "--nocapture"])
+            .env(CHILD, "1")
+            .output()
+            .expect("run the owner metadata case in a fresh process");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    crate::plane_driver::registry::publish_planes(&[&TELEMETRY_PLANE]);
     crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let app = TestApp::new()
-        .lane(LaneSpec::new(
-            "tel-parity-model",
-            lane_protocol(),
-            "http://m",
-        ))
-        .pool("tel-parity-pool", &[(0, 1)])
-        .build();
+    let app = AppSlots::build(
+        &[("tel-parity-pool", vec![0])],
+        &[("tel-parity-model", 0)],
+        |index| (index == 0).then_some("tel-parity-model"),
+        model_plane_key(),
+    );
     let ingress = shipped_protocols().1;
 
-    request_finished(
+    request_finished_in(
         &app,
         model_plane_key(),
         ingress,
@@ -224,15 +315,40 @@ fn test_request_finished_renders_premigration_names_and_labels() {
 
 #[test]
 fn test_engine_helpers_emit_premigration_series() {
+    const CHILD: &str = "BUSBAR_TELEMETRY_OWNER_TEST_ENGINE_HELPERS_EMIT_PREMIGRATION_SERIES";
+    if std::env::var_os(CHILD).is_none() {
+        let full = concat!(
+            module_path!(),
+            "::test_engine_helpers_emit_premigration_series"
+        );
+        let (_, name) = full.split_once("::").expect("the crate prefix");
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args(["--exact", name, "--nocapture"])
+            .env(CHILD, "1")
+            .output()
+            .expect("run the owner metadata case in a fresh process");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    crate::plane_driver::registry::publish_planes(&[&TELEMETRY_PLANE]);
     crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let app = TestApp::new()
-        .lane(LaneSpec::new("tel-eng-model", lane_protocol(), "http://m"))
-        .pool("tel-eng-pool", &[(0, 1)])
-        .build();
+    let app = AppSlots::build(
+        &[("tel-eng-pool", vec![0])],
+        &[("tel-eng-model", 0)],
+        |index| (index == 0).then_some("tel-eng-model"),
+        model_plane_key(),
+    );
     let pool = [("pool", "tel-eng-pool")];
 
     let attempts0 = metric_sum(crate::snapshot::UPSTREAM_ATTEMPTS_TOTAL, &pool);
-    upstream_attempt(&app, "tel-eng-pool", 0);
+    upstream_attempt_in(&app, "tel-eng-pool", 0, || {
+        upstream_attempt_on("tel-eng-pool", "tel-eng-model")
+    });
     assert_eq!(
         (metric_sum(crate::snapshot::UPSTREAM_ATTEMPTS_TOTAL, &pool) - attempts0).round() as u64,
         1
@@ -246,11 +362,18 @@ fn test_engine_helpers_emit_premigration_series() {
             ("disposition", crate::telemetry::DISPOSITION_TRANSIENT),
         ],
     );
-    upstream_failure(
+    upstream_failure_in(
         &app,
         "tel-eng-pool",
         0,
         crate::telemetry::DISPOSITION_TRANSIENT,
+        || {
+            upstream_failure_on(
+                "tel-eng-pool",
+                "tel-eng-model",
+                crate::telemetry::DISPOSITION_TRANSIENT,
+            )
+        },
     );
     assert_eq!(
         (metric_sum(
@@ -266,7 +389,9 @@ fn test_engine_helpers_emit_premigration_series() {
     );
 
     let trips0 = metric_sum(crate::snapshot::BREAKER_TRIPS_TOTAL, &pool);
-    breaker_trip(&app, "tel-eng-pool", 0);
+    breaker_trip_in(&app, "tel-eng-pool", 0, || {
+        breaker_trip_on("tel-eng-pool", "tel-eng-model")
+    });
     assert_eq!(
         (metric_sum(crate::snapshot::BREAKER_TRIPS_TOTAL, &pool) - trips0).round() as u64,
         1
@@ -277,7 +402,7 @@ fn test_engine_helpers_emit_premigration_series() {
         ("reason", busbar_kernel_egress::upstream::ERR_NET_TIMEOUT),
     ];
     let failovers0 = metric_sum(crate::snapshot::FAILOVERS_TOTAL, &fo_labels);
-    failover(
+    failover_in(
         &app,
         "tel-eng-pool",
         busbar_kernel_egress::upstream::ERR_NET_TIMEOUT,
@@ -290,15 +415,39 @@ fn test_engine_helpers_emit_premigration_series() {
 
 #[test]
 fn test_unregistered_pool_falls_back_to_macro_emission() {
+    const CHILD: &str =
+        "BUSBAR_TELEMETRY_OWNER_TEST_UNREGISTERED_POOL_FALLS_BACK_TO_MACRO_EMISSION";
+    if std::env::var_os(CHILD).is_none() {
+        let full = concat!(
+            module_path!(),
+            "::test_unregistered_pool_falls_back_to_macro_emission"
+        );
+        let (_, name) = full.split_once("::").expect("the crate prefix");
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args(["--exact", name, "--nocapture"])
+            .env(CHILD, "1")
+            .output()
+            .expect("run the owner metadata case in a fresh process");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    crate::plane_driver::registry::publish_planes(&[&TELEMETRY_PLANE]);
     crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let app = TestApp::new()
-        .lane(LaneSpec::new("tel-fb-model", lane_protocol(), "http://m"))
-        .pool("tel-fb-pool", &[(0, 1)])
-        .build();
+    let app = AppSlots::build(
+        &[("tel-fb-pool", vec![0])],
+        &[("tel-fb-model", 0)],
+        |index| (index == 0).then_some("tel-fb-model"),
+        model_plane_key(),
+    );
 
     let labels = [("pool", "tel-fb-unregistered-pool"), ("outcome", "ok")];
     let before = metric_sum(crate::snapshot::REQUESTS_TOTAL, &labels);
-    request_finished(
+    request_finished_in(
         &app,
         model_plane_key(),
         lane_protocol(),
@@ -348,6 +497,27 @@ fn test_histogram_bank_drains_all_thread_samples() {
 
 #[test]
 fn test_translation_bank_counts_known_protocol_pair() {
+    const CHILD: &str = "BUSBAR_TELEMETRY_OWNER_TEST_TRANSLATION_BANK_COUNTS_KNOWN_PROTOCOL_PAIR";
+    if std::env::var_os(CHILD).is_none() {
+        let full = concat!(
+            module_path!(),
+            "::test_translation_bank_counts_known_protocol_pair"
+        );
+        let (_, name) = full.split_once("::").expect("the crate prefix");
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args(["--exact", name, "--nocapture"])
+            .env(CHILD, "1")
+            .output()
+            .expect("run the owner metadata case in a fresh process");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    crate::plane_driver::registry::publish_planes(&[&TELEMETRY_PLANE]);
     crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let (from, to) = shipped_protocols();
     let labels = [("from", from), ("to", to)];
@@ -683,23 +853,42 @@ fn off_metrics_releases_exited_banks_and_preserves_preinstall_counts() {
 
 #[test]
 fn test_finish_outcome_mapping_503_is_exhausted() {
+    const CHILD: &str = "BUSBAR_TELEMETRY_OWNER_TEST_FINISH_OUTCOME_MAPPING_503_IS_EXHAUSTED";
+    if std::env::var_os(CHILD).is_none() {
+        let full = concat!(
+            module_path!(),
+            "::test_finish_outcome_mapping_503_is_exhausted"
+        );
+        let (_, name) = full.split_once("::").expect("the crate prefix");
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args(["--exact", name, "--nocapture"])
+            .env(CHILD, "1")
+            .output()
+            .expect("run the owner metadata case in a fresh process");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    crate::plane_driver::registry::publish_planes(&[&TELEMETRY_PLANE]);
     crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     model_plane_key();
-    let app = TestApp::new()
-        .lane(LaneSpec::new(
-            "tel-f25-503-model",
-            lane_protocol(),
-            "http://m",
-        ))
-        .pool("tel-f25-503-pool", &[(0, 1)])
-        .build();
+    let app = AppSlots::build(
+        &[("tel-f25-503-pool", vec![0])],
+        &[("tel-f25-503-model", 0)],
+        |index| (index == 0).then_some("tel-f25-503-model"),
+        model_plane_key(),
+    );
     let ingress = shipped_protocols().1;
     let exhausted = [("pool", "tel-f25-503-pool"), ("outcome", "exhausted")];
     let error = [("pool", "tel-f25-503-pool"), ("outcome", "error")];
     let exhausted0 = metric_sum(crate::snapshot::REQUESTS_TOTAL, &exhausted);
     let error0 = metric_sum(crate::snapshot::REQUESTS_TOTAL, &error);
 
-    model_request_finished(&app, ingress, "tel-f25-503-pool", 503, 0.001);
+    model_request_finished_in(&app, ingress, "tel-f25-503-pool", 503, 0.001);
 
     assert_eq!(
         (metric_sum(crate::snapshot::REQUESTS_TOTAL, &exhausted) - exhausted0).round() as u64,
