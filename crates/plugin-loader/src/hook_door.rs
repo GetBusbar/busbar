@@ -581,7 +581,12 @@ impl Inner {
         I: InFrame,
         O: OutFrame + Copy,
     {
-        let deadline = Instant::now() + budget;
+        let deadline = Instant::now().checked_add(budget).ok_or_else(|| {
+            Answered::Broken(format!(
+                "hook '{}' call budget exceeds the clock range",
+                self.name
+            ))
+        })?;
         let deadline_ns =
             now_ns().saturating_add(u64::try_from(budget.as_nanos()).unwrap_or(u64::MAX));
         let mut lent = lent;

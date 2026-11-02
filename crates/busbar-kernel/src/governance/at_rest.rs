@@ -19,7 +19,7 @@
 //!
 //! ROTATION never breaks a credential. `credentials.at_rest.previous` opens (never seals), and a
 //! row that opens only under it, or a pre-1.6.0 `v1:plain` row, is re-sealed under `key` and
-//! written back at boot and when a reload changes the keys (`GovState::rewrap_credentials`). A
+//! written back at boot and on every committed reload that declares the keys (`GovState::rewrap_credentials`). A
 //! fleet rotates in two steps: first every node adds the new key as `previous`, then every node
 //! swaps the two; a node at either step opens what a node at the other seals.
 //!

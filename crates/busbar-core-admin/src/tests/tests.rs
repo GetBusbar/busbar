@@ -14,6 +14,9 @@ mod store_overlay_tests;
 #[path = "price_activation_tests.rs"]
 mod price_activation_tests;
 
+#[path = "config_boundary_tests.rs"]
+mod config_boundary_tests;
+
 /// The OpenAPI 3 Operation Object's status-keyed field, spelled once. It is the OpenAPI
 /// specification's own key, not a busbar or instance word.
 ///

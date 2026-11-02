@@ -437,7 +437,7 @@ pub fn load_config_from_disk_with_store(
 pub type GovCredentialRotation = Box<dyn FnOnce() + Send>;
 
 /// RE-WRAP the stored recoverable credentials under the at-rest `key` just installed (boot, or a
-/// reload that changed the keys). Never fatal: a row it does not reach still opens under the key it
+/// reload that declares the keys). Never fatal: a row it does not reach still opens under the key it
 /// was sealed under, so a store hiccup here costs a later pass, never a credential.
 fn rewrap_at_rest(gs: &governance::GovState) {
     match gs.rewrap_credentials(busbar_kernel::store::now()) {
@@ -1491,9 +1491,10 @@ pub fn build_app_from_config_with_store(
                         gs.set_signing_key(signer);
                     }
                     if let Some(keys) = at_rest {
-                        if gs.set_at_rest_keys(Some(keys)) {
-                            rewrap_at_rest(&gs);
-                        }
+                        gs.set_at_rest_keys(Some(keys));
+                        // A prior pass may have failed or lost a row claim. The same keys must
+                        // retry that debt on a committed reload, after persistence and swap.
+                        rewrap_at_rest(&gs);
                     }
                 }));
             }

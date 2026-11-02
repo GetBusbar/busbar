@@ -276,12 +276,25 @@ fn assert_interpolation_preserves_structure(
     real: &str,
     occurrences: &[Occurrence],
 ) -> Result<(), String> {
-    // If the real text doesn't even parse as YAML, that already fails safely downstream (the
-    // caller re-parses it and gets a loud, ordinary parse error) — nothing "succeeded silently",
-    // so there is nothing for this check to add. Skip rather than invent a confusing second error.
+    // A generic map or a lifted field can accept a duplicate that Value rejects. A parse error
+    // therefore cannot stand in for the structural proof: fail closed before any typed reader.
+    // Never render the expanded parser error, which may quote an interpolated secret as a key.
     let real_value: serde_yaml::Value = match serde_yaml::from_str(real) {
         Ok(v) => v,
-        Err(_) => return Ok(()),
+        Err(error) => {
+            let mut vars: Vec<&str> = occurrences.iter().map(|o| o.var_name.as_str()).collect();
+            vars.sort_unstable();
+            vars.dedup();
+            let position = error.location().map_or_else(String::new, |at| {
+                format!(" at line {} column {}", at.line(), at.column())
+            });
+            return Err(format!(
+                "could not verify that environment-variable interpolation preserves config \
+                 structure: interpolated YAML could not be parsed{position}; inspect variable(s) \
+                 {}; refusing to proceed",
+                vars.join(", ")
+            ));
+        }
     };
 
     let placeholder_text = splice_occurrences(template, occurrences, None);
@@ -2583,3 +2596,7 @@ pub enum PolicyOnError {
 /// `providers:` shapes in `config::providers` (architect ruling PROVIDERS-MOVE; home since #83a SD-8)
 /// and re-exported here at its historical `config::ProviderAuth` path.
 pub use providers::ProviderAuth;
+
+#[cfg(test)]
+#[path = "tests/config_boundary_tests.rs"]
+mod config_boundary_tests;
