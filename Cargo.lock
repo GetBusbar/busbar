@@ -370,16 +370,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "busbar-core-admin-testkit"
-version = "1.6.0"
-dependencies = [
- "busbar-core-admin",
- "busbar-kernel",
- "schemars",
- "serde_json",
-]
-
-[[package]]
 name = "busbar-core-connector"
 version = "1.6.0"
 dependencies = [
