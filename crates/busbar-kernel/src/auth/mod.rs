@@ -1270,6 +1270,16 @@ pub(crate) struct AdminCarried {
     no_verdict: bool,
 }
 
+fn unresolved_admin_module(name: &str) -> Judgement {
+    diag_error!(
+        ADMIN_MODULE_UNRESOLVED,
+        module = name,
+        "admin_auth names a module with no resolved plugin; skipping (boot resolves \
+         every non-builtin admin module, fail-closed)"
+    );
+    Judgement::of(AuthVerdict::Pass)
+}
+
 async fn run_admin_chain(
     app: &crate::state::App,
     method: &str,
@@ -1310,15 +1320,7 @@ async fn run_admin_chain(
                 external_admin_module(app, other, request, probe).await
             }
         }
-        .unwrap_or_else(|| {
-            diag_error!(
-                ADMIN_MODULE_UNRESOLVED,
-                module = name.as_str(),
-                "admin_auth names a module with no resolved plugin; skipping (boot resolves \
-                 every non-builtin admin module, fail-closed)"
-            );
-            Judgement::of(AuthVerdict::Pass)
-        });
+        .unwrap_or_else(|| unresolved_admin_module(name));
         carried.strips.extend(outcome.strips);
         if outcome.no_verdict {
             verify_without_verdict("admin", name, "no verdict");

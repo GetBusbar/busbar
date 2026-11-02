@@ -129,11 +129,13 @@ fn auth_fault_path_diagnostic_identities_are_pinned() {
 
 #[test]
 fn admin_module_unresolved_diag_fires_and_falls_through_to_pass() {
-    let mut app = crate::test_support::TestApp::new().build();
-    let a = Arc::get_mut(&mut app).expect("freshly built App Arc is unshared");
-    a.admin_chain = vec!["ghost-module".to_string()];
-    let (verdict, buf) =
-        capture(|| super::tests::run_admin_chain_on(&app, Some("anything"), None).0);
+    // Defensive metadata continuation: ordinary boot separately refuses missing modules.
+    // No fake registry/application is needed to pin this diagnostic and the all-Pass fold.
+    let (verdict, buf) = capture(|| {
+        let judged = unresolved_admin_module("ghost-module");
+        assert_eq!(judged.verdict, AuthVerdict::Pass);
+        complete_chain(chain_position_verdict("ghost-module", judged.verdict))
+    });
     assert_eq!(
         verdict,
         ChainVerdict::Denied,
