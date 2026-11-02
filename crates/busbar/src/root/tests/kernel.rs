@@ -471,7 +471,6 @@ fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_commit() {
     const BOOT_FEE: i64 = 3;
     const FIRST_FEE: i64 = 7;
     const SECOND_FEE: i64 = 11;
-    const UNUSED_PROVIDER_KEY: &str = "BUSBAR_CONFIRMED_CARD_UNUSED_PROVIDER_KEY";
     if std::env::var_os(CHILD).is_none() {
         struct Child(std::process::Child);
         impl Drop for Child {
@@ -515,10 +514,69 @@ fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_commit() {
             std::thread::park_timeout(std::time::Duration::from_millis(5));
         }
     }
-    busbar_kernel_testkit::test_support::register_neutral_test_plane();
-    busbar_kernel_testkit::test_support::metrics::init();
-    busbar_kernel_testkit::test_support::rate_holders::install_rate_apply(&CardRepricer);
-    busbar_kernel_testkit::test_support::rate_holders::install_rate_epoch(&CardRepricer);
+    let release = crate::root::test_plugins::key(0x5a);
+    std::env::set_var(
+        "BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY",
+        hex::encode(release.verifying_key().as_bytes()),
+    );
+    let library_path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
+    );
+    let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
+        .expect("the actual store statement reads")
+        .expect("the actual store exports its statement");
+    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid")
+        .name;
+    let mut manifest = crate::root::test_plugins::manifest(
+        "store",
+        &module,
+        crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+    );
+    manifest.statement = Some(hex::encode(statement));
+    let library = std::fs::read(library_path).expect("the actual store library reads");
+    let directory = crate::root::test_plugins::scratch("confirmed-card-generation");
+    std::fs::write(
+        directory.join("store.tar.gz"),
+        crate::root::test_plugins::signed(&release, manifest, &library),
+    )
+    .expect("stage the actual store archive");
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+        "providers": {},
+        "models": {},
+        "auth": { "chain": [], "admin_auth": [] },
+        "store": { "module": module, "settings": settings },
+        "advanced": { "allow_destinations": ["127.0.0.1"] },
+    }))
+    .expect("the actual product deployment parses");
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the actual product deployment resolves");
+    let judge = crate::root::connector::dest_judge(&config);
+    let late = crate::root::serve::LateServices::new();
+    let dispatcher = crate::root::dispatch::boot(1, &late);
+    crate::root::doors::install_dispatcher(dispatcher);
+    let (credentials, _handle) = crate::root::credentials::AppCredentials::late();
+    crate::root::serve::compose(judge.clone(), &late, credentials);
+    crate::register_protocols();
+    crate::register_planes();
+    crate::register_diagnostics();
+    crate::root::doors::install_plugin_logs(crate::root::boot::plugin_logs());
+    crate::root::connector::boot(
+        crate::LINKED_TRANSPORT_DOORS,
+        &crate::root::policy::client_settings(&config.limits),
+        judge,
+        &[],
+    );
+    let plugins = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: directory.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
     let slots = crate::root::store_double::RecordSlots::new();
     let boot = busbar_kernel::config::card::CardFields {
         per_request_fee: BOOT_FEE,
@@ -528,9 +586,7 @@ fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_commit() {
     ROOT_CARD.card_applied(&boot, "actual boot");
     ROOT_CARD.boot_in_store(None).unwrap();
     let build = |fee, prior: Option<&busbar_kernel::state::App>| {
-        let mut cfg = busbar_kernel_testkit::test_support::cfg_with_provider_api_key(
-            busbar_kernel::config::SecretRef::env(UNUSED_PROVIDER_KEY),
-        );
+        let mut cfg = config.clone();
         cfg.per_request_fee = fee;
         if let Some(prior) = prior {
             cfg.limits.request_body_max_bytes = prior
@@ -542,13 +598,13 @@ fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_commit() {
         }
         let (app, _, limits) = busbar_kernel::build_app_from_config(
             cfg,
-            busbar_kernel::config::PluginsCfg::default(),
+            plugins.clone(),
             None,
             Default::default(),
             Default::default(),
             (None, None),
             prior,
-            &(Arc::new(busbar_kernel::appbuild::AcceptAll)
+            &(Arc::new(crate::root::door_steps::Rules::default())
                 as Arc<dyn busbar_kernel::appbuild::RootRules>),
         )
         .unwrap();
@@ -914,9 +970,7 @@ fn a_restart_after_store_chunks_prices_every_posting_at_the_card_in_force_when_i
         .unwrap()
         .journal
         .append(
-            &busbar_kernel_testkit::test_support::tokens::grant::<
-                busbar_contract::caps::DurableWrite,
-            >(),
+            &new_kernel().durability_token(),
             busbar_contract::caps::StepName::Meter,
             &[busbar_kernel_wal::Entry::new(
                 busbar_kernel_wal::RecordClass::Load,
@@ -1121,7 +1175,6 @@ impl busbar_kernel_wal::SegmentFactory for BreakableDisk {
 
 #[test]
 fn a_rate_card_the_log_owes_after_a_failed_roll_is_not_published_while_unconfirmed() {
-    use busbar_contract::caps::DurableWrite;
     let store = crate::root::store_double::RecordSlots::new();
     let holder = process_holder();
     apply_at(holder, 3.0, BOOT_A);
@@ -1141,7 +1194,7 @@ fn a_rate_card_the_log_owes_after_a_failed_roll_is_not_published_while_unconfirm
     book.lock().expect("the book").journal = busbar_kernel_wal::Journal::over(log, 7);
     failing.store(true, std::sync::atomic::Ordering::SeqCst);
 
-    let token = busbar_kernel_testkit::test_support::tokens::grant::<DurableWrite>();
+    let token = new_kernel().durability_token();
     assert!(book
         .lock()
         .expect("the book")
@@ -1352,7 +1405,6 @@ fn an_applied_card_round_trips_the_journal_as_the_same_card_on_every_plane() {
 #[cfg(feature = "root-admin")]
 #[test]
 fn a_back_dated_correction_survives_a_restart() {
-    use busbar_contract::caps::DurableWrite;
     const CORRECTED: (u64, u64) = (0, 86_400_000);
 
     const OUTSIDE: u64 = 86_400_000 + EARNED_B;
@@ -1365,7 +1417,7 @@ fn a_back_dated_correction_survives_a_restart() {
 
         let journal = crate::root::units_admin::AmendmentJournal::new(
             Arc::clone(&book),
-            busbar_kernel_testkit::test_support::tokens::grant::<DurableWrite>(),
+            new_kernel().durability_token(),
         );
         holder
             .amend(
@@ -1444,10 +1496,9 @@ fn seal_correction(
     nanos: u64,
     rebase: impl FnOnce(super::CorrectionBase) -> super::CorrectionBase,
 ) -> busbar_kernel_ledger::cost::HistorySeq {
-    use busbar_contract::caps::DurableWrite;
     let journal = crate::root::units_admin::AmendmentJournal::new(
         Arc::clone(book),
-        busbar_kernel_testkit::test_support::tokens::grant::<DurableWrite>(),
+        new_kernel().durability_token(),
     );
     let seq = holder
         .amend(
@@ -1708,7 +1759,6 @@ fn boot_book_on_store(
 #[cfg(feature = "root-admin")]
 #[test]
 fn a_back_dated_correction_survives_a_restart_over_the_store() {
-    use busbar_contract::caps::DurableWrite;
     const CORRECTED: (u64, u64) = (0, 86_400_000);
     const SIGNED_AT: u64 = 20_000;
     let slots = crate::root::store_double::RecordSlots::new();
@@ -1718,7 +1768,7 @@ fn a_back_dated_correction_survives_a_restart_over_the_store() {
         let book = boot_book_on_store(holder, &slots);
         let journal = crate::root::units_admin::AmendmentJournal::new(
             Arc::clone(&book),
-            busbar_kernel_testkit::test_support::tokens::grant::<DurableWrite>(),
+            new_kernel().durability_token(),
         );
         holder
             .amend(
