@@ -1,6 +1,60 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+fn metric_sum(name: &str, labels: &[(&str, &str)]) -> f64 {
+    busbar_kernel::snapshot::snapshot()
+        .expect("the real metrics recorder is installed")
+        .iter()
+        .flat_map(|family| &family.samples)
+        .filter(|sample| {
+            sample.name == name
+                && labels
+                    .iter()
+                    .all(|&(key, value)| sample.labels.iter().any(|(k, v)| k == key && v == value))
+        })
+        .map(|sample| sample.value.parse::<f64>().expect("a numeric sample"))
+        .sum()
+}
+
+fn render_metrics() -> String {
+    use crate::root::loader::dispatch::{
+        kinds::export::Export, load_dropped, rendering_of_library, Bind, ConnTable, DispatchConfig,
+        Dispatcher, NoSink,
+    };
+    use busbar_contract::export_calls::ExportCalls as _;
+    let path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_TEST_PROMETHEUS_CDYLIB")
+            .expect("BUSBAR_TEST_PROMETHEUS_CDYLIB names the actual built metrics exporter"),
+    );
+    let statement = rendering_of_library(&path)
+        .expect("the actual exporter statement reads")
+        .expect("the actual exporter carries its statement");
+    let dispatcher = std::sync::Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let plugin = load_dropped::<Export>(
+        &path,
+        &statement,
+        Bind {
+            instance: "serve-test-metrics".into(),
+            max_inflight_cap: 64,
+            sink: std::sync::Arc::new(NoSink),
+            dispatcher: dispatcher.adopter(),
+            conns: ConnTable::NoNeeds,
+        },
+    )
+    .expect("the actual exporter loads through its memory ABI");
+    let exporter =
+        crate::root::loader::export_door::ExportInstance::open(plugin, dispatcher, b"{}")
+            .expect("the actual exporter opens");
+    let families =
+        busbar_kernel::snapshot::snapshot().expect("the real metrics recorder is installed");
+    String::from_utf8(
+        exporter
+            .scrape(&families)
+            .expect("the actual exporter scrapes"),
+    )
+    .expect("the actual exporter emits UTF-8")
+}
+
 #[tokio::test]
 async fn an_empty_plane_set_still_stages_the_core_listener_lines() {
     use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
@@ -1250,7 +1304,7 @@ pub(super) mod session_door {
         opts: Opts,
         api_key: &str,
     ) -> Option<Result<SessionDoor, String>> {
-        busbar_kernel_testkit::test_support::metrics::init();
+        busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(10));
         let budget = opts.budget;
         let (port, heard) = match (opts.far_end, opts.far) {
             (Some(far_end), _) => far_end,
@@ -2763,7 +2817,7 @@ mod tools_door {
     }
 
     fn scraped(family: &str, labels: &[(&str, &str)]) -> f64 {
-        busbar_kernel_testkit::test_support::export_axis::render()
+        crate::root::serve::door_tests::render_metrics()
             .lines()
             .filter(|l| !l.starts_with('#') && l.starts_with(&format!("{family}{{")))
             .filter(|l| {
@@ -2794,7 +2848,7 @@ mod tools_door {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_failing_tool_server_trips_its_breaker_cell_through_the_composed_door() {
-        busbar_kernel_testkit::test_support::metrics::init();
+        busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(10));
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-trip";
         let mut bad_server = answering_calls_with(503).await;
@@ -3939,7 +3993,7 @@ mod tools_door {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_client_fault_answer_is_relayed_and_never_penalizes_the_member() {
-        busbar_kernel_testkit::test_support::metrics::init();
+        busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(10));
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-disposition";
         let mut faulted_server = answering_calls_with(400).await;
@@ -4041,7 +4095,7 @@ mod tools_door {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_doors_traffic_appears_on_the_metrics_scrape_under_its_plane() {
         use crate::root::door_steps::tests::door_boundary;
-        busbar_kernel_testkit::test_support::metrics::init();
+        busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(10));
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-metrics";
         let mut port_server = TlsToolServer::new().await;
@@ -5109,7 +5163,7 @@ async fn serve_configured(
     allowed_pools: Option<Vec<String>>,
     api_key: &str,
 ) -> Result<Serving, String> {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(10));
     let judge = crate::root::connector::guard_for(&busbar_kernel::config::Destinations {
         block_private_addresses: false,
         ..Default::default()
@@ -5705,7 +5759,7 @@ async fn the_pools_doors_traffic_appears_on_the_metrics_scrape() {
     )
     .await;
     let attempts = || {
-        busbar_kernel_testkit::test_support::metric_sum(
+        crate::root::serve::door_tests::metric_sum(
             busbar_kernel::telemetry::UPSTREAM_ATTEMPTS_TOTAL,
             &[("pool", pool), ("lane", "m0")],
         )
@@ -5725,7 +5779,7 @@ async fn the_pools_doors_traffic_appears_on_the_metrics_scrape() {
         after > before,
         "this pool's attempt was counted: {before} -> {after}"
     );
-    let scrape = busbar_kernel_testkit::test_support::export_axis::render();
+    let scrape = crate::root::serve::door_tests::render_metrics();
     assert!(
         scrape
             .lines()
@@ -8476,9 +8530,7 @@ mod pools_door_money {
 
     use axum::http::StatusCode;
     use busbar_kernel::config::groups::{LimitCfg, LimitMetric, LimitWindow};
-    use busbar_kernel_testkit::test_support::{
-        metric_sum, MockResponse, MockServer, MockServerState,
-    };
+    use busbar_kernel_testkit::test_support::{MockResponse, MockServer, MockServerState};
 
     use super::super::hook_seat_tests::DoorRig;
 
@@ -9399,9 +9451,7 @@ mod pools_door_counts_and_routes {
     use axum::http::StatusCode;
     use busbar_contract::Signal;
     use busbar_kernel::store::BreakerState;
-    use busbar_kernel_testkit::test_support::{
-        metric_sum, MockResponse, MockServer, MockServerState,
-    };
+    use busbar_kernel_testkit::test_support::{MockResponse, MockServer, MockServerState};
 
     use super::super::hook_seat_tests::DoorRig;
 
@@ -9574,7 +9624,7 @@ mod pools_door_counts_and_routes {
         assert_eq!(status, 404, "an unknown model is a 404");
         let after = unresolved_client_errors();
         assert_eq!(after - before, 1.0, "this unknown request was counted once");
-        let scrape = busbar_kernel_testkit::test_support::export_axis::render();
+        let scrape = crate::root::serve::door_tests::render_metrics();
         assert!(
             !scrape.contains(probe),
             "the raw model is never a label:\n{scrape}"
@@ -9699,7 +9749,7 @@ mod pools_door_counts_and_routes {
                 "`{model}` counts under `{label}`: {before} -> {after}"
             );
         }
-        let scrape = busbar_kernel_testkit::test_support::export_axis::render();
+        let scrape = crate::root::serve::door_tests::render_metrics();
         assert!(!scrape.contains("pool=\"anything-else\""), "{scrape}");
         assert!(!scrape.contains("pool=\"\""), "{scrape}");
     }
@@ -10931,7 +10981,7 @@ fn exposition_metric_name(line: &str) -> Option<&str> {
 fn a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric() {
     use busbar_kernel_testkit::test_support::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(10));
     let cap = WarnCapture::capturing_debug();
     let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(cap.clone()));
     let mut statuses: Vec<(&str, u16)> = Vec::new();
@@ -11009,7 +11059,7 @@ fn a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric() {
             .join("\n")
     );
 
-    let exposition = busbar_kernel_testkit::test_support::export_axis::render();
+    let exposition = crate::root::serve::door_tests::render_metrics();
     let leaked: Vec<&str> = exposition
         .lines()
         .filter_map(exposition_metric_name)
@@ -11171,7 +11221,7 @@ fn exposition_family<'a>(exposition: &'a str, family: &str) -> Vec<&'a str> {
 async fn a_model_plane_request_is_counted_exactly_once() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-counted-once";
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(10));
     let rig = rig(
         instance,
         RigOpts {
@@ -11182,12 +11232,12 @@ async fn a_model_plane_request_is_counted_exactly_once() {
     .await;
 
     let labels = [("pool", "p")];
-    let before = busbar_kernel_testkit::test_support::metric_sum(
+    let before = crate::root::serve::door_tests::metric_sum(
         busbar_kernel::snapshot::REQUESTS_TOTAL,
         &labels,
     );
     let _ = rig.chat().await;
-    let after = busbar_kernel_testkit::test_support::metric_sum(
+    let after = crate::root::serve::door_tests::metric_sum(
         busbar_kernel::snapshot::REQUESTS_TOTAL,
         &labels,
     );
@@ -11206,7 +11256,7 @@ async fn the_model_plane_families_stay_v1_5_4_shaped_on_a_real_scrape() {
     let instance = "serve-door-model-families";
     let pool = "t065-model-family-pool";
     let far = seat_far_end(200, SERVED_BY_TWIN).await;
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(10));
     let rig = rig(
         instance,
         RigOpts {
@@ -11223,11 +11273,11 @@ async fn the_model_plane_families_stay_v1_5_4_shaped_on_a_real_scrape() {
     );
     let counts = || {
         (
-            busbar_kernel_testkit::test_support::metric_sum(
+            crate::root::serve::door_tests::metric_sum(
                 busbar_kernel::snapshot::REQUESTS_TOTAL,
                 &labels,
             ),
-            busbar_kernel_testkit::test_support::metric_sum(&duration_count, &labels),
+            crate::root::serve::door_tests::metric_sum(&duration_count, &labels),
         )
     };
     let before = counts();
@@ -11251,7 +11301,7 @@ async fn the_model_plane_families_stay_v1_5_4_shaped_on_a_real_scrape() {
         after.1 > before.1,
         "this pool's duration observed: {before:?} -> {after:?}"
     );
-    let exposition = busbar_kernel_testkit::test_support::export_axis::render();
+    let exposition = crate::root::serve::door_tests::render_metrics();
     let model_counters = exposition_family(&exposition, busbar_kernel::snapshot::REQUESTS_TOTAL);
     assert!(
         model_counters.iter().any(|line| line.contains("pool=\"t065-model-family-pool\"") && exposition_label_keys(line)
