@@ -165,15 +165,10 @@ fn peer_calls_present_neither_unit_nor_request_nor_body() {
         &Head::default(),
         None
     ));
-    assert!(!peer_payload_empty(
-        UnitRef::NONE,
-        &Head {
-            method: "POST".to_string(),
-            target: "/v1/messages".to_string(),
-            ..Default::default()
-        },
-        None
-    ));
+    let mut request = Head::default();
+    request.method = "POST".to_string();
+    request.target = "/v1/messages".to_string();
+    assert!(!peer_payload_empty(UnitRef::NONE, &request, None));
     assert!(!peer_payload_empty(
         UnitRef::NONE,
         &Head::default(),
