@@ -197,24 +197,72 @@ pub struct SessionPipe {
     pub to_caller: tokio::sync::mpsc::Receiver<SessionOut>,
 }
 
-/// WHERE A FRAMED CONNECTION TAKES AN ADMITTED SESSION'S PIPE: a request the data listener serves
-/// through its framer's accept side carries one (a request extension). The session route leaves
-/// the admitted pipe here and answers `101`; the listener then hands the connection to the framer
-/// that claims the upgrade, which answers the upgrade itself, and carries the pipe over it.
+/// One request's admission to a framed connection, answered by its owning transport actor.
+/// The stream identifies the request on that connection; no callback or ABI loan is retained.
+#[derive(Debug)]
+pub struct SessionAdmission {
+    pub stream: u64,
+    pub reply: tokio::sync::oneshot::Sender<bool>,
+}
+
+#[derive(Debug)]
+struct PendingAdmission {
+    sender: tokio::sync::mpsc::UnboundedSender<SessionAdmission>,
+    stream: u64,
+}
+
+/// The transport-owned route slot for one framed request. Admission is consumed once across
+/// every clone; a default slot carries no admission authority and cannot enter a session handler.
 #[derive(Debug, Clone, Default)]
-pub struct FramedSession(Arc<std::sync::Mutex<Option<SessionPipe>>>);
+pub struct FramedSession {
+    pipe: Arc<std::sync::Mutex<Option<SessionPipe>>>,
+    admission: Arc<std::sync::Mutex<Option<PendingAdmission>>>,
+}
 
 impl FramedSession {
+    /// Give this request a single admission exchange with its connection's transport actor.
+    #[must_use]
+    pub fn with_admission(
+        sender: tokio::sync::mpsc::UnboundedSender<SessionAdmission>,
+        stream: u64,
+    ) -> Self {
+        Self {
+            pipe: Default::default(),
+            admission: Arc::new(std::sync::Mutex::new(Some(PendingAdmission {
+                sender,
+                stream,
+            }))),
+        }
+    }
+
+    /// Ask the owning transport to admit this request before a session handler runs. A missing,
+    /// reused or disconnected admission exchange refuses; no mutex is held while awaiting it.
+    pub async fn admit(&self) -> bool {
+        let pending = self
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        let Some(PendingAdmission { sender, stream }) = pending else {
+            return false;
+        };
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        if sender.send(SessionAdmission { stream, reply }).is_err() {
+            return false;
+        }
+        answer.await.unwrap_or(false)
+    }
+
     pub fn put(&self, pipe: SessionPipe) {
         *self
-            .0
+            .pipe
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(pipe);
     }
 
     #[must_use]
     pub fn take(&self) -> Option<SessionPipe> {
-        self.0
+        self.pipe
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
@@ -252,3 +300,7 @@ impl PlaneSessionSpec {
 #[cfg(test)]
 #[path = "tests/plane_routes_pairing.rs"]
 mod pairing_tests;
+
+#[cfg(test)]
+#[path = "tests/session_admission_tests.rs"]
+mod session_admission_tests;

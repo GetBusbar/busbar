@@ -253,7 +253,7 @@ plane-a2a = ["plane-a2a-door"]
 # so the compiled-in plane is called through the same table as its dropped-in cdylib (#2, #30; THE
 # DESIGN section 11.4), and the serve row hands it its arrivals. It carries the ws wire its live
 # sessions arrive over and leave on.
-plane-streaming = ["dep:busbar-plane-streaming", "transport-ws", "busbar-kernel/duplex-ws"]
+plane-streaming = ["dep:busbar-plane-streaming", "transport-ws"]
 # THE WS WIRE, the one optional transport: the streaming plane's edge and nothing else's, so `plane-streaming`
 # carries it and `--no-default-features` drops the crate edge and its linked row together.
 transport-ws = ["dep:busbar-transport-ws"]

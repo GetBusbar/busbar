@@ -20,7 +20,7 @@ busbar-kernel = { path = "../busbar-kernel", default-features = false, features 
 busbar-contract = { path = "../busbar-contract" }
 
 busbar-kernel-identity = { path = "../busbar-kernel-identity" }
-axum = { workspace = true, features = ["http1"] }
+axum = { workspace = true, features = ["http1", "ws"] }
 bytes = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }

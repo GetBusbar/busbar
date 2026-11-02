@@ -377,16 +377,8 @@ fn base_data_router_scoped(
         router = mount_plane_route(router, std::sync::Arc::clone(&unslotted), spec);
     }
 
-    #[cfg(feature = "duplex-ws")]
     for spec in sessions {
         router = mount_plane_session(router, std::sync::Arc::clone(&unslotted), spec);
-    }
-    #[cfg(not(feature = "duplex-ws"))]
-    if !sessions.is_empty() {
-        tracing::warn!(
-            routes = sessions.len(),
-            "door session routes are not mounted: this build has no duplex upgrade"
-        );
     }
 
     for path in door_paths {
@@ -525,7 +517,6 @@ fn mount_plane_route(
     )
 }
 
-#[cfg(feature = "duplex-ws")]
 fn mount_plane_session(
     router: crate::core_routes::CoreRouter,
     slot: std::sync::Arc<dyn std::any::Any + Send + Sync>,
@@ -542,7 +533,7 @@ fn mount_plane_session(
         path,
         RouteMethod::Get,
         auth,
-        move |upgrade: busbar_kernel::ingress::duplex_ws::SessionUpgrade,
+        move |upgrade: busbar_kernel::ingress::session::SessionUpgrade,
               state::CurrentApp(app): state::CurrentApp,
               _: axum::extract::RawPathParams,
               uri: axum::http::Uri,
@@ -587,7 +578,7 @@ fn mount_plane_session(
                 match handler(ctx).await {
                     busbar_kernel::plane_routes::SessionAnswer::Refused(response) => response,
                     busbar_kernel::plane_routes::SessionAnswer::Accepted(pipe) => {
-                        busbar_kernel::ingress::duplex_ws::bridge_either(upgrade, pipe)
+                        busbar_kernel::ingress::session::bridge(upgrade, pipe)
                     }
                 }
             }
@@ -1277,6 +1268,12 @@ pub(crate) fn apply_inbound_concurrency_limit(
 #[path = "tests/router_door_tests.rs"]
 mod router_door_tests;
 
-#[cfg(all(test, feature = "duplex-ws"))]
+#[cfg(test)]
 #[path = "tests/router_session_tests.rs"]
 mod router_session_tests;
+
+// The real socket adapter is a dev-only kit implementation. A private source mount keeps this
+// unit-test binary's kernel types identical to the ones its router under test uses.
+#[cfg(test)]
+#[path = "../../busbar-kernel-testkit/src/websocket.rs"]
+mod session_socket_test_adapter;

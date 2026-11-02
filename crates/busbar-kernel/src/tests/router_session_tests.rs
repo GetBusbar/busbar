@@ -65,7 +65,11 @@ async fn serve() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
     .0;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let server = tokio::spawn(async move {
+        axum::serve(listener, super::session_socket_test_adapter::adapt(router))
+            .await
+            .unwrap()
+    });
     (addr, server)
 }
 
@@ -159,7 +163,11 @@ async fn a_websocket_plane_receives_no_scheme_derived_from_a_raw_credential() {
     .0;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let server = tokio::spawn(async move {
+        axum::serve(listener, super::session_socket_test_adapter::adapt(router))
+            .await
+            .unwrap()
+    });
     let mut request = format!("ws://{addr}{OPEN}").into_client_request().unwrap();
     request
         .headers_mut()

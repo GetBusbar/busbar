@@ -1023,6 +1023,7 @@ enum Ticketed<'a> {
         side: u32,
         established: Established,
         leftover: std::borrow::Cow<'a, [u8]>,
+        prewire: bool,
     },
     Ingest {
         bytes: std::borrow::Cow<'a, [u8]>,
@@ -1062,11 +1063,15 @@ impl Ticketed<'_> {
                 guests,
             },
             Self::Adopt {
-                side, established, ..
+                side,
+                established,
+                prewire,
+                ..
             } => Ticketed::Adopt {
                 side,
                 established,
                 leftover: std::borrow::Cow::Owned(Vec::new()),
+                prewire,
             },
 
             Self::Ingest { end, .. } => Ticketed::Ingest {
@@ -1828,11 +1833,31 @@ impl Framing {
                 side,
                 established,
                 leftover,
+                prewire,
             } => {
                 let facts = established.facts();
+                let extensions = if *prewire {
+                    use busbar_contract::abi::transport::adopted_session::{
+                        EXT_PREWIRE_SESSION, SUPPORT_PREWIRE_SESSION,
+                    };
+                    busbar_contract::abi::mechanism::extensions::encode(&[(
+                        EXT_PREWIRE_SESSION,
+                        SUPPORT_PREWIRE_SESSION,
+                    )])
+                } else {
+                    Vec::new()
+                };
                 let mut i: AdoptIn = blank_in();
                 i.side = *side;
                 i.facts = &facts;
+                if !extensions.is_empty() {
+                    i.head.extensions = Blob {
+                        ptr: extensions.as_ptr(),
+                        len: extensions.len(),
+                        fmt: busbar_contract::abi::mechanism::call::BLOB_OCTETS,
+                        flags: 0,
+                    };
+                }
                 if fresh {
                     i.leftover = leftover.as_ptr();
                     i.leftover_len = leftover.len();
@@ -2050,6 +2075,7 @@ impl Framing {
             std::borrow::Cow::Borrowed(leftover),
             established,
             None,
+            false,
         )
     }
 
@@ -2057,8 +2083,28 @@ impl Framing {
     pub fn adopt_detached(
         door: Arc<dyn FramerDoor>,
         side: u32,
+        detached: Detached,
+        established: &Established,
+    ) -> Result<(Self, Yielded), Refused> {
+        Self::adopt_detached_mode(door, side, detached, established, false)
+    }
+
+    /// Adopt once while requesting a typed opening receipt and an explicit wire commit.
+    pub fn adopt_detached_staged(
+        door: Arc<dyn FramerDoor>,
+        side: u32,
+        detached: Detached,
+        established: &Established,
+    ) -> Result<(Self, Yielded), Refused> {
+        Self::adopt_detached_mode(door, side, detached, established, true)
+    }
+
+    fn adopt_detached_mode(
+        door: Arc<dyn FramerDoor>,
+        side: u32,
         mut detached: Detached,
         established: &Established,
+        prewire: bool,
     ) -> Result<(Self, Yielded), Refused> {
         let context =
             match detached.context.as_ref() {
@@ -2078,6 +2124,7 @@ impl Framing {
             std::borrow::Cow::Owned(std::mem::take(&mut detached.bytes)),
             established,
             context,
+            prewire,
         )
     }
 
@@ -2087,6 +2134,7 @@ impl Framing {
         leftover: std::borrow::Cow<'_, [u8]>,
         established: &Established,
         context: Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
+        prewire: bool,
     ) -> Result<(Self, Yielded), Refused> {
         let ticket = door.framing_side();
         let context = match context {
@@ -2106,6 +2154,7 @@ impl Framing {
             side,
             established: established.clone(),
             leftover,
+            prewire,
         };
         let yielded = framing.run(op, Yielded::default(), false, false, ticket)?;
         Ok((framing, yielded.unwrap_or_default()))
@@ -2376,7 +2425,14 @@ impl Framing {
 
     /// `detach`: the bytes the framer took and did not answer, and the framing is over.
     pub fn detach(mut self) -> Result<Detached, Refused> {
+        self.try_detach()
+    }
+
+    /// Attempt a handover without dropping an unchanged framing when its first crossing refuses.
+    /// Once any prefix was handed over, an error is a fault and cannot resume the old framing.
+    pub fn try_detach(&mut self) -> Result<Detached, Refused> {
         self.quiet()?;
+        let mut crossed = false;
         let mut left = Vec::new();
         let mut recalls = Recalls::default();
         loop {
@@ -2384,12 +2440,18 @@ impl Framing {
             i.framing = self.token;
             i.sink = self.bufs.sink();
             let mut o: FramerOut = blank_out();
-            ready(self.door.cross_scoped(
+            if let Err(mut error) = ready(self.door.cross_scoped(
                 self.context.as_ref(),
                 None,
                 false,
                 Call::Detach(&mut i, &mut o),
-            ))?;
+            )) {
+                if crossed {
+                    error.outcome = Outcome::Fault;
+                }
+                return Err(error);
+            }
+            crossed = true;
             let n = usize::try_from(o.yielded.frame_len).unwrap_or(usize::MAX);
             left.extend_from_slice(self.bufs.frame.get(..n).ok_or_else(|| Refused {
                 outcome: Outcome::Fault,

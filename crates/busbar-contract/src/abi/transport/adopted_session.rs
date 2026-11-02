@@ -11,6 +11,12 @@ pub const EXT_ADOPTED_SESSION: &str = "session.adopted";
 /// A Statement advertises this extension value when its Adopt consumes inherited sessions.
 pub const SUPPORT_ADOPTED_SESSION: &[u8] = b"1";
 
+/// Opt in to a transport-owned opening held until an explicit status-101 commit.
+pub const EXT_PREWIRE_SESSION: &str = "session.prewire";
+
+/// The complete value of [`EXT_PREWIRE_SESSION`].
+pub const SUPPORT_PREWIRE_SESSION: &[u8] = b"1";
+
 /// The session already admitted by the host. The reference belongs to the adopting owner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AdoptedSession {
