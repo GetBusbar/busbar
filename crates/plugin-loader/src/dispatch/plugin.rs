@@ -2388,6 +2388,7 @@ impl<K: Kind> Plugin<K> {
                         .and_then(|r| busbar_contract::abi::mechanism::rendering::read(&r).ok())
                         .map(|r| r.needs)
                         .ok_or_else(|| LoadError::BadStatement("the needs do not render".into()))?;
+                    wake.conn_state.declare_needs(ctx, &needs);
                     for (i, need) in needs.iter().enumerate() {
                         // THE BOOT'S SCHEME MATCH (spec Part 0: core refuses at boot; Part 2
                         // #50): a need, outbound or inbound, over a scheme no loaded transport

@@ -2827,6 +2827,30 @@ impl busbar_contract::conn::Conns for PresentingConns {
 }
 
 impl busbar_contract::conn::DeclaredConns for PresentingConns {
+    fn open_request(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+        desc: &busbar_contract::conn::OpenDesc<'_>,
+        require_secure: bool,
+        dial_timeout_ms: u64,
+    ) -> Result<busbar_contract::conn::ConnId, busbar_contract::conn::ConnError> {
+        let target = busbar_kernel_egress::trust::net::strip_userinfo(desc.target);
+        let led = self.userinfo.leading(desc.fields);
+        let fields = led.as_deref().unwrap_or(desc.fields);
+        self.inner.open_request(
+            caller,
+            need,
+            &busbar_contract::conn::OpenDesc {
+                target: &target,
+                fields,
+                ..desc.clone()
+            },
+            require_secure,
+            dial_timeout_ms,
+        )
+    }
+
     fn declare(
         &self,
         owner: busbar_contract::conn::InstanceId,
