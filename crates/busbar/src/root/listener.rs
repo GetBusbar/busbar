@@ -384,6 +384,7 @@ async fn accept_loop(
         };
         spawn(admitted, guard);
     }
+    drop(admits);
 
     if let Some(mut b) = balancer.take() {
         while let Ok(a) = b.rx.try_recv() {
