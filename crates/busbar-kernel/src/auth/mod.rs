@@ -1248,10 +1248,18 @@ pub(crate) fn inbound_candidate(
     app: &crate::state::App,
     headers: &HeaderMap,
 ) -> Option<busbar_contract::redacted::Secret<String>> {
-    app.oauth_as
-        .as_ref()
-        .and_then(|_| dpop::dpop_credential(headers))
-        .or_else(|| app.auth.extract_client_token(headers))
+    candidate_from_metadata(app.oauth_as.is_some(), app.auth.carriers(), headers)
+}
+
+fn candidate_from_metadata(
+    has_oauth_as: bool,
+    carriers: &[HeaderName],
+    headers: &HeaderMap,
+) -> Option<busbar_contract::redacted::Secret<String>> {
+    has_oauth_as
+        .then(|| dpop::dpop_credential(headers))
+        .flatten()
+        .or_else(|| carried_credential(carriers, headers))
         .map(busbar_contract::redacted::Secret::new)
 }
 
