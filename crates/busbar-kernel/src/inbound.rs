@@ -911,6 +911,49 @@ fn signed_reader_step(answer: Option<VerifyAnswer>, faulted: bool) -> SignedRead
     }
 }
 
+fn matched_handin_line<'a>(
+    guests: &'a GuestList,
+    auth_line: Option<u32>,
+    requested: u32,
+    head: &Head,
+) -> Option<&'a Line> {
+    let line = guests.lines().get(requested as usize)?;
+    if auth_line != Some(requested) {
+        return None;
+    }
+    let fields: Vec<(&str, &[u8])> = head
+        .fields
+        .iter()
+        .map(|(n, v)| (n.as_str(), v.as_slice()))
+        .collect();
+    match guests.matched(&head.method, &head.target, &fields) {
+        Matched::Line(m) if std::ptr::eq::<Line>(m, line) => Some(line),
+        _ => None,
+    }
+}
+
+fn handin_state_matches(
+    unit_line: u32,
+    generation: u64,
+    signed_pending: bool,
+    original: Option<&Head>,
+    strips: &[Strip],
+    h: &HandIn,
+) -> bool {
+    if unit_line != h.line || generation != h.generation || signed_pending {
+        return false;
+    }
+    if let Some(original) = original {
+        if !original
+            .stripped(strips)
+            .is_some_and(|original| same_request(&original, &h.head))
+        {
+            return false;
+        }
+    }
+    true
+}
+
 struct Table {
     listener: Listener,
     doors: crate::core_routes::CoreRouteTable,
@@ -2534,42 +2577,27 @@ impl Inbound {
     }
 
     fn admits(&self, table: &Table, h: &HandIn, unit: UnitRef) -> bool {
-        let lines = table.listener.guests.lines();
-        let Some(line) = lines.get(h.line as usize) else {
+        let Some(line) = matched_handin_line(
+            &table.listener.guests,
+            table.line_of(h.auth),
+            h.line,
+            &h.head,
+        ) else {
             return false;
         };
-
-        if table.line_of(h.auth) != Some(h.line) {
-            return false;
-        }
-        let fields: Vec<(&str, &[u8])> = h
-            .head
-            .fields
-            .iter()
-            .map(|(n, v)| (n.as_str(), v.as_slice()))
-            .collect();
-        match table
-            .listener
-            .guests
-            .matched(&h.head.method, &h.head.target, &fields)
-        {
-            Matched::Line(m) if std::ptr::eq::<Line>(m, line) => {}
-            _ => return false,
-        }
         let units = self.units();
         let Some(u) = units.get(&unit.id) else {
             return false;
         };
-        if u.line != h.line || u.generation != h.generation || u.signed_pending {
+        if !handin_state_matches(
+            u.line,
+            u.generation,
+            u.signed_pending,
+            u.head.as_ref(),
+            &u.strips,
+            h,
+        ) {
             return false;
-        }
-        if let Some(original) = &u.head {
-            if !original
-                .stripped(&u.strips)
-                .is_some_and(|original| same_request(&original, &h.head))
-            {
-                return false;
-            }
         }
 
         if matches!(line.auth, LineAuth::Chain(..))
