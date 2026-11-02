@@ -702,11 +702,11 @@ mod tests {
 
     #[test]
     fn diagnostics_and_failed_rebuild_never_advance_the_old_app_baseline() {
-        let fixture = TestOverlayStore::new();
-        let backend = fixture.backend();
+        let store = crate::real_store::store();
+        let backend = OverlayStore::new(store.clone()).unwrap();
         persist_root(Some(&backend), &RootSettings::default()).unwrap();
         let before = backend.observed.lock().unwrap().clone();
-        let other = fixture.fork_backend();
+        let other = OverlayStore::new(store).unwrap();
         persist_root(
             Some(&other),
             &RootSettings {
@@ -728,8 +728,7 @@ mod tests {
 
     #[test]
     fn a_normal_confirmed_commit_advances_its_reopened_candidate_carrier() {
-        let fixture = TestOverlayStore::new();
-        let backend = fixture.backend();
+        let backend = OverlayStore::new(crate::real_store::store()).unwrap();
         persist_root(Some(&backend), &RootSettings::default()).unwrap();
         let (candidate, _) = backend.reopen_for_reload().unwrap();
         persist_root(
