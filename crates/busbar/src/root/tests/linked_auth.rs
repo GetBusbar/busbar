@@ -22,7 +22,7 @@ fn link() {
         busbar_kernel_testkit::test_support::protocols::register_test_protocols(decls);
     }
 
-    busbar_kernel_testkit::test_support::register_neutral_test_plane();
+    crate::root::test_plane_registry::register();
 }
 
 fn op() -> &'static str {

@@ -161,7 +161,7 @@ fn operator_infrastructure_refuses_metadata_even_when_carved_out() {
 #[test]
 fn a_reload_that_removes_a_carve_out_refuses_the_next_dial() {
     let _registry = busbar_kernel_testkit::test_support::planes::TestRegistryIsolation::seeded(&[
-        busbar_kernel_testkit::test_support::neutral_fallback_plane(),
+        crate::root::test_plane_registry::fallback(),
     ]);
     let boot = deployment(
         &[],
@@ -191,7 +191,7 @@ fn a_reload_that_removes_a_carve_out_refuses_the_next_dial() {
 fn a_reload_that_changes_the_allowlist_changes_nothing() {
     use busbar_contract::abi::host::service::DEST_INTERNAL;
     let _registry = busbar_kernel_testkit::test_support::planes::TestRegistryIsolation::seeded(&[
-        busbar_kernel_testkit::test_support::neutral_fallback_plane(),
+        crate::root::test_plane_registry::fallback(),
     ]);
     let private_a = vec!["10.0.0.5".parse().unwrap()];
     let private_b = vec!["10.0.0.9".parse().unwrap()];

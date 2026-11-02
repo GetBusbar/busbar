@@ -75,3 +75,7 @@ pub(crate) mod store_double;
 #[cfg(test)]
 #[path = "tests/linked_door_root.rs"]
 mod linked_door_root;
+
+#[cfg(test)]
+#[path = "tests/plane_registry.rs"]
+pub(crate) mod test_plane_registry;

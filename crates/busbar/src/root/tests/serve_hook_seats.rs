@@ -67,18 +67,10 @@ pub(super) fn pools_door() -> busbar_contract::abi::mechanism::door::DoorFn {
 }
 
 pub(super) fn install_door_seams() {
-    static ROW: std::sync::OnceLock<&'static busbar_kernel::plane_driver::registry::PlaneDecl> =
-        std::sync::OnceLock::new();
     for decls in crate::LINKED.protocols {
         busbar_kernel_testkit::test_support::protocols::register_test_protocols(decls);
     }
-    let row = ROW.get_or_init(|| {
-        use crate::root::loader::dispatch::kinds::plane::{linked_probe, registration};
-        let reg = registration(linked_probe(pools_door(), "pools-door-row"))
-            .expect("the door serving the `pools` map binds");
-        busbar_kernel::plane_driver::door::fold(reg).expect("the door folds")
-    });
-    busbar_kernel_testkit::test_support::planes::register_test_plane(row);
+    crate::root::test_plane_registry::register();
 }
 
 static CARD: std::sync::LazyLock<crate::root::kernel::RootHistory> =

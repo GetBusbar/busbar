@@ -336,7 +336,7 @@ fn probe_failures_and_hard_downs_cool_on_the_walks_clock() {
 }
 
 fn pools_of(section: &str) -> ModelPools {
-    busbar_kernel_testkit::test_support::register_neutral_test_plane();
+    crate::root::test_plane_registry::register();
     let deploy = busbar_kernel::config::deploy_from_yaml_str(&format!(
         "providers: {{}}\nmodels: {{}}\npools:\n{section}"
     ))
@@ -472,7 +472,7 @@ fn live_egress_borrows_its_owner_and_never_reverts_after_that_owner_retires() {
 
 #[test]
 fn a_keyless_lane_is_not_probed() {
-    busbar_kernel_testkit::test_support::register_neutral_test_plane();
+    crate::root::test_plane_registry::register();
     let mut defs = std::collections::HashMap::new();
     for name in ["keyed", "local"] {
         let def: busbar_kernel::config::ProviderDef =
