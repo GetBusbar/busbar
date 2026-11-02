@@ -1131,7 +1131,14 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
                 .refused_wait
                 .filter(|(refused, _)| *refused == reason)
                 .map(|(_, secs)| secs);
-            (st.unit, dialect, declined, words, refused_wait)
+            // A cancel or completed answer already released the plane's unit. Rendering the
+            // resulting failure still needs its dialect, but must not close that unit again.
+            let unit = if st.close == close::Close::Closed {
+                0
+            } else {
+                st.unit
+            };
+            (unit, dialect, declined, words, refused_wait)
         };
         // A refusal the plane's own `arrive` decided wears the status it stated; the walk's
         // terminal wears its own; every other one the plane's stated row or the kernel's default.

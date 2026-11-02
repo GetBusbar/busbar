@@ -483,6 +483,14 @@ impl Double {
             let lent = self.held_lent.lock().unwrap().remove(&sibling);
             drop(lent);
         }
+        // The cancelled worker returned every Pending crossing; its input loan has returned
+        // too. Faulted and independently controlled crossings retain their separate loans.
+        if *self.sessions.input_mode.lock().unwrap() == SessionInputMode::Cancellable {
+            let mut borrowed = self.sessions.borrowed.lock().unwrap();
+            if borrowed.as_ref().is_some_and(|(input, _)| input.0.unit == unit) {
+                borrowed.take();
+            }
+        }
         cancelled
     }
 
