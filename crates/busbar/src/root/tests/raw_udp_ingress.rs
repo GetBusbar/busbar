@@ -108,11 +108,16 @@ async fn raw_output_credit_readiness_drops_before_acceptance_and_resumes_without
     // protocol. A fresh genuine SCTP message proves progress after retirement.
     pair.send(b"credit returned").await;
     assert_eq!(
-        tokio::time::timeout(WAIT, pair.caller.read()).await.unwrap(),
+        tokio::time::timeout(WAIT, pair.caller.read())
+            .await
+            .unwrap(),
         Some(b"credit returned".to_vec())
     );
     assert!(pair.pairing.published().await.failure.is_none());
-    assert!(pair.caller.from.try_recv().is_err(), "no discarded input replay");
+    assert!(
+        pair.caller.from.try_recv().is_err(),
+        "no discarded input replay"
+    );
     assert_eq!(pair.door.assocs.raw_busy_dropped(), dropped_before + 1);
     assert!(!pair.pairing.closed());
     pair.door.close();
@@ -219,4 +224,193 @@ async fn closing_a_busy_real_association_cancels_unaccepted_writes_and_retires_i
     );
     assert!(!replacement.pairing.closed());
     door.close();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn admitted_real_srtp_line_reaches_the_real_upstream_framer_once() {
+    use busbar_contract::conn::{ConnError, Piece, PieceKind};
+    use busbar_contract::ids::StreamId;
+    use busbar_contract::transport::wire::WireStatusClass;
+    use busbar_core_connector::datagram::DatagramFraming;
+    use busbar_core_connector::dtls::SessionCert;
+    use busbar_core_connector::framer::{Call, Crossed, DoorFacts, FramerDoor};
+    use busbar_core_connector::test_support::DatagramSession;
+    use busbar_transport_webrtc::framing::MEDIA_BASE;
+    use std::task::Poll;
+    use tokio::net::UdpSocket;
+
+    const OPUS: &[u8] = &[0xF8, 1, 2, 3, 4];
+    // Observe the actual upstream operation without changing product output.
+    struct Upstream {
+        inner: Arc<dyn FramerDoor>,
+        emitted: std::sync::Mutex<Vec<(u64, usize)>>,
+    }
+    impl FramerDoor for Upstream {
+        fn facts(&self) -> &DoorFacts {
+            self.inner.facts()
+        }
+        fn cross(&self, call: Call<'_>) -> Crossed {
+            if let Call::Emit(input, _) = &call {
+                self.emitted.lock().unwrap().push((input.stream, input.len));
+            }
+            self.inner.cross(call)
+        }
+    }
+    struct Tasks(Vec<tokio::task::JoinHandle<()>>);
+    impl Drop for Tasks {
+        fn drop(&mut self) {
+            for task in &self.0 {
+                task.abort();
+            }
+        }
+    }
+
+    let pair = Pair::with_audio().await;
+    assert_eq!(pair.caller.read().await, Some(Vec::new()));
+    let observed = Arc::new(Upstream {
+        inner: super::tests::real::loaded(),
+        emitted: std::sync::Mutex::new(Vec::new()),
+    });
+    let port = ReadyPort::open(bind("127.0.0.1:0").unwrap()).unwrap();
+    let (framing, offer) = DatagramFraming::dial(
+        observed.clone(),
+        Arc::new(SessionCert::mint().unwrap()),
+        port.local_addr(),
+        &[
+            ("channel".into(), b"events".to_vec()),
+            ("media".into(), b"audio".to_vec()),
+        ],
+        Arc::new(super::tests::real::Loopback),
+        0,
+    )
+    .unwrap();
+    let offer = offer
+        .pieces
+        .iter()
+        .find(|p| p.stream == 0 && !p.fields)
+        .unwrap()
+        .bytes
+        .clone();
+    let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let (mut peer, _) =
+        DatagramFraming::accept_minted(super::tests::real::loaded(), socket.local_addr().unwrap())
+            .unwrap();
+    let answer = peer.rendezvous(&offer, Instant::now()).unwrap();
+    let answer = answer
+        .pieces
+        .iter()
+        .find(|p| p.stream == 0 && !p.fields)
+        .unwrap()
+        .bytes
+        .clone();
+    let upstream = Arc::new(DatagramSession::new(framing, port, pair.pairing.clone()));
+    for (kind, bytes) in [
+        (PieceKind::Fields, &[][..]),
+        (PieceKind::Body, answer.as_slice()),
+        (PieceKind::Completion, &[][..]),
+    ] {
+        upstream
+            .exchanged(
+                Piece {
+                    kind,
+                    stream: StreamId(0),
+                    len: bytes.len(),
+                    end: true,
+                    status: (kind == PieceKind::Fields).then_some(WireStatusClass::Success),
+                    status_code: None,
+                    status_namespace: None,
+                    retry_after_secs: None,
+                    fault: None,
+                    reason: None,
+                    declared_len: None,
+                },
+                bytes,
+            )
+            .expect("the genuine SDP answer settles the actual upstream");
+    }
+    let (opened, ready) = tokio::sync::oneshot::channel();
+    let (delivered, mut received) = tokio::sync::mpsc::channel(8);
+    let far = tokio::spawn(async move {
+        let mut opened = Some(opened);
+        let mut bytes = vec![0_u8; 65536];
+        loop {
+            while let Some((to, bytes)) = peer.poll_send() {
+                socket.send_to(&bytes, to).await.unwrap();
+            }
+            let mut yielded = tokio::select! {
+                got = socket.recv_from(&mut bytes) => {
+                    let (n, from) = got.unwrap();
+                    peer.datagram(from, &bytes[..n], Instant::now()).unwrap()
+                },
+                () = tokio::time::sleep(std::time::Duration::from_millis(10)) => peer.timeout(Instant::now()).unwrap(),
+            };
+            for piece in yielded.pieces.drain(..) {
+                assert!(
+                    !piece.failed,
+                    "actual upstream peer failed: {:?}",
+                    piece.reason
+                );
+                if piece.stream == 1 && piece.fields {
+                    if let Some(opened) = opened.take() {
+                        let _ = opened.send(());
+                    }
+                }
+                if piece.stream == MEDIA_BASE && !piece.fields && !piece.end {
+                    delivered.try_send(piece.bytes).unwrap();
+                }
+            }
+        }
+    });
+    let driving = {
+        let upstream = upstream.clone();
+        tokio::spawn(async move {
+            let mut bytes = [0_u8; 1024];
+            std::future::poll_fn(|cx| match upstream.read(cx.waker(), &mut bytes) {
+                Err(ConnError::Pending) => Poll::<()>::Pending,
+                result => panic!(
+                    "LINE forwarding must not create upstream application output: {result:?}"
+                ),
+            })
+            .await;
+        })
+    };
+    let _tasks = Tasks(vec![far, driving]);
+    tokio::time::timeout(WAIT, ready)
+        .await
+        .expect("actual upstream ICE/DTLS/SCTP opens")
+        .unwrap();
+    pair.input.send(Input::Audio(OPUS.to_vec())).await.unwrap();
+    assert_eq!(
+        tokio::time::timeout(WAIT, received.recv()).await.unwrap(),
+        Some(OPUS.to_vec())
+    );
+    let outcome = pair.pairing.published().await;
+    assert!(outcome.failure.is_none(), "{outcome:?}");
+    assert_eq!(
+        *observed.emitted.lock().unwrap(),
+        vec![(MEDIA_BASE, OPUS.len())]
+    );
+    assert_eq!(
+        (
+            outcome.accepted_frames,
+            outcome.handed_frames,
+            outcome.cancelled_frames
+        ),
+        (1, 1, 0)
+    );
+    assert_eq!(
+        (outcome.accepted_bytes, outcome.handed_bytes),
+        (OPUS.len() as u64, OPUS.len() as u64)
+    );
+    assert!(
+        pair.caller.from.try_recv().is_err(),
+        "audio LINE never enters the application channel"
+    );
+    assert!(
+        received.try_recv().is_err(),
+        "one accepted SRTP frame is forwarded once"
+    );
+    assert_eq!(pair.door.assocs.raw_busy_dropped(), 0);
+    upstream.close();
+    pair.door.close();
 }

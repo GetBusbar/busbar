@@ -245,7 +245,7 @@ pub(crate) mod real {
             crate::root::doors::Dispatched::open(plugin, &TransportSettings::default()).unwrap(),
         )
     }
-    struct Loopback;
+    pub(crate) struct Loopback;
     impl DialJudge for Loopback {
         fn judge_dial(&self, dest: &str, _: u32, _: Judged) -> Option<Result<SocketAddr, Verdict>> {
             Some(
@@ -259,6 +259,7 @@ pub(crate) mod real {
     pub(crate) enum Input {
         Message(Vec<u8>),
         Raw(Vec<u8>),
+        Audio(Vec<u8>),
     }
     pub(crate) struct Pair {
         pub(crate) door: Arc<ClaimDoor>,
@@ -292,7 +293,7 @@ pub(crate) mod real {
             .await
         }
         pub(crate) async fn on(door: Arc<ClaimDoor>, early: &[&[u8]]) -> Self {
-            Self::configured(door, early, None, None).await
+            Self::configured(door, early, None, None, false).await
         }
         pub(crate) async fn with_limit(limit: usize) -> Self {
             Self::configured(
@@ -300,17 +301,29 @@ pub(crate) mod real {
                 &[],
                 Some(limit),
                 None,
+                false,
             )
             .await
         }
         pub(crate) async fn with_framer(door: Arc<ClaimDoor>, framer: Arc<dyn FramerDoor>) -> Self {
-            Self::configured(door, &[], None, Some(framer)).await
+            Self::configured(door, &[], None, Some(framer), false).await
+        }
+        pub(crate) async fn with_audio() -> Self {
+            Self::configured(
+                ClaimDoor::serve(ReadyPort::open(bind("127.0.0.1:0").unwrap()).unwrap()),
+                &[],
+                None,
+                None,
+                true,
+            )
+            .await
         }
         async fn configured(
             door: Arc<ClaimDoor>,
             early: &[&[u8]],
             limit: Option<usize>,
             inner: Option<Arc<dyn FramerDoor>>,
+            audio: bool,
         ) -> Self {
             let framer = Arc::new(Observed {
                 inner: inner.unwrap_or_else(loaded),
@@ -319,11 +332,15 @@ pub(crate) mod real {
                 observer: Mutex::new(None),
             });
             let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let mut fields = vec![("channel".into(), b"events".to_vec())];
+            if audio {
+                fields.push(("media".into(), b"audio".to_vec()));
+            }
             let (mut peer, offer) = DatagramFraming::dial(
                 loaded(),
                 Arc::new(SessionCert::mint().unwrap()),
                 socket.local_addr().unwrap(),
-                &[("channel".into(), b"events".to_vec())],
+                &fields,
                 Arc::new(Loopback),
                 0,
             )
@@ -371,6 +388,7 @@ pub(crate) mod real {
                     let yielded = tokio::select! {
                         input = commands.recv() => match input {
                             Some(Input::Message(bytes)) => peer.emit(1, &bytes, true, false, Instant::now()).unwrap(),
+                            Some(Input::Audio(bytes)) => peer.emit(busbar_transport_webrtc::framing::MEDIA_BASE, &bytes, true, false, Instant::now()).unwrap(),
                             Some(Input::Raw(bytes)) => { socket.send_to(&bytes, target).await.unwrap(); continue; }
                             None => break,
                         },
