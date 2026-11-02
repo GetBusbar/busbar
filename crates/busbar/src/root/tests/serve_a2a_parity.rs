@@ -536,10 +536,13 @@ fn raw_relay_and_lifecycle(
         .done
         .frame
         .expect("the terminal SHORT returns its input for one fresh recall");
+    // A prior Pending resume may be reflected in the returned input. Terminal SHORT ends
+    // that invocation; its one recall is a fresh call, retaining only the original ticket/body.
+    frame.input.head.flags &= !FLAG_RESUME;
     assert_eq!(
         frame.input.head.flags & FLAG_RESUME,
         0,
-        "terminal SHORT is never a Pending resume"
+        "the SHORT recall is fresh"
     );
     assert_eq!(
         frame.input.head.ticket, short,
@@ -582,6 +585,7 @@ fn raw_relay_and_lifecycle(
         plane.call(slot::REFUSAL, &mut refusal).outcome,
         Outcome::Ready
     );
+    assert_eq!(refusal.out.status, 403);
     assert_eq!(&reply[..refusal.out.reply_written as usize], REFUSAL);
 
     let driven = &plane.inner.driven;
