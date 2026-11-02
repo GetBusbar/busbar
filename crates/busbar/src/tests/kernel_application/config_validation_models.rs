@@ -11,6 +11,7 @@ fn make_root_cfg(
     models: HashMap<String, config::ModelCfg>,
     pools: HashMap<String, config::PoolCfg>,
 ) -> RootCfg {
+    crate::dist_root_install::install();
     config::RootCfg {
         plane_defs: Default::default(),
         plane_pools: Default::default(),
