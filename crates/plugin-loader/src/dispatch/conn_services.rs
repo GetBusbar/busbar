@@ -1535,7 +1535,18 @@ extern "C" fn write_request(
                     let bound = if waived {
                         None
                     } else {
-                        table.auth_of(id, need, &member, &target)
+                        // Root member-auth registrations belong to the original instance,
+                        // independently of the generation which owns this connection's I/O.
+                        let original = st
+                            .context
+                            .get()
+                            .and_then(|ctx| super::handle::resolve(*ctx))
+                            .and_then(|wake| wake.conn.get());
+                        let Some((owner, original_table)) = original else {
+                            install(st, id, i.stream, table, Conn::Failed(ConnError::Unarmed));
+                            return refusal(ConnError::Unarmed);
+                        };
+                        original_table.auth_of(*owner, need, &member, &target)
                     };
 
                     let handle = bound.as_ref().and_then(|b| match &b.per_request {
@@ -2191,6 +2202,7 @@ mod creating_authority_tests {
         slab: ConnSlab<()>,
         closed: Mutex<Vec<(InstanceId, ConnId)>>,
         forgotten: Mutex<Vec<InstanceId>>,
+        auth_lookups: Mutex<Vec<InstanceId>>,
         state: OnceLock<&'static ConnState>,
     }
 
@@ -2260,6 +2272,16 @@ mod creating_authority_tests {
         fn serves_scheme(&self, _: &str) -> bool {
             true
         }
+        fn auth_of(
+            &self,
+            owner: InstanceId,
+            _: NeedId,
+            _: &str,
+            _: &str,
+        ) -> Option<busbar_contract::conn::ConnAuth> {
+            lock(&self.auth_lookups).push(owner);
+            None
+        }
         fn forget(&self, owner: InstanceId) {
             lock(&self.forgotten).push(owner);
         }
@@ -2297,6 +2319,7 @@ mod creating_authority_tests {
         let table: Arc<dyn DeclaredConns> = actual.clone();
         assert!(wake.conn.set((old_owner, table.clone())).is_ok());
         assert!(actual.state.set(&wake.conn_state).is_ok());
+        wake.conn_state.declare_needs(ctx, &[]);
         for owner in [old_owner, new_owner] {
             actual.slab.declare(owner, NeedId(0));
         }
@@ -2344,7 +2367,56 @@ mod creating_authority_tests {
         });
         wake.exports.publish(new.clone());
         // The following services execute in the newly published operation context.
-        super::super::export_bindings::crossing(Some(new), || {
+        super::super::export_bindings::crossing(Some(new.clone()), || {
+            // A new generation owns the request I/O, while member auth stays rooted at the
+            // original registered instance.
+            let framed = held_id();
+            wake.conn_state.streams().insert(
+                framed,
+                Stream {
+                    conn: Conn::Held {
+                        need: NeedId(0),
+                        target: String::new(),
+                        within: Vec::new(),
+                        member: "member".into(),
+                        dial_timeout_ms: 0,
+                        head: Some(Head {
+                            method: b"GET".to_vec(),
+                            target: b"/".to_vec(),
+                            fields: Vec::new(),
+                            timeout_ms: 0,
+                            dial_timeout_ms: 0,
+                        }),
+                        body: Vec::new(),
+                    },
+                    headed: false,
+                    ended: false,
+                    reply_timeout_ms: 0,
+                    authority: Authority::capture(new_owner, &table),
+                },
+            );
+            // SAFETY: zero is valid for every plain ABI field; live descriptors/heads are
+            // supplied before calling the actual request service.
+            let mut piece: RequestPiece = unsafe { std::mem::zeroed() };
+            piece.kind = REQUEST_END;
+            let mut request: RequestIn = unsafe { std::mem::zeroed() };
+            request.head.size = size_of::<RequestIn>() as u32;
+            request.head.op = service::WRITE_REQUEST;
+            request.stream = framed;
+            request.piece = &piece;
+            let mut result: ServiceOut = unsafe { std::mem::zeroed() };
+            result.size = size_of::<ServiceOut>() as u32;
+            write_request(ctx, std::ptr::from_ref(&request).cast(), &mut result);
+            assert_eq!(result.outcome, RawOutcome::of(Outcome::Ready));
+            assert_eq!(*lock(&actual.auth_lookups), vec![old_owner]);
+            let streams = wake.conn_state.streams();
+            let framed = streams.get(&framed).unwrap();
+            assert_eq!(framed.authority.conn.0, new_owner);
+            let Conn::Open(conn) = framed.conn else {
+                panic!("actual request opened")
+            };
+            assert!(actual.slab.get(new_owner, conn).is_ok());
+            drop(streams);
             for stream in [raw.0, held] {
                 let mut byte = [9];
                 // SAFETY: these ABI inputs/outputs contain only plain zero-valid fields; all
@@ -2385,6 +2457,7 @@ mod creating_authority_tests {
         assert!(lock(&actual.closed)
             .iter()
             .all(|(owner, _)| *owner == old_owner));
+        drop(wake.conn_state.retire_binding(&new));
         wake.exports.clear();
     }
 
