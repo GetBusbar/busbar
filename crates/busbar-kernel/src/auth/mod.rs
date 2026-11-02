@@ -1766,7 +1766,7 @@ impl VerbAllowList {
 }
 
 fn admin_verbs_named(
-    app: &crate::state::App,
+    bindings: &crate::config::RoleBindings,
     module: &str,
     principal: &Principal,
     cap: Option<busbar_contract::authz::Scope>,
