@@ -442,3 +442,6 @@ mod kernel_application_central2_config_export;
 
 #[path = "admin_application/admin_custody_outcomes.rs"]
 mod admin_application_admin_custody_outcomes;
+
+#[path = "kernel_application/external_plane_driver_actual.rs"]
+mod kernel_application_external_plane_driver_actual;
