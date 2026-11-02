@@ -13,11 +13,15 @@ use busbar_core_connector::doors::{refresh_named, Dispatched};
 
 #[tokio::test]
 async fn an_apply_refreshes_a_live_transport_and_its_next_dial_spawns() {
+    use busbar_contract::abi::mechanism::call::AbiStr;
     use busbar_contract::abi::sdk::door::abi_str;
-    use busbar_contract::abi::transport::{Destination, IoOut, ReadIn, DEST_PROGRAM};
+    use busbar_contract::abi::transport::{
+        Destination, IoOut, ReadIn, DEST_PROGRAM, READ_END_OF_FRAME,
+    };
     use busbar_contract::services::HostServices;
-    use busbar_core_connector::carrier::Driven;
+    use busbar_core_connector::carrier::{Carried, Driven};
     use busbar_core_connector::doors::bind_on;
+    use busbar_core_connector::framer::FramerDoor;
     use busbar_core_connector::hostio::{Admission, HostIo};
     use busbar_core_connector::spawn_env::HeldEnv;
 
@@ -76,86 +80,112 @@ async fn an_apply_refreshes_a_live_transport_and_its_next_dial_spawns() {
     let plugin =
         crate::root::test_plugins::linked_transport(busbar_transport_stdio::door::door, binding);
     let settings = TransportSettings::default();
-    let door = Dispatched::open_on(plugin, &settings, dispatcher).unwrap();
-    let mut side = Driven::of(&door).expect("the actual carrier owns a side");
+    let door = Arc::new(Dispatched::open_on(plugin, &settings, dispatcher).unwrap());
+    let mut side = Driven::of(door.as_ref()).expect("the actual carrier owns a side");
+    let executable = std::env::current_exe().unwrap();
     let program = busbar_contract::conn::Program::from_settings(&serde_json::json!({
-        "command": "/bin/true"
+        "command": executable,
+        "args": ["--list", "--exact", "__busbar_supervisor_natural_exit_fixture__"]
     }))
     .unwrap();
+    let arguments: Vec<AbiStr> = program
+        .args
+        .iter()
+        .map(|argument| AbiStr {
+            ptr: argument.as_ptr(),
+            len: argument.len(),
+        })
+        .collect();
     let destination = Destination {
         kind: DEST_PROGRAM,
         _reserved: 0,
         authority: abi_str(""),
-        program: abi_str("/bin/true"),
-        args: std::ptr::null(),
-        args_len: 0,
+        program: AbiStr {
+            ptr: program.command.as_ptr(),
+            len: program.command.len(),
+        },
+        args: arguments.as_ptr(),
+        args_len: arguments.len(),
         env: std::ptr::null(),
         env_len: 0,
     };
-    let dial = |side: &mut Driven| {
+    let dial = |side: &mut Driven, key| {
         io.admit(
             side.ticket(),
             Admission::Spawn(program.clone(), HeldEnv::written_only()),
         );
         let mut input = blank_in::<DialIn>();
         input.dest = &destination;
-        input.supervision_key = 159;
+        input.supervision_key = key;
         let mut output = blank_out::<ConnOut>();
         let called = side
-            .cross(&door, Carry::Dial(&mut input, &mut output), None)
+            .cross(door.as_ref(), Carry::Dial(&mut input, &mut output), None)
             .unwrap();
         let settled = io.settle(side.ticket());
         (called.outcome, output.conn, settled)
     };
-    // Five genuine exits stop restart permanently. This avoids racing the first short
-    // backoff when checking that a rejected refresh preserves the supervision state.
+    // Listing an absent test is only a portable short-lived child program, never a test pass.
+    // Five genuine exits hold each member permanently, avoiding a short-backoff timing race.
     for delay in [Some(120), Some(220), Some(420), Some(820), None] {
-        let (outcome, connection, (native, failure)) = dial(&mut side);
-        assert_eq!(outcome, Outcome::Ready, "a fresh or elapsed member spawns");
-        assert!(failure.is_none(), "the real host spawned it: {failure:?}");
-        let native = native.expect("a real child handle");
-        tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            let mut buffer = [0; 8];
-            let mut input = blank_in::<ReadIn>();
-            input.conn = connection;
-            input.buf = buffer.as_mut_ptr();
-            input.cap = buffer.len();
-            let mut output = blank_out::<IoOut>();
-            let called = std::future::poll_fn(|cx| {
-                match side.cross(&door, Carry::Read(&mut input, &mut output), Some(cx)) {
-                    Some(called) => std::task::Poll::Ready(called),
-                    None => std::task::Poll::Pending,
+        for key in [159, 160] {
+            let (outcome, connection, (native, failure)) = dial(&mut side, key);
+            assert_eq!(outcome, Outcome::Ready, "a fresh or elapsed member spawns");
+            assert!(failure.is_none(), "the real host spawned it: {failure:?}");
+            let native = native.expect("a real child handle");
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                let mut total = 0;
+                loop {
+                    let mut buffer = [0; 256];
+                    let mut input = blank_in::<ReadIn>();
+                    input.conn = connection;
+                    input.buf = buffer.as_mut_ptr();
+                    input.cap = buffer.len();
+                    let mut output = blank_out::<IoOut>();
+                    let called = std::future::poll_fn(|cx| {
+                        match side.cross(
+                            door.as_ref(),
+                            Carry::Read(&mut input, &mut output),
+                            Some(cx),
+                        ) {
+                            Some(called) => std::task::Poll::Ready(called),
+                            None => std::task::Poll::Pending,
+                        }
+                    })
+                    .await;
+                    assert_eq!(
+                        called.outcome,
+                        Outcome::Ready,
+                        "the actual child reaches EOF"
+                    );
+                    total += output.len;
+                    assert!(total <= 16 * 1024, "the actual fixture's stdout is bounded");
+                    if output.len == 0 && output.flags & READ_END_OF_FRAME == 0 {
+                        break;
+                    }
                 }
             })
-            .await;
+            .await
+            .expect("the real program exits within its bound");
+            let mut input = blank_in::<ShutIn>();
+            input.conn = connection;
+            let mut output = blank_out::<OutHead>();
             assert_eq!(
-                called.outcome,
+                side.cross(door.as_ref(), Carry::Shut(&mut input, &mut output), None)
+                    .unwrap()
+                    .outcome,
                 Outcome::Ready,
-                "the actual child reaches EOF"
+                "the ended connection retires"
             );
-            assert_eq!(output.len, 0, "/bin/true produces no stdout");
-        })
-        .await
-        .expect("the real program exits within its bound");
-        let mut input = blank_in::<ShutIn>();
-        input.conn = connection;
-        let mut output = blank_out::<OutHead>();
-        assert_eq!(
-            side.cross(&door, Carry::Shut(&mut input, &mut output), None)
-                .unwrap()
-                .outcome,
-            Outcome::Ready,
-            "the ended connection retires"
-        );
-        assert!(
-            io.program_id(native).is_none(),
-            "the ended child was reaped"
-        );
+            assert!(
+                io.program_id(native).is_none(),
+                "the ended child was reaped"
+            );
+        }
         if let Some(delay) = delay {
             tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
         }
     }
-    let (outcome, _, (native, _)) = dial(&mut side);
+    let (outcome, _, (native, _)) = dial(&mut side, 159);
     assert_eq!(
         outcome,
         Outcome::Refused,
@@ -170,7 +200,7 @@ async fn an_apply_refreshes_a_live_transport_and_its_next_dial_spawns() {
         .refresh(&refusing)
         .unwrap_err()
         .contains("did not refresh"));
-    let (outcome, _, (native, _)) = dial(&mut side);
+    let (outcome, _, (native, _)) = dial(&mut side, 159);
     assert_eq!(
         outcome,
         Outcome::Refused,
@@ -182,22 +212,45 @@ async fn an_apply_refreshes_a_live_transport_and_its_next_dial_spawns() {
         refused.is_empty(),
         "the root's named apply is accepted: {refused:?}"
     );
-    let (outcome, connection, (native, failure)) = dial(&mut side);
+    for key in [159, 160] {
+        let (outcome, _, (native, _)) = dial(&mut side, key);
+        assert_eq!(
+            outcome,
+            Outcome::Refused,
+            "an unchanged member's hold survives a settings refresh"
+        );
+        assert!(native.is_none());
+    }
+    // An apply retires a removed/redeclared member by its own supervision key. Ordinary
+    // settings refresh must leave other members' crash histories alone.
+    let retiring: Arc<dyn FramerDoor> = door.clone();
+    Carried::retire_key(&retiring, &io, 159);
+    let (outcome, connection, (native, failure)) = dial(&mut side, 159);
     assert_eq!(
         outcome,
         Outcome::Ready,
-        "the accepted apply releases the hold and the next dial spawns"
+        "the redeclared member's retired key releases its hold and the next dial spawns"
     );
     assert!(
         failure.is_none(),
         "the actual new spawn succeeds: {failure:?}"
     );
-    let native = native.expect("the refreshed member has a real child handle");
+    let native = native.expect("the redeclared member has a real child handle");
+    let (other_outcome, _, (other_native, _)) = dial(&mut side, 160);
+    assert_eq!(
+        other_outcome,
+        Outcome::Refused,
+        "retiring one member leaves its sibling held"
+    );
+    assert!(
+        other_native.is_none(),
+        "the sibling is never spawned by another member's retirement"
+    );
     let mut input = blank_in::<ShutIn>();
     input.conn = connection;
     let mut output = blank_out::<OutHead>();
     assert_eq!(
-        side.cross(&door, Carry::Shut(&mut input, &mut output), None)
+        side.cross(door.as_ref(), Carry::Shut(&mut input, &mut output), None)
             .unwrap()
             .outcome,
         Outcome::Ready
