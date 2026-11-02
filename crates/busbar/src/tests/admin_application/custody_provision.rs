@@ -7,6 +7,8 @@ use busbar_core_admin::admin_state::AppAdmin as _;
 use busbar_kernel::audit_ring;
 use std::sync::Arc;
 
+#[path = "../../../../../dist/default/tests/common/mod.rs"]
+mod common;
 #[path = "../../root/tests/test_plugins.rs"]
 mod plugins;
 
@@ -353,4 +355,272 @@ async fn mint_failure_after_the_provision_commit_still_records_the_committed_gro
         "a retry against the now-existing group does not re-provision"
     );
     serving.abort();
+}
+
+#[tokio::test]
+async fn auto_provision_stops_at_the_group_ceiling() {
+    use std::time::{Duration, Instant};
+    const CHILD: &str = "BUSBAR_ADMIN_GROUP_CEILING_CHILD";
+    const WITNESS: &str = "actual OIDC group ceiling assertions completed";
+    if std::env::var_os(CHILD).is_none() {
+        struct Child(std::process::Child);
+        impl Drop for Child {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let name = std::thread::current()
+            .name()
+            .expect("the test runner names its test thread")
+            .to_string();
+        let mut child = Child(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &name, "--nocapture"])
+                .env(CHILD, "1")
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .expect("start the isolated actual-root test"),
+        );
+        let until = Instant::now() + Duration::from_secs(60);
+        loop {
+            if let Some(status) = child.0.try_wait().unwrap() {
+                use std::io::Read;
+                let mut output = String::new();
+                child
+                    .0
+                    .stdout
+                    .take()
+                    .unwrap()
+                    .read_to_string(&mut output)
+                    .unwrap();
+                assert!(
+                    status.success(),
+                    "the actual-root usage witness failed: {status}: {output}"
+                );
+                assert!(
+                    output.contains(WITNESS),
+                    "the exact child did not complete its assertions: {output}"
+                );
+                return;
+            }
+            assert!(
+                Instant::now() < until,
+                "the actual-root usage witness timed out"
+            );
+            std::thread::park_timeout(Duration::from_millis(5));
+        }
+    }
+
+    crate::dist_root_install::install();
+    let library_path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
+    );
+    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
+        .expect("the actual store statement reads")
+        .expect("the actual store exports its statement");
+    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid")
+        .name;
+    let mut manifest = plugins::manifest(
+        "store",
+        &module,
+        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+    );
+    manifest.statement = Some(hex::encode(statement));
+    let library = std::fs::read(library_path).expect("the actual store library reads");
+    let directory = plugins::scratch("admin-group-ceiling");
+    let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
+    std::fs::write(directory.join("store.tar.gz"), archive)
+        .expect("stage the actual store archive");
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    assert!(
+        settings.is_object(),
+        "the actual store settings are an object"
+    );
+    let oidc_path = common::plugins::token_verifier_cdylib_path()
+        .expect("the freshly built actual OIDC product is required");
+    let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
+        .expect("the actual OIDC statement reads")
+        .expect("the actual OIDC product exports its statement");
+    let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
+        .expect("the actual OIDC statement is valid")
+        .name;
+    common::credentials::install_auth_plugin(&directory, &oidc_module, "test-scope-module", true);
+    let signing = directory.join("signing-key");
+    std::fs::write(&signing, hex::encode([9u8; 32]))
+        .expect("write the actual configured signing key");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+        "providers": {},
+        "models": {},
+        "identity-providers": {
+            "test-scope-module": { "module": oidc_module, "max_admin_scope": "full", "settings": common::credentials::settings("api://admin-group-ceiling") }
+        },
+        "auth": {
+            "chain": [], "admin_auth": ["test-scope-module"], "signing_key": { "file": signing },
+            "key_ttl": "1h",
+            "role_bindings": { "test-scope-module": { "minters": { "admin_scope": "full" } } }
+        },
+        "groups": { "team": {} },
+        "store": { "module": module, "settings": settings },
+        "advanced": { "allow_destinations": ["127.0.0.1"] },
+    }))
+    .expect("the product deployment parses");
+    let mut config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the product deployment resolves");
+    config.limits.max_auto_provisioned_groups = 2;
+    let plugin_config = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: directory.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .expect("the actual Store bootstraps its config authority");
+    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
+        anchor
+            .calls
+            .as_ref()
+            .cloned()
+            .expect("the actual Store exposes typed calls"),
+    )
+    .expect("the actual Store supports conditional config records");
+    let rules = Arc::new(crate::root::door_steps::Rules::default())
+        as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+        config,
+        plugin_config,
+        Some(overlay.clone()),
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+        Some(anchor),
+        true,
+    )
+    .expect("the actual product builds the session deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual Store binds the node book before rates commit");
+    limits
+        .keep()
+        .expect("the product limits commit after the book opens");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+
+    // The original literal test:ceiling-audit actor is now the genuine OIDC subject
+    // oidc:test:ceiling-audit; provider, role and exact audit predicates stay explicit.
+    const ACTOR: &str = "oidc:test:ceiling-audit";
+    static ACCEPTED: std::sync::OnceLock<
+        std::sync::Mutex<Option<tokio::sync::oneshot::Sender<audit_ring::AuditEntry>>>,
+    > = std::sync::OnceLock::new();
+    fn accepted(entry: &audit_ring::AuditEntry) {
+        if entry.action == "key.create" && entry.resource == "key:-" && entry.principal == ACTOR {
+            if let Some(sender) = ACCEPTED.get().and_then(|slot| slot.lock().unwrap().take()) {
+                let _ = sender.send(entry.clone());
+            }
+        }
+    }
+    let token = common::credentials::token_for(
+        "test:ceiling-audit",
+        &["minters"],
+        "api://admin-group-ceiling",
+    );
+    let (router, handle) =
+        busbar_kernel::build_router_with_limits(Arc::new(app), 1 << 20, 0, false);
+    let request = |name: &str, group: &str| {
+        axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/admin/keys")
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::json!({
+                    "name":name,"group":group,"parent":"team",
+                })
+                .to_string(),
+            ))
+            .unwrap()
+    };
+    let first = tokio::time::timeout(
+        Duration::from_secs(10),
+        tower::ServiceExt::oneshot(router.clone(), request("k1", "user:alice")),
+    )
+    .await
+    .expect("the actual first mint is bounded")
+    .unwrap();
+    assert_eq!(
+        first.status(),
+        StatusCode::CREATED,
+        "the first self-mint provisions its leaf"
+    );
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        axum::body::to_bytes(first.into_body(), 64 * 1024),
+    )
+    .await
+    .expect("the actual mint body is bounded")
+    .unwrap();
+    let (send, receive) = tokio::sync::oneshot::channel();
+    ACCEPTED
+        .set(std::sync::Mutex::new(Some(send)))
+        .expect("the isolated observer installs once");
+    busbar_kernel::audit::auditlog::install_accepted_entry_test_hook(accepted);
+    let second = tokio::time::timeout(
+        Duration::from_secs(10),
+        tower::ServiceExt::oneshot(router.clone(), request("k2", "user:bob")),
+    )
+    .await
+    .expect("the actual ceiling mint is bounded")
+    .unwrap();
+    assert_eq!(
+        second.status(),
+        StatusCode::CONFLICT,
+        "the ceiling refuses the next auto-provision"
+    );
+    assert!(
+        !handle.load().groups_registry.contains_key("user:bob"),
+        "and nothing was provisioned"
+    );
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        axum::body::to_bytes(second.into_body(), 64 * 1024),
+    )
+    .await
+    .expect("the actual refusal body is bounded")
+    .unwrap();
+    let recorded = tokio::time::timeout(Duration::from_secs(5), receive)
+        .await
+        .expect("the ceiling refusal audit must be published")
+        .expect("the actual accepted audit callback remains registered");
+    assert_eq!(
+        recorded.outcome,
+        audit_ring::OUTCOME_REJECTED,
+        "the ceiling refusal must write its own `key.create`/rejected audit row"
+    );
+    let third = tokio::time::timeout(
+        Duration::from_secs(10),
+        tower::ServiceExt::oneshot(router, request("k3", "user:alice")),
+    )
+    .await
+    .expect("the actual repeat mint is bounded")
+    .unwrap();
+    assert_eq!(
+        third.status(),
+        StatusCode::CREATED,
+        "a mint that provisions nothing is unaffected by the ceiling"
+    );
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        axum::body::to_bytes(third.into_body(), 64 * 1024),
+    )
+    .await
+    .expect("the actual repeat body is bounded")
+    .unwrap();
+    println!("{WITNESS}");
 }
