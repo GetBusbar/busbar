@@ -37,17 +37,27 @@ impl ConnectorDiagnostics {
     }
 
     fn count(&self, text: &str) -> usize {
-        self.events.lock().unwrap().iter().filter(|s| s.contains(text)).count()
+        self.events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| s.contains(text))
+            .count()
     }
 }
 
 impl tracing::Subscriber for ConnectorDiagnostics {
-    fn register_callsite(&self, _: &'static tracing::Metadata<'static>) -> tracing::subscriber::Interest {
+    fn register_callsite(
+        &self,
+        _: &'static tracing::Metadata<'static>,
+    ) -> tracing::subscriber::Interest {
         // Keep diagnostic callsites available even when another test first visits one.
         tracing::subscriber::Interest::always()
     }
 
-    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool { true }
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        true
+    }
     fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
         tracing::span::Id::from_u64(1)
     }
@@ -57,7 +67,9 @@ impl tracing::Subscriber for ConnectorDiagnostics {
     fn exit(&self, _: &tracing::span::Id) {}
 
     fn event(&self, event: &tracing::Event<'_>) {
-        if *event.metadata().level() > self.level { return; }
+        if *event.metadata().level() > self.level {
+            return;
+        }
         struct Fields(String);
         impl tracing::field::Visit for Fields {
             fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
