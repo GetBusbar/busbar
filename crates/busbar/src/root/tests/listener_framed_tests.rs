@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use std::sync::Arc;
+use std::task::Poll;
 use std::time::Duration;
 
 use axum::Router;
@@ -106,8 +107,18 @@ fn custody_conn(
     tokio::io::DuplexStream,
     super::Conn<tokio::io::DuplexStream>,
 ) {
-    use busbar_core_connector::framer::{Established, Framing};
     let framer = found(Arc::new(H1Accept::new(true))).unwrap();
+    custody_conn_with_framer(router, framer)
+}
+
+fn custody_conn_with_framer(
+    router: Router,
+    framer: DataFramer,
+) -> (
+    tokio::io::DuplexStream,
+    super::Conn<tokio::io::DuplexStream>,
+) {
+    use busbar_core_connector::framer::{Established, Framing};
     let established = Established {
         scheme: Established::scheme_of(false),
         ..Established::default()
@@ -2220,3 +2231,201 @@ async fn a_plain_request_that_declines_detach_keeps_http_400_and_runs_no_plane_e
 #[cfg(feature = "transport-ws")]
 #[path = "listener_real_session_tests.rs"]
 mod real_session_tests;
+
+#[tokio::test]
+async fn eof_errors_an_unfinished_body_without_invalidating_a_piece_end_body() {
+    let _publishing = anonymous_policy().await;
+    let (answers, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let router = Router::new().route(
+        "/capture",
+        axum::routing::post(move |body: axum::body::Body| {
+            let answers = answers.clone();
+            async move {
+                let result = axum::body::to_bytes(body, usize::MAX)
+                    .await
+                    .map_err(|error| error.to_string());
+                answers.send(result).unwrap();
+                "done"
+            }
+        }),
+    );
+    let (mut client, mut conn) = custody_conn(router);
+    custody_head(&mut conn, 3, "/capture");
+    conn.piece(custody_piece(3, b"cut".to_vec(), false, false));
+    custody_head(&mut conn, 5, "/capture");
+    conn.piece(custody_piece(5, b"whole".to_vec(), false, true));
+    assert!(conn.inflows[&3].body.is_some());
+    assert!(conn.inflows[&5].body.is_none());
+    client.shutdown().await.unwrap();
+    std::future::poll_fn(|cx| {
+        assert!(conn.read(cx));
+        Poll::Ready(())
+    })
+    .await;
+    let mut answers = Vec::new();
+    for _ in 0..2 {
+        answers.push(
+            tokio::time::timeout(Duration::from_secs(5), received.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+    }
+    assert!(answers.iter().any(|answer| matches!(answer, Err(error) if error.contains("connection closed before the request body ended"))), "unfinished body must fail: {answers:?}");
+    assert!(
+        answers
+            .iter()
+            .any(|answer| matches!(answer, Ok(bytes) if bytes.as_ref() == b"whole")),
+        "PIECE_END body remains whole: {answers:?}"
+    );
+}
+
+#[derive(Default)]
+struct EofGate {
+    released: std::sync::atomic::AtomicBool,
+    wake: std::sync::Mutex<Option<std::task::Waker>>,
+}
+
+struct EofSide(Arc<EofGate>);
+impl busbar_core_connector::carrier::Side for EofSide {
+    fn ticket(&self) -> busbar_contract::abi::mechanism::ticket::Ticket {
+        busbar_contract::abi::mechanism::ticket::Ticket {
+            slot: 1,
+            generation: 1,
+        }
+    }
+    fn register(&self, waker: &std::task::Waker) {
+        *self.0.wake.lock().unwrap() = Some(waker.clone());
+    }
+}
+
+struct ParkedEof {
+    inner: H1Accept,
+    gate: Arc<EofGate>,
+    // The controlled wire input is owned while the real HTTP fixture's decode is deferred.
+    wire: Vec<u8>,
+}
+impl FramerDoor for ParkedEof {
+    fn facts(&self) -> &busbar_core_connector::framer::DoorFacts {
+        self.inner.facts()
+    }
+    fn accepts(&self) -> bool {
+        self.inner.accepts()
+    }
+    fn instance(&self) -> Option<u64> {
+        self.inner.instance()
+    }
+    fn cross(
+        &self,
+        call: busbar_core_connector::framer::Call<'_>,
+    ) -> busbar_core_connector::framer::Crossed {
+        self.inner.cross(call)
+    }
+    fn framing_side(&self) -> Option<Box<dyn busbar_core_connector::carrier::Side>> {
+        Some(Box::new(EofSide(Arc::clone(&self.gate))))
+    }
+    fn cross_on(
+        &self,
+        _: &dyn busbar_core_connector::carrier::Side,
+        resume: bool,
+        call: busbar_core_connector::framer::Call<'_>,
+    ) -> busbar_core_connector::framer::Crossed {
+        use busbar_contract::abi::mechanism::call::Outcome;
+        use busbar_core_connector::framer::{Call, Crossed};
+        match call {
+            Call::Ingest(input, out) => {
+                if input.end == 0 {
+                    assert!(!resume);
+                    assert_eq!(input.len, self.wire.len());
+                    return Crossed {
+                        outcome: Outcome::Ready,
+                        error: None,
+                    };
+                }
+                if !self.gate.released.load(std::sync::atomic::Ordering::SeqCst) {
+                    return Crossed {
+                        outcome: Outcome::Pending,
+                        error: None,
+                    };
+                }
+                assert!(resume, "EOF completion must resume the parked crossing");
+                let original = (input.bytes, input.len);
+                input.bytes = self.wire.as_ptr();
+                input.len = self.wire.len();
+                let result = self.inner.cross(Call::Ingest(input, out));
+                input.bytes = original.0;
+                input.len = original.1;
+                result
+            }
+            other => self.inner.cross(other),
+        }
+    }
+}
+
+#[tokio::test]
+async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
+    let _publishing = anonymous_policy().await;
+    let wire = b"POST /capture HTTP/1.1\r\nhost: t\r\ncontent-length: 5\r\n\r\nwhole";
+    let gate = Arc::new(EofGate::default());
+    let door: Arc<dyn FramerDoor> = Arc::new(ParkedEof {
+        inner: H1Accept::new(true),
+        gate: Arc::clone(&gate),
+        wire: wire.to_vec(),
+    });
+    let framer = data_framer(Arc::new(move |scheme: &str| {
+        (scheme == DATA_SCHEME).then(|| Arc::clone(&door))
+    }))
+    .unwrap();
+    let (answers, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let router = Router::new().route(
+        "/capture",
+        axum::routing::post(move |body: axum::body::Body| {
+            let answers = answers.clone();
+            async move {
+                let result = axum::body::to_bytes(body, usize::MAX)
+                    .await
+                    .map_err(|error| error.to_string());
+                answers.send(result).unwrap();
+                "done"
+            }
+        }),
+    );
+    let (mut client, mut conn) = custody_conn_with_framer(router, framer);
+    custody_head(&mut conn, 1, "/capture");
+    client.write_all(wire).await.unwrap();
+    std::future::poll_fn(|cx| {
+        assert!(conn.read(cx));
+        Poll::Ready(())
+    })
+    .await;
+    client.shutdown().await.unwrap();
+    std::future::poll_fn(|cx| {
+        assert!(conn.read(cx));
+        Poll::Ready(())
+    })
+    .await;
+    assert!(conn.framing.as_ref().unwrap().parked());
+    assert!(
+        conn.inflows[&1].body.is_some(),
+        "EOF must not finish a still-parked ingest's body"
+    );
+    gate.released
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    if let Some(wake) = gate.wake.lock().unwrap().take() {
+        wake.wake();
+    }
+    std::future::poll_fn(|cx| {
+        assert!(conn.parked(cx));
+        Poll::Ready(())
+    })
+    .await;
+    let result = tokio::time::timeout(Duration::from_secs(5), received.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        result.unwrap().as_ref(),
+        b"whole",
+        "the resumed real decoder's PIECE_END completes the body"
+    );
+}
