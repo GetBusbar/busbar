@@ -456,6 +456,17 @@ impl CommittedLimits {
 
 pub type ConfigProjection = fn(&config::RootCfg) -> std::sync::Arc<dyn std::any::Any + Send + Sync>;
 
+// Keep the slot admission policy over declaration/configuration data: an unopened
+// plane must never be partially served. Fallback declarations remain available.
+pub(crate) fn plane_is_open_for_build(
+    fallback: bool,
+    section: &str,
+    written: &std::collections::BTreeSet<&'static str>,
+    awaiting_restart: &[&str],
+) -> bool {
+    (fallback || written.contains(section)) && (fallback || !awaiting_restart.contains(&section))
+}
+
 pub trait RootRules: Send + Sync {
     fn check(&self, cfg: &config::RootCfg) -> Result<(), String>;
 
@@ -1361,8 +1372,14 @@ pub fn build_app_from_config_with_store(
     > = {
         crate::plane_driver::registry::plane_decls()
             .iter()
-            .filter(|decl| decl.fallback || cfg.plane_sections.contains(decl.config_section))
-            .filter(|decl| decl.fallback || !planes_awaiting_restart.contains(&decl.config_section))
+            .filter(|decl| {
+                plane_is_open_for_build(
+                    decl.fallback,
+                    decl.config_section,
+                    &cfg.plane_sections,
+                    &planes_awaiting_restart,
+                )
+            })
             .filter_map(|decl| {
                 let ctx = crate::plane_driver::registry::BuildCtx {
                     endpoint_slot: cfg.endpoint_resources.get(decl.config_section).cloned(),

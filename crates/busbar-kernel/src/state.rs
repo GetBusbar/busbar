@@ -552,10 +552,16 @@ pub struct AppParts {
 
 #[must_use]
 pub fn planes_awaiting_restart_added(installed: &App, previous: &App) -> Vec<String> {
+    awaiting_restart_added(
+        &installed.planes_awaiting_restart,
+        &previous.planes_awaiting_restart,
+    )
+}
+
+pub(crate) fn awaiting_restart_added(installed: &[String], previous: &[String]) -> Vec<String> {
     installed
-        .planes_awaiting_restart
         .iter()
-        .filter(|s| !previous.planes_awaiting_restart.contains(s))
+        .filter(|s| !previous.contains(s))
         .cloned()
         .collect()
 }

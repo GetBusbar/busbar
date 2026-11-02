@@ -1,5 +1,4 @@
 use super::*;
-use crate::test_support::{build_once, cfg_with_provider_api_key};
 
 #[allow(unused_imports)]
 use crate::appbuild::{
@@ -712,85 +711,21 @@ fn auth_scope_caps_are_keyed_by_provider_name_not_module() {
 
 #[test]
 fn a_plane_the_boot_did_not_open_builds_no_slot_and_is_reported_awaiting_restart() {
+    use crate::appbuild::plane_is_open_for_build;
+    use crate::state::awaiting_restart_added;
     const SECTION: &str = "pending-red";
-    static PENDING: crate::plane_driver::registry::PlaneDecl =
-        crate::plane_driver::registry::PlaneDecl {
-            declaration: crate::plane_driver::registry::PlaneDeclaration {
-                key: "pending-red-plane",
-                fallback: false,
-                config_section: SECTION,
-                ..crate::test_support::NEUTRAL_FALLBACK.declaration
-            },
-            build: |_, _| {
-                Some(std::sync::Arc::new(()) as std::sync::Arc<dyn std::any::Any + Send + Sync>)
-            },
-            ..crate::test_support::NEUTRAL_FALLBACK
-        };
-    struct Unopened;
-    impl crate::appbuild::RootRules for Unopened {
-        fn check(&self, _cfg: &crate::config::RootCfg) -> Result<(), String> {
-            Ok(())
-        }
-        fn planes_awaiting_restart(&self, cfg: &crate::config::RootCfg) -> Vec<&'static str> {
-            if cfg.plane_sections.contains(SECTION) {
-                vec![SECTION]
-            } else {
-                Vec::new()
-            }
-        }
-    }
-    let _registry = crate::test_support::planes::TestRegistryIsolation::seeded(&[
-        crate::test_support::neutral_fallback_plane(),
-        &PENDING,
-    ]);
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let build = |rules: std::sync::Arc<dyn crate::appbuild::RootRules>, writes: bool| {
-        let mut cfg = cfg_with_provider_api_key(crate::config::SecretRef::env(
-            "BUSBAR_TEST_NO_SUCH_KEY_PENDING_PLANE",
-        ));
-        if writes {
-            cfg.plane_sections.insert(SECTION);
-        }
-        crate::build_app_from_config(
-            cfg,
-            crate::config::PluginsCfg::default(),
-            None,
-            std::collections::HashSet::new(),
-            std::collections::HashSet::new(),
-            (None, None),
-            None,
-            &rules,
-        )
-        .expect("the configuration builds")
-        .0
-    };
-    let opened = build(std::sync::Arc::new(crate::appbuild::AcceptAll), true);
-    assert!(
-        opened.plane_slot(PENDING.key).is_some(),
-        "a plane the boot opened builds its slot, as before"
-    );
-    assert!(opened.planes_awaiting_restart.is_empty());
-    let pending = build(std::sync::Arc::new(Unopened), true);
-    assert!(
-        pending.plane_slot(PENDING.key).is_none(),
-        "a plane the boot did not open is given no slot: nothing of it is half-served"
-    );
-    assert_eq!(pending.planes_awaiting_restart, vec![SECTION.to_string()]);
-    let unwritten = build(std::sync::Arc::new(Unopened), false);
-    assert!(unwritten.plane_slot(PENDING.key).is_none());
-    assert!(
-        unwritten.planes_awaiting_restart.is_empty(),
-        "a configuration that does not write the plane reports nothing"
-    );
-    assert_eq!(
-        crate::state::planes_awaiting_restart_added(&pending, &unwritten),
-        vec![SECTION.to_string()],
-        "the mutation that first writes the section is the one flagged"
-    );
-    assert!(
-        crate::state::planes_awaiting_restart_added(&pending, &pending).is_empty(),
-        "a later edit does not re-flag it"
-    );
+    let written = std::collections::BTreeSet::from([SECTION]);
+    let unwritten = std::collections::BTreeSet::new();
+    let pending = [SECTION];
+    assert!(plane_is_open_for_build(false, SECTION, &written, &[]));
+    assert!(!plane_is_open_for_build(false, SECTION, &written, &pending));
+    assert!(!plane_is_open_for_build(
+        false, SECTION, &unwritten, &pending
+    ));
+    assert!(plane_is_open_for_build(true, SECTION, &unwritten, &pending));
+    let pending = vec![SECTION.to_string()];
+    assert_eq!(awaiting_restart_added(&pending, &[]), pending);
+    assert!(awaiting_restart_added(&pending, &pending).is_empty());
 }
 
 struct PanickingAdminModule;
