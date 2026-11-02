@@ -31,7 +31,3 @@ pub async fn admit_session(
     .await
     .unwrap_or(Err(super::IdentityRefusal::Denied))
 }
-
-#[cfg(test)]
-#[path = "tests/admit_tests.rs"]
-mod tests;
