@@ -8,7 +8,7 @@ mod auth_plugin_chain_trust;
 mod plugin_preflight_scan;
 
 #[cfg(feature = "auth-admin-tokens")]
-#[path = "../../../../dist/default/tests/admin_cross_plane/main.rs"]
+#[path = "../../../../dist/default/tests/product/admin_cross_plane/main.rs"]
 mod admin_cross_plane;
 
 #[path = "oauth2_application/mod.rs"]
@@ -208,3 +208,57 @@ mod plugin_inspect_envelope;
 
 #[path = "admin_application/split_admin_listener.rs"]
 mod split_admin_listener;
+
+#[path = "kernel_application/auth_dpop_tests.rs"]
+mod auth_dpop_tests;
+
+#[path = "kernel_application/auth_preflight_tests.rs"]
+mod auth_preflight_tests;
+
+#[path = "admin_application/admin_all_reads_guard.rs"]
+mod admin_all_reads_guard;
+
+#[path = "admin_application/admin_auth_row_projection.rs"]
+mod admin_auth_row_projection;
+
+#[path = "admin_application/admin_budget_group_contracts.rs"]
+mod admin_budget_group_contracts;
+
+#[path = "admin_application/admin_configuration_health.rs"]
+mod admin_configuration_health;
+
+#[path = "admin_application/admin_delegated_authority.rs"]
+mod admin_delegated_authority;
+
+#[path = "admin_application/admin_key_queries_and_audit.rs"]
+mod admin_key_queries_and_audit;
+
+#[path = "admin_application/admin_locked_configuration.rs"]
+mod admin_locked_configuration;
+
+#[path = "admin_application/admin_mint_policy_ceilings.rs"]
+mod admin_mint_policy_ceilings;
+
+#[path = "admin_application/admin_restart_refusal.rs"]
+mod admin_restart_refusal;
+
+#[path = "admin_application/admin_settings_boundaries.rs"]
+mod admin_settings_boundaries;
+
+#[path = "admin_application/admin_settings_persistence.rs"]
+mod admin_settings_persistence;
+
+#[path = "admin_application/admin_token_ttl_ceiling.rs"]
+mod admin_token_ttl_ceiling;
+
+#[path = "admin_application/config_at_rest_recovery.rs"]
+mod config_at_rest_recovery;
+
+#[path = "admin_application/config_key_transactions.rs"]
+mod config_key_transactions;
+
+#[path = "admin_application/config_price_activation.rs"]
+mod config_price_activation;
+
+#[path = "admin_application/config_secret_transaction.rs"]
+mod config_secret_transaction;
