@@ -278,10 +278,10 @@ enum Row<'r> {
     /// A wire this build links.
     Linked(&'r LinkedTransport),
     /// A transport door dropped into `plugins.dir`.
-    Door(&'static DroppedDoor),
+    Door(&'r DroppedDoor),
 }
 
-impl Row<'_> {
+impl<'r> Row<'r> {
     fn key(self) -> &'static str {
         match self {
             Row::Linked(row) => (row.key)(),
@@ -289,7 +289,7 @@ impl Row<'_> {
         }
     }
 
-    fn composes_over(self) -> &'static [&'static str] {
+    fn composes_over(self) -> &'r [&'static str] {
         match self {
             Row::Linked(row) => (row.composes_over)(),
             Row::Door(door) => door.composes_over.as_slice(),
@@ -339,7 +339,10 @@ pub fn compose(
         };
         let registered = Registered {
             key: row.key(),
-            composes_over: row.composes_over(),
+            composes_over: match row {
+                Row::Linked(row) => std::borrow::Cow::Borrowed((row.composes_over)()),
+                Row::Door(door) => std::borrow::Cow::Owned(door.composes_over.clone()),
+            },
             composed_over: None,
         };
         // ONE ENTRY, ITS SCHEMES ITS CLAIMS (TRANSPORT-STACK, ONE ENTRY PER PLUGIN): every scheme
@@ -353,7 +356,7 @@ pub fn compose(
         for key in also {
             let claimed = Registered {
                 key,
-                composes_over: &[],
+                composes_over: std::borrow::Cow::Borrowed(&[]),
                 composed_over: None,
             };
             built.push((claimed, Arc::clone(&transport)));
