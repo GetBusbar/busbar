@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-mod linked;
-
 use busbar_kernel::config::plane_sections::{config_sections_from, refuse_cross_plane_reference};
 use busbar_kernel::config::{deploy_from_yaml_str, resolve, RootCfg};
 use busbar_kernel::plane_driver::registry::{
@@ -14,17 +12,52 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 fn builtin_plane_decls() -> &'static [&'static PlaneDecl] {
-    linked::planes()
+    register_planes();
+    static PLANES: std::sync::OnceLock<Vec<&'static PlaneDecl>> = std::sync::OnceLock::new();
+    PLANES.get_or_init(|| {
+        ["pools", "tools", "agents"]
+            .into_iter()
+            .map(|section| {
+                busbar_kernel::plane_driver::registry::plane_decl_for_config_section(section)
+                    .unwrap_or_else(|| panic!("the distribution registers the `{section}:` plane"))
+            })
+            .collect()
+    })
 }
 
 fn register_planes() {
-    linked::install();
+    crate::dist_root_install::install();
+}
+
+fn owning(section: &str) -> &'static PlaneDecl {
+    builtin_plane_decls()
+        .iter()
+        .copied()
+        .find(|decl| {
+            decl.config_section == section || decl.owned_config_sections.contains(&section)
+        })
+        .unwrap_or_else(|| panic!("the distribution registers the owner of `{section}:`"))
+}
+
+fn fallback() -> &'static PlaneDecl {
+    builtin_plane_decls()
+        .iter()
+        .copied()
+        .find(|decl| decl.fallback)
+        .expect("the distribution registers its fallback plane")
+}
+
+fn door_section(decl: &PlaneDecl) -> &'static str {
+    decl.owned_config_sections
+        .first()
+        .copied()
+        .unwrap_or(decl.config_section)
 }
 
 fn canonical_keys() -> Vec<&'static str> {
     ["pools", "tools", "agents"]
         .iter()
-        .map(|s| linked::owning(s).key)
+        .map(|s| owning(s).key)
         .collect()
 }
 
@@ -150,7 +183,7 @@ fn installed_planes_fold_ahead_and_the_builtin_order_is_unchanged() {
 
 #[test]
 fn a_same_key_registration_is_skipped_and_the_first_copy_wins() {
-    let agents = linked::owning("agents");
+    let agents = owning("agents");
     let from_the_crate: &'static PlaneDecl = Box::leak(Box::new(PlaneDecl {
         declaration: agents.declaration,
         ..WIDGET_PLANE
@@ -200,7 +233,7 @@ fn every_plane_key_answers_from_its_declaration() {
 
     assert_eq!(
         busbar_kernel::plane_driver::dispatch::fallback_key(),
-        linked::fallback().key
+        fallback().key
     );
     for decl in builtin_plane_decls() {
         let by_key = busbar_kernel::plane_driver::dispatch::plane_decl(decl.key);
@@ -210,15 +243,33 @@ fn every_plane_key_answers_from_its_declaration() {
     }
 }
 
+fn fallback_protocols() -> Vec<&'static str> {
+    register_planes();
+    let candidates = crate::root::boot::DOOR_CANDIDATES
+        .get()
+        .expect("the actual composition root discovers its planes");
+    candidates
+        .iter()
+        .find_map(|candidate| {
+            let registration = busbar_plugin_loader::dispatch::kinds::plane::stated_registration(
+                candidate,
+                Arc::new(|| Err("declaration inspection does not bind a plane".into())),
+            )
+            .expect("the actual plane states its protocol declaration");
+            registration.fallback.then_some(registration.dialects)
+        })
+        .expect("the actual fallback door declares its protocols")
+}
+
 #[test]
 fn the_fallback_decl_reads_the_protocol_registry() {
-    linked::install();
+    register_planes();
     assert_eq!(
         busbar_kernel::plane_driver::dispatch::wire_format_names(
             busbar_kernel::plane_driver::dispatch::fallback_key()
         ),
-        busbar_kernel_testkit::ingress::protocols::known_protocols(),
-        "the fallback plane's dialects are the registered protocols, not a literal"
+        fallback_protocols(),
+        "the fallback plane's dialects are its actual registered protocols"
     );
     assert!(
         busbar_kernel::plane_driver::dispatch::wire_formats(
@@ -296,10 +347,28 @@ fn the_scope_kind_index_is_the_exact_inverse_of_scope_kind_at() {
 }
 
 #[test]
-#[should_panic(expected = "install_planes called after the plane list was first read")]
 fn install_planes_after_first_read_panics() {
-    let _ = busbar_kernel::config::plane_sections::config_sections();
-    install_planes(&[]);
+    const CHILD: &str = "BUSBAR_REGISTRY_INSTALL_AFTER_READ_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        let _ = busbar_kernel::config::plane_sections::config_sections();
+        install_planes(&[]);
+        panic!("install_planes accepted registration after the first read");
+    }
+    let test_name = concat!(module_path!(), "::install_planes_after_first_read_panics")
+        .split_once("::")
+        .expect("the mounted test has a module path")
+        .1;
+    let output = std::process::Command::new(std::env::current_exe().expect("the test executable"))
+        .args(["--exact", test_name, "--nocapture"])
+        .env(CHILD, "1")
+        .output()
+        .expect("run the registry first-read case in a fresh process");
+    assert!(!output.status.success(), "late registration must panic");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("install_planes called after the plane list was first read"),
+        "the production registry refuses late installation: {stderr}"
+    );
 }
 
 static ALPHA_CLAIMS_FOO: PlaneDecl = PlaneDecl {
@@ -435,8 +504,8 @@ fn resolved(yaml: &str) -> RootCfg {
 }
 
 fn receiving_cfg() -> RootCfg {
-    let owner = linked::owning("tools");
-    let door = linked::door_section(owner);
+    let owner = owning("tools");
+    let door = door_section(owner);
 
     let key = owner.key;
     resolved(&format!(
@@ -510,7 +579,7 @@ fn r1_every_declared_path_resolves_an_admission() {
         }
     }
 
-    let multi = linked::owning("agents");
+    let multi = owning("agents");
     let multi_claims = (multi.claims)(slots[multi.key]);
     assert!(
         multi_claims.len() >= 2,
@@ -643,6 +712,46 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
     assert!(dispatch.mounted_keys().is_empty(), "and it mounts nothing");
 }
 
+fn boot_app() -> Arc<busbar_kernel::state::App> {
+    register_planes();
+    let store = crate::LINKED
+        .stores
+        .iter()
+        .find(|store| store.1)
+        .expect("the actual distribution links an ephemeral product store");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+        "providers": {},
+        "models": {},
+        "store": { "module": store.0 },
+        "auth": { "chain": [], "admin_auth": [] },
+    }))
+    .expect("the actual app deployment parses");
+    let config = busbar_kernel::config::resolve(&deploy, &HashMap::new())
+        .expect("the actual app deployment resolves");
+    let rules = Arc::new(crate::root::door_steps::Rules::default())
+        as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+        config,
+        Default::default(),
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+    )
+    .expect("the production root builds the app and opens its real store through the ABI");
+    limits.keep().expect("the actual app's limits commit");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+    assert!(
+        app.governance.is_some(),
+        "the actual store supplies governance"
+    );
+    Arc::new(app)
+}
+
 #[test]
 fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
     static REFUSES_START: PlaneDecl = PlaneDecl {
@@ -693,7 +802,9 @@ fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
         resolve_provider: None,
         door: None,
     };
-    let ctx = busbar_kernel_testkit::test_support::planes::empty_boot_context();
+    let app = boot_app();
+    let handle = Arc::new(busbar_kernel::state::AppHandle::new(app));
+    let ctx = busbar_kernel::plane_driver::registry::BootCtx::for_start(&handle, None);
 
     let err = busbar_kernel::boot::run_start_hooks(&[&REFUSES_START], &ctx)
         .expect_err("a plane whose start returns Err must refuse boot, not continue");
@@ -804,7 +915,14 @@ fn r2_boot_a_plane_whose_hydrate_errs_refuses_boot() {
         resolve_provider: None,
         door: None,
     };
-    let ctx = busbar_kernel_testkit::test_support::planes::empty_boot_context();
+    let app = boot_app();
+    let store = busbar_kernel::store::plane_view::PlaneStoreView::narrow(
+        app.governance
+            .as_ref()
+            .expect("the real app has governance")
+            .store(),
+    );
+    let ctx = busbar_kernel::plane_driver::registry::BootCtx::for_hydrate(Some(store), &app);
 
     let err = busbar_kernel::boot::run_hydrate_hooks(&[&REFUSES_HYDRATE], &ctx)
         .expect_err("a plane whose hydrate returns Err must refuse boot");
@@ -852,7 +970,7 @@ fn r3_no_vocabulary_collision_across_the_mounted_set() {
 
     let mut keys = mounted_keys;
     keys.sort_unstable();
-    let mut want = vec![linked::owning("tools").key, linked::owning("agents").key];
+    let mut want = vec![owning("tools").key, owning("agents").key];
     want.sort_unstable();
     assert_eq!(keys, want);
 }
@@ -897,7 +1015,7 @@ fn a_delegation_only_multi_binding_plane_mounts_nothing() {
          agents:\n  planner:\n    url: \"https://agent.example/planner\"\n    \
          pin: { mechanism: unpinned }\n",
     );
-    let agents = linked::owning("agents");
+    let agents = owning("agents");
 
     let owned = built_slots(&cfg);
     let slot = owned
