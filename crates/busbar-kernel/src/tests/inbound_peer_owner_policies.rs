@@ -10,12 +10,14 @@ fn mixed_peer_answers_never_replace_their_per_request_verdicts() {
     for provisional in [Judged::Identity, Judged::Pass] {
         assert!(
             inherited_peer_answers(&providers, &request_auths, &[Some(provisional)], &[], &[])
-                .is_empty()
+                .next()
+                .is_none()
         );
     }
     for terminal in [Judged::Denied, Judged::Overloaded] {
-        let copied =
-            inherited_peer_answers(&providers, &request_auths, &[Some(terminal)], &[], &[]);
+        let copied: Vec<_> =
+            inherited_peer_answers(&providers, &request_auths, &[Some(terminal)], &[], &[])
+                .collect();
         assert_eq!(copied.len(), 1);
         assert_eq!((copied[0].index, copied[0].answer), (0, Some(terminal)));
     }
@@ -30,13 +32,14 @@ fn peer_only_identity_survives_an_earlier_head_pass_and_a_mixed_provisional_iden
             subject: "fallback-peer".to_string(),
             ..Default::default()
         };
-        let copied = inherited_peer_answers(
+        let copied: Vec<_> = inherited_peer_answers(
             &providers,
             &request_auths,
             &[first, Some(Judged::Identity)],
             &[None, Some(peer_identity)],
             &[],
-        );
+        )
+        .collect();
         let mut request_answers = [None, None];
         let mut inherited_identity = None;
         for inherited in copied {
@@ -87,13 +90,14 @@ fn inherited_peer_positions_keep_the_exact_replay_authority_and_provider_order()
         "peer".to_string(),
         "unanswered".to_string(),
     ];
-    let copied = inherited_peer_answers(
+    let copied: Vec<_> = inherited_peer_answers(
         &providers,
         &HashSet::from(["request".to_string()]),
         &[Some(Judged::Identity), Some(Judged::Identity), None],
         &[Some(identity.clone()), Some(identity), None],
         &[Some(replay.clone()), Some(replay.clone())],
-    );
+    )
+    .collect();
     assert_eq!(copied.iter().map(|p| p.index).collect::<Vec<_>>(), [1, 2]);
     assert_eq!(
         copied[0].identity.as_ref().unwrap().subject,
