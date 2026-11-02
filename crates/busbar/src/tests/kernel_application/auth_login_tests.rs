@@ -109,8 +109,6 @@ async fn inbound_provider_retains_the_actual_opened_instance() {
         "advanced": { "allow_destinations": ["127.0.0.1"] }
     }))
     .expect("the actual deployment parses");
-    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
-        .expect("the actual deployment resolves");
     let plugin_config = busbar_kernel::config::PluginsCfg {
         enabled: true,
         dir: directory.to_string_lossy().into_owned(),

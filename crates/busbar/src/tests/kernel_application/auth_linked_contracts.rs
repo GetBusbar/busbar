@@ -96,7 +96,6 @@ async fn actual_operator_and_signing_file_reload_preserves_governance_and_fails_
         "advanced": {"allow_destinations": ["127.0.0.1"]}
     }))
     .unwrap();
-    let config = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
     let plugin_config = busbar_kernel::config::PluginsCfg {
         enabled: true,
         dir: directory.to_string_lossy().into_owned(),

@@ -116,7 +116,10 @@ fn gate_granted(reject: Option<(u16, &'static str)>, send_prompt: bool) -> (Seen
     )
 }
 
-struct Rewriter;
+struct Rewriter {
+    name: &'static str,
+    refuses_failed_rewrite: bool,
+}
 
 #[async_trait::async_trait]
 impl RoutingPolicy for Rewriter {
@@ -130,7 +133,10 @@ impl RoutingPolicy for Rewriter {
         Ok(RoutingDecision::Abstain)
     }
     fn name(&self) -> &'static str {
-        "rewriter"
+        self.name
+    }
+    fn refuses_failed_rewrite(&self) -> bool {
+        self.refuses_failed_rewrite
     }
     async fn transform(&self, _: &RoutingRequest<'_>, _: Duration) -> TransformOutcome {
         TransformOutcome::Rewrite(RewriteReply {
@@ -186,7 +192,13 @@ async fn no_hook_bound_projects_nothing() {
 async fn a_rewrite_is_applied_by_the_plane_and_re_pushed_on_every_attempt() {
     let (seen, g) = gate(None);
     let hooks = bound(
-        vec![(Duration::from_millis(500), Arc::new(Rewriter))],
+        vec![(
+            Duration::from_millis(500),
+            Arc::new(Rewriter {
+                name: "rewriter",
+                refuses_failed_rewrite: false,
+            }),
+        )],
         vec![(0, g)],
     );
     let r = rig_with_hooks(
@@ -346,7 +358,13 @@ async fn a_load_bearing_rewrite_that_cannot_answer_refuses_with_the_shared_503()
 }
 
 fn resolved_rewrite(on_error: &str) -> Vec<(Duration, Arc<dyn RoutingPolicy>)> {
-    super::actual_rewrite(on_error)
+    vec![(
+        Duration::from_millis(500),
+        Arc::new(Rewriter {
+            name: "rw",
+            refuses_failed_rewrite: on_error == "reject",
+        }),
+    )]
 }
 
 #[tokio::test]
@@ -1234,7 +1252,13 @@ async fn reported(hooks: BoundHooks) -> Vec<HooksRan> {
 async fn the_stage_reports_each_hook_that_ran_in_order_with_its_head() {
     let (_, g) = gate(None);
     let reports = reported(bound(
-        vec![(Duration::from_millis(500), Arc::new(Rewriter))],
+        vec![(
+            Duration::from_millis(500),
+            Arc::new(Rewriter {
+                name: "rewriter",
+                refuses_failed_rewrite: false,
+            }),
+        )],
         vec![(0, g)],
     ))
     .await;
