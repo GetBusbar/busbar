@@ -2,7 +2,30 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use crate::test_support::{metric_sum, LaneSpec, TestApp};
+use crate::test_support::{LaneSpec, TestApp};
+
+fn metric_sum(name: &str, labels: &[(&str, &str)]) -> f64 {
+    crate::snapshot::snapshot()
+        .expect("the actual recorder is installed")
+        .iter()
+        .flat_map(|family| &family.samples)
+        .filter(|sample| {
+            sample.name == name
+                && labels.iter().all(|(key, value)| {
+                    sample
+                        .labels
+                        .iter()
+                        .any(|(held_key, held_value)| held_key == key && held_value == value)
+                })
+        })
+        .map(|sample| {
+            sample
+                .value
+                .parse::<f64>()
+                .expect("a numeric metric sample")
+        })
+        .sum()
+}
 
 fn model_plane_key() -> &'static str {
     crate::test_support::register_neutral_test_plane();
@@ -50,7 +73,7 @@ fn test_bank_multithread_adds_sum_exactly_under_concurrent_scrape() {
         .collect();
 
     for _ in 0..50 {
-        let _ = crate::snapshot::render();
+        let _ = crate::snapshot::snapshot();
     }
     for w in writers {
         w.join().unwrap();
