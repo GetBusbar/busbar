@@ -560,6 +560,38 @@ pub fn planes_awaiting_restart_added(installed: &App, previous: &App) -> Vec<Str
         .collect()
 }
 
+// The snapshot's ownership-bearing identity is moved together without consulting a root,
+// subscribing the journal, or constructing any runtime capability.
+struct SnapshotFields {
+    root_rules: Arc<dyn crate::appbuild::RootRules>,
+    amendments: Arc<crate::audit::amend::NodeAmendments>,
+    request_id_counter: Arc<std::sync::atomic::AtomicU64>,
+    config_version: u64,
+    public_url: Option<String>,
+    login_methods: Arc<crate::auth::login::LoginMethods>,
+    export_projections: crate::export::projection::ProjectionUnion,
+}
+
+fn snapshot_fields(
+    root_rules: Arc<dyn crate::appbuild::RootRules>,
+    amendments: Arc<crate::audit::amend::NodeAmendments>,
+    request_id_counter: Arc<std::sync::atomic::AtomicU64>,
+    config_version: u64,
+    public_url: Option<String>,
+    login_methods: Arc<crate::auth::login::LoginMethods>,
+    export_projections: crate::export::projection::ProjectionUnion,
+) -> SnapshotFields {
+    SnapshotFields {
+        root_rules,
+        amendments,
+        request_id_counter,
+        config_version,
+        public_url,
+        login_methods,
+        export_projections,
+    }
+}
+
 impl App {
     pub(crate) fn assemble(
         parts: AppParts,
@@ -632,6 +664,23 @@ impl App {
             boot_route_paths,
             planes_awaiting_restart,
         } = parts;
+        let SnapshotFields {
+            root_rules,
+            amendments,
+            request_id_counter,
+            config_version,
+            public_url,
+            login_methods,
+            export_projections,
+        } = snapshot_fields(
+            root_rules,
+            amendments,
+            request_id_counter,
+            config_version,
+            public_url,
+            login_methods,
+            export_projections,
+        );
         Self {
             tslots,
             fallback_runtime_key,
