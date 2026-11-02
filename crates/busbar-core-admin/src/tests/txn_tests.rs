@@ -864,11 +864,17 @@ async fn cancelling_a_handler_future_does_not_release_the_mutation_domain() {
 
 /// A `HookEnv` whose secret resolver's PLUGIN arm blocks for `delay`. In production that arm is
 /// `DynSecret::resolve` — a synchronous `transport_call` into a dlopened `kind: secret` plugin, and
-/// behind it a Vault / AWS-SM round trip. The registry is empty, so every hook still resolves to
-/// "gate absent"; the SECRET resolution happens first and is what this measures.
+/// behind it a Vault / AWS-SM round trip. The registry declares the secret-bearing setting, but
+/// the hook axis still resolves the module to "gate absent"; SECRET resolution happens first
+/// and is what this measures.
 fn parking_secret_hook_env(delay: Duration) -> busbar_kernel::hooks::HookEnv {
     busbar_kernel::hooks::HookEnv::new(
-        busbar_kernel::test_support::rows::empty(),
+        busbar_kernel::test_support::rows::Rows::new()
+            .with_dropped_secret_slots(
+                busbar_kernel::test_support::rows::row("some-hook-plugin", "", "hook"),
+                &["licenseKey"],
+            )
+            .into_rows(),
         Arc::new(busbar_kernel::config::secret::SecretResolver::with_plugin(
             Box::new(move |_module: &str, _settings: &str| {
                 std::thread::sleep(delay);
