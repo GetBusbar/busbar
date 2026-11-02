@@ -96,8 +96,12 @@ async fn without_an_authorization_server_a_dpop_presentation_is_no_credential() 
         None,
         &rules,
         Some(anchor),
+        true,
     )
     .expect("the actual product builds the session deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual Store binds rate-card history and usage recovery before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();

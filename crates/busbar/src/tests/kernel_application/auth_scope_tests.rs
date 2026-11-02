@@ -58,7 +58,7 @@ async fn test_dry_run_empty_admin_chain_is_not_full() {
     };
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
         None,
@@ -67,8 +67,13 @@ async fn test_dry_run_empty_admin_chain_is_not_full() {
         (None, None),
         None,
         &rules,
+        None,
+        true,
     )
     .expect("the actual product builds the session deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual Store binds rate-card history and usage recovery before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();

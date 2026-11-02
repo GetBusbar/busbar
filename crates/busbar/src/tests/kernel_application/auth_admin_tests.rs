@@ -96,8 +96,12 @@ async fn admin_plugin_full_binding_allows_mutation() {
         None,
         &rules,
         Some(anchor),
+        true,
     )
     .expect("the actual product builds the session deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual Store binds rate-card history and usage recovery before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -227,8 +231,12 @@ async fn admin_max_admin_scope_caps_binding() {
         None,
         &rules,
         Some(anchor),
+        true,
     )
     .expect("the actual product builds the session deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual Store binds rate-card history and usage recovery before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -353,8 +361,12 @@ async fn admin_plugin_readonly_binding_get_ok_post_403() {
         None,
         &rules,
         Some(anchor),
+        true,
     )
     .expect("the actual product builds the session deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual Store binds rate-card history and usage recovery before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -515,8 +527,12 @@ async fn roleless_external_admin_principal_denied() {
         None,
         &rules,
         Some(anchor),
+        true,
     )
     .expect("the actual product builds the session deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual Store binds rate-card history and usage recovery before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -635,8 +651,12 @@ async fn forbidden_admin_requests_audit_once_per_window() {
         None,
         &rules,
         Some(anchor),
+        true,
     )
     .expect("the actual product builds the session deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual Store binds rate-card history and usage recovery before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -772,8 +792,12 @@ async fn the_admin_gate_admits_only_the_listed_verbs() {
         None,
         &rules,
         Some(anchor),
+        true,
     )
     .expect("the actual product builds the session deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual Store binds rate-card history and usage recovery before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -964,8 +988,12 @@ fn actual_operator_requests_keep_credentials_out_of_core_logs() {
                 None,
                 &rules,
                 Some(anchor),
+                true,
             )
             .expect("the actual product builds the session deployment");
+            limits.stage_boot();
+            let _book = crate::root::boot::book(&app, &module)
+                .expect("the actual Store binds rate-card history and usage recovery before activation");
             limits.keep().expect("the product limits commit");
             if let Some(rotate) = rotate {
                 rotate();
@@ -1196,8 +1224,13 @@ fn a_slow_admin_door_does_not_stall_healthz() {
             None,
             &rules,
             Some(anchor),
+            true,
         )
         .expect("the actual product builds the session deployment");
+        limits.stage_boot();
+        let _book = crate::root::boot::book(&app, &module).expect(
+            "the actual Store binds rate-card history and usage recovery before activation",
+        );
         limits.keep().expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate();
@@ -1386,8 +1419,12 @@ async fn external_admin_verifier_receives_bearer_and_admin_header_candidates() {
         None,
         &rules,
         Some(anchor),
+        true,
     )
     .expect("the actual product builds the session deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual Store binds rate-card history and usage recovery before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -1571,8 +1608,12 @@ async fn every_request_is_verified_by_the_door_and_the_kernel_caches_no_verdict(
         None,
         &rules,
         Some(anchor),
+        true,
     )
     .expect("the actual product builds the session deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual Store binds rate-card history and usage recovery before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
