@@ -6,6 +6,9 @@ use crate::carrier::{Carry, Side};
 use crate::framer::{Call, Crossed, DoorFacts};
 use std::time::{Duration, Instant};
 
+#[path = "deadline_waiter_tests.rs"]
+mod deadline_waiter_tests;
+
 struct Counted(
     TestDoor,
     std::sync::atomic::AtomicUsize,
@@ -35,6 +38,13 @@ impl FramerDoor for Counted {
 }
 
 fn pending(timeout_ms: u64) -> (Connector, Arc<Counted>, Arc<Mutex<Option<crate::Judged>>>) {
+    pending_waking(timeout_ms, Arc::new(|_, _| {}))
+}
+
+fn pending_waking(
+    timeout_ms: u64,
+    wake: crate::WakeTicket,
+) -> (Connector, Arc<Counted>, Arc<Mutex<Option<crate::Judged>>>) {
     let carrier = Arc::new(Counted(
         TestDoor::identity("bytes"),
         Default::default(),
@@ -53,7 +63,7 @@ fn pending(timeout_ms: u64) -> (Connector, Arc<Counted>, Arc<Mutex<Option<crate:
             None
         }),
         None,
-        Arc::new(|_, _| {}),
+        wake,
     );
     let mut need = config_targeted_need("");
     need.timeout_ms = timeout_ms;
