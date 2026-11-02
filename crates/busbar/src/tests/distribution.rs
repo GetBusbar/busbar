@@ -361,3 +361,48 @@ mod admin_application_admin_usage_model_key;
 
 #[path = "../root/tests/serve_a2a_parity.rs"]
 mod a2a_actual_parity;
+
+#[path = "kernel_application/auth_data_gate_tests.rs"]
+mod kernel_application_auth_data_gate_tests;
+
+#[path = "kernel_application/central2_disk_config.rs"]
+mod kernel_application_central2_disk_config;
+
+#[path = "kernel_application/central2_linked_products.rs"]
+mod kernel_application_central2_linked_products;
+
+#[path = "kernel_application/central2_preflight.rs"]
+mod kernel_application_central2_preflight;
+
+#[path = "kernel_application/central2_provider_boot.rs"]
+mod kernel_application_central2_provider_boot;
+
+#[path = "kernel_application/central2_rate_apply.rs"]
+mod kernel_application_central2_rate_apply;
+
+#[path = "kernel_application/central2_root_rules.rs"]
+mod kernel_application_central2_root_rules;
+
+#[path = "kernel_application/central2_router_boundaries.rs"]
+mod kernel_application_central2_router_boundaries;
+
+#[path = "kernel_application/central2_validator_order.rs"]
+mod kernel_application_central2_validator_order;
+
+#[path = "kernel_application/misc_snapshot_fields.rs"]
+mod kernel_application_misc_snapshot_fields;
+
+#[path = "admin_application/admin_warning_contracts.rs"]
+mod admin_application_admin_warning_contracts;
+
+#[path = "admin_application/service_bootstrap_rollback.rs"]
+mod admin_application_service_bootstrap_rollback;
+
+#[path = "admin_application/service_cross_usage.rs"]
+mod admin_application_service_cross_usage;
+
+#[path = "admin_application/service_store_usage.rs"]
+mod admin_application_service_store_usage;
+
+#[path = "admin_application/service_usage_adjustment.rs"]
+mod admin_application_service_usage_adjustment;
