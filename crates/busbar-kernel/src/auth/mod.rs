@@ -1997,6 +1997,17 @@ fn consumed_from_carriers(
     consumed
 }
 
+fn verified_caller_credential(
+    inbound: Option<Option<&busbar_contract::redacted::Secret<String>>>,
+    client_token: Option<&str>,
+) -> Option<CallerCredential> {
+    match inbound {
+        Some(credential) => credential
+            .map(|credential| CallerCredential::verified(credential.expose(&crate::seal::lend()))),
+        None => client_token.map(CallerCredential::verified),
+    }
+}
+
 async fn ticket_verdict(
     signed: bool,
     keys_in_chain: bool,
@@ -2134,13 +2145,12 @@ pub(crate) async fn auth_middleware(
     };
 
     let mut consumed = gate_consumed(&app, is_admin, dpop_proven);
-    consumed.caller =
-        match &inbound {
-            Some(admission) => admission.inner.credential.as_ref().map(|credential| {
-                CallerCredential::verified(credential.expose(&crate::seal::lend()))
-            }),
-            None => client_token.as_deref().map(CallerCredential::verified),
-        };
+    consumed.caller = verified_caller_credential(
+        inbound
+            .as_ref()
+            .map(|admission| admission.inner.credential.as_ref()),
+        client_token.as_deref(),
+    );
 
     req.extensions_mut()
         .insert(CallerToken(client_token.clone()));
