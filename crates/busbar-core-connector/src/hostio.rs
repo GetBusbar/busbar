@@ -488,14 +488,23 @@ impl HostListener {
     }
 }
 
-/// A released handle's end: a program is its handle's own, and ends with it.
+/// End a released handle before its last descriptor closes.
 fn ended(e: &Entry) {
-    if let Kind::Program(p) = &e.kind {
-        let _ = p
-            .child
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .start_kill();
+    match &e.kind {
+        Kind::Listener(listener) => {
+            // A concurrent fork can hold a copy of this close-on-exec descriptor until exec.
+            // Dropping our descriptor alone leaves that socket listening in the interval. Stop
+            // the shared socket first, so close/reap/retirement takes effect before returning.
+            let _ = socket2::SockRef::from(listener.get_ref()).shutdown(Shutdown::Both);
+        }
+        Kind::Program(p) => {
+            let _ = p
+                .child
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .start_kill();
+        }
+        Kind::Stream { .. } => {}
     }
 }
 
