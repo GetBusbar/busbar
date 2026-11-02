@@ -613,6 +613,84 @@ async fn actual_inbound_foreign_binding_and_session_custody() {
     );
     drop(receipt);
     inbound.framing_ended(61);
+    // An open line allocates authority only at hand-in. Asking it for auth
+    // answers LINE_OPEN synchronously and never enters an asynchronous verifier.
+    inbound
+        .install(
+            107,
+            3,
+            Listener {
+                guests: GuestList::seal(vec![Line {
+                    route: Route {
+                        methods: busbar_contract::abi::transport::route::METHOD_GET,
+                        path_form: PATH_EXACT,
+                        path: "/healthz".into(),
+                        fields: Vec::new(),
+                        rung: 0,
+                    },
+                    claimant: Claimant::Plane("inbound-open-custody".into()),
+                    dialect: 0,
+                    auth: LineAuth::None,
+                    upgrade: None,
+                    offered: AuthPoints::HEAD,
+                }])
+                .unwrap(),
+                auths: Default::default(),
+                body_limit: 16,
+                app: Arc::clone(&app),
+                door_refusals: Vec::new(),
+                ids: vec![7107],
+                signed_ingress: Arc::new(|_, _| false),
+                scope: None,
+            },
+        )
+        .unwrap();
+    let open_auth = inbound.specs(107, 3).unwrap()[0].auth;
+    let mut health = Head::default();
+    health.method = "GET".into();
+    health.target = "/healthz".into();
+    let (flow, open_unit) = inbound
+        .hand_in(HandIn {
+            owner: 107,
+            generation: 3,
+            auth: open_auth,
+            unit: UnitRef::NONE,
+            line: 0,
+            conn: 71,
+            stream: 1,
+            framing: Some(71),
+            head: health.clone(),
+        })
+        .unwrap();
+    assert_eq!(flow, FLOW_CONTINUE);
+    assert!(!open_unit.is_none(), "an open hand-in mints its unit");
+    assert_eq!(
+        inbound
+            .unit_secret(107, open_unit.id)
+            .map(|(_, generation, line)| (generation, line)),
+        Some((3, 0))
+    );
+    assert!(matches!(
+        inbound.auth_call(
+            Call {
+                owner: 107,
+                generation: 3,
+                auth: open_auth,
+                unit: UnitRef::NONE,
+                point: POINT_HEAD,
+                conn: 71,
+                stream: 1,
+                framing: 71,
+                head: health,
+                body: None,
+                deadline: None
+            },
+            Box::new(|_| panic!("an open line invokes no verifier"))
+        ),
+        Some(Err(busbar_kernel::inbound::LINE_OPEN))
+    ));
+    inbound.exit(open_unit.id);
+
     // The transferred request's receipt owns its original genuine application,
     // even after both framing incarnations and all installed tables are retired.
     // This observes the public lifetime contract without exposing receipt internals.
