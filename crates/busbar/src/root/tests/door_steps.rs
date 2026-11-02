@@ -4920,7 +4920,10 @@ pub(crate) mod door_boundary {
             "messages": [{"role": "user", "content": "hi"}],
             "max_tokens": 16
         });
-        let mut routes = busbar_kernel_testkit::routes::base_data_route_method_view(&rig.app);
+        let mut routes = busbar_kernel::base_data_core_lines(&rig.app)
+            .into_iter()
+            .map(|(path, method, auth)| (path, method.as_str().to_string(), auth))
+            .collect::<Vec<_>>();
         routes.extend(rig.door_table.iter().cloned());
         let mut walked: Vec<String> = Vec::new();
         for (pattern, verb, auth) in &routes {
@@ -5032,7 +5035,10 @@ pub(crate) mod door_boundary {
             Some("client-1"),
         );
 
-        let mut routes = busbar_kernel_testkit::routes::base_data_route_method_view(&rig.app);
+        let mut routes = busbar_kernel::base_data_core_lines(&rig.app)
+            .into_iter()
+            .map(|(path, method, auth)| (path, method.as_str().to_string(), auth))
+            .collect::<Vec<_>>();
         routes.extend(rig.door_table.iter().cloned());
         let admissible: Vec<String> = rig
             .door_table

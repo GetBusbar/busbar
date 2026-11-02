@@ -96,7 +96,7 @@ async fn serve_with_gov(gov: Arc<GovState>) -> (std::net::SocketAddr, tokio::tas
 
 #[tokio::test]
 async fn test_admin_v1_info_reports_version_features_and_topology() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -160,7 +160,7 @@ async fn test_admin_v1_info_reports_version_features_and_topology() {
 #[tokio::test]
 async fn test_admin_v1_topology_reads_pools_models_providers() {
     use busbar_kernel_testkit::test_support::LaneSpec;
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
 
@@ -226,7 +226,7 @@ async fn test_admin_v1_topology_reads_pools_models_providers() {
 
 #[tokio::test]
 async fn test_api_root_unmatched_paths_speak_the_admin_envelope() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -266,7 +266,7 @@ async fn test_api_root_unmatched_paths_speak_the_admin_envelope() {
 #[tokio::test]
 async fn an_unmatched_admin_path_reads_no_body() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -289,7 +289,7 @@ async fn an_unmatched_admin_path_reads_no_body() {
 
 #[tokio::test]
 async fn test_keys_surface_governance_disabled_semantics() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let mut app = crate::new_test_app().build();
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
@@ -341,7 +341,7 @@ async fn test_keys_surface_governance_disabled_semantics() {
 #[tokio::test]
 async fn test_admin_v1_pool_detail_live_status() {
     use busbar_kernel_testkit::test_support::LaneSpec;
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app()
@@ -430,7 +430,7 @@ async fn test_admin_v1_pool_detail_live_status() {
 #[tokio::test]
 async fn test_admin_v1_pool_detail_reports_the_per_pool_breaker_cell() {
     use busbar_kernel_testkit::test_support::LaneSpec;
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let mut app = crate::new_test_app()
@@ -496,7 +496,7 @@ async fn test_admin_v1_pool_detail_reports_the_per_pool_breaker_cell() {
 
 #[tokio::test]
 async fn test_admin_v1_admin_auth_read() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -526,7 +526,7 @@ async fn test_admin_v1_admin_auth_read() {
 #[tokio::test]
 async fn test_admin_v1_get_single_key() {
     use busbar_kernel::governance::NewKeySpec;
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (minted, minted_secret) = gov
@@ -579,7 +579,7 @@ async fn test_admin_v1_get_single_key() {
 #[tokio::test]
 async fn test_admin_v1_usage_meters_by_model_and_key() {
     use busbar_kernel::governance::NewKeySpec;
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
 
     let gov = gov_with_signer(store, Some("admintok".to_string()));
@@ -696,7 +696,7 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
 #[cfg(unix)]
 #[tokio::test]
 async fn test_admin_v1_hook_settings_patch_commit_on_ack_and_schema() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let env =
         busbar_kernel_testkit::test_support::test_hook_env(&["test-hook"], Default::default());
     let store = Arc::new(MemoryStore::new());
@@ -783,7 +783,7 @@ async fn test_admin_v1_hook_settings_patch_commit_on_ack_and_schema() {
 #[cfg(unix)]
 #[tokio::test]
 async fn test_admin_v1_plugin_schema_falls_back_to_manifest_when_describe_answers_null() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let manifest_schema = serde_json::json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -865,7 +865,7 @@ async fn test_admin_v1_plugin_schema_falls_back_to_manifest_when_describe_answer
 
 #[tokio::test]
 async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let mut app = crate::new_test_app()
@@ -955,7 +955,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
 
 #[tokio::test]
 async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let dir = std::env::temp_dir().join(format!("busbar-reload-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let providers_path = dir.join("providers.yaml");
@@ -1108,7 +1108,7 @@ providers: {}
 
 #[tokio::test]
 async fn test_admin_v1_mutation_rate_limit_config_class() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -1147,7 +1147,7 @@ async fn test_admin_v1_mutation_rate_limit_config_class() {
 
 #[tokio::test]
 async fn test_admin_v1_scope_ladder_e2e_with_group_mapped_principals() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let mut app = crate::new_test_app().governance(gov).build();
@@ -1295,7 +1295,7 @@ async fn test_admin_v1_scope_ladder_e2e_with_group_mapped_principals() {
 
 #[tokio::test]
 async fn test_admin_v1_idempotency_key_is_principal_scoped() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let mut app = crate::new_test_app().governance(gov).build();
@@ -1402,7 +1402,7 @@ impl busbar_contract::auth_calls::AuthCalls for CachingDoor {
 
 #[tokio::test]
 async fn test_admin_v1_credential_cache_and_flush_endpoint() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let door = Arc::new(CachingDoor(std::sync::atomic::AtomicUsize::new(0)));
@@ -1488,7 +1488,7 @@ async fn test_admin_v1_credential_cache_and_flush_endpoint() {
 
 #[tokio::test]
 async fn test_admin_v1_put_auth_accepts_a_renamed_operator_provider() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
 
@@ -1541,7 +1541,7 @@ async fn test_admin_v1_put_auth_accepts_a_renamed_operator_provider() {
 
 #[tokio::test]
 async fn test_admin_v1_put_auth_dry_run_guard() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let mut app = crate::new_test_app().governance(gov).build();
@@ -1677,7 +1677,7 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
 
 #[tokio::test]
 async fn test_admin_v1_put_auth_applies_an_empty_chain_as_1_5_5_did() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -1712,7 +1712,7 @@ async fn test_admin_v1_put_auth_applies_an_empty_chain_as_1_5_5_did() {
 
 #[tokio::test]
 async fn test_admin_v1_put_auth_refused_on_locked_config() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
 
@@ -1748,7 +1748,7 @@ async fn test_admin_v1_put_auth_refused_on_locked_config() {
 
 #[tokio::test]
 async fn test_admin_v1_config_apply_refused_on_locked_config() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app()
@@ -1800,7 +1800,7 @@ async fn test_admin_v1_config_apply_refused_on_locked_config() {
 
 #[tokio::test]
 async fn test_admin_v1_key_idempotent_mint_and_if_match() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -1873,7 +1873,7 @@ async fn test_admin_v1_key_idempotent_mint_and_if_match() {
 
 #[tokio::test]
 async fn test_admin_v1_idempotency_reservation_frees_on_failure() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -2104,7 +2104,7 @@ impl busbar_kernel::governance::RecordStore for SlowNthPutKeyStore {
 
 #[tokio::test]
 async fn an_idempotency_key_survives_a_client_disconnect_mid_mint() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let inner = Arc::new(MemoryStore::new());
     let (entered_tx, mut entered_rx) = tokio::sync::mpsc::channel::<()>(1);
     let (landed_tx, mut landed_rx) = tokio::sync::mpsc::channel::<String>(1);
@@ -2243,7 +2243,7 @@ async fn an_idempotency_key_survives_a_client_disconnect_mid_mint() {
 
 #[tokio::test]
 async fn test_admin_v1_key_rotate_and_pagination() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov.clone()).build();
@@ -2358,7 +2358,7 @@ async fn test_admin_v1_key_rotate_and_pagination() {
 
 #[tokio::test]
 async fn test_admin_v1_rotate_idempotent_replay_survives_the_ttl_sweep() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -2407,7 +2407,7 @@ async fn test_admin_v1_rotate_idempotent_replay_survives_the_ttl_sweep() {
 
 #[tokio::test]
 async fn test_admin_v1_rotate_idempotency_in_flight_is_not_replayed_as_complete() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let inner = Arc::new(MemoryStore::new());
 
     let slow_store: Arc<dyn busbar_kernel::governance::RecordStore> =
@@ -2478,7 +2478,7 @@ async fn test_admin_v1_rotate_idempotency_in_flight_is_not_replayed_as_complete(
 
 #[tokio::test]
 async fn create_and_rotate_operation_namespaces_survive_cache_loss() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     for create_first in [true, false] {
         for lose_cache in [false, true] {
             let store = Arc::new(MemoryStore::new());
@@ -2559,7 +2559,7 @@ async fn create_and_rotate_operation_namespaces_survive_cache_loss() {
 
 #[tokio::test]
 async fn test_admin_v1_rotate_idempotency_cache_key_does_not_collide_across_colon_joined_ids() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -2649,7 +2649,7 @@ async fn test_admin_v1_rotate_idempotency_cache_key_does_not_collide_across_colo
 
 #[tokio::test]
 async fn test_admin_v1_put_hook_replaces_live_with_guards() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -2752,7 +2752,7 @@ async fn test_admin_v1_put_hook_replaces_live_with_guards() {
 
 #[tokio::test]
 async fn test_admin_v1_config_versions_rollback_and_diff() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -2846,7 +2846,7 @@ async fn test_admin_v1_config_versions_rollback_and_diff() {
 
 #[tokio::test]
 async fn test_admin_v1_register_hook_takes_effect_live() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -3007,7 +3007,7 @@ async fn test_admin_v1_register_hook_takes_effect_live() {
 
 #[tokio::test]
 async fn test_admin_v1_audit_records_mutations() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -3084,7 +3084,7 @@ async fn test_admin_v1_audit_records_mutations() {
 
 #[tokio::test]
 async fn test_admin_v1_hook_mutation_404_is_audited() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -3151,7 +3151,7 @@ async fn test_admin_v1_hook_mutation_404_is_audited() {
 #[tokio::test]
 async fn test_admin_v1_list_keys_filters() {
     use busbar_kernel::governance::NewKeySpec;
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (minted, _secret) = gov
@@ -3206,7 +3206,7 @@ async fn test_admin_v1_list_keys_filters() {
 #[tokio::test]
 async fn test_admin_v1_list_keys_group_filter() {
     use busbar_kernel::governance::NewKeySpec;
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let mint = |name: &str, group: Option<&str>| {
@@ -3289,7 +3289,7 @@ async fn test_admin_v1_list_keys_group_filter() {
 
 #[tokio::test]
 async fn test_admin_v1_config_plane_golden_path() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("t".to_string()));
     let overlay = TestOverlayStore::new();
@@ -3386,7 +3386,7 @@ async fn test_admin_v1_config_plane_golden_path() {
 
 #[tokio::test]
 async fn test_admin_v1_hook_register_persists_to_overlay() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let overlay = TestOverlayStore::new();
@@ -3433,7 +3433,7 @@ async fn test_admin_v1_hook_register_persists_to_overlay() {
 
 #[tokio::test]
 async fn test_admin_v1_config_apply_preserves_the_persisted_overlay() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let overlay = TestOverlayStore::new();
@@ -3507,7 +3507,7 @@ async fn test_admin_v1_config_apply_preserves_the_persisted_overlay() {
 
 #[tokio::test]
 async fn test_admin_v1_audit_records_key_mutations() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -3550,7 +3550,7 @@ async fn test_admin_v1_audit_records_key_mutations() {
 
 #[tokio::test]
 async fn test_admin_v1_base_hook_is_read_only_via_api() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let base: busbar_kernel::config::HookCfg = serde_json::from_value(serde_json::json!({
@@ -3613,7 +3613,7 @@ async fn test_admin_v1_base_hook_is_read_only_via_api() {
 
 #[tokio::test]
 async fn base_hook_delete_conflict_outranks_a_stale_if_match() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let base: busbar_kernel::config::HookCfg = serde_json::from_value(serde_json::json!({
@@ -3644,7 +3644,7 @@ async fn base_hook_delete_conflict_outranks_a_stale_if_match() {
 
 #[tokio::test]
 async fn test_admin_v1_delete_hook_takes_effect_live() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -3701,7 +3701,7 @@ async fn test_admin_v1_delete_hook_takes_effect_live() {
 
 #[tokio::test]
 async fn test_admin_v1_hooks_read_surface() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
 
@@ -3778,7 +3778,7 @@ async fn test_admin_v1_hooks_read_surface() {
 
 #[tokio::test]
 async fn test_admin_v1_hook_health_best_effort() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let mk = |plugin: &str| busbar_kernel::config::HookCfg {
@@ -3847,7 +3847,7 @@ async fn test_admin_v1_hook_health_best_effort() {
 
 #[tokio::test]
 async fn test_admin_v1_plugins_catalog_by_type() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let gate = busbar_kernel::config::HookCfg {
@@ -3940,7 +3940,7 @@ async fn test_admin_v1_plugins_catalog_by_type() {
 
 #[tokio::test]
 async fn test_admin_v1_auth_read() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -3967,7 +3967,7 @@ async fn test_admin_v1_auth_read() {
 
 #[tokio::test]
 async fn test_admin_v1_auth_read_keys_chain_reports_1_5_5_open() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let mut cfg = busbar_kernel::config::AuthCfg::default_none();
@@ -4001,7 +4001,7 @@ async fn test_admin_v1_auth_read_keys_chain_reports_1_5_5_open() {
 
 #[tokio::test]
 async fn test_admin_v1_config_validate_dry_run() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -4087,7 +4087,7 @@ async fn test_admin_v1_config_validate_dry_run() {
 
 #[tokio::test]
 async fn test_admin_v1_config_validate_accepts_1_6_0_additive_top_level_keys() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -4128,7 +4128,7 @@ async fn test_admin_v1_config_validate_accepts_1_6_0_additive_top_level_keys() {
 
 #[tokio::test]
 async fn test_admin_v1_config_apply_accepts_the_boot_shape_and_refuses_an_unknown_key() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -4175,7 +4175,7 @@ async fn test_admin_v1_config_apply_accepts_the_boot_shape_and_refuses_an_unknow
 #[tokio::test]
 async fn test_admin_v1_config_effective_snapshot_no_secrets() {
     use busbar_kernel_testkit::test_support::LaneSpec;
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let gate = busbar_kernel::config::HookCfg {
@@ -4280,7 +4280,7 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
     use std::collections::{BTreeMap, BTreeSet};
     const PREFIX: &str = crate::v1::contract::ADMIN_PREFIX;
     const METHODS: [&str; 5] = ["GET", "POST", "PUT", "PATCH", "DELETE"];
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     crate::ensure_seam();
 
     let every_plane: Vec<&'static str> = busbar_kernel::plane_driver::registry::plane_decls()
@@ -4559,7 +4559,7 @@ fn literal_admin_routes(src: &str) -> Vec<(String, String)> {
 
 #[tokio::test]
 async fn test_admin_v1_all_reads_require_admin_token() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -4603,7 +4603,7 @@ async fn test_admin_v1_all_reads_require_admin_token() {
 
 #[tokio::test]
 async fn minting_a_recoverable_credential_without_an_at_rest_key_is_refused_and_says_what_to_set() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_without_at_rest_key(store.clone(), Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -4656,7 +4656,7 @@ async fn minting_a_recoverable_credential_without_an_at_rest_key_is_refused_and_
 
 #[tokio::test]
 async fn test_create_key_with_aws_credential_returns_secret_once_and_hides_on_reads() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -4727,7 +4727,7 @@ async fn test_create_key_with_aws_credential_returns_secret_once_and_hides_on_re
 
 #[tokio::test]
 async fn test_create_list_usage_roundtrip_through_spawn_blocking() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -4786,7 +4786,7 @@ async fn test_create_list_usage_roundtrip_through_spawn_blocking() {
 
 #[tokio::test]
 async fn test_create_key_rejects_removed_budget_period_field() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -4833,7 +4833,7 @@ async fn test_create_key_rejects_removed_budget_period_field() {
 
 #[tokio::test]
 async fn test_create_key_rejects_unsafe_labels() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -4924,7 +4924,7 @@ async fn test_create_key_rejects_unsafe_labels() {
 
 #[tokio::test]
 async fn test_create_key_name_length_boundary_is_exact() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -4975,7 +4975,7 @@ async fn test_create_key_name_length_boundary_is_exact() {
 
 #[tokio::test]
 async fn test_admin_malformed_body_returns_generic_400_no_input_fragment() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -5032,7 +5032,7 @@ async fn test_admin_malformed_body_returns_generic_400_no_input_fragment() {
 
 #[tokio::test]
 async fn test_create_key_rejects_removed_max_budget_cents_field() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -5078,7 +5078,7 @@ async fn test_create_key_rejects_removed_max_budget_cents_field() {
 
 #[tokio::test]
 async fn test_patch_key_enables_disables_and_validates_at_create_parity() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -5146,7 +5146,7 @@ async fn test_patch_key_enables_disables_and_validates_at_create_parity() {
 
 #[tokio::test]
 async fn test_create_key_rejects_removed_rate_limit_fields() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -5198,7 +5198,7 @@ async fn test_create_key_rejects_removed_rate_limit_fields() {
 
 #[tokio::test]
 async fn test_patch_key_three_state_group_and_enabled() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
 
@@ -5324,7 +5324,7 @@ async fn test_patch_key_three_state_group_and_enabled() {
 fn test_create_key_unconfigured_allowed_pool_is_nonfatal_and_quiet() {
     use tracing_subscriber::layer::SubscriberExt as _;
 
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
 
@@ -5409,7 +5409,7 @@ fn test_create_key_unconfigured_allowed_pool_is_nonfatal_and_quiet() {
 
 #[tokio::test]
 async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
 
     let principal = busbar_kernel::auth::Principal {
         id: "delegated-admin".to_string(),
@@ -5480,7 +5480,7 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin() {
 
 #[tokio::test]
 async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     const CEIL: u64 = 24 * 3600;
 
     async fn mint(body: serde_json::Value) -> (u16, Arc<GovState>, Option<u64>) {
@@ -5552,7 +5552,7 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default() {
 
 #[tokio::test]
 async fn proof_max_ttl_ceiling_clamps_a_rotated_token() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     const CEIL: u64 = 24 * 3600;
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
@@ -5607,7 +5607,7 @@ async fn proof_max_ttl_ceiling_clamps_a_rotated_token() {
 
 #[tokio::test]
 async fn proof_role_mint_ceiling_bounds_a_delegated_admin() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     const ROLE_TTL: u64 = 3600;
 
     let principal = busbar_kernel::auth::Principal {
@@ -5702,7 +5702,7 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin() {
 
 #[tokio::test]
 async fn test_delete_existing_key_returns_200() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (key, _secret) = gov
@@ -5736,7 +5736,7 @@ async fn test_delete_existing_key_returns_200() {
 
 #[tokio::test]
 async fn test_delete_missing_key_returns_404() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
 
@@ -5877,7 +5877,7 @@ impl busbar_kernel::governance::RecordStore for CountingStore {
 
 #[tokio::test]
 async fn test_single_key_reads_use_get_key_not_list_keys() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(CountingStore::new());
     let gov = gov_with_signer(store.clone(), Some("admintok".to_string()));
     let (key_a, _) = gov
@@ -5998,7 +5998,7 @@ async fn test_single_key_reads_use_get_key_not_list_keys() {
 
 #[tokio::test]
 async fn test_single_key_writes_use_get_key_for_their_existence_check() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(CountingStore::new());
     let gov = gov_with_signer(store.clone(), Some("admintok".to_string()));
     let (key_a, _) = gov
@@ -6081,7 +6081,7 @@ async fn test_single_key_writes_use_get_key_for_their_existence_check() {
 
 #[tokio::test]
 async fn test_delete_key_is_not_idempotent_204() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (key, _secret) = gov
@@ -6118,7 +6118,7 @@ async fn test_delete_key_is_not_idempotent_204() {
 
 #[tokio::test]
 async fn test_concurrent_delete_returns_exactly_one_204() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (key, _secret) = gov
@@ -6173,7 +6173,7 @@ async fn test_concurrent_delete_returns_exactly_one_204() {
 
 #[tokio::test]
 async fn test_patch_after_delete_404s_and_does_not_recreate_key() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (key, _secret) = gov
@@ -6348,7 +6348,7 @@ impl busbar_kernel::governance::RecordStore for BarrierStore {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_patch_interleaved_with_delete_never_resurrects_key() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel::<()>(1);
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
     let store = Arc::new(BarrierStore {
@@ -6429,7 +6429,7 @@ async fn test_patch_interleaved_with_delete_never_resurrects_key() {
 
 #[tokio::test]
 async fn test_rotate_interleaved_with_delete_never_resurrects_key() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel::<()>(1);
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
     let store = Arc::new(BarrierStore {
@@ -6516,7 +6516,7 @@ fn test_existence_gate_is_claimable_without_runtime() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_cancelled_patch_keeps_gate_held_for_full_store_mutation() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel::<()>(1);
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
     let store = Arc::new(BarrierStore {
@@ -6596,7 +6596,7 @@ async fn test_cancelled_patch_keeps_gate_held_for_full_store_mutation() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_delete_of_another_key_is_not_held_behind_a_patch_parked_in_the_store() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel::<()>(1);
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
     let store = Arc::new(BarrierStore {
@@ -6664,7 +6664,7 @@ async fn a_delete_of_another_key_is_not_held_behind_a_patch_parked_in_the_store(
 #[tokio::test]
 #[allow(clippy::field_reassign_with_default)]
 async fn test_create_key_budget_group_and_labels_roundtrip_and_missing_group_400() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
 
@@ -6764,7 +6764,7 @@ fn budget_limit(cents: u64) -> busbar_kernel::config::groups::LimitCfg {
 
 #[tokio::test]
 async fn test_mint_auto_provisions_leaf_from_child_default() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
 
@@ -6882,7 +6882,7 @@ async fn test_mint_auto_provisions_leaf_from_child_default() {
 
 #[tokio::test]
 async fn test_mint_parent_mismatch_is_409() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let groups = std::collections::BTreeMap::from([
@@ -6949,7 +6949,7 @@ async fn test_mint_parent_mismatch_is_409() {
 
 #[tokio::test]
 async fn test_max_keys_per_principal_cap_trips() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let groups = std::collections::BTreeMap::from([
@@ -7013,7 +7013,7 @@ async fn test_max_keys_per_principal_cap_trips() {
 
 #[tokio::test]
 async fn test_admin_v1_idempotency_reservation_frees_on_at_cap_refusal() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let groups = std::collections::BTreeMap::from([(
@@ -7092,7 +7092,7 @@ async fn test_admin_v1_idempotency_reservation_frees_on_at_cap_refusal() {
 #[tokio::test]
 async fn test_admin_v1_patch_no_op_on_an_already_counted_key_is_not_an_admission() {
     use busbar_kernel::governance::NewKeySpec;
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let mint = |name: &str| {
@@ -7151,7 +7151,7 @@ async fn test_admin_v1_patch_no_op_on_an_already_counted_key_is_not_an_admission
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_max_keys_per_principal_atomic_under_concurrent_mint() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let groups = std::collections::BTreeMap::from([(
@@ -7226,7 +7226,7 @@ async fn test_max_keys_per_principal_atomic_under_concurrent_mint() {
 
 #[tokio::test]
 async fn test_signed_mint_returns_token_and_expiry_never_stored() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -7281,7 +7281,7 @@ async fn test_signed_mint_returns_token_and_expiry_never_stored() {
 
 #[tokio::test]
 async fn test_signed_mint_expiry_parsing_matrix() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -7348,7 +7348,7 @@ async fn test_signed_mint_expiry_parsing_matrix() {
 
 #[tokio::test]
 async fn test_signed_mint_verify_then_delete_denies() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov.clone()).await;
@@ -7396,7 +7396,7 @@ async fn test_signed_mint_verify_then_delete_denies() {
 
 #[tokio::test]
 async fn test_signed_revoke_denylists_without_deleting() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov.clone()).await;
@@ -7459,7 +7459,7 @@ async fn test_signed_revoke_denylists_without_deleting() {
 
 #[tokio::test]
 async fn test_key_state_distinguishes_disable_revoke_and_tombstone() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov.clone()).await;
@@ -7564,7 +7564,7 @@ async fn test_key_state_distinguishes_disable_revoke_and_tombstone() {
 
 #[tokio::test]
 async fn test_list_keys_include_tombstoned() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov.clone()).await;
@@ -7641,7 +7641,7 @@ async fn test_list_keys_include_tombstoned() {
 
 #[tokio::test]
 async fn test_signed_mint_group_none_and_pool_acl_matrix() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov.clone()).await;
@@ -7692,7 +7692,7 @@ async fn test_signed_mint_group_none_and_pool_acl_matrix() {
 
 #[tokio::test]
 async fn test_signing_key_rotate_reports_kid_and_revoke_all() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -7789,7 +7789,7 @@ groups:
 
 #[tokio::test]
 async fn test_admin_v1_overlay_reset_groups_reverts_to_base() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let (dir, config_path, providers_path) = write_reset_fixture("groups");
     let overlay = TestOverlayStore::new();
     let store = Arc::new(MemoryStore::new());
@@ -7945,7 +7945,7 @@ async fn test_admin_v1_overlay_reset_groups_reverts_to_base() {
 
 #[tokio::test]
 async fn test_admin_v1_overlay_reset_hooks_reverts_to_base() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let (dir, config_path, providers_path) = write_reset_fixture("hooks");
     let overlay = TestOverlayStore::new();
     let store = Arc::new(MemoryStore::new());
@@ -8017,7 +8017,7 @@ async fn test_admin_v1_overlay_reset_hooks_reverts_to_base() {
 
 #[tokio::test]
 async fn test_admin_v1_overlay_reset_stale_if_match_conflicts() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let (dir, config_path, providers_path) = write_reset_fixture("ifmatch");
     let overlay = TestOverlayStore::new();
     let store = Arc::new(MemoryStore::new());
@@ -8082,7 +8082,7 @@ async fn test_admin_v1_overlay_reset_stale_if_match_conflicts() {
 
 #[tokio::test]
 async fn test_admin_v1_overlay_reset_unknown_section_400() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -8108,7 +8108,7 @@ async fn test_admin_v1_overlay_reset_unknown_section_400() {
 
 #[tokio::test]
 async fn test_admin_v1_overlay_reset_empty_section_is_idempotent_noop() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let overlay = TestOverlayStore::new();
@@ -8161,7 +8161,7 @@ async fn test_admin_v1_overlay_reset_empty_section_is_idempotent_noop() {
 
 #[tokio::test]
 async fn test_admin_v1_overlay_reset_requires_full_scope() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -8200,7 +8200,7 @@ async fn settings_test_app(
     tokio::sync::MutexGuard<'static, ()>,
 ) {
     let limits_lock = busbar_kernel_testkit::limits::LIMITS_TEST_LOCK.lock().await;
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
 
     let (dir, config_path, providers_path) = write_reset_fixture(&format!("settings-{tag}"));
     let overlay = TestOverlayStore::new();
@@ -8336,7 +8336,7 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
 
 #[tokio::test]
 async fn test_admin_v1_config_settings_survives_a_real_store_reload() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let (dir, config_path, providers_path) = write_reset_fixture("boot-default-overlay");
     let default_overlay = TestOverlayStore::new();
     let store = Arc::new(MemoryStore::new());
@@ -8833,7 +8833,7 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_too_new() {
 
 #[tokio::test]
 async fn test_admin_v1_config_settings_persist_failure_does_not_install_limits() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
 
     let _limits_lock = busbar_kernel_testkit::limits::LIMITS_TEST_LOCK.lock().await;
     let (dir, config_path, providers_path) = write_reset_fixture("limits-persist-fail");
@@ -8894,7 +8894,7 @@ async fn test_admin_v1_config_settings_persist_failure_does_not_install_limits()
 
 #[tokio::test]
 async fn test_admin_v1_config_settings_persist_failure_does_not_rotate_gov_credentials() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let dir = std::env::temp_dir().join(format!(
         "busbar-settings-gov-rotate-persist-fail-{}-{}",
         std::process::id(),
@@ -9111,7 +9111,7 @@ async fn settings_test_app_no_overlay(
     std::net::SocketAddr,
     tokio::task::JoinHandle<()>,
 ) {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let (dir, config_path, providers_path) = write_reset_fixture(&format!("settings-no-ov-{tag}"));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
@@ -9317,7 +9317,7 @@ async fn test_admin_v1_restart_refuses_when_it_cannot_restart() {
         );
         return;
     }
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
 
     let baseline_seq = busbar_kernel::audit::auditlog::AUDIT_LOG
         .list_filtered(0, 1, None, None)
@@ -9407,7 +9407,7 @@ async fn test_admin_v1_restart_refuses_when_it_cannot_restart() {
 
 #[tokio::test]
 async fn limit_zero_does_not_produce_a_self_referential_cursor() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -9496,7 +9496,7 @@ fn linked_export_axis() {
 
 #[tokio::test]
 async fn test_admin_v1_named_map_reads_project_settings_keys_never_values() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app()
@@ -9578,7 +9578,7 @@ async fn test_admin_v1_named_map_reads_project_settings_keys_never_values() {
 #[tokio::test]
 async fn test_admin_v1_named_map_rejects_an_under_scoped_caller() {
     linked_export_axis();
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let mut app = crate::new_test_app()
@@ -9656,7 +9656,7 @@ async fn test_admin_v1_named_map_rejects_an_under_scoped_caller() {
 
 #[tokio::test]
 async fn test_admin_v1_hook_reads_project_settings_keys_never_values() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let mut cfg: busbar_kernel::config::HookCfg = serde_json::from_value(serde_json::json!({
@@ -9772,7 +9772,7 @@ async fn test_admin_v1_config_settings_read_redacts_every_settings_bag() {
 
 #[tokio::test]
 async fn a_repeated_key_post_keys_replays_the_first_response_byte_for_byte() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -9817,7 +9817,7 @@ async fn node_over(
 
 #[tokio::test]
 async fn an_idempotent_mint_retried_after_a_restart_is_refused_not_minted_twice() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let mint = |addr: std::net::SocketAddr, client: reqwest::Client| async move {
         client
@@ -9861,7 +9861,7 @@ async fn an_idempotent_mint_retried_after_a_restart_is_refused_not_minted_twice(
 
 #[tokio::test]
 async fn an_idempotent_rotate_retried_after_a_restart_is_refused_not_rotated_twice() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
 
     let (addr, before, client) = node_over(&store).await;
@@ -9919,7 +9919,7 @@ async fn an_idempotent_rotate_retried_after_a_restart_is_refused_not_rotated_twi
 
 #[tokio::test]
 async fn a_stuck_mint_or_rotate_is_refused_in_flight_however_old_its_sentinel() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov.clone()).build();
@@ -10034,7 +10034,7 @@ fn auth_modules_list_inbound_rows_only() {
 async fn rotate_under_a_pool_ceiling(
     bound_pools: Option<Vec<String>>,
 ) -> (u16, serde_json::Value, bool) {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let principal = busbar_kernel::auth::Principal {
         id: "delegated-admin".to_string(),
         name: None,
@@ -10133,7 +10133,7 @@ async fn proof_role_pool_ceiling_rotates_an_in_ceiling_key() {
 
 #[tokio::test]
 async fn a_past_ceiling_rotate_releases_its_idempotency_claim() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let principal = busbar_kernel::auth::Principal {
         id: "delegated-admin".to_string(),
         name: None,

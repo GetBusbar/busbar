@@ -132,7 +132,7 @@ impl busbar_kernel::governance::RecordStore for RewrapStore {
 
 #[tokio::test]
 async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let _limits_lock = busbar_kernel_testkit::limits::LIMITS_TEST_LOCK.lock().await;
     for failure in ["listing", "claim"] {
         let (dir, config_path, providers_path) = write_reset_fixture(&format!("rewrap-{failure}"));
@@ -270,7 +270,7 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
 
 #[tokio::test]
 async fn hook_register_and_replace_refuse_oversized_timeouts_without_swapping() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let hook =
         serde_json::from_value(serde_json::json!({"kind": "gate", "module": "test-hook"})).unwrap();
     let overlay = TestOverlayStore::new();
@@ -317,7 +317,7 @@ async fn hook_register_and_replace_refuse_oversized_timeouts_without_swapping() 
 
 #[tokio::test]
 async fn reload_refuses_env_policy_injection_without_publishing() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     const VAR: &str = "BUSBAR_TEST_KC_ADMIN_POLICY_TTL";
     let _env = busbar_kernel_testkit::test_support::EnvVarGuard::capture(VAR);
     std::env::set_var(VAR, r#"90d"}, policy: {self_mint: true, default_ttl: "90d"#);
