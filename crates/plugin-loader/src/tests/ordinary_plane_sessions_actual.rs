@@ -10,8 +10,8 @@ use busbar_contract::abi::mechanism::call::{DeadlineClass, Outcome, RawOutcome, 
 use busbar_contract::abi::mechanism::door::{Door, DoorParts};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
-    slot, OnPieceIn, OnPieceOut, Ops, PlaneCancelIn, PlaneCancelOut, CANCEL_ABORTED, EMIT_DONE,
-    FROM_CALLER,
+    slot, OnPieceIn, OnPieceOut, Ops, PlaneCancelIn, PlaneCancelOut, PlaneOpenIn, CANCEL_ABORTED,
+    EMIT_DONE, FROM_CALLER,
 };
 use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -20,9 +20,39 @@ static SERIAL: Mutex<()> = Mutex::new(());
 static MODE: AtomicUsize = AtomicUsize::new(0);
 static CANCELS: AtomicUsize = AtomicUsize::new(0);
 static SEEN: Mutex<Vec<(Ticket, u32, u64)>> = Mutex::new(Vec::new());
+static OPEN_URLS: Mutex<Vec<Option<String>>> = Mutex::new(Vec::new());
 fn guarded(f: impl FnOnce() -> RawOutcome) -> RawOutcome {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
         .unwrap_or(RawOutcome::of(Outcome::Fault))
+}
+extern "C" fn open(
+    instance: *mut std::ffi::c_void,
+    input: *const std::ffi::c_void,
+    out: *mut std::ffi::c_void,
+) -> RawOutcome {
+    guarded(|| {
+        // SAFETY: the loader lends a fully initialized PlaneOpenIn throughout this callback.
+        let i = unsafe { &*input.cast::<PlaneOpenIn>() };
+        let url = if i.public_url.len == 0 {
+            assert!(i.public_url.ptr.is_null());
+            None
+        } else {
+            // SAFETY: actual caller's live public URL allocation has the stated length.
+            Some(
+                String::from_utf8(
+                    unsafe { std::slice::from_raw_parts(i.public_url.ptr, i.public_url.len) }
+                        .to_vec(),
+                )
+                .unwrap(),
+            )
+        };
+        OPEN_URLS.lock().unwrap().push(url);
+        // SAFETY: exact real MCP table and frames, no lifecycle mutation or substitute instance.
+        unsafe {
+            let ops = &*crate::actual_mcp::door().ops().cast::<Ops>();
+            ops.head.open.unwrap()(instance, input, out)
+        }
+    })
 }
 extern "C" fn piece(
     _: *mut std::ffi::c_void,
@@ -77,6 +107,7 @@ extern "C" fn door() -> &'static Door {
             on_piece: Some(piece),
             head: busbar_contract::abi::mechanism::lifecycle::OpsHead {
                 cancel: Some(cancel),
+                open: Some(open),
                 ..ops.head
             },
             ..ops
@@ -215,4 +246,29 @@ fn cancelling_no_session_ticket_cannot_end_an_admitted_unit() {
     assert_eq!(SEEN.lock().unwrap().len(), 1);
     assert_eq!(CANCELS.load(SeqCst), 0);
     d.recycle(t);
+}
+
+#[test]
+fn open_passes_an_absent_public_url_as_none_and_a_present_url_verbatim() {
+    let _serial = SERIAL.lock().unwrap();
+    OPEN_URLS.lock().unwrap().clear();
+    let d = Dispatcher::new(DispatchConfig::default());
+    for url in [None, Some("https://public.example/mcp")] {
+        let p = load_linked::<Plane>(
+            &LinkedRow::of(door).unwrap(),
+            Bind {
+                instance: "public-url-boundary".into(),
+                max_inflight_cap: 8,
+                sink: Arc::new(NoSink),
+                dispatcher: d.adopter(),
+                conns: ConnTable::Probe,
+            },
+        )
+        .unwrap();
+        open_door(&p, b"{}", b"{}", url).expect("actual MCP opens with its public URL posture");
+    }
+    assert_eq!(
+        *OPEN_URLS.lock().unwrap(),
+        vec![None, Some("https://public.example/mcp".to_string())]
+    );
 }
