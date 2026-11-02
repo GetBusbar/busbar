@@ -285,7 +285,7 @@ async fn admitted_real_srtp_line_reaches_the_real_upstream_framer_once() {
 
     use busbar_contract::conn::{Conns, InstanceId, NeedId, OpenDesc, PollConns};
     use busbar_contract::transport::TransportSettings;
-    use http_body_util::{BodyExt, Full};
+    use http_body_util::Full;
 
     let pair = Pair::with_audio().await;
     assert_eq!(pair.caller.read().await, Some(Vec::new()));
@@ -306,7 +306,8 @@ async fn admitted_real_srtp_line_reaches_the_real_upstream_framer_once() {
     let connector = busbar_core_connector::process::build_with_secrets(
         || Ok(entries),
         crate::root::connector::guard_for(&busbar_kernel::config::Destinations {
-            block_private_addresses: false,
+            block_private_addresses: true,
+            allow: vec!["127.0.0.1".into()],
             ..Default::default()
         })
         .unwrap(),
@@ -324,6 +325,7 @@ async fn admitted_real_srtp_line_reaches_the_real_upstream_framer_once() {
     let target = format!("http://{}/session", signal.local_addr().unwrap());
     let (peer_out, peer_in) = tokio::sync::oneshot::channel();
     let peer = Arc::new(std::sync::Mutex::new(Some((peer, peer_out))));
+    let mut tasks = Tasks(Vec::new());
     let signaling = tokio::spawn(async move {
         let (socket, _) = signal.accept().await.unwrap();
         let service =
@@ -332,7 +334,10 @@ async fn admitted_real_srtp_line_reaches_the_real_upstream_framer_once() {
                 async move {
                     assert_eq!(request.method(), hyper::Method::POST);
                     assert_eq!(request.uri().path(), "/session");
-                    let description = request.into_body().collect().await.unwrap().to_bytes();
+                    let description =
+                        axum::body::to_bytes(axum::body::Body::new(request.into_body()), 64 * 1024)
+                            .await
+                            .unwrap();
                     assert!(
                         description.starts_with(b"v=0\r\n"),
                         "the actual production HTTP/TCP path carries real SDP"
@@ -364,6 +369,7 @@ async fn admitted_real_srtp_line_reaches_the_real_upstream_framer_once() {
             .await
             .unwrap();
     });
+    tasks.0.push(signaling);
     let owner = InstanceId(91);
     let need = NeedId(1);
     connector
@@ -415,6 +421,7 @@ async fn admitted_real_srtp_line_reaches_the_real_upstream_framer_once() {
             }
         })
     };
+    tasks.0.push(driving);
     let mut peer = tokio::time::timeout(WAIT, peer_in)
         .await
         .expect("actual production HTTP request reaches the real peer")
@@ -452,7 +459,7 @@ async fn admitted_real_srtp_line_reaches_the_real_upstream_framer_once() {
             }
         }
     });
-    let _tasks = Tasks(vec![signaling, far, driving]);
+    tasks.0.push(far);
     tokio::time::timeout(WAIT, ready)
         .await
         .expect("actual upstream ICE/DTLS/SCTP opens")
@@ -495,7 +502,7 @@ async fn admitted_real_srtp_line_reaches_the_real_upstream_framer_once() {
         "the actual HTTP response head is observed once while SDP remains internal"
     );
     assert!(
-        !_tasks.0[2].is_finished(),
+        !tasks.0[1].is_finished(),
         "the actual connector reader remains live without application output"
     );
     connector.close(owner, connection).unwrap();
