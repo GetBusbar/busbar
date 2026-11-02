@@ -2334,19 +2334,6 @@ pub fn red_ready(s: &Subject) {
     });
 }
 
-#[cfg(all(test, loader_self_tests))]
-mod ready_cleanup_tests {
-    #[test]
-    fn failed_store_ready_is_invoked_once_and_closes_its_successful_open() {
-        let subject = super::Subject::new(
-            crate::both_ways::store_fixture::door,
-            "unused",
-            include_str!("../../tests/fixtures/store_conformance.json"),
-        );
-        super::red_ready(&subject);
-    }
-}
-
 /// The real door restated with one outbound need over the stream double's transport
 /// (`stand_in.json`), its target its own (the RED arm's subject
 /// for a door that declares none).
@@ -2930,3 +2917,16 @@ mod newer_schema_tests;
 #[cfg(all(test, loader_self_tests))]
 #[path = "../tests/conformance_ready_result_tests.rs"]
 mod ready_result_tests;
+
+#[cfg(all(test, loader_self_tests))]
+mod ready_cleanup_tests {
+    #[test]
+    fn failed_store_ready_is_invoked_once_and_closes_its_successful_open() {
+        let subject = super::Subject::new(
+            crate::both_ways::store_fixture::door,
+            "unused",
+            include_str!("../../tests/fixtures/store_conformance.json"),
+        );
+        super::red_ready(&subject);
+    }
+}
