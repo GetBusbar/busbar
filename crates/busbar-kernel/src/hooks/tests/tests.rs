@@ -173,7 +173,7 @@ async fn inbound_feedback_reaches_the_policy_instance_and_reload_keeps_old_state
     )]);
     let build = || {
         let mut env = HookEnv::with_axis(
-            crate::test_support::rows::empty(),
+            std::sync::Arc::new(busbar_plugin_loader::PluginRegistry::empty()),
             Arc::new(ReceivingAxis),
             Arc::new(crate::config::secret::SecretResolver::builtins_only()),
         );
@@ -287,7 +287,7 @@ impl busbar_contract::hook_calls::HookAxis for StrategyAxis {
 
 fn strategy_env(infallible: bool, words: Vec<String>, fail_open: bool) -> HookEnv {
     HookEnv::with_axis(
-        crate::test_support::rows::empty(),
+        std::sync::Arc::new(busbar_plugin_loader::PluginRegistry::empty()),
         Arc::new(StrategyAxis {
             facts: busbar_contract::hook_calls::HookFacts {
                 name: "strategy-double".into(),
@@ -371,7 +371,7 @@ fn test_env() -> HookEnv {
 
 fn empty_env() -> HookEnv {
     HookEnv::new(
-        crate::test_support::rows::empty(),
+        std::sync::Arc::new(busbar_plugin_loader::PluginRegistry::empty()),
         std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
     )
     .expect("the registry's hook axis")
@@ -770,7 +770,8 @@ fn a_reused_registry_address_never_inherits_a_dead_registrys_resolution() {
     let mut keepalive: Vec<std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>> =
         Vec::new();
     for _ in 0..4096 {
-        let reg = crate::test_support::rows::empty();
+        let reg: std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows> =
+            std::sync::Arc::new(busbar_plugin_loader::PluginRegistry::empty());
         if std::sync::Arc::as_ptr(&reg) as *const u8 as usize == freed {
             let reused = HookEnv::new(
                 reg,
@@ -2113,7 +2114,7 @@ fn settings_drift_never_compares_a_secret_ref_field() {
 
 fn parking_secret_env(park: std::time::Duration) -> HookEnv {
     HookEnv::new(
-        crate::test_support::rows::empty(),
+        std::sync::Arc::new(busbar_plugin_loader::PluginRegistry::empty()),
         std::sync::Arc::new(crate::config::secret::SecretResolver::with_plugin(
             Box::new(move |_module: &str, _settings: &str| {
                 std::thread::sleep(park);
