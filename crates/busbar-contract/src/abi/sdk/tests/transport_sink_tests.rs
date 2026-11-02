@@ -266,6 +266,33 @@ fn a_head_that_fits_without_its_first_field_waits_with_that_field() {
 }
 
 #[test]
+fn a_head_stays_with_its_first_field_fragment_when_both_fit() {
+    let mut f = Framing::default();
+    f.pieces.push_back(Piece {
+        head: Some(HeadWords::reason(b"word".to_vec())),
+        ..Piece::fields(1, b"x: v\r\n".to_vec())
+    });
+    let first = fill_into(&mut f, 0, 6, 1, 1);
+    assert_eq!(first.frame, b"wordx:");
+    assert_eq!(first.heads.len(), 1);
+    assert_eq!(first.pieces.len(), 1);
+    assert_eq!(first.pieces[0].offset, 4);
+    assert_eq!(first.pieces[0].len, 2);
+    assert_eq!(first.pieces[0].flags & PIECE_END_OF_FRAME, 0);
+    assert_eq!(first.yielded.flags & YIELD_MORE, YIELD_MORE);
+    let rest = fill_into(&mut f, 0, 6, 1, 1);
+    assert_eq!(rest.frame, b" v\r\n");
+    assert!(rest.heads.is_empty(), "the words are delivered once");
+    assert_eq!(rest.pieces.len(), 1);
+    assert_eq!(rest.pieces[0].flags & PIECE_CONTINUED, PIECE_CONTINUED);
+    assert_eq!(
+        rest.pieces[0].flags & PIECE_END_OF_FRAME,
+        PIECE_END_OF_FRAME
+    );
+    assert!(f.pieces.is_empty());
+}
+
+#[test]
 fn a_whole_sink_too_small_for_words_and_a_fragment_still_makes_progress() {
     for fields in [false, true] {
         let mut f = Framing::default();
@@ -282,7 +309,7 @@ fn a_whole_sink_too_small_for_words_and_a_fragment_still_makes_progress() {
     }
     let mut f = Framing::default();
     f.pieces.push_back(Piece {
-        head: Some(HeadWords::reason(b"word".to_vec())),
+        head: Some(HeadWords::reason(b"words".to_vec())),
         ..Piece::fields(1, b"x: v\r\n".to_vec())
     });
     let empty = fill_into(&mut f, 0, 0, 1, 1);
