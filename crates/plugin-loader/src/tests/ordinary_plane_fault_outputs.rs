@@ -76,7 +76,7 @@ fn fault_arrival_and_projection_never_copy_unjudged_output_text() {
                 max_inflight_cap: 8,
                 sink: Arc::new(NoSink),
                 dispatcher: d.adopter(),
-                conns: ConnTable::NoNeeds,
+                conns: ConnTable::Probe,
             },
         )
         .unwrap();
