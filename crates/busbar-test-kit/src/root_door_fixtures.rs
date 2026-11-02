@@ -20,6 +20,9 @@ pub mod datagram_feedback;
 #[path = "root_door_fixtures/raw_udp_ingress.rs"]
 pub mod raw_udp_ingress;
 
+#[path = "root_door_fixtures/piece_pending.rs"]
+pub mod piece_pending;
+
 /// The carrier under test: a member's program it holds down once it ended, until its `refresh`.
 pub mod held_down {
     use std::marker::PhantomData;
