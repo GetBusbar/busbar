@@ -382,7 +382,11 @@ impl Association {
         self.wanted = Some(path);
         if self.proven.contains_key(&path) {
             self.apply_bind(path, now);
-            Ok(Bind::Now)
+            if self.failed.is_some() {
+                Err(BindRefused::Failed)
+            } else {
+                Ok(Bind::Now)
+            }
         } else {
             self.probe(path, now);
             Ok(Bind::WhenProven)
@@ -408,7 +412,11 @@ impl Association {
         self.wanted = Some(new);
         if self.proven.contains_key(&new) {
             self.apply_bind(new, now);
-            Ok(Bind::Now)
+            if self.failed.is_some() {
+                Err(BindRefused::Failed)
+            } else {
+                Ok(Bind::Now)
+            }
         } else {
             self.probe(new, now);
             Ok(Bind::WhenProven)
