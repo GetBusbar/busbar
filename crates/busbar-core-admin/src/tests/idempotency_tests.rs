@@ -7,7 +7,7 @@
 //! honoured exactly.
 
 use crate::idempotency::durable::{self, Refused, Settled};
-use crate::idempotency::{IDEMPOTENCY_TTL_SECS, IdempotencyCache, Probe};
+use crate::idempotency::{IdempotencyCache, Probe, IDEMPOTENCY_TTL_SECS};
 use busbar_kernel::governance::MemoryStore;
 
 fn key(actor: &str, header: &str) -> (String, String) {
