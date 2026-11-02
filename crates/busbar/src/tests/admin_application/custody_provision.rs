@@ -250,6 +250,7 @@ async fn mint_failure_after_the_provision_commit_still_records_the_committed_gro
         None,
         &rules,
         Some(refusing),
+        false,
     )
     .expect("the actual product builds the provision deployment");
     limits.keep().expect("the product limits commit");
