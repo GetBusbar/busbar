@@ -32,7 +32,7 @@ fn actual_mcp_function_macro_and_loaded_rows_preserve_the_same_door_and_statemen
     );
 
     let manifest =
-        crate::LinkedPlugin::first_party_door("plane", "busbar-plane-mcp", "tools", door).manifest;
+        crate::LinkedPlugin::first_party_door("plane", "mcp", "tools", door).manifest;
     let linked = crate::PluginRegistry::empty()
         .link(vec![crate::LinkedPlugin::door(manifest.clone(), door)])
         .expect("the actual function door links");

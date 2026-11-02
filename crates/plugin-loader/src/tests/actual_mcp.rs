@@ -45,6 +45,6 @@ pub(crate) extern "C" fn door() -> &'static Door {
     let name = busbar_contract::abi::mechanism::rendering::read(&stated)
         .unwrap()
         .name;
-    assert_eq!(name, "busbar-plane-mcp", "require the actual MCP product");
+    assert_eq!(name, "mcp", "require the actual MCP product");
     door
 }
