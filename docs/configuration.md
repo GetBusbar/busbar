@@ -1399,10 +1399,17 @@ export:
 | `request-log-file` | Logs (PUSH) | `path` (**required**), `rotate_mb` | Appends each request-log line as JSONL. |
 | `otlp` | Traces | `url` (**required**) | OTLP/HTTP trace exporter. Loopback `http://` is allowed (standard collector default); remote endpoints must use `https://`. SSRF-guarded: rejects RFC-1918, link-local, CGNAT, metadata hosts. Each request-path span is POSTed as it closes (OTLP/HTTP protobuf, one span per request). At most ONE instance. |
 
-The whole `export:` block is **restart-to-apply**: edit it in `config.yaml` and apply via a plugin
-reload / restart. It is deliberately NOT part of the single-value `PUT /config/settings` overlay: the
-sinks seed process-global `OnceLock`s (and, for OTLP, a one-shot `tracing_subscriber` init) that a
-live apply structurally cannot re-point.
+Export instance membership, `module`, `streams` and `fields` are **restart-to-apply** for push
+delivery: the process keeps its boot-opened sinks and their projections. Removing a definition
+therefore does not guarantee that its push delivery has stopped until restart. Settings of an
+existing instance of the same module are refreshed live; a refused refresh retains its prior
+settings and logs a warning.
+
+The named-map admin API reports boot-bound changes through `reload_to_apply` and `note`, with
+`export.<name>` identifying the instance. A pending export deletion returns `200` with those fields;
+a fully live deletion returns `204`. Route mounting has its separate restart requirement: a route
+absent at boot remains unavailable until restart. Export definitions are not part of the single-value
+`PUT /config/settings` overlay.
 
 **OTLP credential hygiene.** If your OTLP endpoint requires auth, supply credentials in the URL userinfo (`https://user:pass@collector.example.com/…`): Busbar moves them to an `Authorization: Basic` header and strips them from the URL before logging, so they do not appear in logs or spans.
 

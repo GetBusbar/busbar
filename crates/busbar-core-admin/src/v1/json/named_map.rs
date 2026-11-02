@@ -456,9 +456,20 @@ async fn apply(
 
 
 
+            let export_restart = if txn_section == NamedMapSection::Export
+                && busbar_kernel::export::plugin::requires_restart(
+                    &txn_name,
+                    installed.export_defs.get(&txn_name),
+                )
+            {
+                vec![format!("export.{txn_name}")]
+            } else {
+                Vec::new()
+            };
             let awaiting_restart = (
                 awaiting_restart,
                 busbar_kernel::state::planes_awaiting_restart_added(&installed, &snapshot),
+                export_restart,
             );
 
 
@@ -513,7 +524,10 @@ async fn apply(
     installed.record_version(&actor, &format!("{action} {resource}"));
     let version = installed.config_version;
     if removes {
-        return with_config_etag(StatusCode::NO_CONTENT.into_response(), version);
+        return with_config_etag(
+            removal_response(awaiting_restart.0, awaiting_restart.1, awaiting_restart.2),
+            version,
+        );
     }
     with_config_etag(
         respond(
@@ -521,15 +535,21 @@ async fn apply(
             super::service(&handle)
                 .get_named_def(section, &name)
                 .await
-                .map(|def| MutatedDefView::new(def, awaiting_restart.0, awaiting_restart.1)),
+                .map(|def| {
+                    MutatedDefView::new(
+                        def,
+                        awaiting_restart.0,
+                        awaiting_restart.1,
+                        awaiting_restart.2,
+                    )
+                }),
         ),
         version,
     )
 }
 
 /// THE MUTATION RESPONSE for an upsert/settings write: the stored definition, PLUS the
-/// restart-required signal when this mutation introduced a plugin route the running process cannot
-/// serve.
+/// restart-required signal for boot-bound routes, planes and export instances or projections.
 ///
 /// `#[serde(flatten)]` keeps the definition's own fields exactly where they have always been, so the
 /// signal is purely ADDITIVE — and both signal fields are omitted entirely when nothing is pending,
@@ -544,9 +564,9 @@ pub(crate) struct MutatedDefView {
     /// The plugin-route PATHS this mutation declared that the process cannot serve until it restarts,
     /// because the axum router registers each path once, at boot, and a config apply swaps only
     /// `Arc<App>`; then the plane SECTIONS it first wrote whose plane the process did not open at
-    /// boot (a plane is opened once, at process start, when its section is configured). Empty (and
-    /// omitted) for every mutation that adds neither — including every REMOVAL, which genuinely
-    /// does apply live.
+    /// boot (a plane is opened once, at process start, when its section is configured); and export
+    /// instances whose membership, module or projection differs from the boot-opened sink.
+    /// Empty and omitted when this mutation leaves no boot-bound change.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     reload_to_apply: Vec<String>,
     /// The operator-facing sentence for [`Self::reload_to_apply`]; omitted with it.
@@ -559,15 +579,51 @@ impl MutatedDefView {
         def: crate::v1::contract::NamedDefView,
         paths: Vec<String>,
         planes: Vec<String>,
+        exports: Vec<String>,
     ) -> Self {
-        let note = restart_note(&paths, &planes);
-        let mut reload_to_apply = paths;
-        reload_to_apply.extend(planes);
+        let (reload_to_apply, note) = restart_fields(paths, planes, exports);
         Self {
             def,
             reload_to_apply,
             note,
         }
+    }
+}
+
+fn restart_fields(
+    paths: Vec<String>,
+    planes: Vec<String>,
+    exports: Vec<String>,
+) -> (Vec<String>, Option<String>) {
+    let prior = restart_note(&paths, &planes);
+    let export = (!exports.is_empty()).then(|| {
+        format!(
+            "stored, but the export instance(s) {} require a RESTART to apply membership, module \
+             or streams/fields projection changes to push delivery; this process keeps its \
+             boot-opened sinks and their projections until then. Settings refreshes for existing \
+             instances of the same module still apply live",
+            exports.join(", ")
+        )
+    });
+    let note = match (prior, export) {
+        (Some(prior), Some(export)) => Some(format!("{prior}; {export}")),
+        (prior, export) => prior.or(export),
+    };
+    let mut reload_to_apply = paths;
+    reload_to_apply.extend(planes);
+    reload_to_apply.extend(exports);
+    (reload_to_apply, note)
+}
+
+fn removal_response(paths: Vec<String>, planes: Vec<String>, exports: Vec<String>) -> Response {
+    let (reload_to_apply, note) = restart_fields(paths, planes, exports);
+    if reload_to_apply.is_empty() {
+        StatusCode::NO_CONTENT.into_response()
+    } else {
+        respond(
+            StatusCode::OK,
+            Ok(serde_json::json!({ "reload_to_apply": reload_to_apply, "note": note })),
+        )
     }
 }
 
@@ -723,6 +779,20 @@ pub(crate) fn openapi_paths() -> Vec<(String, serde_json::Value)> {
     for section in NamedMapSection::sections() {
         let key = section.key();
         let singular = section.singular();
+        let mut removal = operation(
+            format!(
+                "Remove one `{key}:` definition, refused while another config section \
+                 still references it by bare name"
+            ),
+            name_param,
+            "204",
+            "Removed; fully live removals return no body",
+        );
+        if section == NamedMapSection::Export {
+            removal[RESPONSES_KEY]["200"] = json!({
+                "description": "Removed from stored configuration, with `reload_to_apply` and `note` when a boot-opened export instance still requires restart to stop push delivery"
+            });
+        }
         out.push((
             super::ap(section.path_root().as_ref()),
             json!({
@@ -745,8 +815,11 @@ pub(crate) fn openapi_paths() -> Vec<(String, serde_json::Value)> {
                 "put": operation(
                     format!(
                         "Create or REPLACE one `{key}:` definition (upsert), persisted to the \
-                         config overlay and live after an atomic rebuild-and-swap. A \
-                         base-config-defined entry is 409 (edit config.yaml){}",
+                         config overlay and applied by an atomic config swap. Boot-bound changes \
+                         are reported in `reload_to_apply`; export instance membership, module and \
+                         streams/fields projections require restart for push delivery, while \
+                         existing same-module settings refresh live. A base-config-defined entry \
+                         is 409 (edit config.yaml){}",
                         if section.has_trust_ceiling() {
                             "; RAISING `max_admin_scope` is refused outright (the trust ceiling is \
                              operator file policy)"
@@ -758,22 +831,14 @@ pub(crate) fn openapi_paths() -> Vec<(String, serde_json::Value)> {
                     OK,
                     format!(
                         "The stored {singular} definition. Additionally carries `reload_to_apply` \
-                         (+ a `note`) when the mutation declared a plugin ROUTE this process cannot \
-                         serve: each route path is registered on the HTTP router once, at process \
-                         start, and an apply swaps only the config snapshot, so a path that did not \
-                         exist at boot (e.g. `/metrics` for a first `prometheus` exporter) answers \
-                         404 until the next RESTART. Both fields are omitted when nothing is pending"
+                         (+ a `note`) for a new unmounted plugin route, an unopened plane section, \
+                         or an export instance whose membership, module or streams/fields \
+                         projection differs from boot. New route paths answer 404 until restart; \
+                         push exports keep their boot-opened instances and projections. Both fields \
+                         are omitted when nothing is pending"
                     ),
                 ),
-                "delete": operation(
-                    format!(
-                        "Remove one `{key}:` definition, refused while another config section \
-                         still references it by bare name"
-                    ),
-                    name_param,
-                    "204",
-                    "Removed",
-                )
+                "delete": removal
             }),
         ));
         out.push((
@@ -788,7 +853,8 @@ pub(crate) fn openapi_paths() -> Vec<(String, serde_json::Value)> {
                     OK,
                     format!(
                         "The updated {singular} definition (same `reload_to_apply` restart signal as \
-                         the PUT, when the mutation declares a route the router lacks)"
+                         the PUT; same-module export settings refresh live, while any outstanding \
+                         boot-bound export instance or projection remains reported)"
                     ),
                 )
             }),

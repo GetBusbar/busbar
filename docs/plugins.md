@@ -559,7 +559,7 @@ plugin-declared (`export`, like any kind that is not `hook`/`auth`, falls throug
 | `secret` | restart-required   |
 | `hook`   | hot-appliable      |
 | `auth`   | hot-appliable      |
-| `export` | restart-required   |
+| `export` | Instance membership, module and streams/fields projection require restart for push delivery; existing same-module settings refresh live |
 
 A per-field `x-busbar-restart-required` overrides the kind default, but only in ONE direction
 without qualification: `true` (more restart-cautious than the kind default) is always honored. The

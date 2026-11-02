@@ -218,6 +218,40 @@ pub(super) fn sinks() -> impl Iterator<Item = &'static PluginSink> {
     SINKS.get().into_iter().flatten()
 }
 
+/// Whether the stored definition differs from this process's boot-opened instance or projection.
+pub fn requires_restart(name: &str, def: Option<&crate::config::ExportDefCfg>) -> bool {
+    let boot = sinks()
+        .find(|sink| sink.name == name)
+        .map(|sink| (sink.module.as_str(), sink.projection, sink.sink.streams()));
+    definition_requires_restart(name, boot, def)
+}
+
+fn definition_requires_restart(
+    name: &str,
+    boot: Option<(&str, Projection, &[u8])>,
+    def: Option<&crate::config::ExportDefCfg>,
+) -> bool {
+    let (module, projection, streams, def) = match (boot, def) {
+        (None, None) => return false,
+        (None, Some(_)) | (Some(_), None) => return true,
+        (Some((module, projection, streams)), Some(def)) => (module, projection, streams, def),
+    };
+    if def.module.trim() != module {
+        return true;
+    }
+    let mut errors = Vec::new();
+    let desired = resolve_projection(
+        name,
+        module,
+        Some(&streams_of(streams)),
+        def.streams.as_deref(),
+        def.fields.as_deref(),
+        false,
+        &mut errors,
+    );
+    !errors.is_empty() || desired != projection
+}
+
 pub fn open(cfg: &ExportCfg) -> Result<(), String> {
     let Some(axis) = axis() else {
         return Ok(());
@@ -317,6 +351,18 @@ fn refresh(defs: &crate::config::ExportDefs, generation: u64) {
     let Some(axis) = axis() else {
         return;
     };
+    let names: std::collections::BTreeSet<_> = sinks()
+        .map(|sink| sink.name.as_str())
+        .chain(defs.keys().map(String::as_str))
+        .collect();
+    for name in names {
+        if requires_restart(name, defs.get(name)) {
+            tracing::warn!(
+                instance = %name,
+                "export instance membership, module or projection differs from boot; restart is required for push delivery"
+            );
+        }
+    }
     for sink in sinks() {
         let Some(def) = defs
             .get(&sink.name)
