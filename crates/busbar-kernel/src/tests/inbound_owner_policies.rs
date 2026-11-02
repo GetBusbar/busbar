@@ -162,11 +162,15 @@ async fn a_deadline_cancels_the_owned_pending_verification_and_leaves_the_reacto
             polled: polled.clone(),
             dropped: dropped.clone(),
         });
-    let result = until_deadline(
-        Some(std::time::Instant::now() + std::time::Duration::from_millis(10)),
-        &mut verifying,
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        until_deadline(
+            Some(std::time::Instant::now() + std::time::Duration::from_millis(10)),
+            &mut verifying,
+        ),
     )
-    .await;
+    .await
+    .expect("the actual production deadline must stop the pending verification");
     assert!(result.is_none());
     assert!(polled.load(Ordering::SeqCst) > 0);
     assert_eq!(
