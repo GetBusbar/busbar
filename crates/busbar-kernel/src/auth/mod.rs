@@ -1997,7 +1997,6 @@ fn consumed_from_carriers(
     consumed
 }
 
-#[allow(clippy::result_large_err)]
 async fn ticket_verdict(
     signed: bool,
     keys_in_chain: bool,
@@ -2028,6 +2027,7 @@ async fn ticket_verdict(
     }
 }
 
+#[allow(clippy::result_large_err)]
 pub(crate) async fn auth_middleware(
     crate::state::CurrentApp(app): crate::state::CurrentApp,
 
