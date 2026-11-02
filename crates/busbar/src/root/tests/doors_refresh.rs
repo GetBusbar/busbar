@@ -8,7 +8,6 @@ use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::abi::transport::{ConnIn, ConnOut, DialIn, ShutIn};
 use busbar_contract::transport::TransportSettings;
 use busbar_core_connector::carrier::Carry;
-use busbar_core_connector::framer::FramerDoor;
 
 use busbar_core_connector::doors::{refresh_named, Dispatched};
 
