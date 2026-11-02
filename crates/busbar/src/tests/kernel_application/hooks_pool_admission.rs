@@ -60,9 +60,15 @@ async fn pool_rw_gate_resolves_as_rewrite_not_decision() {
         "the actual store settings are an object"
     );
     let hook_module = hook_module.expect("the actual hook was staged");
+    let credential = directory.join("upstream-credential");
+    std::fs::write(&credential, b"pool-admission-unused-upstream-credential")
+        .expect("write the normal file-backed upstream credential");
     let document = serde_json::json!({
-        "providers": {},
-        "models": {},
+        "providers": {
+            "local": {"protocol": "anthropic", "base_url": "http://127.0.0.1:1",
+                      "api_key": {"file": credential}}
+        },
+        "models": {"local-model": {"provider": "local"}},
         "auth": {"chain": [], "admin_auth": []},
         "advanced": {"allow_destinations": ["127.0.0.1"]},
         "store": {"module": store_module.expect("the actual store was staged"), "settings": settings},
@@ -73,8 +79,8 @@ async fn pool_rw_gate_resolves_as_rewrite_not_decision() {
                       "settings": {"url": "http://127.0.0.1:1/hook"}}
         },
         "pools": {
-            "rewrite": {"members": [], "hooks": ["rw"]},
-            "decision": {"members": [], "hooks": ["plain"]}
+            "rewrite": {"members": ["local-model"], "hooks": ["rw"]},
+            "decision": {"members": ["local-model"], "hooks": ["plain"]}
         }
     });
     let deploy = busbar_kernel::config::deploy_from_deserializer(document)
