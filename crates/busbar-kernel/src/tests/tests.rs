@@ -2876,7 +2876,9 @@ fn a_built_generations_limits_are_in_force_only_once_it_is_live() {
     );
     assert_eq!(live_limits(), after, "the swapped-in generation's limits");
     // The commit after the swap republishes the same values.
-    unkept.keep();
+    unkept
+        .keep()
+        .expect("the test generation confirms its rates");
     assert_eq!(live_limits(), after);
 }
 

@@ -232,7 +232,10 @@ fn malformed_metadata_chunks_and_conflicting_duplicates_never_publish_an_entry()
     }
     let mut same_duplicate = records.clone();
     same_duplicate.extend(records);
-    assert_eq!(Scanned::of(same_duplicate).entries, vec![original]);
+    let scanned = Scanned::of(same_duplicate);
+    assert!(scanned.entries.is_empty());
+    assert_eq!(scanned.intents[0].entry, original);
+    assert!(scanned.intents[0].committed);
 }
 
 #[test]
@@ -319,10 +322,12 @@ fn genuinely_pending_store_calls_wake_and_timeout_retry_the_same_original() {
     assert_eq!(store.puts(), 0);
     store.pause(false);
     assert_eq!(writing.join().unwrap(), PutOutcome::Ready);
-    assert!(scan(store.calls().as_ref(), None)
-        .unwrap()
-        .entries
-        .contains(&original));
+    let scanned = scan(store.calls().as_ref(), None).unwrap();
+    assert!(scanned.entries.is_empty());
+    assert!(scanned
+        .intents
+        .iter()
+        .any(|intent| intent.entry == original && intent.committed));
 
     let next = entry(EntryKey::new(2_000, [3; 8], 2));
     let next_records = next.records_for(true).unwrap();
@@ -348,10 +353,92 @@ fn genuinely_pending_store_calls_wake_and_timeout_retry_the_same_original() {
         ),
         PutOutcome::Ready
     );
+    let scanned = scan(store.calls().as_ref(), None).unwrap();
+    assert!(scanned.entries.is_empty());
     assert_eq!(
-        scan(store.calls().as_ref(), None).unwrap().entries,
+        scanned
+            .intents
+            .iter()
+            .map(|intent| intent.entry.clone())
+            .collect::<Vec<_>>(),
         vec![original, next]
     );
+}
+
+#[test]
+fn prepared_candidates_require_matching_activation_intent_and_commit_but_v2_stays_active() {
+    let original = entry(EntryKey::new(1_000, [3; 8], 1));
+    let candidate = original.records_for(true).unwrap();
+    let scanned = Scanned::of(candidate.clone());
+    assert!(scanned.entries.is_empty());
+    assert!(scanned.intents[0].committed && scanned.intents[0].activation_required);
+    let activation = Activation {
+        effective_from: 2_000,
+    };
+    let markers = activation.records(&original).unwrap();
+    let mut with_intent = candidate.clone();
+    with_intent.push(markers[0].clone());
+    let scanned = Scanned::of(with_intent.clone());
+    assert!(scanned.entries.is_empty());
+    assert_eq!(scanned.intents[0].activation, Some(activation.clone()));
+    assert!(!scanned.intents[0].activation_confirmed);
+    with_intent.push(markers[1].clone());
+    let scanned = Scanned::of(with_intent.clone());
+    assert_eq!(scanned.entries, vec![original.clone()]);
+    assert_eq!(scanned.activations.get(&original.key), Some(&activation));
+    let mut conflicting = with_intent;
+    let conflicting_marker = Activation {
+        effective_from: 3_000,
+    }
+    .records(&original)
+    .unwrap();
+    conflicting.last_mut().unwrap().1 = conflicting_marker[1].1.clone();
+    assert!(!Scanned::of(conflicting).unreadable.is_empty());
+    let mut previous = candidate;
+    for (key, value) in &mut previous {
+        if key.as_slice() == tagged_key(original.key, INTENT_TAG)
+            || key.as_slice() == tagged_key(original.key, COMMIT_TAG)
+        {
+            let mut metadata = value.as_slice().to_vec();
+            metadata[0] = RECORD_VERSION;
+            *value = RecordBytes::new(metadata).unwrap();
+        }
+    }
+    assert_eq!(Scanned::of(previous).entries, vec![original]);
+}
+
+#[test]
+fn retirement_and_activation_bind_exact_candidate_bytes_and_cannot_both_commit() {
+    let original = entry(EntryKey::new(1_000, [3; 8], 1));
+    let candidate = original.records_for(true).unwrap();
+    let retirement = retirement_records(&original).unwrap();
+    let mut retiring = candidate.clone();
+    retiring.push(retirement[0].clone());
+    let scanned = Scanned::of(retiring.clone());
+    assert!(scanned.intents[0].retiring && !scanned.intents[0].retired);
+    assert!(scanned.entries.is_empty());
+    retiring.push(retirement[1].clone());
+    let scanned = Scanned::of(retiring.clone());
+    assert!(scanned.intents[0].retired);
+    assert!(scanned.entries.is_empty());
+    let activation = Activation {
+        effective_from: 2_000,
+    }
+    .records(&original)
+    .unwrap();
+    retiring.extend(activation.clone());
+    assert!(!Scanned::of(retiring).unreadable.is_empty());
+    let mut different_bytes = b" ".to_vec();
+    different_bytes.extend(original.value());
+    let mut different = value_records(original.key, &different_bytes, true).unwrap();
+    different.extend(activation);
+    assert!(
+        !Scanned::of(different).unreadable.is_empty(),
+        "equivalent JSON is not the same immutable Store original"
+    );
+    let mut different = value_records(original.key, &different_bytes, true).unwrap();
+    different.extend(retirement);
+    assert!(!Scanned::of(different).unreadable.is_empty());
 }
 
 #[test]

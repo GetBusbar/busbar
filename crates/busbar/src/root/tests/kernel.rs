@@ -563,6 +563,168 @@ fn the_usage_read_answers_with_the_process_history() {
     println!("{WITNESS}");
 }
 
+/// The real root, card Store, App builder and generation publication seam in one isolated process.
+#[test]
+fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_commit() {
+    use busbar_kernel::rate_apply::{RateApply, RateEpoch};
+    const CHILD: &str = "BUSBAR_CONFIRMED_CARD_GENERATION_CHILD";
+    const WITNESS: &str = "actual confirmed card generation witness completed";
+    const BOOT_FEE: i64 = 3;
+    const FIRST_FEE: i64 = 7;
+    const SECOND_FEE: i64 = 11;
+    const UNUSED_PROVIDER_KEY: &str = "BUSBAR_CONFIRMED_CARD_UNUSED_PROVIDER_KEY";
+    if std::env::var_os(CHILD).is_none() {
+        struct Child(std::process::Child);
+        impl Drop for Child {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let module = module_path!().split_once("::").unwrap().1;
+        let mut child = Child(std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg(format!("{module}::actual_card_store_and_root_rate_apply_gate_the_real_app_generation_commit"))
+            .arg("--nocapture").env(CHILD, "1")
+            .stdout(std::process::Stdio::piped()).spawn().unwrap());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            if let Some(status) = child.0.try_wait().unwrap() {
+                use std::io::Read as _;
+                let mut output = String::new();
+                child
+                    .0
+                    .stdout
+                    .take()
+                    .unwrap()
+                    .read_to_string(&mut output)
+                    .unwrap();
+                assert!(
+                    status.success(),
+                    "the actual generation witness failed: {status}: {output}"
+                );
+                assert!(
+                    output.contains(WITNESS),
+                    "the exact witness did not finish: {output}"
+                );
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the actual generation witness timed out"
+            );
+            std::thread::park_timeout(std::time::Duration::from_millis(5));
+        }
+    }
+    busbar_kernel::test_support::register_neutral_test_plane();
+    busbar_kernel::snapshot::init();
+    busbar_kernel::test_support::rate_holders::install_rate_apply(&CardRepricer);
+    busbar_kernel::test_support::rate_holders::install_rate_epoch(&CardRepricer);
+    let slots = crate::root::store_double::RecordSlots::new();
+    let boot = busbar_kernel::config::card::CardFields {
+        per_request_fee: BOOT_FEE,
+        ..Default::default()
+    };
+    ROOT_CARD.keep_in_store(slots.calls(), 1);
+    ROOT_CARD.card_applied(&boot, "actual boot");
+    ROOT_CARD.boot_in_store(None).unwrap();
+    let build = |fee, prior: Option<&busbar_kernel::state::App>| {
+        let mut cfg = busbar_kernel::test_support::cfg_with_provider_api_key(
+            busbar_kernel::config::SecretRef::env(UNUSED_PROVIDER_KEY),
+        );
+        cfg.per_request_fee = fee;
+        if let Some(prior) = prior {
+            cfg.limits.request_body_max_bytes = prior
+                .limits
+                .as_ref()
+                .unwrap()
+                .request_body_max_bytes
+                .saturating_add(1);
+        }
+        let (app, _, limits) = busbar_kernel::build_app_from_config(
+            cfg,
+            busbar_kernel::config::PluginsCfg::default(),
+            None,
+            Default::default(),
+            Default::default(),
+            (None, None),
+            prior,
+            &(Arc::new(busbar_kernel::appbuild::AcceptAll)
+                as Arc<dyn busbar_kernel::appbuild::RootRules>),
+        )
+        .unwrap();
+        (Arc::new(app), limits)
+    };
+    let (boot_app, limits) = build(BOOT_FEE, None);
+    limits.keep().unwrap();
+    let handle = busbar_kernel::state::AppHandle::new(boot_app);
+    let pinned = ROOT_CARD.pin().unwrap();
+    for (fee, fail_activation) in [(FIRST_FEE, false), (SECOND_FEE, true)] {
+        let before = handle.load();
+        let before_limits = busbar_kernel::config::limits::installed();
+        let before_era = CardRepricer.era_at(busbar_kernel::store::now_ms());
+        let before_own = ROOT_CARD.card_store().unwrap().own();
+        let card = busbar_kernel::config::card::CardFields {
+            per_request_fee: fee,
+            ..Default::default()
+        };
+        if fail_activation {
+            drop(
+                CardRepricer
+                    .prepare(&card, &card.rates().raw(), "saved actual candidate")
+                    .unwrap(),
+            );
+        }
+        slots.refuse(true);
+        let (next, limits) = build(fee, Some(&before));
+        assert!(handle
+            .commit_rates_and_swap(next, || Ok(()), limits, "actual generation refusal")
+            .is_err());
+        let store = ROOT_CARD.card_store().unwrap();
+        let candidate = store.pending().unwrap();
+        assert!(Arc::ptr_eq(&handle.load(), &before));
+        assert_eq!(handle.load().config_version, before.config_version);
+        assert_eq!(store.own(), before_own);
+        assert_eq!(
+            CardRepricer.era_at(busbar_kernel::store::now_ms()),
+            before_era
+        );
+        assert_eq!(
+            busbar_kernel::config::limits::installed().map(|limits| limits.request_body_max_bytes),
+            before_limits.map(|limits| limits.request_body_max_bytes)
+        );
+        slots.refuse(false);
+        let (next, limits) = build(fee, Some(&before));
+        handle
+            .reload_rates_and_swap(
+                next.clone(),
+                || Ok(()),
+                limits,
+                "explicit actual generation recovery",
+            )
+            .unwrap();
+        assert!(Arc::ptr_eq(&handle.load(), &next));
+        assert_eq!(handle.load().config_version, before.config_version + 1);
+        assert_eq!(store.own(), Some((candidate, card)));
+        assert_eq!(
+            CardRepricer.era_at(busbar_kernel::store::now_ms()).entry_id,
+            Some(candidate.id())
+        );
+        assert!(store.pending().is_none());
+    }
+    assert_eq!(ROOT_CARD.card_store().unwrap().entries().len(), 3);
+    assert_eq!(
+        pinned
+            .view()
+            .card_at(busbar_kernel::store::now_ms())
+            .unwrap()
+            .1
+            .fee(),
+        BOOT_FEE
+    );
+    println!("{WITNESS}");
+}
+
 /// The module names `[package.metadata.busbar.root-units]` lists, in manifest order.
 fn root_unit_modules(manifest: &str) -> Vec<String> {
     let mut in_table = false;

@@ -55,7 +55,7 @@ pub fn build_once_under(
     )?;
     // Same reasoning for the limits: no persist step follows, so this build IS the live generation
     // and its limits stay installed — the behaviour every caller of this helper has always had.
-    limits.keep();
+    limits.keep()?;
     if let Some(rotate) = gov_rotate {
         rotate();
     }
