@@ -104,9 +104,9 @@ fn inventory(id: &AsIdentity) -> Vec<String> {
 }
 
 fn served_paths(app: &busbar_kernel::state::App) -> std::collections::BTreeSet<String> {
-    busbar_kernel_testkit::routes::base_data_route_table_view(app)
+    busbar_kernel::base_data_core_lines(app)
         .into_iter()
-        .map(|(path, _auth)| path)
+        .map(|(path, _method, _auth)| path)
         .collect()
 }
 
