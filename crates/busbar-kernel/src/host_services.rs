@@ -587,6 +587,7 @@ pub struct KernelServices {
 
     mono_ns: Option<MonoNs>,
     instances: Mutex<HashMap<Arc<str>, Arc<InstanceFacts>>>,
+    plane_cleanup: Mutex<Vec<std::sync::Weak<crate::plane_driver::PlaneDriver>>>,
     records: OnceLock<Records>,
     pool: OnceLock<Arc<dyn Offload>>,
     pending: Arc<PendingRecords>,
@@ -673,6 +674,7 @@ impl KernelServices {
             wall_ms: Arc::new(system_wall_ms),
             mono_ns: None,
             instances: Mutex::default(),
+            plane_cleanup: Mutex::default(),
             records: OnceLock::new(),
             pool: OnceLock::new(),
             pending: Arc::default(),
@@ -1418,6 +1420,52 @@ impl KernelServices {
             if self.batcher.start() {
                 self.start_flush(records, pool);
             }
+        }
+    }
+
+    /// Keep a live plane eligible for idle cancellation cleanup without retaining its instance.
+    pub fn register_plane_cleanup(
+        &self,
+        driver: std::sync::Weak<crate::plane_driver::PlaneDriver>,
+    ) {
+        self.plane_cleanup
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(driver);
+    }
+
+    fn cleanup_planes(&self, _cx: &mut std::task::Context<'_>) -> bool {
+        let drivers = {
+            let mut registered = self.plane_cleanup.lock().unwrap_or_else(|e| e.into_inner());
+            registered.retain(|driver| driver.strong_count() != 0);
+            registered
+                .iter()
+                .filter_map(std::sync::Weak::upgrade)
+                .collect::<Vec<_>>()
+        };
+        let mut idle = true;
+        for driver in drivers {
+            driver.sweep();
+            idle &= driver.buried() == 0 && driver.owed_closes() == 0;
+        }
+        idle
+    }
+
+    /// Settle dropped callers before final billing flushes, retaining pending work on timeout.
+    pub async fn drain_plane_cleanup(&self, deadline: std::time::Duration) -> bool {
+        let until = tokio::time::Instant::now() + deadline;
+        loop {
+            if std::future::poll_fn(|cx| std::task::Poll::Ready(self.cleanup_planes(cx))).await {
+                return true;
+            }
+            if tokio::time::Instant::now() >= until {
+                return false;
+            }
+            tokio::time::sleep_until(std::cmp::min(
+                until,
+                tokio::time::Instant::now() + std::time::Duration::from_millis(2),
+            ))
+            .await;
         }
     }
 

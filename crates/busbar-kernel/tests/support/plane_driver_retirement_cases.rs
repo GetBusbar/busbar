@@ -174,3 +174,48 @@ async fn the_first_checkpoint_prices_its_answer_lane_on_the_admitted_card() {
         assert_eq!(money.open_units(), 0);
     }
 }
+
+#[tokio::test]
+async fn idle_maintenance_bills_a_dropped_stream_once_without_another_arrival() {
+    let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
+    let driver = Arc::new(r.driver);
+    let services = services();
+    services.register_plane_cleanup(Arc::downgrade(&driver));
+    let cadence = Arc::clone(&services);
+    let maintenance = tokio::spawn(async move { cadence.flushes().await });
+    let (steps, far, caller) = (
+        common::TestUnits::passing(),
+        cases::Far::new(&["hang-row"], cases::CHUNKS),
+        cases::Caller::default(),
+    );
+    let units = driver.unit(&steps, &far, &caller, cases::arrival("/call", b"x"), 0);
+    let mut running = Box::pin(cases::drive(&units));
+    std::future::poll_fn(|cx| {
+        for _ in 0..32 {
+            assert!(running.as_mut().poll(cx).is_pending());
+            if !r.plane.held.lock().unwrap().is_empty() {
+                return Poll::Ready(());
+            }
+        }
+        panic!("the pending crossing was never submitted");
+    })
+    .await;
+    drop(running);
+    drop(units);
+    assert_eq!(driver.buried(), 1);
+    let settled = tokio::time::timeout(Duration::from_secs(3), async {
+        while driver.buried() != 0 || driver.owed_closes() != 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    maintenance.abort();
+    assert!(
+        settled.is_ok(),
+        "idle maintenance must retire the dropped caller"
+    );
+    assert_eq!(r.book.bills().len(), 1);
+    assert_eq!(r.plane.stats[stat::CANCELS].load(Ordering::SeqCst), 1);
+    driver.sweep();
+    assert_eq!(r.book.bills().len(), 1);
+}
