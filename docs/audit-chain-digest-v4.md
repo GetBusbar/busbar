@@ -273,18 +273,25 @@ can provide.
 
 ---
 
-## 6. Head history survives a restart
+## 6. Head history survives independently of its records
 
-A head is about a hundred bytes. Sampled hourly, that is 8 760 a year — under a megabyte. A node
-that cannot afford a megabyte a year cannot afford an audit chain either, so nothing ages a head out.
+Permanent hourly samples and the current tip are kept in the configured Store under the separate
+`busbar.audit.heads.v1` schema. The existing journal lane commits an audit record's final journal
+part and its new head checkpoint in one conditional Store transaction. A refused transaction
+publishes neither; an unknown outcome retains and retries the same transaction identity.
 
-The heads are rebuilt from the records at every boot: a head is a pure function of the record it was
-taken after and of the sampling rule, and the node's journal keeps every record, so after a restart
-the head read answers with the tip the chain really has and a window's `anchor` is the one it was
-before. A chain that has sealed nothing answers `"head": null` with `"next_seq": 1`; a non-empty
-chain never answers a null head.
+Boot restores the retained anchors independently of source-record reconstruction. On an existing
+deployment without this schema, it first verifies the complete journal and backfills the samples
+before accepting new writes. Interrupted backfills resume from matching samples; an existing
+malformed checkpoint is reported rather than treated as an old deployment.
 
-The genesis head is always kept, whatever the sampling rate.
+A head is about a hundred bytes. One hourly sample is 8 760 per year, and samples never age out.
+The genesis sample is always kept. The current tip also preserves the sampler's last sampled clock,
+so a restart or a backward wall clock cannot move an existing sample.
+
+There is currently no production fixed-audit record-pruning API. The bounded in-memory audit ring
+is a cache over the durable journal; evicting a cache entry does not delete a durable record. The
+independent head schema is outside plane-record retention and has no pruning operation.
 
 ---
 

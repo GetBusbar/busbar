@@ -402,11 +402,10 @@ impl AuditChain {
     /// and the head history is REBUILT from them, so the head read answers with the tip the chain
     /// really has and every window's anchor is the one it had before the restart.
     ///
-    /// Rebuilt rather than restored: a head is a pure function of the record it was taken after and
-    /// of the sampling rule, so walking the records again reproduces the series the predecessor
-    /// held, without a second store that could disagree with the journal. A chain resumed from a
-    /// tail alone would answer a null head beside a `next_seq` above one, which says the chain is
-    /// empty while it is not.
+    /// This rebuild supports complete legacy journals and standalone callers. The production root
+    /// then installs its independently persisted anchors through [`Self::retaining_heads`], so
+    /// their lifetime does not depend on retaining each source record. A tail-only rebuild by
+    /// itself cannot recover earlier anchors.
     pub fn resume(sealed: &[AuditRecord]) -> Self {
         let mut chain = AuditChain::new();
         for record in sealed {

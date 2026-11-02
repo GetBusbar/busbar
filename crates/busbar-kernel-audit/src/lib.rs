@@ -44,8 +44,8 @@
 //! and opens no outbound connection for any of this. Anchoring is somebody else's product, because
 //! a node cannot anchor to itself.
 //!
-//! [`heads`] keeps the anchors — the heads a puller ties a window to — rebuilt from the sealed
-//! records at every boot, so a restart loses none of them.
+//! [`heads`] keeps the anchors — the heads a puller ties a window to. The composition root restores
+//! them from its independent Store schema; a legacy journal is backfilled before new writes.
 //!
 //! ## What a token buys here
 //!

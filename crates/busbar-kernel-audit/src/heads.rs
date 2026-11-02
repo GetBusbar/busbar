@@ -1,24 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! HEAD HISTORY: the anchors a node has published, rebuilt from its records at every boot.
+//! HEAD HISTORY: the permanent hourly anchors and the current tip.
 //!
-//! ## What a head is for
+//! A head says "at position N the chain was THIS". A puller compares it with a head retained
+//! outside the node; a window's range read includes its anchor ([`HeadHistory::anchor_at`]).
 //!
-//! A head is the one fact that says "at position N the chain was THIS", and it is what an external
-//! party timestamps and counter-signs. A puller reading a window it cannot trace to the genesis
-//! needs the head this node published at or before the window's end to tie the window to; the range
-//! read folds exactly that in as its `anchor` ([`HeadHistory::anchor_at`]).
-//!
-//! ## Where the anchors live
-//!
-//! In memory, derived from the sealed records: a head is a pure function of the record it was taken
-//! after and of the sampling rule, so the history is not a second store that could disagree with
-//! the journal. A boot rebuilds it by walking the records the journal hands back
-//! ([`crate::record::AuditChain::resume`]), so the head read and every window's anchor answer after
-//! a restart exactly as they did before it. The anchors last as long as the journal keeps the
-//! records they were taken from, and the journal keeps every record. Nothing in this module prunes:
-//! [`HeadHistory`] has no pruning method and takes no cutoff.
+//! The composition root persists samples and the current tip in an independent Store schema.
+//! Its existing journal lane commits a sealed record's final part and head checkpoint atomically.
+//! Boot restores these anchors independently of the source records; a deployment predating that
+//! schema is backfilled from its complete journal before it can accept new writes. This crate
+//! owns the sampling and restoration rules, and opens no Store or filesystem itself.
 //!
 //! ## Why keeping them all is affordable
 //!
