@@ -45,3 +45,16 @@ fn no_two_kinds_share_a_root_key() {
     unique.dedup();
     assert_eq!(unique.len(), keys.len(), "{keys:?}");
 }
+
+#[test]
+fn version_grammar_keeps_arbitrary_length_decimal_components() {
+    for version in [
+        "18446744073709551615.0.0",
+        "18446744073709551616.0.0",
+        "0.18446744073709551616.0",
+        "0.0.18446744073709551616-rc1+build",
+        "0001.0002.0003-rc1+build",
+    ] {
+        assert!(valid_semver(version), "{version}");
+    }
+}
