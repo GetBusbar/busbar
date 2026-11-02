@@ -126,7 +126,7 @@ async fn busy_raw_ingress_drops_before_acceptance_and_other_real_associations_pr
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn closing_a_busy_real_association_cancels_unaccepted_writes_and_retires_its_path() {
-    let mut a = Pair::new(&[]).await;
+    let a = Pair::new(&[]).await;
     let door = a.door.clone();
     let (parked, inside) = Parked::start(&a);
     inside.recv_timeout(WAIT).unwrap();

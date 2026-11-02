@@ -204,7 +204,7 @@ pub(crate) mod real {
     use busbar_core_connector::dtls::SessionCert;
     use busbar_core_connector::framer::{Call, Crossed, DoorFacts, FramerDoor, Yielded};
     use busbar_core_connector::{Connector, DialJudge, Judged, Verdict};
-    use busbar_kernel::plane_driver::{CallerEnd, SessionCaller};
+    use busbar_kernel::plane_driver::CallerEnd;
     use std::net::SocketAddr;
     use std::sync::Mutex;
     use std::time::Duration;
@@ -266,8 +266,8 @@ pub(crate) mod real {
         pub(crate) connector: Arc<Connector>,
         peer: tokio::task::JoinHandle<()>,
     }
-    fn collect(y: Yielded, tx: &tokio::sync::mpsc::Sender<Vec<u8>>) {
-        for piece in y.pieces {
+    fn collect(mut y: Yielded, tx: &tokio::sync::mpsc::Sender<Vec<u8>>) {
+        for piece in y.pieces.drain(..) {
             assert!(
                 !piece.failed,
                 "actual WebRTC stream failed: {:?}",
@@ -325,10 +325,11 @@ pub(crate) mod real {
             .unwrap();
             let offer = offer
                 .pieces
-                .into_iter()
+                .iter()
                 .find(|p| p.stream == 0 && !p.fields)
                 .unwrap()
-                .bytes;
+                .bytes
+                .clone();
             let opened = {
                 let limits = busbar_kernel::config::limits::LimitsResolved {
                     datagram_line_memory_bytes: limit,
