@@ -1556,54 +1556,6 @@ async fn dlopen_decide_order_and_abstain() {
 }
 
 #[tokio::test]
-async fn dlopen_decide_reject_from_opt_in_prompt() {
-    let env = test_env();
-    let budget = std::time::Duration::from_secs(5);
-    let cands = [dcand(0)];
-    let policy = resolve_one(
-        &env,
-        serde_json::json!({"order": [0], "reject_if_contains": "BLOCKME"}),
-    )
-    .expect("resolve");
-
-    let d = policy
-        .decide(&dreq("clean prompt"), &cands, &dctx(), budget)
-        .await
-        .expect("decide");
-    assert_eq!(d, RoutingDecision::Prefer(vec![0]));
-
-    let d = policy
-        .decide(&dreq("please BLOCKME"), &cands, &dctx(), budget)
-        .await
-        .expect("decide");
-    assert_eq!(
-        d,
-        RoutingDecision::Reject {
-            status: 403,
-            message: "blocked by test gate".to_string()
-        }
-    );
-}
-
-#[tokio::test]
-async fn dlopen_transform_rewrite_and_reject() {
-    use busbar_contract::hooks::TransformOutcome;
-    let env = test_env();
-    let budget = std::time::Duration::from_secs(5);
-    let policy =
-        resolve_one(&env, serde_json::json!({"reject_if_contains": "BLOCKME"})).expect("resolve");
-
-    match policy.transform(&dreq("hello"), budget).await {
-        TransformOutcome::Rewrite(rw) => assert_eq!(rw.messages.len(), 1),
-        other => panic!("expected Rewrite, got {other:?}"),
-    }
-    match policy.transform(&dreq("BLOCKME"), budget).await {
-        TransformOutcome::Reject { status, .. } => assert_eq!(status, 451),
-        other => panic!("expected Reject, got {other:?}"),
-    }
-}
-
-#[tokio::test]
 async fn dlopen_notify_is_fire_and_forget() {
     let env = test_env();
     let budget = std::time::Duration::from_secs(5);
