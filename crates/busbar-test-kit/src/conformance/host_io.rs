@@ -80,6 +80,7 @@ fn failed(e: &std::io::Error) -> IoRefusal {
 }
 
 /// A zero-timeout readiness query does not consume input or send probe bytes.
+#[cfg(unix)]
 fn socket_ready(stream: &TcpStream, direction: u32) -> bool {
     use std::os::fd::AsRawFd;
     let mut fd = libc::pollfd {
@@ -89,7 +90,25 @@ fn socket_ready(stream: &TcpStream, direction: u32) -> bool {
     };
     // SAFETY: one live pollfd, a socket borrowed for this nonblocking call, and no callbacks.
     let ready = unsafe { libc::poll(&mut fd, 1, 0) };
-    ready > 0 && fd.revents != 0
+    // A polling error also wakes the operation so its actual read/write can report the error.
+    ready < 0 || (ready > 0 && fd.revents != 0)
+}
+
+/// Winsock's zero-timeout query has the same non-consuming readiness semantics.
+#[cfg(windows)]
+fn socket_ready(stream: &TcpStream, direction: u32) -> bool {
+    use std::os::windows::io::AsRawSocket;
+    use windows_sys::Win32::Networking::WinSock::{WSAPoll, WSAPOLLFD, POLLRDNORM, POLLWRNORM};
+    let mut fd = WSAPOLLFD {
+        fd: stream.as_raw_socket() as _,
+        events: if direction == DIR_WRITE { POLLWRNORM } else { POLLRDNORM },
+        revents: 0,
+    };
+    // SAFETY: one initialized WSAPOLLFD borrows a live socket for this nonblocking call.
+    let ready = unsafe { WSAPoll(&mut fd, 1, 0) };
+    // Closure/error events wake the operation. On SOCKET_ERROR, its actual read/write reports
+    // the Winsock error through std::net; interpreting it as last_os_error would be incorrect.
+    ready < 0 || (ready > 0 && fd.revents != 0)
 }
 
 impl SuiteIo {
