@@ -33,6 +33,24 @@ use busbar_contract::abi::export::{ExportField, ExportStream};
 use serde_json::Value;
 use std::sync::Arc;
 
+/// Read the real host snapshot service from a test-support crossing. The existing snapshot grant
+/// still decides whether this caller may read; an ungranted caller receives its normal refusal.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn read_test_snapshot(scope: u32) -> busbar_contract::services::Snapshot {
+    scrape::read(scope)
+}
+
+/// Dispatch a test-support sink through the real served-sink adapter and snapshot grant. The grant
+/// is lent only for each HTTP crossing and restored by the same guard used for live scrape routes.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn serve_test_sink(
+    sink: Arc<dyn busbar_contract::export_calls::ExportCalls>,
+) -> Arc<dyn crate::plugin_routes::PluginHttpDispatch> {
+    Arc::new(scrape::Granted(plugin::served(sink)))
+}
+
 /// The live plugin-route declarations the `export:` block contributes — every opened export-axis
 /// sink's own, the scrape sink's well-known `/metrics` and `/metrics/hooks` first. Built at App construction from the resolved `export:` block
 /// and folded into the [`crate::plugin_routes::PluginRouteTable`] on the App snapshot.

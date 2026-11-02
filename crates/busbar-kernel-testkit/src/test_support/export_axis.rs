@@ -139,16 +139,20 @@ impl busbar_contract::export_calls::ExportAxis for StandIn {
 }
 
 /// THE FROZEN SCRAPE MODULE WORD: the `module:` backing the 1.5.x type key whose default instance is
-/// named for the `metrics` stream (the root migration table's `export_type_keys` row, read through the
-/// migrator's own `config::migrate_export::export_type_keys`: 1.5.5's spelling of the scrape
-/// sink, which `--migrate-config` writes). The double answers to it; the kernel spells no export
+/// named for the `metrics` stream (the root migration table's `export_type_keys` row, read through
+/// its public data view: 1.5.5's spelling of the scrape sink, which `--migrate-config` writes).
+/// The double answers to it; the kernel spells no export
 /// module.
 #[must_use]
 pub fn scrape_module() -> &'static str {
-    crate::config::migrate_export::export_type_keys()
+    crate::config::migration_table::pairs("export_type_keys")
         .into_iter()
-        .find(|(_, instance, _)| *instance == ExportStream::Metrics.as_token())
-        .map_or("", |(_, _, module)| module)
+        .filter_map(|(_, fields)| {
+            let mut field = fields.split(':');
+            Some((field.next()?, field.next()?))
+        })
+        .find(|(instance, _)| *instance == ExportStream::Metrics.as_token())
+        .map_or("", |(_, module)| module)
 }
 
 /// The scrape double, when `module` is the word it answers to and no neutral row answers to it (the
@@ -398,7 +402,7 @@ fn serve_snapshot(
             body,
         })
     };
-    match crate::export::scrape::read(scope) {
+    match crate::export::read_test_snapshot(scope) {
         Snapshot::Families(f) => served(
             200,
             vec![("content-type", content_type)],
@@ -414,10 +418,7 @@ fn serve_snapshot(
 pub(crate) fn lines_scrape_routes() -> Vec<crate::plugin_routes::RouteDecl> {
     let sink: std::sync::Arc<dyn busbar_contract::export_calls::ExportCalls> =
         std::sync::Arc::new(LinesSink);
-    let dispatch: std::sync::Arc<dyn crate::plugin_routes::PluginHttpDispatch> =
-        std::sync::Arc::new(crate::export::scrape::Granted(
-            crate::export::plugin::served(sink.clone()),
-        ));
+    let dispatch = crate::export::serve_test_sink(sink.clone());
     sink.routes()
         .iter()
         .map(|route| crate::plugin_routes::RouteDecl {
