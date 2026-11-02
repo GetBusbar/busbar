@@ -1740,19 +1740,18 @@ async fn the_signed_ingress_claims_its_identitys_replay_key() {
 }
 
 #[tokio::test]
-async fn a_replayed_signed_message_inside_its_ttl_is_denied() {
+async fn a_replayed_verified_identity_inside_its_ttl_is_denied() {
     let gov = replay_gov();
+    // INTERNAL post-verification claim continuation; no fake verifier or chain.
     let run = |key: &str, gov: Option<std::sync::Arc<crate::governance::GovState>>| {
-        let auth = naming_chain(hook_answer(Some(key), Vec::new()));
+        let answered = chain_verdict_of(hook_answer(Some(key), Vec::new()));
+        let verdict = complete_chain(chain_position_verdict("door", answered.verdict));
+        let pending = PendingClaim::of(
+            ReplayClaim::of("door", answered.replay, busbar_kernel::store::now()),
+            gov,
+        );
         async move {
-            AuthMiddleware::run_chain_on_request_path(
-                &auth,
-                Some("signed".into()),
-                ChainHead::default(),
-                gov,
-                None,
-            )
-            .await
+            deny_unavailable_chain(claimed_chain_identity(Ok(verdict), pending.as_ref()).await)
         }
     };
     let first = run("standard-webhooks/msg_1", Some(gov.clone())).await;
@@ -1885,53 +1884,63 @@ fn named_credential_stripping_preserves_both_request_targets_and_other_headers()
     );
 }
 
-fn naming_admin_app(
-    answer: busbar_contract::auth_calls::VerifyAnswer,
-) -> std::sync::Arc<crate::state::App> {
-    let rb = bindings_for(
-        "ext-door",
-        &[("hooks", binding(None, None, Some("read-only")))],
-    );
-    let mut app = crate::test_support::TestApp::new()
-        .admin_chain(vec!["ext-door".to_string()])
-        .role_bindings(rb)
-        .governance(replay_gov())
-        .build();
-    let mut modules = std::collections::HashMap::new();
-    modules.insert(
-        "ext-door".to_string(),
-        AdminModule {
-            calls: std::sync::Arc::new(NamingDoor(answer)),
-        },
-    );
-    std::sync::Arc::get_mut(&mut app)
-        .expect("freshly built App Arc is unshared")
-        .admin_modules = std::sync::Arc::new(AdminAuthChain {
-        modules,
-        operator: Operator::new(crate::config::operator_provider()),
-    });
-    app
-}
-
 #[tokio::test]
 async fn an_admin_identity_replayed_is_denied_and_its_named_lines_ride_out() {
-    use busbar_contract::auth_calls::Strip;
-    let app = naming_admin_app(hook_answer(
-        Some("signed/admin_1"),
-        vec![Strip::field("x-hook-secret")],
-    ));
-    let headers = admin_headers(Some("signed"), None);
-    let mut strips = Vec::new();
-    let first = judge_admin_door(&app, "GET", "/", &headers, false, true, &mut strips).await;
+    let gov = replay_gov();
+    let now = busbar_kernel::store::now();
+    let project = || {
+        let mut carried = AdminCarried::default();
+        let (verdict, replay) = carry_admin_outcome(
+            &mut carried,
+            "ext-door",
+            chain_verdict_of(hook_answer(
+                Some("signed/admin_1"),
+                vec![Strip::field("x-hook-secret")],
+            )),
+        );
+        let verdict = complete_chain(chain_position_verdict("ext-door", verdict));
+        let pending = PendingClaim::of(
+            unclaimed_admin_replay(
+                matches!(&verdict, ChainVerdict::Identified { .. }),
+                replay.map(|r| ("ext-door".into(), r)),
+                now,
+            ),
+            Some(gov.clone()),
+        );
+        let door = admin_door_from_bindings(
+            &bindings_for(
+                "ext-door",
+                &[("hooks", binding(None, None, Some("read-only")))],
+            ),
+            &Operator::new("operator-provider"),
+            "operator",
+            verdict,
+            None,
+            crate::admin::seam::admin_verb_rung,
+        );
+        (door, pending, carried.strips)
+    };
+    let (door, pending, strips) = project();
+    let first = Ok::<_, VerifierUnavailable>(
+        claimed_admin_door(door, pending.as_ref(), "GET", "/", true).await,
+    );
     assert!(matches!(first, Ok(AdminDoor::Identified(..))), "{first:?}");
     assert_eq!(strips, vec![Strip::field("x-hook-secret")]);
+    let (door, pending, _) = project();
     assert_eq!(
-        admin_door(&app, "GET", "/", &headers),
+        probed_admin_claim(door, pending.as_ref(), "GET", "/", true),
         AdminDoor::Denied,
         "the replay is refused"
     );
+    let (door, pending, _) = project();
     assert!(
-        dry_run_admin_scope(&app, &headers) != busbar_contract::authz::Grants::default(),
+        admin_scope_from_door(probed_admin_claim(
+            door,
+            pending.as_ref(),
+            "GET",
+            "/",
+            false
+        )) != busbar_contract::authz::Grants::default(),
         "a dry run claims nothing"
     );
 }
@@ -2016,30 +2025,58 @@ async fn a_session_refused_for_its_grant_claims_no_replay_key() {
 #[tokio::test]
 async fn an_admin_identity_refused_for_scope_leaves_its_replay_key_unclaimed() {
     use busbar_contract::authz::Scope;
-    let app = naming_admin_app(hook_answer(Some("signed/admin_r6"), Vec::new()));
-    let headers = admin_headers(Some("signed"), None);
-    let mut strips = Vec::new();
+    let gov = replay_gov();
+    let now = busbar_kernel::store::now();
+    // INTERNAL verified-identity/scope/claim continuation over actual conditional Store.
+    let project = || {
+        let answered = chain_verdict_of(hook_answer(Some("signed/admin_r6"), Vec::new()));
+        let verdict = complete_chain(chain_position_verdict("ext-door", answered.verdict));
+        let pending = PendingClaim::of(
+            unclaimed_admin_replay(true, answered.replay.map(|r| ("ext-door".into(), r)), now),
+            Some(gov.clone()),
+        );
+        let door = admin_door_from_bindings(
+            &bindings_for(
+                "ext-door",
+                &[("hooks", binding(None, None, Some("read-only")))],
+            ),
+            &Operator::new("operator-provider"),
+            "operator",
+            verdict,
+            None,
+            crate::admin::seam::admin_verb_rung,
+        );
+        (door, pending)
+    };
     for _ in 0..2 {
-        let refused = judge_admin_door(&app, "POST", "/", &headers, false, true, &mut strips).await;
+        let (door, pending) = project();
+        let refused = Ok::<_, VerifierUnavailable>(
+            claimed_admin_door(door, pending.as_ref(), "POST", "/", true).await,
+        );
         let Ok(AdminDoor::Identified(_, grants)) = &refused else {
             panic!("identified, not authorized, not a replay: {refused:?}");
         };
         assert!(!grants.allows(Scope::Full), "{grants:?}");
     }
+    let (door, pending) = project();
     assert!(
         matches!(
-            admin_door(&app, "POST", "/", &headers),
+            probed_admin_claim(door, pending.as_ref(), "POST", "/", true),
             AdminDoor::Identified(..)
         ),
         "the probe refuses for scope too, claiming nothing"
     );
-    let admitted = judge_admin_door(&app, "GET", "/", &headers, false, true, &mut strips).await;
+    let (door, pending) = project();
+    let admitted = Ok::<_, VerifierUnavailable>(
+        claimed_admin_door(door, pending.as_ref(), "GET", "/", true).await,
+    );
     assert!(
         matches!(admitted, Ok(AdminDoor::Identified(..))),
         "the authorized request wins the still-free claim: {admitted:?}"
     );
+    let (door, pending) = project();
     assert_eq!(
-        admin_door(&app, "GET", "/", &headers),
+        probed_admin_claim(door, pending.as_ref(), "GET", "/", true),
         AdminDoor::Denied,
         "its replay is refused"
     );

@@ -251,6 +251,18 @@ async fn claim_won(pending: Option<&PendingClaim>) -> bool {
     }
 }
 
+async fn claimed_chain_identity(
+    verdict: Result<ChainVerdict, VerifierUnavailable>,
+    pending: Option<&PendingClaim>,
+) -> Result<ChainVerdict, VerifierUnavailable> {
+    match verdict {
+        Ok(ChainVerdict::Identified { .. }) if !claim_won(pending).await => {
+            Ok(ChainVerdict::Denied)
+        }
+        verdict => verdict,
+    }
+}
+
 #[cfg(test)]
 async fn signed_replay_claimed(
     gov: Option<&crate::governance::GovState>,
@@ -1022,12 +1034,7 @@ impl AuthMiddleware {
             Self::judge_chain_on_request_path_naming(auth, candidate, head, gov, expected_aud)
                 .await;
 
-        match verdict {
-            Ok(ChainVerdict::Identified { .. }) if !claim_won(pending.as_ref()).await => {
-                Ok(ChainVerdict::Denied)
-            }
-            verdict => verdict,
-        }
+        claimed_chain_identity(verdict, pending.as_ref()).await
     }
 
     pub async fn judge_chain_on_request_path_naming(
@@ -1527,10 +1534,20 @@ async fn judge_admin_door(
     let verdict = admin_chain_outcome(verdict, no_verdict)?;
     let (door, pending) = admin_door_claim_of(app, verdict, cap, replay);
 
-    if claim && admin_door_admits(&door, method, target) && !claim_won(pending.as_ref()).await {
-        return Ok(AdminDoor::Denied);
+    Ok(claimed_admin_door(door, pending.as_ref(), method, target, claim).await)
+}
+
+async fn claimed_admin_door(
+    door: AdminDoor,
+    pending: Option<&PendingClaim>,
+    method: &str,
+    target: &str,
+    claim: bool,
+) -> AdminDoor {
+    if claim && admin_door_admits(&door, method, target) && !claim_won(pending).await {
+        return AdminDoor::Denied;
     }
-    Ok(door)
+    door
 }
 
 /// THE ADMIN DOOR'S VERDICT with its identity's replay claim UNWON ([`PendingClaim`]), for an admin
@@ -1673,10 +1690,17 @@ fn probe_admin_door(
 ) -> AdminDoor {
     let (door, pending) = probe_admin_verdict(app, method, target, headers);
 
-    if claim
-        && admin_door_admits(&door, method, target)
-        && pending.as_ref().is_some_and(|p| !p.win_now())
-    {
+    probed_admin_claim(door, pending.as_ref(), method, target, claim)
+}
+
+fn probed_admin_claim(
+    door: AdminDoor,
+    pending: Option<&PendingClaim>,
+    method: &str,
+    target: &str,
+    claim: bool,
+) -> AdminDoor {
+    if claim && admin_door_admits(&door, method, target) && pending.is_some_and(|p| !p.win_now()) {
         return AdminDoor::Denied;
     }
     door
