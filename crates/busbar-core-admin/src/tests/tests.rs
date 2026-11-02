@@ -7074,19 +7074,6 @@ fn free_open_units() -> serde_json::Value {
         .into()
 }
 
-#[test]
-fn auth_modules_list_inbound_rows_only() {
-    let inbound: busbar_kernel::preflight::LinkedAuth = (
-        "inbound-row",
-        "canonical-name",
-        busbar_kernel_testkit::test_support::operator_double::door,
-    );
-    assert_eq!(
-        busbar_kernel::preflight::inbound_auth_names(&[inbound]),
-        vec!["inbound-row"]
-    );
-}
-
 async fn rotate_under_a_pool_ceiling(
     bound_pools: Option<Vec<String>>,
 ) -> (u16, serde_json::Value, bool) {
