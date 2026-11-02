@@ -407,3 +407,13 @@ mod actual_mcp;
 #[allow(unsafe_code)]
 #[path = "tests/actual_mcp_identity_tests.rs"]
 mod actual_mcp_identity_tests;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/ordinary_plane_registry.rs"]
+mod ordinary_plane_registry;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/ordinary_plane_lending.rs"]
+mod ordinary_plane_lending;
