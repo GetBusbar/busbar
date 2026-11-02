@@ -1,7 +1,38 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-mod linked;
+mod linked {
+    use busbar_kernel::plane_driver::registry::PlaneDecl;
+    pub(super) fn install() {
+        crate::dist_root_install::install();
+    }
+    pub(super) fn planes() -> &'static [&'static PlaneDecl] {
+        install();
+        busbar_kernel::plane_driver::registry::plane_decls()
+    }
+    pub(super) fn owning(section: &str) -> &'static PlaneDecl {
+        planes()
+            .iter()
+            .copied()
+            .find(|decl| {
+                decl.config_section == section || decl.owned_config_sections.contains(&section)
+            })
+            .expect("the actual distribution declares the configured section")
+    }
+    pub(super) fn fallback() -> &'static PlaneDecl {
+        planes()
+            .iter()
+            .copied()
+            .find(|decl| decl.fallback)
+            .expect("the actual distribution declares its fallback")
+    }
+    pub(super) fn door_section(decl: &PlaneDecl) -> &'static str {
+        decl.owned_config_sections
+            .first()
+            .copied()
+            .unwrap_or(decl.config_section)
+    }
+}
 
 use busbar_kernel::config::RootCfg;
 use busbar_kernel::plane_driver::registry::{BuildCtx, PlaneDecl};
@@ -117,7 +148,36 @@ fn door_served_by_root(decl: &'static PlaneDecl, sections: &str) -> bool {
 
 #[tokio::test]
 async fn oversized_post_to_a_mounted_door_plane_is_refused_in_the_planes_own_dialect() {
-    busbar_kernel::snapshot::init_with(std::time::Duration::from_secs(60));
+    const CHILD: &str = "BUSBAR_PLANE_INTEGRATION_CHILD";
+    if std::env::var(CHILD).ok().as_deref()
+        != Some("oversized_post_to_a_mounted_door_plane_is_refused_in_the_planes_own_dialect")
+    {
+        let module = module_path!()
+            .split_once("::")
+            .expect("a mounted test module")
+            .1;
+        let test = format!(
+            "{module}::oversized_post_to_a_mounted_door_plane_is_refused_in_the_planes_own_dialect"
+        );
+        let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .args([test.as_str(), "--exact", "--nocapture", "--test-threads=1"])
+            .env(
+                CHILD,
+                "oversized_post_to_a_mounted_door_plane_is_refused_in_the_planes_own_dialect",
+            )
+            .output()
+            .expect("run the original behavior in a fresh product process");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success()
+                && stdout.contains("running 1 test")
+                && stdout.contains(&format!("test {test} ... ok"))
+                && stdout.contains("1 passed; 0 failed; 0 ignored"),
+            "the original behavior failed or did not run exactly once:\n{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
     let sections = door_section_yaml("gateway.example.com");
     let mount = jsonrpc_mount(door_plane(), &sections);
     let mut cfg = resolved(&sections);
@@ -182,7 +242,7 @@ async fn oversized_post_to_a_mounted_door_plane_is_refused_in_the_planes_own_dia
     }
     let app = Arc::new(app);
 
-    let v = oversized_413_body(app, &mount).await;
+    let v = oversized_413_body(app, &sections, &mount).await;
 
     assert_eq!(
         v.get("jsonrpc").and_then(|j| j.as_str()),
@@ -202,7 +262,31 @@ async fn oversized_post_to_a_mounted_door_plane_is_refused_in_the_planes_own_dia
 
 #[tokio::test]
 async fn a_mount_claims_its_own_segment_and_not_its_sibling() {
-    busbar_kernel::snapshot::init_with(std::time::Duration::from_secs(60));
+    const CHILD: &str = "BUSBAR_PLANE_INTEGRATION_CHILD";
+    if std::env::var(CHILD).ok().as_deref()
+        != Some("a_mount_claims_its_own_segment_and_not_its_sibling")
+    {
+        let module = module_path!()
+            .split_once("::")
+            .expect("a mounted test module")
+            .1;
+        let test = format!("{module}::a_mount_claims_its_own_segment_and_not_its_sibling");
+        let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .args([test.as_str(), "--exact", "--nocapture", "--test-threads=1"])
+            .env(CHILD, "a_mount_claims_its_own_segment_and_not_its_sibling")
+            .output()
+            .expect("run the original behavior in a fresh product process");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success()
+                && stdout.contains("running 1 test")
+                && stdout.contains(&format!("test {test} ... ok"))
+                && stdout.contains("1 passed; 0 failed; 0 ignored"),
+            "the original behavior failed or did not run exactly once:\n{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
     let sections = door_section_yaml("gateway.example.com");
     let mount = jsonrpc_mount(door_plane(), &sections);
     let mut cfg = resolved(&sections);
@@ -267,14 +351,14 @@ async fn a_mount_claims_its_own_segment_and_not_its_sibling() {
     }
     let app = Arc::new(app);
 
-    let under = oversized_413_body(app.clone(), &format!("{mount}/anything")).await;
+    let under = oversized_413_body(app.clone(), &sections, &format!("{mount}/anything")).await;
     assert_eq!(
         under.get("jsonrpc").and_then(|j| j.as_str()),
         Some("2.0"),
         "`{mount}/anything` lies beneath the `{mount}` mount at a segment boundary; got {under}"
     );
 
-    let sibling = oversized_413_body(app, &format!("{mount}x")).await;
+    let sibling = oversized_413_body(app, &sections, &format!("{mount}x")).await;
     assert!(
         sibling.get("jsonrpc").is_none(),
         "`{mount}x` is NOT under the `{mount}` mount — it must not inherit the plane's refusal \
@@ -288,7 +372,35 @@ async fn a_mount_claims_its_own_segment_and_not_its_sibling() {
 
 #[test]
 fn plane_slot_holds_the_one_built_object_of_each_configured_plane() {
-    busbar_kernel::snapshot::init_with(std::time::Duration::from_secs(60));
+    const CHILD: &str = "BUSBAR_PLANE_INTEGRATION_CHILD";
+    if std::env::var(CHILD).ok().as_deref()
+        != Some("plane_slot_holds_the_one_built_object_of_each_configured_plane")
+    {
+        let module = module_path!()
+            .split_once("::")
+            .expect("a mounted test module")
+            .1;
+        let test =
+            format!("{module}::plane_slot_holds_the_one_built_object_of_each_configured_plane");
+        let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .args([test.as_str(), "--exact", "--nocapture", "--test-threads=1"])
+            .env(
+                CHILD,
+                "plane_slot_holds_the_one_built_object_of_each_configured_plane",
+            )
+            .output()
+            .expect("run the original behavior in a fresh product process");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success()
+                && stdout.contains("running 1 test")
+                && stdout.contains(&format!("test {test} ... ok"))
+                && stdout.contains("1 passed; 0 failed; 0 ignored"),
+            "the original behavior failed or did not run exactly once:\n{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
     let sections = format!("{}{AGENTS_YAML}", door_section_yaml("gw.example.com"));
     let cfg = bootable(&sections);
     let configured: Vec<&'static PlaneDecl> = linked::planes()
@@ -419,7 +531,31 @@ fn plane_slot_holds_the_one_built_object_of_each_configured_plane() {
 
 #[test]
 fn plane_slot_is_none_when_the_plane_is_not_configured() {
-    busbar_kernel::snapshot::init_with(std::time::Duration::from_secs(60));
+    const CHILD: &str = "BUSBAR_PLANE_INTEGRATION_CHILD";
+    if std::env::var(CHILD).ok().as_deref()
+        != Some("plane_slot_is_none_when_the_plane_is_not_configured")
+    {
+        let module = module_path!()
+            .split_once("::")
+            .expect("a mounted test module")
+            .1;
+        let test = format!("{module}::plane_slot_is_none_when_the_plane_is_not_configured");
+        let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .args([test.as_str(), "--exact", "--nocapture", "--test-threads=1"])
+            .env(CHILD, "plane_slot_is_none_when_the_plane_is_not_configured")
+            .output()
+            .expect("run the original behavior in a fresh product process");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success()
+                && stdout.contains("running 1 test")
+                && stdout.contains(&format!("test {test} ... ok"))
+                && stdout.contains("1 passed; 0 failed; 0 ignored"),
+            "the original behavior failed or did not run exactly once:\n{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
     let cfg = resolved("");
     assert!(
         cfg.endpoint_resources.is_empty(),
@@ -550,9 +686,37 @@ mod metrics_scrape {
 
     #[tokio::test]
     async fn mounted_plane_traffic_appears_on_a_real_metrics_scrape() {
-        busbar_kernel::snapshot::init_with(std::time::Duration::from_secs(60));
+        const CHILD: &str = "BUSBAR_PLANE_INTEGRATION_CHILD";
+        if std::env::var(CHILD).ok().as_deref()
+            != Some("mounted_plane_traffic_appears_on_a_real_metrics_scrape")
+        {
+            let module = module_path!()
+                .split_once("::")
+                .expect("a mounted test module")
+                .1;
+            let test = format!("{module}::mounted_plane_traffic_appears_on_a_real_metrics_scrape");
+            let output =
+                std::process::Command::new(std::env::current_exe().expect("test executable"))
+                    .args([test.as_str(), "--exact", "--nocapture", "--test-threads=1"])
+                    .env(
+                        CHILD,
+                        "mounted_plane_traffic_appears_on_a_real_metrics_scrape",
+                    )
+                    .output()
+                    .expect("run the original behavior in a fresh product process");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success()
+                    && stdout.contains("running 1 test")
+                    && stdout.contains(&format!("test {test} ... ok"))
+                    && stdout.contains("1 passed; 0 failed; 0 ignored"),
+                "the original behavior failed or did not run exactly once:\n{stdout}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
         linked::install();
-        let sections = format!("{}{AGENTS_YAML}", door_section_yaml("gateway.example.com"));
+        let sections = format!("{}{AGENTS_YAML}export:\n  metrics: {{module: prometheus, settings: {{buffer_seconds: 60}}}}\n", door_section_yaml("gateway.example.com"));
         let door_mount = jsonrpc_mount(door_plane(), &sections);
         let agents_mount = jsonrpc_mount(agents_plane(), &sections);
         let mut cfg = resolved(&sections);
@@ -601,6 +765,7 @@ mod metrics_scrape {
         };
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn busbar_kernel::appbuild::RootRules>;
+        busbar_kernel::export::plugin::open(&cfg.export).expect("the configured exporter opens");
         let (app, rotate, limits) = busbar_kernel::build_app_from_config(
             cfg,
             plugin_config,
@@ -618,7 +783,7 @@ mod metrics_scrape {
         }
         let app = Arc::new(app);
 
-        let router = busbar_kernel::build_router(app);
+        let router = plane_router(app, &sections, usize::MAX, &[]);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -718,10 +883,37 @@ const BODY_INGRESS_ROUTES: [&str; 2] = ["/{name}/v1/messages", "/{provider}/{mod
 
 #[tokio::test]
 async fn an_audience_bound_token_is_confined_to_its_door_plane() {
+    const CHILD: &str = "BUSBAR_PLANE_INTEGRATION_CHILD";
+    if std::env::var(CHILD).ok().as_deref()
+        != Some("an_audience_bound_token_is_confined_to_its_door_plane")
+    {
+        let module = module_path!()
+            .split_once("::")
+            .expect("a mounted test module")
+            .1;
+        let test = format!("{module}::an_audience_bound_token_is_confined_to_its_door_plane");
+        let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .args([test.as_str(), "--exact", "--nocapture", "--test-threads=1"])
+            .env(
+                CHILD,
+                "an_audience_bound_token_is_confined_to_its_door_plane",
+            )
+            .output()
+            .expect("run the original behavior in a fresh product process");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success()
+                && stdout.contains("running 1 test")
+                && stdout.contains(&format!("test {test} ... ok"))
+                && stdout.contains("1 passed; 0 failed; 0 ignored"),
+            "the original behavior failed or did not run exactly once:\n{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
     use busbar_kernel::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
     use busbar_kernel::governance::GovState;
 
-    busbar_kernel::snapshot::init_with(std::time::Duration::from_secs(60));
     let door = door_plane();
 
     const HOST: &str = "busbar.example.com";
@@ -894,7 +1086,7 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
         "an empty table would make every assertion below vacuous"
     );
 
-    let router = busbar_kernel::build_router(app);
+    let router = plane_router(app, &sections, usize::MAX, &["keys"]);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1109,8 +1301,12 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
     handle.abort();
 }
 
-async fn oversized_413_body(app: Arc<busbar_kernel::state::App>, path: &str) -> serde_json::Value {
-    let (router, _) = busbar_kernel::build_router_with_limits(app, 64, 16, false);
+async fn oversized_413_body(
+    app: Arc<busbar_kernel::state::App>,
+    sections: &str,
+    path: &str,
+) -> serde_json::Value {
+    let router = plane_router(app, sections, 64, &[]);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");
@@ -1133,4 +1329,115 @@ async fn oversized_413_body(app: Arc<busbar_kernel::state::App>, path: &str) -> 
         String::from_utf8_lossy(&bytes)
     );
     serde_json::from_slice(&bytes).expect("the refusal is JSON")
+}
+
+fn plane_router(
+    app: Arc<busbar_kernel::state::App>,
+    sections: &str,
+    body_limit: usize,
+    chain: &[&str],
+) -> axum::Router {
+    use busbar_plugin_loader::dispatch::{load_linked, Bind, ConnTable, LinkedRow, NoSink};
+    let cfg = resolved(sections);
+    let late = crate::root::serve::LateServices::new();
+    let dispatcher = Arc::new(crate::root::dispatch::build(1, &late));
+    let (credentials, live) = crate::root::credentials::AppCredentials::late();
+    crate::root::serve::compose(crate::root::connector::dest_judge(&cfg), &late, credentials);
+    let declarations: Vec<_> = linked::planes()
+        .iter()
+        .map(|decl| &decl.declaration)
+        .collect();
+    crate::root::serve::attach(
+        &late,
+        app.governance.as_deref(),
+        app.governance
+            .clone()
+            .map(|gov| gov as Arc<dyn busbar_kernel::host_services::SignKey>),
+        &app.demotion_record,
+        &declarations,
+    );
+    let doors: Vec<_> = crate::LINKED
+        .plane_door_declares
+        .iter()
+        .map(|&(name, door, _)| {
+            let row = LinkedRow::of(door).expect("the actual linked plane states itself");
+            let plugin = load_linked::<busbar_plugin_loader::dispatch::kinds::plane::Plane>(
+                &row,
+                Bind {
+                    instance: name.into(),
+                    max_inflight_cap: 64,
+                    sink: Arc::new(NoSink),
+                    dispatcher: dispatcher.adopter(),
+                    conns: ConnTable::Host(crate::root::connector::the().clone()),
+                },
+            )
+            .expect("the actual linked plane crosses its memory ABI");
+            (name.to_string(), Arc::new(plugin))
+        })
+        .collect();
+    let written: serde_yaml::Value =
+        serde_yaml::from_str(sections).expect("the plane configuration");
+    let mut configured = std::collections::BTreeMap::new();
+    for decl in linked::planes() {
+        for section in
+            std::iter::once(decl.config_section).chain(decl.owned_config_sections.iter().copied())
+        {
+            if let Some(value) = written.get(section) {
+                configured.insert(section, value.clone());
+            }
+        }
+    }
+    let gov = app.governance.clone().expect("actual governance book");
+    let post = Arc::new(crate::root::plane_node::NodeEndPost::new(
+        crate::root::plane_node::node(),
+    ));
+    let served = crate::root::serve::compose_planes(
+        &doors,
+        &dispatcher,
+        &late,
+        &configured,
+        Some("https://busbar.example"),
+        &|| {
+            Arc::new(busbar_kernel::plane_driver::PlaneMoney::new(
+                gov.clone(),
+                post.clone(),
+            ))
+        },
+        None,
+        None,
+        &app.serve_tables,
+    )
+    .expect("the actual plane generations open through the production composition");
+    let data_chain: Vec<_> = chain
+        .iter()
+        .map(|name| {
+            (
+                (*name).to_string(),
+                busbar_contract::abi::auth::AuthPoints(busbar_contract::abi::auth::POINT_HEAD),
+            )
+        })
+        .collect();
+    let mounts = crate::root::serve::door_mounts(
+        served,
+        || crate::root::kernel::ROOT_CARD.pin(),
+        &data_chain,
+        &busbar_kernel::base_data_core_lines(&app),
+        &[],
+        &crate::root::serve::transport_offers(crate::LINKED.transports, &[]),
+    )
+    .expect("the actual root mounts the planes' own declared doors");
+    let (router, _, handle) = busbar_kernel::build_split_routers_serving_doors(
+        app,
+        mounts.routes,
+        mounts.sessions,
+        mounts.refusals,
+        body_limit,
+        16,
+        false,
+    );
+    if let Some(refuser) = mounts.refuse_by_path {
+        handle.bind_door_refuser(refuser);
+    }
+    live.set(handle);
+    router
 }

@@ -1,7 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-mod linked;
+mod linked {
+    use busbar_kernel::plane_driver::registry::PlaneDecl;
+    pub(super) fn install() {
+        crate::dist_root_install::install();
+    }
+    pub(super) fn planes() -> &'static [&'static PlaneDecl] {
+        install();
+        busbar_kernel::plane_driver::registry::plane_decls()
+    }
+    pub(super) fn fallback() -> &'static PlaneDecl {
+        planes()
+            .iter()
+            .copied()
+            .find(|decl| decl.fallback)
+            .expect("the actual distribution declares its fallback")
+    }
+}
 
 use axum::extract::Extension;
 use busbar_contract::records::{ScopeRef, VirtualKey};

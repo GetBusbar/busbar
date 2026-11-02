@@ -1,7 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-mod linked;
+mod linked {
+    use busbar_kernel::plane_driver::registry::PlaneDecl;
+    pub(super) fn install() {
+        crate::dist_root_install::install();
+    }
+    pub(super) fn planes() -> &'static [&'static PlaneDecl] {
+        install();
+        busbar_kernel::plane_driver::registry::plane_decls()
+    }
+}
 
 #[path = "../../../crates/busbar/src/root/tests/test_plugins.rs"]
 mod plugins;

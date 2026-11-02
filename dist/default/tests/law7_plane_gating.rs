@@ -1,7 +1,38 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-mod linked;
+mod linked {
+    use busbar_kernel::plane_driver::registry::PlaneDecl;
+    pub(super) fn install() {
+        crate::dist_root_install::install();
+    }
+    pub(super) fn planes() -> &'static [&'static PlaneDecl] {
+        install();
+        busbar_kernel::plane_driver::registry::plane_decls()
+    }
+    pub(super) fn owning(section: &str) -> &'static PlaneDecl {
+        planes()
+            .iter()
+            .copied()
+            .find(|decl| {
+                decl.config_section == section || decl.owned_config_sections.contains(&section)
+            })
+            .expect("the actual distribution declares the configured section")
+    }
+    pub(super) fn fallback() -> &'static PlaneDecl {
+        planes()
+            .iter()
+            .copied()
+            .find(|decl| decl.fallback)
+            .expect("the actual distribution declares its fallback")
+    }
+    pub(super) fn door_section(decl: &PlaneDecl) -> &'static str {
+        decl.owned_config_sections
+            .first()
+            .copied()
+            .unwrap_or(decl.config_section)
+    }
+}
 
 use busbar_kernel::plane_driver::registry::{PlaneDecl, PlaneDeclaration};
 use std::sync::Arc;
