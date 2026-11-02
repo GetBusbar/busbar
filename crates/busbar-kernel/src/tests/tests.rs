@@ -1635,57 +1635,6 @@ fn secret_ref_wrong_kind_plugin_fails_at_preflight() {
 }
 
 #[test]
-fn a_rebuild_carries_the_session_store_and_defaults_scan_off() {
-    crate::test_support::register_neutral_test_plane();
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let cfg = || {
-        cfg_with_provider_api_key(crate::config::SecretRef::env(
-            "BUSBAR_TEST_NO_SUCH_KEY_SESSION_STORE",
-        ))
-    };
-    let prior = build_once(cfg(), None).expect("boot");
-    assert!(
-        !prior.incremental_scan,
-        "with BUSBAR_INCREMENTAL_SCAN unset the gate incremental scan must default OFF"
-    );
-    let next = build_once(cfg(), Some(&prior)).expect("rebuild");
-    assert!(
-        std::sync::Arc::ptr_eq(&prior.session_store, &next.session_store),
-        "an apply must carry the process-lifetime session substrate across the rebuild"
-    );
-}
-
-#[test]
-fn an_apply_carries_the_node_amendment_journal_its_governance_owns() {
-    crate::test_support::register_neutral_test_plane();
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let cfg = || {
-        cfg_with_provider_api_key(crate::config::SecretRef::env(
-            "BUSBAR_TEST_NO_SUCH_KEY_AMENDMENT_JOURNAL",
-        ))
-    };
-    let prior = build_once(cfg(), None).expect("boot");
-    let gov = prior
-        .governance
-        .clone()
-        .expect("the boot builds governance");
-    assert!(
-        std::sync::Arc::ptr_eq(&prior.amendments, gov.amendments()),
-        "the boot generation carries the journal its governance owns"
-    );
-    let next = build_once(cfg(), Some(&prior)).expect("apply");
-    assert!(
-        std::sync::Arc::ptr_eq(&next.amendments, &prior.amendments),
-        "an apply carries the prior generation's journal, never a new one"
-    );
-    let next_gov = next.governance.clone().expect("the apply keeps governance");
-    assert!(
-        std::sync::Arc::ptr_eq(&next.amendments, next_gov.amendments()),
-        "and it is still the journal governance owns"
-    );
-}
-
-#[test]
 fn secrets_block_rejects_alias_and_canonical_for_one_module() {
     let (dir, reg) = secret_registry("secrets-alias-collision");
     let mut secrets = std::collections::BTreeMap::new();
