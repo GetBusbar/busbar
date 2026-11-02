@@ -101,6 +101,8 @@ fn h1_fixture_keeps_incomplete_headers_and_bodies_until_they_complete() {
     );
 }
 
+// Ordinary root continuation tests below seed typed pieces after real host admission.
+// Actual decoder, wire output and upgrade tests separately drive the real transport end to end.
 fn custody_conn(
     router: Router,
 ) -> (

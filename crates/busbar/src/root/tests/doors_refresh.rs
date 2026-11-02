@@ -124,17 +124,51 @@ async fn a_real_stdio_refresh_changes_the_live_line_bound_and_a_refusal_preserve
     // applying a tiny bound here cannot change another test's live stdio connection.
     const CHILD: &str = "BUSBAR_ROOT_REAL_STDIO_REFRESH_CHILD";
     if std::env::var_os(CHILD).is_none() {
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
+        struct OwnedChild(Option<std::process::Child>);
+        impl Drop for OwnedChild {
+            fn drop(&mut self) {
+                if let Some(mut child) = self.0.take() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            }
+        }
+        let mut child = OwnedChild(Some(std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "root::doors_refresh::a_real_stdio_refresh_changes_the_live_line_bound_and_a_refusal_preserves_it", "--nocapture"])
             .env(CHILD, "1")
-            .output().unwrap();
-        assert!(
-            output.status.success(),
-            "real stdio refresh child failed:\n{}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return;
+            .stdout(std::process::Stdio::inherit()).stderr(std::process::Stdio::inherit())
+            .spawn().unwrap()));
+        let bound = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            match child
+                .0
+                .as_mut()
+                .unwrap()
+                .try_wait()
+                .expect("poll the owned child")
+            {
+                Some(_) => {
+                    let status = child
+                        .0
+                        .take()
+                        .unwrap()
+                        .wait()
+                        .expect("reap the finished child");
+                    assert!(
+                        status.success(),
+                        "real stdio refresh child failed: {status}"
+                    );
+                    return;
+                }
+                None if std::time::Instant::now() < bound => {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                None => {
+                    drop(child); // Kill and reap before reporting an unconditional timeout failure.
+                    panic!("real stdio refresh child exceeded its 30-second bound");
+                }
+            }
+        }
     }
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     crate::root::connector::install_io(&dispatcher);
@@ -237,38 +271,43 @@ async fn a_real_stdio_refresh_changes_the_live_line_bound_and_a_refusal_preserve
         "the prior finite bound remains enforced"
     );
 
-    for expected in [b"12345".as_slice(), b"1234567".as_slice()] {
-        let mut received = Vec::new();
-        loop {
-            let mut buffer = [0; 16];
-            let mut input = blank_in::<ReadIn>();
-            input.conn = connection;
-            input.buf = buffer.as_mut_ptr();
-            input.cap = buffer.len();
-            let mut output = blank_out::<IoOut>();
-            let called = tokio::time::timeout(
-                std::time::Duration::from_secs(10),
-                std::future::poll_fn(|cx| {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        for expected in [b"12345".as_slice(), b"1234567".as_slice()] {
+            let mut received = Vec::new();
+            loop {
+                let mut buffer = [0; 16];
+                let mut input = blank_in::<ReadIn>();
+                input.conn = connection;
+                input.buf = buffer.as_mut_ptr();
+                input.cap = buffer.len();
+                let mut output = blank_out::<IoOut>();
+                let called = std::future::poll_fn(|cx| {
                     match side.cross(&door, Carry::Read(&mut input, &mut output), Some(cx)) {
                         Some(called) => std::task::Poll::Ready(called),
                         None => std::task::Poll::Pending,
                     }
-                }),
-            )
-            .await
-            .expect("the actual child echoes its accepted line");
-            assert_eq!(called.outcome, Outcome::Ready, "{called:?}");
-            let count = usize::try_from(output.len).unwrap();
-            received.extend_from_slice(&buffer[..count]);
-            if output.flags & READ_END_OF_FRAME != 0 {
-                break;
+                })
+                .await;
+                assert_eq!(called.outcome, Outcome::Ready, "{called:?}");
+                let count = usize::try_from(output.len).unwrap();
+                assert!(
+                    count != 0 || output.flags & READ_END_OF_FRAME != 0,
+                    "a Ready read must make progress or terminate its frame"
+                );
+                received.extend_from_slice(&buffer[..count]);
+                assert!(received.len() <= expected.len(), "bounded echo frame");
+                if output.flags & READ_END_OF_FRAME != 0 {
+                    break;
+                }
             }
+            assert_eq!(
+                received, expected,
+                "only accepted lines reached the real child"
+            );
         }
-        assert_eq!(
-            received, expected,
-            "only accepted lines reached the real child"
-        );
-    }
+    })
+    .await
+    .expect("the actual child echoes both accepted lines within one overall bound");
     let mut input = blank_in::<ShutIn>();
     input.conn = connection;
     let mut output = blank_out::<OutHead>();
