@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[derive(Default)]
 struct Reentry {
@@ -187,7 +188,23 @@ fn completing_a_later_replay_drops_the_earlier_public_waker_outside_guards() {
             let mut cx = Context::from_waker(&waker);
             c.poll_read(OWNER, id, &mut cx, &mut [0; 1])
         };
-        let (socket, _) = listener.accept().await.unwrap();
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let proxy = tokio::spawn(async move {
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                socket.read_exact(&mut byte).await.unwrap();
+                request.push(byte[0]);
+                assert!(request.len() <= 8192, "CONNECT request stayed bounded");
+            }
+            assert!(request.starts_with(b"CONNECT far.test:80 HTTP/1.1\r\n"));
+            socket
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .await
+                .unwrap();
+            // Keep the tunnel open without a target reply, so a public read stays pending.
+            socket
+        });
         // CONNECT occupied part of the allowance. Releasing it lets a different caller finish
         // replay, replacing the fan's old Waker before Answer releases that Waker's last hold.
         gate.released.store(true, Ordering::SeqCst);
@@ -205,6 +222,10 @@ fn completing_a_later_replay_drops_the_earlier_public_waker_outside_guards() {
         .await
         .is_ok();
         let timely = reentry.timely.load(Ordering::SeqCst);
+        let socket = tokio::time::timeout(Duration::from_secs(5), proxy)
+            .await
+            .unwrap()
+            .unwrap();
         c.close(OWNER, id).unwrap();
         drop(socket);
         let calls = reentry.join();

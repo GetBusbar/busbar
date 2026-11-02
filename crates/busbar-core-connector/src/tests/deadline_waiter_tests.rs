@@ -201,7 +201,7 @@ impl Drop for DropProbe {
 #[test]
 fn host_task_waiters_deduplicate_and_drop_outside_connection_and_waiter_guards() {
     worker().block_on(async {
-        let (c, _, _) = pending(700);
+        let (c, _, pending) = pending(700);
         let id = open_pending(&c, 0);
         let held = c.slab.get(OWNER, id).unwrap().1;
         let due = held.dial_due.lock().unwrap().clone().unwrap();
@@ -231,6 +231,10 @@ fn host_task_waiters_deduplicate_and_drop_outside_connection_and_waiter_guards()
             "the superseded task has only its deadline hold"
         );
         assert!(due.wake.waiters.lock().unwrap().tasks.is_empty());
+        // The outstanding resolver callback owns the answer and its latest reader waker.
+        // Release that external hold before checking that every probe has been destroyed.
+        let callback = pending.lock().unwrap().take();
+        drop(callback);
         drop(held);
         assert_eq!(dropped.load(Ordering::SeqCst), 2);
     });

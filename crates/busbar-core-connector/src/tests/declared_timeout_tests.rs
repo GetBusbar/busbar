@@ -410,6 +410,7 @@ fn a_pended_dns_dial_carries_its_expired_original_bound_into_the_tls_stage() {
             expiring.dial_due.lock().unwrap().as_mut().unwrap().at = Instant::now();
         }));
         answer.lock().unwrap().take().unwrap()(Ok(address.parse().unwrap()));
+        assert!(held.due.lock().unwrap().is_some());
         assert_eq!(c.read(OWNER, id, 73, &mut [0; 8]), Err(ConnError::Timeout));
         assert_eq!(
             carrier.1.load(Ordering::SeqCst),
@@ -422,9 +423,11 @@ fn a_pended_dns_dial_carries_its_expired_original_bound_into_the_tls_stage() {
             "no request framing starts past the original dial bound"
         );
         assert!(
-            held.due.lock().unwrap().is_some(),
-            "the independent request bound was not spent by landing"
+            held.due.lock().unwrap().is_none(),
+            "terminal TLS failure retires the independent request bound"
         );
+        assert!(held.dial_due.lock().unwrap().is_none());
+        assert_eq!(c.read(OWNER, id, 73, &mut [0; 8]), Err(ConnError::Timeout));
         c.close(OWNER, id).unwrap();
     });
 }

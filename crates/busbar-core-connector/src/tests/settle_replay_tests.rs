@@ -6,6 +6,30 @@ use busbar_contract::io_host::{IoHost, IoRefusal};
 
 type Gate = Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>;
 
+struct ReplayRecordingDoor {
+    inner: TestDoor,
+    emits: Mutex<Vec<(usize, bool, bool)>>,
+}
+
+impl FramerDoor for ReplayRecordingDoor {
+    fn facts(&self) -> &DoorFacts {
+        self.inner.facts()
+    }
+
+    fn cross(&self, call: Call<'_>) -> Crossed {
+        if let Call::Emit(i, _) = &call {
+            let text = i.flags & EMIT_TEXT != 0;
+            let end = i.end_of_frame != 0;
+            // This fixture replays text followed by an empty terminal frame. The opening
+            // body and the line's empty nonterminal readiness probes are separate traffic.
+            if text || (i.len == 0 && end) {
+                self.emits.lock().unwrap().push((i.len, end, text));
+            }
+        }
+        self.inner.cross(call)
+    }
+}
+
 struct ReplayCarrier {
     inner: GatedWrites,
     dial: Gate,
@@ -60,8 +84,8 @@ fn pending_connector(
     answer: Arc<Mutex<Option<crate::Judged>>>,
     wakes: Arc<Mutex<Vec<Ticket>>>,
     pooled: bool,
-) -> (Arc<Connector>, Arc<RecordingDoor>) {
-    let framing = Arc::new(RecordingDoor {
+) -> (Arc<Connector>, Arc<ReplayRecordingDoor>) {
+    let framing = Arc::new(ReplayRecordingDoor {
         inner: TestDoor::new("frames", &["frames"], &["bytes"], Default::default()),
         emits: Mutex::new(Vec::new()),
     });
