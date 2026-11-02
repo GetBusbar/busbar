@@ -70,8 +70,8 @@ fn a_role_bound_standing_is_rechecked_against_the_live_snapshot_bindings() {
         dir: directory.to_string_lossy().into_owned(),
         ..Default::default()
     };
-    let rules = Arc::new(crate::root::door_steps::Rules::default())
-        as Arc<dyn kernel::appbuild::RootRules>;
+    let rules =
+        Arc::new(crate::root::door_steps::Rules::default()) as Arc<dyn kernel::appbuild::RootRules>;
     let (mut app, rotate, limits) = kernel::build_app_from_config(
         config,
         plugin_config,
