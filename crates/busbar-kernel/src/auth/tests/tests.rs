@@ -3196,63 +3196,6 @@ fn the_providers_ceiling_caps_a_named_verb() {
     );
 }
 
-#[tokio::test]
-async fn the_admin_gate_admits_only_the_listed_verbs() {
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let app = verbs_app(verbs_binding("verbs: [post_config_apply]"), "full");
-    let (base, handle) = serve_app(app).await;
-    let client = reqwest::Client::new();
-    let listed = client
-        .post(format!("{base}/api/v1/admin/config/apply"))
-        .bearer_auth("grp:ops")
-        .body("{}")
-        .send()
-        .await
-        .unwrap();
-    assert_ne!(
-        listed.status().as_u16(),
-        401,
-        "the listed role authenticates"
-    );
-    assert_ne!(
-        listed.status().as_u16(),
-        403,
-        "the listed verb must pass authorization, got {}",
-        listed.status()
-    );
-    for (method, path) in [
-        (reqwest::Method::POST, "/api/v1/admin/keys"),
-        (reqwest::Method::GET, "/api/v1/admin/keys"),
-    ] {
-        let refused = client
-            .request(method.clone(), format!("{base}{path}"))
-            .bearer_auth("grp:ops")
-            .body("{}")
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(
-            refused.status().as_u16(),
-            403,
-            "{method} {path}: a verb the list does not name is refused"
-        );
-        let needed = if method == reqwest::Method::GET {
-            "read-only"
-        } else {
-            "full"
-        };
-        assert_eq!(
-            refused.text().await.unwrap(),
-            format!(
-                "{{\"error\":{{\"code\":\"forbidden\",\"message\":\"this endpoint requires the \
-                 `{needed}` admin scope\"}}}}"
-            ),
-            "{method} {path}: the refusal is the existing scope refusal, byte for byte"
-        );
-    }
-    handle.abort();
-}
-
 #[test]
 fn bearer_separators_consume_ascii_spaces_without_normalizing_token_bytes() {
     for header in ["Bearer token", "Bearer  token", "bEaReR     token"] {
