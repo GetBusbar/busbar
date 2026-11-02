@@ -31,8 +31,6 @@ use busbar_contract::services::{
 };
 use busbar_kernel::host_records::QUEUE_CAP;
 use busbar_kernel::host_services::{BlockingPool, DestJudge, KernelServices, SignKey};
-/// The stream `Content-Type` every declared protocol states, folded at boot.
-use busbar_kernel::ingress::protocols::streaming_content_types as declared_stream_media;
 use busbar_kernel::plane_driver::serve::{ServeRoute, ServeTable, ServeTables};
 use busbar_kernel::plane_driver::{
     refusal_status, BufferCaps, CallerEnd, DriverConfig, Egress, HeadFields, MoneySeam,
@@ -5895,13 +5893,23 @@ fn whole_answer(fields: &HeadFields) -> bool {
         && !named(b"content-type").is_some_and(|v| streamed_media(&v))
 }
 
-/// Whether `content_type` is a stream's, read off the DECLARED ROWS and never spelled here (Law 1;
-/// BUSBAR-1.6.0.md: "Dialects are internal to their plane"): the event stream the contract names,
-/// or the stream `Content-Type` a declared protocol states on its `ProtocolDecl` row, folded at
-/// boot ([`declared_stream_media`]).
+/// Stream media declared by the loaded plane doors, through the same memory ABI for linked and
+/// dropped-in plugins. No codec implementation is linked into the host to read this metadata.
+fn declared_stream_media() -> impl Iterator<Item = &'static str> {
+    busbar_kernel::plane_driver::registry::plane_decls()
+        .iter()
+        .flat_map(|decl| {
+            busbar_kernel::plane_driver::door::streaming_content_types(decl)
+                .iter()
+                .copied()
+        })
+}
+
+/// Whether `content_type` is a stream's: the shared event stream type or a loaded plane's declared
+/// response media. A plane's dialect vocabulary remains inside that plane.
 fn streamed_media(content_type: &str) -> bool {
     std::iter::once(busbar_contract::protocol::TEXT_EVENT_STREAM)
-        .chain(declared_stream_media().iter().copied())
+        .chain(declared_stream_media())
         .any(|media| {
             content_type
                 .get(..media.len())

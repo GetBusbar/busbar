@@ -162,9 +162,7 @@ fn metadata_value(manifest: &str, table: &str, key: &str) -> Option<String> {
 
 /// The root-bound seams: an axis a crate DRIVES rather than fills, emitted as a cfg the root binds
 /// the seam under (the kernel compiles some of them only when a plane that drives them is linked).
-pub(crate) const SEAMS: &[(&str, &str)] = &[
-    ("egress", "linked_egress"),
-];
+pub(crate) const SEAMS: &[(&str, &str)] = &[("egress", "linked_egress")];
 
 /// The `key = "value"` rows of the `[table]` header of a Cargo manifest, in file order. Deliberately
 /// not a TOML parser: one row per line, both sides optionally double-quoted. An absent table is no
@@ -515,6 +513,10 @@ pub(crate) fn linked_source(
         // The store axis is `LINKED_STORES`, above.
         if *field == "stores" {
             continue;
+        }
+        // A codec declaration is a legacy test fixture, never a shipping registration axis.
+        if *field == "protocols" {
+            out.push_str("    #[cfg(test)]\n");
         }
         out.push_str(&format!("    {field}: &["));
         for ((e, axes), door) in linked.iter().zip(&doors) {

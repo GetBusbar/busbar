@@ -65,7 +65,8 @@ pub struct Linked {
         busbar_contract::abi::mechanism::door::DoorFn,
         &'static str,
     )],
-    /// Protocol declarations, appended to the installed protocol set in this order.
+    /// Legacy fixture declarations. Shipping planes communicate only through their door.
+    #[cfg(test)]
     pub protocols:
         &'static [&'static [&'static busbar_kernel::ingress::protocols::ProtocolDecl]],
     /// Body-model arrivals, by protocol name.
@@ -361,18 +362,22 @@ pub struct BookCtx<'a> {
     pub app: &'a busbar_kernel::state::App,
 }
 
-/// THE PROTOCOL AXIS: every entry's declarations and its body-model arrivals, then each entry's
-/// protocol-axis seams. A dialect whose model rides the URL has no arrival here: its plane's door
+/// Legacy arrival seams and root-unit drivers. Executable protocol declarations are installed
+/// only in the test binary; shipping planes supply routes and refusals through their doors.
+/// A dialect whose model rides the URL has no arrival here: its plane's door
 /// claims and serves those paths (ARCHITECT 2026-10-16 ruling 3 item 1). Then the node axis, which
 /// those arrivals hand their units to: every entry on it is handed the node a root unit drives it
 /// through.
 pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
-    let installed: Vec<&'static busbar_kernel::ingress::protocols::ProtocolDecl> = linked
-        .protocols
-        .iter()
-        .flat_map(|decls| decls.iter().copied())
-        .collect();
-    busbar_kernel::ingress::protocols::install_protocols(installed);
+    #[cfg(test)]
+    {
+        let installed = linked
+            .protocols
+            .iter()
+            .flat_map(|decls| decls.iter().copied())
+            .collect();
+        busbar_kernel::ingress::protocols::install_protocols(installed);
+    }
     let body_ingress: Vec<BodyIngressEntry> = linked
         .body_ingress
         .iter()
