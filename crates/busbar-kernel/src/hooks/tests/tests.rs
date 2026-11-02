@@ -10,7 +10,6 @@ fn from_ranked_drops_unknown_and_dedups() {
 }
 
 use crate::config::{HookCfg, HookKind, PolicyOnError, PoolPolicy, PromptAccess, UserAccess};
-use busbar_contract::hook_calls::HookAxis as _;
 use std::collections::HashMap;
 
 #[path = "resolution_tests.rs"]
