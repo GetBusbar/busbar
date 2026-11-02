@@ -57,8 +57,6 @@ async fn build_with_hook_registers_and_wires_global_tap() {
         );
         manifest.statement = Some(hex::encode(statement));
         if kind == "hook" {
-            // These are the actual webrequest product's declared content needs,
-            // signed alongside its exact door rendering, not a synthetic hook tail.
             manifest.needs.prompt = busbar_contract::plugin_rows::NeedLevel::Rw;
             manifest.needs.user = busbar_contract::plugin_rows::NeedLevel::Ro;
             hook_module = Some(facts.name);
@@ -157,8 +155,6 @@ async fn build_with_hook_demotes_global_false_removes_wiring() {
         );
         manifest.statement = Some(hex::encode(statement));
         if kind == "hook" {
-            // These are the actual webrequest product's declared content needs,
-            // signed alongside its exact door rendering, not a synthetic hook tail.
             manifest.needs.prompt = busbar_contract::plugin_rows::NeedLevel::Rw;
             manifest.needs.user = busbar_contract::plugin_rows::NeedLevel::Ro;
             hook_module = Some(facts.name);
@@ -264,8 +260,6 @@ async fn build_with_hook_caps_oversized_name() {
         );
         manifest.statement = Some(hex::encode(statement));
         if kind == "hook" {
-            // These are the actual webrequest product's declared content needs,
-            // signed alongside its exact door rendering, not a synthetic hook tail.
             manifest.needs.prompt = busbar_contract::plugin_rows::NeedLevel::Rw;
             manifest.needs.user = busbar_contract::plugin_rows::NeedLevel::Ro;
             hook_module = Some(facts.name);
@@ -357,8 +351,6 @@ async fn build_with_hook_rejects_invalid_definitions() {
         );
         manifest.statement = Some(hex::encode(statement));
         if kind == "hook" {
-            // These are the actual webrequest product's declared content needs,
-            // signed alongside its exact door rendering, not a synthetic hook tail.
             manifest.needs.prompt = busbar_contract::plugin_rows::NeedLevel::Rw;
             manifest.needs.user = busbar_contract::plugin_rows::NeedLevel::Ro;
             hook_module = Some(facts.name);
@@ -458,8 +450,6 @@ async fn build_with_hook_enforces_grant_immutability() {
         );
         manifest.statement = Some(hex::encode(statement));
         if kind == "hook" {
-            // These are the actual webrequest product's declared content needs,
-            // signed alongside its exact door rendering, not a synthetic hook tail.
             manifest.needs.prompt = busbar_contract::plugin_rows::NeedLevel::Rw;
             manifest.needs.user = busbar_contract::plugin_rows::NeedLevel::Ro;
             hook_module = Some(facts.name);
@@ -558,8 +548,6 @@ async fn build_with_hook_reregistering_same_global_hook_does_not_duplicate() {
         );
         manifest.statement = Some(hex::encode(statement));
         if kind == "hook" {
-            // These are the actual webrequest product's declared content needs,
-            // signed alongside its exact door rendering, not a synthetic hook tail.
             manifest.needs.prompt = busbar_contract::plugin_rows::NeedLevel::Rw;
             manifest.needs.user = busbar_contract::plugin_rows::NeedLevel::Ro;
             hook_module = Some(facts.name);
@@ -654,8 +642,6 @@ async fn build_with_hook_demote_only_removes_the_target_hook() {
         );
         manifest.statement = Some(hex::encode(statement));
         if kind == "hook" {
-            // These are the actual webrequest product's declared content needs,
-            // signed alongside its exact door rendering, not a synthetic hook tail.
             manifest.needs.prompt = busbar_contract::plugin_rows::NeedLevel::Rw;
             manifest.needs.user = busbar_contract::plugin_rows::NeedLevel::Ro;
             hook_module = Some(facts.name);
@@ -757,8 +743,6 @@ async fn build_without_hook_only_removes_the_target_from_global_wiring() {
         );
         manifest.statement = Some(hex::encode(statement));
         if kind == "hook" {
-            // These are the actual webrequest product's declared content needs,
-            // signed alongside its exact door rendering, not a synthetic hook tail.
             manifest.needs.prompt = busbar_contract::plugin_rows::NeedLevel::Rw;
             manifest.needs.user = busbar_contract::plugin_rows::NeedLevel::Ro;
             hook_module = Some(facts.name);
@@ -828,4 +812,115 @@ async fn build_without_hook_only_removes_the_target_from_global_wiring() {
         next.global_hooks.iter().any(|n| n == "other"),
         "the OTHER global hook must survive the deletion untouched"
     );
+}
+
+#[tokio::test]
+async fn build_with_hook_caps_oversized_settings() {
+    crate::dist_root_install::install();
+    let directory = plugins::scratch("admin-service-hooks");
+    let mut store_module = None;
+    let mut hook_module = None;
+    for (kind, variable) in [
+        ("store", "BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN"),
+        ("hook", "BUSBAR_TEST_WEBREQUEST_CDYLIB"),
+    ] {
+        let path = PathBuf::from(std::env::var_os(variable).unwrap_or_else(|| {
+            panic!("{variable} must name the actual built product cdylib; this test never skips")
+        }));
+        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&path)
+            .expect("the actual product statement reads")
+            .expect("the actual product exports its statement");
+        let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
+            .expect("the actual product statement is valid");
+        let mut manifest = plugins::manifest(
+            kind,
+            &facts.name,
+            busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        );
+        manifest.statement = Some(hex::encode(statement));
+        if kind == "hook" {
+            manifest.needs.prompt = busbar_contract::plugin_rows::NeedLevel::Rw;
+            manifest.needs.user = busbar_contract::plugin_rows::NeedLevel::Ro;
+            hook_module = Some(facts.name);
+        } else {
+            store_module = Some(facts.name);
+        }
+        let library = std::fs::read(&path).expect("the actual product library reads");
+        let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
+        std::fs::write(directory.join(format!("{kind}-product.tar.gz")), archive)
+            .expect("stage the signed actual product archive");
+    }
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    assert!(
+        settings.is_object(),
+        "the actual store settings are an object"
+    );
+    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+        "providers": {},
+        "models": {},
+        "auth": { "chain": [], "admin_auth": [] },
+        "store": { "module": store_module.expect("the actual Store was staged"), "settings": settings },
+        "advanced": { "allow_destinations": ["127.0.0.1"] },
+    }))
+    .expect("the product deployment parses");
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the product deployment resolves");
+    let plugin_config = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: directory.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let rules = Arc::new(crate::root::door_steps::Rules::default())
+        as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+        config,
+        plugin_config,
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+    )
+    .expect("the actual product builds the swap deployment");
+    limits.keep().expect("the product limits commit");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+    let app = Arc::new(app);
+    let hook_module = hook_module.expect("the actual hook was staged");
+
+    let mut too_many = hook(&hook_module, HookKind::Tap, false);
+    for i in 0..=256 {
+        too_many
+            .settings
+            .insert(format!("k{i}"), serde_json::json!(1));
+    }
+    assert!(
+        matches!(
+            build_with_hook(&app, "big", too_many),
+            Err(AdminError::Validation(_))
+        ),
+        "a settings map over the key cap must reject at register/PUT, not just PATCH"
+    );
+
+    let mut too_big = hook(&hook_module, HookKind::Tap, false);
+    too_big.settings.insert(
+        "blob".to_string(),
+        serde_json::json!("x".repeat((64 * 1024) + 1)),
+    );
+    assert!(matches!(
+        build_with_hook(&app, "big", too_big),
+        Err(AdminError::Validation(_))
+    ));
+
+    let mut ok = hook(&hook_module, HookKind::Tap, false);
+    ok.settings.insert(
+        "url".to_string(),
+        serde_json::json!("http://127.0.0.1:1/hook"),
+    );
+    assert!(build_with_hook(&app, "fine", ok).is_ok());
 }

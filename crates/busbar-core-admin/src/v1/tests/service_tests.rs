@@ -29,40 +29,6 @@ pub(crate) fn hook(kind: HookKind, global: bool) -> HookCfg {
     }
 }
 
-#[test]
-fn build_with_hook_caps_oversized_settings() {
-    let app = crate::new_test_app().build();
-
-    let mut too_many = hook(HookKind::Tap, false);
-    for i in 0..=MAX_SETTINGS_KEYS {
-        too_many
-            .settings
-            .insert(format!("k{i}"), serde_json::json!(1));
-    }
-    assert!(
-        matches!(
-            build_with_hook(&app, "big", too_many),
-            Err(AdminError::Validation(_))
-        ),
-        "a settings map over the key cap must reject at register/PUT, not just PATCH"
-    );
-
-    let mut too_big = hook(HookKind::Tap, false);
-    too_big.settings.insert(
-        "blob".to_string(),
-        serde_json::json!("x".repeat(MAX_SETTINGS_BYTES + 1)),
-    );
-    assert!(matches!(
-        build_with_hook(&app, "big", too_big),
-        Err(AdminError::Validation(_))
-    ));
-
-    let mut ok = hook(HookKind::Tap, false);
-    ok.settings
-        .insert("level".to_string(), serde_json::json!("info"));
-    assert!(build_with_hook(&app, "fine", ok).is_ok());
-}
-
 use busbar_kernel::admission::{Admitted, Inventoried, Judged, PluginAdmission, Refusal, Stated};
 
 fn tmp_plugins_dir(tag: &str) -> std::path::PathBuf {
