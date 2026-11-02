@@ -503,6 +503,66 @@ impl StoreRecovery {
         Ok(tips)
     }
 
+    fn verify_origin_at(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
+        let (lane, node) = self.inputs()?;
+        let fences = lane.recovery_predicates(node).map_err(unavailable)?;
+        let calls = lane.calls();
+        let initial = match head(calls.as_ref(), &event.operation_id)? {
+            Some((tip, _)) => selected(
+                calls.as_ref(),
+                &event.operation_id,
+                &tip,
+                tip.node,
+                &mut Chains::new(),
+            )?
+            .into_iter()
+            .next()
+            .ok_or_else(|| invalid("recovery child has no selected genesis"))?,
+            None => {
+                event.follows(None)?;
+                event.clone()
+            }
+        };
+        if event.kind != initial.kind
+            || event.body_fingerprint != initial.body_fingerprint
+            || event.first_sent_at_ms != initial.first_sent_at_ms
+            || (event.revision == 0 && event != &initial)
+        {
+            return Err(invalid(
+                "recovery child identity differs from selected genesis",
+            ));
+        }
+        let origin = initial.origin_reference()?;
+        if event.origin_reference()? != origin {
+            return Err(invalid(
+                "recovery checkpoint changed its immutable child origin",
+            ));
+        }
+        if let Some(origin) = origin {
+            let (tip, _) = head(calls.as_ref(), &origin.operation_id)?
+                .ok_or_else(|| invalid("recovery origin parent has no selected head"))?;
+            let parent = selected(
+                calls.as_ref(),
+                &origin.operation_id,
+                &tip,
+                tip.node,
+                &mut Chains::new(),
+            )?
+            .into_iter()
+            .find(|parent| parent.fingerprint().ok() == Some(origin.event_fingerprint))
+            .ok_or_else(|| {
+                invalid("recovery origin checkpoint is not in the current selected parent chain")
+            })?;
+            parent.authorizes_child(&initial)?;
+        }
+        if lane.recovery_predicates(node).map_err(unavailable)? != fences {
+            return Err(unavailable(
+                "the local node fence changed during child-origin verification",
+            ));
+        }
+        Ok(())
+    }
+
     fn adopt_verdict_at(
         &self,
         resolution: &RecoveryResolution,
@@ -541,6 +601,7 @@ impl StoreRecovery {
         let digest = last.fingerprint()?;
         if current.node == node {
             let run = adopted_history(calls.as_ref(), node, &current, resolution, transitions)?;
+            self.verify_origin_at(last)?;
             if head(calls.as_ref(), &resolution.operation_id)?
                 .as_ref()
                 .map(|(_, value)| value)
@@ -607,6 +668,7 @@ impl StoreRecovery {
         let mut previous = foreign;
         for event in transitions {
             event.follows(Some(previous))?;
+            self.verify_origin_at(event)?;
             previous = event;
         }
         let proof = AdoptionProof {
@@ -697,6 +759,7 @@ impl StoreRecovery {
         if let Some((tip, observed_raw)) = &observed {
             if tip.node == node && tip.event_digest == digest {
                 let run = adopted_history(calls.as_ref(), node, tip, resolution, transitions)?;
+                self.verify_origin_at(last)?;
                 if head(calls.as_ref(), &resolution.operation_id)?
                     .as_ref()
                     .map(|(_, value)| value)
@@ -737,6 +800,12 @@ impl StoreRecovery {
         let initial_fences = lane.recovery_predicates(node).map_err(unavailable)?;
         let current = head(calls.as_ref(), &event.operation_id)?;
         let digest = event.fingerprint()?;
+        if current.as_ref().is_some_and(|(head, _)| head.node != node) {
+            return Err(RecoveryError::Conflict(
+                "this recovery operation belongs to another node".into(),
+            ));
+        }
+        self.verify_origin_at(event)?;
         if let Some((current_head, _)) = &current {
             if current_head.node != node {
                 return Err(RecoveryError::Conflict(
@@ -909,6 +978,16 @@ impl StoreRecovery {
                         return Err(invalid("recovery event digest collision"));
                     }
                 }
+                self.verify_origin_at(event)?;
+                if head(calls.as_ref(), &event.operation_id)?
+                    .as_ref()
+                    .map(|(_, raw)| raw)
+                    != Some(selected_raw)
+                {
+                    return Err(RecoveryError::Conflict(
+                        "recovery selection advanced during origin confirmation".into(),
+                    ));
+                }
                 if lane
                     .recovery_predicates(node)
                     .map_err(unavailable)?
@@ -941,6 +1020,10 @@ impl StoreRecovery {
 }
 
 impl RecoverySink for StoreRecovery {
+    fn verify_origin(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
+        off_runtime(|| self.verify_origin_at(event))
+    }
+
     fn inspect_foreign(&self) -> Result<Vec<RecoveryInspection>, RecoveryError> {
         off_runtime(|| self.inspect_foreign_at())
     }
@@ -966,13 +1049,11 @@ impl RecoverySink for StoreRecovery {
             let mut events = Vec::new();
             for (operation, tip) in heads(calls.as_ref())? {
                 if tip.node == node {
-                    events.extend(selected(
-                        calls.as_ref(),
-                        &operation,
-                        &tip,
-                        node,
-                        &mut chains,
-                    )?);
+                    let run = selected(calls.as_ref(), &operation, &tip, node, &mut chains)?;
+                    if let Some(event) = run.last() {
+                        self.verify_origin_at(event)?;
+                    }
+                    events.extend(run);
                 }
             }
             if lane.recovery_predicates(node).map_err(unavailable)? != predicates {
@@ -1026,7 +1107,7 @@ mod tests {
             body_fingerprint: [2; 32],
             state: RecoveryState::Intent,
             first_sent_at_ms: Some(1_000),
-            payload: vec![3; 900],
+            payload: serde_json::to_vec(&serde_json::json!({"test": vec![3u8; 900]})).unwrap(),
         }
     }
 
@@ -1073,6 +1154,30 @@ mod tests {
             RecoveryState::LandedUnknown => vec![transition(previous, state)],
             state => vec![transition(previous, state)],
         }
+    }
+
+    fn linked_events() -> (RecoveryEvent, RecoveryEvent, RecoveryEvent) {
+        let mut child = intent();
+        child.operation_id = [9; 16];
+        child.body_fingerprint = [8; 32];
+        let template = serde_json::json!({"physical": [1, 2, 3]});
+        let template_bytes = serde_json::to_vec(&template).unwrap();
+        let mut parent = intent();
+        parent.operation_id = [6; 16];
+        parent.payload = serde_json::to_vec(&serde_json::json!({"handoffs": []})).unwrap();
+        let mut checkpoint = transition(&parent, RecoveryState::Applied);
+        checkpoint.payload = serde_json::to_vec(&serde_json::json!({"handoffs": [{
+            "operation_id": child.operation_id, "kind": child.kind,
+            "body_fingerprint": child.body_fingerprint, "first_sent_at_ms": child.first_sent_at_ms,
+            "payload": template_bytes,
+        }]}))
+        .unwrap();
+        let mut physical = template;
+        physical["origin"] = serde_json::json!({
+            "operation_id": checkpoint.operation_id, "event_fingerprint": checkpoint.fingerprint().unwrap(),
+        });
+        child.payload = serde_json::to_vec(&physical).unwrap();
+        (parent, checkpoint, child)
     }
 
     #[test]
@@ -1586,5 +1691,129 @@ mod tests {
             .unwrap()
             .is_empty());
         assert!(sink.inspect_foreign().unwrap().is_empty());
+    }
+
+    #[test]
+    fn adopted_child_proves_foreign_parent_without_importing_parent_ownership() {
+        let slots = RecordSlots::new();
+        let old = opened(&slots, "origin-foreign-old");
+        let new = opened(&slots, "origin-foreign-new");
+        let old_sink = usage_recovery_sink(&old);
+        let sink = usage_recovery_sink(&new);
+        let (parent, checkpoint, child) = linked_events();
+        old_sink.persist(&parent).unwrap();
+        old_sink.persist(&checkpoint).unwrap();
+        old_sink.persist(&child).unwrap();
+        let unknown = transition(&child, RecoveryState::LandedUnknown);
+        old_sink.persist(&unknown).unwrap();
+        retire(&old);
+        let request = attestation(&unknown, RecoveryVerdict::NotLanded);
+        let events = handover_events(&unknown, RecoveryVerdict::NotLanded);
+        let selected = sink.adopt_verdict(&request, &events).unwrap();
+        sink.verify_origin(selected.last().unwrap()).unwrap();
+        assert!(sink
+            .replay()
+            .unwrap()
+            .iter()
+            .all(|event| event.operation_id == child.operation_id));
+        assert_eq!(
+            head(slots.calls().as_ref(), &parent.operation_id)
+                .unwrap()
+                .unwrap()
+                .0
+                .node,
+            old.lock().unwrap().journal.node()
+        );
+        assert_eq!(
+            sink.inspect_foreign().unwrap(),
+            vec![RecoveryInspection {
+                owner_node: old.lock().unwrap().journal.node(),
+                event: checkpoint,
+            }]
+        );
+    }
+
+    #[test]
+    fn selected_parent_requires_exact_child_template_and_immutable_latest_origin() {
+        let slots = RecordSlots::new();
+        let book = opened(&slots, "origin-template");
+        let sink = usage_recovery_sink(&book);
+        let (parent, checkpoint, child) = linked_events();
+        sink.persist(&parent).unwrap();
+        sink.persist(&checkpoint).unwrap();
+        let mut changed = child.clone();
+        let mut body: serde_json::Value = serde_json::from_slice(&changed.payload).unwrap();
+        body["physical"] = serde_json::json!([1, 2, 99]);
+        changed.payload = serde_json::to_vec(&body).unwrap();
+        assert!(matches!(
+            sink.verify_origin(&changed),
+            Err(RecoveryError::Invalid(_))
+        ));
+        assert!(matches!(
+            sink.persist(&changed),
+            Err(RecoveryError::Invalid(_))
+        ));
+        assert!(head(slots.calls().as_ref(), &child.operation_id)
+            .unwrap()
+            .is_none());
+        sink.persist(&child).unwrap();
+        let mut latest = transition(&child, RecoveryState::LandedUnknown);
+        let mut body: serde_json::Value = serde_json::from_slice(&latest.payload).unwrap();
+        body["origin"] = serde_json::Value::Null;
+        latest.payload = serde_json::to_vec(&body).unwrap();
+        assert!(matches!(
+            sink.verify_origin(&latest),
+            Err(RecoveryError::Invalid(_))
+        ));
+        assert!(matches!(
+            sink.persist(&latest),
+            Err(RecoveryError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn origin_requires_selected_parent_checkpoint_even_when_fork_is_journaled() {
+        let slots = RecordSlots::new();
+        let book = opened(&slots, "origin-unselected");
+        let sink = usage_recovery_sink(&book);
+        let (parent, checkpoint, child) = linked_events();
+        assert!(matches!(
+            sink.verify_origin(&child),
+            Err(RecoveryError::Invalid(_))
+        ));
+        sink.persist(&parent).unwrap();
+        let (parent_head, _) = head(slots.calls().as_ref(), &parent.operation_id)
+            .unwrap()
+            .unwrap();
+        let lane = book.lock().unwrap().lane().unwrap().clone();
+        let adapter = StoreRecovery {
+            book: Arc::clone(&book),
+            token: busbar_kernel::teller::Kernel::new().durability_token(),
+            state: Mutex::new(DriverState::default()),
+        };
+        let abandoned = adapter
+            .append_candidate(
+                &lane,
+                parent_head.node,
+                Candidate {
+                    event: checkpoint.clone(),
+                    previous_head: Some(parent_head),
+                    adoption: None,
+                },
+            )
+            .unwrap();
+        lane.wait_acked(abandoned.head.node, abandoned.head.sequence, ACK_DEADLINE)
+            .unwrap();
+        lane.confirm_recovery_record(&abandoned.record).unwrap();
+        let mut winner = checkpoint;
+        winner.payload = serde_json::to_vec(&serde_json::json!({"handoffs": []})).unwrap();
+        sink.persist(&winner).unwrap();
+        assert!(
+            matches!(sink.verify_origin(&child), Err(RecoveryError::Invalid(reason))
+            if reason.contains("not in the current selected parent chain"))
+        );
+        assert!(head(slots.calls().as_ref(), &child.operation_id)
+            .unwrap()
+            .is_none());
     }
 }
