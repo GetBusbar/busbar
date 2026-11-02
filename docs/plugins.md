@@ -659,12 +659,44 @@ get code executed, and a compromised or replayed plugin must not load.
    audited `plugins.rollback` admin action). The pin it persists replaces the automatic floor for
    that plugin name and no other, so rolling one plugin back never admits a stale copy of another.
 
-   With a fleet data directory configured, the marks persist beneath it as `plugin-highwater.json`
-   and the floor survives restarts. Without one busbar writes no file at all (a deployment with no
-   data directory creates no data-directory files) and the floor is held in memory for the life of
-   the process — which still refuses a swap performed against a running node, the window an attacker
-   with write access to the plugins directory actually operates in, but is re-established from
-   scratch at the next boot.
+   The marks belong to the configured Store, keyed by host and canonical plugin name. Ordinary
+   registry validation checks them without changing them; real boot and rebuild admission raises
+   them atomically before later native plugin loading. Busbar does not read or write
+   `plugin-highwater.json`, including when `BUSBAR_DATA_DIR` is set. A durable Store preserves
+   the floor across restarts; an ephemeral memory Store loses its contents on restart.
+
+   **Bootstrap artifacts need an operator archive pin.** The Store cannot authorize its own native
+   code using a floor that cannot be read until that code opens it. Before Store recovery, every
+   selected dropped-in Store, required secret plugin, transport, and early plane grammar probe
+   therefore needs an exact
+   `plugins.fetch[].sha256` in the operator's base `config.yaml`, matching its archive filename.
+   This is the SHA-256 of the complete signed `.tar.gz` archive, rather than the library digest
+   inside its manifest. The pin is checked against the exact archive bytes retained by discovery;
+   replacing the file after the scan cannot substitute another image. The existing signature,
+   publisher, and `min_versions` checks still apply. Linked bootstrap plugins are bound to the
+   binary and need no archive pin. Unused dropped plugins need no bootstrap pin unless the host
+   must probe their native grammar before parsing the configuration; such dropped planes also
+   require a base archive pin before that probe.
+
+   This is an explicit operator authorization for bootstrap code before the Store is readable;
+   the Store floor is then checked before subsequent native loads. A Store-owned rollback pin
+   cannot authorize execution needed to read that same Store. To upgrade or roll back a bootstrap
+   dependency, install the intended signed archive and update its base fetch hash together before
+   restarting; an admin install or rollback that disagrees with the base archive pin is refused
+   before publication. Previously unpinned dropped bootstrap configurations must add these hashes
+   when upgrading to 1.6.0. No new configuration key is required.
+
+   The same pre-staging gate covers all seven kinds, including cold plugin checks invoked by
+   `--validate` and native migrations invoked by `--migrate-config`. These commands open no
+   application Store; any dropped native checker or migrator they execute must therefore carry
+   the immutable fetch pin from their operator input. This includes a native migrator downloaded
+   from the release index: the index's version/tag and a valid publisher signature do not replace
+   the matching operator archive hash. A missing pin is an actionable refusal,
+   rather than permission to execute an unbounded older artifact. Once the Store is bound, each
+   actual native opening rechecks its exact candidate against the Store floor, even if its
+   registry was captured earlier. Standalone loader-library tools retain their own explicit
+   policy; this gate is installed by the shipping Busbar composition root before discovery.
+
 4. **Structural fail-closed.** Before trust is even consulted, every tarball must unpack cleanly
    (bounded sizes, exactly two members, no path tricks), the manifest must be complete and
    well-formed, `sha256(lib)` must match, and the `abi_version` must be one this binary speaks.
@@ -701,9 +733,14 @@ get code executed, and a compromised or replayed plugin must not load.
 7. **The engine stays memory-safe.** The engine crate compiles under `forbid(unsafe_code)`; all
    FFI lives in `busbar-plugin-loader`. The loader also bounds every plugin response (a buggy or
    hostile plugin cannot force an unbounded allocation).
-8. **The pre-flight gate is the boot gate.** `busbar --validate` runs the same
-   consistency-policy-scan-resolution pipeline boot runs, so it cannot drift: if `--validate`
-   passes, the plugin half of boot succeeds; if it fails, it names exactly what is wrong.
+8. **Pre-flight checks are shared; boot checks the effective runtime configuration.**
+   `busbar --validate` reads the selected config and provider catalog, checks consistency and
+   trust policy, scans locally available plugin artifacts, plans their selection, and resolves
+   built-in `env:` / `file:` secret references. It does not download plugins, open a Store,
+   recover its admin config overlay, or prove plugin `open`/readiness or backend reachability.
+   Boot recovers the overlay from the base Store (unless config is locked or safe mode skips
+   recovery), validates the resulting effective configuration, and opens its dependencies. A
+   successful offline validation therefore does not guarantee that the plugin half of boot succeeds.
 
 What signing does NOT do: a trusted plugin still runs with Busbar's privileges, exactly like a
 compiled-in backend would. Signing answers "is this the artifact its publisher shipped, unmodified,

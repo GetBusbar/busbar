@@ -259,6 +259,44 @@ fn scan_registers_by_name_and_alias_from_manifest_not_filename() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn an_archive_digest_stays_bound_to_the_verified_image_after_its_path_is_replaced() {
+    use busbar_contract::plugin_rows::PluginRows as _;
+    let release = key(31);
+    let dir = tmpdir("retained-archive-digest");
+    let first_lib = b"first verified library bytes";
+    let first = sign(
+        &release,
+        manifest("busbar-store-anchor", "anchor", "busbar"),
+        first_lib,
+    );
+    let archive = tarball::package(&first, "lib.so", first_lib).unwrap();
+    std::fs::write(dir.join("anchor.tar.gz"), &archive).unwrap();
+    let registry = scan_and_validate(&dir, &policy(&release)).unwrap();
+    let expected = crate::sign::sha256_hex(&archive);
+    assert_eq!(registry.archive_sha256("anchor"), Some(expected.clone()));
+    let replaced_lib = b"different genuinely signed library bytes";
+    let replacement = sign(
+        &release,
+        manifest("busbar-store-anchor", "anchor", "busbar"),
+        replaced_lib,
+    );
+    write_tarball(&dir, "anchor.tar.gz", &replacement, replaced_lib);
+    assert_eq!(
+        registry.archive_sha256("busbar-store-anchor"),
+        Some(expected)
+    );
+    assert_eq!(
+        registry.resolve("anchor").unwrap().lib_bytes.as_slice(),
+        first_lib
+    );
+    assert_ne!(
+        crate::sign::sha256_hex(&std::fs::read(dir.join("anchor.tar.gz")).unwrap()),
+        registry.archive_sha256("anchor").unwrap()
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// FAIL-CLOSED: one invalid tarball in the dir fails the WHOLE scan with a named reason -
 /// never a partial registry.
 #[test]

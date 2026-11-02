@@ -231,7 +231,8 @@ fn crossed(
             return pending;
         }
     }
-    ops.verify.unwrap()(instance, input, output)
+    // SAFETY: forward the unchanged host-owned VERIFY frames to their original SDK slot.
+    unsafe { ops.verify.unwrap()(instance, input, output) }
 }
 
 extern "C" fn selected_verify(
@@ -259,13 +260,23 @@ fn wrapped(door: DoorFn, verify: busbar_contract::abi::mechanism::call::Op) -> D
 }
 
 extern "C" fn selected_door() -> &'static Door {
-    static DOOR: std::sync::OnceLock<Door> = std::sync::OnceLock::new();
-    DOOR.get_or_init(|| wrapped(selected::door, selected_verify))
+    static DOOR: std::sync::OnceLock<crate::conformance::StaticDoor> = std::sync::OnceLock::new();
+    DOOR.get_or_init(|| {
+        // SAFETY: wrapped leaks its immutable ops copy; its Statement and every nested range
+        // keep the original SDK door's static backing, independent of this owned door.
+        unsafe { crate::conformance::StaticDoor::new(wrapped(selected::door, selected_verify)) }
+    })
+    .get()
 }
 
 extern "C" fn all_door() -> &'static Door {
-    static DOOR: std::sync::OnceLock<Door> = std::sync::OnceLock::new();
-    DOOR.get_or_init(|| wrapped(all::door, all_verify))
+    static DOOR: std::sync::OnceLock<crate::conformance::StaticDoor> = std::sync::OnceLock::new();
+    DOOR.get_or_init(|| {
+        // SAFETY: wrapped leaks its immutable ops copy; its Statement and every nested range
+        // keep the original SDK door's static backing, independent of this owned door.
+        unsafe { crate::conformance::StaticDoor::new(wrapped(all::door, all_verify)) }
+    })
+    .get()
 }
 
 fn open(door: DoorFn, second: bool) -> AuthInstance {

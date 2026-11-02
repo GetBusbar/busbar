@@ -2927,7 +2927,7 @@ impl Connector {
             .map_err(|_| ConnError::Fault)?;
         let cert = Arc::new(dtls::SessionCert::mint().map_err(|_| ConnError::Fault)?);
         let judged_class = guard::judged_class(egress_class, declared_target.is_some());
-        let (framing, began) = datagram::DatagramFraming::dial(
+        let (framing, mut began) = datagram::DatagramFraming::dial(
             Arc::clone(door),
             cert,
             port.local_addr(),
@@ -2936,8 +2936,7 @@ impl Connector {
             judged_class,
         )
         .map_err(|_| ConnError::Refused)?;
-        let description = began
-            .pieces
+        let description = std::mem::take(&mut began.pieces)
             .into_iter()
             .find(|g| g.stream == 0 && !g.fields)
             .map(|g| g.bytes)

@@ -867,12 +867,12 @@ fn a_claim_that_is_not_open_owes_the_data_chain_configured_or_empty() {
 
 /// Every declared stream type goes out piece by piece, byte for byte as written, even when the
 /// answer states its length: the event stream the contract names, and the stream `Content-Type`
-/// each declared protocol states on its `ProtocolDecl` row.
+/// each loaded plane states on its memory-ABI tail.
 #[tokio::test]
 async fn every_declared_stream_type_goes_piece_by_piece() {
     use http_body::Body as _;
     let declared = std::iter::once(busbar_contract::protocol::TEXT_EVENT_STREAM)
-        .chain(declared_stream_media().iter().copied());
+        .chain(declared_stream_media());
     for media in declared {
         let fields: HeadFields = vec![
             (b"content-type".to_vec(), media.as_bytes().to_vec()),

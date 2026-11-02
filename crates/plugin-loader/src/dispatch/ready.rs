@@ -19,8 +19,8 @@ use std::time::Duration;
 use busbar_contract::abi::mechanism::call::{DeadlineClass, Outcome};
 use busbar_contract::abi::mechanism::lifecycle::{slot, ReadyIn};
 
-use super::{in_head, now_ns, out_head, Dispatcher, Frame, Kind, Plugin};
 use super::lifecycle::AnswerLease;
+use super::{in_head, now_ns, out_head, Dispatcher, Frame, Kind, Plugin};
 
 /// How long boot waits for one instance's `ready`: the lifecycle budget
 /// ([`super::Budgets::lifecycle`]'s default). At the deadline the dispatcher cancels the op and it

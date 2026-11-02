@@ -1277,6 +1277,9 @@ impl AdminService {
                 linked: busbar_kernel::preflight::linked_rows(),
                 plugins: Some(&loaded.deploy.plugins),
                 data_dir: data_dir.as_deref(),
+                // The installed file may need repair. This inventory opens nothing; only the
+                // supplied candidate's own base trust and immutable pin authorize publication.
+                inventory_only: true,
             },
             &mut |_| {},
         )
@@ -1286,7 +1289,29 @@ impl AdminService {
             ))
         })?;
         let dependencies = busbar_kernel::appbuild::bootstrap_dependency_names(&cfg, rows.as_ref());
-        if dependencies.contains(&manifest.name) || dependencies.contains(&manifest.alias) {
+        let selected_early_plugin = matches!(manifest.kind.as_str(), "transport" | "plane")
+            && admission
+                .bootstrap_probe_selected(
+                    bytes,
+                    config_path,
+                    &cfg.providers
+                        .values()
+                        .map(|provider| provider.base_url.clone())
+                        .collect::<Vec<_>>(),
+                )
+                .map_err(refused)?;
+        if dependencies.contains(&manifest.name)
+            || dependencies.contains(&manifest.alias)
+            || selected_early_plugin
+        {
+            let archive_hash = busbar_contract::redacted::sha256_hex(bytes);
+            busbar_kernel::appbuild::validate_bootstrap_archive(
+                &manifest.name,
+                file,
+                Some(&archive_hash),
+                &loaded.deploy.plugins,
+            )
+            .map_err(AdminError::Conflict)?;
             let (_, verdict) = admission
                 .inspect(bytes, &loaded.deploy.plugins)
                 .map_err(refused)?;

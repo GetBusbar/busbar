@@ -124,7 +124,7 @@ pub use registry::{
     inventory as inventory_tarballs, scan_and_validate, supported_abi, InventoryEntry, LinkedEntry,
     LinkedPlugin, LoadablePlugin, PluginRegistry, SkippedPlugin,
 };
-pub use stage::sweep_dead_staging;
+pub use stage::{install_native_load_guard, sweep_dead_staging, NativeLoadGuard};
 
 /// INTERN a plugin name into a stable `&'static str`, reusing one allocation per unique name.
 ///

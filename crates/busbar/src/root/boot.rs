@@ -5,7 +5,8 @@
 //! plugin loader through [`super::loader`] (the one module that names it). Stage 0 Plan reads what the configuration USES; stage 1 Discover reads
 //! each plugin's facts off its Statement (a signed manifest's rendering; nothing is opened); stage 2
 //! Select picks the plugins the configuration uses (BUSBAR-1.6.0.md §2, §4 Law 7). `--validate` runs these three
-//! stages and nothing dials, no library is opened and no store is opened.
+//! stages without opening an application Store. Native grammar and plugin checks cross the
+//! shared archive-pin gate before staging; ordinary registry discovery remains manifest-only.
 //!
 //! Stage 4 Book ([`book`]) opens the store, replays the WAL, seals the opening and binds the
 //! keyset, at boot only. The configured `plugins.dir` scan ([`dropped_from_config`]), the door
@@ -25,6 +26,134 @@ use busbar_kernel::config::{FetchTarget, PluginsCfg};
 use busbar_kernel::config_validate::deal::{Document, Seat};
 use busbar_kernel::preflight::{BuildNote, CopyLine, Fetched, LinkedRow, RegistryIn};
 
+/// A host-owned pairing of the admitted archive and the exact retained library allocation.
+/// Weak ownership follows the caller's generation without keeping retired images alive forever.
+#[derive(Clone)]
+struct NativeImage {
+    bytes: std::sync::Weak<Vec<u8>>,
+    row: busbar_contract::plugin_rows::Row,
+    archive: String,
+    plugins: Arc<PluginsCfg>,
+}
+
+static NATIVE_IMAGES: std::sync::Mutex<Vec<NativeImage>> = std::sync::Mutex::new(Vec::new());
+
+fn remember_native_images(registry: &PluginRegistry, plugins: &PluginsCfg) {
+    let plugins = Arc::new(plugins.clone());
+    let fresh: Vec<_> = registry
+        .loadable()
+        .iter()
+        .filter(|image| !image.linked())
+        .filter_map(|image| {
+            Some(NativeImage {
+                bytes: Arc::downgrade(&image.lib_bytes),
+                row: PluginRows::resolve(registry, &image.manifest.name)?,
+                archive: image.archive_sha256.clone()?,
+                plugins: Arc::clone(&plugins),
+            })
+        })
+        .collect();
+    let mut remembered = NATIVE_IMAGES.lock().unwrap_or_else(|p| p.into_inner());
+    remembered.retain(|image| image.bytes.strong_count() != 0);
+    remembered.extend(fresh);
+}
+
+/// Root policy is installed before initial discovery, CLI validation, or any native grammar probe.
+/// All seven kinds and the migration/checker lanes cross the loader's same pre-staging frontier.
+pub fn install_native_load_guard() -> Result<(), &'static str> {
+    super::loader::install_native_load_guard(authorize_native_image)
+}
+
+fn authorize_native_image(bytes: &[u8], display: &str) -> Result<(), String> {
+    // Clone metadata before upgrading allocations or consulting the Store: no callback or Store
+    // wait runs under the registry lock. Pointer+length binds this proof to this retained image,
+    // including when another registry has the same filename or a file was replaced after scan.
+    let snapshots = NATIVE_IMAGES
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone();
+    let image = snapshots.into_iter().find_map(|image| {
+        let held = image.bytes.upgrade()?;
+        (held.as_ptr() == bytes.as_ptr() && held.len() == bytes.len()).then_some((image, held))
+    });
+    let (image, _held) = image.ok_or_else(|| {
+        format!("native plugin '{display}' has no retained admitted archive proof")
+    })?;
+    if let Some(authority) = PLUGIN_FLOOR.get() {
+        super::durability::check_plugin_floor_candidate(
+            authority.calls.as_ref(),
+            &authority.host,
+            &image.row,
+            &image.plugins.first_party_floors,
+        )
+    } else {
+        // Before Store recovery, every registry used by a shipping native caller was built from
+        // operator input (base boot/validation or an explicit migration document), never overlay.
+        // An unknown image/context above refuses; no filename or callback supplies a default pin.
+        busbar_kernel::appbuild::validate_bootstrap_archive(
+            &image.row.name,
+            &image.row.file,
+            Some(&image.archive),
+            &image.plugins,
+        )
+    }
+}
+
+/// The base Store is the deployment's stable security authority across recovered generations.
+/// Bootstrap must still authenticate its own Store/secret/transport dependencies before this
+/// authority is readable. Keeping this handle never opens a second Store during validation.
+struct PluginFloorAuthority {
+    calls: Arc<dyn busbar_contract::store_calls::StoreCalls>,
+    host: String,
+}
+
+static PLUGIN_FLOOR: std::sync::OnceLock<PluginFloorAuthority> = std::sync::OnceLock::new();
+
+/// Bind the already-opened bootstrap Store before any further native plugin loading.
+pub fn bind_plugin_floor(
+    calls: Arc<dyn busbar_contract::store_calls::StoreCalls>,
+) -> Result<(), String> {
+    PLUGIN_FLOOR
+        .set(PluginFloorAuthority {
+            calls,
+            host: super::durability::host_identity(),
+        })
+        .map_err(|_| "the plugin floor Store is already bound".to_string())
+}
+
+fn check_plugin_floor(rows: &dyn PluginRows, plugins: &PluginsCfg) -> Result<(), String> {
+    if let Some(authority) = PLUGIN_FLOOR.get() {
+        super::durability::check_plugin_floor(
+            authority.calls.as_ref(),
+            &authority.host,
+            rows,
+            &plugins.first_party_floors,
+        )?;
+    }
+    Ok(())
+}
+
+fn hold_plugin_floor(rows: &dyn PluginRows, plugins: &PluginsCfg) -> Result<(), String> {
+    if let Some(authority) = PLUGIN_FLOOR.get() {
+        super::durability::hold_plugin_floor(
+            authority.calls.as_ref(),
+            &authority.host,
+            rows,
+            &plugins.first_party_floors,
+        )?;
+    }
+    Ok(())
+}
+
+/// The early manifest inventory predates Store recovery. Judge its exact retained bytes under
+/// the recovered rollback pins before the connector, planes or exports can open those images.
+pub fn admit_recovered_plugins(plugins: &PluginsCfg) -> Result<(), String> {
+    if let Some(registry) = REGISTRY.get() {
+        hold_plugin_floor(registry, plugins)?;
+    }
+    Ok(())
+}
+
 /// THE ONE REGISTRY BUILD (BUSBAR-1.6.0.md §3 stage 1; ARCHITECT ruling Q8): the
 /// plugin registry is built here, in the composition root, and nowhere else — the kernel's preflight
 /// receives it through the root's rows (the kernel preflight's `RegistryBuild`), and the root's own
@@ -39,7 +168,16 @@ use busbar_kernel::preflight::{BuildNote, CopyLine, Fetched, LinkedRow, Registry
 pub fn registry(
     linked: Vec<LinkedPlugin>,
     plugins: Option<&PluginsCfg>,
-    data_dir: Option<&std::path::Path>,
+    _data_dir: Option<&std::path::Path>,
+    note: &mut dyn FnMut(Note<'_>),
+) -> Result<PluginRegistry, String> {
+    registry_with_floor(linked, plugins, true, note)
+}
+
+fn registry_with_floor(
+    linked: Vec<LinkedPlugin>,
+    plugins: Option<&PluginsCfg>,
+    check_floor: bool,
     note: &mut dyn FnMut(Note<'_>),
 ) -> Result<PluginRegistry, String> {
     let scan = match plugins {
@@ -47,11 +185,23 @@ pub fn registry(
         Some(p) => Some(Scan {
             policy: trust_policy(p, env!("CARGO_PKG_VERSION"))
                 .map_err(|e| format!("plugins.trust is invalid: {e}"))?,
-            data_dir,
+            // Application security state belongs to the Store. Before it is readable,
+            // exact operator archive pins authorize only the required bootstrap images.
+            data_dir: None,
             dir: p.enabled.then_some(std::path::Path::new(&p.dir)),
         }),
     };
     let registry = super::loader::boot::registry(Build { linked, scan }, note)?;
+    if let Some(plugins) = plugins {
+        remember_native_images(&registry, plugins);
+    }
+    // `registry` contains verified bytes only. Check before any caller can probe/open a hook,
+    // resolve a secret, or bind another kind; a late Book refusal cannot undo native code.
+    if check_floor {
+        if let Some(plugins) = plugins {
+            check_plugin_floor(&registry, plugins)?;
+        }
+    }
     // The dropped-in secret plugins that state a door are JUDGED here, as every build judges them,
     // and join the secret axis only through [`admit_secrets`]: this build is stage 1, which
     // `--validate` and every dry run share, and a dry run keeps the running node's secret plugins
@@ -71,7 +221,10 @@ pub fn registry(
 ///
 /// A stated rendering that does not read back, or a dropped-in secret plugin that claims a word
 /// another plugin answers to, naming both.
-pub fn admit_secrets(rows: &Arc<dyn PluginRows>) -> Result<(), String> {
+pub fn admit_secrets(rows: &Arc<dyn PluginRows>, plugins: &PluginsCfg) -> Result<(), String> {
+    // This is actual app construction, not a dry-run registry scan. Keep the new floor before
+    // handing its candidates to the secret axis or opening later application kinds.
+    hold_plugin_floor(rows.as_ref(), plugins)?;
     match super::loader::rows::registry_arc(Arc::clone(rows)) {
         Some(registry) => admit_dropped_secrets(&registry),
         None => Ok(()),
@@ -100,7 +253,7 @@ pub fn registry_rows(
 ) -> Result<Arc<dyn PluginRows>, String> {
     let mut linked: Vec<_> = i.linked.iter().map(linked_row).collect();
     linked.extend(linked_exports(crate::LINKED.export_doors)?);
-    let registry = registry(linked, i.plugins, i.data_dir, &mut |n| match n {
+    let registry = registry_with_floor(linked, i.plugins, !i.inventory_only, &mut |n| match n {
         Note::FloorUnreadable(detail) => note(BuildNote::FloorUnreadable(detail)),
         Note::Off => note(BuildNote::Off),
         Note::Scanned(scanned) => {
@@ -977,6 +1130,26 @@ pub fn dropped_from_config(
 pub(crate) static REGISTRY: std::sync::OnceLock<crate::root::loader::PluginRegistry> =
     std::sync::OnceLock::new();
 
+/// Only the operator's pre-Store `plugins:` input can authorize an early grammar probe.
+/// Captured before recovery; a Store overlay can never supply this bootstrap authority.
+static BASE_BOOTSTRAP_PLUGINS: std::sync::OnceLock<PluginsCfg> = std::sync::OnceLock::new();
+
+/// Guard the actual early dropped-plane bind. It runs before complete config parsing because
+/// that plugin owns its grammar. Missing initialization is a refusal, never permission to load.
+pub(crate) fn authorize_early_plugin(name: &str) -> Result<(), String> {
+    let registry = REGISTRY
+        .get()
+        .ok_or("the early plugin inventory is not initialized")?;
+    let base = BASE_BOOTSTRAP_PLUGINS
+        .get()
+        .ok_or("the operator's base bootstrap archive pins are not initialized")?;
+    busbar_kernel::appbuild::validate_bootstrap_artifacts(
+        registry,
+        &std::collections::BTreeSet::from([name.to_string()]),
+        base,
+    )
+}
+
 /// The plugin registry [`dropped_from_config`] built and kept, once it has (no rescan). The door
 /// composition reads it to seal each door-plane member's egress over the dropped-in auth plugins
 /// (`root::door_steps::OutboundAuths`).
@@ -1017,6 +1190,7 @@ fn scan_configured() -> Option<crate::root::loader::PluginRegistry> {
         crate::root::boot::registry(Vec::new(), Some(&plugins), data_dir.as_deref(), &mut |_| {})
             .ok()?;
     admit_dropped_secrets(&registry).ok()?;
+    let _ = BASE_BOOTSTRAP_PLUGINS.set(plugins);
     Some(registry)
 }
 
@@ -1076,7 +1250,11 @@ pub fn note_provider_urls(urls: impl IntoIterator<Item = String>) {
 /// that key (two transports claiming one scheme refuse boot).
 fn transport_uses() -> Uses {
     let urls = PROVIDER_URLS.read().expect("provider URLs").clone();
-    let mut uses = plan(&config_path()).reaching(urls.iter().map(String::as_str));
+    transport_uses_for(&config_path(), &urls)
+}
+
+pub(crate) fn transport_uses_for(path: &std::path::Path, urls: &[String]) -> Uses {
+    let mut uses = plan(path).reaching(urls.iter().map(String::as_str));
     uses.schemes.extend(
         crate::LINKED_TRANSPORT_DOORS
             .iter()
@@ -1084,6 +1262,30 @@ fn transport_uses() -> Uses {
             .flat_map(|c| c.schemes),
     );
     uses
+}
+
+/// Check the exact transport selection that the bootstrap connector will open. An unused
+/// dropped transport needs no bootstrap pin; every selected native image does, including
+/// transports selected by a provider scheme or by a conflicting linked claim.
+pub fn check_bootstrap_transports(plugins: &PluginsCfg) -> Result<(), String> {
+    let Some(registry) = REGISTRY.get() else {
+        return Ok(());
+    };
+    let uses = transport_uses();
+    let mut selected = std::collections::BTreeSet::new();
+    for row in registry
+        .loadable()
+        .iter()
+        .filter(|row| row.manifest.kind == "transport")
+    {
+        if row
+            .candidate()?
+            .is_some_and(|candidate| candidate.serves(&uses))
+        {
+            selected.insert(row.manifest.name.clone());
+        }
+    }
+    busbar_kernel::appbuild::validate_bootstrap_artifacts(registry, &selected, plugins)
 }
 
 /// The door planes [`discover_planes`] discovered, waiting for the dispatcher.
@@ -1461,3 +1663,7 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/transport_inventory.rs"]
 mod transport_inventory_tests;
+
+#[cfg(all(test, unix, linked_every_plane_door, feature = "test-harness"))]
+#[path = "tests/bootstrap_pins.rs"]
+mod bootstrap_pin_tests;

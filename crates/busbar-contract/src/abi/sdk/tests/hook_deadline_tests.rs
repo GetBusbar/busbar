@@ -495,7 +495,9 @@ fn expiry_while_facts_is_pending_closes_without_reusing_its_replay_handle() {
             ..Default::default()
         },
         |tables| {
-            let host = crate::abi::sdk::conn::Host::of(tables);
+            // SAFETY: with_tables owns the complete outer, connector and service tables for
+            // this closure; their immutable callbacks and thread-local state stay live here.
+            let host = crate::abi::sdk::conn::Host::of(unsafe { Lent::new(tables) });
             let mut exchange = crate::abi::sdk::exchange::Exchange::request(Request::default())
                 .unwrap()
                 .observing()
@@ -639,7 +641,9 @@ fn facts_that_reaches_expiry_in_its_service_step_cannot_lend_its_handle_to_close
             ..Default::default()
         },
         |tables| {
-            let host = crate::abi::sdk::conn::Host::of(tables);
+            // SAFETY: with_tables owns the complete outer, connector and service tables for
+            // this closure; their immutable callbacks and thread-local state stay live here.
+            let host = crate::abi::sdk::conn::Host::of(unsafe { Lent::new(tables) });
             let mut exchange = crate::abi::sdk::exchange::Exchange::request(Request::default())
                 .unwrap()
                 .observing()

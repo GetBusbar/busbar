@@ -1408,8 +1408,7 @@ dependencies = [
 [[package]]
 name = "h2"
 version = "0.4.18"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "839c0e8a181239723652be9062bb56ca5bf5f64011f73b623f6f4fc59086a228"
+source = "git+https://github.com/MattJackson/h2?rev=d6146a5c425e55653cdfebc5660e52d87430c588#d6146a5c425e55653cdfebc5660e52d87430c588"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -3395,8 +3394,7 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 [[package]]
 name = "tungstenite"
 version = "0.29.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c01152af293afb9c7c2a57e4b559c5620b421f6d133261c60dd2d0cdb38e6b8"
+source = "git+https://github.com/MattJackson/tungstenite-rs?rev=1c190f7dda55dc7df4781b7ecea9faa671fc76fd#1c190f7dda55dc7df4781b7ecea9faa671fc76fd"
 dependencies = [
  "bytes",
  "data-encoding",

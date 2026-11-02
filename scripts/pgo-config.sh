@@ -13,6 +13,8 @@ store: {module: memory}
 #   observability.emit_server_timing -> advanced.response_headers.server_timing (block DELETED)
 #   auth.upstream_credentials        -> pools.upstream_credentials (all-pools default)
 advanced:
+  # The training provider is this one loopback mock; keep the private-address guard on.
+  allow_destinations: ["127.0.0.1"]
   response_headers:
     server_timing: true
 # Signed-key front door. Production traffic is governed - Bearer bbk_* tokens through the keys

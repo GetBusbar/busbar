@@ -12,6 +12,7 @@ use crate::signal::SignalValue;
 // borrowed serialization descriptors only; prompt text, signal values and candidates stay borrowed.
 enum Field<'a> {
     EmptyObject,
+    Null,
     Text(&'a str),
     U64(u64),
     Usize(usize),
@@ -34,6 +35,7 @@ impl Serialize for Field<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
             Self::EmptyObject => serializer.serialize_map(Some(0))?.end(),
+            Self::Null => serializer.serialize_none(),
             Self::Text(v) => v.serialize(serializer),
             Self::U64(v) => v.serialize(serializer),
             Self::Usize(v) => v.serialize(serializer),
@@ -88,21 +90,26 @@ impl Serialize for Field<'_> {
                 for bucket in *v {
                     let mut fields = BTreeMap::from([
                         ("bucket_id", Self::Text(&bucket.bucket_id)),
+                        (
+                            "budget_group",
+                            bucket
+                                .budget_group
+                                .as_deref()
+                                .map_or(Self::Null, Self::Text),
+                        ),
                         ("budget_period", Self::Text(&bucket.budget_period)),
+                        (
+                            "remaining_micros",
+                            bucket.remaining_micros.map_or(Self::Null, Self::I64),
+                        ),
                         (
                             "spend_micros_at_current_rate",
                             Self::I64(bucket.spend_micros_at_current_rate),
                         ),
                         ("window_start", Self::U64(bucket.window_start)),
                     ]);
-                    if let Some(group) = bucket.budget_group.as_deref() {
-                        fields.insert("budget_group", Self::Text(group));
-                    }
                     if let Some(pool) = bucket.pool.as_deref() {
                         fields.insert("pool", Self::Text(pool));
-                    }
-                    if let Some(remaining) = bucket.remaining_micros {
-                        fields.insert("remaining_micros", Self::I64(remaining));
                     }
                     seq.serialize_element(&fields)?;
                 }

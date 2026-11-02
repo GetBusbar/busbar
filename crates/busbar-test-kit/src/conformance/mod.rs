@@ -68,7 +68,7 @@
 //! comparator; the door restated at its kind ABI ± 1 is refused, linked (`KindAbi`) and dropped in
 //! (`ManifestKindAbi`, before `dlopen`); the door under a Statement other than the stated one is
 //! refused, both ways (`StatementMismatch`); the door asked for as every other kind is refused,
-//! linked (`WrongKind`) and dropped in (`ManifestKind`); its instance's connection over a need it
+//! linked and dropped in (`ManifestKind`); its instance's connection over a need it
 //! never declared is refused (`UndeclaredNeed`), and one instance's use of another's connection is
 //! refused (`NotOwner`); a transport door whose tail states another frame piece size than the
 //! host's is refused, linked and by the pack tool (`FramePieceSize`); a plane door whose tail
@@ -89,6 +89,7 @@ use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
+use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, DeadlineClass, InHead, OutHead, Outcome, RawOutcome, BLOB_JSON,
 };
@@ -873,6 +874,36 @@ pub fn dispatcher_serving(
     d
 }
 
+/// An owned fixture door whose entire referenced graph has immutable static storage.
+#[cfg(all(test, loader_self_tests))]
+pub(crate) struct StaticDoor(Door);
+
+#[cfg(all(test, loader_self_tests))]
+impl StaticDoor {
+    /// # Safety
+    /// The door must satisfy `Door::__from_parts` and every table, Statement, and nested range it
+    /// references must remain initialized and immutable for the process lifetime. Moving this
+    /// value must not invalidate any of those references; no backing range may point into `door`.
+    pub(crate) unsafe fn new(door: Door) -> Self {
+        Self(door)
+    }
+
+    pub(crate) fn get(&self) -> &Door {
+        &self.0
+    }
+}
+
+// SAFETY: construction requires immutable static backing independent of this owned door's address.
+#[cfg(all(test, loader_self_tests))]
+unsafe impl Send for StaticDoor {}
+// SAFETY: the owned door and its complete referenced graph are immutable after publication.
+#[cfg(all(test, loader_self_tests))]
+unsafe impl Sync for StaticDoor {}
+
+/// The retained-input transport fixture's reviewed raw slots; callers only receive its door.
+#[cfg(all(test, loader_self_tests))]
+pub(crate) mod transport_receive_fixture;
+
 /// A test's restated door, written in plain Rust; [`test_door`] is its [`RawDoorFn`].
 #[cfg(all(test, loader_self_tests))]
 pub(crate) trait TestDoor {
@@ -1145,11 +1176,11 @@ pub fn same(linked: &[Step], dropped: &[Step]) -> Result<(), String> {
     Ok(())
 }
 
-/// THE NETWORKED DOOR'S RESUMES (Q-P4-5): a door whose Statement declares a need the suite's table
+/// THE NETWORKED DOOR'S RESUMES (Q-P4-5): a door whose Statement declares an outbound need the suite's table
 /// serves reaches a REAL endpoint through it, so the ops that dial answer PENDING and are
 /// RESUMED on their ticket (THE DESIGN §11.2 Ready | Pending(wake)): each step `dialing` names
 /// (`conformance.json`'s `dialing_steps`) resumed at least once, or, when it names none, at least
-/// one step of the fold did. A door that declares no need is not held to it.
+/// one step of the fold did. A door without a served outbound need is not held to it.
 ///
 /// # Errors
 /// The first dialing step that never resumed, or a networked fold with no resume at all.
@@ -1810,9 +1841,13 @@ pub fn both_ways(s: &Subject) {
     );
     distinct_images(s);
     let red = std::env::var(RED_ENV).is_ok_and(|v| v == "count");
-    // Networked: its needs are SERVED by the suite's table (it dials a real endpoint); a door whose
-    // needs the suite cannot serve binds as a probe and dials nothing.
-    let networked = s.conns(&dispatcher()).is_some();
+    // A served outbound need dials a real endpoint and owes a network resume. An inbound-only
+    // listener still binds over its host table, but serving a request does not imply an outbound dial.
+    let networked = s
+        .needs()
+        .iter()
+        .any(|need| need.direction == DIRECTION_OUTBOUND)
+        && s.conns(&dispatcher()).is_some();
     let dialing: Vec<String> = match s.inputs.get("dialing_steps") {
         None => Vec::new(),
         Some(v) => v

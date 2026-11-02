@@ -723,6 +723,47 @@ async fn a_store_without_conditional_transactions_fails_closed() {
         ) -> StoreCall<'a, Vec<(Vec<u8>, RecordBytes)>> {
             panic!("must refuse before scans")
         }
+        fn upsert_plane_record<'a>(&'a self, _: PlaneRecordRef<'a>) -> StoreCall<'a, ()> {
+            panic!("must refuse before plane writes")
+        }
+        fn get_plane_record<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a str,
+        ) -> StoreCall<'a, Option<Vec<u8>>> {
+            panic!("must refuse before plane reads")
+        }
+        fn append_plane_record<'a>(&'a self, _: OpId, _: PlaneRecordRef<'a>) -> StoreCall<'a, ()> {
+            panic!("must refuse before plane appends")
+        }
+        fn list_plane_records<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a PlaneSelector<'a>,
+        ) -> StoreCall<'a, Vec<Vec<u8>>> {
+            panic!("must refuse before plane scans")
+        }
+        fn delete_plane_record<'a>(&'a self, _: &'a str, _: &'a str) -> StoreCall<'a, ()> {
+            panic!("must refuse before plane deletes")
+        }
+        fn redeem_plane_token<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a str,
+            _: u64,
+            _: u64,
+        ) -> StoreCall<'a, bool> {
+            panic!("must refuse before token redemption")
+        }
+        fn plane_token_live<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a str,
+            _: u64,
+            _: u64,
+        ) -> StoreCall<'a, bool> {
+            panic!("must refuse before token liveness reads")
+        }
     }
     let calls: Arc<dyn StoreCalls> = Arc::new(Unsupported);
     assert!(Shared::require_atomic(calls.as_ref()).is_err());

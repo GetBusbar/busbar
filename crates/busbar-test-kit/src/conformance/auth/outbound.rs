@@ -358,14 +358,8 @@ mod field_transcript_tests {
 
     #[test]
     fn byte_identity_order_and_flags_survive_the_field_transcript() {
-        assert_ne!(
-            answer(&[(b"a", &[0xff], 0)]),
-            answer(&[(b"a", &[0xfe], 0)])
-        );
-        assert_ne!(
-            answer(&[(&[0xff], b"v", 0)]),
-            answer(&[(&[0xfe], b"v", 0)])
-        );
+        assert_ne!(answer(&[(b"a", &[0xff], 0)]), answer(&[(b"a", &[0xfe], 0)]));
+        assert_ne!(answer(&[(&[0xff], b"v", 0)]), answer(&[(&[0xfe], b"v", 0)]));
         let want = expected(
             &serde_json::json!([["a", "b", 1], ["c", "d", 0]]),
             "test fields",
@@ -1599,7 +1593,9 @@ extern "C" fn fields_one_byte_off(
     let Some(real) = real_ops().and_then(|o| o.fields) else {
         return RawOutcome::of(Outcome::Fault);
     };
-    let answered = real(instance, input, out);
+    // SAFETY: this wrapper forwards the same live instance and complete typed frames to the
+    // original slot from the subject's validated table, before inspecting its judged answer.
+    let answered = unsafe { real(instance, input, out) };
     if answered.outcome() == Outcome::Ready {
         // SAFETY: the host hands `fields` a `FieldsIn` and a `FieldsOut`; the plugin answered
         // READY, so its first span (when it wrote one) lies inside the host's field buffer.
@@ -1626,7 +1622,9 @@ extern "C" fn fields_writing_nothing(
     let Some(real) = real_ops().and_then(|o| o.fields) else {
         return RawOutcome::of(Outcome::Fault);
     };
-    let answered = real(instance, input, out);
+    // SAFETY: this wrapper forwards the same live instance and complete typed frames to the
+    // original slot from the subject's validated table, before inspecting its judged answer.
+    let answered = unsafe { real(instance, input, out) };
     if answered.outcome() == Outcome::Ready {
         // SAFETY: the host hands `fields` a `FieldsOut` it owns for the call.
         unsafe {
@@ -1646,7 +1644,9 @@ extern "C" fn open_outbound_twice(
     let Some(real) = real_ops().and_then(|o| o.open_outbound) else {
         return RawOutcome::of(Outcome::Fault);
     };
-    let answered = real(instance, input, out);
+    // SAFETY: this wrapper forwards the same live instance and complete typed frames to the
+    // original slot from the subject's validated table, before inspecting its judged answer.
+    let answered = unsafe { real(instance, input, out) };
     // SAFETY: the host hands `open_outbound` an `OpenOutboundIn`; its settings blob is the
     // host's for the call. The second call's `in` and `out` are this frame's own.
     unsafe {
@@ -1678,7 +1678,9 @@ extern "C" fn fields_arming_twice(
     let Some(real) = real_ops().and_then(|o| o.fields) else {
         return RawOutcome::of(Outcome::Fault);
     };
-    let answered = real(instance, input, out);
+    // SAFETY: this wrapper forwards the same live instance and complete typed frames to the
+    // original slot from the subject's validated table, before inspecting its judged answer.
+    let answered = unsafe { real(instance, input, out) };
     if answered.outcome() == Outcome::Pending {
         // SAFETY: the host hands `fields` a `FieldsIn`; its extensions blob is the host's for the
         // call. The second call's `in` and `out` are this frame's own.

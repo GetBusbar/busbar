@@ -1,12 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The kernel's IR-side config: a lane's declared request-shape capabilities.
-//!
-//! The neutral IR itself — the `IrFacts` projection the shared pipeline reads, the sealed
-//! `IrHandle`, the egress parameter bag and the cross-plane `invoke`/`subscribe` leaves — is the
-//! contract's (`busbar_contract::ir`), and the kernel names it there. The concrete chat IR and the
-//! leaf-op IR are the llm plane's.
-
-/// A provider entry's lane-capability config keys (`max_output_key`, `model_capabilities`).
-pub mod lane_caps;
+//! The kernel holds no plane request-shape capability grammar.

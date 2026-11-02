@@ -39,6 +39,49 @@ fn a_present_malformed_floor_is_never_treated_as_absence_or_echoed() {
     }
 }
 
+#[test]
+fn a_read_only_floor_check_refuses_downgrades_without_raising_or_creating_marks() {
+    let store = crate::root::store_double::RecordSlots::new();
+    let name = "busbar-hook-check";
+    let key = super::floor_key("node-a", name);
+    store.put_row(super::PLUGIN_FLOOR_SCHEMA, &key, b"2.0.0");
+    store.on_transaction(|_| panic!("a dry-run floor check must never write"));
+    let lower = Scanned(vec![first_party(name, "1.0.0")]);
+    assert!(
+        super::check(store.calls().as_ref(), "node-a", &lower, &BTreeMap::new())
+            .unwrap_err()
+            .contains("below 2.0.0")
+    );
+    let newer = Scanned(vec![first_party(name, "3.0.0")]);
+    super::check(store.calls().as_ref(), "node-a", &newer, &BTreeMap::new()).unwrap();
+    assert_eq!(kept_floor(&store, "node-a", name), b"2.0.0");
+    let fresh = Scanned(vec![first_party("busbar-hook-first-install", "1.0.0")]);
+    super::check(store.calls().as_ref(), "node-a", &fresh, &BTreeMap::new()).unwrap();
+    assert!(super::wait_for(store.calls().record_get(
+        super::PLUGIN_FLOOR_SCHEMA,
+        &super::floor_key("node-a", "busbar-hook-first-install"),
+    ))
+    .unwrap()
+    .is_none());
+}
+
+#[test]
+fn a_read_only_floor_check_keeps_rollback_authority_scoped_to_its_exact_plugin() {
+    let store = crate::root::store_double::RecordSlots::new();
+    for name in ["busbar-hook-pinned", "busbar-hook-other"] {
+        store.put_row(
+            super::PLUGIN_FLOOR_SCHEMA,
+            &super::floor_key("node-a", name),
+            b"2.0.0",
+        );
+    }
+    let pins = BTreeMap::from([("busbar-hook-pinned".into(), "1.0.0".into())]);
+    let pinned = Scanned(vec![first_party("busbar-hook-pinned", "1.0.0")]);
+    super::check(store.calls().as_ref(), "node-a", &pinned, &pins).unwrap();
+    let other = Scanned(vec![first_party("busbar-hook-other", "1.0.0")]);
+    assert!(super::check(store.calls().as_ref(), "node-a", &other, &pins).is_err());
+}
+
 const WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 struct ReleaseTransaction(Option<std::sync::mpsc::Sender<()>>);

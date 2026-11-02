@@ -255,3 +255,61 @@ fn bootstrap_dependency_closure_uses_declared_reference_paths_and_canonical_iden
         std::collections::BTreeSet::from(["canonical-store".into(), "canonical-secret".into()])
     );
 }
+
+#[test]
+fn native_bootstrap_archive_pins_match_exact_retained_bytes_and_canonical_identity() {
+    use crate::test_support::rows::{row, Rows};
+    let pinned = "aa".repeat(32);
+    let other = "bb".repeat(32);
+    let rows = Rows::new()
+        .with_dropped(row("canonical-store", "store-alias", "store"))
+        .with_dropped(row("unused-hook", "hook-alias", "hook"))
+        .with_archive_sha256("canonical-store", &pinned)
+        .into_rows();
+    let dependencies = std::collections::BTreeSet::from(["store-alias".into()]);
+    let mut plugins = crate::config::PluginsCfg::default();
+    assert!(
+        crate::appbuild::validate_bootstrap_artifacts(rows.as_ref(), &dependencies, &plugins)
+            .unwrap_err()
+            .contains("base plugins.fetch")
+    );
+    plugins.fetch = vec![crate::config::PluginFetch::Url(crate::config::UrlFetch {
+        url: "https://plugins.invalid/canonical-store.tar.gz".into(),
+        sha256: Some(other),
+    })];
+    assert!(
+        crate::appbuild::validate_bootstrap_artifacts(rows.as_ref(), &dependencies, &plugins)
+            .is_err()
+    );
+    let crate::config::PluginFetch::Url(target) = &mut plugins.fetch[0] else {
+        unreachable!()
+    };
+    target.sha256 = Some(pinned);
+    crate::appbuild::validate_bootstrap_artifacts(rows.as_ref(), &dependencies, &plugins).unwrap();
+    // The unused hook is a normal post-recovery candidate and needs no bootstrap fetch pin.
+    assert!(rows.resolve("unused-hook").is_some());
+}
+
+#[test]
+fn malformed_and_conflicting_bootstrap_pins_cannot_authorize_native_code() {
+    let digest = "aa".repeat(32);
+    let mut plugins = crate::config::PluginsCfg::default();
+    for hashes in [vec!["aa".into()], vec![digest.clone(), "bb".repeat(32)]] {
+        plugins.fetch = hashes
+            .into_iter()
+            .map(|hash| {
+                crate::config::PluginFetch::Url(crate::config::UrlFetch {
+                    url: "https://plugins.invalid/store.tar.gz".into(),
+                    sha256: Some(hash),
+                })
+            })
+            .collect();
+        assert!(crate::appbuild::validate_bootstrap_archive(
+            "store",
+            "store.tar.gz",
+            Some(&digest),
+            &plugins
+        )
+        .is_err());
+    }
+}

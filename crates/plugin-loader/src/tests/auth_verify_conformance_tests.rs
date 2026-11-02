@@ -181,13 +181,13 @@ fn abandoned_short_tokens_release_and_closed_auth_instances_refuse_recall_both_w
     use busbar_contract::abi::mechanism::call::Outcome;
     use busbar_contract::abi::mechanism::lifecycle::{slot as life, ReleaseIn};
     let frame = || {
-        // SAFETY: all fields are plain wire data. Only static request bytes are lent here.
-        let mut input: VerifyIn = unsafe { std::mem::zeroed() };
+        // The reviewed all-zero builder initializes these ABI frames; request bytes are static.
+        let mut input: VerifyIn = busbar_contract::abi::sdk::test_support::zeroed();
         input.head = in_head();
         input.point = POINT_HEAD;
         input.request.canonical_path =
             busbar_contract::abi::sdk::door::abi_str("/auth-short-custody");
-        let mut output: IdentifyOut = unsafe { std::mem::zeroed() };
+        let mut output: IdentifyOut = busbar_contract::abi::sdk::test_support::zeroed();
         output.head = out_head();
         Frame::new(input, output)
     };
@@ -195,7 +195,7 @@ fn abandoned_short_tokens_release_and_closed_auth_instances_refuse_recall_both_w
         let d = dispatcher();
         let rows = AuthRows::new(Arc::new(registry), d.clone());
         let opened = rows
-            .open(
+            .open_for_test(
                 "the-auth",
                 "the-auth",
                 &serde_json::json!(sha256_hex(TOKEN.as_bytes())),

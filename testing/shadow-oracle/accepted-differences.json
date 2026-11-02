@@ -5310,7 +5310,72 @@
       },
       "classes": [
         "body"
-      ]
+      ],
+      "premise": {
+        "all": [
+          {
+            "cell": "a2a|fence|egress-message-send",
+            "status": 0
+          },
+          {
+            "cell": "a2a|fence|egress-message-send",
+            "pointer": "/upstream/0/headers",
+            "equals": [
+              [
+                "accept",
+                "*/*"
+              ],
+              [
+                "host",
+                "127.0.0.1:<PORT>"
+              ]
+            ]
+          },
+          {
+            "cell": "a2a|fence|egress-message-send",
+            "pointer": "/upstream/0/raw",
+            "equals": "GET /.well-known/agent-card.json HTTP/1.1\r\naccept: */*\r\nhost: 127.0.0.1:<PORT>\r\n\r\n"
+          },
+          {
+            "cell": "a2a|fence|egress-message-send",
+            "pointer": "/upstream/1/headers",
+            "equals": [
+              [
+                "accept",
+                "*/*"
+              ],
+              [
+                "host",
+                "127.0.0.1:<PORT>"
+              ]
+            ]
+          },
+          {
+            "cell": "a2a|fence|egress-message-send",
+            "pointer": "/upstream/1/raw",
+            "equals": "GET /.well-known/agent-card.json HTTP/1.1\r\naccept: */*\r\nhost: 127.0.0.1:<PORT>\r\n\r\n"
+          },
+          {
+            "cell": "a2a|fence|egress-message-send",
+            "pointer": "/upstream/2/headers",
+            "equals": [
+              [
+                "accept",
+                "*/*"
+              ],
+              [
+                "host",
+                "127.0.0.1:<PORT>"
+              ]
+            ]
+          },
+          {
+            "cell": "a2a|fence|egress-message-send",
+            "pointer": "/upstream/2/raw",
+            "equals": "GET /.well-known/agent-card.json HTTP/1.1\r\naccept: */*\r\nhost: 127.0.0.1:<PORT>\r\n\r\n"
+          }
+        ]
+      }
     },
     {
       "id": "ACCEPT-DEFAULT-MINT the streams client-secrets mint carries the http door's default accept (1.6.0-pre)",
@@ -5391,7 +5456,50 @@
       },
       "classes": [
         "body"
-      ]
+      ],
+      "premise": {
+        "all": [
+          {
+            "cell": "streams|mint|client-secrets",
+            "status": 0
+          },
+          {
+            "cell": "streams|mint|client-secrets",
+            "pointer": "/upstream/0/headers",
+            "equals": [
+              [
+                "authorization",
+                "Bearer oracle-cred-streams-0002"
+              ],
+              [
+                "content-type",
+                "application/json"
+              ],
+              [
+                "openai-safety-identifier",
+                "<OWNER>"
+              ],
+              [
+                "accept",
+                "*/*"
+              ],
+              [
+                "host",
+                "127.0.0.1:<PORT>"
+              ],
+              [
+                "content-length",
+                "83"
+              ]
+            ]
+          },
+          {
+            "cell": "streams|mint|client-secrets",
+            "pointer": "/upstream/0/raw",
+            "equals": "POST /v1/realtime/client_secrets HTTP/1.1\r\nauthorization: Bearer oracle-cred-streams-0002\r\ncontent-type: application/json\r\nopenai-safety-identifier: <OWNER>\r\naccept: */*\r\nhost: 127.0.0.1:<PORT>\r\ncontent-length: 83\r\n\r\n{\"expires_after\":{\"anchor\":\"created_at\",\"seconds\":600},\"session\":{\"model\":\"m-cap\"}}"
+          }
+        ]
+      }
     },
     {
       "id": "ACCEPT-DEFAULT-SDP the streams SDP call post carries the http door's default accept (1.6.0-pre)",
@@ -5464,7 +5572,46 @@
       },
       "classes": [
         "body"
-      ]
+      ],
+      "premise": {
+        "all": [
+          {
+            "cell": "streams|sdp|calls",
+            "status": 0
+          },
+          {
+            "cell": "streams|sdp|calls",
+            "pointer": "/upstream/0/headers",
+            "equals": [
+              [
+                "authorization",
+                "Bearer oracle-cred-streams-0006"
+              ],
+              [
+                "content-type",
+                "application/sdp"
+              ],
+              [
+                "accept",
+                "*/*"
+              ],
+              [
+                "host",
+                "127.0.0.1:<PORT>"
+              ],
+              [
+                "content-length",
+                "54"
+              ]
+            ]
+          },
+          {
+            "cell": "streams|sdp|calls",
+            "pointer": "/upstream/0/raw",
+            "equals": "POST /v1/realtime/calls HTTP/1.1\r\nauthorization: Bearer oracle-cred-streams-0006\r\ncontent-type: application/sdp\r\naccept: */*\r\nhost: 127.0.0.1:<PORT>\r\ncontent-length: 54\r\n\r\nv=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=oracle-offer\r\nt=0 0\r\n"
+          }
+        ]
+      }
     },
     {
       "id": "MIGRATE-MISSING-SIGNING-KEY operator guidance",
@@ -5493,6 +5640,434 @@
             "\\nTODO \\(1\\) - a human must decide:\\n  \\* auth\\.signing_key: required now that the chain uses `keys` \\(busbar no longer auto-generates one\\); run `busbar --generate-signing-key` and set auth\\.signing_key to a secret reference for it \\(\\{file: /path\\} or \\{env: VAR\\}, shared across a fleet\\)\\n",
             ""
           ]
+        ]
+      },
+      "premise": {
+        "all": [
+          {
+            "cell": "config.migrate|v0.10.0|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v0.10.0|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v0.11.0|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v0.11.0|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v0.11.1|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v0.11.1|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v0.12.0|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v0.12.0|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v0.13.0|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v0.13.0|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v0.14.0|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v0.14.0|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v0.14.1|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v0.14.1|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v0.15.0|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v0.15.0|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v0.16.0|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v0.16.0|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v0.16.1|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v0.16.1|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v0.16.2|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v0.16.2|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v0.17.0|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v0.17.0|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v0.17.1|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v0.17.1|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v0.17.2|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v0.17.2|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v0.17.3|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v0.17.3|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v0.17.4|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v0.17.4|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v0.9.0|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v0.9.0|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v0.9.1|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v0.9.1|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v1.0.0_bench_latency_config.anthropic.yaml|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v1.0.0_bench_latency_config.anthropic.yaml|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v1.0.0_bench_latency_config.mock.yaml|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v1.0.0_bench_latency_config.mock.yaml|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v1.0.0|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v1.0.0|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v1.0.1_bench_latency_config.anthropic.yaml|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v1.0.1_bench_latency_config.anthropic.yaml|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v1.0.1_bench_latency_config.mock.yaml|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v1.0.1_bench_latency_config.mock.yaml|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v1.0.1|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v1.0.1|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v1.1.0_bench_latency_config.anthropic.yaml|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v1.1.0_bench_latency_config.anthropic.yaml|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v1.1.0_bench_latency_config.mock.yaml|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v1.1.0_bench_latency_config.mock.yaml|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v1.1.0|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v1.1.0|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v1.1.1_bench_latency_config.anthropic.yaml|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v1.1.1_bench_latency_config.anthropic.yaml|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v1.1.1_bench_latency_config.mock.yaml|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v1.1.1_bench_latency_config.mock.yaml|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v1.1.1|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v1.1.1|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v1.2.0_bench_latency_config.anthropic.yaml|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v1.2.0_bench_latency_config.anthropic.yaml|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v1.2.0_bench_latency_config.mock.yaml|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v1.2.0_bench_latency_config.mock.yaml|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v1.2.0|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v1.2.0|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v1.2.1_bench_latency_config.anthropic.yaml|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v1.2.1_bench_latency_config.anthropic.yaml|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v1.2.1_bench_latency_config.mock.yaml|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v1.2.1_bench_latency_config.mock.yaml|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v1.2.1|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v1.2.1|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v1.3.0_bench_latency_config.anthropic.yaml|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v1.3.0_bench_latency_config.anthropic.yaml|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v1.3.0_bench_latency_config.mock.yaml|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v1.3.0_bench_latency_config.mock.yaml|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v1.3.1_bench_latency_config.anthropic.yaml|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v1.3.1_bench_latency_config.anthropic.yaml|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v1.3.1_bench_latency_config.mock.yaml|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v1.3.1_bench_latency_config.mock.yaml|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v1.3.2_bench_latency_config.anthropic.yaml|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v1.3.2_bench_latency_config.anthropic.yaml|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v1.3.2_bench_latency_config.mock.yaml|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v1.3.2_bench_latency_config.mock.yaml|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v1.3.3_bench_latency_config.anthropic.yaml|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v1.3.3_bench_latency_config.anthropic.yaml|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v1.3.3_bench_latency_config.mock.yaml|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v1.3.3_bench_latency_config.mock.yaml|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v1.4.0_bench_latency_config.anthropic.yaml|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v1.4.0_bench_latency_config.anthropic.yaml|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v1.4.0_bench_latency_config.mock.yaml|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v1.4.0_bench_latency_config.mock.yaml|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v1.4.1_bench_latency_config.anthropic.yaml|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v1.4.1_bench_latency_config.anthropic.yaml|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v1.4.1_bench_latency_config.mock.yaml|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v1.4.1_bench_latency_config.mock.yaml|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v1.5.0_examples_claude-code-bedrock|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v1.5.0_examples_claude-code-bedrock|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v1.5.0|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v1.5.0|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v1.5.1_examples_claude-code-bedrock|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v1.5.1_examples_claude-code-bedrock|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "config.migrate|v1.5.2_examples_claude-code-bedrock|migrate",
+            "status": 0
+          },
+          {
+            "cell": "config.migrate|v1.5.2_examples_claude-code-bedrock|migrate",
+            "body_contains": "# TODO(migrate): auth.signing_key: required now that the chain uses `keys` (busbar no longer auto-generates one); run `busbar --generate-signing-key` and set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, shared across a fleet)\n"
+          },
+          {
+            "cell": "documented|changelog|no-keygen-at-boot",
+            "status": 1
+          },
+          {
+            "cell": "boot.refusal|BOOT-075|validate",
+            "status": 1
+          }
         ]
       }
     }

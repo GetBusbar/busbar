@@ -147,13 +147,19 @@ pub fn consumed_sections(decl: &PlaneDecl) -> &'static [&'static str] {
     row(decl).map_or(&[], |d| d.reg.consumes.as_slice())
 }
 
+/// Response media types a loaded plane declares for streamed delivery.
+#[must_use]
+pub fn streaming_content_types(decl: &PlaneDecl) -> &'static [&'static str] {
+    row(decl).map_or(&[], |d| d.reg.streaming_content_types.as_slice())
+}
+
 /// THE PROVIDER-KEY DESCRIPTOR a door of `decls` states (`PlaneRegistration::provider_keys`, row 155
 /// B1c): the `providers:` entry keys its plane owns, per form, in their frozen order and the neutral
 /// shape vocabulary; the first door row that states one, `None` when none does. The kernel names
 /// none of those keys: this is their only source.
 ///
-/// DORMANT: an unwired seam, read by nothing yet (wiring owner B1c-2, whose provider-entry parse
-/// reads its keys from here).
+/// Provider-entry parsing reads these shapes for plane-owned fields before carrying their
+/// values into the resolved opaque provider table.
 #[must_use]
 pub fn provider_keys(
     decls: &[&'static PlaneDecl],

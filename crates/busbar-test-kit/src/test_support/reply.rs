@@ -551,6 +551,55 @@ impl Reply for OutHead {
     type Owned = ();
 }
 
+impl sealed::Take for busbar_contract::abi::mechanism::lifecycle::CancelOut {
+    fn head(&mut self) -> &mut OutHead {
+        &mut self.head
+    }
+    fn clear(&mut self, _: Token) {
+        clear_head(&mut self.head);
+    }
+    // The disposition is a scalar in this kind's vocabulary; preserve it without interpreting it
+    // as a plane cancellation disposition. No additional plugin-owned memory is named here.
+    fn take(&self, _: Outcome, _: Token) {}
+}
+impl Reply for busbar_contract::abi::mechanism::lifecycle::CancelOut {
+    type Owned = ();
+}
+
+impl sealed::Take for busbar_contract::abi::plane::PlaneCancelOut {
+    fn head(&mut self) -> &mut OutHead {
+        &mut self.cancel.head
+    }
+    fn clear(&mut self, _: Token) {
+        clear_head(&mut self.cancel.head);
+    }
+    // Record writes and their arena remain in the caller's lent buffers. Preserve their counts;
+    // the caller judges those writes against its actual buffers and plane bounds.
+    fn take(&self, outcome: Outcome, _: Token) {
+        judged(busbar_contract::abi::plane::check::check_cancel(
+            outcome,
+            self.cancel.disposition,
+        ));
+    }
+}
+impl Reply for busbar_contract::abi::plane::PlaneCancelOut {
+    type Owned = ();
+}
+
+impl sealed::Take for busbar_contract::abi::plane::PlaneDriveOut {
+    fn head(&mut self) -> &mut OutHead {
+        &mut self.head
+    }
+    fn clear(&mut self, _: Token) {
+        clear_head(&mut self.head);
+    }
+    // Ready-session IDs stay in the caller's lent buffer; only its scalar counts are returned.
+    fn take(&self, _: Outcome, _: Token) {}
+}
+impl Reply for busbar_contract::abi::plane::PlaneDriveOut {
+    type Owned = ();
+}
+
 impl sealed::Take for busbar_contract::abi::mechanism::lifecycle::OpenOut {
     fn head(&mut self) -> &mut OutHead {
         &mut self.head
@@ -751,6 +800,9 @@ impl sealed::Take for busbar_contract::abi::plane::PlaneOpenOut {
     }
     fn take(&self, _: Outcome, _: Token) -> Option<SnapshotCopy> {
         snapshot(self.snapshot)
+    }
+    fn opened(&self, _: Token) -> *mut c_void {
+        self.open.instance
     }
 }
 impl Reply for busbar_contract::abi::plane::PlaneOpenOut {

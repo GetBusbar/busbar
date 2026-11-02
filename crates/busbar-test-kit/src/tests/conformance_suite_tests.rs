@@ -388,7 +388,9 @@ mod resumed_open {
         // SAFETY: stored from the real door's `open` below.
         let real: busbar_contract::abi::mechanism::call::Op =
             unsafe { std::mem::transmute(REAL_OPEN.load(Ordering::SeqCst)) };
-        if real(instance, input, out) != RawOutcome::of(Outcome::Ready) {
+        // SAFETY: this first OPEN invocation forwards the host's original instance and complete
+        // OpenIn/OpenOut frames to their real SDK slot; all input loans remain live until return.
+        if unsafe { real(instance, input, out) } != RawOutcome::of(Outcome::Ready) {
             return unsafe { (*out.cast::<OutHead>()).outcome };
         }
         // SAFETY: the host hands `open` an `OpenIn` and an `OpenOut`.

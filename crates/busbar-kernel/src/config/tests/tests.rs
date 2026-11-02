@@ -50,10 +50,6 @@ fn provider_def(protocol: &str, base_url: &str) -> ProviderDef {
         subject: None,
         auth: None,
         allow_metadata_hosts: Vec::new(),
-        max_output_key: None,
-        anthropic_adaptive_thinking: None,
-        native_structured_output: None,
-        model_capabilities: Vec::new(),
         options: Default::default(),
     }
 }
@@ -72,10 +68,6 @@ fn provider_deploy(env_var: &str) -> ProviderDeploy {
         subject: None,
         auth: None,
         allow_metadata_hosts: None,
-        max_output_key: None,
-        anthropic_adaptive_thinking: None,
-        native_structured_output: None,
-        model_capabilities: None,
         health: None,
         options: Default::default(),
     }
@@ -4656,6 +4648,47 @@ fn a_catalog_entrys_stray_key_is_refused_at_resolve() {
         .expect_err("a typed key of the wrong type")
         .to_string();
     assert!(e.starts_with("p.protocol: invalid type: sequence"), "{e}");
+}
+
+/// Removing a plane leaves its unused catalog options inert. Activating a provider restores
+/// validation of every row before anything can become effective.
+#[test]
+fn an_unowned_catalog_is_deferred_only_while_no_provider_is_deployed() {
+    let defs = crate::config::providers::catalog_from_str(
+        "p:\n  protocol: catalog-deletion-qualification\n  base_url: https://p.example.invalid\n\
+         q:\n  protocol: catalog-deletion-qualification\n  base_url: https://q.example.invalid\n  request_capability: {modes: [future]}\n",
+    )
+    .expect("core catalog fields are valid");
+    let mut deploy = base_deploy();
+    deploy.providers.clear();
+    let cfg = resolve(&deploy, &defs).expect("no provider consumes the unowned options");
+    assert!(cfg.providers.is_empty());
+    assert_eq!(
+        defs["q"].options["request_capability"],
+        serde_json::json!({"modes": ["future"]}),
+        "deferring a check must not delete or rewrite the catalog data"
+    );
+
+    deploy.providers.insert("p".into(), provider_deploy("K"));
+    let errors = resolve(&deploy, &defs).expect_err("deployment restores whole-catalog validation");
+    assert!(
+        errors.iter().any(|e| e.contains("providers.q: unknown field `request_capability`")),
+        "even an unreferenced catalog row is judged before a provider becomes effective: {errors:?}"
+    );
+}
+
+/// The absence of a plane never relaxes the connection grammar core owns.
+#[test]
+fn an_unused_catalog_still_requires_valid_core_fields() {
+    let error = crate::config::providers::catalog_from_str(
+        "p:\n  protocol: catalog-deletion-qualification\n  base_url: [not, a, string]\n",
+    )
+    .expect_err("the core field is typed even for an unused catalog")
+    .to_string();
+    assert!(
+        error.starts_with("p.base_url: invalid type: sequence"),
+        "{error}"
+    );
 }
 
 /// An option written twice in one entry is refused.

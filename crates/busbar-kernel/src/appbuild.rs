@@ -8,11 +8,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::auth::{AuthMiddleware, open_operator};
+use crate::auth::{open_operator, AuthMiddleware};
 use crate::diagnostics::{
-    DEPRECATED_ENV_VAR_HONORED, DURABLE_KEYS_INERT, GOVERNANCE_STORE_EPHEMERAL, OPEN_RELAY_NO_AUTH,
-    PLUGINS_FETCH_RELOAD_MISS, PROVIDER_API_KEY_UNRESOLVABLE, SAFE_MODE_OVERLAY_QUARANTINED,
-    STATEFUL_PLANE_EPHEMERAL_STORE, STORE_SECRET_REF_UNRESOLVED, diag_error, diag_warn,
+    diag_error, diag_warn, DEPRECATED_ENV_VAR_HONORED, DURABLE_KEYS_INERT,
+    GOVERNANCE_STORE_EPHEMERAL, OPEN_RELAY_NO_AUTH, PLUGINS_FETCH_RELOAD_MISS,
+    PROVIDER_API_KEY_UNRESOLVABLE, SAFE_MODE_OVERLAY_QUARANTINED, STATEFUL_PLANE_EPHEMERAL_STORE,
+    STORE_SECRET_REF_UNRESOLVED,
 };
 use crate::preflight::{
     build_secret_resolver, resolve_admin_token, resolve_at_rest_keys, resolve_signing_key,
@@ -726,10 +727,11 @@ pub fn bootstrap_config_store(
         plugins,
         &Default::default(),
     )?;
-    if let Some(admit) = crate::preflight::root_rows().secret_admit {
-        admit(&registry)?;
-    }
     let dependencies = bootstrap_dependency_names(cfg, registry.as_ref());
+    validate_bootstrap_artifacts(registry.as_ref(), &dependencies, plugins)?;
+    if let Some(admit) = crate::preflight::root_rows().secret_admit {
+        admit(&registry, plugins)?;
+    }
     let bootstrap_secrets = cfg
         .secrets
         .iter()
@@ -798,6 +800,59 @@ pub fn bootstrap_dependency_names(
         }
     }
     modules
+}
+
+/// A native dependency needed to read the Store cannot use that Store's unread version floor
+/// to authorize its own code. The operator's base fetch archive pin is its immutable anchor.
+/// Signature trust and configured minimum versions have already admitted the retained row.
+/// Linked dependencies are bound to the binary and need no archive pin.
+pub fn validate_bootstrap_artifacts(
+    registry: &dyn busbar_contract::plugin_rows::PluginRows,
+    dependencies: &std::collections::BTreeSet<String>,
+    plugins: &config::PluginsCfg,
+) -> Result<(), String> {
+    for name in dependencies {
+        let Some(row) = registry.resolve(name) else {
+            continue;
+        };
+        if row.linked {
+            continue;
+        }
+        let actual = registry.archive_sha256(&row.name);
+        validate_bootstrap_archive(&row.name, &row.file, actual.as_deref(), plugins)?;
+    }
+    Ok(())
+}
+
+/// Validate supplied or retained archive bytes against the operator's immutable bootstrap pin.
+/// An uploaded candidate uses its own digest; the installed file cannot vouch for replacement bytes.
+pub fn validate_bootstrap_archive(
+    name: &str,
+    file: &str,
+    actual: Option<&str>,
+    plugins: &config::PluginsCfg,
+) -> Result<(), String> {
+    let targets = plugins.fetch_targets()?;
+    let mut pin: Option<String> = None;
+    for target in targets.into_iter().filter(|target| target.filename == file) {
+        let Some(hash) = target.sha256 else { continue };
+        if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(format!("plugins.fetch archive pin for '{file}' must be exactly 64 hexadecimal SHA-256 digits"));
+        }
+        let hash = hash.to_ascii_lowercase();
+        if pin.as_ref().is_some_and(|previous| previous != &hash) {
+            return Err(format!(
+                "plugins.fetch has conflicting archive pins for '{file}'"
+            ));
+        }
+        pin = Some(hash);
+    }
+    if pin.is_none() || actual != pin.as_deref() {
+        return Err(format!(
+            "native Store bootstrap dependency '{name}' ({file}) requires its exact archive SHA-256 in the operator's base plugins.fetch entry before it can load; the pin is missing or does not match the retained admitted archive. Install the intended signed artifact and update its base config.yaml fetch pin together; an unread Store-owned pin cannot authorize opening its own bootstrap dependency",
+        ));
+    }
+    Ok(())
 }
 
 fn open_config_store(
@@ -1015,7 +1070,7 @@ pub fn build_app_from_config_with_store(
     // STAGE 3 (BUSBAR-1.6.0.md §3, 3a/3e): this build's dropped-in secret plugins join the root's
     // secret axis here, never in the registry build `--validate` and every dry run share.
     if let Some(admit) = crate::preflight::root_rows().secret_admit {
-        admit(&plugin_registry)?;
+        admit(&plugin_registry, &plugins_cfg)?;
     }
 
     // The SECRET RESOLVER: built-in env/file resolve inline; any other module delegates to a

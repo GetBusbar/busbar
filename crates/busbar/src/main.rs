@@ -269,14 +269,8 @@ include!(concat!(env!("OUT_DIR"), "/linked.rs"));
 // admin crate names no hook plugin.
 include!(concat!(env!("OUT_DIR"), "/linked_hook_names.rs"));
 
-/// REGISTER THE LINKED PROTOCOLS — the composition root's one write into the protocol axis, over
-/// every entry in [`LINKED`] (see [`root::linked::register_protocols`]).
-///
-/// THE ORDER IS OPERATOR-VISIBLE. `merged_boot_decls` folds this set AHEAD of whatever built-in
-/// declarations core still carries, and the resulting sequence is both the "must be one of:" tail on
-/// a bad `protocol:` and the list `telemetry` indexes its per-protocol metric families by POSITION
-/// in. The set is the table's order, which is the manifest's: appending a row keeps every existing
-/// index; inserting one renumbers them.
+/// Register the remaining arrival and root-unit seams. Protocol implementation declarations are
+/// test fixtures only; shipping planes communicate through their memory-ABI doors.
 fn register_protocols() {
     root::linked::register_protocols(&LINKED, ROOT_UNITS);
 }
@@ -358,6 +352,7 @@ fn main() {
     // It serves the kernel's host services through `LateServices`, installed once the config is
     // composed (`root::serve::compose`, in `run()`).
     let late_services = root::serve::LateServices::new();
+    root::boot::install_native_load_guard().unwrap_or_else(|error| die(error));
     // THE HANDLE KEY (#74), drawn before the dispatcher exists: a process whose OS random source
     // cannot answer refuses to boot rather than mint plugin handles under a weaker key.
     if let Err(e) = root::loader::dispatch::handle::arm() {
@@ -715,6 +710,8 @@ async fn run(
             .values()
             .map(|provider| provider.base_url.clone()),
     );
+    root::boot::check_bootstrap_transports(&deploy.plugins)
+        .unwrap_or_else(|error| die(format!("bootstrap transport archive admission: {error}")));
     let _connector = root::connector::boot(
         LINKED_TRANSPORT_DOORS,
         &root::policy::client_settings(&base_cfg.limits),
@@ -723,6 +720,13 @@ async fn run(
     );
     let anchor_store = busbar_kernel::appbuild::bootstrap_config_store(&base_cfg, &deploy.plugins)
         .unwrap_or_else(|error| die(format!("base Store overlay anchor: {error}")));
+    let floor_calls = anchor_store
+        .calls
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(|| die("base Store has no typed plugin-floor calls"));
+    root::boot::bind_plugin_floor(floor_calls)
+        .unwrap_or_else(|error| die(format!("Store plugin-floor authority: {error}")));
     let overlay_path = if config_locked {
         None
     } else {
@@ -791,6 +795,8 @@ async fn run(
     );
     // The top-level `plugins:` block (master switch + dir + trust). Absent = disabled defaults.
     let plugins_cfg = deploy.plugins.clone();
+    root::boot::admit_recovered_plugins(&plugins_cfg)
+        .unwrap_or_else(|error| die(format!("Store plugin-floor admission: {error}")));
 
     // BOOT-TIME dead-pid sweep: remove any orphaned plugin staging directory a CRASHED prior busbar
     // left behind (a clean shutdown removes its own; a dead pid's files are unlocked). Runs even

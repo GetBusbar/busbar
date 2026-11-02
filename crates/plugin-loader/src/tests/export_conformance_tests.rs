@@ -1041,7 +1041,9 @@ macro_rules! pre_envelope_ops {
             extern "C" fn $name(i: *mut c_void, input: *const c_void, out: *mut c_void) -> RawOutcome {
                 let real = PRE_ENVELOPE_REAL.get().expect("the RED arm sets the table first");
                 let op = real.0.$($field).+.expect("a forwarding op wraps a present op");
-                let answered = op(i, input, out);
+                // SAFETY: the shim forwards the original instance and unchanged ABI frame to
+                // the real op for this same slot; its checked loans remain live for the call.
+                let answered = unsafe { op(i, input, out) };
                 // SAFETY: every op's `out` leads with its `OutHead`, written by the op just now.
                 unsafe { keep_plugin_local(out) };
                 answered

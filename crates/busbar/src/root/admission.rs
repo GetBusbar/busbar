@@ -82,6 +82,36 @@ fn unpack_checked(
 pub struct RootAdmission;
 
 impl PluginAdmission for RootAdmission {
+    fn bootstrap_probe_selected(
+        &self,
+        tarball: &[u8],
+        config_path: &std::path::Path,
+        provider_urls: &[String],
+    ) -> Result<bool, Refusal> {
+        let unpacked = unpack_checked(tarball, " bootstrap candidate")?;
+        if !matches!(unpacked.manifest.kind.as_str(), "transport" | "plane") {
+            return Ok(false);
+        }
+        let Some(stated) = unpacked
+            .manifest
+            .stated_rendering()
+            .map_err(Refusal::Validation)?
+        else {
+            return Ok(false);
+        };
+        let candidate = super::loader::boot::Candidate::from_manifest(
+            stated,
+            &unpacked.manifest,
+            super::loader::boot::Origin::Dropped {
+                file: "bootstrap candidate".into(),
+                bytes: std::sync::Arc::new(unpacked.lib_bytes),
+            },
+        )
+        .map_err(Refusal::Validation)?;
+        Ok(unpacked.manifest.kind == "plane"
+            || candidate.serves(&super::boot::transport_uses_for(config_path, provider_urls)))
+    }
+
     fn is_tarball(&self, file: &str) -> bool {
         crate::root::loader::tarball::is_plugin_tarball(file)
     }

@@ -1035,6 +1035,7 @@ pub type SignedIngress = Arc<dyn Fn(&App, &str) -> bool + Send + Sync>;
 /// THE DECLARED ANSWER ([`SignedIngress`]): the path's residual dialect declares a signed ingress,
 /// on the residual plane only (an audience-bound plane admits bearer tokens alone).
 #[must_use]
+#[cfg(any(test, feature = "test-support"))]
 pub fn signed_by_dialect() -> SignedIngress {
     Arc::new(|app: &App, path: &str| {
         let ingress = app.planes.ingress_of(path);

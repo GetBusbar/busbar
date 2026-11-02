@@ -353,7 +353,7 @@ extern "C" {
 #define BB_PLANE_MAX_SIGNALS UINT64_C(64) /* The most signals one `project` answer may carry. */
 #define BB_PLANE_MAX_TURNS UINT64_C(0x10000) /* The most prompt turns one `project` answer may carry. */
 #define BB_PLANE_ABI_VERSION UINT32_C(1) /* The plane kind's ABI version: new in 1.6.0 (v1.5.5 had no plane ABI), so it ships `1`. */
-#define BB_PLANE_LAYOUT_FINGERPRINT UINT64_C(0x344ee53291ab670c) /* The plane kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
+#define BB_PLANE_LAYOUT_FINGERPRINT UINT64_C(0xded167218e200fce) /* The plane kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
 #define BB_PLANE_SLOT_ARRIVE UINT32_C(9) /* Classify an arrival. */
 #define BB_PLANE_SLOT_ON_PIECE UINT32_C(10) /* One piece of a unit's bytes. */
 #define BB_PLANE_SLOT_REFUSAL UINT32_C(11) /* Render a refusal in the unit's dialect. */
@@ -610,6 +610,7 @@ extern "C" {
 #define BB_TRANSPORT_FIELD_PRESENT UINT32_C(1) /* The field line is present, whatever its value. */
 #define BB_TRANSPORT_FIELD_VALUE_PREFIX UINT32_C(2) /* The field line is present and its value starts with the predicate's value. */
 #define BB_TRANSPORT_EXT_SENSITIVE_FIELDS "fields.sensitive" /* An opening Emit input's credential field names; never a wire field. */
+#define BB_TRANSPORT_REQUEST_TARGET_FIELD ":path" /* The request-target pseudo-field classified by the sensitive-field extension. */
 
 /* hconn */
 #define BB_HCONN_DIRECTION_INBOUND UINT32_C(1) /* [`Need::direction`]: the plugin is reached (it listens). */
@@ -2584,6 +2585,8 @@ struct bb_plane_PlaneTail {
     size_t metric_lanes_len;
     const bb_plane_RecordRetention *record_retentions;
     size_t record_retentions_len;
+    const bb_mech_AbiStr *streaming_content_types;
+    size_t streaming_content_types_len;
 };
 
 /* One path the built plane answers on. One route — a verb, a target and whether the target is */
@@ -5159,7 +5162,7 @@ BB_ASSERT(offsetof(bb_plane_TrustKey, flags) == 20, "bb_plane_TrustKey.flags: of
 BB_ASSERT(offsetof(bb_plane_TrustKey, default_) == 24, "bb_plane_TrustKey.default_: offset");
 BB_ASSERT(offsetof(bb_plane_TrustKey, mechanisms) == 40, "bb_plane_TrustKey.mechanisms: offset");
 BB_ASSERT(offsetof(bb_plane_TrustKey, mechanisms_len) == 48, "bb_plane_TrustKey.mechanisms_len: offset");
-BB_ASSERT(sizeof(bb_plane_PlaneTail) == 440, "bb_plane_PlaneTail: size");
+BB_ASSERT(sizeof(bb_plane_PlaneTail) == 456, "bb_plane_PlaneTail: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_PlaneTail) == 8, "bb_plane_PlaneTail: alignment");
 BB_ASSERT(offsetof(bb_plane_PlaneTail, head) == 0, "bb_plane_PlaneTail.head: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneTail, flags) == 8, "bb_plane_PlaneTail.flags: offset");
@@ -5207,6 +5210,8 @@ BB_ASSERT(offsetof(bb_plane_PlaneTail, metric_lanes) == 408, "bb_plane_PlaneTail
 BB_ASSERT(offsetof(bb_plane_PlaneTail, metric_lanes_len) == 416, "bb_plane_PlaneTail.metric_lanes_len: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneTail, record_retentions) == 424, "bb_plane_PlaneTail.record_retentions: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneTail, record_retentions_len) == 432, "bb_plane_PlaneTail.record_retentions_len: offset");
+BB_ASSERT(offsetof(bb_plane_PlaneTail, streaming_content_types) == 440, "bb_plane_PlaneTail.streaming_content_types: offset");
+BB_ASSERT(offsetof(bb_plane_PlaneTail, streaming_content_types_len) == 448, "bb_plane_PlaneTail.streaming_content_types_len: offset");
 BB_ASSERT(sizeof(bb_plane_Claim) == 56, "bb_plane_Claim: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_Claim) == 8, "bb_plane_Claim: alignment");
 BB_ASSERT(offsetof(bb_plane_Claim, verb) == 0, "bb_plane_Claim.verb: offset");

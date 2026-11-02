@@ -7,13 +7,13 @@ use std::collections::{HashMap, HashSet};
 
 use crate::config::RootCfg;
 use crate::diagnostics::{
-    CONFIG_AUTH_CHAIN_FULL_SCOPE, CONFIG_OPEN_ADMIN_MINT, CONFIG_PASSTHROUGH_UNUSED_APIKEY,
-    CONFIG_POOL_HETEROGENEOUS, CONFIG_RATE_CARD_ALL_ZERO, diag_warn,
+    diag_warn, CONFIG_AUTH_CHAIN_FULL_SCOPE, CONFIG_OPEN_ADMIN_MINT,
+    CONFIG_PASSTHROUGH_UNUSED_APIKEY, CONFIG_POOL_HETEROGENEOUS, CONFIG_RATE_CARD_ALL_ZERO,
 };
 use crate::plane_driver::registry::plane_decl_for;
 use busbar_contract::abi::export::CheckPhase;
 use busbar_kernel_ledger::cost::{
-    PER_REQUEST, PER_SESSION, PLANE_LANE_SEP, flat_card_present, split_plane_lane,
+    flat_card_present, split_plane_lane, PER_REQUEST, PER_SESSION, PLANE_LANE_SEP,
 };
 
 /// Maximum byte-length of an `affinity.header_name`. HTTP header field-names must be ASCII; an
@@ -2394,7 +2394,7 @@ pub(crate) use secret_refs::{keyless_credential_allowed, secret_module, secret_r
 pub(crate) use undeclared_secret_refs::undeclared_secret_refs;
 /// The one validator every caller runs.
 mod check;
-pub use check::{Check, Refusal, check, no_root_rules};
+pub use check::{check, no_root_rules, Check, Refusal};
 
 /// THE PROVIDER SWEEP, PARAMETERISED ON THE KNOWN-PROTOCOL SET — by argument rather than by
 /// feature-gating the registry, because a feature that empties the registry would be a SECOND way

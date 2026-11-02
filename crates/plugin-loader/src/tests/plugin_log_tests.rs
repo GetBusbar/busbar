@@ -140,7 +140,9 @@ fn open(p: &Plugin<WitnessKind>) {
 }
 
 /// One `tick` in `mode`.
-fn tick(p: &Plugin<WitnessKind>, mode: &'static [u8]) {
+fn tick(p: &Plugin<WitnessKind>, mode: &[u8]) {
+    // Plugin::call executes on this thread and joins the crossing before returning, so this
+    // borrowed mode stays live through every read; a watchdog cannot abandon this frame.
     let mut head = in_head();
     head.extensions = Blob {
         ptr: mode.as_ptr(),

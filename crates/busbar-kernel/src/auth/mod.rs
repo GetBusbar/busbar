@@ -1573,11 +1573,9 @@ fn vendor_auth_failure_message(proto: &str) -> &'static str {
 ///
 /// Read from the protocol registry's `ProtocolDecl::auth_failure_status_and_kind`.
 pub fn auth_failure_status_and_kind(proto: &str) -> (StatusCode, &'static str) {
-    crate::ingress::protocols::decl_for(proto)
-        .and_then(|d| {
-            let (status, kind) = d.auth_failure_status_and_kind;
-            Some((StatusCode::from_u16(status).ok()?, kind))
-        })
+    let (status, kind) = crate::ingress::protocols::auth_failure_status_and_kind(proto);
+    StatusCode::from_u16(status)
+        .map(|status| (status, kind))
         .unwrap_or((
             StatusCode::UNAUTHORIZED,
             busbar_contract::protocol::KIND_AUTHENTICATION,

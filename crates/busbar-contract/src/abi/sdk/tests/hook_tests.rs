@@ -2051,6 +2051,50 @@ fn direct_decide_and_transform_envelopes_keep_the_canonical_wire_bytes() {
 }
 
 #[test]
+fn direct_budget_projection_preserves_nullable_fields_and_absent_pool() {
+    for present in [false, true] {
+        let tags = tags();
+        let candidates = candidates(&tags);
+        let mut budget = budget();
+        budget.truncate(1);
+        if present {
+            budget[0].budget_group = Some("group".into());
+            budget[0].remaining_micros = Some(9);
+        }
+        let context = RoutingContext {
+            pool: "pool-a",
+            budget_remaining: None,
+            budget: &budget,
+        };
+        let request = request(false, false);
+        let frame = DecideFrame::first(DecideView::build(&request, &candidates, &context));
+        let input = frame.input();
+        let decoded = Decoded::of(lend(&input));
+        for op in [OP_DECIDE, OP_TRANSFORM] {
+            let mut bytes = Vec::new();
+            decoded.write_projection(op, None, &mut bytes).unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            let bucket = &value["context"]["budget"][0];
+            assert_eq!(
+                bucket["budget_group"],
+                if present { json!("group") } else { json!(null) }
+            );
+            assert_eq!(
+                bucket["remaining_micros"],
+                if present { json!(9) } else { json!(null) }
+            );
+            assert!(bucket.as_object().unwrap().contains_key("budget_group"));
+            assert!(bucket.as_object().unwrap().contains_key("remaining_micros"));
+            assert!(!bucket.as_object().unwrap().contains_key("pool"));
+            assert_eq!(
+                bytes,
+                canonical_envelope(decoded.projection_json(op), op, None)
+            );
+        }
+    }
+}
+
+#[test]
 fn direct_notify_envelopes_keep_request_candidate_routing_and_response_stage_bytes() {
     for prompt in [false, true] {
         let request = request(prompt, false);

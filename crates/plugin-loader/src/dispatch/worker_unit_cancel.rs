@@ -69,7 +69,7 @@ impl Drop for Binding {
 
 /// The entry retains the sender while a cancellation crosses. Watchdog retirement drops the
 /// entry outside its lock and answers None, even while that crossing still owns every loan.
-pub(super) struct Waiter(Option<oneshot::Sender<Option<Cancelled>>>);
+pub(crate) struct Waiter(Option<oneshot::Sender<Option<Cancelled>>>);
 
 impl Waiter {
     fn closed(&self) -> bool {

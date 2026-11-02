@@ -77,7 +77,10 @@ unit-b = "beta"
         !out.contains("busbar_second"),
         "a disabled row is emitted: {out}"
     );
-    assert!(out.contains("    protocols: &[busbar_first::linked::PROTOCOLS, ],\n"));
+    assert!(
+        out.contains("    #[cfg(test)]\n    protocols: &[busbar_first::linked::PROTOCOLS, ],\n"),
+        "executable codec declarations must not enter the shipping linked table: {out}"
+    );
     assert!(out.contains("    diagnostics: &[crate::root::third_half::DIAGNOSTICS, ],\n"));
     assert!(
         out.contains("    plane_doors: &[busbar_first::linked::door, crate::root::third_half::door, busbar_fourth::linked::door, ],\n"),

@@ -119,6 +119,8 @@ skip = [
 # DB — block it so any such addition is an explicit, reviewed allow-list entry.
 unknown-registry = "deny"
 unknown-git = "deny"
+# All authorized Git dependencies must still name an immutable revision.
+required-git-spec = "rev"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 # The default plugins busbar pulls from their own repos at a PINNED rev (owner ruling, 1.6.0: one
 # repo per plugin). Each is a reviewed entry, one URL per plugin repo.
@@ -148,4 +150,9 @@ allow-git = [
     "https://github.com/GetBusbar/busbar-auth-sigv4",
     "https://github.com/GetBusbar/busbar-auth-webhook-signature",
     "https://github.com/GetBusbar/busbar-transport-grpc",
+    # Authorized release-line fixes; exact revisions remain in root/dist manifests and locks.
+    # h2 d6146a5c425e55653cdfebc5660e52d87430c588 (upstream hyperium/h2#996).
+    "https://github.com/MattJackson/h2",
+    # tungstenite 1c190f7dda55dc7df4781b7ecea9faa671fc76fd (snapview/tungstenite-rs#574).
+    "https://github.com/MattJackson/tungstenite-rs",
 ]

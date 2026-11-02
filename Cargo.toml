@@ -135,6 +135,11 @@ unicode-normalization = "0.1.25"
 [patch.'https://github.com/GetBusbar/busbar']
 busbar-contract = { path = "crates/busbar-contract" }
 
+# Exact release-line fixes submitted upstream: h2 sensitive indexed fields and WebSocket 1014.
+[patch.crates-io]
+h2 = { git = "https://github.com/MattJackson/h2", rev = "d6146a5c425e55653cdfebc5660e52d87430c588" }
+tungstenite = { git = "https://github.com/MattJackson/tungstenite-rs", rev = "1c190f7dda55dc7df4781b7ecea9faa671fc76fd" }
+
 [profile.release]
 opt-level = 3        # opt-3 for the CPU-bound in-process work (parse/translate/serialize on the hot
 lto = "fat"          # whole-program inlining across crates: faster hot path + smaller binary

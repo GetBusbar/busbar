@@ -159,9 +159,15 @@ fn a_failed_resolve_answers_its_code_and_text_through_the_door() {
     let instance = c.take_instance().expect("an instance");
 
     // The host lends the buffer a READY value is written into (row 6); the reply copies it out.
+    struct Resolved {
+        outcome: Outcome,
+        out: ResolveOut,
+        error: Option<String>,
+        owned: reply::SecretCopy,
+    }
     let resolve_with = |settings: &[u8]| {
         let mut secret = [0u8; 64];
-        reply::call_in(
+        let answer = reply::call_in(
             resolve,
             Some(&instance),
             &TestIn::<ResolveIn>::new()
@@ -169,7 +175,14 @@ fn a_failed_resolve_answers_its_code_and_text_through_the_door() {
                 .blob(|i| &i.settings, settings, BLOB_JSON)
                 .buffer(|i| &i.secret_buf, |i| &i.secret_cap, &mut secret),
             zeroed::<ResolveOut>(),
-        )
+        );
+        // Only copied reply fields leave the input borrow; no instance is opened by RESOLVE.
+        Resolved {
+            outcome: answer.outcome,
+            out: answer.out,
+            error: answer.error,
+            owned: answer.owned,
+        }
     };
     let c = resolve_with(b"{}");
     assert_eq!(c.outcome, Outcome::Failed);

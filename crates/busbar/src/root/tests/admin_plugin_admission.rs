@@ -157,6 +157,15 @@ async fn serve_admission(
     cfg: busbar_kernel::config::PluginsCfg,
     hook_env: Option<busbar_kernel::hooks::HookEnv>,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+    serve_admission_with_inputs(dir, cfg, hook_env, None).await
+}
+
+async fn serve_admission_with_inputs(
+    dir: PathBuf,
+    cfg: busbar_kernel::config::PluginsCfg,
+    hook_env: Option<busbar_kernel::hooks::HookEnv>,
+    disk_paths: Option<(PathBuf, PathBuf)>,
+) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
     busbar_core_admin::install();
     // The operator credential's row on the auth axis, as boot links it (`register_planes`): the
     // admin chain authenticates `x-admin-token` through the root's REAL operator door (a test build
@@ -174,6 +183,9 @@ async fn serve_admission(
         .plugin_admission(&ADMISSION);
     if let Some(env) = hook_env {
         app = app.hook_env(env);
+    }
+    if let Some((config, providers)) = disk_paths {
+        app = app.disk_paths(config, providers);
     }
     let (router, _handle) = busbar_kernel::build_router_with_limits(
         app.build(),
@@ -1717,4 +1729,67 @@ fn an_inspect_of_no_tarball_is_refused_as_an_invalid_plugin_tarball() {
         panic!("a body that is no tarball is a validation refusal");
     };
     assert!(why.starts_with("invalid plugin tarball"), "{why}");
+}
+
+#[tokio::test]
+async fn a_bootstrap_archive_upload_and_rollback_refuse_a_changed_base_pin_before_publication() {
+    busbar_kernel::snapshot::init();
+    let dir = tmp_plugins_dir("bootstrap-archive-mutation");
+    let key = SigningKey::from_bytes(&[0x38; 32]);
+    let first = signed_tarball(
+        &key,
+        test_manifest("acme-store-anchor", "anchor", "acme", "1.0.0"),
+        b"first native image",
+    );
+    let changed = signed_tarball(
+        &key,
+        test_manifest("acme-store-anchor", "anchor", "acme", "1.1.0"),
+        b"changed native image",
+    );
+    let file = "anchor.tar.gz";
+    std::fs::write(dir.join(file), &first).unwrap();
+    let config = dir.with_extension("config.yaml");
+    let providers = dir.with_extension("providers.yaml");
+    std::fs::write(&providers, "{}\n").unwrap();
+    let write_base = |hash: &str| {
+        let document = serde_json::json!({"providers":{},"models":{},
+            "store":{"module":"anchor","settings":{}},
+            "plugins":{"enabled":true,"dir":dir,
+                "trust":{"publishers":[{"name":"acme","public_key":hex::encode(key.verifying_key().to_bytes())}]},
+                "fetch":[{"url":"https://plugins.invalid/anchor.tar.gz","sha256":hash}]}});
+        std::fs::write(&config, serde_yaml::to_string(&document).unwrap()).unwrap();
+    };
+    write_base(&crate::root::loader::sign::sha256_hex(&first));
+    let mut posture = publisher_posture("acme", &key);
+    posture.enabled = true;
+    posture.dir = dir.display().to_string();
+    let (addr, handle) = serve_admission_with_inputs(
+        dir.clone(),
+        posture,
+        None,
+        Some((config.clone(), providers.clone())),
+    )
+    .await;
+    let (status, body) = install(addr, file, &changed).await;
+    assert_eq!(status, 409, "{body}");
+    assert!(message(&body).contains("exact archive SHA-256"), "{body}");
+    assert_eq!(std::fs::read(dir.join(file)).unwrap(), first);
+    // A deliberate base-pin change does not authorize the different installed rollback archive.
+    write_base(&crate::root::loader::sign::sha256_hex(&changed));
+    let response = reqwest::Client::new()
+        .post(format!("http://{addr}/api/v1/admin/plugins/rollback"))
+        .header("x-admin-token", "admintok")
+        .json(&serde_json::json!({"file":file}))
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(status.as_u16(), 409, "{body}");
+    assert!(message(&body).contains("exact archive SHA-256"), "{body}");
+    assert_eq!(std::fs::read(dir.join(file)).unwrap(), first);
+    handle.abort();
+    std::fs::remove_file(config).unwrap();
+    std::fs::remove_file(providers).unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
 }

@@ -57,7 +57,9 @@ extern "C" fn selected_open(
     input: *const c_void,
     output: *mut c_void,
 ) -> RawOutcome {
-    let result = base_ops().head.open.unwrap()(instance, input, output);
+    // SAFETY: forward the same OPEN instance and complete host frames, with every nested loan
+    // live through this original SDK slot crossing.
+    let result = unsafe { base_ops().head.open.unwrap()(instance, input, output) };
     if result.outcome() != Outcome::Ready {
         return result;
     }
@@ -83,7 +85,7 @@ extern "C" fn selected_open(
 }
 
 extern "C" fn selected_door() -> &'static Door {
-    static DOOR: std::sync::OnceLock<Door> = std::sync::OnceLock::new();
+    static DOOR: std::sync::OnceLock<crate::conformance::StaticDoor> = std::sync::OnceLock::new();
     DOOR.get_or_init(|| {
         let mut ops = *base_ops();
         ops.head.open = Some(selected_open);
@@ -92,9 +94,12 @@ extern "C" fn selected_door() -> &'static Door {
         unsafe {
             let mut parts = Door::read_parts(base::door());
             parts.ops = std::ptr::from_ref(Box::leak(Box::new(ops))).cast();
-            Door::__from_parts(parts)
+            // The copied ops table is leaked; its complete nested graph and Statement retain
+            // the original SDK door's immutable static backing, independent of this value.
+            crate::conformance::StaticDoor::new(Door::__from_parts(parts))
         }
     })
+    .get()
 }
 
 #[test]

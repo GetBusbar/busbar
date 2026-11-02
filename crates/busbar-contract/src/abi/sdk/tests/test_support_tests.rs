@@ -20,6 +20,7 @@ use crate::abi::mechanism::lifecycle::{slot, OpenIn, OpenOut};
 use crate::abi::mechanism::KindCode;
 use crate::abi::sdk::door::{abi_str, statement};
 use crate::abi::sdk::life::{Life, Refreshed, Refusal};
+use crate::abi::sdk::test_support::test_in::TestIn;
 use crate::abi::transport::{
     Claim, FramePiece, FramerSink, IngestIn, TransportTail, FRAMING_STREAM, ROLE_FRAMER,
     UNIT0_UPGRADE,
@@ -131,6 +132,58 @@ mod plugin {
 
 fn view() -> DoorView {
     DoorView::of(plugin::MACRO_DOOR)
+}
+
+mod allowed_needs {
+    use crate::abi::host::conn::connector::{Need, DIRECTION_OUTBOUND};
+    use crate::abi::sdk::door::abi_str;
+
+    const NEEDS: &[Need] = &[Need {
+        direction: DIRECTION_OUTBOUND,
+        transport: abi_str("https"),
+        ..Need::EMPTY
+    }
+    .with_keep_response_headers(&[abi_str("retry-after")])];
+    crate::plugin_door! {
+        ops: crate::abi::transport::Ops,
+        statement: super::STATEMENT.with_needs(NEEDS),
+        lifecycle: life(super::Probe),
+    }
+}
+
+mod forbidden_needs {
+    use crate::abi::host::conn::connector::{Need, DIRECTION_OUTBOUND};
+    use crate::abi::sdk::door::abi_str;
+
+    const NEEDS: &[Need] = &[Need {
+        direction: DIRECTION_OUTBOUND,
+        transport: abi_str("https"),
+        ..Need::EMPTY
+    }
+    .with_keep_response_headers(&[abi_str("authorization")])];
+    crate::plugin_door! {
+        ops: crate::abi::transport::Ops,
+        statement: super::STATEMENT.with_needs(NEEDS),
+        lifecycle: life(super::Probe),
+    }
+}
+
+#[test]
+fn safe_needs_validation_reads_the_exported_descriptor_and_nested_headers() {
+    assert_eq!(
+        DoorView::of(allowed_needs::MACRO_DOOR).check_needs(),
+        Ok(())
+    );
+    assert_eq!(
+        view().check_needs(),
+        Ok(()),
+        "an empty exported list passes"
+    );
+    let fault = DoorView::of(forbidden_needs::MACRO_DOOR)
+        .check_needs()
+        .expect_err("the exported authorization retention need is forbidden");
+    assert_eq!(fault.rule, crate::abi::mechanism::check::Rule::Foreign);
+    assert_eq!(fault.field, "need.keep_response_headers");
 }
 
 /// A head for slot `op` over a `T` `in`, every other byte zero.
@@ -302,6 +355,7 @@ const PLANE_TAIL: crate::abi::plane::PlaneTail = crate::abi::plane::PlaneTail {
     metric_lanes_len: 0,
     record_retentions: ptr::null(),
     record_retentions_len: 0,
+    ..crate::abi::plane::PlaneTail::ZERO
 };
 
 /// A plane door, laid out as `plugin_door!` lays one (its Statement stamped, every slot absent):
@@ -637,6 +691,124 @@ fn ready_head(lease: u64) -> OutHead {
     h.outcome = RawOutcome::of(Outcome::Ready);
     h.lease = lease;
     h
+}
+
+#[test]
+fn lifecycle_cancel_reply_preserves_its_kind_disposition_and_owns_error_text() {
+    let mut words = String::from("cancelled after partial output");
+    let mut template: crate::abi::mechanism::lifecycle::CancelOut = zeroed();
+    template.head = ready_head(19);
+    template.head.error = str_of(&words);
+    template.disposition = 23;
+    let got = answered(&mut template);
+    words.clear();
+    assert_eq!(got.outcome, Outcome::Ready);
+    assert_eq!(
+        got.out.disposition, 23,
+        "the generic kind owns this vocabulary"
+    );
+    assert_eq!(got.out.head.lease, 19);
+    assert_eq!(got.error.as_deref(), Some("cancelled after partial output"));
+    assert!(got.out.head.error.ptr.is_null());
+}
+
+#[test]
+fn plane_cancel_reply_preserves_each_disposition_and_record_accounting() {
+    for disposition in [
+        crate::abi::plane::CANCEL_OK_PARTIAL,
+        crate::abi::plane::CANCEL_FAILED,
+        crate::abi::plane::CANCEL_ABORTED,
+    ] {
+        let mut template: crate::abi::plane::PlaneCancelOut = zeroed();
+        template.cancel.head = ready_head(7);
+        template.cancel.disposition = disposition;
+        template.records_written = 2;
+        template.arena_written = 31;
+        let got = answered(&mut template);
+        assert_eq!(got.outcome, Outcome::Ready);
+        assert_eq!(got.out.cancel.disposition, disposition);
+        assert_eq!(got.out.cancel.head.lease, 7);
+        assert_eq!(got.out.records_written, 2);
+        assert_eq!(got.out.arena_written, 31);
+    }
+}
+
+#[test]
+#[should_panic(expected = "cancel.disposition")]
+fn a_ready_plane_cancel_reply_requires_an_actual_disposition() {
+    let mut template: crate::abi::plane::PlaneCancelOut = zeroed();
+    template.cancel.head = ready_head(0);
+    let _ = answered(&mut template);
+}
+
+#[test]
+fn plane_drive_reply_preserves_written_and_needed_session_counts() {
+    for (written, needed) in [(3, 0), (0, 9)] {
+        let mut template: crate::abi::plane::PlaneDriveOut = zeroed();
+        template.head = ready_head(0);
+        template.sessions_written = written;
+        template.sessions_needed = needed;
+        let got = answered(&mut template);
+        assert_eq!(got.outcome, Outcome::Ready);
+        assert_eq!(got.out.sessions_written, written);
+        assert_eq!(got.out.sessions_needed, needed);
+    }
+}
+
+#[test]
+fn a_plane_open_reply_yields_an_instance_proof_that_close_consumes() {
+    extern "C" fn open(_: *mut c_void, _: *const c_void, out: *mut c_void) -> RawOutcome {
+        // SAFETY: the selected plane OPEN has a complete exclusive PlaneOpenOut. Its instance
+        // owns this allocation until the sole matching CLOSE below consumes it.
+        let out = unsafe { &mut *out.cast::<crate::abi::plane::PlaneOpenOut>() };
+        out.open.instance = Box::into_raw(Box::new(37_u8)).cast();
+        out.open.head.outcome = RawOutcome::of(Outcome::Ready);
+        RawOutcome::of(Outcome::Ready)
+    }
+    extern "C" fn close(instance: *mut c_void, _: *const c_void, out: *mut c_void) -> RawOutcome {
+        // SAFETY: close_in consumes the proof for the one live allocation this OPEN returned;
+        // its exclusive output is a complete OutHead.
+        unsafe {
+            assert_eq!(*Box::from_raw(instance.cast::<u8>()), 37);
+            (*out.cast::<OutHead>()).outcome = RawOutcome::of(Outcome::Ready);
+        }
+        RawOutcome::of(Outcome::Ready)
+    }
+    const OPS: &crate::abi::plane::Ops = &{
+        let mut ops = crate::abi::sdk::door::absent_table::<crate::abi::plane::Ops>();
+        ops.head.open = Some(open);
+        ops.head.close = Some(close);
+        ops
+    };
+    // SAFETY: both table slots and the existing Statement/tail have immutable static backing.
+    const DOOR: &crate::abi::mechanism::door::Door = &unsafe {
+        crate::abi::sdk::door::door::<crate::abi::plane::Ops>(PLANE_STATEMENT, OPS, None)
+    };
+    extern "C" fn door() -> &'static crate::abi::mechanism::door::Door {
+        DOOR
+    }
+    // SAFETY: the reviewed static descriptor above has the same complete layout and stamped
+    // Statement that the macro emits, with exact typed plane lifecycle slots.
+    let view = DoorView::of(unsafe { crate::abi::sdk::door::MacroDoor::__from_door_macro(door) });
+    let mut opened = super::reply::call_in(
+        view.op::<crate::abi::plane::Ops>(|ops| &ops.head.open)
+            .unwrap(),
+        None,
+        &TestIn::<OpenIn>::new(),
+        zeroed::<crate::abi::plane::PlaneOpenOut>(),
+    );
+    assert_eq!(opened.outcome, Outcome::Ready);
+    assert!(opened.owned.is_none(), "the absent snapshot stays absent");
+    let instance = opened.take_instance().expect("the plane OPEN proof");
+    assert!(opened.take_instance().is_none(), "the proof transfers once");
+    let closed = super::reply::close_in(
+        view.op::<crate::abi::plane::Ops>(|ops| &ops.head.close)
+            .unwrap(),
+        instance,
+        &TestIn::<InHead>::new(),
+        zeroed::<OutHead>(),
+    );
+    assert_eq!(closed.outcome, Outcome::Ready);
 }
 
 fn resolved(secret: Blob) -> ResolveOut {

@@ -560,7 +560,9 @@ pub fn publish(app: &Arc<busbar_kernel::state::App>) -> Option<u64> {
         app: Arc::clone(app),
         door_refusals,
         ids,
-        signed_ingress: kin::signed_by_dialect(),
+        // Signed paths come from the plane door's CLAIM_SIGNED_INGRESS rows. The
+        // former codec-registry fallback called plugin Rust predicates outside the ABI.
+        signed_ingress: Arc::new(|_, _| false),
         scope: None,
     };
     let snapshot = Arc::new(Published {

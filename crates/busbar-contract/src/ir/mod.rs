@@ -4,8 +4,6 @@
 //! THE CROSS-PLANE IR SHAPES (DECISIONS #83: contract = shapes) — what a plane reads and writes and
 //! the shared pipeline reads back, which every implementation must agree on.
 //!
-//! - [`egress_prep`]: the resolved-primitives param bag a cross-protocol egress hop passes to a
-//!   request handle, and a lane's declared request-shape capabilities.
 //! - [`facts`]: THE ONE PROJECTION — the family-blind seam the shared pipeline reads a request
 //!   through, and the render-once screening view over it.
 //! - [`invoke`] / [`subscribe`]: the two protocol-surface operations' request/response pairs.
@@ -16,7 +14,6 @@
 //! historical path; the handle's byte carrier is re-expressed over [`crate::bounded::SlabBytes`].
 //! The `providers:`/`models:` config grammars stay there: they are not shapes.
 
-pub mod egress_prep;
 pub mod facts;
 pub mod handle;
 pub mod invoke;
