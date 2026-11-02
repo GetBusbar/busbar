@@ -554,7 +554,7 @@ impl RecoveryAdmin<'_> {
             None
         };
         let known = governance
-            .validate_foreign_known_outcome(&resolution)
+            .validate_foreign_known_outcome(&resolution, adoption.inspection.event.kind)
             .and_then(|_| {
                 if adoption.inspection.event.kind == RecoveryKind::Correction {
                     governance.validate_foreign_correction_verdict(&resolution)
@@ -822,6 +822,7 @@ impl super::GovState {
     fn validate_foreign_known_outcome(
         &self,
         resolution: &RecoveryResolution,
+        kind: RecoveryKind,
     ) -> Result<(), RecoveryError> {
         let entries = self
             .recovery_book
@@ -832,6 +833,11 @@ impl super::GovState {
             return Ok(());
         };
         for event in entry.selected.iter().chain(entry.pending.iter()) {
+            if event.kind != kind || event.body_fingerprint != resolution.body_fingerprint {
+                return Err(RecoveryError::Conflict(
+                    "foreign adoption would replace an immutable local operation identity".into(),
+                ));
+            }
             let known = match event.state {
                 RecoveryState::Applied => Some(RecoveryVerdict::Landed),
                 RecoveryState::ConditionConflict => Some(RecoveryVerdict::NotLanded),
@@ -885,6 +891,13 @@ impl super::GovState {
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let entry = entries.entry(operation_id).or_default();
+        if let Some(previous) = entry.selected.as_ref() {
+            if history.get(&previous.fingerprint()?) != Some(previous) {
+                return Err(RecoveryError::Invalid(
+                    "adopted selected history forks from a locally confirmed predecessor".into(),
+                ));
+            }
+        }
         entry.selected = selected;
         entry.history = history;
         entry.pending = None;
