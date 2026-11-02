@@ -25,6 +25,8 @@ mod config_boundary_tests;
 const OAS_OPERATION_STATUSES: &str =
     include_str!("../../tests/fixtures/openapi_operation_statuses_key.txt").trim_ascii();
 
+const LOCKED_CONFIG_MUTATION_MESSAGE: &str = "config mutation refused: this busbar has no writable Store-backed config overlay; edit config.yaml and reload a locked deployment";
+
 /// Build a `GovState` that CAN mint 1.5.0 signed-token keys: it carries a deterministic
 /// `TokenSigner` (fixed key bytes + the default kid) so `POST /keys` issues a `bbk_` token instead
 /// of a 409 "signed-token minting is unavailable". Every admin test that mints (directly or over
@@ -1932,11 +1934,10 @@ async fn test_admin_v1_put_auth_refused_on_locked_config() {
         "a locked config must refuse PUT /admin-auth"
     );
     let body: serde_json::Value = resp.json().await.unwrap();
-    assert!(
-        body["error"]["message"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("no writable config overlay"),
+    assert_eq!(body["error"]["code"], "invalid_request");
+    assert_eq!(
+        body["error"]["message"].as_str(),
+        Some(LOCKED_CONFIG_MUTATION_MESSAGE),
         "the refusal names the locked/no-overlay reason: {body}"
     );
     handle.abort();
@@ -1991,11 +1992,10 @@ async fn test_admin_v1_config_apply_refused_on_locked_config() {
         "a locked config must refuse POST /config/apply"
     );
     let body: serde_json::Value = resp.json().await.unwrap();
-    assert!(
-        body["error"]["message"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("no writable config overlay"),
+    assert_eq!(body["error"]["code"], "invalid_request");
+    assert_eq!(
+        body["error"]["message"].as_str(),
+        Some(LOCKED_CONFIG_MUTATION_MESSAGE),
         "the refusal names the locked/no-overlay reason: {body}"
     );
     handle.abort();
@@ -10206,8 +10206,9 @@ async fn test_admin_v1_config_settings_put_on_locked_config_is_refused() {
     assert_eq!(put.status().as_u16(), 400, "{:?}", put.text().await);
     let body: serde_json::Value = put.json().await.unwrap();
     let msg = body["error"]["message"].as_str().unwrap_or_default();
-    assert!(
-        msg.contains("config.locked") || msg.contains("no writable config overlay"),
+    assert_eq!(body["error"]["code"], "invalid_request");
+    assert_eq!(
+        msg, LOCKED_CONFIG_MUTATION_MESSAGE,
         "the refusal must explain the locked/no-overlay posture: {body}"
     );
 
@@ -10235,8 +10236,9 @@ async fn test_admin_v1_config_settings_put_refuses_when_persistence_is_explicitl
     assert_eq!(put.status().as_u16(), 400, "{:?}", put.text().await);
     let body: serde_json::Value = put.json().await.unwrap();
     let msg = body["error"]["message"].as_str().unwrap_or_default();
-    assert!(
-        msg.contains("config.locked") || msg.contains("no writable config overlay"),
+    assert_eq!(body["error"]["code"], "invalid_request");
+    assert_eq!(
+        msg, LOCKED_CONFIG_MUTATION_MESSAGE,
         "the refusal must name the locked/no-overlay posture, not just be a generic 400: {body}"
     );
     assert!(
@@ -10352,8 +10354,8 @@ fn test_persist_root_without_an_overlay_errs() {
          the mutation is refused, never falsely reported as persisted"
     );
     let msg = result.unwrap_err();
-    assert!(
-        msg.contains("config.locked") || msg.contains("no writable config overlay"),
+    assert_eq!(
+        msg, LOCKED_CONFIG_MUTATION_MESSAGE,
         "the error must explain the locked/no-overlay posture: {msg}"
     );
 }

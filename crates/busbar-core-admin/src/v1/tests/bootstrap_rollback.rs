@@ -23,15 +23,6 @@ fn service(
     let config = dir.join("config.yaml");
     let providers = dir.join("providers.yaml");
     std::fs::write(&providers, "{}").unwrap();
-    std::fs::write(
-        &config,
-        serde_json::to_vec(&serde_json::json!({
-            "providers": {}, "models": {}, "store": {"module":anchor,"settings":store_settings},
-            "plugins": {"enabled":true,"dir":plugins,"min_versions":{(target):base_floor}}
-        }))
-        .unwrap(),
-    )
-    .unwrap();
     let mut live = strict_posture();
     live.enabled = true;
     live.dir = plugins.to_string_lossy().into_owned();
@@ -55,7 +46,22 @@ fn service(
         bytes = FAKE_HEAD.to_vec();
         bytes.extend(serde_json::to_vec(&manifest).unwrap());
     }
-    std::fs::write(plugins.join("target.tar.gz"), bytes).unwrap();
+    let archive_pin = busbar_contract::redacted::sha256_hex(&bytes);
+    std::fs::write(plugins.join("target.tar.gz"), &bytes).unwrap();
+    // Authorize these exact candidate bytes in the operator's base config independently of its
+    // trust/version floor. The running generation's lower version pin cannot supply this proof.
+    std::fs::write(
+        &config,
+        serde_json::to_vec(&serde_json::json!({
+            "providers": {}, "models": {}, "store": {"module":anchor,"settings":store_settings},
+            "plugins": {
+                "enabled":true,"dir":plugins,"min_versions":{(target):base_floor},
+                "fetch":[{"url":"https://plugins.example/target.tar.gz","sha256":archive_pin}]
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
     let app = crate::new_test_app()
         .plugins_dir(plugins)
         .plugins_cfg(live)
