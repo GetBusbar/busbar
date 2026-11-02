@@ -23,7 +23,7 @@
 //! REQUEST-PATH RESULTS (THE DESIGN, the memory ABI's host-buffer rule):
 //! rows are written straight from the store's answer into the host's buffers. Returned text is
 //! boxed in its reply so even an inline rendered refusal cannot move while the host reads it.
-//! Reply-table capacities are reused as host ticket slots are recycled.
+//! Reply-table capacities and stable text boxes are reused as host ticket slots are recycled.
 
 use std::any::Any;
 use std::cell::RefCell;
@@ -194,8 +194,23 @@ impl Text {
 
 // Text::Rendered keeps bytes inline. Every previously emitted AbiStr must retain its address
 // when another text grows this vector, so each Text needs a separate stable allocation.
-#[allow(clippy::vec_box)]
-type ReplyTexts = Vec<Box<Text>>;
+#[derive(Default)]
+struct ReplyTexts {
+    #[allow(clippy::vec_box)]
+    texts: Vec<Box<Text>>,
+    used: usize,
+}
+
+impl ReplyTexts {
+    fn clear(&mut self) {
+        // The preceding answer was consumed before this ticket crossed again. Drop its owned
+        // strings outside the reply-table lock, retaining the boxes for allocation-free reuse.
+        for text in &mut self.texts {
+            **text = Text::render(format_args!(""));
+        }
+        self.used = 0;
+    }
+}
 
 /// One store instance as the door serves it: the backend and the error texts it keeps for the
 /// host. It is the store's [`Life`]: the SDK's one instance state, [`Held`], holds it beside the
@@ -243,16 +258,20 @@ fn reply_text(text: Text, held: &RefCell<ReplyTexts>) -> AbiStr {
         }
         rendered @ Text::Rendered(_) => rendered,
     };
-    // Box even an inline rendered text: growing this answer's list must not move bytes
-    // already named in its output.
-    let text = Box::new(text);
-    let kept = text.as_str();
-    let named = AbiStr {
+    let mut held = held.borrow_mut();
+    let index = held.used;
+    if index == held.texts.len() {
+        // Only a new peak number of texts in one answer needs another stable allocation.
+        held.texts.push(Box::new(text));
+    } else {
+        *held.texts[index] = text;
+    }
+    held.used += 1;
+    let kept = held.texts[index].as_str();
+    AbiStr {
         ptr: kept.as_ptr(),
         len: kept.len(),
-    };
-    held.borrow_mut().push(text);
-    named
+    }
 }
 
 #[cfg(test)]

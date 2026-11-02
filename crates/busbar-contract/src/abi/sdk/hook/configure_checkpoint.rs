@@ -23,6 +23,7 @@ pub struct ConfigureCheckpoint {
     pub revision: u64,
     /// The version of the effective settings, which can exceed a stale push's acknowledged version.
     pub settings_version: u64,
+    // settings-leak-lint: allow — private wiping checkpoint owner, never an admin response or diagnostic
     settings: Zeroizing<Vec<u8>>,
 }
 
