@@ -1186,7 +1186,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 if let Some(inflow) = self.inflows.get_mut(&stream) {
                     inflow.refused = true;
                 }
-                let refused = framing.emit_head(stream, &[], true, 400);
+                let refused = framing.refuse(Some(stream), &[], 400, false);
                 self.took(refused);
                 let _ = reply.send(false);
                 return;
