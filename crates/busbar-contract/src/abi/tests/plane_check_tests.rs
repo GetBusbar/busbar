@@ -1581,17 +1581,41 @@ fn needs_have_a_known_direction_and_a_transport() {
     let mut n: Need = z();
     n.direction = DIRECTION_OUTBOUND;
     n.transport = s("t");
-    assert_eq!(check_needs(&[n]), Ok(()));
+    assert_eq!(
+        {
+            // SAFETY: this fixture owns the named arrays and bytes; rejected shapes are not read.
+            unsafe { check_needs(&[n]) }
+        },
+        Ok(())
+    );
     let mut bad = n;
     bad.direction = 3;
-    assert_eq!(check_needs(&[bad]), f(Rule::UnknownCode, "need.direction"));
+    assert_eq!(
+        {
+            // SAFETY: this fixture owns the named arrays and bytes; rejected shapes are not read.
+            unsafe { check_needs(&[bad]) }
+        },
+        f(Rule::UnknownCode, "need.direction")
+    );
     let mut bad = n;
     bad.transport = z();
-    assert_eq!(check_needs(&[bad]), f(Rule::Missing, "need.transport"));
+    assert_eq!(
+        {
+            // SAFETY: this fixture owns the named arrays and bytes; rejected shapes are not read.
+            unsafe { check_needs(&[bad]) }
+        },
+        f(Rule::Missing, "need.transport")
+    );
     let mut bad = n;
     bad.details.ptr = null();
     bad.details.len = 1;
-    assert_eq!(check_needs(&[bad]), f(Rule::NullWithCount, "need.details"));
+    assert_eq!(
+        {
+            // SAFETY: this fixture owns the named arrays and bytes; rejected shapes are not read.
+            unsafe { check_needs(&[bad]) }
+        },
+        f(Rule::NullWithCount, "need.details")
+    );
 }
 
 /// A need's kept response head fields: lower-case tokens, bounded; a hop-by-hop or credential
@@ -1608,7 +1632,13 @@ fn a_need_keeps_only_declarable_response_fields() {
     ];
     n.keep_response_headers = kept.as_ptr();
     n.keep_response_headers_len = kept.len();
-    assert_eq!(check_needs(&[n]), Ok(()));
+    assert_eq!(
+        {
+            // SAFETY: this fixture owns the named arrays and bytes; rejected shapes are not read.
+            unsafe { check_needs(&[n]) }
+        },
+        Ok(())
+    );
     for name in [
         "authorization",
         "connection",
@@ -1620,7 +1650,10 @@ fn a_need_keeps_only_declarable_response_fields() {
         b.keep_response_headers = bad.as_ptr();
         b.keep_response_headers_len = 1;
         assert_eq!(
-            check_needs(&[b]),
+            {
+                // SAFETY: this fixture owns the named arrays and bytes; rejected shapes are not read.
+                unsafe { check_needs(&[b]) }
+            },
             f(Rule::Foreign, "need.keep_response_headers"),
             "{name}"
         );
@@ -1630,7 +1663,10 @@ fn a_need_keeps_only_declarable_response_fields() {
     b.keep_response_headers = upper.as_ptr();
     b.keep_response_headers_len = 1;
     assert_eq!(
-        check_needs(&[b]),
+        {
+            // SAFETY: this fixture owns the named arrays and bytes; rejected shapes are not read.
+            unsafe { check_needs(&[b]) }
+        },
         f(Rule::UnknownCode, "need.keep_response_headers")
     );
     let many: Vec<AbiStr> = (0..=KEEP_RESPONSE_HEADERS_MAX).map(|_| s("x")).collect();
@@ -1638,14 +1674,20 @@ fn a_need_keeps_only_declarable_response_fields() {
     b.keep_response_headers = many.as_ptr();
     b.keep_response_headers_len = many.len();
     assert_eq!(
-        check_needs(&[b]),
+        {
+            // SAFETY: this fixture owns the named arrays and bytes; rejected shapes are not read.
+            unsafe { check_needs(&[b]) }
+        },
         f(Rule::OverMax, "need.keep_response_headers")
     );
     let mut b = n;
     b.keep_response_headers = null();
     b.keep_response_headers_len = 1;
     assert_eq!(
-        check_needs(&[b]),
+        {
+            // SAFETY: this fixture owns the named arrays and bytes; rejected shapes are not read.
+            unsafe { check_needs(&[b]) }
+        },
         f(Rule::NullWithCount, "need.keep_response_headers")
     );
 }
@@ -1666,36 +1708,61 @@ fn a_need_keeps_named_fields_or_all_but_denied_ones_and_nothing_else() {
     ];
     n.deny_response_headers = denied.as_ptr();
     n.deny_response_headers_len = denied.len();
-    assert_eq!(check_needs(&[n]), Ok(()));
+    assert_eq!(
+        {
+            // SAFETY: this fixture owns the named arrays and bytes; rejected shapes are not read.
+            unsafe { check_needs(&[n]) }
+        },
+        Ok(())
+    );
     let mut none = n;
     none.deny_response_headers = null();
     none.deny_response_headers_len = 0;
-    assert_eq!(check_needs(&[none]), Ok(()), "an empty deny list");
+    assert_eq!(
+        {
+            // SAFETY: this fixture owns the named arrays and bytes; rejected shapes are not read.
+            unsafe { check_needs(&[none]) }
+        },
+        Ok(()),
+        "an empty deny list"
+    );
 
     let kept = [s("retry-after")];
     let mut both = n;
     both.keep_response_headers = kept.as_ptr();
     both.keep_response_headers_len = 1;
     assert_eq!(
-        check_needs(&[both]),
+        {
+            // SAFETY: this fixture owns the named arrays and bytes; rejected shapes are not read.
+            unsafe { check_needs(&[both]) }
+        },
         f(Rule::Contradiction, "need.keep_response_headers")
     );
     let mut named = both;
     named.keep_mode = KEEP_NAMED;
     assert_eq!(
-        check_needs(&[named]),
+        {
+            // SAFETY: this fixture owns the named arrays and bytes; rejected shapes are not read.
+            unsafe { check_needs(&[named]) }
+        },
         f(Rule::Contradiction, "need.deny_response_headers")
     );
     let mut unknown = none;
     unknown.keep_mode = 2;
     assert_eq!(
-        check_needs(&[unknown]),
+        {
+            // SAFETY: this fixture owns the named arrays and bytes; rejected shapes are not read.
+            unsafe { check_needs(&[unknown]) }
+        },
         f(Rule::UnknownCode, "need.keep_mode")
     );
     let mut padded = none;
     padded._reserved = 1;
     assert_eq!(
-        check_needs(&[padded]),
+        {
+            // SAFETY: this fixture owns the named arrays and bytes; rejected shapes are not read.
+            unsafe { check_needs(&[padded]) }
+        },
         f(Rule::UnknownCode, "need._reserved")
     );
 
@@ -1704,7 +1771,10 @@ fn a_need_keeps_named_fields_or_all_but_denied_ones_and_nothing_else() {
     b.deny_response_headers = upper.as_ptr();
     b.deny_response_headers_len = 1;
     assert_eq!(
-        check_needs(&[b]),
+        {
+            // SAFETY: this fixture owns the named arrays and bytes; rejected shapes are not read.
+            unsafe { check_needs(&[b]) }
+        },
         f(Rule::UnknownCode, "need.deny_response_headers")
     );
     let many: Vec<AbiStr> = (0..=KEEP_RESPONSE_HEADERS_MAX).map(|_| s("x")).collect();
@@ -1712,14 +1782,20 @@ fn a_need_keeps_named_fields_or_all_but_denied_ones_and_nothing_else() {
     b.deny_response_headers = many.as_ptr();
     b.deny_response_headers_len = many.len();
     assert_eq!(
-        check_needs(&[b]),
+        {
+            // SAFETY: this fixture owns the named arrays and bytes; rejected shapes are not read.
+            unsafe { check_needs(&[b]) }
+        },
         f(Rule::OverMax, "need.deny_response_headers")
     );
     let mut b = n;
     b.deny_response_headers = null();
     b.deny_response_headers_len = 1;
     assert_eq!(
-        check_needs(&[b]),
+        {
+            // SAFETY: this fixture owns the named arrays and bytes; rejected shapes are not read.
+            unsafe { check_needs(&[b]) }
+        },
         f(Rule::NullWithCount, "need.deny_response_headers")
     );
 }
@@ -1796,10 +1872,23 @@ fn a_need_names_a_known_egress_class() {
         EGRESS_LOOPBACK_ALLOWED,
     ] {
         n.egress_class = class;
-        assert_eq!(check_needs(&[n]), Ok(()), "class {class}");
+        assert_eq!(
+            {
+                // SAFETY: this fixture owns the named arrays and bytes; rejected shapes are not read.
+                unsafe { check_needs(&[n]) }
+            },
+            Ok(()),
+            "class {class}"
+        );
     }
     n.egress_class = EGRESS_LOOPBACK_ALLOWED + 1;
-    assert_eq!(check_needs(&[n]), f(Rule::UnknownCode, "need.egress_class"));
+    assert_eq!(
+        {
+            // SAFETY: this fixture owns the named arrays and bytes; rejected shapes are not read.
+            unsafe { check_needs(&[n]) }
+        },
+        f(Rule::UnknownCode, "need.egress_class")
+    );
 }
 
 #[test]

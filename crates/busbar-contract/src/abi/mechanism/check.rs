@@ -573,7 +573,18 @@ abi_op! {
 /// # Errors
 ///
 /// The rule a need breaks.
-pub fn check_needs(needs: &[Need]) -> Result<(), Fault> {
+///
+/// # Safety
+/// Every response-header list that passes the pointer/count/alignment bounds points at its
+/// stated initialized `AbiStr` entries, and every nonempty name read from those entries points
+/// at its stated live bytes. Rejected shapes are not dereferenced. All storage remains live and
+/// unwritten for this check. Raw pointer/count fields do not establish that ownership in safe Rust.
+///
+/// ```compile_fail,E0133
+/// use busbar_contract::abi::mechanism::check::check_needs;
+/// let _ = check_needs(&[]);
+/// ```
+pub unsafe fn check_needs(needs: &[Need]) -> Result<(), Fault> {
     needs.iter().try_for_each(check_need)
 }
 
@@ -720,7 +731,9 @@ pub unsafe fn check_statement(st: &Statement) -> Result<(), Fault> {
     {
         return Err(fault(Rule::Contradiction, "statement.sections"));
     }
-    check_needs(unsafe { list(st.needs, st.needs_len, "statement.needs") }?)?;
+    let needs = unsafe { list(st.needs, st.needs_len, "statement.needs") }?;
+    // SAFETY: the caller's Statement contract keeps its nested list entries and names live.
+    unsafe { check_needs(needs) }?;
     text(st.target_from, "statement.target_from")?;
     text(st.trust_from, "statement.trust_from")?;
     for a in unsafe { list(st.answers, st.answers_len, "statement.answers") }? {
