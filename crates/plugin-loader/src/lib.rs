@@ -298,10 +298,8 @@ mod conformance_auth_short_tests;
 #[path = "tests/conformance_auth_unjudged_tests.rs"]
 mod conformance_auth_unjudged_tests;
 
-#[cfg(test)]
-#[allow(unsafe_code)]
-#[path = "tests/conformance_datagram_tests.rs"]
-mod conformance_datagram_tests;
+// The retired datagram harness tested its own string renderer and script judge.
+// Actual transport behavior remains owned by the product tests.
 
 #[cfg(test)]
 #[allow(unsafe_code)]
