@@ -260,11 +260,12 @@ pub fn run(c: &AbiCanaries) -> (Vec<Sink>, Vec<String>) {
     let settings = serde_json::json!({});
     match outbound.serving("api-key", &settings) {
         Ok(Some(serving)) => {
-            let request = || FieldsRequest {
-                method: b"POST".to_vec(),
-                authority: "api.canary.invalid".into(),
-                path: b"/v1/messages".to_vec(),
-                ..FieldsRequest::default()
+            let request = || {
+                let mut request = FieldsRequest::default();
+                request.method = b"POST".to_vec();
+                request.authority = "api.canary.invalid".into();
+                request.path = b"/v1/messages".to_vec();
+                request
             };
             match serving.auth.open_outbound(
                 "api-key",
