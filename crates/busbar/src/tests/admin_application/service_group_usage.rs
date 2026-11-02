@@ -214,7 +214,7 @@ async fn get_group_usage_splits_window_pool_buckets_and_derives_remaining() {
     };
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
         None,
@@ -223,9 +223,16 @@ async fn get_group_usage_splits_window_pool_buckets_and_derives_remaining() {
         (None, None),
         None,
         &rules,
+        None,
+        true,
     )
     .expect("the actual product builds the swap deployment");
-    limits.keep().expect("the product limits commit");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual Store binds the node book and rates");
+    limits
+        .keep()
+        .expect("the product limits commit after the actual book opens");
     if let Some(rotate) = rotate {
         rotate();
     }
@@ -414,7 +421,7 @@ async fn get_group_usage_unknown_group_not_found() {
     };
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
         None,
@@ -423,9 +430,16 @@ async fn get_group_usage_unknown_group_not_found() {
         (None, None),
         None,
         &rules,
+        None,
+        true,
     )
     .expect("the actual product builds the swap deployment");
-    limits.keep().expect("the product limits commit");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual Store binds the node book and rates");
+    limits
+        .keep()
+        .expect("the product limits commit after the actual book opens");
     if let Some(rotate) = rotate {
         rotate();
     }
@@ -573,7 +587,7 @@ async fn get_group_usage_governance_off_zero_usage_caps_projected() {
     };
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
         None,
@@ -582,9 +596,16 @@ async fn get_group_usage_governance_off_zero_usage_caps_projected() {
         (None, None),
         None,
         &rules,
+        None,
+        true,
     )
     .expect("the actual product builds the swap deployment");
-    limits.keep().expect("the product limits commit");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual Store binds the node book and rates");
+    limits
+        .keep()
+        .expect("the product limits commit after the actual book opens");
     if let Some(rotate) = rotate {
         rotate();
     }
