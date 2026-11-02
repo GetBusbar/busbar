@@ -493,7 +493,7 @@ fn a_fake_service_answers_the_sdks_own_calls_as_the_host_does() {
         .serve(fake::host::RECORDS_GET, Records);
     // The SDK's own wrapper, over the tables an `open` would be lent: it stamps every head and
     // judges every answer by the host's checks.
-    let services = Services::of(host.tables_for_tests()).expect("the host offers services");
+    let services = Services::of(host.lent()).expect("the host offers services");
     let handle = CompletionHandle {
         ticket: Ticket::NONE,
         seq: 0,
@@ -552,11 +552,14 @@ fn a_fake_refuses_an_in_of_another_op_a_short_in_and_a_stray_selector_with_fault
     let call = |host: &FakeHost, input: &RecordsGetIn| {
         let mut out: ServiceOut = zeroed();
         let f = host.slots_for_tests().0.records_get.expect("served");
-        f(
-            HostCtx::NONE,
-            ptr::from_ref(input).cast(),
-            ptr::from_mut(&mut out).cast(),
-        )
+        // SAFETY: `input` is the selected slot's live frame and every loan stays live; `out` is exclusive.
+        unsafe {
+            f(
+                HostCtx::NONE,
+                ptr::from_ref(input).cast(),
+                ptr::from_mut(&mut out).cast(),
+            )
+        }
         .outcome()
     };
     // An `in` whose head names another op: the double never runs.
@@ -1074,7 +1077,8 @@ fn io_in(op: u32, buf: &mut [u8]) -> IoIn {
 
 fn served_by(f: crate::abi::host::service::ServiceFn, input: *const c_void) -> Outcome {
     let mut out: ServiceOut = zeroed();
-    f(HostCtx::NONE, input, ptr::from_mut(&mut out).cast()).outcome()
+    // SAFETY: each test passes the frame matching `f`, with live nested loans; `out` is exclusive.
+    unsafe { f(HostCtx::NONE, input, ptr::from_mut(&mut out).cast()) }.outcome()
 }
 
 #[test]
@@ -1491,4 +1495,29 @@ fn the_slot_table_maps_every_slot_of_every_kind_to_its_own_in() {
         super::kit::slot_in_type::<store::Ops>(store::slot::GET_KEY),
         in_of::<store::Ops, { store::slot::GET_KEY }>()
     );
+}
+
+#[test]
+fn safe_host_handles_own_tables_after_the_fake_host_is_dropped() {
+    use crate::abi::sdk::conn::Host;
+    use crate::abi::sdk::services::Services;
+    let (host, services) = {
+        let fake = FakeHost::new().serve(fake::host::CLOCK_NOW, Clock);
+        (Host::of(fake.lent()), Services::of(fake.lent()).unwrap())
+    };
+    // Both constructors copied callable tables rather than erasing a borrow of their boxes.
+    let handle = CompletionHandle {
+        ticket: Ticket::NONE,
+        seq: 0,
+        _reserved: 0,
+    };
+    assert_eq!(services.clock_now(handle).unwrap().mono_ns, 9);
+    assert_eq!(
+        host.services().unwrap().clock_now(handle).unwrap().wall_ns,
+        7
+    );
+    assert!(
+        matches!(host.connector(Ticket::NONE).clock_now(), std::task::Poll::Ready(Ok(r)) if r.mono_ns == 9)
+    );
+    assert!(host.io(Ticket::NONE).armed());
 }

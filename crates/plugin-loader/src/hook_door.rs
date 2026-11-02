@@ -843,7 +843,10 @@ impl HookInstance {
     {
         let inner = Arc::clone(&self.inner);
         Box::pin(async move {
-            let current = Arc::new(Mutex::new(Arc::clone(&frame)));
+            let Some(lent) = frame.try_lend().map(Arc::new) else {
+                return Answered::Broken("hook answer buffers are already in use".into());
+            };
+            let current = Arc::new(Mutex::new(Arc::clone(&lent)));
             let make = {
                 let current = Arc::clone(&current);
                 move || {
@@ -854,13 +857,21 @@ impl HookInstance {
             let regrow = {
                 let current = Arc::clone(&current);
                 move |out: &O| {
-                    let mut c = current.lock().unwrap_or_else(|p| p.into_inner());
-                    let grown = regrown(&c, s, out)?;
-                    *c = Arc::clone(&grown);
+                    let previous = current.lock().unwrap_or_else(|p| p.into_inner()).clone();
+                    let grown = regrown(previous.frame(), s, out)?;
+                    let grown = Arc::new(grown.try_lend()?);
+                    // The SHORT answer ended the old operation before this fresh re-call.
+                    // SAFETY: submit invokes regrow only after receiving the settled answer.
+                    unsafe { previous.complete() };
+                    let retired = {
+                        let mut c = current.lock().unwrap_or_else(|p| p.into_inner());
+                        std::mem::replace(&mut *c, Arc::clone(&grown))
+                    };
+                    drop(retired);
                     Some(grown as Lent)
                 }
             };
-            match inner.submit(s, budget, frame as Lent, make, regrow).await {
+            match inner.submit(s, budget, lent as Lent, make, regrow).await {
                 Ok(done) => {
                     release(&done.plugin, done.lease);
                     if !inner.orders && done.outcome == Outcome::Ready {
@@ -868,7 +879,11 @@ impl HookInstance {
                             return Answered::Broken(refused);
                         }
                     }
-                    let frame = current.lock().unwrap_or_else(|p| p.into_inner()).clone();
+                    let lent = current.lock().unwrap_or_else(|p| p.into_inner()).clone();
+                    // SAFETY: submit returned the terminal answer, after the last crossing.
+                    // Unlike timeout/client drop, this establishes that plugin writes ended.
+                    unsafe { lent.complete() };
+                    let frame = Arc::clone(lent.frame());
                     drop(done.lent);
                     Answered::Answer {
                         outcome: done.outcome,

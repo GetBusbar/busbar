@@ -112,15 +112,18 @@ fn host(end: End) -> Host {
         loans_match: true,
         closed: 0,
     });
-    Host::of(&HostTables {
-        size: std::mem::size_of::<HostTables>() as u32,
-        _reserved: 0,
-        ctx: HostCtx::NONE,
-        wake: None,
-        conns,
-        services: std::ptr::null(),
-        io: std::ptr::null(),
-    })
+    /* SAFETY: these harness tables and callbacks are live for the snapshot. */
+    unsafe {
+        Host::from_raw(&HostTables {
+            size: std::mem::size_of::<HostTables>() as u32,
+            _reserved: 0,
+            ctx: HostCtx::NONE,
+            wake: None,
+            conns,
+            services: std::ptr::null(),
+            io: std::ptr::null(),
+        })
+    }
 }
 
 fn run(host: &Host) -> (Step<Result<(), ConnFailure>>, Parked) {

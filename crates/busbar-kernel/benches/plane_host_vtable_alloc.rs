@@ -37,6 +37,9 @@
 //! `cargo xtask gate hot-path-alloc` enforces that this instrument keeps making the alloc-budget claim; this
 //! file is what measures it.
 
+//! SAFETY for raw clock service calls below: `ClockCall` owns the initialized frame, reading
+//! and exclusive output, and its boxed allocation stays live through every measured call.
+
 use busbar_contract::abi::host::service::{
     op, ClockNowIn, ClockReading, HostSlots, ServiceFn, ServiceHead, ServiceOut, SERVICES,
 };
@@ -157,7 +160,7 @@ fn assert_zero_alloc_pod_batch() {
     ALLOC_COUNT.store(0, Ordering::Relaxed);
     ARMED.store(true, Ordering::Relaxed);
     for _ in 0..100_000u32 {
-        let answered = clock_now(null, black_box(input), black_box(out));
+        let answered = unsafe { clock_now(null, black_box(input), black_box(out)) };
         sink = sink.wrapping_add(u64::from(answered.0));
         if inject {
             // The RED shape: an allocation inside the isolated batch, which the budget forbids.
@@ -185,7 +188,9 @@ fn hot_path_alloc(c: &mut Criterion) {
     let clock_now = vt.clock_now.expect("clock_now slot is armed");
 
     c.bench_function("POD_HOST_CALL_BATCH", |b| {
-        b.iter(|| u64::from(black_box(clock_now(null, black_box(input), black_box(out))).0));
+        b.iter(|| {
+            u64::from(black_box(unsafe { clock_now(null, black_box(input), black_box(out)) }).0)
+        });
     });
 
     // The gating assertion runs once per invocation: any allocation in the armed window takes the

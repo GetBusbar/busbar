@@ -10,7 +10,8 @@
 //!
 //! A service that MAY PEND answers a [`Pend`]: [`Poll::Pending`] means the host holds the call on
 //! the handle's ticket and wakes it; the op answers PENDING and, re-entered, re-issues the SAME
-//! handle to read the stored answer. Nothing here allocates but [`Judged::within`] (the address
+//! handle to read the stored answer. Allocating wrappers are [`Services::hook_call`] (temporary
+//! descriptors for borrowed messages), [`Judged::within`] (the address
 //! set an ESTABLISH takes), the auth handle's three wrappers ([`Services::auth_call`],
 //! [`Services::unit_hand_in`], [`Services::unit_refuse`]), which lend buffers of their own and
 //! answer copies, and [`Services::records_secret`] (a credential's secret, copied into the
@@ -20,6 +21,8 @@
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::task::Poll;
+
+use super::lent::HostSource;
 
 use crate::abi::auth::{FieldSpan, FIELD_QUERY, FIELD_SENSITIVE};
 use crate::abi::hook::{MessageView, PromptView};
@@ -348,10 +351,16 @@ fn copied(s: AbiStr) -> Option<Vec<u8>> {
     Some(unsafe { std::slice::from_raw_parts(s.ptr, s.len) }.to_vec())
 }
 
-/// `Wake` as an instance holds it for its life (status row 194): the host's own tables, read at
-/// `open`. #1471 ties `Wake` to the tables it was read from (`Wake<'t>`) and states this alias as
-/// `Wake<'static>`; a plugin names it where it keeps one (a struct field, a returned handle), and
-/// the same spelling compiles before and after.
+/// A prompt message borrowed for a safe `hook.call` crossing.
+#[derive(Debug, Clone, Copy)]
+pub struct HookMessage<'a> {
+    /// The message role.
+    pub role: &'a str,
+    /// Its flattened text.
+    pub text: &'a str,
+}
+
+/// An owned wake function and opaque host context, retained by an instance.
 pub type StaticWake = Wake;
 
 /// THE HOST'S WAKE, as `open` handed it (`HostTables::wake`): an instance holding work of its own
@@ -372,25 +381,25 @@ unsafe impl Sync for Wake {}
 impl Wake {
     /// The wake in the tables `open` handed the instance; `None` when the host handed none.
     #[must_use]
-    pub fn of(tables: &HostTables) -> Option<Self> {
+    pub fn of(tables: impl HostSource) -> Option<Self> {
+        let tables = tables.tables();
         tables.wake.map(|wake| Self {
             ctx: tables.ctx,
             wake,
         })
     }
 
-    /// The same as `of`, for a host or harness that holds the tables raw (status row 159): #1469
-    /// makes `of` take the tables as a `Lent` and keeps this `unsafe` door for raw tables, so a
-    /// caller that names it here compiles there too.
+    /// Read a wake function from raw host tables.
     ///
     /// # Safety
-    ///
-    /// `tables` are the tables a real host lent this instance's `open`: `ctx` the host's own for
-    /// that instance, `wake` the host's, and each table pointer NULL or the host's live table, all
-    /// valid for every use of the value.
+    /// The wake remains callable while the result is used and checks opaque context handles
+    /// before accessing host state, including after the original table allocation is dropped.
     #[must_use]
     pub unsafe fn from_raw(tables: &HostTables) -> Option<Self> {
-        Self::of(tables)
+        tables.wake.map(|wake| Self {
+            ctx: tables.ctx,
+            wake,
+        })
     }
 
     /// Wake `ticket`.
@@ -399,47 +408,39 @@ impl Wake {
     }
 }
 
-/// `Services` as an instance holds it for its life (status row 194): the host's own tables, read at
-/// `open`. #1471 ties `Services` to the tables it was read from (`Services<'t>`) and states this alias as
-/// `Services<'static>`; a plugin names it where it keeps one (a struct field, a returned handle), and
-/// the same spelling compiles before and after.
+/// An owned service table snapshot retained by an instance.
 pub type StaticServices = Services;
 
-/// The host services an instance was opened with: its context and the table.
+/// The host context and an owned copy of its advertised service functions.
 #[derive(Debug, Clone, Copy)]
 pub struct Services {
     ctx: HostCtx,
-    table: *const HostSlots,
+    table: HostSlots,
 }
 
-// SAFETY: the table is the host's static and the context an opaque `u64` handle (#74); the host
-// states both are usable from any thread for the instance's life.
-unsafe impl Send for Services {}
-// SAFETY: as above.
-unsafe impl Sync for Services {}
-
 impl Services {
-    /// The services in the tables `open` handed the instance; `None` when the host offers none.
+    /// Copy the services proved by a typed lifecycle loan; absent or short tables offer none.
     #[must_use]
-    pub fn of(tables: &HostTables) -> Option<Self> {
-        (!tables.services.is_null()).then_some(Self {
-            ctx: tables.ctx,
-            table: tables.services,
-        })
+    pub fn of(tables: impl HostSource) -> Option<Self> {
+        // SAFETY: the sealed loan proves the advertised nested prefix and callback contract.
+        unsafe { Self::from_raw(tables.tables()) }
     }
 
-    /// The same as `of`, for a host or harness that holds the tables raw (status row 159): #1469
-    /// makes `of` take the tables as a `Lent` and keeps this `unsafe` door for raw tables, so a
-    /// caller that names it here compiles there too.
+    pub(super) const fn from_snapshot(ctx: HostCtx, table: HostSlots) -> Self {
+        Self { ctx, table }
+    }
+
+    /// Copy the service table from raw host tables.
     ///
     /// # Safety
-    ///
-    /// `tables` are the tables a real host lent this instance's `open`: `ctx` the host's own for
-    /// that instance, `wake` the host's, and each table pointer NULL or the host's live table, all
-    /// valid for every use of the value.
+    /// The non-NULL service table points to a readable size word and its advertised prefix
+    /// during this call. Its callbacks remain callable while the result is used, obey the
+    /// service ABI, and validate opaque context handles before accessing host state.
     #[must_use]
     pub unsafe fn from_raw(tables: &HostTables) -> Option<Self> {
-        Self::of(tables)
+        // SAFETY: the caller proves the advertised prefix and callback contract.
+        unsafe { super::conn::snapshot_services(tables.services) }
+            .map(|table| Self::from_snapshot(tables.ctx, table))
     }
 
     /// `clock.now`: the kernel's one clock, wall and monotonic, so a plugin reads no clock of its
@@ -1462,15 +1463,31 @@ impl Services {
     /// `HOOK_REWRITE`, a rewrite chain resumed at `from` (`0`, or the last [`Hooked::Rewrote`]'s
     /// `resume`) — over the prompt `system` and `messages`. Ready: [`Hooked`], its bytes a view into
     /// the caller's `buf`. An `in` that breaks `check_hook_call_in` is REFUSED here, before the host
-    /// is called. May pend, so callable only from a ticketed op.
+    /// is called. May pend, so callable only from a ticketed op. Borrowed messages prove every
+    /// nested string remains live; their temporary ABI descriptors are copied before Pending.
+    ///
+    /// ```compile_fail,E0308
+    /// use busbar_contract::abi::{hook::MessageView, sdk::services::Services,
+    ///     mechanism::ticket::CompletionHandle};
+    /// fn forged(s: &Services, h: CompletionHandle, raw: &[MessageView], b: &mut [u8]) {
+    ///     let _ = s.hook_call(h, (1, 0), None, raw, b);
+    /// }
+    /// ```
     pub fn hook_call<'b>(
         &self,
         handle: CompletionHandle,
         (stage, from): (u32, u32),
         system: Option<&str>,
-        messages: &[MessageView],
+        messages: &[HookMessage<'_>],
         buf: &'b mut [u8],
     ) -> Pend<Hooked<'b>> {
+        let messages: Vec<MessageView> = messages
+            .iter()
+            .map(|m| MessageView {
+                role: text(m.role),
+                text: text(m.text),
+            })
+            .collect();
         let prompt = PromptView {
             system: system.map_or(NO_TEXT, text),
             message_count: messages.len() as u64,
@@ -1775,16 +1792,23 @@ impl Services {
         service: u32,
         pick: fn(&HostSlots) -> Option<ServiceFn>,
         input: &I,
-        check: fn(&I, RawOutcome, &ServiceOut) -> Result<Filled, Fault>,
+        check: unsafe fn(&I, RawOutcome, &ServiceOut) -> Result<Filled, Fault>,
     ) -> Result<(Outcome, ServiceOut, Filled), ServiceError> {
         let slot = self.slot(service, pick)?;
         let mut out = blank_out();
-        let ret = slot(
-            self.ctx,
-            std::ptr::from_ref(input).cast::<c_void>(),
-            &mut out,
-        );
-        let filled = check(input, ret, &out).map_err(|_| ServiceError::Broken)?;
+        // SAFETY: the SDK-built input, its buffers, and out remain live during this crossing.
+        // A service must copy retained work before returning Pending.
+        let ret = unsafe {
+            slot(
+                self.ctx,
+                std::ptr::from_ref(input).cast::<c_void>(),
+                &mut out,
+            )
+        };
+        // SAFETY: every caller builds `input` from its own live initialized answer slots and
+        // borrowed output slices. The trusted host writes only those buffers during `slot`;
+        // they remain live and unwritten while the validator reads the reported answer.
+        let filled = unsafe { check(input, ret, &out) }.map_err(|_| ServiceError::Broken)?;
         Ok((ret.outcome(), out, filled))
     }
 
@@ -1794,8 +1818,7 @@ impl Services {
         service: u32,
         pick: fn(&HostSlots) -> Option<ServiceFn>,
     ) -> Result<ServiceFn, ServiceError> {
-        // SAFETY: `table` is the host's live table, non-NULL by construction.
-        let table = unsafe { &*self.table };
+        let table = &self.table;
         if table.slots <= service {
             return Err(ServiceError::Unserved);
         }
