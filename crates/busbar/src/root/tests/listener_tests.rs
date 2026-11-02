@@ -754,13 +754,43 @@ fn gen_self_signed() -> (String, String) {
     (cert.pem(), signing_key.serialize_pem())
 }
 
+fn tls_fixture_resolver(
+    tls: &busbar_kernel::config::sections::TlsCfg,
+) -> busbar_kernel::config::secret::SecretResolver {
+    let bindings: Vec<_> = [&tls.cert, &tls.key]
+        .into_iter()
+        .chain(tls.client_ca.iter())
+        .map(|reference| {
+            assert_eq!(reference.module, "file");
+            let path = reference.settings["path"].as_str().unwrap();
+            let material = std::fs::read(path)
+                .map(busbar_kernel::config::secret::Held::new)
+                .map_err(|error| format!("cannot read fixture {path}: {error}"));
+            (
+                reference.module.clone(),
+                serde_json::Value::Object(reference.settings.clone()).to_string(),
+                material,
+            )
+        })
+        .collect();
+    busbar_kernel::config::secret::SecretResolver::with_plugin(Box::new(move |module, settings| {
+        bindings
+            .iter()
+            .find(|(bound_module, bound_settings, _)| {
+                bound_module == module && bound_settings == settings
+            })
+            .map(|(_, _, material)| material.clone())
+            .unwrap_or_else(|| Err("unbound TLS fixture reference".into()))
+    }))
+}
+
 async fn spawn_tls_server(
     tls: &busbar_kernel::config::sections::TlsCfg,
 ) -> (SocketAddr, tokio::sync::oneshot::Sender<()>) {
     let security = busbar_core_connector::tls::prepare(
         "engine-tls test",
         Some(tls),
-        &busbar_kernel::config::secret::SecretResolver::builtins_only(),
+        &tls_fixture_resolver(tls),
         true,
     )
     .expect("valid test TLS config");
@@ -1187,4 +1217,56 @@ async fn shutdown_retires_the_listening_socket_before_an_accepted_request_finish
     );
     assert!(response.starts_with(b"HTTP/1.1 200"), "{response:?}");
     assert!(response.windows(8).any(|bytes| bytes == b"finished"));
+}
+
+#[test]
+fn tls_fixture_bindings_preserve_unbound_and_missing_file_refusals() {
+    use busbar_contract::secret::SecretResolve;
+
+    let (cert_pem, key_pem) = gen_self_signed();
+    let tls = busbar_kernel::config::sections::TlsCfg {
+        cert: file(&temp_pem("bound-cert", &cert_pem)),
+        key: file(&temp_pem("bound-key", &key_pem)),
+        client_ca: None,
+    };
+    let resolver = tls_fixture_resolver(&tls);
+    busbar_core_connector::tls::prepare("bound TLS fixture", Some(&tls), &resolver, true)
+        .expect("the explicitly bound PEM files build a TLS configuration");
+    let mut unbound = tls.cert.clone();
+    unbound.module = "outside-this-tls-fixture".into();
+    let scope = busbar_contract::config_time::ConfigScope::config_time();
+    let error = resolver
+        .resolve_at_config(&unbound, &scope)
+        .expect_err("an unbound module is refused");
+    assert!(
+        error.text.contains("unbound TLS fixture reference"),
+        "{error:?}"
+    );
+
+    let missing_path = temp_pem("missing-cert", &cert_pem);
+    std::fs::remove_file(&missing_path).unwrap();
+    let missing = busbar_kernel::config::sections::TlsCfg {
+        cert: file(&missing_path),
+        key: tls.key,
+        client_ca: None,
+    };
+    let missing_resolver = tls_fixture_resolver(&missing);
+    let error = missing_resolver
+        .resolve_at_config(&missing.cert, &scope)
+        .expect_err("a missing bound file is refused");
+    assert!(
+        error.text.contains(missing_path.to_str().unwrap()),
+        "{error:?}"
+    );
+    assert!(
+        !error.text.contains("unbound TLS fixture reference"),
+        "{error:?}"
+    );
+    assert!(busbar_core_connector::tls::prepare(
+        "missing TLS fixture",
+        Some(&missing),
+        &missing_resolver,
+        true,
+    )
+    .is_err());
 }
