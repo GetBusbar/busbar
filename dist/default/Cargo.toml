@@ -849,7 +849,7 @@ members = ["."]
 # THE LLM PLANE, pinned from its own repo like every other plane. da2ab5f (stuck3-1427-journal) is
 # e154678 plus its held-cell test reading the rig's node journal (busbar #1427: the node amendment
 # journal is an instance the node owns; `node_recent` is gone).
-busbar-plane-llm = { git = "https://git.getbusbar.dev/GetBusbar/busbar-plane-llm", rev = "b5b2129cc1f0075bf033ab42e68eb8edb2ae7d91" }
+busbar-plane-llm = { git = "https://git.getbusbar.dev/GetBusbar/busbar-plane-llm", rev = "ee865f585812b453edd5c57164891f5224539749" }
 # ── External plugin crates: ONE pin each (ONE HOME PER FACT); members use `workspace = true` ──
 busbar-auth-admin-tokens = { git = "https://git.getbusbar.dev/GetBusbar/busbar-auth-admin-tokens", rev = "01b5fb9befb0e96737c3d3a42cc7e499e2ff80c3" }
 busbar-auth-admin-tokens-plugin = { git = "https://git.getbusbar.dev/GetBusbar/busbar-auth-admin-tokens", rev = "01b5fb9befb0e96737c3d3a42cc7e499e2ff80c3" }
@@ -956,7 +956,7 @@ busbar-plane-mcp = { git = "https://git.getbusbar.dev/GetBusbar/busbar-plane-mcp
 # THE DECISIONS PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the
 # decisions plane's door row (`plane-decisions`, `busbar_plane_decisions::door`). Its
 # dropped-in cdylib twin (`busbar-plane-decisions-plugin`) and its gates live in that repo's plugin CI.
-busbar-plane-decisions = { git = "https://git.getbusbar.dev/GetBusbar/busbar-plane-decisions", rev = "c0bd93169de6b2d2a4239424090cdf1ff2b53292" }
+busbar-plane-decisions = { git = "https://git.getbusbar.dev/GetBusbar/busbar-plane-decisions", rev = "0cebb82461db6d98a92b859c222e0e8c5442304d" }
 # THE A2A PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the a2a
 # plane's door row (`plane-a2a-door`, `busbar_plane_a2a::door`), whose own root cells it
 # states under its `links` name. Its dropped-in cdylib twin (`busbar-plane-a2a-plugin`) and its gates
