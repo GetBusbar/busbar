@@ -246,6 +246,37 @@ impl RecoveryEvent {
     }
 
     pub fn follows(&self, previous: Option<&Self>) -> Result<(), RecoveryError> {
+        RecoveryLink::from_event(self).follows(previous)
+    }
+}
+
+/// Metadata from an actually decoded and verified event, retained while a cold
+/// ancestry scan releases historical payloads. It is never an application event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecoveryLink {
+    pub operation_id: [u8; 16],
+    pub revision: u64,
+    pub previous_event: Option<[u8; 32]>,
+    pub kind: RecoveryKind,
+    pub body_fingerprint: [u8; 32],
+    pub state: RecoveryState,
+    pub first_sent_at_ms: Option<u64>,
+}
+
+impl RecoveryLink {
+    pub fn from_event(event: &RecoveryEvent) -> Self {
+        Self {
+            operation_id: event.operation_id,
+            revision: event.revision,
+            previous_event: event.previous_event,
+            kind: event.kind,
+            body_fingerprint: event.body_fingerprint,
+            state: event.state,
+            first_sent_at_ms: event.first_sent_at_ms,
+        }
+    }
+
+    pub fn follows(&self, previous: Option<&RecoveryEvent>) -> Result<(), RecoveryError> {
         let invalid = || RecoveryError::Invalid("invalid recovery transition chain".into());
         let Some(previous) = previous else {
             return if self.revision == 0
