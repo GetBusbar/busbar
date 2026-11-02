@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Instant;
 
-type Step = Box<dyn FnOnce(Option<&Across>) -> LineStep + Send>;
+type Step = Box<dyn FnOnce(Option<&Across>) -> Result<LineStep, Refused> + Send>;
 
 /// A leg whose crossings are scripted: each `poll_line` records its input and runs the next
 /// scripted step (with no sink lock held, so a step may re-enter the pairing); an exhausted script
@@ -29,7 +29,10 @@ struct Script {
 
 impl Script {
     fn then(&self, step: impl FnOnce(Option<&Across>) -> LineStep + Send + 'static) {
-        self.steps.lock().unwrap().push_back(Box::new(step));
+        self.steps
+            .lock()
+            .unwrap()
+            .push_back(Box::new(move |input| Ok(step(input))));
     }
 
     fn crossed(&self) -> Vec<Option<Across>> {
@@ -51,7 +54,7 @@ impl LegSink for Script {
     ) -> Poll<Result<LineStep, Refused>> {
         self.inputs.lock().unwrap().push(input.cloned());
         let step = self.steps.lock().unwrap().pop_front();
-        Poll::Ready(Ok(step.map_or(LineStep::Complete, |step| step(input))))
+        Poll::Ready(step.map_or(Ok(LineStep::Complete), |step| step(input)))
     }
 
     fn channels(&self, mut batch: SessionBatch, _: Instant) -> Result<(), String> {
@@ -813,5 +816,154 @@ fn a_ready_batch_after_reentrant_close_counts_taken_source_and_cancels_its_line_
         upstream.crossed().is_empty(),
         "no destination crosses output after reentrant close"
     );
+    assert_eq!(pairing.memory_account().used(), 0);
+}
+
+#[test]
+fn fixed_channel_outputs_from_application_and_bridged_line_inputs_publish_once_in_order() {
+    let caller = Arc::new(Script::default());
+    let upstream = Arc::new(Script::default());
+    let pairing = bridged(&caller, &upstream);
+    let weak = Arc::downgrade(&pairing);
+    caller.then(move |input| {
+        assert_eq!(input.unwrap().bytes, b"application");
+        // A concrete other-leg publication arrives while this source crossing
+        // owns the actor. It must follow the current source's channel output.
+        let session = weak.upgrade().unwrap().publish(
+            Leg::Upstream,
+            {
+                let mut y = Yielded::default();
+                y.pieces = vec![got(20, b"line frame", false)];
+                y
+            },
+            Instant::now(),
+        );
+        assert!(
+            session.pieces.is_empty(),
+            "the LINE stays out of the upstream session"
+        );
+        LineStep::Batch {
+            yielded: {
+                let mut y = Yielded::default();
+                y.pieces = vec![got(99, b"application output", false)];
+                y
+            },
+            accepted: true,
+        }
+    });
+    caller.then(|input| {
+        let input = input.expect("the queued LINE crosses after the application input");
+        assert_eq!(
+            (input.stream, input.bytes.as_slice()),
+            (10, b"line frame".as_slice())
+        );
+        LineStep::Batch {
+            yielded: {
+                let mut y = Yielded::default();
+                y.pieces = vec![got(99, b"line output", false)];
+                y
+            },
+            accepted: true,
+        }
+    });
+    let custody = pairing.reserve_input_for(Leg::Caller, 11).unwrap();
+    pairing
+        .submit_owned(
+            Leg::Caller,
+            Across {
+                stream: 1,
+                bytes: b"application".to_vec(),
+                end_of_frame: true,
+            },
+            false,
+            custody,
+        )
+        .unwrap();
+    let outcome = drive(&pairing, &caller);
+    assert!(outcome.failure.is_none());
+    assert_eq!(
+        *caller.messages.lock().unwrap(),
+        vec![b"application output".to_vec(), b"line output".to_vec()]
+    );
+    assert!(upstream.messages.lock().unwrap().is_empty());
+    assert_eq!(
+        caller
+            .crossed()
+            .into_iter()
+            .flatten()
+            .map(|across| across.bytes)
+            .collect::<Vec<_>>(),
+        vec![b"application".to_vec(), b"line frame".to_vec()]
+    );
+    assert_eq!(
+        (
+            outcome.original_bytes,
+            outcome.original_handed_bytes,
+            outcome.accepted_frames,
+            outcome.handed_frames,
+            outcome.cancelled_frames
+        ),
+        (11, 11, 1, 1, 0)
+    );
+    pairing.close();
+}
+
+#[test]
+fn refusal_of_the_first_preaccepted_source_cancels_later_sources_without_crossing_them() {
+    let caller = Arc::new(Script::default());
+    let pairing = pairing_over(&caller, Some(1 << 20));
+    caller.steps.lock().unwrap().push_back(Box::new(|input| {
+        assert_eq!(input.unwrap().bytes, b"first accepted");
+        Err(Refused {
+            outcome: Outcome::Refused,
+            error: "bounded producer refusal".into(),
+        })
+    }));
+    for bytes in [b"first accepted".as_slice(), b"later accepted"] {
+        let custody = pairing.reserve_input_for(Leg::Caller, bytes.len()).unwrap();
+        assert!(pairing.retain_input(bytes.len()));
+        pairing
+            .submit_preaccepted_owned(
+                Leg::Caller,
+                Across {
+                    stream: 1,
+                    bytes: bytes.to_vec(),
+                    end_of_frame: true,
+                },
+                false,
+                custody,
+                bytes.len(),
+                None,
+            )
+            .unwrap();
+    }
+    let outcome = drive(&pairing, &caller);
+    assert!(pairing.closed());
+    assert_eq!(outcome.failure.as_deref(), Some("bounded producer refusal"));
+    assert_eq!(
+        (
+            outcome.original_bytes,
+            outcome.original_handed_bytes,
+            outcome.original_cancelled_bytes,
+            outcome.original_uncertain_bytes
+        ),
+        (28, 0, 28, 0)
+    );
+    assert_eq!(
+        caller
+            .crossed()
+            .into_iter()
+            .flatten()
+            .map(|across| across.bytes)
+            .collect::<Vec<_>>(),
+        vec![b"first accepted".to_vec()]
+    );
+    assert!(!crate::support::worker().block_on(pairing.send(
+        Leg::Caller,
+        1,
+        b"after refusal",
+        false
+    )));
+    assert_eq!(pairing.publication_outcome(), outcome);
     assert_eq!(pairing.memory_account().used(), 0);
 }
