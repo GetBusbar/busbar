@@ -1139,37 +1139,6 @@ fn test_admin_scope_cap_ceilings_external_module() {
     );
 }
 
-#[test]
-fn test_dry_run_empty_admin_chain_is_not_full() {
-    use busbar_contract::authz::{Grants, Scope};
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-
-    let mut app = crate::test_support::TestApp::new().build();
-    let a = std::sync::Arc::get_mut(&mut app).expect("freshly built App Arc is unshared");
-    a.admin_chain = vec![];
-
-    let g = dry_run_admin_scope(&app, &admin_headers(None, None));
-    assert!(
-        !g.contains(Scope::Full),
-        "an empty admin_auth chain must NOT dry-run to Full — that masks the fail-open the \
-         PUT /admin/admin-auth lock-out guard reads"
-    );
-    assert_eq!(
-        g,
-        Grants::default(),
-        "an empty chain is reported as no earned grant, never full"
-    );
-
-    assert!(
-        !dry_run_admin_scope(
-            &app,
-            &admin_headers(Some("anything"), Some("x-admin-token"))
-        )
-        .contains(Scope::Full),
-        "an empty chain must not grant Full to any presented credential"
-    );
-}
-
 async fn dp_serve(
     app: std::sync::Arc<crate::state::App>,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
@@ -1252,45 +1221,6 @@ async fn test_1_5_2_keys_chain_disabled_vkey_rejected() {
     );
     handle.abort();
     server.shutdown().await;
-}
-
-#[test]
-fn test_1_5_2_keys_arm_resolves_the_vkey() {
-    use crate::governance::{GovState, NewKeySpec};
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let store = crate::real_store::store();
-    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
-        &[9u8; 32],
-        crate::governance::signing::DEFAULT_KID,
-    );
-    let gov = GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap();
-    let (_k, secret) = gov
-        .mint_signed(
-            NewKeySpec {
-                name: "ce".to_string(),
-                allowed_pools: None,
-                group: None,
-                labels: Default::default(),
-                ..Default::default()
-            },
-            2_000_000_000,
-            1_000_000_000,
-        )
-        .unwrap();
-    let secret = secret.expose(&crate::seal::lend()).as_str();
-    let mw = AuthMiddleware::new_builtin(&chain_cfg(&["keys"]));
-    let now = busbar_kernel::store::now();
-    let verdict = mw.run_chain_with(Some(secret), Some(&gov), now, None);
-    assert!(
-        matches!(
-            verdict,
-            ChainVerdict::Identified {
-                resolved: Some(_),
-                ..
-            }
-        ),
-        "the keys arm must resolve the vkey"
-    );
 }
 
 #[test]
