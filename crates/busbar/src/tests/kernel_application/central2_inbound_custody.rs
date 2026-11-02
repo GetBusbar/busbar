@@ -168,6 +168,7 @@ async fn actual_inbound_foreign_binding_and_session_custody() {
         signed_ingress: Arc::new(|_, _| false),
         scope: None,
     };
+    inbound.install(7, 3, listener(Arc::clone(&app))).unwrap();
     inbound
         .install_at(7, 71, 3, listener(Arc::clone(&app)))
         .unwrap();
