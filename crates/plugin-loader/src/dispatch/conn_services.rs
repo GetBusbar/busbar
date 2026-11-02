@@ -195,15 +195,50 @@ fn slot<R: Into<Kept>>(
         let Some(wake) = super::handle::resolve(ctx) else {
             return refusal(ConnError::Unarmed);
         };
-        let binding = super::export_bindings::current();
-        let Some((id, table)) = binding
-            .as_ref()
-            .map_or_else(|| wake.conn.get(), |binding| binding.conn.as_ref())
-        else {
+        let st = &wake.conn_state;
+        let authority = if service == service::IDENTITY {
+            wake.conn.get().map(|conn| Authority {
+                conn: conn.clone(),
+                binding: None,
+            })
+        } else {
+            let creating = if service == service::ESTABLISH {
+                st.dial_authority(head.handle.ticket)
+            } else if matches!(
+                service,
+                service::READ
+                    | service::WRITE
+                    | service::UPGRADE_SECURE
+                    | service::FACTS
+                    | service::CLOSE
+                    | service::READ_REPLY
+                    | service::WRITE_REQUEST
+            ) {
+                // SAFETY: each checked service input has the same leading ServiceHead/stream
+                // layout as StreamIn, and its required size covers that prefix.
+                let stream = unsafe { input.cast::<StreamIn>().read_unaligned() }.stream;
+                st.stream_authority(stream)
+            } else {
+                None
+            };
+            creating.or_else(|| {
+                let binding = super::export_bindings::current();
+                let conn = binding
+                    .as_ref()
+                    .map_or_else(|| wake.conn.get(), |binding| binding.conn.as_ref())?
+                    .clone();
+                Some(Authority { conn, binding })
+            })
+        };
+        let Some(authority) = authority else {
             return refusal(ConnError::Unarmed);
         };
-        let st = &wake.conn_state;
-        let run = || -> Kept { body(*id, table, st, head).into() };
+        let (id, table) = &authority.conn;
+        let run = || -> Kept {
+            super::export_bindings::crossing(authority.binding.clone(), || {
+                body(*id, table, st, head).into()
+            })
+        };
 
         if service == service::IDENTITY {
             return run().answer;
@@ -300,6 +335,7 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
                 st.streams().insert(
                     stream,
                     Stream {
+                        authority: Authority::capture(id, table),
                         conn: Conn::Held {
                             need: NeedId(i.need),
                             target: target.into_owned(),
@@ -342,16 +378,23 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
             };
 
             if ticket.is_none() {
-                st.record_raw(conn, need_timeout_ms);
+                st.record_raw(id, table, conn, need_timeout_ms);
                 return Answered::ready(conn.0, 0);
             }
             match table.landed(id, conn, conn_ticket(ticket)) {
                 Ok(()) => {
-                    st.record_raw(conn, need_timeout_ms);
+                    st.record_raw(id, table, conn, need_timeout_ms);
                     Answered::ready(conn.0, 0)
                 }
                 Err(ConnError::Pending) => {
-                    lock(&st.dialling).insert(ticket, (wanted, conn));
+                    lock(&st.dialling).insert(
+                        ticket,
+                        Dial {
+                            wanted,
+                            conn,
+                            authority: Authority::capture(id, table),
+                        },
+                    );
                     refusal(ConnError::Pending)
                 }
                 Err(e) => {
@@ -369,19 +412,22 @@ type Wanted = (NeedId, String, Vec<IpAddr>, String, u64);
 impl ConnState {
     fn dialling(
         &self,
-        id: InstanceId,
-        table: &Arc<dyn DeclaredConns>,
+        _id: InstanceId,
+        _table: &Arc<dyn DeclaredConns>,
         ticket: Ticket,
         wanted: &Wanted,
     ) -> Option<ConnId> {
         if ticket.is_none() {
             return None;
         }
-        let (asked, conn) = lock(&self.dialling).remove(&ticket)?;
-        if &asked == wanted {
-            return Some(conn);
+        let dial = lock(&self.dialling).remove(&ticket)?;
+        if &dial.wanted == wanted {
+            return Some(dial.conn);
         }
-        let _ = table.close(id, conn);
+        let (owner, creating_table) = &dial.authority.conn;
+        let _ = creating_table.close(*owner, dial.conn);
+        // The dial's generation remains live through close, outside the state lock.
+        drop(dial);
         None
     }
 
@@ -389,31 +435,99 @@ impl ConnState {
         drop(self.take_dialling(table, gone));
     }
 
-    fn take_dialling(&self, table: Option<&ArmedConns>, gone: impl Fn(&Ticket) -> bool) -> Closes {
-        let left: Vec<ConnId> = {
+    fn take_dialling(&self, _table: Option<&ArmedConns>, gone: impl Fn(&Ticket) -> bool) -> Closes {
+        let dials = {
             let mut all = lock(&self.dialling);
             let keys: Vec<Ticket> = all.keys().filter(|k| gone(k)).copied().collect();
-            keys.iter()
-                .filter_map(|k| all.remove(k).map(|(_, conn)| conn))
-                .collect()
+            keys.iter().filter_map(|k| all.remove(k)).collect()
         };
         let waits = self.take_waits(|handle, _| gone(&handle.ticket));
-        Closes(table.filter(|_| !left.is_empty()).cloned(), left, waits)
+        Closes {
+            dials,
+            streams: Vec::new(),
+            waits,
+        }
+    }
+
+    fn stream_authority(&self, stream: u64) -> Option<Authority> {
+        self.streams().get(&stream).map(|s| s.authority.clone())
+    }
+
+    fn dial_authority(&self, ticket: Ticket) -> Option<Authority> {
+        lock(&self.dialling)
+            .get(&ticket)
+            .map(|d| d.authority.clone())
+    }
+
+    /// Detach only the candidate's resources. Dropping the returned owner closes connections
+    /// and auth calls without holding any ConnState lock, before releasing their generations.
+    pub(crate) fn retire_binding(
+        &self,
+        binding: &Arc<super::export_bindings::Generation>,
+    ) -> Closes {
+        let streams: Vec<_> = {
+            let mut all = self.streams();
+            let keys: Vec<_> = all
+                .iter()
+                .filter(|(_, stream)| stream.authority.belongs_to(binding))
+                .map(|(key, _)| *key)
+                .collect();
+            keys.into_iter()
+                .filter_map(|key| all.remove(&key).map(|s| (key, s)))
+                .collect()
+        };
+        let dials = {
+            let mut all = lock(&self.dialling);
+            let keys: Vec<_> = all
+                .iter()
+                .filter(|(_, dial)| dial.authority.belongs_to(binding))
+                .map(|(key, _)| *key)
+                .collect();
+            keys.into_iter()
+                .filter_map(|key| all.remove(&key))
+                .collect()
+        };
+        {
+            let mut facts = lock(&self.facts);
+            for (key, _) in &streams {
+                facts.remove(key);
+            }
+        }
+        let waits = self.take_waits(|_, wait| {
+            wait.binding
+                .as_ref()
+                .is_some_and(|creating| Arc::ptr_eq(creating, binding))
+        });
+        Closes {
+            dials,
+            streams: streams.into_iter().map(|(_, s)| s).collect(),
+            waits,
+        }
     }
 }
 
-#[must_use = "dropped, it closes its dials at once"]
-pub(crate) struct Closes(Option<ArmedConns>, Vec<ConnId>, Vec<ReplyWait>);
+#[must_use = "dropped, it closes its connections outside the state locks"]
+#[derive(Default)]
+pub(crate) struct Closes {
+    dials: Vec<Dial>,
+    streams: Vec<Stream>,
+    waits: Vec<ReplyWait>,
+}
 
 impl Drop for Closes {
     fn drop(&mut self) {
-        if let Some((id, table)) = &self.0 {
-            for conn in self.1.drain(..) {
-                let _ = table.close(*id, conn);
-            }
+        for dial in self.dials.drain(..) {
+            let (owner, table) = &dial.authority.conn;
+            let _ = table.close(*owner, dial.conn);
         }
-        let waits = std::mem::take(&mut self.2);
-        drop(waits);
+        for stream in self.streams.drain(..) {
+            if let Conn::Open(conn) = &stream.conn {
+                let (owner, table) = &stream.authority.conn;
+                let _ = table.close(*owner, *conn);
+            }
+            // In-flight auth is dropped here too; its generation outlives the fielding call.
+        }
+        self.waits.clear();
     }
 }
 
@@ -672,6 +786,42 @@ service!(
 
 type ArmedConns = (InstanceId, Arc<dyn DeclaredConns>);
 
+/// A connection retains the declarations and authority which created it, across publication.
+#[derive(Clone)]
+struct Authority {
+    conn: ArmedConns,
+    binding: Option<Arc<super::export_bindings::Generation>>,
+}
+
+impl Authority {
+    fn capture(id: InstanceId, table: &Arc<dyn DeclaredConns>) -> Self {
+        Self {
+            conn: (id, table.clone()),
+            binding: super::export_bindings::current(),
+        }
+    }
+
+    fn belongs_to(&self, binding: &Arc<super::export_bindings::Generation>) -> bool {
+        self.binding
+            .as_ref()
+            .is_some_and(|creating| Arc::ptr_eq(creating, binding))
+    }
+}
+
+impl std::fmt::Debug for Authority {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Authority")
+            .field("owner", &self.conn.0)
+            .finish_non_exhaustive()
+    }
+}
+
+struct Dial {
+    wanted: Wanted,
+    conn: ConnId,
+    authority: Authority,
+}
+
 /// WHAT THE CONNECTOR HOLDS FOR ONE INSTANCE, on the instance's own [`InstanceWake`] (where every
 /// slot call already resolves its context), so no instance's connector calls wait on another's
 /// lock. Each lock is held only to read or swap an entry, never across a call that can run plugin
@@ -691,7 +841,7 @@ pub(crate) struct ConnState {
     facts: Mutex<HeldFacts>,
     /// THE DIALS IN FLIGHT: an `ESTABLISH` on a ticket that answered PENDING while its dial
     /// connects, by ticket, closed on the instance's table when the ticket moves on without it.
-    dialling: Mutex<HashMap<Ticket, (Wanted, ConnId)>>,
+    dialling: Mutex<HashMap<Ticket, Dial>>,
     /// Every ticketed service's answer ([`Kept`]), by ticket, then by the handle's issue order.
     kept: Mutex<HashMap<Ticket, HashMap<u32, Kept>>>,
     /// Each pending read's original bound, by full completion identity, never restarted by poll.
@@ -701,6 +851,7 @@ pub(crate) struct ConnState {
 #[derive(Clone)]
 struct ReplyWait {
     stream: u64,
+    binding: Option<Arc<super::export_bindings::Generation>>,
     at: std::time::Instant,
     timer: Arc<OnceLock<ReplyTimer>>,
     /// Shared unregisters a clone's waker when that clone drops; retain the polled registration.
@@ -794,8 +945,15 @@ impl ConnState {
             .unwrap_or(0)
     }
 
-    fn record_raw(&self, conn: ConnId, reply_timeout_ms: u64) {
+    fn record_raw(
+        &self,
+        id: InstanceId,
+        table: &Arc<dyn DeclaredConns>,
+        conn: ConnId,
+        reply_timeout_ms: u64,
+    ) {
         self.streams().entry(conn.0).or_insert(Stream {
+            authority: Authority::capture(id, table),
             conn: Conn::Open(conn),
             headed: false,
             ended: false,
@@ -822,6 +980,9 @@ impl ConnState {
             .entry(handle)
             .or_insert_with(|| ReplyWait {
                 stream,
+                binding: streams
+                    .get(&stream)
+                    .and_then(|s| s.authority.binding.clone()),
                 at,
                 timer: Arc::default(),
                 registered: Arc::default(),
@@ -1015,7 +1176,7 @@ pub(crate) fn forget(id: InstanceId, ticket: Ticket) -> (usize, Forgotten) {
             (
                 0,
                 Forgotten {
-                    _closes: Closes(None, Vec::new(), Vec::new()),
+                    _closes: Closes::default(),
                     _binding: None,
                 },
             )
@@ -1057,11 +1218,11 @@ pub(crate) fn purge(id: InstanceId, table: &Arc<dyn DeclaredConns>) {
         *lock(&st.facts) = HashMap::new();
         *lock(&st.kept) = HashMap::new();
         let gone = std::mem::take(&mut *st.streams());
-        for s in gone.into_values() {
-            if let Conn::Open(c) = s.conn {
-                let _ = table.close(id, c);
-            }
-        }
+        drop(Closes {
+            streams: gone.into_values().collect(),
+            waits: st.take_waits(|_, _| true),
+            ..Closes::default()
+        });
     }
     forget_authority(id, table);
 }
@@ -1151,6 +1312,8 @@ struct Stream {
     headed: bool,
     /// The reply's terminal piece was read.
     ended: bool,
+    // Drop auth/open state before releasing its creating generation.
+    authority: Authority,
 }
 
 fn install(
@@ -1729,6 +1892,7 @@ fn reply(
     {
         let mut all = st.streams();
         let s = all.entry(stream).or_insert(Stream {
+            authority: Authority::capture(id, table),
             conn: Conn::Open(ConnId(stream)),
             reply_timeout_ms: 0,
             headed: false,
@@ -2013,5 +2177,281 @@ mod retirement_tests {
         assert_eq!(answer.outcome, Outcome::Ready);
         assert_eq!(&bytes, b"data");
         store.retire_results(wake, &ack).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod creating_authority_tests {
+    use super::*;
+    use busbar_contract::conn::{ConnSlab, Conns, Piece};
+    use busbar_contract::transport::ConnFacts;
+
+    #[derive(Default)]
+    struct Table {
+        slab: ConnSlab<()>,
+        closed: Mutex<Vec<(InstanceId, ConnId)>>,
+        forgotten: Mutex<Vec<InstanceId>>,
+        state: OnceLock<&'static ConnState>,
+    }
+
+    impl Conns for Table {
+        fn open(
+            &self,
+            owner: InstanceId,
+            need: NeedId,
+            _: &OpenDesc<'_>,
+        ) -> Result<ConnId, ConnError> {
+            self.slab.insert(owner, need, ())
+        }
+        fn write(
+            &self,
+            owner: InstanceId,
+            conn: ConnId,
+            bytes: &[u8],
+            _: bool,
+            _: bool,
+        ) -> Result<usize, ConnError> {
+            self.slab.get(owner, conn)?;
+            Ok(bytes.len())
+        }
+        fn read(
+            &self,
+            owner: InstanceId,
+            conn: ConnId,
+            _: u64,
+            _: &mut [u8],
+        ) -> Result<Piece, ConnError> {
+            self.slab.get(owner, conn)?;
+            Err(ConnError::Closed)
+        }
+        fn wait(&self, _: InstanceId, _: &[ConnId], _: u64) -> Result<usize, ConnError> {
+            Err(ConnError::Pending)
+        }
+        fn facts(&self, owner: InstanceId, conn: ConnId) -> Result<ConnFacts, ConnError> {
+            self.slab.get(owner, conn)?;
+            Ok(ConnFacts::default())
+        }
+        fn close(&self, owner: InstanceId, conn: ConnId) -> Result<(), ConnError> {
+            if let Some(state) = self.state.get() {
+                assert!(state.streams.try_lock().is_ok());
+                assert!(state.dialling.try_lock().is_ok());
+                assert!(state.waits.try_lock().is_ok());
+            }
+            self.slab.remove(owner, conn)?;
+            lock(&self.closed).push((owner, conn));
+            Ok(())
+        }
+    }
+    impl DeclaredConns for Table {
+        fn declare(
+            &self,
+            owner: InstanceId,
+            need: NeedId,
+            _: &busbar_contract::abi::mechanism::rendering::ReadNeed,
+            _: Option<&str>,
+            _: Option<&str>,
+        ) -> Result<(), ConnError> {
+            self.slab.declare(owner, need);
+            Ok(())
+        }
+        fn declared(&self, owner: InstanceId, need: NeedId) -> Option<Result<(), ConnError>> {
+            Some(self.slab.check_need(owner, need))
+        }
+        fn serves_scheme(&self, _: &str) -> bool {
+            true
+        }
+        fn forget(&self, owner: InstanceId) {
+            lock(&self.forgotten).push(owner);
+        }
+        fn upgrade_secure(
+            &self,
+            owner: InstanceId,
+            conn: ConnId,
+            _: Option<&str>,
+            _: Option<&str>,
+            _: bool,
+            _: u64,
+        ) -> Result<(), ConnError> {
+            self.slab.get(owner, conn)?;
+            Ok(())
+        }
+    }
+
+    fn generation(
+        owner: InstanceId,
+        table: &Arc<dyn DeclaredConns>,
+    ) -> Arc<super::super::export_bindings::Generation> {
+        Arc::new(super::super::export_bindings::Generation {
+            conn: Some((owner, table.clone())),
+            destinations: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn published_refresh_keeps_raw_held_and_pending_dials_on_their_creating_authority() {
+        let wake = Box::leak(Box::<InstanceWake>::default());
+        let ctx = super::super::handle::mint(wake).unwrap();
+        let old_owner = super::super::handle::instance_id(ctx);
+        let new_owner = InstanceId(u64::MAX - 1);
+        let actual = Arc::new(Table::default());
+        let table: Arc<dyn DeclaredConns> = actual.clone();
+        assert!(wake.conn.set((old_owner, table.clone())).is_ok());
+        assert!(actual.state.set(&wake.conn_state).is_ok());
+        for owner in [old_owner, new_owner] {
+            actual.slab.declare(owner, NeedId(0));
+        }
+        let old = generation(old_owner, &table);
+        let new = generation(new_owner, &table);
+        let raw = table
+            .open(old_owner, NeedId(0), &OpenDesc::default())
+            .unwrap();
+        let pending = table
+            .open(old_owner, NeedId(0), &OpenDesc::default())
+            .unwrap();
+        let held = held_id();
+        let ticket = Ticket {
+            slot: 6,
+            generation: 2,
+        };
+        super::super::export_bindings::crossing(Some(old.clone()), || {
+            wake.conn_state.record_raw(old_owner, &table, raw, 0);
+            wake.conn_state.streams().insert(
+                held,
+                Stream {
+                    conn: Conn::Held {
+                        need: NeedId(0),
+                        target: String::new(),
+                        within: Vec::new(),
+                        member: String::new(),
+                        dial_timeout_ms: 0,
+                        head: None,
+                        body: Vec::new(),
+                    },
+                    headed: false,
+                    ended: false,
+                    reply_timeout_ms: 0,
+                    authority: Authority::capture(old_owner, &table),
+                },
+            );
+            lock(&wake.conn_state.dialling).insert(
+                ticket,
+                Dial {
+                    wanted: (NeedId(0), String::new(), Vec::new(), String::new(), 0),
+                    conn: pending,
+                    authority: Authority::capture(old_owner, &table),
+                },
+            );
+        });
+        wake.exports.publish(new.clone());
+        // The following services execute in the newly published operation context.
+        super::super::export_bindings::crossing(Some(new), || {
+            for stream in [raw.0, held] {
+                let mut byte = [9];
+                // SAFETY: these ABI inputs/outputs contain only plain zero-valid fields; all
+                // heads and live payload loans are filled before the actual service call.
+                let mut input: IoIn = unsafe { std::mem::zeroed() };
+                input.head.size = size_of::<IoIn>() as u32;
+                input.head.op = service::WRITE;
+                input.stream = stream;
+                input.buf = byte.as_mut_ptr();
+                input.len = byte.len();
+                let mut output: ServiceOut = unsafe { std::mem::zeroed() };
+                output.size = size_of::<ServiceOut>() as u32;
+                write(ctx, std::ptr::from_ref(&input).cast(), &mut output);
+                assert_eq!(output.outcome, RawOutcome::of(Outcome::Ready));
+                assert_eq!(output.len, 1);
+            }
+            let mut input: EstablishIn = unsafe { std::mem::zeroed() };
+            input.head.size = size_of::<EstablishIn>() as u32;
+            input.head.op = service::ESTABLISH;
+            input.head.handle.ticket = ticket;
+            let mut output: ServiceOut = unsafe { std::mem::zeroed() };
+            output.size = size_of::<ServiceOut>() as u32;
+            establish(ctx, std::ptr::from_ref(&input).cast(), &mut output);
+            assert_eq!(output.outcome, RawOutcome::of(Outcome::Ready));
+            assert_eq!(output.value, pending.0);
+            assert_eq!(
+                wake.conn_state.stream_authority(pending.0).unwrap().conn.0,
+                old_owner
+            );
+        });
+        assert!(!lock(&actual.forgotten).contains(&old_owner));
+        assert_eq!(
+            wake.conn_state.stream_authority(raw.0).unwrap().conn.0,
+            old_owner
+        );
+        drop(wake.conn_state.retire_binding(&old));
+        assert_eq!(lock(&actual.closed).len(), 3);
+        assert!(lock(&actual.closed)
+            .iter()
+            .all(|(owner, _)| *owner == old_owner));
+        wake.exports.clear();
+    }
+
+    #[test]
+    fn candidate_retirement_closes_only_its_streams_dials_and_waits_outside_state_locks() {
+        let state = Box::leak(Box::<ConnState>::default());
+        let actual = Arc::new(Table::default());
+        assert!(actual.state.set(state).is_ok());
+        let table: Arc<dyn DeclaredConns> = actual.clone();
+        let owners = [InstanceId(u64::MAX - 2), InstanceId(u64::MAX - 3)];
+        let old = generation(owners[0], &table);
+        let candidate = generation(owners[1], &table);
+        let weak = Arc::downgrade(&candidate);
+        let mut raw = Vec::new();
+        for (owner, binding) in [(owners[0], &old), (owners[1], &candidate)] {
+            actual.slab.declare(owner, NeedId(0));
+            let conn = table.open(owner, NeedId(0), &OpenDesc::default()).unwrap();
+            super::super::export_bindings::crossing(Some(binding.clone()), || {
+                state.record_raw(owner, &table, conn, 1000);
+            });
+            let mut handle: CompletionHandle = unsafe { std::mem::zeroed() };
+            handle.ticket = Ticket {
+                slot: owner.0 as u32,
+                generation: 1,
+            };
+            state.wait_reply(handle, conn.0).unwrap();
+            raw.push(conn);
+        }
+        let dial = table
+            .open(owners[1], NeedId(0), &OpenDesc::default())
+            .unwrap();
+        lock(&state.dialling).insert(
+            Ticket {
+                slot: 3,
+                generation: 4,
+            },
+            Dial {
+                wanted: (NeedId(0), String::new(), Vec::new(), String::new(), 0),
+                conn: dial,
+                authority: Authority {
+                    conn: (owners[1], table.clone()),
+                    binding: Some(candidate.clone()),
+                },
+            },
+        );
+        let closes = state.retire_binding(&candidate);
+        assert!(
+            lock(&actual.closed).is_empty(),
+            "detaching does not run table code"
+        );
+        assert!(state.stream_authority(raw[0].0).is_some());
+        assert!(state.stream_authority(raw[1].0).is_none());
+        assert_eq!(lock(&state.waits).len(), 1);
+        assert!(lock(&state.dialling).is_empty());
+        drop(candidate);
+        assert!(
+            weak.upgrade().is_some(),
+            "detached resources retain their authority until close"
+        );
+        drop(closes);
+        assert!(weak.upgrade().is_none());
+        assert_eq!(
+            *lock(&actual.closed),
+            vec![(owners[1], dial), (owners[1], raw[1])]
+        );
+        assert_eq!(*lock(&actual.forgotten), vec![owners[1]]);
+        assert!(actual.slab.get(owners[0], raw[0]).is_ok());
+        drop(state.retire_binding(&old));
     }
 }
