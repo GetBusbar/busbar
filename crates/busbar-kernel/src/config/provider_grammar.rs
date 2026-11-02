@@ -124,6 +124,40 @@ impl<'de> Visitor<'de> for List<'_> {
         Ok(Value::Array(values))
     }
 }
+// Unknown names must fail in the key deserializer itself. Returning the same
+// error later from visit_map loses the key's YAML source column.
+struct FieldName<'a>(&'a Table);
+impl<'de> DeserializeSeed<'de> for FieldName<'_> {
+    type Value = String;
+    fn deserialize<D: serde::Deserializer<'de>>(self, de: D) -> Result<String, D::Error> {
+        struct NameVisitor<'a>(&'a Table);
+        impl<'de> Visitor<'de> for NameVisitor<'_> {
+            type Value = String;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("field identifier")
+            }
+            fn visit_str<E: serde::de::Error>(self, name: &str) -> Result<String, E> {
+                if self.0.deny_unknown && !self.0.keys.iter().any(|key| key.name == name) {
+                    return Err(E::custom(format!(
+                        "unknown field `{name}`, expected one of {}",
+                        self.0
+                            .keys
+                            .iter()
+                            .map(|key| format!("`{}`", key.name))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )));
+                }
+                Ok(name.to_string())
+            }
+            fn visit_string<E: serde::de::Error>(self, name: String) -> Result<String, E> {
+                self.visit_str(&name)
+            }
+        }
+        de.deserialize_identifier(NameVisitor(self.0))
+    }
+}
+
 struct Fields<'a>(&'a Table);
 impl<'de> Visitor<'de> for Fields<'_> {
     type Value = Value;
@@ -135,7 +169,7 @@ impl<'de> Visitor<'de> for Fields<'_> {
     }
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
         let mut values = Map::new();
-        while let Some(name) = map.next_key::<String>()? {
+        while let Some(name) = map.next_key_seed(FieldName(self.0))? {
             let key = self.0.keys.iter().find(|k| k.name == name);
             let value = if let Some(key) = key {
                 if values.contains_key(&name) {
@@ -144,16 +178,6 @@ impl<'de> Visitor<'de> for Fields<'_> {
                     )));
                 }
                 map.next_value_seed(ValueSeed::field(key))?
-            } else if self.0.deny_unknown {
-                return Err(serde::de::Error::custom(format!(
-                    "unknown field `{name}`, expected one of {}",
-                    self.0
-                        .keys
-                        .iter()
-                        .map(|k| format!("`{}`", k.name))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )));
             } else {
                 map.next_value::<Value>()?
             };
