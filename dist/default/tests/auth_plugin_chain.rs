@@ -463,7 +463,9 @@ fn a_v1_auth_plugin_is_refused_at_boot_and_the_current_one_builds_browser_login(
     );
     let (_app, _rotation, limits) =
         built.expect("the current login-capable plugin with browser_login builds");
-    limits.keep();
+    limits
+        .keep()
+        .expect("the login-capable app activates its configuration");
 
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&dir2);
