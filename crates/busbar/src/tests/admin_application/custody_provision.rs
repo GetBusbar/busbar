@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use axum::http::StatusCode;
+use busbar_contract::records::*;
 use busbar_core_admin::admin_state::AppAdmin as _;
 use busbar_kernel::audit_ring;
 use std::sync::Arc;
@@ -12,66 +13,166 @@ mod plugins;
 struct RefusesKeyWrites(Arc<dyn busbar_contract::records::RecordStore>);
 
 impl busbar_contract::records::RecordStore for RefusesKeyWrites {
-    fn put_key(
-        &self,
-        _key: &busbar_contract::records::VirtualKey,
-    ) -> busbar_contract::records::RecordStoreResult<()> {
-        Err(busbar_contract::records::RecordStoreError(
-            "key write unavailable".into(),
-        ))
+    fn put_key(&self, _key: &VirtualKey) -> RecordStoreResult<()> {
+        Err(RecordStoreError("key write unavailable".into()))
     }
-    fn put_key_with_credential(
-        &self,
-        _key: &busbar_contract::records::VirtualKey,
-        _secret: &busbar_contract::records::CredentialSecret,
-    ) -> busbar_contract::records::RecordStoreResult<()> {
-        Err(busbar_contract::records::RecordStoreError(
-            "key write unavailable".into(),
-        ))
-    }
-    fn get_key(
-        &self,
-        id: &str,
-    ) -> busbar_contract::records::RecordStoreResult<Option<busbar_contract::records::VirtualKey>>
-    {
+    fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
         self.0.get_key(id)
     }
-    fn list_keys(
-        &self,
-    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::VirtualKey>>
-    {
+    fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
         self.0.list_keys()
     }
-    fn delete_key(&self, id: &str) -> busbar_contract::records::RecordStoreResult<()> {
+    fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
         self.0.delete_key(id)
     }
-    fn get_usage(
-        &self,
-        bucket_id: &str,
-        window_start: u64,
-    ) -> busbar_contract::records::RecordStoreResult<busbar_contract::records::UsageLedger> {
+    fn list_keys_since(&self, since: u64) -> RecordStoreResult<Vec<VirtualKey>> {
+        self.0.list_keys_since(since)
+    }
+    fn get_usage(&self, bucket_id: &str, window_start: u64) -> RecordStoreResult<UsageLedger> {
         self.0.get_usage(bucket_id, window_start)
+    }
+    fn apply_usage_correction(
+        &self,
+        request: &correction::Request,
+    ) -> RecordStoreResult<correction::Decision> {
+        self.0.apply_usage_correction(request)
+    }
+    fn supports_usage_correction(&self) -> bool {
+        self.0.supports_usage_correction()
     }
     fn put_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-        ledger: &busbar_contract::records::UsageLedger,
-    ) -> busbar_contract::records::RecordStoreResult<()> {
+        ledger: &UsageLedger,
+    ) -> RecordStoreResult<()> {
         self.0.put_usage(bucket_id, window_start, ledger)
     }
-    fn add_metering(
+    fn add_usage(
         &self,
-        delta: &busbar_contract::records::MeteringDelta,
-    ) -> busbar_contract::records::RecordStoreResult<()> {
+        bucket_id: &str,
+        window_start: u64,
+        delta: &UsageDelta,
+    ) -> RecordStoreResult<()> {
+        self.0.add_usage(bucket_id, window_start, delta)
+    }
+    fn add_usage_batch_deduped(
+        &self,
+        op: busbar_contract::abi::store::OpId,
+        cells: &[(&str, u64, UsageDelta)],
+    ) -> RecordStoreResult<()> {
+        self.0.add_usage_batch_deduped(op, cells)
+    }
+    fn supports_usage_batch_deduped(&self) -> bool {
+        self.0.supports_usage_batch_deduped()
+    }
+    fn supports_metering_batch_deduped(&self) -> bool {
+        self.0.supports_metering_batch_deduped()
+    }
+    fn add_metering_batch_deduped(
+        &self,
+        op: busbar_contract::abi::store::OpId,
+        deltas: &[MeteringDelta],
+    ) -> RecordStoreResult<()> {
+        self.0.add_metering_batch_deduped(op, deltas)
+    }
+    fn add_metering(&self, delta: &MeteringDelta) -> RecordStoreResult<()> {
         self.0.add_metering(delta)
     }
-    fn list_metering(
-        &self,
-        bucket: u64,
-    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::MeteringRow>>
-    {
+    fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
         self.0.list_metering(bucket)
+    }
+    fn put_credential(&self, secret: &CredentialSecret) -> RecordStoreResult<()> {
+        self.0.put_credential(secret)
+    }
+    fn rewrap_credential(
+        &self,
+        expected: &CredentialSecret,
+        replacement: &str,
+    ) -> RecordStoreResult<bool> {
+        self.0.rewrap_credential(expected, replacement)
+    }
+    fn put_key_with_credential(
+        &self,
+        _key: &VirtualKey,
+        _secret: &CredentialSecret,
+    ) -> RecordStoreResult<()> {
+        Err(RecordStoreError("key write unavailable".into()))
+    }
+    fn list_credentials(&self, key_id: &str) -> RecordStoreResult<Vec<CredentialMeta>> {
+        self.0.list_credentials(key_id)
+    }
+    fn revoke_credential(&self, id: &str, reason: &str) -> RecordStoreResult<()> {
+        self.0.revoke_credential(id, reason)
+    }
+    fn list_credentials_since(&self, since: u64) -> RecordStoreResult<Vec<CredentialSecret>> {
+        self.0.list_credentials_since(since)
+    }
+    fn append_audit(&self, entry: &AuditRecord) -> RecordStoreResult<()> {
+        self.0.append_audit(entry)
+    }
+    fn list_audit(&self) -> RecordStoreResult<Vec<AuditRecord>> {
+        self.0.list_audit()
+    }
+    fn add_denylist(&self, sub: &str, reason: &str) -> RecordStoreResult<()> {
+        self.0.add_denylist(sub, reason)
+    }
+    fn list_denylist(&self) -> RecordStoreResult<Vec<String>> {
+        self.0.list_denylist()
+    }
+    fn list_audit_tail(&self, limit: u64) -> RecordStoreResult<Vec<AuditRecord>> {
+        self.0.list_audit_tail(limit)
+    }
+    fn upsert_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
+        self.0.upsert_plane_record(record)
+    }
+    fn get_plane_record(&self, kind: &str, id: &str) -> RecordStoreResult<Option<Vec<u8>>> {
+        self.0.get_plane_record(kind, id)
+    }
+    fn append_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
+        self.0.append_plane_record(record)
+    }
+    fn list_plane_records(
+        &self,
+        kind: &str,
+        selector: &PlaneSelector<'_>,
+    ) -> RecordStoreResult<Vec<Vec<u8>>> {
+        self.0.list_plane_records(kind, selector)
+    }
+    fn list_plane_record_parents(&self, kind: &str) -> RecordStoreResult<Vec<String>> {
+        self.0.list_plane_record_parents(kind)
+    }
+    fn purge_plane_records_before(&self, kind: &str, before: u64) -> RecordStoreResult<u64> {
+        self.0.purge_plane_records_before(kind, before)
+    }
+    fn purge_plane_records(
+        &self,
+        kind: &str,
+        before: u64,
+        retention: Retention,
+    ) -> RecordStoreResult<u64> {
+        self.0.purge_plane_records(kind, before, retention)
+    }
+    fn delete_plane_record(&self, kind: &str, id: &str) -> RecordStoreResult<()> {
+        self.0.delete_plane_record(kind, id)
+    }
+    fn redeem_plane_token(
+        &self,
+        kind: &str,
+        token: &str,
+        expires_at: u64,
+        now: u64,
+    ) -> RecordStoreResult<bool> {
+        self.0.redeem_plane_token(kind, token, expires_at, now)
+    }
+    fn plane_token_live(
+        &self,
+        kind: &str,
+        token: &str,
+        expires_at: u64,
+        now: u64,
+    ) -> RecordStoreResult<bool> {
+        self.0.plane_token_live(kind, token, expires_at, now)
     }
 }
 
