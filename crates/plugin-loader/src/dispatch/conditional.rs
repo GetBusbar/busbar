@@ -317,6 +317,8 @@ fn nonapplied_output(answer: &super::Answer, receipt: ReceiptKind) -> Result<(),
                 || out.fault != 0
                 || out.tap_fault != 0
                 || out.verdict != 0
+                || out.wait_member.len != 0
+                || out.fault_reason.len != 0
             {
                 return Err(());
             }
@@ -358,7 +360,17 @@ fn nonapplied_output(answer: &super::Answer, receipt: ReceiptKind) -> Result<(),
                 return Err(());
             }
         }
-        slot::TICK => {}
+        slot::TICK => {
+            if !observed
+                && answer
+                    .out::<busbar_contract::abi::mechanism::lifecycle::TickOut>()
+                    .map_err(|_| ())?
+                    .next_tick_ns
+                    != 0
+            {
+                return Err(());
+            }
+        }
         _ => return Err(()),
     }
     Ok(())
