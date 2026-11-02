@@ -20,6 +20,7 @@ use crate::abi::mechanism::lifecycle::{slot, OpenIn, OpenOut};
 use crate::abi::mechanism::KindCode;
 use crate::abi::sdk::door::{abi_str, statement};
 use crate::abi::sdk::life::{Life, Refreshed, Refusal};
+use crate::abi::sdk::test_support::test_in::TestIn;
 use crate::abi::transport::{
     Claim, FramePiece, FramerSink, IngestIn, TransportTail, FRAMING_STREAM, ROLE_FRAMER,
     UNIT0_UPGRADE,
