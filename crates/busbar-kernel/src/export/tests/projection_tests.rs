@@ -9,10 +9,27 @@ use crate::export::projection::{
 use busbar_contract::abi::export::{ExportField, ExportStream};
 
 fn resolve_errs(yaml: &str) -> Vec<String> {
-    crate::export::scrape::tests::installed_axis();
     let defs: ExportDefs = serde_yaml::from_str(yaml).expect("fixture parses");
     let mut errors = Vec::new();
-    let _ = crate::config::resolve_export(&defs, &mut errors);
+    for (name, def) in defs {
+        // Grammar inputs are declarations, not an exporter implementation. Product
+        // loading and config-axis wiring are exercised in the distribution tests.
+        let carries = match def.module.as_str() {
+            "request-log-webhook" => &[ExportStream::Logs][..],
+            "prometheus" => &[ExportStream::Metrics][..],
+            "otlp" => &[ExportStream::Traces][..],
+            module => panic!("unexpected grammar input module {module}"),
+        };
+        resolve_projection(
+            &name,
+            &def.module,
+            Some(carries),
+            def.streams.as_deref(),
+            def.fields.as_deref(),
+            def.durable,
+            &mut errors,
+        );
+    }
     errors
 }
 
@@ -303,7 +320,6 @@ fn a_grant_on_one_stream_does_not_leak_into_another() {
 
 #[test]
 fn projection_union_is_the_compute_gate() {
-    crate::test_support::export_axis::install_export_axis();
     let empty = ProjectionUnion::default();
     assert!(empty.is_empty());
     for s in ExportStream::ALL {
@@ -315,7 +331,30 @@ fn projection_union_is_the_compute_gate() {
     )
     .unwrap();
     let mut errors = Vec::new();
-    let cfg = crate::config::resolve_export(&defs, &mut errors);
+    let plugins = defs
+        .into_iter()
+        .map(|(name, def)| {
+            let projection = resolve_projection(
+                &name,
+                &def.module,
+                None,
+                def.streams.as_deref(),
+                def.fields.as_deref(),
+                def.durable,
+                &mut errors,
+            );
+            crate::config::PluginExportSettings {
+                name,
+                def,
+                projection,
+                scrape: false,
+            }
+        })
+        .collect();
+    let cfg = crate::config::ExportCfg {
+        recorder: None,
+        plugins,
+    };
     assert!(errors.is_empty(), "{errors:#?}");
     let union = cfg.projection_union();
     assert!(union.wants_stream(ExportStream::Logs));
