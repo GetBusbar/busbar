@@ -244,6 +244,19 @@ snapshot_table!(
 );
 
 impl Host {
+    /// A host that only wakes tickets through a safe callback and an opaque scalar context.
+    /// No connector, service or I/O table is offered. This needs no raw-pointer proof.
+    #[must_use]
+    pub const fn wake_only(ctx: HostCtx, wake: WakeFn) -> Self {
+        Self {
+            ctx,
+            wake: Some(wake),
+            conns: None,
+            services: None,
+            io: None,
+        }
+    }
+
     /// Copy the tables lent by the SDK's typed lifecycle input. This consumes only the proof;
     /// the returned handle owns its function tables and may outlive their original allocation.
     ///

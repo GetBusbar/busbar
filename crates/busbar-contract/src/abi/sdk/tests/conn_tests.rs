@@ -463,3 +463,17 @@ fn snapshots_read_only_complete_advertised_function_fields() {
     // SAFETY: just the advertised size word is allocated; no slots word is read.
     assert!(unsafe { snapshot_io(std::ptr::from_ref(&too_short).cast()) }.is_none());
 }
+
+#[test]
+fn a_safe_wake_only_host_preserves_the_opaque_context_and_absent_tables() {
+    static WOKEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    extern "C" fn wake(ctx: HostCtx, _: Ticket) {
+        WOKEN.store(ctx.handle, std::sync::atomic::Ordering::SeqCst);
+    }
+    let host = Host::wake_only(HostCtx { handle: 73 }, wake);
+    assert!(!host.lends_connector());
+    assert!(host.services().is_none());
+    assert!(!host.io(TICKET).armed());
+    host.wake(TICKET);
+    assert_eq!(WOKEN.load(std::sync::atomic::Ordering::SeqCst), 73);
+}
