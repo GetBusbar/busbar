@@ -28,9 +28,6 @@ pub const WINDOW_HOUR: &str = "hour";
 
 const VK_ID_PREFIX: &str = "vk_";
 
-#[cfg(test)]
-const SK_SECRET_PREFIX: &str = crate::test_support::governance::SK_SECRET_PREFIX;
-
 pub const BINDING_MARKER_PREFIX: &str = "binding:";
 
 pub const SELF_KEY_GROUP_PREFIX: &str = "user:";
@@ -1060,11 +1057,6 @@ fn synthesize_key(
 pub use busbar_contract::records::PlaneRequestCtx;
 
 pub type GovCtx = busbar_contract::records::PlaneRequestCtx;
-
-#[cfg(test)]
-fn generate_secret() -> Result<String, getrandom::Error> {
-    crate::test_support::governance::generate_secret()
-}
 
 fn draw(alphabet: &str, n: usize) -> Result<String, getrandom::Error> {
     let symbols = alphabet.as_bytes();

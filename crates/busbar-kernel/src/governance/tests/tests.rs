@@ -1,3 +1,13 @@
+static ISSUED_SHAPE: std::sync::LazyLock<busbar_contract::auth_calls::IssuedShape> =
+    std::sync::LazyLock::new(|| busbar_contract::auth_calls::IssuedShape {
+        id_prefix: "AKIA".to_string(),
+        id_len: 20,
+        id_alphabet: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".to_string(),
+        secret_len: 40,
+        secret_alphabet: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+            .to_string(),
+    });
+
 #[test]
 fn synthesize_principal_key_union_semantics() {
     use crate::config::RoleBindingCfg;
@@ -235,8 +245,9 @@ async fn test_concurrent_govstate_admission_respects_cap() {
     let store = crate::real_store::store();
     let gov = Arc::new(GovState::new(store.clone(), None).unwrap());
     let cost = Arc::new(group_cost(1, &[("team", 5, "total", None)]));
-    let (key, _s) = gov
-        .create_key(
+    let (key, _s) = {
+        gov.set_signing_key(Some(self_serve_signer()));
+        gov.mint_signed(
             NewKeySpec {
                 name: "k".to_string(),
                 allowed_pools: None,
@@ -244,9 +255,11 @@ async fn test_concurrent_govstate_admission_respects_cap() {
                 labels: std::collections::BTreeMap::new(),
                 ..Default::default()
             },
+            4_000_000_000,
             1_700_000_000,
         )
-        .unwrap();
+    }
+    .unwrap();
     let at = 1_700_000_000u64;
     let mut handles = Vec::new();
     for _ in 0..20 {
@@ -294,8 +307,9 @@ async fn test_charge_refund_readmit_cycle() {
     let store = crate::real_store::store();
     let gov = Arc::new(GovState::new(store.clone(), None).unwrap());
     let cost = group_cost(1, &[("solo", 1, "total", None)]);
-    let (key, _s) = gov
-        .create_key(
+    let (key, _s) = {
+        gov.set_signing_key(Some(self_serve_signer()));
+        gov.mint_signed(
             NewKeySpec {
                 name: "k".to_string(),
                 allowed_pools: None,
@@ -303,9 +317,11 @@ async fn test_charge_refund_readmit_cycle() {
                 labels: std::collections::BTreeMap::new(),
                 ..Default::default()
             },
+            4_000_000_000,
             1_700_000_000,
         )
-        .unwrap();
+    }
+    .unwrap();
     let at = 1_700_000_000u64;
 
     let first = (gov.try_admit(&cost, &key, "", at))
@@ -341,8 +357,9 @@ async fn test_try_admit_rejects_at_group_cap() {
     let store = crate::real_store::store();
     let gov = GovState::new(store, None).unwrap();
     let cost = group_cost(1, &[("g", 2, "total", None)]);
-    let (key, _s) = gov
-        .create_key(
+    let (key, _s) = {
+        gov.set_signing_key(Some(self_serve_signer()));
+        gov.mint_signed(
             NewKeySpec {
                 name: "k".to_string(),
                 allowed_pools: None,
@@ -350,9 +367,11 @@ async fn test_try_admit_rejects_at_group_cap() {
                 labels: std::collections::BTreeMap::new(),
                 ..Default::default()
             },
+            4_000_000_000,
             1_700_000_000,
         )
-        .unwrap();
+    }
+    .unwrap();
     let at = 1_700_000_000u64;
     assert!(
         gov.try_admit(&cost, &key, "", at).is_ok(),
@@ -499,8 +518,12 @@ fn test_virtualkey_debug_redacts_key_hash() {
 fn test_create_key_with_aws_issues_and_resolves_credential() {
     let store = crate::real_store::store();
     let gov = GovState::new(store, None).unwrap();
-    let (key, _bearer, akid, secret) = gov
-        .create_key_with_aws(
+    let (key, _bearer, akid, secret) = {
+        gov.set_signing_key(Some(self_serve_signer()));
+        gov.set_at_rest_keys(Some(crate::governance::at_rest::AtRestKeys::new(
+            &[3u8; 32], None,
+        )));
+        gov.mint_signed_with_credential(
             NewKeySpec {
                 name: "vendor-a-key".to_string(),
                 allowed_pools: Some(vec!["prod".to_string()]),
@@ -508,9 +531,21 @@ fn test_create_key_with_aws_issues_and_resolves_credential() {
                 labels: std::collections::BTreeMap::new(),
                 ..Default::default()
             },
+            4_000_000_000,
             1_700_000_000,
+            &signed_kind(),
+            &ISSUED_SHAPE,
         )
-        .unwrap();
+        .map(|(key, bearer, public_id, secret)| {
+            (
+                key,
+                bearer,
+                public_id,
+                secret.expose(&crate::seal::lend()).clone(),
+            )
+        })
+    }
+    .unwrap();
 
     assert!(akid.starts_with("AKIA"), "akid shape: {akid}");
     assert_eq!(akid.len(), 20);
@@ -520,7 +555,13 @@ fn test_create_key_with_aws_issues_and_resolves_credential() {
         .lookup_credential(&crate::governance::tests::signed_kind(), &akid)
         .expect("akid resolves");
     assert_eq!(resolved_key.id, key.id);
-    assert_eq!(cred.secret, format!("v1:plain:{secret}"));
+    let (opened, live) = gov.credential_secret(&signed_kind(), &akid, 1_700_000_000);
+    assert_eq!(opened.expose(&crate::seal::lend()), &secret);
+    assert!(live);
+    assert!(
+        !cred.secret.contains(&secret),
+        "the durable credential is encrypted"
+    );
     assert!(resolved_key.enabled);
 
     assert!(gov
@@ -530,18 +571,7 @@ fn test_create_key_with_aws_issues_and_resolves_credential() {
 
 #[test]
 fn test_credential_generators_contract() {
-    let s = generate_secret().expect("OS entropy available");
-    assert!(s.starts_with(SK_SECRET_PREFIX), "bearer prefix: {s}");
-    let hex_part = &s[SK_SECRET_PREFIX.len()..];
-    assert_eq!(hex_part.len(), 64, "32 random bytes -> 64 hex chars");
-    assert!(
-        hex_part
-            .bytes()
-            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
-        "bearer body is lowercase hex: {hex_part}"
-    );
-
-    let (_, shape) = crate::test_support::issued::double();
+    let (_, shape) = (signed_kind(), ISSUED_SHAPE.clone());
     let (akid, sak) = issue_credential(&shape).expect("OS entropy available");
     assert_eq!(akid.len(), 20);
     assert!(akid.starts_with("AKIA"), "akid prefix: {akid}");
@@ -557,7 +587,6 @@ fn test_credential_generators_contract() {
         "the secret is over the stated alphabet: {sak}"
     );
 
-    assert_ne!(generate_secret().unwrap(), s, "secrets must not repeat");
     assert_ne!(
         issue_credential(&shape).unwrap().0,
         akid,
@@ -570,8 +599,12 @@ fn test_aws_credential_persists_across_reload() {
     let store: Arc<dyn RecordStore> = crate::real_store::store();
     let akid = {
         let gov = GovState::new(store.clone(), None).unwrap();
-        let (_k, _b, akid, _s) = gov
-            .create_key_with_aws(
+        let (_k, _b, akid, _s) = {
+            gov.set_signing_key(Some(self_serve_signer()));
+            gov.set_at_rest_keys(Some(crate::governance::at_rest::AtRestKeys::new(
+                &[3u8; 32], None,
+            )));
+            gov.mint_signed_with_credential(
                 NewKeySpec {
                     name: "k".to_string(),
                     allowed_pools: None,
@@ -579,9 +612,21 @@ fn test_aws_credential_persists_across_reload() {
                     labels: std::collections::BTreeMap::new(),
                     ..Default::default()
                 },
+                4_000_000_000,
                 0,
+                &signed_kind(),
+                &ISSUED_SHAPE,
             )
-            .unwrap();
+            .map(|(key, bearer, public_id, secret)| {
+                (
+                    key,
+                    bearer,
+                    public_id,
+                    secret.expose(&crate::seal::lend()).clone(),
+                )
+            })
+        }
+        .unwrap();
         akid
     };
     let gov2 = GovState::new(store, None).unwrap();
@@ -595,8 +640,12 @@ fn test_aws_credential_persists_across_reload() {
 fn test_delete_key_removes_aws_credential() {
     let store = crate::real_store::store();
     let gov = GovState::new(store, None).unwrap();
-    let (key, _b, akid, _s) = gov
-        .create_key_with_aws(
+    let (key, _b, akid, _s) = {
+        gov.set_signing_key(Some(self_serve_signer()));
+        gov.set_at_rest_keys(Some(crate::governance::at_rest::AtRestKeys::new(
+            &[3u8; 32], None,
+        )));
+        gov.mint_signed_with_credential(
             NewKeySpec {
                 name: "k".to_string(),
                 allowed_pools: None,
@@ -604,9 +653,21 @@ fn test_delete_key_removes_aws_credential() {
                 labels: std::collections::BTreeMap::new(),
                 ..Default::default()
             },
+            4_000_000_000,
             0,
+            &signed_kind(),
+            &ISSUED_SHAPE,
         )
-        .unwrap();
+        .map(|(key, bearer, public_id, secret)| {
+            (
+                key,
+                bearer,
+                public_id,
+                secret.expose(&crate::seal::lend()).clone(),
+            )
+        })
+    }
+    .unwrap();
     assert!(gov.lookup_credential(&signed_kind(), &akid).is_some());
     gov.delete_key(&key.id).unwrap();
     assert!(
@@ -639,8 +700,8 @@ fn test_refresh_updates_both_indices_atomically() {
             },
             2_000_000_000,
             1_700_000_000,
-            &crate::test_support::issued::double().0,
-            &crate::test_support::issued::double().1,
+            &signed_kind(),
+            &ISSUED_SHAPE,
         )
         .unwrap();
 
@@ -701,16 +762,33 @@ fn test_generated_aws_credentials_are_distinct() {
     let store = crate::real_store::store();
     let gov = GovState::new(store, None).unwrap();
     let mk = |gov: &GovState, n: &str| {
-        gov.create_key_with_aws(
-            NewKeySpec {
-                name: n.to_string(),
-                allowed_pools: None,
-                group: None,
-                labels: std::collections::BTreeMap::new(),
-                ..Default::default()
-            },
-            0,
-        )
+        {
+            gov.set_signing_key(Some(self_serve_signer()));
+            gov.set_at_rest_keys(Some(crate::governance::at_rest::AtRestKeys::new(
+                &[3u8; 32], None,
+            )));
+            gov.mint_signed_with_credential(
+                NewKeySpec {
+                    name: n.to_string(),
+                    allowed_pools: None,
+                    group: None,
+                    labels: std::collections::BTreeMap::new(),
+                    ..Default::default()
+                },
+                4_000_000_000,
+                0,
+                &signed_kind(),
+                &ISSUED_SHAPE,
+            )
+            .map(|(key, bearer, public_id, secret)| {
+                (
+                    key,
+                    bearer,
+                    public_id,
+                    secret.expose(&crate::seal::lend()).clone(),
+                )
+            })
+        }
         .unwrap()
     };
     let (_k1, _b1, akid1, s1) = mk(&gov, "a");
@@ -1820,7 +1898,11 @@ fn test_create_key_minted_id_is_free_so_mint_succeeds() {
         labels: std::collections::BTreeMap::new(),
         ..Default::default()
     };
-    let (key, _secret) = gov.create_key(spec, 1_700_000_000).unwrap();
+    let (key, _secret) = {
+        gov.set_signing_key(Some(self_serve_signer()));
+        gov.mint_signed(spec, 4_000_000_000, 1_700_000_000)
+    }
+    .unwrap();
     assert!(key.id.starts_with("vk_"));
 
     assert_eq!(gov.lookup_by_sub(&key.id).unwrap().id, key.id);
@@ -1830,8 +1912,9 @@ fn test_create_key_minted_id_is_free_so_mint_succeeds() {
 fn test_update_key_toggles_enabled_and_rebinds_group_in_place() {
     let store = crate::real_store::store();
     let gov = GovState::new(store.clone(), None).unwrap();
-    let (key, _secret) = gov
-        .create_key(
+    let (key, _secret) = {
+        gov.set_signing_key(Some(self_serve_signer()));
+        gov.mint_signed(
             NewKeySpec {
                 name: "k".to_string(),
                 allowed_pools: None,
@@ -1839,9 +1922,11 @@ fn test_update_key_toggles_enabled_and_rebinds_group_in_place() {
                 labels: std::collections::BTreeMap::new(),
                 ..Default::default()
             },
+            4_000_000_000,
             1_700_000_000,
         )
-        .unwrap();
+    }
+    .unwrap();
     assert!(key.enabled, "new key starts enabled");
     let hash = key.generation_hash.clone();
 
@@ -2281,15 +2366,18 @@ fn a_revoke_is_not_held_behind_a_reload_parked_in_the_store_and_the_reload_does_
     let gov = Arc::new(
         GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap(),
     );
-    let (key, _) = gov
-        .create_key(
+    let (key, _) = {
+        gov.set_signing_key(Some(self_serve_signer()));
+        gov.mint_signed(
             NewKeySpec {
                 name: "k".to_string(),
                 ..Default::default()
             },
+            4_000_000_000,
             0,
         )
-        .unwrap();
+    }
+    .unwrap();
     assert!(gov.lookup_by_sub(&key.id).unwrap().enabled);
     store
         .wedge_list
@@ -2329,15 +2417,18 @@ fn a_reload_is_not_held_behind_a_revoke_parked_in_the_store() {
     let gov = Arc::new(
         GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap(),
     );
-    let (key, _) = gov
-        .create_key(
+    let (key, _) = {
+        gov.set_signing_key(Some(self_serve_signer()));
+        gov.mint_signed(
             NewKeySpec {
                 name: "k".to_string(),
                 ..Default::default()
             },
+            4_000_000_000,
             0,
         )
-        .unwrap();
+    }
+    .unwrap();
     let (done_tx, done) = std::sync::mpsc::channel();
     std::thread::scope(|s| {
         let parked = s.spawn(|| gov.revoke(&key.id, "test"));
@@ -2845,6 +2936,7 @@ fn test_budget_state_projects_the_whole_chain() {
 }
 
 mod signed_token {
+    use super::{signed_kind, ISSUED_SHAPE};
     use crate::governance::signing::{TokenSigner, DEFAULT_KID};
     use crate::governance::{GovState, NewKeySpec, ScopeRef};
     use std::sync::Arc;
@@ -3073,8 +3165,8 @@ mod signed_token {
                 spec("bob", None, None),
                 2_000,
                 1_000,
-                &crate::test_support::issued::double().0,
-                &crate::test_support::issued::double().1,
+                &signed_kind(),
+                &ISSUED_SHAPE,
             )
             .expect("mint+aws");
         assert!(token.expose(&crate::seal::lend()).starts_with("bbk_"));
@@ -3095,8 +3187,8 @@ mod signed_token {
                 spec("bob", None, None),
                 2_000,
                 1_000,
-                &crate::test_support::issued::double().0,
-                &crate::test_support::issued::double().1,
+                &signed_kind(),
+                &ISSUED_SHAPE,
             )
             .expect("mint+aws");
         let token = minted.1.expose(&crate::seal::lend()).clone();
@@ -4038,7 +4130,28 @@ fn deletion_eviction_cannot_be_reversed_by_an_older_reload() {
 fn partial_revoke_immediately_retires_the_durable_credential() {
     let (store, _, _) = WedgeStore::new();
     let gov = GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap();
-    let (key, _, public_id, _) = gov.create_key_with_aws(NewKeySpec::default(), 1).unwrap();
+    let (key, _, public_id, _) = {
+        gov.set_signing_key(Some(self_serve_signer()));
+        gov.set_at_rest_keys(Some(crate::governance::at_rest::AtRestKeys::new(
+            &[3u8; 32], None,
+        )));
+        gov.mint_signed_with_credential(
+            NewKeySpec::default(),
+            4_000_000_000,
+            1,
+            &signed_kind(),
+            &ISSUED_SHAPE,
+        )
+        .map(|(key, bearer, public_id, secret)| {
+            (
+                key,
+                bearer,
+                public_id,
+                secret.expose(&crate::seal::lend()).clone(),
+            )
+        })
+    }
+    .unwrap();
     assert!(gov.lookup_credential(&signed_kind(), &public_id).is_some());
     store.fail_denylist.store(true, Ordering::SeqCst);
     assert!(gov.revoke(&key.id, "test").is_err());
@@ -4335,7 +4448,7 @@ fn signed_mints_report_committed_ids_without_returning_secrets_after_refresh_fai
             ..Default::default()
         };
         let error = if issued {
-            let (kind, shape) = crate::test_support::issued::double();
+            let (kind, shape) = (signed_kind(), ISSUED_SHAPE.clone());
             gov.mint_signed_with_credential(spec, 2_000, 1_000, &kind, &shape)
                 .unwrap_err()
                 .to_string()
@@ -4403,7 +4516,7 @@ fn signed_mints_do_not_claim_applied_when_the_write_fails() {
             ..Default::default()
         };
         let error = if issued {
-            let (kind, shape) = crate::test_support::issued::double();
+            let (kind, shape) = (signed_kind(), ISSUED_SHAPE.clone());
             gov.mint_signed_with_credential(spec, 2_000, 1_000, &kind, &shape)
                 .unwrap_err()
                 .to_string()
@@ -4421,8 +4534,9 @@ fn signed_mints_do_not_claim_applied_when_the_write_fails() {
 fn delete_key_with_a_failing_refresh_still_stops_the_credential_and_says_so() {
     let store = Arc::new(RefreshBlipStore::new());
     let gov = GovState::new(store.clone(), None).unwrap();
-    let (key, _secret) = gov
-        .create_key(
+    let (key, _secret) = {
+        gov.set_signing_key(Some(self_serve_signer()));
+        gov.mint_signed(
             NewKeySpec {
                 name: "doomed".to_string(),
                 allowed_pools: None,
@@ -4430,9 +4544,11 @@ fn delete_key_with_a_failing_refresh_still_stops_the_credential_and_says_so() {
                 labels: std::collections::BTreeMap::new(),
                 ..Default::default()
             },
+            4_000_000_000,
             1_700_000_000,
         )
-        .unwrap();
+    }
+    .unwrap();
     assert!(
         gov.lookup_by_sub(&key.id).is_some(),
         "the key resolves before revocation"
@@ -5941,15 +6057,18 @@ fn a_role_bound_standing_follows_the_live_bindings_and_lapses_when_the_binding_g
 fn a_registry_key_standing_is_unchanged_by_the_bindings_resolver() {
     use crate::trust::validate::{GovResolve, Lapsed, Refusal, Snapshot, Standing};
     let gov = GovState::new(crate::real_store::store(), None).expect("registry");
-    let (key, _secret) = gov
-        .create_key(
+    let (key, _secret) = {
+        gov.set_signing_key(Some(self_serve_signer()));
+        gov.mint_signed(
             NewKeySpec {
                 name: "streamer".to_string(),
                 ..Default::default()
             },
+            4_000_000_000,
             1_700_000_000,
         )
-        .expect("mint");
+    }
+    .expect("mint");
     let rb = bound_table(crate::config::RoleBindingCfg::default());
     let standing = Standing::opened(
         Some(&key),
@@ -5992,15 +6111,31 @@ fn the_credential_read_answers_a_secret_for_any_id_and_live_only_for_a_live_cred
     let store = crate::real_store::store();
     let gov = GovState::new(store, None).unwrap();
     let now = busbar_kernel::store::now();
-    let (key, _bearer, akid, secret) = gov
-        .create_key_with_aws(
+    let (key, _bearer, akid, secret) = {
+        gov.set_signing_key(Some(self_serve_signer()));
+        gov.set_at_rest_keys(Some(crate::governance::at_rest::AtRestKeys::new(
+            &[3u8; 32], None,
+        )));
+        gov.mint_signed_with_credential(
             NewKeySpec {
                 name: "read".to_string(),
                 ..Default::default()
             },
+            4_000_000_000,
             now,
+            &signed_kind(),
+            &ISSUED_SHAPE,
         )
-        .unwrap();
+        .map(|(key, bearer, public_id, secret)| {
+            (
+                key,
+                bearer,
+                public_id,
+                secret.expose(&crate::seal::lend()).clone(),
+            )
+        })
+    }
+    .unwrap();
     let (got, live) = gov.credential_secret(&signed_kind(), &akid, now);
     assert_eq!(
         (got.expose(&crate::seal::lend()).as_str(), live),
@@ -6024,15 +6159,31 @@ fn the_credential_read_does_the_same_work_for_a_known_and_an_unknown_id() {
     let store = crate::real_store::store();
     let gov = GovState::new(store, None).unwrap();
     let now = busbar_kernel::store::now();
-    let (_key, _bearer, akid, _secret) = gov
-        .create_key_with_aws(
+    let (_key, _bearer, akid, _secret) = {
+        gov.set_signing_key(Some(self_serve_signer()));
+        gov.set_at_rest_keys(Some(crate::governance::at_rest::AtRestKeys::new(
+            &[3u8; 32], None,
+        )));
+        gov.mint_signed_with_credential(
             NewKeySpec {
                 name: "work".to_string(),
                 ..Default::default()
             },
+            4_000_000_000,
             now,
+            &signed_kind(),
+            &ISSUED_SHAPE,
         )
-        .unwrap();
+        .map(|(key, bearer, public_id, secret)| {
+            (
+                key,
+                bearer,
+                public_id,
+                secret.expose(&crate::seal::lend()).clone(),
+            )
+        })
+    }
+    .unwrap();
     let kind = signed_kind();
 
     let window = REVOCATION_SYNC_TTL_SECS;
