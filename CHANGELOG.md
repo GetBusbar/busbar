@@ -138,7 +138,9 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
   loads use the Store's per-host downgrade floor, and Busbar no longer reads or writes a local
   `plugin-highwater.json`. Bootstrap upgrades and rollbacks must update the base archive pin and
   intended signed artifact together; an incompatible admin upload or rollback is refused before
-  publication. See [plugin security](docs/plugins.md#security-model).
+  publication. Native plugin checks during offline validation and native migrations require the
+  same immutable operator archive authorization before execution. See
+  [plugin security](docs/plugins.md#security-model).
 
 - **A metadata host-list entry is read the way the destination it guards is read.**
   1.6.0 Changed: a Unicode-written `blocked_metadata_hosts` or `allow_metadata_hosts` entry matches the ASCII host it maps to, a destination host holding a `%` outside an IPv6 zone id is refused as `DEST_NO_HOST`, and a metadata host-list entry that names no usable host refuses startup with an error naming the entry.

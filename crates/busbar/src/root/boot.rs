@@ -5,7 +5,8 @@
 //! plugin loader through [`super::loader`] (the one module that names it). Stage 0 Plan reads what the configuration USES; stage 1 Discover reads
 //! each plugin's facts off its Statement (a signed manifest's rendering; nothing is opened); stage 2
 //! Select picks the plugins the configuration uses (BUSBAR-1.6.0.md §2, §4 Law 7). `--validate` runs these three
-//! stages and nothing dials, no library is opened and no store is opened.
+//! stages without opening an application Store. Native grammar and plugin checks cross the
+//! shared archive-pin gate before staging; ordinary registry discovery remains manifest-only.
 //!
 //! Stage 4 Book ([`book`]) opens the store, replays the WAL, seals the opening and binds the
 //! keyset, at boot only. The configured `plugins.dir` scan ([`dropped_from_config`]), the door
@@ -24,6 +25,79 @@ use busbar_contract::plugin_rows::PluginRows;
 use busbar_kernel::config::{FetchTarget, PluginsCfg};
 use busbar_kernel::config_validate::deal::{Document, Seat};
 use busbar_kernel::preflight::{BuildNote, CopyLine, Fetched, LinkedRow, RegistryIn};
+
+/// A host-owned pairing of the admitted archive and the exact retained library allocation.
+/// Weak ownership follows the caller's generation without keeping retired images alive forever.
+#[derive(Clone)]
+struct NativeImage {
+    bytes: std::sync::Weak<Vec<u8>>,
+    row: busbar_contract::plugin_rows::Row,
+    archive: String,
+    plugins: Arc<PluginsCfg>,
+}
+
+static NATIVE_IMAGES: std::sync::Mutex<Vec<NativeImage>> = std::sync::Mutex::new(Vec::new());
+
+fn remember_native_images(registry: &PluginRegistry, plugins: &PluginsCfg) {
+    let plugins = Arc::new(plugins.clone());
+    let fresh: Vec<_> = registry
+        .loadable()
+        .iter()
+        .filter(|image| !image.linked())
+        .filter_map(|image| {
+            Some(NativeImage {
+                bytes: Arc::downgrade(&image.lib_bytes),
+                row: PluginRows::resolve(registry, &image.manifest.name)?,
+                archive: image.archive_sha256.clone()?,
+                plugins: Arc::clone(&plugins),
+            })
+        })
+        .collect();
+    let mut remembered = NATIVE_IMAGES.lock().unwrap_or_else(|p| p.into_inner());
+    remembered.retain(|image| image.bytes.strong_count() != 0);
+    remembered.extend(fresh);
+}
+
+/// Root policy is installed before initial discovery, CLI validation, or any native grammar probe.
+/// All seven kinds and the migration/checker lanes cross the loader's same pre-staging frontier.
+pub fn install_native_load_guard() -> Result<(), &'static str> {
+    super::loader::install_native_load_guard(authorize_native_image)
+}
+
+fn authorize_native_image(bytes: &[u8], display: &str) -> Result<(), String> {
+    // Clone metadata before upgrading allocations or consulting the Store: no callback or Store
+    // wait runs under the registry lock. Pointer+length binds this proof to this retained image,
+    // including when another registry has the same filename or a file was replaced after scan.
+    let snapshots = NATIVE_IMAGES
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone();
+    let image = snapshots.into_iter().find_map(|image| {
+        let held = image.bytes.upgrade()?;
+        (held.as_ptr() == bytes.as_ptr() && held.len() == bytes.len()).then_some((image, held))
+    });
+    let (image, _held) = image.ok_or_else(|| {
+        format!("native plugin '{display}' has no retained admitted archive proof")
+    })?;
+    if let Some(authority) = PLUGIN_FLOOR.get() {
+        super::durability::check_plugin_floor_candidate(
+            authority.calls.as_ref(),
+            &authority.host,
+            &image.row,
+            &image.plugins.first_party_floors,
+        )
+    } else {
+        // Before Store recovery, every registry used by a shipping native caller was built from
+        // operator input (base boot/validation or an explicit migration document), never overlay.
+        // An unknown image/context above refuses; no filename or callback supplies a default pin.
+        busbar_kernel::appbuild::validate_bootstrap_archive(
+            &image.row.name,
+            &image.row.file,
+            Some(&image.archive),
+            &image.plugins,
+        )
+    }
+}
 
 /// The base Store is the deployment's stable security authority across recovered generations.
 /// Bootstrap must still authenticate its own Store/secret/transport dependencies before this
@@ -118,6 +192,9 @@ fn registry_with_floor(
         }),
     };
     let registry = super::loader::boot::registry(Build { linked, scan }, note)?;
+    if let Some(plugins) = plugins {
+        remember_native_images(&registry, plugins);
+    }
     // `registry` contains verified bytes only. Check before any caller can probe/open a hook,
     // resolve a secret, or bind another kind; a late Book refusal cannot undo native code.
     if check_floor {

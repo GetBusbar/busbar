@@ -7,8 +7,7 @@ use super::*;
 fn early_plane_archive_pins_refuse_before_native_constructors() {
     const CHILD: &str = "BUSBAR_EARLY_PLANE_ARCHIVE_CHILD";
     if std::env::var_os(CHILD).is_some() {
-        crate::main();
-        panic!("the constructor-only plane exports no plugin door");
+        super::tests::constructor_child(false);
     }
     let dir = std::env::temp_dir().join(format!(
         "busbar-plane-bootstrap-{}-{}",
@@ -101,6 +100,108 @@ __attribute__((constructor)) static void mark_loaded(void) {
             .current_dir(&dir).env(CHILD, "1").env("BUSBAR_PLANE_CTOR_MARKER", &marker)
             .env("BUSBAR_CONFIG", &config).env("BUSBAR_PROVIDERS", &providers)
             .env("BUSBAR_DATA_DIR", dir.join("state")).output().unwrap();
+        let logs = String::from_utf8_lossy(&output.stdout).into_owned()
+            + &String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !output.status.success(),
+            "the fixture exports no door: {logs}"
+        );
+        assert_eq!(marker.exists(), constructor, "{tag}: {logs}");
+        if !constructor {
+            assert!(logs.contains("exact archive SHA-256"), "{tag}: {logs}");
+        }
+        assert!(!dir.join("state/plugin-highwater.json").exists());
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn offline_secret_checker_archive_pins_refuse_before_native_constructors() {
+    const CHILD: &str = "BUSBAR_OFFLINE_SECRET_ARCHIVE_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        super::tests::constructor_child(true);
+    }
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-secret-bootstrap-{}-{}",
+        std::process::id(),
+        hex::encode(busbar_kernel::door::op_id().0)
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("constructor.c");
+    let image = dir.join("constructor.so");
+    std::fs::write(
+        &source,
+        r#"#include <stdio.h>
+#include <stdlib.h>
+__attribute__((constructor)) static void mark_loaded(void) {
+    const char *path = getenv("BUSBAR_SECRET_CTOR_MARKER");
+    if (path) { FILE *out = fopen(path, "wb"); if (out) { fputs("loaded", out); fclose(out); } }
+}
+"#,
+    )
+    .unwrap();
+    let mut compiler = std::process::Command::new("cc");
+    #[cfg(target_os = "macos")]
+    compiler.arg("-dynamiclib");
+    #[cfg(not(target_os = "macos"))]
+    compiler.args(["-shared", "-fPIC"]);
+    let compiled = compiler.arg(source).arg("-o").arg(&image).output().unwrap();
+    assert!(
+        compiled.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+    let library = std::fs::read(image).unwrap();
+    let stated = crate::root::loader::dispatch::rendering_of(
+        busbar_test_kit::root_door_fixtures::migrate_stub::door,
+    )
+    .unwrap();
+    let key = crate::root::loader::sign::SigningKey::from_bytes(&[0x39; 32]);
+    let manifest = crate::root::loader::sign::sign(
+        &key,
+        crate::root::loader::sign::Manifest {
+            name: "busbar-secret-stub".into(),
+            alias: "constructor-secret".into(),
+            kind: "secret".into(),
+            version: "1.6.0".into(),
+            publisher: "busbar".into(),
+            abi_version: crate::root::loader::supported_abi("secret")[0],
+            statement: Some(hex::encode(stated)),
+            ..Default::default()
+        },
+        &library,
+    );
+    let archive = crate::root::loader::tarball::package(&manifest, "lib.so", &library).unwrap();
+    let hash = crate::root::loader::sign::sha256_hex(&archive);
+    let plugins = dir.join("plugins");
+    std::fs::create_dir_all(&plugins).unwrap();
+    std::fs::write(plugins.join("secret.tar.gz"), archive).unwrap();
+    let config = dir.join("config.yaml");
+    let providers = dir.join("providers.yaml");
+    std::fs::write(&providers, "{}\n").unwrap();
+    for (tag, pin, constructor) in [
+        ("missing", None, false),
+        ("wrong", Some("00".repeat(32)), false),
+        ("matching", Some(hash.clone()), true),
+    ] {
+        let fetch: Vec<_> = pin
+            .into_iter()
+            .map(|pin| serde_json::json!({"url":"http://127.0.0.1:9/secret.tar.gz","sha256":pin}))
+            .collect();
+        let secret = serde_json::json!({"module":"constructor-secret","settings":{}});
+        let document = serde_json::json!({
+            "providers":{},"models":{},"store":{"module":"memory","settings":{}},
+            "advanced":{"worker_threads":1},"tls":{"cert":secret,"key":secret},
+            "plugins":{"enabled":true,"dir":plugins,"fetch":fetch}
+        });
+        std::fs::write(&config, serde_yaml::to_string(&document).unwrap()).unwrap();
+        let marker = dir.join(format!("{tag}.marker"));
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact","root::boot::bootstrap_pin_tests::offline_secret_checker_archive_pins_refuse_before_native_constructors","--nocapture"])
+            .current_dir(&dir).env(CHILD,"1").env("BUSBAR_SECRET_CTOR_MARKER",&marker)
+            .env("BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY",hex::encode(key.verifying_key().to_bytes()))
+            .env("BUSBAR_CONFIG",&config).env("BUSBAR_PROVIDERS",&providers)
+            .env("BUSBAR_DATA_DIR",dir.join("state")).output().unwrap();
         let logs = String::from_utf8_lossy(&output.stdout).into_owned()
             + &String::from_utf8_lossy(&output.stderr);
         assert!(

@@ -678,3 +678,34 @@ mod on_linux_memfd {
         release(loaded);
     }
 }
+
+#[test]
+fn an_embedding_host_guard_runs_before_any_native_staging() {
+    const CHILD: &str = "BUSBAR_NATIVE_GUARD_TEST_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "stage::tests::an_embedding_host_guard_runs_before_any_native_staging",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    install_native_load_guard(|_, _| Err("host archive/floor policy refused".into())).unwrap();
+    let before = STAGED_HERE.with(|counter| counter.get());
+    let error = match load_library_from_bytes(b"no native format is consulted", "guarded-image") {
+        Ok(_) => panic!("the policy must refuse before mapping"),
+        Err(error) => error,
+    };
+    assert_eq!(error, "host archive/floor policy refused");
+    assert_eq!(STAGED_HERE.with(|counter| counter.get()), before);
+}

@@ -1001,7 +1001,30 @@ fn a_committing_builds_admission_replaces_the_dropped_secret_rows() {
     );
 }
 
-/// Exercise main's actual bootstrap path in a fresh process: constructors run at dlopen, before
+/// The production discovery and run/validation entry points, isolated from libtest's CLI flags.
+/// No Store, plugin axis or staging function is replaced by a test double in these children.
+pub(super) fn constructor_child(validate: bool) -> ! {
+    let late = crate::root::serve::LateServices::new();
+    crate::root::boot::install_native_load_guard().unwrap();
+    crate::root::loader::dispatch::handle::arm().unwrap();
+    let dispatcher = crate::root::dispatch::boot(1, &late);
+    crate::root::doors::install_dispatcher(dispatcher);
+    crate::register_protocols();
+    crate::register_planes();
+    crate::root::doors::install_plugin_logs(crate::root::boot::plugin_logs());
+    let catalogue = crate::register_diagnostics();
+    if validate {
+        std::process::exit(crate::root::cli::validate_config_command());
+    }
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(crate::run(1, late, catalogue, crate::ControlWork::new()));
+    panic!("the constructor-only fixture must be refused for its missing plugin door");
+}
+
+/// Exercise the production bootstrap run path in a fresh process: constructors run at dlopen, before
 /// a missing door can be refused. The same signed native image must remain unopened under a
 /// mismatched base archive pin, and reach its constructor only under the matching pin.
 #[cfg(unix)]
@@ -1010,8 +1033,7 @@ fn bootstrap_archive_pins_refuse_before_native_constructors() {
     const CHILD: &str = "BUSBAR_BOOTSTRAP_ARCHIVE_CHILD";
     const MARKER: &str = "BUSBAR_BOOTSTRAP_CTOR_MARKER";
     if std::env::var_os(CHILD).is_some() {
-        crate::main();
-        panic!("the constructor-only fixture must be refused for its missing plugin door");
+        constructor_child(false);
     }
     let dir = scratch("bootstrap-constructor");
     let source = dir.join("constructor.c");

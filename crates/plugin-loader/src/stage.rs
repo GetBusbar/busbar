@@ -460,6 +460,18 @@ std::thread_local! {
     pub(crate) static STAGED_HERE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
+/// Optional embedding-host policy at the actual native-code boundary. Standalone loader tools
+/// retain their explicit policy; the shipping composition root installs its Store/bootstrap gate.
+pub type NativeLoadGuard = fn(&[u8], &str) -> Result<(), String>;
+static NATIVE_LOAD_GUARD: OnceLock<NativeLoadGuard> = OnceLock::new();
+
+/// Install once, before the embedding host can open any dropped native image.
+pub fn install_native_load_guard(guard: NativeLoadGuard) -> Result<(), &'static str> {
+    NATIVE_LOAD_GUARD
+        .set(guard)
+        .map_err(|_| "a native load guard is already installed")
+}
+
 /// Load a dynamic library from EXACTLY the in-memory `bytes` supplied - the verified-bytes ==
 /// loaded-bytes entrypoint. On Linux this uses `memfd_create` + `/proc/self/fd/N` (zero disk
 /// files); elsewhere (or if memfd fails) the bytes are staged into the per-process private `0700`
@@ -469,6 +481,9 @@ pub(crate) fn load_library_from_bytes(
     bytes: &[u8],
     display: &str,
 ) -> Result<(Library, Staged), String> {
+    if let Some(guard) = NATIVE_LOAD_GUARD.get() {
+        guard(bytes, display)?;
+    }
     #[cfg(test)]
     STAGED_HERE.with(|n| n.set(n.get() + 1));
     #[cfg(target_os = "linux")]

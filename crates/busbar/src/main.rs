@@ -352,6 +352,7 @@ fn main() {
     // It serves the kernel's host services through `LateServices`, installed once the config is
     // composed (`root::serve::compose`, in `run()`).
     let late_services = root::serve::LateServices::new();
+    root::boot::install_native_load_guard().unwrap_or_else(|error| die(error));
     // THE HANDLE KEY (#74), drawn before the dispatcher exists: a process whose OS random source
     // cannot answer refuses to boot rather than mint plugin handles under a weaker key.
     if let Err(e) = root::loader::dispatch::handle::arm() {

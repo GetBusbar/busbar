@@ -686,6 +686,15 @@ get code executed, and a compromised or replayed plugin must not load.
    before publication. Previously unpinned dropped bootstrap configurations must add these hashes
    when upgrading to 1.6.0. No new configuration key is required.
 
+   The same pre-staging gate covers all seven kinds, including cold plugin checks invoked by
+   `--validate` and native migrations invoked by `--migrate-config`. These commands open no
+   application Store; any dropped native checker or migrator they execute must therefore carry
+   the immutable fetch pin from their operator input. A missing pin is an actionable refusal,
+   rather than permission to execute an unbounded older artifact. Once the Store is bound, each
+   actual native opening rechecks its exact candidate against the Store floor, even if its
+   registry was captured earlier. Standalone loader-library tools retain their own explicit
+   policy; this gate is installed by the shipping Busbar composition root before discovery.
+
 4. **Structural fail-closed.** Before trust is even consulted, every tarball must unpack cleanly
    (bounded sizes, exactly two members, no path tricks), the manifest must be complete and
    well-formed, `sha256(lib)` must match, and the `abi_version` must be one this binary speaks.

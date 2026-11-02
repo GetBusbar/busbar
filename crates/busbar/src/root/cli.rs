@@ -358,7 +358,7 @@ pub(crate) fn handle_cli_flags() -> Option<i32> {
 /// Honors `-c`/`--config`, `--providers`, `BUSBAR_CONFIG`, and `--safe-mode` exactly as boot does.
 /// Prints an OK summary + exits 0 when valid;
 /// prints every error (same text boot prints) + exits 1 when not.
-fn validate_config_command() -> i32 {
+pub(crate) fn validate_config_command() -> i32 {
     let providers_override = providers_override();
     let config_path = std::path::PathBuf::from(resolve_config_path(config_path_flag().as_deref()));
     let safe_mode = safe_mode_requested(std::env::args());
@@ -405,8 +405,8 @@ fn validate_config_command() -> i32 {
     // the semantic pass; the destination guard as boot builds it (a bad `advanced.allow_destinations`
     // entry fails here as it fails the boot); the plugin pre-flight boot shares (consistency, trust,
     // the three-phase tarball scan, store resolution); and every secret module and reference
-    // against that registry. Manifest-only: nothing is `dlopen`ed, no store is opened, nothing is
-    // fetched. `--validate` alone also RESOLVES every built-in secret: boot and the admin paths warn
+    // against that registry. No Store is opened and nothing is fetched. Native grammar/hook/secret checks use the root's pre-staging archive-pin gate;
+    // no application Store is opened. `--validate` alone also RESOLVES every built-in secret: boot and the admin paths warn
     // on an unresolvable secret by design, but an operator asking whether the config is good gets
     // the strict answer.
     let destination_guard =
