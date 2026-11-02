@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(super) fn next(counter: &AtomicU64) -> u64 {
