@@ -2607,14 +2607,20 @@ mod dated_rate_card_history {
     /// seam because `record_metering` can only ever bucket at the wall clock, and these windows are
     /// in the past.
     pub(super) fn gov_with_rows(rows: &[(u64, u64)]) -> Arc<GovState> {
+        gov_with_priced_rows(rows.iter().map(|(bucket, era)| (*bucket, *era, "")))
+    }
+
+    fn gov_with_priced_rows<'a>(
+        rows: impl IntoIterator<Item = (u64, u64, &'a str)>,
+    ) -> Arc<GovState> {
         let store = Arc::new(MemoryStore::new());
-        for (bucket, priced_from_ms) in rows {
+        for (bucket, priced_from_ms, pricing_version) in rows {
             busbar_contract::records::RecordStore::add_metering(
                 store.as_ref(),
                 &busbar_contract::records::MeteringDelta {
                     usage_units: Default::default(),
                     key_id: KEY.to_string(),
-                    bucket: *bucket,
+                    bucket,
                     model: LANE.to_string(),
                     provider: PROVIDER.to_string(),
                     tokens_input: TOKENS,
@@ -2624,8 +2630,8 @@ mod dated_rate_card_history {
                     requests: 1,
                     billable_requests: 1,
                     key_group_at_use: String::new(),
-                    pricing_version: String::new(),
-                    priced_from_ms: *priced_from_ms,
+                    pricing_version: pricing_version.to_string(),
+                    priced_from_ms,
                 },
             )
             .expect("the memory store accepts a metering delta");
@@ -2848,6 +2854,145 @@ mod dated_rate_card_history {
             read(gov, src, prepaid).await.total.spend_micros,
             1_000,
             "the prepaid window prices at 1"
+        );
+    }
+
+    /// A Store activation can remain unconfirmed across a UTC boundary while the serving App
+    /// continues stamping its old configuration era. Observing that activation later must not
+    /// reprice those old-served counts at the later bucket's newer configuration.
+    #[tokio::test]
+    async fn old_served_counts_keep_their_config_era_across_a_later_bucket_and_activation() {
+        let (old, activated, later) = windows();
+        let mut history = History::opening(card(20.0), 0);
+        let old_seq = history.append(CardEntryDraft {
+            effective_from: old * 1_000,
+            effective_until: None,
+            card: card(10.0),
+            appended_at: old * 1_000,
+            author: Author::Config { policy_epoch: 1 },
+        });
+        history.append(CardEntryDraft {
+            effective_from: activated * 1_000,
+            effective_until: None,
+            card: card(1.0),
+            appended_at: activated * 1_000,
+            author: Author::Config { policy_epoch: 2 },
+        });
+        let src = source(history);
+        let old_rows = gov_with_rows(&[(later, old * 1_000)]);
+        let old_read = read(old_rows.clone(), src, later).await;
+        assert_eq!(old_read.total.spend_micros, 10_000);
+        assert_eq!(old_read.rate_card_version, Some(old_seq.get()));
+        assert_eq!(
+            read_as_of(old_rows, src, later, Some(old_seq.get()))
+                .await
+                .unwrap()
+                .total
+                .spend_micros,
+            10_000,
+        );
+        let both = gov_with_rows(&[(later, old * 1_000), (later, activated * 1_000)]);
+        let both_read = read(both, src, later).await;
+        assert_eq!(both_read.total.tokens_input, TOKENS * 2);
+        assert_eq!(both_read.total.spend_micros, 11_000);
+    }
+
+    /// Era selection and correction time are separate: a later Config cannot steal an old row,
+    /// while a covering amendment still reaches that row at its own wall-clock bucket.
+    #[tokio::test]
+    async fn amendments_reach_old_served_eras_without_enabling_later_config_repricing() {
+        let (old, activated, corrected_day) = windows();
+        let mut history = History::opening(card(20.0), 0);
+        let old_seq = history.append(CardEntryDraft {
+            effective_from: old * 1_000,
+            effective_until: None,
+            card: card(10.0),
+            appended_at: old * 1_000,
+            author: Author::Config { policy_epoch: 1 },
+        });
+        let activated_seq = history.append(CardEntryDraft {
+            effective_from: activated * 1_000,
+            effective_until: None,
+            card: card(1.0),
+            appended_at: activated * 1_000,
+            author: Author::Config { policy_epoch: 2 },
+        });
+        let amended_seq = history.append(CardEntryDraft {
+            effective_from: corrected_day * 1_000,
+            effective_until: Some((corrected_day + DAY) * 1_000),
+            card: card(5.0),
+            appended_at: busbar_kernel::store::now_ms(),
+            author: Author::Amend {
+                reason_hash: [7; 32],
+            },
+        });
+        let src = source(history);
+        let rows = gov_with_rows(&[(activated, old * 1_000), (corrected_day, old * 1_000)]);
+        let before = read_as_of(rows.clone(), src, corrected_day, Some(activated_seq.get()))
+            .await
+            .unwrap();
+        assert_eq!(before.total.spend_micros, 10_000);
+        assert_eq!(before.rate_card_version, Some(old_seq.get()));
+        let corrected = read(rows.clone(), src, corrected_day).await;
+        assert_eq!(corrected.total.spend_micros, 5_000);
+        assert_eq!(corrected.rate_card_version, Some(amended_seq.get()));
+        assert_eq!(read(rows, src, activated).await.total.spend_micros, 10_000);
+    }
+
+    /// Exact opening provenance distinguishes new counts served at era zero from historical
+    /// undated rows. Legacy free-text versions keep their temporal reading; a malformed or unknown
+    /// versioned identity refuses instead of quietly picking the current configuration.
+    #[tokio::test]
+    async fn exact_opening_provenance_survives_a_later_config_and_legacy_names_keep_their_reading()
+    {
+        use busbar_kernel::cost::EntryId;
+        const UNKNOWN_ENTRY_ID: &str = "ffffffffffffffffffffffff";
+        const LEGACY_NAMED_VERSION: &str = "historical-card";
+        let (_old, activated, later) = windows();
+        let mut history = History::opening(card(10.0), 0);
+        let opening_version = history.entries()[0].id().metering_version();
+        let activated_seq = history.append(CardEntryDraft {
+            effective_from: activated * 1_000,
+            effective_until: None,
+            card: card(1.0),
+            appended_at: activated * 1_000,
+            author: Author::Config { policy_epoch: 1 },
+        });
+        let activated_version = history.entries()[1].id().metering_version();
+        let src = source(history);
+        let known = gov_with_priced_rows([(later, 0, opening_version.as_str())]);
+        let view = read(known, src, later).await;
+        assert_eq!(view.total.spend_micros, 10_000);
+        assert_eq!(view.rate_card_version, Some(0));
+        for legacy in ["", LEGACY_NAMED_VERSION] {
+            let rows = gov_with_priced_rows([(later, 0, legacy)]);
+            let view = read(rows, src, later).await;
+            assert_eq!(view.total.spend_micros, 1_000);
+            assert_eq!(view.rate_card_version, Some(activated_seq.get()));
+        }
+        let malformed = EntryId::METERING_VERSION_PREFIX;
+        let unknown = EntryId::parse_hex(UNKNOWN_ENTRY_ID)
+            .unwrap()
+            .metering_version();
+        for (era, version) in [
+            (0, malformed),
+            (0, unknown.as_str()),
+            (activated * 1_000, opening_version.as_str()),
+        ] {
+            let rows = gov_with_priced_rows([(later, era, version)]);
+            assert!(matches!(
+                read_as_of(rows, src, later, None).await,
+                Err(AdminError::Internal)
+            ));
+        }
+        let new_rows =
+            gov_with_priced_rows([(later, activated * 1_000, activated_version.as_str())]);
+        assert!(
+            matches!(
+                read_as_of(new_rows, src, later, Some(0)).await,
+                Err(AdminError::Internal)
+            ),
+            "a snapshot cannot price counts whose exact source entry it does not contain"
         );
     }
 
@@ -4215,6 +4360,77 @@ mod plane_fees_on_admin_usage {
         let (book, admin) = serve_calls(|| carded_cost(70_000, 3, 0), &[t(), t()]).await;
         assert_eq!(book, 410);
         assert_eq!(admin, 410 * MICROS_PER_MINOR);
+    }
+
+    /// The row total and each reported class use the same old served entry after a newer
+    /// activation becomes visible across a bucket boundary. Resolving the class by wall time a
+    /// second time would report a cost that disagrees with the very row containing it.
+    #[tokio::test]
+    async fn an_old_served_entry_prices_both_the_row_and_its_itemized_classes() {
+        use busbar_kernel::cost::{Author, CardEntryDraft, History};
+        const TOOL_SUBJECT: &str = "srv.read";
+        const TOOL_CLASS: &str = "tool_calls";
+        const CALLS: u64 = 3;
+        const OLD_CALL_MICROS: u64 = 70_000;
+        const NEW_CALL_MICROS: u64 = 10_000;
+        const OLD_REQUEST_MINOR: i64 = 3;
+        const NEW_REQUEST_MINOR: i64 = 1;
+        let bucket = busbar_kernel::governance::metering_bucket(busbar_kernel::store::now());
+        let day = busbar_kernel::governance::METERING_BUCKET_SECS;
+        let old_era = (bucket - day) * 1_000;
+        let activated = (bucket - day / 2) * 1_000;
+        let old_cost = carded_cost(OLD_CALL_MICROS, OLD_REQUEST_MINOR, 0);
+        let new_cost = carded_cost(NEW_CALL_MICROS, NEW_REQUEST_MINOR, 0);
+        let mut history = History::opening(new_cost.card().clone(), 0);
+        let old_seq = history.append(CardEntryDraft {
+            effective_from: old_era,
+            effective_until: None,
+            card: old_cost.card().clone(),
+            appended_at: old_era,
+            author: Author::Config { policy_epoch: 1 },
+        });
+        let old_version = history.entries()[1].id().metering_version();
+        history.append(CardEntryDraft {
+            effective_from: activated,
+            effective_until: None,
+            card: new_cost.card().clone(),
+            appended_at: activated,
+            author: Author::Config { policy_epoch: 2 },
+        });
+        let store = Arc::new(MemoryStore::new());
+        store
+            .add_metering(&busbar_contract::records::MeteringDelta {
+                key_id: KEY.to_string(),
+                bucket,
+                model: TOOL_SUBJECT.to_string(),
+                provider: FEE_PLANE.to_string(),
+                tokens_input: 0,
+                tokens_output: 0,
+                tokens_cache_read: 0,
+                tokens_cache_write: 0,
+                requests: CALLS,
+                billable_requests: CALLS,
+                key_group_at_use: String::new(),
+                pricing_version: old_version,
+                priced_from_ms: old_era,
+                usage_units: std::collections::BTreeMap::from([(TOOL_CLASS.to_string(), CALLS)]),
+            })
+            .unwrap();
+        let gov = Arc::new(GovState::new(store, None).unwrap());
+        let app = crate::new_test_app().governance(gov).cost(new_cost).build();
+        let _planes = TestRegistryIsolation::seeded(&[&POOLS, &FEE, &FREE]);
+        let view = AdminService::new(app)
+            .with_rate_history(Arc::new(history))
+            .get_usage(Some(bucket), None)
+            .await
+            .unwrap();
+        let call_count = i64::try_from(CALLS).unwrap();
+        let class_cost = call_count * i64::try_from(OLD_CALL_MICROS).unwrap();
+        let request_cost = call_count * OLD_REQUEST_MINOR * MICROS_PER_MINOR;
+        assert_eq!(view.total.spend_micros, class_cost + request_cost);
+        assert_eq!(view.total.classes[TOOL_CLASS].cost, class_cost);
+        assert_eq!(view.by_model[0].usage.classes[TOOL_CLASS].cost, class_cost);
+        assert_eq!(view.rate_card_version, Some(old_seq.get()));
     }
 
     /// THE DATED PATH (#79) prices a row's ledgered classes as the fallback does: a plane's fee row
