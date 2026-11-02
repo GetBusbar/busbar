@@ -29,7 +29,7 @@ fn door(key: &str) -> String {
 }
 
 fn warm_shared_protocol_registry() {
-    let _ = busbar_kernel::ingress::protocols::known_protocols();
+    let _ = busbar_kernel_testkit::ingress::protocols::known_protocols();
 }
 
 #[test]
@@ -112,7 +112,7 @@ fn the_fallback_wire_format_count_comes_from_the_protocol_registry() {
     warm_shared_protocol_registry();
     assert_eq!(
         wire_formats(fallback()),
-        busbar_kernel::ingress::protocols::known_protocols().len()
+        busbar_kernel_testkit::ingress::protocols::known_protocols().len()
     );
     assert!(
         wire_formats(fallback()) >= 2,
@@ -440,12 +440,12 @@ fn the_fallback_planes_dialects_are_the_registrys_so_an_empty_registry_empties_t
     warm_shared_protocol_registry();
     assert_eq!(
         wire_format_names(fallback()),
-        busbar_kernel::ingress::protocols::known_protocols(),
+        busbar_kernel_testkit::ingress::protocols::known_protocols(),
         "the fallback plane's wire formats must track the registry"
     );
 
-    let empty = busbar_kernel::ingress::protocols::Registry::new(
-        busbar_kernel::ingress::protocols::merged_boot_decls(&[], &[]),
+    let empty = busbar_kernel_testkit::ingress::protocols::Registry::new(
+        busbar_kernel_testkit::ingress::protocols::merged_boot_decls(&[], &[]),
     );
     let names: &'static [&'static str] = empty.codec_protocols();
     assert!(names.is_empty(), "premise: no declarations, no dialects");

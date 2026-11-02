@@ -496,9 +496,9 @@ fn the_scrapes_pool_queued_gauge_reads_the_live_depth() {
 
     let pool = "q-live-pool";
 
-    let dialect = busbar_kernel::ingress::protocols::residual_default_dialect()
+    let dialect = busbar_kernel_testkit::ingress::protocols::residual_default_dialect()
         .or_else(|| {
-            busbar_kernel::ingress::protocols::detect_protocol(
+            busbar_kernel_testkit::ingress::protocols::detect_protocol(
                 "/v1/chat/completions",
                 &axum::http::HeaderMap::new(),
             )
