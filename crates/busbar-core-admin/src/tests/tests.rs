@@ -2153,7 +2153,7 @@ struct GatedKeyStore {
     inner: Arc<dyn busbar_kernel::governance::RecordStore>,
     entered: tokio::sync::mpsc::Sender<()>,
     release: std::sync::Mutex<Option<std::sync::mpsc::Receiver<()>>>,
-    landed: tokio::sync::mpsc::Sender<()>,
+    landed: tokio::sync::mpsc::Sender<String>,
     fired: std::sync::atomic::AtomicBool,
 }
 impl busbar_kernel::governance::RecordStore for GatedKeyStore {
@@ -2204,7 +2204,9 @@ impl busbar_kernel::governance::RecordStore for GatedKeyStore {
             let _ = rx.recv_timeout(std::time::Duration::from_secs(30));
         }
         let out = self.inner.put_key(key);
-        let _ = self.landed.try_send(());
+        if out.is_ok() {
+            let _ = self.landed.try_send(key.id.clone());
+        }
         out
     }
     fn get_key(
@@ -2368,7 +2370,7 @@ async fn an_idempotency_key_survives_a_client_disconnect_mid_mint() {
     busbar_kernel::snapshot::init();
     let inner = Arc::new(MemoryStore::new());
     let (entered_tx, mut entered_rx) = tokio::sync::mpsc::channel::<()>(1);
-    let (landed_tx, mut landed_rx) = tokio::sync::mpsc::channel::<()>(1);
+    let (landed_tx, mut landed_rx) = tokio::sync::mpsc::channel::<String>(1);
     let (release_tx, release_rx) = std::sync::mpsc::sync_channel::<()>(1);
     let gated_store: Arc<dyn busbar_kernel::governance::RecordStore> = Arc::new(GatedKeyStore {
         inner,
@@ -2468,7 +2470,7 @@ async fn an_idempotency_key_survives_a_client_disconnect_mid_mint() {
     release_tx
         .send(())
         .expect("the parked mint hung up on its release channel");
-    tokio::time::timeout(RENDEZVOUS_BACKSTOP, landed_rx.recv())
+    let committed_id = tokio::time::timeout(RENDEZVOUS_BACKSTOP, landed_rx.recv())
         .await
         .expect(
             "waited 60s after releasing the parked mint and its write never committed. A mint \
@@ -2484,11 +2486,19 @@ async fn an_idempotency_key_survives_a_client_disconnect_mid_mint() {
     // still open and the reservation was never cleared) or — since the mint already landed and the
     // cache slot may have been replaced by the real committed body before this retry runs — a replay
     // of that same committed response. What must NOT happen is a fresh 201 that mints a SECOND key.
-    assert_ne!(
-        retry.status().as_u16(),
-        201,
-        "a disconnect mid-mint must never let a retry mint a SECOND key"
+    assert!(
+        matches!(retry.status().as_u16(), 201 | 409),
+        "a retry must replay the first answer or refuse the held claim: {}",
+        retry.status()
     );
+    if retry.status().as_u16() == 201 {
+        let replay: serde_json::Value = retry.json().await.unwrap();
+        assert_eq!(
+            replay["id"].as_str(),
+            Some(committed_id.as_str()),
+            "a cached 201 must name the first committed key, never a second mint"
+        );
+    }
 
     let keys: serde_json::Value = normal_client
         .get(format!("http://{addr}/api/v1/admin/keys"))
@@ -2507,6 +2517,12 @@ async fn an_idempotency_key_survives_a_client_disconnect_mid_mint() {
     assert_eq!(
         disconnector_count, 1,
         "exactly one key must exist after a client disconnect mid-mint + retry, got: {items:?}"
+    );
+    assert!(
+        items
+            .iter()
+            .any(|key| key["id"].as_str() == Some(committed_id.as_str())),
+        "the one retained key must be the first committed key"
     );
 
     handle.abort();
