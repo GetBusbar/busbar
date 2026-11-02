@@ -1552,7 +1552,10 @@ async fn proof_self_mint_disabled_refuses_self_serve() {
             .idp_chain()
             .governance(gov.clone())
             .overlay_backend(overlay.backend())
-            .group("team", GroupCfg::default())
+            .groups_tree(std::collections::BTreeMap::from([(
+                "team".into(),
+                GroupCfg::default(),
+            )]))
             .role_bindings(bindings("test-idp-module", "idp-user", Some("team")))
             .mint_policy(crate::governance::mint_policy::MintPolicy {
                 self_mint,
@@ -1635,7 +1638,10 @@ async fn self_mint_mode_policy_gates_exchange_login_and_refresh_before_mutation(
             let app = crate::test_support::TestApp::new()
                 .idp_chain()
                 .governance(gov.clone())
-                .group("team", GroupCfg::default())
+                .groups_tree(std::collections::BTreeMap::from([(
+                    "team".into(),
+                    GroupCfg::default(),
+                )]))
                 .role_bindings(bindings("test-idp-module", "idp-user", Some("team")))
                 .mint_policy(policy)
                 .overlay_backend(overlay.backend())
