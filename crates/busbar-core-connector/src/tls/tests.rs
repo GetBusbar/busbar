@@ -29,6 +29,35 @@ fn temp_pem(tag: &str, contents: &str) -> std::path::PathBuf {
     p
 }
 
+// Each resolver admits only this test's explicit PEM references; production file resolution stays absent.
+fn fixture_resolver(tls: &TlsCfg) -> SecretResolver {
+    let bindings: Vec<_> = [&tls.cert, &tls.key]
+        .into_iter()
+        .chain(tls.client_ca.iter())
+        .map(|reference| {
+            assert_eq!(reference.module, "file");
+            let path = reference.settings["path"].as_str().unwrap();
+            let material = std::fs::read(path)
+                .map(busbar_kernel::config::secret::Held::new)
+                .map_err(|error| format!("cannot read fixture {path}: {error}"));
+            (
+                reference.module.clone(),
+                serde_json::Value::Object(reference.settings.clone()).to_string(),
+                material,
+            )
+        })
+        .collect();
+    SecretResolver::with_plugin(Box::new(move |module, settings| {
+        bindings
+            .iter()
+            .find(|(bound_module, bound_settings, _)| {
+                bound_module == module && bound_settings == settings
+            })
+            .map(|(_, _, material)| material.clone())
+            .unwrap_or_else(|| Err("unbound TLS fixture reference".into()))
+    }))
+}
+
 fn valid_tls_cfg() -> (TlsCfg, String) {
     let (cert_pem, key_pem) = gen_self_signed();
     let cert_file = temp_pem("cert", &cert_pem);
@@ -41,6 +70,23 @@ fn valid_tls_cfg() -> (TlsCfg, String) {
         },
         cert_pem,
     )
+}
+
+#[test]
+fn pem_fixtures_are_explicitly_bound_without_restoring_builtin_file_resolution() {
+    use busbar_contract::secret::SecretResolve;
+    let (tls, _) = valid_tls_cfg();
+    let resolver = fixture_resolver(&tls);
+    build_server_config(&tls, &resolver).expect("the admitted PEM pair builds");
+    let (other, _) = valid_tls_cfg();
+    let error = resolver
+        .resolve(&other.cert)
+        .expect_err("another existing file is not admitted");
+    assert!(error.contains("unbound TLS fixture reference"), "{error}");
+    let mut wrong_module = tls.cert.clone();
+    wrong_module.module = "another-secret-plugin".into();
+    assert!(resolver.resolve(&wrong_module).is_err());
+    assert!(build_server_config(&tls, &SecretResolver::builtins_only()).is_err());
 }
 
 /// `prepare` with `tls_cfg: None` hands back the identity wrap, and running a stream through it
@@ -71,7 +117,7 @@ async fn prepare_plaintext_is_identity_and_passes_bytes_unchanged() {
 #[tokio::test]
 async fn build_server_config_and_prepare_build_from_operator_config() {
     let (tls, _cert_pem) = valid_tls_cfg();
-    let resolver = SecretResolver::builtins_only();
+    let resolver = fixture_resolver(&tls);
 
     let config = build_server_config(&tls, &resolver).expect("valid self-signed cert/key");
     assert_eq!(
@@ -97,8 +143,8 @@ fn malformed_cert_errors_clearly() {
         key: SecretRef::file(key_file.to_string_lossy().into_owned()),
         client_ca: None,
     };
-    let err = build_server_config(&tls, &SecretResolver::builtins_only())
-        .expect_err("malformed cert must error");
+    let err =
+        build_server_config(&tls, &fixture_resolver(&tls)).expect_err("malformed cert must error");
     assert!(err.contains("cert"), "error must reference the cert: {err}");
 }
 
@@ -110,7 +156,7 @@ fn bad_cert_path_errors_clearly() {
         key: SecretRef::file("/nonexistent/busbar-core-connector/does-not-exist-key.pem"),
         client_ca: None,
     };
-    let err = build_server_config(&tls, &SecretResolver::builtins_only())
+    let err = build_server_config(&tls, &fixture_resolver(&tls))
         .expect_err("missing cert file must error");
     assert!(
         err.contains("cert") && err.contains("does-not-exist-cert.pem"),
@@ -122,7 +168,7 @@ fn bad_cert_path_errors_clearly() {
 #[tokio::test]
 async fn prepare_fails_closed_when_transport_is_incapable() {
     let (tls, _cert_pem) = valid_tls_cfg();
-    let resolver = SecretResolver::builtins_only();
+    let resolver = fixture_resolver(&tls);
 
     let err = match prepare("incapable-binding", Some(&tls), &resolver, false) {
         Ok(_) => panic!("an incapable transport must never receive a TLS wrap"),
@@ -144,7 +190,7 @@ async fn prepare_fails_closed_on_missing_cert() {
         key: SecretRef::file("/nonexistent/busbar-core-connector/does-not-exist-key.pem"),
         client_ca: None,
     };
-    let resolver = SecretResolver::builtins_only();
+    let resolver = fixture_resolver(&tls);
 
     let err = match prepare("missing-cert-binding", Some(&tls), &resolver, true) {
         Ok(_) => panic!("a binding whose TLS material cannot be resolved must not come up"),
@@ -160,7 +206,7 @@ async fn prepare_fails_closed_on_missing_cert() {
 #[tokio::test]
 async fn tls_wrap_completes_a_real_handshake_and_carries_bytes() {
     let (tls, cert_pem) = valid_tls_cfg();
-    let resolver = SecretResolver::builtins_only();
+    let resolver = fixture_resolver(&tls);
     let security = prepare("tls-binding", Some(&tls), &resolver, true)
         .expect("valid TLS config with a capable transport");
 
@@ -312,9 +358,8 @@ fn the_config_built_from_the_tls_block_serves_a_real_handshake_and_carries_bytes
             .unwrap();
     let cert_pem = cert.pem();
     let tls = tls_cfg_from(&cert_pem, &signing_key.serialize_pem(), None);
-    let server_cfg = Arc::new(
-        build_server_config(&tls, &SecretResolver::builtins_only()).expect("a valid pair builds"),
-    );
+    let server_cfg =
+        Arc::new(build_server_config(&tls, &fixture_resolver(&tls)).expect("a valid pair builds"));
 
     let (mut client, mut server) = handshake(
         server_cfg,
@@ -339,14 +384,10 @@ fn only_the_mutual_tls_config_refuses_a_client_that_offers_no_certificate() {
         gen_ca_and_leaf(vec!["localhost".into()]);
     let (client_ca_pem, _client_leaf_pem, _client_key_pem) =
         gen_ca_and_leaf(vec!["busbar-client".into()]);
-    let resolver = SecretResolver::builtins_only();
     let localhost = || rustls::pki_types::ServerName::try_from("localhost").unwrap();
 
-    let server_only = build_server_config(
-        &tls_cfg_from(&server_cert_pem, &server_key_pem, None),
-        &resolver,
-    )
-    .unwrap();
+    let tls = tls_cfg_from(&server_cert_pem, &server_key_pem, None);
+    let server_only = build_server_config(&tls, &fixture_resolver(&tls)).unwrap();
     handshake(
         Arc::new(server_only),
         anonymous_client(&server_ca_pem),
@@ -354,11 +395,8 @@ fn only_the_mutual_tls_config_refuses_a_client_that_offers_no_certificate() {
     )
     .expect("server-only TLS asks a client for nothing and completes");
 
-    let mutual = build_server_config(
-        &tls_cfg_from(&server_cert_pem, &server_key_pem, Some(&client_ca_pem)),
-        &resolver,
-    )
-    .unwrap();
+    let tls = tls_cfg_from(&server_cert_pem, &server_key_pem, Some(&client_ca_pem));
+    let mutual = build_server_config(&tls, &fixture_resolver(&tls)).unwrap();
     let err = handshake(
         Arc::new(mutual),
         anonymous_client(&server_ca_pem),
@@ -381,13 +419,8 @@ async fn the_tls_wrap_serves_a_client_whose_certificate_chains_to_the_client_ca(
     let (client_ca_pem, client_leaf_pem, client_key_pem) =
         gen_ca_and_leaf(vec!["busbar-client".into()]);
     let tls = tls_cfg_from(&server_cert_pem, &server_key_pem, Some(&client_ca_pem));
-    let security = prepare(
-        "mtls-binding",
-        Some(&tls),
-        &SecretResolver::builtins_only(),
-        true,
-    )
-    .expect("valid mutual TLS config with a capable transport");
+    let security = prepare("mtls-binding", Some(&tls), &fixture_resolver(&tls), true)
+        .expect("valid mutual TLS config with a capable transport");
 
     let (server_io, client_io) = tokio::io::duplex(8192);
     let server_task = tokio::spawn(async move {
@@ -441,7 +474,7 @@ fn a_client_ca_with_no_certificates_in_it_is_refused() {
     let (cert_pem, key_pem) = gen_self_signed();
 
     let tls = tls_cfg_from(&cert_pem, &key_pem, Some(&key_pem));
-    let err = build_server_config(&tls, &SecretResolver::builtins_only()).unwrap_err();
+    let err = build_server_config(&tls, &fixture_resolver(&tls)).unwrap_err();
     assert!(err.contains("client_ca"), "{err}");
     assert!(err.contains("no CA certificates"), "{err}");
 }
@@ -452,7 +485,7 @@ fn mismatched_cert_and_key_pair_is_refused() {
     let (cert_pem, _key_pem) = gen_self_signed();
     let (_other_cert_pem, other_key_pem) = gen_self_signed();
     let tls = tls_cfg_from(&cert_pem, &other_key_pem, None);
-    let err = build_server_config(&tls, &SecretResolver::builtins_only()).unwrap_err();
+    let err = build_server_config(&tls, &fixture_resolver(&tls)).unwrap_err();
     assert!(err.contains("not a valid pair"), "{err}");
 }
 
@@ -461,7 +494,7 @@ fn mismatched_cert_and_key_pair_is_refused() {
 fn empty_cert_chain_is_refused() {
     let (_cert_pem, key_pem) = gen_self_signed();
     let tls = tls_cfg_from("not a pem cert", &key_pem, None);
-    let err = build_server_config(&tls, &SecretResolver::builtins_only()).unwrap_err();
+    let err = build_server_config(&tls, &fixture_resolver(&tls)).unwrap_err();
     assert!(err.contains("contains no certificates"), "{err}");
 }
 
@@ -536,7 +569,7 @@ fn any_offered_name_or_none_is_served_the_configured_certificate() {
         rcgen::generate_simple_self_signed(vec!["configured.example".to_string()]).unwrap();
     let cert_pem = cert.pem();
     let tls = tls_cfg_from(&cert_pem, &signing_key.serialize_pem(), None);
-    let server_cfg = Arc::new(build_server_config(&tls, &SecretResolver::builtins_only()).unwrap());
+    let server_cfg = Arc::new(build_server_config(&tls, &fixture_resolver(&tls)).unwrap());
     let configured = leaf_der(&cert_pem);
 
     assert_eq!(
@@ -568,7 +601,7 @@ fn a_tls_listener_negotiates_h2_when_offered_and_http1_when_only_that_is_offered
         rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
     let cert_pem = cert.pem();
     let tls = tls_cfg_from(&cert_pem, &signing_key.serialize_pem(), None);
-    let server_cfg = Arc::new(build_server_config(&tls, &SecretResolver::builtins_only()).unwrap());
+    let server_cfg = Arc::new(build_server_config(&tls, &fixture_resolver(&tls)).unwrap());
     let negotiated = |protocols: &[&[u8]]| {
         let (client, server) = handshake(
             Arc::clone(&server_cfg),
@@ -605,13 +638,9 @@ async fn wrap_and_read(
 ) -> std::io::Result<Vec<u8>> {
     install_crypto_provider();
     let (ca_pem, cert_pem, key_pem) = gen_ca_and_leaf(vec!["localhost".into()]);
-    let security = prepare(
-        "alpn-binding",
-        Some(&tls_cfg_from(&cert_pem, &key_pem, None)),
-        &SecretResolver::builtins_only(),
-        true,
-    )
-    .expect("valid TLS config with a capable transport");
+    let tls = tls_cfg_from(&cert_pem, &key_pem, None);
+    let security = prepare("alpn-binding", Some(&tls), &fixture_resolver(&tls), true)
+        .expect("valid TLS config with a capable transport");
     let (server_io, client_io) = tokio::io::duplex(8192);
     let server_task = tokio::spawn(async move {
         let raw: Box<dyn busbar_contract::transport::wire::RawIo> =
@@ -768,7 +797,7 @@ fn pkcs1_and_sec1_keys_build_a_server_config() {
     ] {
         let tls = tls_cfg_from(cert, key, None);
         let server_cfg = Arc::new(
-            build_server_config(&tls, &SecretResolver::builtins_only())
+            build_server_config(&tls, &fixture_resolver(&tls))
                 .unwrap_or_else(|e| panic!("a {what} key must build a server config: {e}")),
         );
         assert_eq!(
@@ -823,7 +852,7 @@ fn a_bad_key_or_client_ca_names_its_file_and_never_its_bytes() {
         ));
     }
     for (field, tls, path) in cases {
-        let err = build_server_config(&tls, &SecretResolver::builtins_only())
+        let err = build_server_config(&tls, &fixture_resolver(&tls))
             .expect_err("a bad key or client CA is refused");
         assert!(
             err.contains(field),
