@@ -754,7 +754,7 @@ fn gen_self_signed() -> (String, String) {
     (cert.pem(), signing_key.serialize_pem())
 }
 
-fn tls_fixture_resolver(
+pub(super) fn tls_fixture_resolver(
     tls: &busbar_kernel::config::sections::TlsCfg,
 ) -> busbar_kernel::config::secret::SecretResolver {
     let bindings: Vec<_> = [&tls.cert, &tls.key]
