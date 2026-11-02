@@ -688,7 +688,7 @@ impl<'de, A: serde::de::MapAccess<'de>> serde::de::MapAccess<'de> for OptionsAsi
 ///
 /// The plane's refusal, or, when no loaded plane judges provider entries, the first option named.
 pub fn judge_options(name: &str, provider: &ResolvedProvider) -> Result<(), String> {
-    judge_table(name, &provider.table)
+    judge_table(name, &provider.table, false)
 }
 
 /// [`judge_options`] of one CATALOG entry, alone: its typed keys and its options, as the plane would
@@ -698,10 +698,17 @@ pub fn judge_options(name: &str, provider: &ResolvedProvider) -> Result<(), Stri
 ///
 /// As [`judge_options`].
 pub fn judge_catalog_entry(name: &str, def: &ProviderDef) -> Result<(), String> {
-    judge_table(name, &with_options(def, &def.options))
+    judge_table(name, &with_options(def, &def.options), false)
 }
 
-fn judge_table(name: &str, table: &ProviderTable) -> Result<(), String> {
+/// An unused catalog can contain another plane's provider options. A plane that owns the row still
+/// validates it; without an owner these options remain inert until a provider is deployed. Core
+/// fields have already passed the same typed parse, and deployed providers always require a judge.
+pub(super) fn judge_unused_catalog_entry(name: &str, def: &ProviderDef) -> Result<(), String> {
+    judge_table(name, &with_options(def, &def.options), true)
+}
+
+fn judge_table(name: &str, table: &ProviderTable, defer_unowned: bool) -> Result<(), String> {
     let core = |k: &String| CORE_PROVIDER_KEYS.contains(&k.as_str());
     let typed = |k: &String| DEPLOY_KEYS.contains(&k.as_str()) || core(k);
     let Some(first) = table.keys().find(|k| !typed(k)) else {
@@ -709,6 +716,7 @@ fn judge_table(name: &str, table: &ProviderTable) -> Result<(), String> {
     };
     match crate::plane_driver::door::judge_provider(name, table) {
         Some(judged) => judged,
+        None if defer_unowned => Ok(()),
         None => Err(format!(
             "providers.{name}: unknown field `{first}`: no loaded plane speaks this provider's \
              dialect, so it takes no option"

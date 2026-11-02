@@ -2044,12 +2044,19 @@ pub fn resolve(
     )
     .and_then(|d| d.resolve_provider);
 
-    // Every catalog entry, deployed or not, is judged: its keys beyond busbar's are options of its
-    // dialect (owner ruling 2026-10-27, the `config.yaml` rule), refused in the plane's words.
+    // Every owned catalog row is judged, deployed or not. If no provider is deployed, a row with
+    // no owning plane is inert catalog data: deleting that plane must not make its unused options
+    // prevent startup. As soon as any provider is deployed, the entire catalog is judged strictly
+    // before resolution, including rows the deployment does not reference.
     let mut catalog_names: Vec<&String> = defs.keys().collect();
     catalog_names.sort();
     for name in catalog_names {
-        if let Err(refusal) = providers::judge_catalog_entry(name, &defs[name]) {
+        let judged = if deploy.providers.is_empty() {
+            providers::judge_unused_catalog_entry(name, &defs[name])
+        } else {
+            providers::judge_catalog_entry(name, &defs[name])
+        };
+        if let Err(refusal) = judged {
             errors.push(format!("providers.yaml: {refusal}"));
         }
     }
