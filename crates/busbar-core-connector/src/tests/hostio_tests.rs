@@ -20,6 +20,40 @@ use super::*;
 const OWNER: u64 = 1;
 
 #[test]
+fn a_manually_constructed_program_cannot_bypass_the_working_directory_guard() {
+    worker().block_on(async {
+        let io = HostIo::new();
+        for directory in ["relative", "", " /tmp", "/tmp ", "/tmp\0invalid"] {
+            let mut program =
+                Program::from_settings(&serde_json::json!({"command": "/bin/cat"})).unwrap();
+            program.cwd = Some(directory.to_owned());
+            io.admit_for(
+                ticket(94),
+                Admission::Spawn(program, crate::spawn_env::HeldEnv::written_only()),
+                Some(OWNER),
+            );
+            assert!(
+                matches!(
+                    io.spawn(
+                        OWNER,
+                        ticket(94),
+                        &Spawn {
+                            program: "/bin/cat",
+                            args: &[],
+                            env: &[]
+                        }
+                    ),
+                    Err(IoRefusal::Refused(_))
+                ),
+                "a direct host Program bypassed cwd validation: {directory:?}"
+            );
+            assert_eq!(io.settle(ticket(94)).0, None);
+            assert_eq!(io.held(), 0);
+        }
+    });
+}
+
+#[test]
 fn replacing_a_ticket_grant_does_not_lend_the_new_suppliers_program_to_the_old_owner() {
     worker().block_on(async {
         let io = HostIo::new();

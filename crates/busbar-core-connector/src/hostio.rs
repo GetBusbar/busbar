@@ -778,6 +778,15 @@ impl IoHost for HostIo {
                 "a program is spawned by its absolute path only".into(),
             ));
         }
+        if cwd.as_deref().is_some_and(|directory| {
+            !std::path::Path::new(directory).is_absolute()
+                || directory.trim() != directory
+                || directory.contains('\0')
+        }) {
+            return Err(IoRefusal::Refused(
+                "a program working directory must be an unpadded absolute path without NUL".into(),
+            ));
+        }
         if tokio::runtime::Handle::try_current().is_err() {
             return Err(IoRefusal::Failed(reactor::NOT_ON_A_WORKER.into()));
         }
