@@ -103,3 +103,16 @@ async fn mode_refused_exchange_leaves_its_verified_identitys_replay_claim_unclai
     // Actual App Arc non-swap/no-group publication is checked separately for this same mode
     // policy by the real root self_mint_mode_policy_gates_exchange_login_and_refresh_before_mutation.
 }
+
+#[tokio::test]
+async fn dpop_refusal_keeps_the_exchange_unauthenticated_words() {
+    // DPoP's Refused decision reaches this same production unauthorized formatter. The
+    // constraint decision is separately pinned in auth::dpop unit tests.
+    let response = refusal(ExchangeError::Unauthorized);
+    let status = response.status().as_u16();
+    let bytes = axum::body::to_bytes(response.into_body(), 1024)
+        .await
+        .unwrap();
+    let body = std::str::from_utf8(&bytes).unwrap();
+    assert_eq!((status, body), (401, r#"{"error":"not authenticated"}"#));
+}
