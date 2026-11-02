@@ -16,3 +16,9 @@ mod oauth2_application;
 
 #[path = "kernel_application/state.rs"]
 mod kernel_state;
+
+#[path = "kernel_application/router.rs"]
+mod kernel_router;
+
+#[path = "../../../../dist/default/tests/product/decisions_hooks.rs"]
+mod decisions_hooks;
