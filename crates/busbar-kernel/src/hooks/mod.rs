@@ -420,14 +420,9 @@ pub fn resolve_pool_rewrites(
     settings_version: u64,
 ) -> Vec<(std::time::Duration, Arc<dyn RoutingPolicy>)> {
     let mut ranked: Vec<(u16, std::time::Duration, Arc<dyn RoutingPolicy>)> = Vec::new();
-    for name in &cfg.gates {
-        let Some(hook) = hooks.get(name) else {
-            continue;
-        };
-
-        if hook.kind != crate::config::HookKind::Gate || !admits_rewrite(name, hook, env) {
-            continue;
-        }
+    for (name, hook) in rewrite_definitions(hooks, &cfg.gates, |name, hook| {
+        admits_rewrite(name, hook, env)
+    }) {
         if let Some(ResolvedPolicy::Policy {
             policy,
             timeout,
@@ -702,6 +697,21 @@ fn access_from_intent(
 fn projection_grants(name: &str, hook: &crate::config::HookCfg, env: &HookEnv) -> (bool, bool) {
     let (prompt, user) = effective_access(name, hook, env);
     (prompt.sends_prompt(), user.sends_user())
+}
+
+fn rewrite_definitions<'a>(
+    hooks: &'a std::collections::HashMap<String, crate::config::HookCfg>,
+    names: &'a [String],
+    mut admitted: impl FnMut(&str, &crate::config::HookCfg) -> bool,
+) -> Vec<(&'a str, &'a crate::config::HookCfg)> {
+    names
+        .iter()
+        .filter_map(|name| {
+            let hook = hooks.get(name)?;
+            (hook.kind == crate::config::HookKind::Gate && admitted(name, hook))
+                .then_some((name.as_str(), hook))
+        })
+        .collect()
 }
 
 fn admits_rewrite(name: &str, hook: &crate::config::HookCfg, env: &HookEnv) -> bool {
@@ -1190,14 +1200,9 @@ pub fn resolve_rewrite_hooks(
     settings_version: u64,
 ) -> Vec<(std::time::Duration, Arc<dyn RoutingPolicy>)> {
     let mut ranked: Vec<(u16, std::time::Duration, Arc<dyn RoutingPolicy>)> = Vec::new();
-    for name in global_hooks {
-        let Some(hook) = hooks.get(name) else {
-            continue;
-        };
-
-        if hook.kind != crate::config::HookKind::Gate || !admits_rewrite(name, hook, env) {
-            continue;
-        }
+    for (name, hook) in rewrite_definitions(hooks, global_hooks, |name, hook| {
+        admits_rewrite(name, hook, env)
+    }) {
         if let Some(ResolvedPolicy::Policy {
             policy,
             timeout,

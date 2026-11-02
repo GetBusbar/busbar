@@ -792,7 +792,6 @@ fn a_reused_registry_address_never_inherits_a_dead_registrys_resolution() {
 
 #[test]
 fn resolve_rewrite_hooks_admits_only_prompt_rw_gates() {
-    let env = test_env();
     let mk = |kind: HookKind, prompt: PromptAccess| HookCfg {
         kind,
         prompt,
@@ -811,7 +810,19 @@ fn resolve_rewrite_hooks_admits_only_prompt_rw_gates() {
         "no-gate".to_string(),
         "rw-tap".to_string(),
     ];
-    let resolved = resolve_rewrite_hooks(&hooks, &global, &env, 0);
+    let resolved = rewrite_definitions(&hooks, &global, |name, hook| {
+        access_from_intent(
+            name,
+            hook,
+            Needs {
+                prompt: busbar_contract::plugin_rows::NeedLevel::Rw,
+                user: busbar_contract::plugin_rows::NeedLevel::Ro,
+            },
+            &std::sync::Mutex::new(HashSet::new()),
+        )
+        .0
+        .can_rewrite()
+    });
     assert_eq!(
         resolved.len(),
         1,
@@ -835,7 +846,6 @@ fn resolve_rewrite_hooks_admits_only_prompt_rw_gates() {
 /// on `hook.prompt.can_rewrite()` alone and every row admitted.
 #[test]
 fn rewrite_admission_requires_the_signed_manifest_rewrite_need() {
-    use crate::test_support::HookNeeds;
     use busbar_contract::plugin_rows::NeedLevel;
 
     for (need, admitted) in [
@@ -843,18 +853,23 @@ fn rewrite_admission_requires_the_signed_manifest_rewrite_need() {
         (NeedLevel::Ro, false),
         (NeedLevel::Rw, true),
     ] {
-        let needs = HookNeeds {
+        let needs = Needs {
             prompt: need,
             user: NeedLevel::No,
         };
-        let env = test_env_needs("test-hook", needs);
+        let banners = std::sync::Mutex::new(HashSet::new());
 
         let mut rw = base_gate();
         rw.prompt = PromptAccess::Rw;
         rw.global = true;
         let hooks = registry("rw", rw);
 
-        let global = resolve_rewrite_hooks(&hooks, &["rw".to_string()], &env, 0);
+        let global_names = ["rw".to_string()];
+        let global = rewrite_definitions(&hooks, &global_names, |name, hook| {
+            access_from_intent(name, hook, needs, &banners)
+                .0
+                .can_rewrite()
+        });
         assert_eq!(
             !global.is_empty(),
             admitted,
@@ -862,7 +877,12 @@ fn rewrite_admission_requires_the_signed_manifest_rewrite_need() {
              {} admit — the operator grant alone is not the ticket",
             if admitted { "" } else { "NOT " }
         );
-        let pool = resolve_pool_rewrites(&pool_with_hook("rw"), &hooks, &env, 0);
+        let pool_cfg = pool_with_hook("rw");
+        let pool = rewrite_definitions(&hooks, &pool_cfg.gates, |name, hook| {
+            access_from_intent(name, hook, needs, &banners)
+                .0
+                .can_rewrite()
+        });
         assert_eq!(
             !pool.is_empty(),
             admitted,
@@ -871,7 +891,9 @@ fn rewrite_admission_requires_the_signed_manifest_rewrite_need() {
             if admitted { "" } else { "NOT " }
         );
 
-        let (send_prompt, _) = projection_grants("rw", hooks.get("rw").unwrap(), &env);
+        let send_prompt = access_from_intent("rw", &hooks["rw"], needs, &banners)
+            .0
+            .sends_prompt();
         assert!(
             !admitted || send_prompt,
             "an admitted rewrite hook must also be cleared to READ the prompt it rewrites"
