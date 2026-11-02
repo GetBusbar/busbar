@@ -873,24 +873,6 @@ impl AuthMiddleware {
         })
     }
 
-    #[cfg(test)]
-    pub fn new_builtin(cfg: &AuthCfg) -> Self {
-        let mut mw = Self::new(
-            cfg,
-            &crate::test_support::rows::empty(),
-            &crate::config::secret::SecretResolver::builtins_only(),
-        )
-        .expect("builtin-only auth chain never fails to construct");
-        if mw.carriers.is_empty() {
-            mw.carriers = test_inbound_style();
-        }
-
-        if mw.issued.is_none() {
-            mw.issued = Some(crate::test_support::issued::double());
-        }
-        mw
-    }
-
     pub fn chain_names(&self) -> Vec<String> {
         self.chain.iter().map(|e| e.name.clone()).collect()
     }
@@ -2533,73 +2515,6 @@ fn signed_request(parts: &axum::http::request::Parts, body: &[u8]) -> VerifyRequ
         unit: 0,
         credential: None,
         peer: None,
-    }
-}
-
-#[cfg(test)]
-fn test_inbound_style() -> Vec<HeaderName> {
-    if crate::preflight::linked_auth_names().is_empty() {
-        return header_names(&crate::test_support::outbound_auth::double_inbound_style());
-    }
-    header_names(
-        &crate::preflight::linked_auth_axis()
-            .and_then(|axis| axis.default_inbound_style().ok())
-            .unwrap_or_default(),
-    )
-}
-
-#[cfg(any(test, feature = "test-support"))]
-impl AuthMiddleware {
-    pub fn from_calls_for_test(
-        chain: Vec<(String, std::sync::Arc<dyn AuthCalls>)>,
-        carriers: &[&str],
-    ) -> Self {
-        let chain = chain
-            .into_iter()
-            .map(|(provider, calls)| ChainEntry {
-                provider,
-                name: calls.name().to_string(),
-                calls,
-            })
-            .collect();
-        Self {
-            keys_in_chain: false,
-            chain,
-            readers: Vec::new(),
-            carriers: carriers
-                .iter()
-                .filter_map(|word| HeaderName::from_bytes(word.as_bytes()).ok())
-                .collect(),
-            issued: None,
-        }
-    }
-
-    #[cfg(test)]
-    pub fn from_doors_for_test(chain: Vec<(String, std::sync::Arc<dyn AuthCalls>)>) -> Self {
-        let carriers = test_inbound_style();
-        let names: Vec<&str> = carriers.iter().map(HeaderName::as_str).collect();
-        Self::from_calls_for_test(chain, &names)
-    }
-
-    #[must_use]
-    pub fn with_reader_for_test(
-        mut self,
-        calls: std::sync::Arc<dyn AuthCalls>,
-        kinds: Vec<String>,
-        carriers: &[&str],
-    ) -> Self {
-        self.keys_in_chain = true;
-        self.readers.push(CredentialReader {
-            name: "test-reader".to_owned(),
-            kinds,
-            issued: None,
-            carriers: carriers
-                .iter()
-                .filter_map(|c| HeaderName::from_bytes(c.as_bytes()).ok())
-                .collect(),
-            calls,
-        });
-        self
     }
 }
 

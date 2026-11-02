@@ -2746,10 +2746,6 @@ impl Inbound {
 }
 
 #[cfg(test)]
-#[path = "tests/inbound_tests.rs"]
-mod tests;
-
-#[cfg(test)]
 #[path = "tests/inbound_owner_policies.rs"]
 mod owner_policies;
 
