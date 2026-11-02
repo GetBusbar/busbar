@@ -2666,20 +2666,16 @@ pub(crate) async fn plugin_schema(
 
         let kind = loadable.as_ref().map(|p| p.kind.clone());
         let restart_required_default = kind.as_deref().map(|k| kind_restart_default(&current, k));
-        if described.is_some() {
-            return ok_json(
-                StatusCode::OK,
-                &json!({ "name": name, "schema": described, "schema_error": null, "trust": trust, "source": "describe", "kind": kind, "restart_required_default": restart_required_default }),
-            );
-        }
-
-        let (schema, schema_error) = loadable
-            .as_ref()
-            .map(|p| manifest_schema(p.settings_schema.as_deref()))
-            .unwrap_or((None, None));
         return ok_json(
             StatusCode::OK,
-            &json!({ "name": name, "schema": schema, "schema_error": schema_error, "trust": trust, "source": "manifest", "kind": kind, "restart_required_default": restart_required_default }),
+            &hook_schema_selection(
+                &name,
+                described,
+                loadable.as_ref().and_then(|p| p.settings_schema.as_deref()),
+                trust,
+                kind.as_deref(),
+                restart_required_default,
+            ),
         );
     }
     let Some(loadable) = current.hook_env.registry.resolve(&name) else {
@@ -2700,6 +2696,25 @@ pub(crate) async fn plugin_schema(
         }),
     )
 }
+
+fn hook_schema_selection(
+    name: &str,
+    described: Option<serde_json::Value>,
+    settings_schema: Option<&str>,
+    trust: &str,
+    kind: Option<&str>,
+    restart_required_default: Option<bool>,
+) -> serde_json::Value {
+    if described.is_some() {
+        return json!({ "name": name, "schema": described, "schema_error": null, "trust": trust, "source": "describe", "kind": kind, "restart_required_default": restart_required_default });
+    }
+    let (schema, schema_error) = manifest_schema(settings_schema);
+    json!({ "name": name, "schema": schema, "schema_error": schema_error, "trust": trust, "source": "manifest", "kind": kind, "restart_required_default": restart_required_default })
+}
+
+#[cfg(test)]
+#[path = "tests/schema_fallback.rs"]
+mod schema_fallback;
 
 fn manifest_schema(settings_schema: Option<&str>) -> (Option<serde_json::Value>, Option<String>) {
     match settings_schema {
