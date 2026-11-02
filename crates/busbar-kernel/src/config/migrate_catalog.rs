@@ -9,7 +9,7 @@
 
 use serde_yaml::Value;
 
-use super::ProviderDef;
+use super::providers;
 
 /// A catalog with its stray keys removed: the new text and one change line per removed key.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,43 +20,45 @@ pub struct CatalogMigration {
     pub changes: Vec<String>,
 }
 
+#[derive(Debug)]
+pub(super) struct Fields(&'static [&'static str]);
+impl std::fmt::Display for Fields {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the grammar's fields")
+    }
+}
+impl std::error::Error for Fields {}
+impl serde::de::Error for Fields {
+    fn custom<M: std::fmt::Display>(_: M) -> Self {
+        Fields(&[])
+    }
+}
+pub(super) struct Probe;
+impl<'de> serde::Deserializer<'de> for Probe {
+    type Error = Fields;
+    fn deserialize_any<V: serde::de::Visitor<'de>>(self, _: V) -> Result<V::Value, Fields> {
+        Err(Fields(&[]))
+    }
+    fn deserialize_struct<V: serde::de::Visitor<'de>>(
+        self,
+        _: &'static str,
+        fields: &'static [&'static str],
+        _: V,
+    ) -> Result<V::Value, Fields> {
+        Err(Fields(fields))
+    }
+    serde::forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string bytes byte_buf
+        option unit unit_struct newtype_struct seq tuple tuple_struct map enum identifier
+        ignored_any
+    }
+}
 /// The keys a derived struct reads, as its `Deserialize` derive states them (the `fields` it hands
 /// `deserialize_struct`); empty when the type does not read a struct.
-fn struct_keys<T: serde::de::DeserializeOwned>() -> &'static [&'static str] {
-    #[derive(Debug)]
-    struct Fields(&'static [&'static str]);
-    impl std::fmt::Display for Fields {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str("the grammar's fields")
-        }
-    }
-    impl std::error::Error for Fields {}
-    impl serde::de::Error for Fields {
-        fn custom<M: std::fmt::Display>(_: M) -> Self {
-            Fields(&[])
-        }
-    }
-    struct Probe;
-    impl<'de> serde::Deserializer<'de> for Probe {
-        type Error = Fields;
-        fn deserialize_any<V: serde::de::Visitor<'de>>(self, _: V) -> Result<V::Value, Fields> {
-            Err(Fields(&[]))
-        }
-        fn deserialize_struct<V: serde::de::Visitor<'de>>(
-            self,
-            _: &'static str,
-            fields: &'static [&'static str],
-            _: V,
-        ) -> Result<V::Value, Fields> {
-            Err(Fields(fields))
-        }
-        serde::forward_to_deserialize_any! {
-            bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string bytes byte_buf
-            option unit unit_struct newtype_struct seq tuple tuple_struct map enum identifier
-            ignored_any
-        }
-    }
-    match T::deserialize(Probe) {
+pub(super) fn struct_keys<T>(
+    read: impl FnOnce(Probe) -> Result<T, Fields>,
+) -> &'static [&'static str] {
+    match read(Probe) {
         Err(Fields(fields)) => fields,
         Ok(_) => &[],
     }
@@ -65,7 +67,7 @@ fn struct_keys<T: serde::de::DeserializeOwned>() -> &'static [&'static str] {
 /// The keys a catalog entry reads.
 #[must_use]
 pub fn catalog_keys() -> &'static [&'static str] {
-    struct_keys::<ProviderDef>()
+    providers::catalog_grammar_keys()
 }
 
 /// `raw`, a `providers.yaml` catalog (`shown` is how its path is printed), without the keys its
@@ -82,6 +84,10 @@ pub fn migrate_catalog(raw: &str, shown: &str) -> Result<Option<CatalogMigration
     let Value::Mapping(mut catalog) = doc else {
         return Ok(None);
     };
+    // Plane-owned typed keys are also grammar: migration must never erase an option a loaded
+    // plane reads merely because the kernel carries it opaquely.
+    let descriptor =
+        crate::plane_driver::door::provider_keys(crate::plane_driver::registry::plane_decls());
     let mut changes = Vec::new();
     for (name, entry) in catalog.iter_mut() {
         let (Some(name), Value::Mapping(entry)) = (name.as_str(), entry) else {
@@ -89,7 +95,15 @@ pub fn migrate_catalog(raw: &str, shown: &str) -> Result<Option<CatalogMigration
         };
         let stray: Vec<Value> = entry
             .keys()
-            .filter(|k| !k.as_str().is_some_and(|k| keys.contains(&k)))
+            .filter(|k| {
+                !k.as_str().is_some_and(|k| {
+                    keys.contains(&k)
+                        || descriptor.as_ref().is_some_and(|descriptor| {
+                            !descriptor.catalog.deny_unknown
+                                || descriptor.catalog.keys.iter().any(|key| key.name == k)
+                        })
+                })
+            })
             .cloned()
             .collect();
         for key in stray {

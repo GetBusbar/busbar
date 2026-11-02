@@ -4706,17 +4706,9 @@ fn an_option_written_twice_is_refused() {
 /// `CATALOG_KEYS` is the catalog's typed grammar's own list, in its order.
 #[test]
 fn the_catalog_keys_are_the_typed_grammars() {
-    let e = serde_yaml::from_str::<ProviderDef>("zzz: 1\n")
-        .expect_err("the typed grammar alone refuses a key it does not read")
-        .to_string();
-    let listed: String = crate::config::providers::CATALOG_KEYS
-        .iter()
-        .map(|k| format!("`{k}`"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    assert!(
-        e.starts_with(&format!("unknown field `zzz`, expected one of {listed}")),
-        "{e}"
+    assert_eq!(
+        crate::config::providers::catalog_grammar_keys(),
+        crate::config::providers::CATALOG_KEYS,
     );
 }
 
@@ -4724,17 +4716,9 @@ fn the_catalog_keys_are_the_typed_grammars() {
 /// key it does not read lists exactly these.
 #[test]
 fn the_deploy_keys_are_the_typed_grammars() {
-    let e = serde_yaml::from_str::<ProviderDeploy>("zzz: 1\n")
-        .expect_err("the typed grammar alone refuses a key it does not read")
-        .to_string();
-    let listed: String = crate::config::providers::DEPLOY_KEYS
-        .iter()
-        .map(|k| format!("`{k}`"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    assert!(
-        e.starts_with(&format!("unknown field `zzz`, expected one of {listed}")),
-        "{e}"
+    assert_eq!(
+        crate::config::providers::deploy_grammar_keys(),
+        crate::config::providers::DEPLOY_KEYS,
     );
 }
 

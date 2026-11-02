@@ -511,6 +511,16 @@ pub const CATALOG_KEYS: &[&str] = &[
     "allow_metadata_hosts",
 ];
 
+/// The remote derive's own typed catalog field list, used by migration.
+pub(super) fn catalog_grammar_keys() -> &'static [&'static str] {
+    super::migrate_catalog::struct_keys(ProviderDefCore::deserialize)
+}
+
+#[cfg(test)]
+pub(super) fn deploy_grammar_keys() -> &'static [&'static str] {
+    super::migrate_catalog::struct_keys(ProviderDeployCore::deserialize)
+}
+
 /// THE `providers.yaml` CATALOG, read as [`deployments`] reads `config.yaml`'s section: each entry's
 /// typed keys ([`CATALOG_KEYS`]) by its derived grammar, every other key into its
 /// [`ProviderDef::options`], judged at resolve.
