@@ -14,7 +14,7 @@ use super::super::self_keys::{
 use super::super::{ChainVerdict, Principal};
 use crate::config::groups::{provision_child, GroupCfg};
 use crate::config::{RoleBindingCfg, RoleBindings};
-use crate::governance::{GovState, MemoryStore, RecordStore as _};
+use crate::governance::{GovState, RecordStore as _};
 
 const SEED: [u8; 32] = [7u8; 32];
 
@@ -61,7 +61,7 @@ impl SelfGroupProvisioner for NoopProvisioner {
 fn gov() -> Arc<GovState> {
     Arc::new(
         GovState::new_with_signer(
-            Arc::new(MemoryStore::new()),
+            crate::real_store::store(),
             None,
             Some(crate::governance::signing::TokenSigner::from_secret_bytes(
                 &SEED,
@@ -465,7 +465,7 @@ fn concurrent_issue_self_yields_one_binding() {
 }
 
 struct RefreshOverlapStore {
-    inner: MemoryStore,
+    inner: std::sync::Arc<busbar_plugin_loader::store_v3::LoadedStore>,
     next_put: std::sync::Mutex<
         Option<(
             tokio::sync::oneshot::Sender<()>,
@@ -551,7 +551,7 @@ async fn a_login_or_refresh_overlapping_refresh_uses_the_surviving_binding() {
 
     for contender_refresh in [false, true] {
         let store = Arc::new(RefreshOverlapStore {
-            inner: MemoryStore::new(),
+            inner: crate::real_store::store(),
             next_put: std::sync::Mutex::new(None),
         });
         let gov = Arc::new(

@@ -188,9 +188,7 @@ fn admin_audit_chain_boot_verifies_from_frozen_bytes() {
     store.put(KIND_AUDIT, Some("admin"), &neutral(AD_1));
     store.put(KIND_AUDIT, Some("admin"), &neutral(AD_2));
 
-    let h = crate::audit::auditlog::AuditTestHarness::over(std::sync::Arc::new(
-        crate::governance::MemoryStore::new(),
-    ));
+    let h = crate::audit::auditlog::AuditTestHarness::over(crate::real_store::store());
     let restored = h.restore_from_store(&store).expect("store read");
     assert!(
         restored.chain_breaks.is_empty(),

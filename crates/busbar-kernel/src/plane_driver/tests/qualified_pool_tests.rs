@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::config::groups::{GroupCfg, LimitCfg, LimitMetric, LimitWindow};
-use crate::governance::{LimitBlocked, MemoryStore, RecordStore, WINDOW_TOTAL};
+use crate::governance::{LimitBlocked, RecordStore, WINDOW_TOTAL};
 use crate::registry::Generation;
 use busbar_contract::abi::plane::{CANCEL_OK_PARTIAL, UNITS_REPORTED};
 use busbar_contract::caps::OriginKind;
@@ -21,7 +21,7 @@ impl EndPost for Posted {
 }
 
 struct Rig {
-    store: Arc<MemoryStore>,
+    store: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
     gov: Arc<GovState>,
     cost: Arc<CostModel>,
     key: Arc<VirtualKey>,
@@ -75,7 +75,7 @@ fn rig() -> Rig {
             },
         )])),
     );
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = Arc::new(GovState::new(store.clone(), None).unwrap());
     let key = Arc::new(VirtualKey {
         id: "k".into(),

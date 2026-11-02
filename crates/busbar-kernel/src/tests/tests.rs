@@ -297,10 +297,10 @@ fn test_stateful_plane_ephemeral_store_warn_fires_only_for_ram_plus_stateful() {
 
 #[test]
 fn test_memory_store_cannot_reach_inert_with_keys() {
-    use crate::governance::{GovState, MemoryStore};
+    use crate::governance::GovState;
     use std::sync::Arc;
 
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new(store, None).unwrap();
     assert!(gov.admin_token_hash().is_none(), "no admin token → inert");
     let key_count = gov.all_keys().map(|k| k.len()).unwrap_or(0);
@@ -308,7 +308,7 @@ fn test_memory_store_cannot_reach_inert_with_keys() {
 
     assert!(inert_durable_keys_banner(false, key_count, false).is_none());
 
-    let store2 = Arc::new(MemoryStore::new());
+    let store2 = crate::real_store::store();
     let gov2 = GovState::new(store2, Some("admintok".to_string())).unwrap();
     assert!(gov2.admin_token_hash().is_some(), "admin token → active");
 }

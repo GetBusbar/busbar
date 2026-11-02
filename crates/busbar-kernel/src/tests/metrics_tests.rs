@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use crate::governance::{GovState, MemoryStore, RecordStore, VirtualKey};
+use crate::governance::{GovState, RecordStore, VirtualKey};
 use crate::test_support::{LaneSpec, TestApp};
 use std::sync::Arc;
 
@@ -79,7 +79,7 @@ fn test_init_is_idempotent_and_does_not_panic() {
 }
 
 fn gov_with_key(key: VirtualKey) -> Arc<GovState> {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     store.put_key(&key).unwrap();
     Arc::new(GovState::new(store, None).unwrap())
 }
@@ -323,7 +323,7 @@ fn test_key_gauge_limit_truncation() {
     init();
 
     const LIMIT: usize = crate::config::DEFAULT_KEY_GAUGE_LIMIT;
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
 
     for i in 0..=(LIMIT) {
         let id = format!("vk_limit_{i:04x}");
@@ -389,7 +389,7 @@ fn test_key_gauge_limit_truncation() {
 }
 
 fn app_with_n_keys(n: usize) -> Arc<App> {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     for i in 0..n {
         let id = format!("vk_bound_{i:04x}");
         let key = VirtualKey {

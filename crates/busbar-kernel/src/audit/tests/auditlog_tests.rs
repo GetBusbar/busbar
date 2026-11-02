@@ -52,7 +52,7 @@ fn suffix_plus_scopeless_prelude_equals_legacy_audit_digest() {
 
 #[test]
 fn a_converted_sites_seam_record_matches_the_legacy_ring_hash() {
-    let h = AuditTestHarness::over(std::sync::Arc::new(crate::governance::MemoryStore::new()));
+    let h = AuditTestHarness::over(crate::real_store::store());
     let (ts, act, res, out, pr) = (
         1_700_000_123u64,
         "hook.register",
@@ -88,7 +88,7 @@ fn a_converted_sites_seam_record_matches_the_legacy_ring_hash() {
 type PlaneRows = std::collections::HashMap<(String, Option<String>), Vec<Vec<u8>>>;
 
 struct DualDurableStore {
-    inner: crate::governance::MemoryStore,
+    inner: std::sync::Arc<busbar_plugin_loader::store_v3::LoadedStore>,
     audit: std::sync::Mutex<std::collections::BTreeMap<u64, busbar_contract::records::AuditRecord>>,
     plane: std::sync::Mutex<PlaneRows>,
 }
@@ -96,7 +96,7 @@ struct DualDurableStore {
 impl DualDurableStore {
     fn new() -> Self {
         Self {
-            inner: crate::governance::MemoryStore::new(),
+            inner: crate::real_store::store(),
             audit: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             plane: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
@@ -625,7 +625,7 @@ fn parse_audit_suffix_still_reads_legacy_bodies() {
 #[test]
 fn a_safe_suffix_record_restores_with_exact_fields_despite_embedded_pipes() {
     let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
-        std::sync::Arc::new(crate::governance::MemoryStore::new());
+        crate::real_store::store();
     let h = AuditTestHarness::over(store.clone());
     let ts = 1_700_000_555u64;
     let forged_resource = "x|applied|nobody";
