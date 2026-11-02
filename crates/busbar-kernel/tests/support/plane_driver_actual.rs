@@ -1642,11 +1642,11 @@ impl RecordRows for Rows {
         .map_err(|e| busbar_contract::kinds::StoreError::Rejected(e.0))
     }
     fn record_put(&self, s: RecordSchemaId, k: &[u8], v: &RecordBytes) -> Result<(), StoreError> {
-        self.0.record_put(s, k, v)
+        busbar_kernel::host_records::StoreRows(self.0.clone()).record_put(s, k, v)
     }
 
     fn record_get(&self, s: RecordSchemaId, k: &[u8]) -> Result<Option<RecordBytes>, StoreError> {
-        self.0.record_get(s, k)
+        busbar_kernel::host_records::StoreRows(self.0.clone()).record_get(s, k)
     }
 
     fn record_scan(
@@ -1655,7 +1655,7 @@ impl RecordRows for Rows {
         prefix: &[u8],
         limit: u32,
     ) -> Result<Vec<(Vec<u8>, RecordBytes)>, StoreError> {
-        self.0.record_scan(s, prefix, limit)
+        busbar_kernel::host_records::StoreRows(self.0.clone()).record_scan(s, prefix, limit)
     }
 }
 
