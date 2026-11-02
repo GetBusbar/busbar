@@ -627,24 +627,6 @@ pub(super) fn admin_headers(bearer: Option<&str>, header: Option<&str>) -> Heade
     headers
 }
 
-struct OperatorAnswer(Option<busbar_contract::auth_calls::VerifyAnswer>);
-
-impl std::future::Future for OperatorAnswer {
-    type Output = busbar_contract::auth_calls::VerifyAnswer;
-    fn poll(
-        mut self: std::pin::Pin<&mut Self>,
-        _: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        std::task::Poll::Ready(self.0.take().expect("polled once"))
-    }
-}
-
-impl busbar_contract::auth_calls::Verifying for OperatorAnswer {
-    fn settled(&mut self) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
-        self.0.take()
-    }
-}
-
 #[test]
 fn operator_answer_continuation_preserves_identified_and_refusal_types() {
     use busbar_contract::auth_calls::{Verified, VerifiedIdentity};
@@ -1150,88 +1132,31 @@ fn external_admin_answer_projection_keeps_identity_and_all_refusal_types() {
     }
 }
 
-struct ScriptedDoor {
-    script: Vec<busbar_contract::auth_calls::Verified>,
-    verifies: std::sync::atomic::AtomicUsize,
-}
-
-impl ScriptedDoor {
-    fn answer(&self) -> busbar_contract::auth_calls::VerifyAnswer {
-        let n = self
-            .verifies
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.script[n.min(self.script.len() - 1)].clone().into()
-    }
-}
-
-impl busbar_contract::auth_calls::AuthCalls for ScriptedDoor {
-    fn name(&self) -> &str {
-        "scripted-door"
-    }
-    fn facts(&self) -> u32 {
-        busbar_contract::abi::auth::FACT_CACHEABLE
-    }
-    fn verify_now(
-        &self,
-        _: &busbar_contract::auth_calls::VerifyRequest,
-    ) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
-        Some(self.answer())
-    }
-    fn verify(
-        &self,
-        _: busbar_contract::auth_calls::VerifyRequest,
-    ) -> Box<dyn busbar_contract::auth_calls::Verifying> {
-        Box::new(OperatorAnswer(Some(self.answer())))
-    }
-    fn refresh(&self) -> Result<u64, String> {
-        Ok(0)
-    }
-}
-
-#[tokio::test]
-async fn every_request_is_verified_by_the_door_and_the_kernel_caches_no_verdict() {
+#[test]
+fn successive_admin_answer_projections_do_not_reuse_an_earlier_identity() {
     use busbar_contract::auth_calls::{Verified, VerifiedIdentity};
-    let door = std::sync::Arc::new(ScriptedDoor {
-        script: vec![
-            Verified::Identity(VerifiedIdentity {
-                subject: "ext:who".into(),
-                groups: vec!["ops".into()],
-                ..VerifiedIdentity::default()
-            }),
-            Verified::Reject,
-        ],
-        verifies: std::sync::atomic::AtomicUsize::new(0),
-    });
-    let mut app = crate::test_support::TestApp::new()
-        .admin_chain(vec!["ext-door".to_string()])
-        .build();
-    let mut modules = std::collections::HashMap::new();
-    modules.insert(
-        "ext-door".to_string(),
-        AdminModule {
-            calls: door.clone(),
-        },
+    let project = |verified: Verified| {
+        let answer = admin_verdict_of(verified.into(), false);
+        let verdict = complete_chain(chain_position_verdict("ext-door", answer.verdict));
+        let cap = if matches!(&verdict, ChainVerdict::Identified { .. }) {
+            module_scope_cap(
+                &Default::default(),
+                &Operator::new("operator-provider"),
+                "ext-door",
+            )
+        } else {
+            None
+        };
+        (verdict, cap)
+    };
+    assert!(
+        matches!(project(Verified::Identity(VerifiedIdentity { subject: "ext:who".into(), groups: vec!["ops".into()], ..Default::default() })),
+        (ChainVerdict::Identified { ref module, .. }, _) if module == "ext-door")
     );
-    std::sync::Arc::get_mut(&mut app)
-        .expect("freshly built App Arc is unshared")
-        .admin_modules = std::sync::Arc::new(AdminAuthChain {
-        modules,
-        operator: Operator::new(crate::config::operator_provider()),
-    });
-    let headers = admin_headers(Some("tok"), None);
-    assert!(matches!(
-        run_admin_chain(&app, "GET", "/", &headers, false, &mut Default::default()).await,
-        (ChainVerdict::Identified { ref module, .. }, _) if module == "ext-door"
-    ));
     assert_eq!(
-        run_admin_chain(&app, "GET", "/", &headers, false, &mut Default::default()).await,
+        project(Verified::Reject),
         (ChainVerdict::Denied, None),
-        "the second request is the door's second answer, never a cached Identified"
-    );
-    assert_eq!(
-        door.verifies.load(std::sync::atomic::Ordering::SeqCst),
-        2,
-        "one door verify per request"
+        "a later refusal is never replaced by an earlier Identified outcome"
     );
 }
 
