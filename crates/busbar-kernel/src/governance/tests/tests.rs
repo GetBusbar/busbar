@@ -4238,6 +4238,7 @@ async fn mint_self_offloaded_maps_a_join_panic_to_a_store_error() {
 struct RefreshBlipStore {
     inner: MemoryStore,
     fail_list: std::sync::atomic::AtomicBool,
+    fail_put: std::sync::atomic::AtomicBool,
 }
 
 impl RefreshBlipStore {
@@ -4245,6 +4246,7 @@ impl RefreshBlipStore {
         Self {
             inner: MemoryStore::new(),
             fail_list: std::sync::atomic::AtomicBool::new(false),
+            fail_put: std::sync::atomic::AtomicBool::new(false),
         }
     }
     fn arm(&self) {
@@ -4255,7 +4257,23 @@ impl RefreshBlipStore {
 
 impl RecordStore for RefreshBlipStore {
     fn put_key(&self, key: &VirtualKey) -> RecordStoreResult<()> {
+        if self.fail_put.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(RecordStoreError("write refused".into()));
+        }
         self.inner.put_key(key)
+    }
+    fn put_key_with_credential(
+        &self,
+        key: &VirtualKey,
+        secret: &CredentialSecret,
+    ) -> RecordStoreResult<()> {
+        if self.fail_put.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(RecordStoreError("write refused".into()));
+        }
+        self.inner.put_key_with_credential(key, secret)
+    }
+    fn list_credentials_since(&self, since: u64) -> RecordStoreResult<Vec<CredentialSecret>> {
+        self.inner.list_credentials_since(since)
     }
     fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
         self.inner.get_key(id)
@@ -4291,6 +4309,107 @@ impl RecordStore for RefreshBlipStore {
         since: u64,
     ) -> RecordStoreResult<Vec<busbar_contract::records::MeteringRow>> {
         self.inner.list_metering(since)
+    }
+}
+
+#[test]
+fn signed_mints_report_committed_ids_without_returning_secrets_after_refresh_failure() {
+    use std::sync::atomic::Ordering;
+    for issued in [false, true] {
+        let store = Arc::new(RefreshBlipStore::new());
+        let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+            &[7; 32],
+            crate::governance::signing::DEFAULT_KID,
+        );
+        let gov = GovState::new_with_signer(store.clone(), None, Some(signer)).unwrap();
+        gov.set_at_rest_keys(Some(crate::governance::at_rest::AtRestKeys::new(
+            &[3; 32], None,
+        )));
+        store.arm();
+        let spec = NewKeySpec {
+            name: "applied-mint".into(),
+            ..Default::default()
+        };
+        let error = if issued {
+            let (kind, shape) = crate::test_support::issued::double();
+            gov.mint_signed_with_credential(spec, 2_000, 1_000, &kind, &shape)
+                .unwrap_err()
+                .to_string()
+        } else {
+            gov.mint_signed(spec, 2_000, 1_000).unwrap_err().to_string()
+        };
+        let rows = store.inner.list_keys().unwrap();
+        assert_eq!(rows.len(), 1, "the successful write remains durable");
+        let id = &rows[0].id;
+        assert!(
+            error.contains("MINT APPLIED (new secret not returned)"),
+            "{error}"
+        );
+        assert!(error.contains(id), "the public committed ID is recoverable");
+        assert!(
+            !error.contains("transient store blip"),
+            "internal reconciliation details stay out of the public marker"
+        );
+        assert!(
+            gov.lookup_by_sub(id).is_none(),
+            "failed refresh cannot install authority from the mint candidate"
+        );
+        let credentials = store.inner.list_credentials_since(0).unwrap();
+        assert_eq!(credentials.len(), usize::from(issued));
+        if issued {
+            assert_eq!(&credentials[0].meta.key_id, id);
+            assert!(credentials[0].secret.starts_with("v1:aead:"));
+            assert!(gov
+                .lookup_credential(&credentials[0].meta.kind, &credentials[0].meta.public_id)
+                .is_none());
+        }
+        store.fail_list.store(false, Ordering::SeqCst);
+        gov.refresh().unwrap();
+        assert_eq!(gov.lookup_by_sub(id).unwrap().id, *id);
+        if issued {
+            assert!(gov
+                .lookup_credential(&credentials[0].meta.kind, &credentials[0].meta.public_id)
+                .is_some());
+        }
+        gov.delete_key(id).unwrap();
+        assert!(
+            gov.lookup_by_sub(id).is_none(),
+            "the identified durable key can be cleaned up normally"
+        );
+    }
+}
+
+#[test]
+fn signed_mints_do_not_claim_applied_when_the_write_fails() {
+    for issued in [false, true] {
+        let store = Arc::new(RefreshBlipStore::new());
+        let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+            &[7; 32],
+            crate::governance::signing::DEFAULT_KID,
+        );
+        let gov = GovState::new_with_signer(store.clone(), None, Some(signer)).unwrap();
+        gov.set_at_rest_keys(Some(crate::governance::at_rest::AtRestKeys::new(
+            &[3; 32], None,
+        )));
+        store
+            .fail_put
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let spec = NewKeySpec {
+            name: "refused-mint".into(),
+            ..Default::default()
+        };
+        let error = if issued {
+            let (kind, shape) = crate::test_support::issued::double();
+            gov.mint_signed_with_credential(spec, 2_000, 1_000, &kind, &shape)
+                .unwrap_err()
+                .to_string()
+        } else {
+            gov.mint_signed(spec, 2_000, 1_000).unwrap_err().to_string()
+        };
+        assert!(error.contains("write refused"));
+        assert!(!error.contains("MINT APPLIED"));
+        assert!(store.inner.list_keys().unwrap().is_empty());
+        assert!(store.inner.list_credentials_since(0).unwrap().is_empty());
     }
 }
 

@@ -55,6 +55,8 @@ struct Store {
     fail_read: AtomicBool,
     fail_delete: AtomicBool,
     lose_write_reply: AtomicBool,
+    fail_refresh_after_write: AtomicBool,
+    fail_list: AtomicBool,
 }
 
 impl Store {
@@ -68,6 +70,8 @@ impl Store {
             fail_read: AtomicBool::new(false),
             fail_delete: AtomicBool::new(false),
             lose_write_reply: AtomicBool::new(false),
+            fail_refresh_after_write: AtomicBool::new(false),
+            fail_list: AtomicBool::new(false),
         })
     }
 }
@@ -78,6 +82,9 @@ impl RecordStore for Store {
             self.write.wait();
         }
         self.inner.put_key(key)?;
+        if self.fail_refresh_after_write.load(Ordering::SeqCst) {
+            self.fail_list.store(true, Ordering::SeqCst);
+        }
         if self.lose_write_reply.load(Ordering::SeqCst) {
             return Err(RecordStoreError(
                 "reply lost after committed key write".into(),
@@ -94,6 +101,9 @@ impl RecordStore for Store {
     }
 
     fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
+        if self.fail_list.load(Ordering::SeqCst) {
+            return Err(RecordStoreError("private refresh failure detail".into()));
+        }
         self.inner.list_keys()
     }
 
@@ -476,4 +486,60 @@ async fn lost_rotate_reply_does_not_release_a_committed_claim() {
         store.inner.get_key(&id).unwrap().unwrap().generation_hash,
         generation
     );
+}
+
+#[tokio::test]
+async fn committed_mint_refresh_failure_is_truthful_and_same_idempotency_cannot_mint_again() {
+    let store = Store::new();
+    let handle = app(store.clone());
+    let cache = Arc::new(KeyReplayCache::new());
+    store.fail_refresh_after_write.store(true, Ordering::SeqCst);
+    let response = mint(
+        handle.clone(),
+        cache.clone(),
+        "custody:applied-refresh",
+        "applied-refresh",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let answer = body(response).await;
+    let rows = store.inner.list_keys().unwrap();
+    assert_eq!(rows.len(), 1);
+    let id = &rows[0].id;
+    let text = answer.to_string();
+    assert!(
+        text.contains("MINT APPLIED (new secret not returned)"),
+        "{text}"
+    );
+    assert!(text.contains(id));
+    assert!(!text.contains("private refresh failure detail"));
+    assert!(answer.get("token").is_none());
+    assert!(answer.get("aws_secret_access_key").is_none());
+    assert_eq!(
+        audit_rows("custody:applied-refresh", "key.create", "applied"),
+        1
+    );
+    assert_eq!(
+        audit_rows("custody:applied-refresh", "key.create", "rejected"),
+        0
+    );
+    assert!(matches!(crate::idempotency::durable::claim(
+        &*store,
+        &("custody:applied-refresh".into(), crate::idempotency::create_replay_key("applied-refresh")),
+        busbar_kernel::store::now(),
+    ), Err(crate::idempotency::durable::Refused::Applied(what)) if what == format!("key:{id}")));
+    store.fail_list.store(false, Ordering::SeqCst);
+    store
+        .fail_refresh_after_write
+        .store(false, Ordering::SeqCst);
+    let retry = mint(
+        handle,
+        Arc::new(KeyReplayCache::new()),
+        "custody:applied-refresh",
+        "applied-refresh",
+    )
+    .await;
+    assert_eq!(retry.status(), StatusCode::CONFLICT);
+    assert!(body(retry).await.to_string().contains("already ran"));
+    assert_eq!(store.inner.list_keys().unwrap().len(), 1);
 }
