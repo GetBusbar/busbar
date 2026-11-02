@@ -403,7 +403,7 @@ async fn actual_inbound_foreign_binding_and_session_custody() {
     inbound.framing_ended(19);
     assert!(inbound.unit_secret(97, unit.id).is_none());
     assert!(inbound.with_credential(unit.id, |_| ()).is_none());
-    drop(admission);
+    // Retain the claimed receipt until the final actual App lifetime control.
     // Two independently claimed requests on one detached connection cannot be
     // guessed into a session. Each actual Store-backed key admission remains held.
     inbound.framing_started(7, 71, 21, 3).unwrap();
@@ -613,5 +613,20 @@ async fn actual_inbound_foreign_binding_and_session_custody() {
     );
     drop(receipt);
     inbound.framing_ended(61);
+    // The transferred request's receipt owns its original genuine application,
+    // even after both framing incarnations and all installed tables are retired.
+    // This observes the public lifetime contract without exposing receipt internals.
+    let old_app = Arc::downgrade(&app);
+    inbound.retire_before(100);
+    drop(app);
+    assert!(
+        old_app.upgrade().is_some(),
+        "the retained adopted receipt holds its actual application after both framing ends"
+    );
+    drop(admission);
+    assert!(
+        old_app.upgrade().is_none(),
+        "dropping the final receipt releases the retired actual application"
+    );
     println!("{WITNESS}");
 }
