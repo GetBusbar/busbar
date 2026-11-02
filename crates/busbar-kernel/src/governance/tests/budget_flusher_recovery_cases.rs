@@ -126,6 +126,14 @@ async fn live_flusher_resumes_not_landed_with_current_cost_without_blocking_reac
     let registry: Arc<dyn busbar_contract::plugin_rows::PluginRows> =
         Arc::new(busbar_plugin_loader::registry::PluginRegistry::empty());
     let secret_resolver = Arc::new(crate::config::secret::SecretResolver::builtins_only());
+    let admin_modules = Arc::new(
+        crate::auth::AdminAuthChain::build(
+            &crate::config::AuthCfg::default_none(),
+            &registry,
+            &secret_resolver,
+        )
+        .expect("the configured empty admin chain needs no provider"),
+    );
     let app = Arc::new(crate::state::App::from_test_parts(crate::state::AppParts {
         fallback_runtime_key: "",
         serve_tables: Default::default(),
@@ -168,7 +176,7 @@ async fn live_flusher_resumes_not_landed_with_current_cost_without_blocking_reac
         export_defs: Default::default(),
         admin: Default::default(),
         admin_chain: Default::default(),
-        admin_modules: Arc::new(crate::auth::AdminAuthChain::empty()),
+        admin_modules,
         public_url: Default::default(),
         oauth_as: Default::default(),
         demotion_record: Default::default(),
