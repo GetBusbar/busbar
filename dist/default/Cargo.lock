@@ -520,6 +520,7 @@ dependencies = [
  "flate2",
  "futures",
  "getrandom 0.3.4",
+ "h2",
  "hex",
  "http",
  "http-body",
