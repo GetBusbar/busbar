@@ -411,6 +411,19 @@ impl Node {
         self.lease_lane.get().cloned()
     }
 
+    /// Re-offer retained journal records from the background flush tick. The journal's lock is
+    /// taken here, off the runtime workers; the Store lane only accepts custody or turns the same
+    /// batch away. Its worker retains any unknown Store outcome and owns retries of that candidate.
+    /// Without this re-offer, a full lane can drain while admission remains closed on a batch the
+    /// journal still holds, leaving no newly admitted unit to trigger the next append.
+    pub(crate) fn retry_held_journal(&self) {
+        if let Some(book) = self.book.get() {
+            book.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .offer_held_back();
+        }
+    }
+
     /// WHY THIS NODE REFUSES A NEW MONEY-BEARING UNIT NOW, or `None` — one atomic read while the
     /// store keeps up. The book's journal is kept by the configured store and the lane to it is
     /// full: admitting the unit would put records on the chain nothing has room to hold, and a record
@@ -1993,17 +2006,33 @@ impl Sealing {
             controls,
             correlation_label: None,
         };
-        let sealed = book
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .seal_unit(inputs, seal.pass, token);
+        let (sealed, journalled) = {
+            let mut book = book
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let before = book.journal.next_seq();
+            let sealed = book.seal_unit(inputs, seal.pass, token);
+            // An encoding failure never enters the journal. An append seals this exact record
+            // before offering it to the lane, and retains it when that hand-off is refused.
+            let journalled = book.journal.next_seq() > before;
+            (sealed, journalled)
+        };
         if let Err(lost) = sealed {
-            tracing::error!(
-                step = lost.step().as_str(),
-                unit = seal.key.get(),
-                "the journal lost a unit's audit record: it is sealed on the chain and cached, and \
-                 a restart will not read it back"
-            );
+            if journalled {
+                tracing::warn!(
+                    step = lost.step().as_str(),
+                    unit = seal.key.get(),
+                    "the journal retains a unit's audit record awaiting Store custody; \
+                     the background flush tick will re-offer it"
+                );
+            } else {
+                tracing::error!(
+                    step = lost.step().as_str(),
+                    unit = seal.key.get(),
+                    "the journal lost a unit's audit record: it is sealed on the audit chain \
+                     and cached, but its body could not enter the journal"
+                );
+            }
         }
     }
 }
