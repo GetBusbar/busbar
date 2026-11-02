@@ -32,8 +32,8 @@ fn env_reference(r: &SecretRef) -> Result<(), String> {
         },
         || None,
     );
-    rows.link(crate::both_ways::secret_fixture::door::door)?;
-    rows.shared(crate::both_ways::secret_fixture::NAME)?
+    rows.link(crate::actual_env_secret::door)?;
+    rows.shared(crate::actual_env_secret::NAME)?
         .resolve(&serde_json::to_vec(&r.settings).expect("the reference settings serialize"))
         .map(drop)
         .map_err(|e| e.text)

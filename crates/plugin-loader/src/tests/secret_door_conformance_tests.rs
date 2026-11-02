@@ -8,7 +8,7 @@ use busbar_contract::abi::secret::{slot, ResolveIn, ResolveOut, ERROR_KIND_NOT_F
 use super::door_both_ways::{
     self as both, close, input, line, open, output, release, same, Loaded,
 };
-use crate::both_ways::{fixture_cdylib, secret_fixture};
+use crate::actual_env_secret as secret_fixture;
 use crate::dispatch::kinds::export::Export;
 use crate::dispatch::kinds::secret::Secret;
 use crate::dispatch::{load_linked, Frame, LinkedRow, Plugin};
@@ -93,12 +93,12 @@ fn script(p: &Plugin<Secret>) -> Vec<String> {
 }
 
 fn linked() -> Loaded<Secret> {
-    both::linked::<Secret>(secret_fixture::door::door)
+    both::linked::<Secret>(secret_fixture::door)
 }
 
 fn dropped() -> Loaded<Secret> {
-    let path = fixture_cdylib("secret");
-    both::dropped_from::<Secret>(secret_fixture::door::door, &path)
+    let path = secret_fixture::cdylib();
+    both::dropped_from::<Secret>(secret_fixture::door, &path)
 }
 
 #[test]
@@ -162,7 +162,7 @@ fn the_secret_door_is_not_another_kinds_door() {
     let dispatcher = std::sync::Arc::new(crate::dispatch::Dispatcher::new(
         crate::dispatch::DispatchConfig::default(),
     ));
-    let row = LinkedRow::of(secret_fixture::door::door).expect("the linked row states");
+    let row = LinkedRow::of(secret_fixture::door).expect("the linked row states");
     let err = load_linked::<Export>(&row, both::bind(&dispatcher))
         .expect_err("a secret door is not an export door");
     let said = format!("{err:?}");
