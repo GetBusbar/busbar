@@ -1281,6 +1281,12 @@ mod tests {
     fn fresh_node_mode_is_bound_to_its_minted_registry_row() {
         let slots = RecordSlots::new();
         let first = opened(&slots, "recovery-fresh");
+        // Keep the first writer live while take_node watches for an expired host lease.
+        super::super::store_identity::set_lease_expiry(
+            slots.calls().as_ref(),
+            "recovery-fresh",
+            u64::MAX,
+        );
         let fresh = opened(&slots, "recovery-fresh");
         assert_ne!(
             first.lock().unwrap().journal.node(),
@@ -1663,6 +1669,11 @@ mod tests {
     fn retired_fresh_node_orphan_is_visible_and_requires_explicit_attested_handover() {
         let slots = RecordSlots::new();
         let host_owner = opened(&slots, "handover-shared-host");
+        super::super::store_identity::set_lease_expiry(
+            slots.calls().as_ref(),
+            "handover-shared-host",
+            u64::MAX,
+        );
         let orphan = opened(&slots, "handover-shared-host");
         let recipient = opened(&slots, "handover-orphan-recipient");
         let orphan_node = orphan.lock().unwrap().journal.node();

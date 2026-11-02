@@ -198,7 +198,9 @@ fn immutable_request(
     let request = super::conditional::candidate(predicates, mutations);
     // This validates the actual extension frame, including part keys and both predicate and
     // mutation envelopes, against the existing 16 MiB ABI bound before the Store sees it.
-    drop(request.encode_held().map_err(str::to_string)?);
+    drop(request.encode_held().map_err(|why| {
+        format!("recovery transaction cannot be encoded within the ABI byte bound: {why}")
+    })?);
     Ok((request, fences, parts))
 }
 
