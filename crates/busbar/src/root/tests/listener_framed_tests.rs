@@ -950,6 +950,30 @@ fn found(door: Arc<H1Accept>) -> Option<DataFramer> {
     }))
 }
 
+fn actual_transport(door: busbar_contract::abi::mechanism::door::DoorFn) -> Arc<dyn FramerDoor> {
+    use crate::root::doors::{bind_on, Dispatched};
+    use crate::root::loader::dispatch::{DispatchConfig, Dispatcher};
+    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    assert!(crate::root::inbound::install(&dispatcher));
+    let plugin = crate::root::test_plugins::linked_transport(door, bind_on(&dispatcher));
+    Arc::new(
+        Dispatched::open_on(
+            plugin,
+            &busbar_contract::transport::TransportSettings::default(),
+            dispatcher,
+        )
+        .expect("the actual transport opens through the root dispatcher"),
+    )
+}
+
+fn actual_http_framer() -> DataFramer {
+    let door = actual_transport(busbar_transport_http::door::door);
+    data_framer(Arc::new(move |scheme| {
+        (scheme == DATA_SCHEME).then(|| Arc::clone(&door))
+    }))
+    .expect("the actual HTTP transport accepts the data listener")
+}
+
 async fn answer(s: &mut tokio::net::TcpStream) -> String {
     let mut got = Vec::new();
     let mut buf = [0_u8; 4096];
@@ -979,8 +1003,7 @@ async fn answer(s: &mut tokio::net::TcpStream) -> String {
 #[tokio::test]
 async fn the_data_listener_is_served_through_its_framers_accept_side() {
     let _publishing = anonymous_policy().await;
-    let door = Arc::new(H1Accept::new(true));
-    let framer = found(Arc::clone(&door)).expect("an accepting framer is found by its facts");
+    let framer = actual_http_framer();
     let declared = framer
         .guests()
         .expect("the listener publishes its guest lines");
@@ -1019,16 +1042,14 @@ async fn the_data_listener_is_served_through_its_framers_accept_side() {
     assert!(got.starts_with("HTTP/1.1 200 OK\r\n"), "{got:?}");
     assert!(got.contains("content-length: 2\r\n"), "{got:?}");
     assert!(got.ends_with("\r\n\r\nhi"), "{got:?}");
-    assert_eq!(
-        *door.statuses.lock().unwrap(),
-        vec![200],
-        "the answer's head went down through the framer, its status on the emit"
-    );
-    assert_eq!(
-        *door.begun.lock().unwrap(),
-        vec![vec![(0, 0, true)]],
-        "the framing was begun lent the listener's one `none` line, with the host's handle"
-    );
+    // Successful admission and a complete wire answer exercise the real transport's Begin,
+    // host-issued guest authorization, response Head and body Emit through the root dispatcher.
+    s.write_all(b"GET /hello HTTP/1.1\r\nhost: t\r\n\r\n")
+        .await
+        .unwrap();
+    let second = answer(&mut s).await;
+    assert!(second.starts_with("HTTP/1.1 200 OK\r\n"), "{second:?}");
+    assert!(second.ends_with("\r\n\r\nhi"), "{second:?}");
     drop(s);
     let _ = stop.send(());
     tokio::time::timeout(Duration::from_secs(10), served)
@@ -1040,7 +1061,15 @@ async fn the_data_listener_is_served_through_its_framers_accept_side() {
 
 #[test]
 fn a_framer_that_does_not_accept_is_not_the_data_listeners() {
-    assert!(found(Arc::new(H1Accept::new(false))).is_none());
+    let carrier = actual_transport(busbar_transport_tcp::door::door);
+    assert!(
+        !carrier.accepts(),
+        "the actual TCP carrier has no accept framer"
+    );
+    assert!(data_framer(Arc::new(move |scheme| {
+        (scheme == DATA_SCHEME).then(|| Arc::clone(&carrier))
+    }))
+    .is_none());
 }
 
 #[tokio::test]
@@ -1136,8 +1165,7 @@ async fn the_admin_listener_still_serves_through_its_explicit_root_path() {
 #[tokio::test(start_paused = true)]
 async fn a_silent_connection_is_closed_at_the_first_byte_bound() {
     let _publishing = anonymous_policy().await;
-    let door = Arc::new(H1Accept::new(true));
-    let framer = found(door).expect("found");
+    let framer = actual_http_framer();
     let (_client, server) = tokio::io::duplex(1024);
     let (_stop, stop) = tokio::sync::watch::channel(false);
     let router = Router::new();

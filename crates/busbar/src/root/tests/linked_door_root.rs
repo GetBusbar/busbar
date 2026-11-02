@@ -7,24 +7,20 @@ use crate::root::linked::linked_transport;
 use crate::root::registry::{compose, Dropped};
 use busbar_core_connector::doors::{row_facts, stated_row, RowFacts};
 
-use busbar_test_kit::root_door_fixtures::{layered, misnamed, wire};
+use busbar_test_kit::root_door_fixtures::{layered, misnamed};
 
 #[test]
 fn a_door_root_row_links_with_the_key_layers_and_session_its_statement_states() {
-    let row = linked_transport!(wire::door);
-    assert_eq!(
-        (row.key)(),
-        "door-root-wire",
-        "the key is the door's own claim"
-    );
+    let row = linked_transport!(busbar_transport_tcp::door::door);
+    assert_eq!((row.key)(), "tcp", "the key is the door's own claim");
     assert!(
         (row.composes_over)().is_empty(),
         "the layers are the tail's: none"
     );
     assert_eq!(
-        row_facts(wire::door),
+        row_facts(busbar_transport_tcp::door::door),
         RowFacts {
-            key: "door-root-wire",
+            key: "tcp",
             composes_over: Vec::new(),
             session: true,
         },
@@ -33,14 +29,10 @@ fn a_door_root_row_links_with_the_key_layers_and_session_its_statement_states() 
     let built = compose(&[row], Dropped::NONE, &TransportSettings::default())
         .expect("the door-root row composes");
     let keys: Vec<&str> = built.iter().map(|(r, _)| r.key).collect();
-    assert_eq!(
-        keys,
-        ["door-root-wire"],
-        "the fold registers it under its key"
-    );
+    assert_eq!(keys, ["tcp"], "the fold registers it under its key");
     assert_eq!(
         built[0].1.key(),
-        "door-root-wire",
+        "tcp",
         "the boot's admission of its door answers the same key"
     );
 
@@ -51,6 +43,20 @@ fn a_door_root_row_links_with_the_key_layers_and_session_its_statement_states() 
         !row_facts(layered::door).session,
         "its claim row carries no session"
     );
+
+    let framer = linked_transport!(busbar_transport_http::door::door);
+    let stated = row_facts(busbar_transport_http::door::door);
+    assert_eq!((framer.key)(), "http");
+    assert_eq!((framer.composes_over)(), stated.composes_over);
+    assert!(!stated.session, "the actual HTTP claim carries no session");
+    let built = compose(&[row, framer], Dropped::NONE, &TransportSettings::default())
+        .expect("the actual carrier and framer compose");
+    assert!(built
+        .iter()
+        .any(|(registered, wire)| registered.key == "tcp" && wire.key() == "tcp"));
+    assert!(built
+        .iter()
+        .any(|(registered, wire)| registered.key == "http" && wire.key() == "http"));
 }
 
 #[test]

@@ -182,15 +182,13 @@ __attribute__((constructor)) static void mark_loaded(void) {
         String::from_utf8_lossy(&compiled.stderr)
     );
     let library = std::fs::read(image).unwrap();
-    let stated = crate::root::loader::dispatch::rendering_of(
-        busbar_test_kit::root_door_fixtures::migrate_stub::door,
-    )
-    .unwrap();
+    let stated =
+        crate::root::loader::dispatch::rendering_of(busbar_secret_env::door::door).unwrap();
     let key = crate::root::loader::sign::SigningKey::from_bytes(&[0x39; 32]);
     let manifest = crate::root::loader::sign::sign(
         &key,
         crate::root::loader::sign::Manifest {
-            name: "busbar-secret-stub".into(),
+            name: "busbar-secret-env".into(),
             alias: "constructor-secret".into(),
             kind: "secret".into(),
             version: "1.6.0".into(),
