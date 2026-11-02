@@ -1,10 +1,7 @@
 use super::*;
 use busbar_contract::redacted::Secret;
-use busbar_kernel_ledger::{
-    cost::{
-        plane_fee_lane, split_plane_lane, History, Money, MoneyError, MICROS_PER_CENT, PER_REQUEST,
-    },
-    usage::FeeEras,
+use busbar_kernel_ledger::cost::{
+    plane_fee_lane, split_plane_lane, History, Money, MoneyError, MICROS_PER_CENT, PER_REQUEST,
 };
 use std::collections::BTreeMap;
 // The wall clock, by name: the admission path reads it and never reaches a store handle for it.
@@ -615,12 +612,26 @@ impl GovState {
         units: &std::collections::BTreeMap<String, u64>,
         now: u64,
     ) {
+        let era = crate::rate_apply::era_at(crate::store::now_ms());
+        self.record_usage_served_in_era(cost, key, pool, model, provider, units, now, era);
+    }
+
+    /// Accrue a unit under its captured serving provenance, including after a card activation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_usage_served_in_era(
+        &self,
+        cost: &crate::cost::CostModel,
+        key: &VirtualKey,
+        pool: &str,
+        model: &str,
+        provider: Option<&str>,
+        units: &std::collections::BTreeMap<String, u64>,
+        now: u64,
+        era: RawRateEra,
+    ) {
         if units.values().all(|v| *v == 0) {
             return; // nothing to ledger
         }
-        // THE CARD ERA (Q14, #79), read as the metering row beside this accrual reads it: the
-        // tokens are dated when they land, on the history's own millisecond clock.
-        let era = crate::rate_apply::effective_from_at(crate::store::now_ms());
         // THE METERING SERIES CARRIES WHAT THIS BOOK HOLDS: the same counts, keyed by the same era,
         // mirrored onto the key's metering row by THIS accrual — the one place every ledgered class
         // lands — so the admin usage read prices exactly the counts this book prices.
@@ -673,7 +684,7 @@ impl GovState {
         lane: &str,
         provider: Option<&str>,
         units: &std::collections::BTreeMap<String, u64>,
-        priced_from_ms: u64,
+        era: RawRateEra,
         now: u64,
     ) {
         let (plane, subject) = busbar_kernel_ledger::cost::split_plane_lane(lane);
@@ -699,9 +710,11 @@ impl GovState {
             metering_bucket(now),
             model.to_string(),
             provider.to_string(),
-            priced_from_ms,
+            era.effective_from,
             key.group.clone().unwrap_or_default(),
-            String::new(),
+            era.entry_id
+                .map(|id| id.metering_version())
+                .unwrap_or_default(),
         );
         self.pending_metering.accrue(
             key,
@@ -728,7 +741,15 @@ impl GovState {
         units: &std::collections::BTreeMap<String, u64>,
         now: u64,
     ) {
-        self.record_lane_metering_attributed(key_id, "", lane, provider, units, now);
+        self.record_lane_metering_attributed(
+            key_id,
+            "",
+            lane,
+            provider,
+            units,
+            now,
+            crate::rate_apply::era_at(wall_ms()),
+        );
     }
 
     /// Meter with the key snapshot admitted for this unit, including its historical group.
@@ -740,6 +761,26 @@ impl GovState {
         units: &std::collections::BTreeMap<String, u64>,
         now: u64,
     ) {
+        self.record_lane_metering_in_era(
+            key,
+            lane,
+            provider,
+            units,
+            now,
+            crate::rate_apply::era_at(wall_ms()),
+        );
+    }
+
+    /// Meter a unit with the same immutable provenance as its budget accrual.
+    pub fn record_lane_metering_in_era(
+        &self,
+        key: &VirtualKey,
+        lane: &str,
+        provider: Option<&str>,
+        units: &std::collections::BTreeMap<String, u64>,
+        now: u64,
+        era: RawRateEra,
+    ) {
         self.record_lane_metering_attributed(
             &key.id,
             key.group.as_deref().unwrap_or(""),
@@ -747,9 +788,11 @@ impl GovState {
             provider,
             units,
             now,
+            era,
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn record_lane_metering_attributed(
         &self,
         key_id: &str,
@@ -758,17 +801,34 @@ impl GovState {
         provider: Option<&str>,
         units: &std::collections::BTreeMap<String, u64>,
         now: u64,
+        era: RawRateEra,
     ) {
         match split_plane_lane(lane) {
             ("", _) => {
                 if let Some(provider) = provider {
                     let add = MeterCounts::request(units);
-                    self.record_metered_request(key_id, key_group_at_use, lane, provider, add, now);
+                    self.record_metered_request_in_era(
+                        key_id,
+                        key_group_at_use,
+                        lane,
+                        provider,
+                        add,
+                        now,
+                        era,
+                    );
                 }
             }
             (plane, subject) => {
                 let add = MeterCounts::request(&std::collections::BTreeMap::new());
-                self.record_metered_request(key_id, key_group_at_use, subject, plane, add, now);
+                self.record_metered_request_in_era(
+                    key_id,
+                    key_group_at_use,
+                    subject,
+                    plane,
+                    add,
+                    now,
+                    era,
+                );
             }
         }
     }
@@ -780,7 +840,7 @@ impl GovState {
         bucket_id: &str,
         group: Option<&str>,
         budget_period: &str,
-        (model, era): (&str, u64),
+        (model, era): (&str, RawRateEra),
         units: &std::collections::BTreeMap<String, u64>,
         now: u64,
     ) {
@@ -800,7 +860,7 @@ impl GovState {
             if let Some(group) = group {
                 cell.group_owners.insert(group.to_string());
             }
-            cell.accrue(model, era, units);
+            cell.accrue_raw(model, era, units);
             cell.dirty = true;
             cell.last_touch = now;
         });
@@ -856,7 +916,7 @@ impl GovState {
             add,
             now,
             &crate::store::now_ms,
-            &crate::rate_apply::effective_from_at,
+            &crate::rate_apply::era_at,
         );
     }
 
@@ -865,7 +925,7 @@ impl GovState {
     /// process-wide `OnceLock` holder. The production path passes the wall clock in milliseconds
     /// and the installed holder.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn record_metered_request_dated(
+    pub(crate) fn record_metered_request_dated<E: Into<RawRateEra>>(
         &self,
         key_id: &str,
         key_group_at_use: &str,
@@ -874,12 +934,11 @@ impl GovState {
         add: MeterCounts,
         now: u64,
         clock_ms: &dyn Fn() -> u64,
-        dater: &dyn Fn(u64) -> u64,
+        dater: &dyn Fn(u64) -> E,
     ) {
         // THE CELL'S PRICE INSTANT (DECISION #79): when the card this response was served under
-        // STARTED, not which card it is. A build with no root ledger in it answers zero, the
-        // opening entry's own `effective_from`, so the cell still dates to a card that covers it
-        // rather than to none.
+        // STARTED, together with the exact entry identity when the holder knows it. A build with
+        // no root ledger answers legacy zero; it must not invent an opening entry identity.
         //
         // READ ON THE MILLISECOND SCALE THE HISTORY IS DATED ON, not lifted from `now`. `now` is
         // seconds; a card apply records `store::now_ms()`. Lifting `now * 1_000` therefore dates
@@ -890,15 +949,39 @@ impl GovState {
         // two card publishes and still resolving to the first. Two clocks of different resolution
         // cannot order two events inside one tick of the coarser one, so the accrual reads the
         // finer one, which is the one the thing it is being compared against was written on.
-        let priced_from_ms = dater(clock_ms());
+        let era = dater(clock_ms()).into();
+        self.record_metered_request_in_era(
+            key_id,
+            key_group_at_use,
+            model,
+            provider,
+            add,
+            now,
+            era,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn record_metered_request_in_era(
+        &self,
+        key_id: &str,
+        key_group_at_use: &str,
+        model: &str,
+        provider: &str,
+        add: MeterCounts,
+        now: u64,
+        era: RawRateEra,
+    ) {
         let key: MeterKey = (
             key_id.to_string(),
             metering_bucket(now),
             model.to_string(),
             provider.to_string(),
-            priced_from_ms,
+            era.effective_from,
             key_group_at_use.to_owned(),
-            String::new(),
+            era.entry_id
+                .map(|id| id.metering_version())
+                .unwrap_or_default(),
         );
         // Accrue through the sharded accumulator: this locks ONLY the shard owning `key_id`, so
         // concurrent completions for different keys no longer serialize on one process-wide mutex.
@@ -1920,7 +2003,7 @@ impl GovState {
         } else {
             self.store.get_usage(&era_bucket(bucket_id), window)?
         };
-        Ok(durable_cell(row, eras, window))
+        durable_cell(row, eras, window)
     }
 
     /// THE MONEY VIEW over one cell: its counts, priced by the one function.
@@ -2400,7 +2483,7 @@ impl GovState {
 
         // The arrival's card era: each bucket's fee base records the request under the card in
         // force at admission, so a card edit reprices only what follows it.
-        let era = crate::rate_apply::effective_from_at(wall_ms());
+        let era = crate::rate_apply::era_at(wall_ms());
         // Another plane's request is one fee unit on ITS fee lane (#47), not the flat fee base.
         let one = || BTreeMap::from([(PER_REQUEST.to_string(), 1)]);
         let plane_fee = (!plane.is_empty()).then(|| (plane_fee_lane(plane), one()));
@@ -2430,7 +2513,7 @@ impl GovState {
                 }
                 cell.requests = cell.requests.saturating_add(1);
                 if let Some((lane, one)) = &plane_fee {
-                    cell.accrue(lane, era, one);
+                    cell.accrue_raw(lane, era, one);
                 } else {
                     cell.billable_requests = cell.billable_requests.saturating_add(1);
                     cell.fee_eras.charge(era);
@@ -2510,6 +2593,19 @@ impl GovState {
         now: u64,
         fee_unit: &str,
     ) {
+        self.refund_fee_unit_in_era(cost, key, pool, now, fee_unit, None);
+    }
+
+    /// Refund the original fee unit's provenance, never a newer card's count.
+    pub fn refund_fee_unit_in_era(
+        &self,
+        cost: &crate::cost::CostModel,
+        key: &VirtualKey,
+        pool: &str,
+        now: u64,
+        fee_unit: &str,
+        era: Option<RawRateEra>,
+    ) {
         let (plane, pool) = split_plane_lane(pool);
         if plane.is_empty() {
             return;
@@ -2519,13 +2615,13 @@ impl GovState {
         let Ok(chain) = cost.chain_for(key) else {
             // The charge failed closed on a missing group, so nothing was charged; refund only the
             // key bucket defensively (it floors at 0 on a no-op).
-            self.refund_bucket(&key.id, super::WINDOW_TOTAL, now, lane);
+            self.refund_bucket(&key.id, super::WINDOW_TOTAL, now, lane, era);
             return;
         };
         // Refund EXACTLY the buckets the admission charged: the same pool predicate, so a
         // pool-scoped bucket another pool's request never charged is never eroded by its refund.
         for bucket in chain.iter().filter(|b| b.applies_to_pool(pool)) {
-            self.refund_bucket(bucket.bucket_id, bucket.window, now, lane);
+            self.refund_bucket(bucket.bucket_id, bucket.window, now, lane, era);
         }
     }
 
@@ -2535,6 +2631,7 @@ impl GovState {
         budget_period: &str,
         now: u64,
         (lane, unit): (&str, &str),
+        era: Option<RawRateEra>,
     ) {
         let window = budget_window(budget_period, now);
         let mut map = self.budget.write(bucket_id);
@@ -2547,7 +2644,11 @@ impl GovState {
             cell.mutate(|cell| {
                 if cell.window_start >= window {
                     let held = (cell.models.iter_mut())
-                        .filter(|m| &*m.model == lane && m.cur.get(unit).is_some_and(|n| *n > 0))
+                        .filter(|m| {
+                            &*m.model == lane
+                                && era.is_none_or(|era| m.era == era)
+                                && m.cur.get(unit).is_some_and(|n| *n > 0)
+                        })
                         .max_by_key(|m| m.era);
                     if let Some(m) = held {
                         take_one(&mut m.cur, unit);
@@ -2614,7 +2715,7 @@ impl GovState {
             requests: u64,
             billable_requests: u64,
             models: Vec<ModelCell>,
-            fee_eras: busbar_kernel_ledger::usage::FeeEras,
+            fee_eras: RawFeeEras,
         }
         /// One delta to write: the PER-MODEL TOKEN delta payload for `Store::add_usage`, under the
         /// window it belongs to. `acked` is `Some` for the cell's live window and `None` for a
@@ -3047,7 +3148,7 @@ fn still_enforces_a_cap(cost: &crate::cost::CostModel, bucket_id: &str) -> bool 
 /// `lane`. Refund ONLY the billable (fee-base) counter - the flat fee bills 2xx only. The admission
 /// `requests` counter is NEVER refunded, so a failed request still consumed its requests-limit slot
 /// (a caller cannot escape the requests cap by hammering failures). Floored at 0.
-fn refund_in_place(cell: &mut BudgetCell, lane: Option<(&str, &str)>, era: u64) {
+fn refund_in_place(cell: &mut BudgetCell, lane: Option<(&str, &str)>, era: RawRateEra) {
     cell.mutate(|cell| {
         match lane {
             None => {
@@ -3112,7 +3213,7 @@ fn durable_cell(
     row: busbar_contract::records::UsageLedger,
     eras: busbar_contract::records::UsageLedger,
     window: u64,
-) -> BudgetCell {
+) -> RecordStoreResult<BudgetCell> {
     let mut cell = BudgetCell::fresh(window);
     cell.requests = row.requests;
     cell.billable_requests = row.billable_requests;
@@ -3125,16 +3226,20 @@ fn durable_cell(
             Some((era, model)) => (era, Some(model)),
             None => (e.model.as_str(), None),
         };
-        let Ok(era @ 1..) = era.parse::<u64>() else {
+        let Some(era) = parse_era_tag(era)? else {
             continue;
         };
+        if era == RawRateEra::legacy(0) {
+            continue;
+        }
         let Some(model) = model else {
             let n = (e.usage_units.get(ERA_FEE_UNIT).copied().unwrap_or(0)).min(undated_fees);
             undated_fees -= n;
             fees.push((era, n));
             continue;
         };
-        let rest = (cell.models.iter_mut()).find(|m| m.era == 0 && *m.model == *model);
+        let rest =
+            (cell.models.iter_mut()).find(|m| m.era == RawRateEra::legacy(0) && *m.model == *model);
         let Some(rest) = rest else {
             continue;
         };
@@ -3168,13 +3273,13 @@ fn durable_cell(
     }
     cell.fee_eras = busbar_kernel_ledger::usage::FeeEras::of(fees);
     cell.flushed_fee_eras = cell.fee_eras.clone();
-    cell
+    Ok(cell)
 }
 
 fn durable_segments(rows: Vec<busbar_contract::records::ModelTokens>) -> Vec<ModelCell> {
     let segment = |m: busbar_contract::records::ModelTokens| ModelCell {
         model: std::sync::Arc::from(m.model),
-        era: 0,
+        era: RawRateEra::legacy(0),
         cur: m.usage_units,
         flushed: BTreeMap::new(),
         flushed_era: BTreeMap::new(),

@@ -193,6 +193,80 @@ fn ordinary_small_unknown_commit_keeps_paired_rows_and_later_accrual_exact() {
 }
 
 #[test]
+fn raw_entry_identity_survives_unknown_budget_flush_and_later_same_timestamp_counts() {
+    const OLD_ID_HEX: &str = "010101010101010101010101";
+    const NEW_ID_HEX: &str = "020202020202020202020202";
+    let old = RawRateEra::entry(0, EntryId::parse_hex(OLD_ID_HEX).unwrap());
+    let new = RawRateEra::entry(0, EntryId::parse_hex(NEW_ID_HEX).unwrap());
+    for reply in [Reply::LoseAfter, Reply::CancelAfter] {
+        let (store, gov, key, now) = setup("vk_exact_raw_unknown_flush");
+        let cost = model(&[]);
+        gov.record_usage_served_in_era(
+            &cost,
+            &key,
+            "",
+            MODEL,
+            None,
+            &toks(CONCURRENT_INPUT, 0),
+            now,
+            old,
+        );
+        store.replies.lock().unwrap().push_back(reply);
+        if matches!(reply, Reply::CancelAfter) {
+            assert!(
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| gov.flush_budgets()))
+                    .is_err()
+            );
+        } else {
+            assert_eq!(gov.flush_budgets(), 0);
+        }
+        gov.record_usage_served_in_era(
+            &cost,
+            &key,
+            "",
+            MODEL,
+            None,
+            &toks(NEXT_INPUT, 0),
+            now,
+            new,
+        );
+        gov.flush_budgets_final();
+        assert_eq!(
+            input(store.as_ref(), &key.id, 0),
+            CONCURRENT_INPUT + NEXT_INPUT
+        );
+        let dated = store
+            .get_usage(&super::super::era_bucket(&key.id), 0)
+            .unwrap();
+        for (era, expected) in [(old, CONCURRENT_INPUT), (new, NEXT_INPUT)] {
+            let name = super::super::era_model(era, MODEL);
+            let segment = dated.models.iter().find(|row| row.model == name).unwrap();
+            assert_eq!(
+                segment
+                    .usage_units
+                    .get(busbar_contract::records::UNIT_INPUT),
+                Some(&expected)
+            );
+        }
+        assert_eq!(
+            dated.models.len(),
+            2,
+            "opening identities are separately persisted"
+        );
+        let batches = store.batches.lock().unwrap();
+        assert_eq!(
+            batches[0], batches[1],
+            "the uncertain packet never adopts the newer identity"
+        );
+        assert!(batches[0]
+            .1
+            .iter()
+            .flat_map(|(_, _, delta)| &delta.models)
+            .all(|row| row.model != super::super::era_model(new, MODEL)));
+    }
+}
+
+#[test]
 fn ordinary_small_plain_only_unknown_commit_replays_once() {
     let (store, gov, key, now) = setup("vk_small_plain_unknown_flush");
     {

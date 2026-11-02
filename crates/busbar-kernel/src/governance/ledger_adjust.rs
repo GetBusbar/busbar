@@ -58,8 +58,8 @@ mod correction_impl;
 pub(in crate::governance) use correction_impl::PendingCorrection;
 
 /// The model name an adjustment row keeps one (key, lane, era) under.
-fn adjustment_slot(key_id: &str, lane: &str, era: u64) -> String {
-    format!("{key_id}{SLOT_SEP}{lane}{SLOT_SEP}{era}")
+fn adjustment_slot(key_id: &str, lane: &str, era: impl Into<RawRateEra>) -> String {
+    format!("{key_id}{SLOT_SEP}{lane}{SLOT_SEP}{}", era_tag(era.into()))
 }
 
 /// A metering row's LANE: a non-fallback plane's row is that plane's lane (`<plane><sep><model>`),
@@ -84,6 +84,8 @@ pub struct UsageAdjustment {
     pub lane: String,
     /// The era (`priced_from_ms`) of the metering rows it lands on.
     pub era: u64,
+    /// The exact entry identity where it was captured, absent for historical timestamp rows.
+    pub entry_id: Option<EntryId>,
     /// The exact signed difference of two raw `u64` counters per class. Zero nets are left off.
     pub delta: BTreeMap<String, i128>,
 }
@@ -363,7 +365,7 @@ impl GovState {
             else {
                 continue;
             };
-            let Ok(era) = era.parse() else {
+            let Some(era) = parse_era_tag(era)? else {
                 continue;
             };
             let delta: BTreeMap<_, _> = counts
@@ -374,7 +376,8 @@ impl GovState {
                 result.push(UsageAdjustment {
                     key_id: key.into(),
                     lane: lane.into(),
-                    era,
+                    era: era.effective_from,
+                    entry_id: era.entry_id,
                     delta,
                 });
             }
@@ -388,8 +391,10 @@ impl GovState {
 /// it (Q128 arch u32 #18). `None` when the window holds none of that lane by then.
 fn segment_at(models: &[ModelCell], lane: &str, at_ms: u64) -> Option<usize> {
     (models.iter().enumerate())
-        .filter(|(_, m)| *m.model == *lane && m.era <= at_ms)
-        .max_by_key(|(_, m)| m.era)
+        .filter(|(_, m)| {
+            *m.model == *lane && m.era.entry_id.is_none() && m.era.effective_from <= at_ms
+        })
+        .max_by_key(|(_, m)| m.era.effective_from)
         .map(|(i, _)| i)
 }
 
