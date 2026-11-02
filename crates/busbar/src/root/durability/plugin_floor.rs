@@ -38,6 +38,17 @@ fn floor_key(host: &str, name: &str) -> Vec<u8> {
     key
 }
 
+/// Check the Store's floor before any candidate can enter native code. This read-only pass
+/// also serves dry-run validation; only `hold` may raise a mark during real admission.
+pub fn check(
+    calls: &dyn StoreCalls,
+    host: &str,
+    rows: &dyn PluginRows,
+    pins: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    enforce(calls, host, rows, pins, false)
+}
+
 /// HOLD THE FLOOR on `host`: refuse a loadable dropped-in first-party plugin below the mark the
 /// store keeps for its name (unless `pins` names it), then raise each name's mark to what loaded.
 ///
@@ -49,6 +60,16 @@ pub fn hold(
     host: &str,
     rows: &dyn PluginRows,
     pins: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    enforce(calls, host, rows, pins, true)
+}
+
+fn enforce(
+    calls: &dyn StoreCalls,
+    host: &str,
+    rows: &dyn PluginRows,
+    pins: &BTreeMap<String, String>,
+    raise: bool,
 ) -> Result<(), String> {
     for row in rows.loadable() {
         let first_party = matches!(
@@ -91,6 +112,9 @@ pub fn hold(
                 if version_at_least(floor, &row.version) {
                     break;
                 }
+            }
+            if !raise {
+                break;
             }
             let request = super::conditional::candidate(
                 vec![Predicate {

@@ -25,6 +25,61 @@ use busbar_kernel::config::{FetchTarget, PluginsCfg};
 use busbar_kernel::config_validate::deal::{Document, Seat};
 use busbar_kernel::preflight::{BuildNote, CopyLine, Fetched, LinkedRow, RegistryIn};
 
+/// The base Store is the deployment's stable security authority across recovered generations.
+/// Bootstrap must still authenticate its own Store/secret/transport dependencies before this
+/// authority is readable. Keeping this handle never opens a second Store during validation.
+struct PluginFloorAuthority {
+    calls: Arc<dyn busbar_contract::store_calls::StoreCalls>,
+    host: String,
+}
+
+static PLUGIN_FLOOR: std::sync::OnceLock<PluginFloorAuthority> = std::sync::OnceLock::new();
+
+/// Bind the already-opened bootstrap Store before any further native plugin loading.
+pub fn bind_plugin_floor(
+    calls: Arc<dyn busbar_contract::store_calls::StoreCalls>,
+) -> Result<(), String> {
+    PLUGIN_FLOOR
+        .set(PluginFloorAuthority {
+            calls,
+            host: super::durability::host_identity(),
+        })
+        .map_err(|_| "the plugin floor Store is already bound".to_string())
+}
+
+fn check_plugin_floor(rows: &dyn PluginRows, plugins: &PluginsCfg) -> Result<(), String> {
+    if let Some(authority) = PLUGIN_FLOOR.get() {
+        super::durability::check_plugin_floor(
+            authority.calls.as_ref(),
+            &authority.host,
+            rows,
+            &plugins.first_party_floors,
+        )?;
+    }
+    Ok(())
+}
+
+fn hold_plugin_floor(rows: &dyn PluginRows, plugins: &PluginsCfg) -> Result<(), String> {
+    if let Some(authority) = PLUGIN_FLOOR.get() {
+        super::durability::hold_plugin_floor(
+            authority.calls.as_ref(),
+            &authority.host,
+            rows,
+            &plugins.first_party_floors,
+        )?;
+    }
+    Ok(())
+}
+
+/// The early manifest inventory predates Store recovery. Judge its exact retained bytes under
+/// the recovered rollback pins before the connector, planes or exports can open those images.
+pub fn admit_recovered_plugins(plugins: &PluginsCfg) -> Result<(), String> {
+    if let Some(registry) = REGISTRY.get() {
+        hold_plugin_floor(registry, plugins)?;
+    }
+    Ok(())
+}
+
 /// THE ONE REGISTRY BUILD (BUSBAR-1.6.0.md §3 stage 1; ARCHITECT ruling Q8): the
 /// plugin registry is built here, in the composition root, and nowhere else — the kernel's preflight
 /// receives it through the root's rows (the kernel preflight's `RegistryBuild`), and the root's own
@@ -52,6 +107,11 @@ pub fn registry(
         }),
     };
     let registry = super::loader::boot::registry(Build { linked, scan }, note)?;
+    // `registry` contains verified bytes only. Check before any caller can probe/open a hook,
+    // resolve a secret, or bind another kind; a late Book refusal cannot undo native code.
+    if let Some(plugins) = plugins {
+        check_plugin_floor(&registry, plugins)?;
+    }
     // The dropped-in secret plugins that state a door are JUDGED here, as every build judges them,
     // and join the secret axis only through [`admit_secrets`]: this build is stage 1, which
     // `--validate` and every dry run share, and a dry run keeps the running node's secret plugins
@@ -71,7 +131,10 @@ pub fn registry(
 ///
 /// A stated rendering that does not read back, or a dropped-in secret plugin that claims a word
 /// another plugin answers to, naming both.
-pub fn admit_secrets(rows: &Arc<dyn PluginRows>) -> Result<(), String> {
+pub fn admit_secrets(rows: &Arc<dyn PluginRows>, plugins: &PluginsCfg) -> Result<(), String> {
+    // This is actual app construction, not a dry-run registry scan. Keep the new floor before
+    // handing its candidates to the secret axis or opening later application kinds.
+    hold_plugin_floor(rows.as_ref(), plugins)?;
     match super::loader::rows::registry_arc(Arc::clone(rows)) {
         Some(registry) => admit_dropped_secrets(&registry),
         None => Ok(()),

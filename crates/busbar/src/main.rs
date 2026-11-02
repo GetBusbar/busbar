@@ -717,6 +717,13 @@ async fn run(
     );
     let anchor_store = busbar_kernel::appbuild::bootstrap_config_store(&base_cfg, &deploy.plugins)
         .unwrap_or_else(|error| die(format!("base Store overlay anchor: {error}")));
+    let floor_calls = anchor_store
+        .calls
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(|| die("base Store has no typed plugin-floor calls"));
+    root::boot::bind_plugin_floor(floor_calls)
+        .unwrap_or_else(|error| die(format!("Store plugin-floor authority: {error}")));
     let overlay_path = if config_locked {
         None
     } else {
@@ -785,6 +792,8 @@ async fn run(
     );
     // The top-level `plugins:` block (master switch + dir + trust). Absent = disabled defaults.
     let plugins_cfg = deploy.plugins.clone();
+    root::boot::admit_recovered_plugins(&plugins_cfg)
+        .unwrap_or_else(|error| die(format!("Store plugin-floor admission: {error}")));
 
     // BOOT-TIME dead-pid sweep: remove any orphaned plugin staging directory a CRASHED prior busbar
     // left behind (a clean shutdown removes its own; a dead pid's files are unlocked). Runs even

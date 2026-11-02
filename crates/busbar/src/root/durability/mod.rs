@@ -104,7 +104,7 @@ pub use recovery::{node_verb_store, report_operator_breaks};
 
 /// The first-party anti-downgrade floor the store keeps per host.
 mod plugin_floor;
-pub use plugin_floor::hold as hold_plugin_floor;
+pub use plugin_floor::{check as check_plugin_floor, hold as hold_plugin_floor};
 
 /// How many sealed audit records a node keeps in memory: a CACHE of the newest, never the record.
 /// The journal holds every one (`audit.v4`), and a window older than this is read back off it.

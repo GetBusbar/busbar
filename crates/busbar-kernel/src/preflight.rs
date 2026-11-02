@@ -146,7 +146,7 @@ pub enum BuildNote<'r> {
 ///
 /// # Errors
 /// A dropped-in secret plugin that claims a word another plugin answers to, naming both.
-pub type SecretAdmit = fn(&Arc<dyn PluginRows>) -> Result<(), String>;
+pub type SecretAdmit = fn(&Arc<dyn PluginRows>, &config::PluginsCfg) -> Result<(), String>;
 
 /// What the root's registry build reads: the build's linked rows and, unless only those are
 /// wanted, the `plugins:` block (its trust, its directory, whether it is on) and the fleet data dir

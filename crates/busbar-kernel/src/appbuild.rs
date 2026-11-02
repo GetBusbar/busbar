@@ -8,11 +8,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::auth::{AuthMiddleware, open_operator};
+use crate::auth::{open_operator, AuthMiddleware};
 use crate::diagnostics::{
-    DEPRECATED_ENV_VAR_HONORED, DURABLE_KEYS_INERT, GOVERNANCE_STORE_EPHEMERAL, OPEN_RELAY_NO_AUTH,
-    PLUGINS_FETCH_RELOAD_MISS, PROVIDER_API_KEY_UNRESOLVABLE, SAFE_MODE_OVERLAY_QUARANTINED,
-    STATEFUL_PLANE_EPHEMERAL_STORE, STORE_SECRET_REF_UNRESOLVED, diag_error, diag_warn,
+    diag_error, diag_warn, DEPRECATED_ENV_VAR_HONORED, DURABLE_KEYS_INERT,
+    GOVERNANCE_STORE_EPHEMERAL, OPEN_RELAY_NO_AUTH, PLUGINS_FETCH_RELOAD_MISS,
+    PROVIDER_API_KEY_UNRESOLVABLE, SAFE_MODE_OVERLAY_QUARANTINED, STATEFUL_PLANE_EPHEMERAL_STORE,
+    STORE_SECRET_REF_UNRESOLVED,
 };
 use crate::preflight::{
     build_secret_resolver, resolve_admin_token, resolve_at_rest_keys, resolve_signing_key,
@@ -727,7 +728,7 @@ pub fn bootstrap_config_store(
         &Default::default(),
     )?;
     if let Some(admit) = crate::preflight::root_rows().secret_admit {
-        admit(&registry)?;
+        admit(&registry, plugins)?;
     }
     let dependencies = bootstrap_dependency_names(cfg, registry.as_ref());
     let bootstrap_secrets = cfg
@@ -1015,7 +1016,7 @@ pub fn build_app_from_config_with_store(
     // STAGE 3 (BUSBAR-1.6.0.md §3, 3a/3e): this build's dropped-in secret plugins join the root's
     // secret axis here, never in the registry build `--validate` and every dry run share.
     if let Some(admit) = crate::preflight::root_rows().secret_admit {
-        admit(&plugin_registry)?;
+        admit(&plugin_registry, &plugins_cfg)?;
     }
 
     // The SECRET RESOLVER: built-in env/file resolve inline; any other module delegates to a
