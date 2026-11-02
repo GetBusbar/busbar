@@ -56,7 +56,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=BUSBAR_PROVENANCE_SOURCE");
     let manifest = std::fs::read_to_string("Cargo.toml").expect("read Cargo.toml");
     println!("cargo::rustc-check-cfg=cfg(distribution_root)");
-    if metadata_scalar(&manifest, "package.metadata.busbar.core", "dir").is_some() {
+    if metadata_value(&manifest, "package.metadata.busbar.core", "dir").is_some() {
         println!("cargo::rustc-cfg=distribution_root");
     }
     let core = core_dir(&manifest);
