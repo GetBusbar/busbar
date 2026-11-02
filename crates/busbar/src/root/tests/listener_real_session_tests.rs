@@ -20,11 +20,11 @@ async fn real_framer() -> (tokio::sync::MutexGuard<'static, ()>, DataFramer) {
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     assert!(crate::root::inbound::install(&dispatcher));
     let http = crate::root::test_plugins::linked_transport(
-        busbar_transport_http::door,
+        busbar_transport_http::door::door,
         bind_on(&dispatcher),
     );
     let ws = crate::root::test_plugins::linked_transport(
-        busbar_transport_ws::door,
+        busbar_transport_ws::door::door,
         bind_on(&dispatcher),
     );
     let http: Arc<dyn FramerDoor> = Arc::new(
