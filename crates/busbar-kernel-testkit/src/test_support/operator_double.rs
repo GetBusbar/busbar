@@ -6,7 +6,7 @@
 //! l.179-181: "Kernel tests use kind-neutral doubles ... The cleanliness crates (§8) obey the same
 //! rule").
 //!
-//! It states itself under the stand-in operator words (`busbar_kernel_identity::operator::OperatorWords { provider: "test-operator-double", principal_id: "admin" }`)
+//! It states itself under the external test kit's explicit operator words.
 //! and answers the operator credential's contract, nothing more: opened with the configured token's
 //! SHA-256 digest (64 hex characters, as the operator `token:` resolves), it identifies the
 //! operator principal when a bearer or an `x-admin-token` line hashes to that digest, refuses a
