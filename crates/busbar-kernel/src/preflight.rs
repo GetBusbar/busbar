@@ -261,14 +261,7 @@ pub fn root_rows() -> RootInstall {
 }
 
 fn unset() -> RootInstall {
-    #[cfg(test)]
-    {
-        crate::test_support::root::STAND_IN
-    }
-    #[cfg(not(test))]
-    {
-        RootInstall::default()
-    }
+    RootInstall::default()
 }
 
 pub use busbar_kernel_identity::operator::{
