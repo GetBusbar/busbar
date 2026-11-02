@@ -107,3 +107,179 @@ fn a_refused_refresh_keeps_the_prior_settings() {
     );
     assert_eq!(dial(&door), Outcome::Ready, "the instance keeps serving");
 }
+
+#[tokio::test]
+async fn a_real_stdio_refresh_changes_the_live_line_bound_and_a_refusal_preserves_it() {
+    use crate::root::loader::dispatch::{DispatchConfig, Dispatcher};
+    use busbar_contract::abi::sdk::door::abi_str;
+    use busbar_contract::abi::transport::{
+        Destination, IoOut, ReadIn, WriteIn, DEST_PROGRAM, READ_END_OF_FRAME, WRITE_END_OF_FRAME,
+    };
+    use busbar_core_connector::carrier::Driven;
+    use busbar_core_connector::doors::bind_on;
+    use busbar_core_connector::hostio::{Admission, HostIo};
+    use busbar_core_connector::spawn_env::HeldEnv;
+
+    // Refresh is process-wide by the actual plugin's Statement name. Isolate the process so
+    // applying a tiny bound here cannot change another test's live stdio connection.
+    const CHILD: &str = "BUSBAR_ROOT_REAL_STDIO_REFRESH_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "root::doors_refresh::a_real_stdio_refresh_changes_the_live_line_bound_and_a_refusal_preserves_it", "--nocapture"])
+            .env(CHILD, "1")
+            .output().unwrap();
+        assert!(
+            output.status.success(),
+            "real stdio refresh child failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    crate::root::connector::install_io(&dispatcher);
+    let io = Arc::new(HostIo::new());
+    assert!(dispatcher.install_io(io.clone()));
+    let mut binding = bind_on(&dispatcher);
+    binding.instance = Arc::from("real-stdio-refresh");
+    let plugin =
+        crate::root::test_plugins::linked_transport(busbar_transport_stdio::door::door, binding);
+    let settings = TransportSettings {
+        request_body_max_bytes: 4,
+        ..TransportSettings::default()
+    };
+    let door = Dispatched::open_on(plugin, &settings, dispatcher).unwrap();
+    let mut side = Driven::of(&door).expect("the actual stdio carrier owns a side");
+    let program = busbar_contract::conn::Program::from_settings(&serde_json::json!({
+        "command": "/bin/cat",
+    }))
+    .unwrap();
+    io.admit(
+        side.ticket(),
+        Admission::Spawn(program, HeldEnv::written_only()),
+    );
+    let destination = Destination {
+        kind: DEST_PROGRAM,
+        _reserved: 0,
+        authority: abi_str(""),
+        program: abi_str("/bin/cat"),
+        args: std::ptr::null(),
+        args_len: 0,
+        env: std::ptr::null(),
+        env_len: 0,
+    };
+    let mut input = blank_in::<DialIn>();
+    input.dest = &destination;
+    let mut output = blank_out::<ConnOut>();
+    let called = side
+        .cross(&door, Carry::Dial(&mut input, &mut output), None)
+        .unwrap();
+    assert_eq!(
+        called.outcome,
+        Outcome::Ready,
+        "the actual child spawns: {called:?}"
+    );
+    let connection = output.conn;
+    let (native, failure) = io.settle(side.ticket());
+    assert!(
+        failure.is_none(),
+        "the admitted spawn succeeds: {failure:?}"
+    );
+    let native = native.expect("the real host owns the child pipes");
+    assert!(io.program_id(native).is_some());
+
+    let write = |side: &mut Driven, bytes: &[u8]| {
+        let mut input = blank_in::<WriteIn>();
+        input.conn = connection;
+        input.bytes = bytes.as_ptr();
+        input.len = bytes.len();
+        input.flags = WRITE_END_OF_FRAME;
+        let mut output = blank_out::<IoOut>();
+        side.cross(&door, Carry::Write(&mut input, &mut output), None)
+            .expect("these bounded lines never fill the real pipe")
+            .outcome
+    };
+    assert_eq!(
+        write(&mut side, b"12345"),
+        Outcome::Failed,
+        "the actual carrier enforces the initial four-byte setting"
+    );
+    let applied = TransportSettings {
+        request_body_max_bytes: 8,
+        ..settings
+    };
+    assert!(
+        refresh_named(&applied, |row| row == "stdio").is_empty(),
+        "the root refresh registry reaches this actual live carrier"
+    );
+    assert_eq!(
+        write(&mut side, b"12345"),
+        Outcome::Ready,
+        "the same connection takes its newly applied setting"
+    );
+
+    let refusing = TransportSettings {
+        request_body_max_bytes: 0,
+        ..applied
+    };
+    let refusal = door
+        .refresh(&refusing)
+        .expect_err("the actual plugin refuses a zero bound");
+    assert!(refusal.contains("did not refresh"), "{refusal}");
+    assert_eq!(
+        write(&mut side, b"1234567"),
+        Outcome::Ready,
+        "a refused refresh preserves the prior eight-byte bound"
+    );
+    assert_eq!(
+        write(&mut side, b"123456789"),
+        Outcome::Failed,
+        "the prior finite bound remains enforced"
+    );
+
+    for expected in [b"12345".as_slice(), b"1234567".as_slice()] {
+        let mut received = Vec::new();
+        loop {
+            let mut buffer = [0; 16];
+            let mut input = blank_in::<ReadIn>();
+            input.conn = connection;
+            input.buf = buffer.as_mut_ptr();
+            input.cap = buffer.len();
+            let mut output = blank_out::<IoOut>();
+            let called = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                std::future::poll_fn(|cx| {
+                    match side.cross(&door, Carry::Read(&mut input, &mut output), Some(cx)) {
+                        Some(called) => std::task::Poll::Ready(called),
+                        None => std::task::Poll::Pending,
+                    }
+                }),
+            )
+            .await
+            .expect("the actual child echoes its accepted line");
+            assert_eq!(called.outcome, Outcome::Ready, "{called:?}");
+            let count = usize::try_from(output.len).unwrap();
+            received.extend_from_slice(&buffer[..count]);
+            if output.flags & READ_END_OF_FRAME != 0 {
+                break;
+            }
+        }
+        assert_eq!(
+            received, expected,
+            "only accepted lines reached the real child"
+        );
+    }
+    let mut input = blank_in::<ShutIn>();
+    input.conn = connection;
+    let mut output = blank_out::<OutHead>();
+    assert_eq!(
+        side.cross(&door, Carry::Shut(&mut input, &mut output), None)
+            .unwrap()
+            .outcome,
+        Outcome::Ready
+    );
+    assert!(
+        io.program_id(native).is_none(),
+        "shut retires the actual child handle"
+    );
+}
