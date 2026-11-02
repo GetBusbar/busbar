@@ -1109,8 +1109,18 @@ mod pending_open_custody {
         .outcome();
         assert_eq!(outcome, Outcome::Failed);
         assert!(output.instance.is_null());
-        assert!(output.err_len <= reason.len());
-        assert_eq!(&reason[..output.err_len], b"scripted pending OPEN failure");
+        assert_eq!(output.err_len, 0);
+        assert_eq!(reason, [0; 64]);
+        assert!(!output.head.error.ptr.is_null());
+        assert_eq!(
+            output.head.error.len,
+            b"scripted pending OPEN failure".len()
+        );
+        // SAFETY: this exact Life::opening returns Refusal::failed with a static string literal.
+        // Out::fail names that borrowed text directly, so it outlives the retired partial instance.
+        let error =
+            unsafe { std::slice::from_raw_parts(output.head.error.ptr, output.head.error.len) };
+        assert_eq!(error, b"scripted pending OPEN failure");
         assert_eq!(
             counts(),
             Counts {
