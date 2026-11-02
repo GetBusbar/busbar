@@ -12,6 +12,20 @@ fn policy_timeout(timeout_ms: u64) -> std::time::Duration {
     std::time::Duration::from_millis(ms)
 }
 
+// The reuse key is DATA: a handle is reusable only for the same module, resolved
+// settings and effective budget. HTTP route declarations add their own equality
+// check after this predicate; gate resolution uses the unresolved definition.
+fn same_call_inputs(
+    opened_module: &str,
+    opened_settings: &serde_json::Map<String, serde_json::Value>,
+    opened_budget: std::time::Duration,
+    module: &str,
+    settings: &serde_json::Map<String, serde_json::Value>,
+    effective_budget: impl FnOnce() -> std::time::Duration,
+) -> bool {
+    opened_module == module && opened_settings == settings && opened_budget == effective_budget()
+}
+
 pub mod gate;
 pub mod taps;
 
@@ -128,20 +142,16 @@ impl HookEnv {
         name: &str,
         timeout_ms: u64,
     ) -> Result<Arc<dyn RoutingPolicy>, String> {
-        if let Some(opened) = retained_route(
-            &self.route_calls,
-            name,
-            RouteIdentity {
+        if let Some(opened) = self.route_calls.get(name).filter(|opened| {
+            same_call_inputs(
+                &opened.module,
+                &opened.resolved,
+                opened.budget,
                 module,
                 settings,
-                budget: policy_timeout(timeout_ms),
-            },
-            |opened| RouteIdentity {
-                module: &opened.module,
-                settings: &opened.resolved,
-                budget: opened.budget,
-            },
-        ) {
+                || policy_timeout(timeout_ms),
+            )
+        }) {
             return Ok(crate::plane_driver::hooks::policy::HookPolicy::policy(
                 opened.calls.clone(),
                 name,
@@ -315,9 +325,14 @@ fn retained_route<'a, T>(
 ) -> Option<&'a T> {
     routes.get(name).filter(|retained| {
         let retained = identity(*retained);
-        retained.module == requested.module
-            && retained.settings == requested.settings
-            && retained.budget == requested.budget
+        same_call_inputs(
+            retained.module,
+            retained.settings,
+            retained.budget,
+            requested.module,
+            requested.settings,
+            || requested.budget,
+        )
     })
 }
 
@@ -810,20 +825,16 @@ fn gate_transport_named(
     env: &HookEnv,
     _settings_version: u64,
 ) -> Option<(Arc<dyn RoutingPolicy>, ResolvedSettings)> {
-    if let Some(opened) = retained_route(
-        &env.route_calls,
-        name,
-        RouteIdentity {
-            module: &hook.plugin,
-            settings: &hook.settings,
-            budget: policy_timeout(hook.timeout_ms),
-        },
-        |opened| RouteIdentity {
-            module: &opened.module,
-            settings: &opened.definition,
-            budget: opened.budget,
-        },
-    ) {
+    if let Some(opened) = env.route_calls.get(name).filter(|opened| {
+        same_call_inputs(
+            &opened.module,
+            &opened.definition,
+            opened.budget,
+            &hook.plugin,
+            &hook.settings,
+            || policy_timeout(hook.timeout_ms),
+        )
+    }) {
         return Some((
             crate::plane_driver::hooks::policy::HookPolicy::policy(opened.calls.clone(), name),
             opened.resolved.clone(),
@@ -1588,4 +1599,75 @@ pub struct FallbackHook {
     pub send_prompt: bool,
     pub send_user: bool,
     pub on_empty: crate::config::PolicyOnError,
+}
+
+#[cfg(test)]
+mod call_input_tests {
+    use super::{policy_timeout, same_call_inputs};
+
+    #[test]
+    fn timeout_only_changes_refuse_the_old_instance_in_every_reuse_path() {
+        let settings = serde_json::json!({"url": "http://127.0.0.1:1/"})
+            .as_object()
+            .unwrap()
+            .clone();
+        assert!(same_call_inputs(
+            "webrequest",
+            &settings,
+            policy_timeout(11),
+            "webrequest",
+            &settings,
+            || policy_timeout(11)
+        ));
+        assert!(!same_call_inputs(
+            "webrequest",
+            &settings,
+            policy_timeout(11),
+            "webrequest",
+            &settings,
+            || policy_timeout(29)
+        ));
+        assert!(!same_call_inputs(
+            "webrequest",
+            &settings,
+            policy_timeout(11),
+            "ranking",
+            &settings,
+            || policy_timeout(11)
+        ));
+        let changed = serde_json::json!({"url": "http://127.0.0.1:2/"})
+            .as_object()
+            .unwrap()
+            .clone();
+        assert!(!same_call_inputs(
+            "webrequest",
+            &settings,
+            policy_timeout(11),
+            "webrequest",
+            &changed,
+            || policy_timeout(11)
+        ));
+    }
+
+    #[test]
+    fn implicit_and_explicit_default_reuse_the_same_effective_budget() {
+        let settings = Default::default();
+        let default = crate::limits::default_policy_timeout_ms();
+        assert!(same_call_inputs(
+            "hook",
+            &settings,
+            policy_timeout(0),
+            "hook",
+            &settings,
+            || policy_timeout(default)
+        ));
+        assert!(same_call_inputs(
+            "hook",
+            &settings,
+            policy_timeout(default),
+            "hook",
+            &settings,
+            || policy_timeout(0)
+        ));
+    }
 }
