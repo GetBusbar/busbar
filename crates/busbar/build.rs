@@ -364,7 +364,7 @@ fn test_linked_source(manifest: &str) -> String {
         let module = entries
             .iter()
             .map(|(_, module)| module)
-            .find(|module| module.starts_with(&format!("{id}::")))
+            .find(|module| *module == id || module.starts_with(&format!("{id}::")))
             .cloned()
             .unwrap_or_else(|| format!("{id}::plane_door"));
         out.push_str(&format!("    ({id:?}, {module}::door),\n"));
