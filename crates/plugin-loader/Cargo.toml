@@ -115,7 +115,8 @@ busbar-stub-export-scrape-plugin = { path = "stubs/export-scrape/plugin" }
 busbar-stub-export-trace = { path = "stubs/export-trace/logic" }
 busbar-stub-export-trace-plugin = { path = "stubs/export-trace/plugin" }
 busbar-stub-store = { path = "stubs/store/logic" }
-busbar-stub-secret = { path = "stubs/secret/logic" }
+busbar-secret-env = { git = "https://git.getbusbar.dev/GetBusbar/busbar-secret-env", rev = "80e13fcd3ac788f20d74abc46a231abed69c981c" }
+busbar-secret-env-plugin = { git = "https://git.getbusbar.dev/GetBusbar/busbar-secret-env", rev = "80e13fcd3ac788f20d74abc46a231abed69c981c" }
 busbar-stub-auth-verify = { path = "stubs/auth-verify/logic" }
 busbar-stub-auth-verify-plugin = { path = "stubs/auth-verify/plugin" }
 h2 = { workspace = true }
@@ -131,7 +132,7 @@ libc = { workspace = true }
 [package.metadata.busbar.both-ways]
 store = "busbar-stub-store"
 auth-verify = "busbar-stub-auth-verify"
-secret = "busbar-stub-secret"
+secret = "busbar-secret-env"
 transport = "busbar-stub-transport"
 export = "busbar-stub-export"
 export-carried = "busbar-stub-export-carried"

@@ -23,9 +23,20 @@ fn env_reference(r: &SecretRef) -> Result<(), String> {
     if r.module != busbar_contract::secret_ref::SECRET_MODULE_ENV {
         return Err(format!("{} does not resolve", r.describe()));
     }
-    crate::both_ways::secret_fixture::resolve(&r.settings)
+    use busbar_contract::secret::SecretAxis;
+    let mut rows = crate::secret_calls::SecretRows::new(
+        || {
+            std::sync::Arc::new(crate::dispatch::Dispatcher::new(
+                crate::dispatch::DispatchConfig::default(),
+            ))
+        },
+        || None,
+    );
+    rows.link(crate::both_ways::secret_fixture::door::door)?;
+    rows.shared(crate::both_ways::secret_fixture::NAME)?
+        .resolve(&serde_json::to_vec(&r.settings).expect("the reference settings serialize"))
         .map(drop)
-        .map_err(|e| e.message)
+        .map_err(|e| e.text)
 }
 
 /// A connection table holding the connector's member-program contract: the members each
