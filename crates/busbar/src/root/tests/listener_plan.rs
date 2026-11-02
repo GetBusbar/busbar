@@ -964,7 +964,7 @@ async fn newly_opened_data_paths_are_physically_served_without_a_restart_report(
 /// object. Listener preparation must preserve that position while collecting only plugin calls.
 #[tokio::test]
 async fn a_kernel_keys_listener_prepares_and_keeps_real_key_verification() {
-    use busbar_contract::abi::auth::POINT_HEAD;
+    use busbar_contract::abi::auth::{POINT_HEAD, POINT_HEAD_BODY};
     use busbar_contract::abi::host::service::{UnitRef, FLOW_CONTINUE, FLOW_STOP};
     use busbar_contract::auth_calls::StripPlace;
     use busbar_kernel::governance::signing::{TokenSigner, DEFAULT_KID};
@@ -975,7 +975,8 @@ async fn a_kernel_keys_listener_prepares_and_keeps_real_key_verification() {
     const GENERATION: u64 = 1;
     const FRAMING: u64 = 31;
     let topology = topology();
-    let plan = plan(topology.clone());
+    let mut plan = plan(topology.clone());
+    Arc::get_mut(&mut plan).unwrap().offers[0].1 = AuthPoints(POINT_HEAD | POINT_HEAD_BODY);
     let signer = TokenSigner::from_secret_bytes(&[37; 32], DEFAULT_KID);
     let gov = Arc::new(
         GovState::new_with_signer(Arc::new(MemoryStore::new()), None, Some(signer)).unwrap(),
@@ -1008,6 +1009,14 @@ async fn a_kernel_keys_listener_prepares_and_keeps_real_key_verification() {
         .auth
         .position_calls(busbar_kernel::config::KEYS_MODULE)
         .is_none());
+    let expected_points = candidate
+        .auth
+        .position_points(busbar_kernel::config::KEYS_MODULE);
+    let verify_point = if expected_points.bits() & POINT_HEAD_BODY != 0 {
+        POINT_HEAD_BODY
+    } else {
+        POINT_HEAD
+    };
     plan.check(&candidate)
         .expect("kernel keys requires no opened plugin calls");
     let guests = plan.guests(&candidate, PRIVATE_LISTENER).unwrap();
@@ -1015,7 +1024,7 @@ async fn a_kernel_keys_listener_prepares_and_keeps_real_key_verification() {
         panic!("protected route remains present");
     };
     assert!(matches!(&line.auth, LineAuth::Chain(names, points)
-        if names == &[busbar_kernel::config::KEYS_MODULE] && *points == AuthPoints::HEAD));
+        if names == &[busbar_kernel::config::KEYS_MODULE] && *points == expected_points));
     let auths = plan.auths(&candidate, &guests).unwrap();
     assert!(
         auths.is_empty(),
@@ -1078,7 +1087,10 @@ async fn a_kernel_keys_listener_prepares_and_keeps_real_key_verification() {
         .framing_started(OWNER, 0, FRAMING, GENERATION)
         .unwrap();
     let specs = inbound.specs(OWNER, GENERATION).unwrap();
-    let line = specs.iter().find(|spec| spec.points == POINT_HEAD).unwrap();
+    let line = specs
+        .iter()
+        .find(|spec| spec.points == expected_points.bits())
+        .unwrap();
     for (index, (credential, accepted, disabled)) in [
         (None, false, false),
         (Some("not-a-valid-key"), false, false),
@@ -1116,12 +1128,12 @@ async fn a_kernel_keys_listener_prepares_and_keeps_real_key_verification() {
                 generation: GENERATION,
                 auth: line.auth,
                 unit: UnitRef::NONE,
-                point: POINT_HEAD,
+                point: verify_point,
                 conn: FRAMING,
                 stream,
                 framing: FRAMING,
                 head: head.clone(),
-                body: None,
+                body: (verify_point == POINT_HEAD_BODY).then(Vec::new),
                 deadline: None,
             },
             Box::new(move |answer| {
