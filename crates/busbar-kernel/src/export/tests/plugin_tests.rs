@@ -554,11 +554,22 @@ fn export_reference_diagnostics_keep_secret_and_plain_fields_distinct() {
         "auth_header": { "name": "Authorization", "value": { "env": token_var } },
     }));
     let output = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    struct Output(Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for Output {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let writing = output.clone();
     let subscriber = tracing_subscriber::fmt()
         .without_time()
         .with_ansi(false)
         .with_max_level(tracing::Level::DEBUG)
-        .with_writer(output.clone())
+        .with_writer(move || Output(writing.clone()))
         .finish();
     let handed = tracing::subscriber::with_default(subscriber, || {
         sink_settings(&DeclaringAxis, "declaring-sink", &written)
@@ -592,10 +603,8 @@ fn export_reference_diagnostics_keep_secret_and_plain_fields_distinct() {
         "reference diagnostics must never include resolved values"
     );
     assert!(
-        events
-            .iter()
-            .any(|line| line.contains("setting=\"url\" ")
-                && line.contains("reference-capable (not secret)")),
+        events.iter().any(|line| line.contains("setting=\"url\" ")
+            && line.contains("reference-capable (not secret)")),
         "the URL reference must retain its plain-setting classification"
     );
     assert!(

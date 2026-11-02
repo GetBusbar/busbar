@@ -1951,11 +1951,22 @@ fn offload_bounded_logs_when_the_blocking_task_panics() {
         .build()
         .unwrap();
     let output = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    struct Output(Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for Output {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let writing = output.clone();
     let subscriber = tracing_subscriber::fmt()
         .without_time()
         .with_ansi(false)
         .with_max_level(tracing::Level::WARN)
-        .with_writer(output.clone())
+        .with_writer(move || Output(writing.clone()))
         .finish();
 
     let out: Option<()> = tracing::subscriber::with_default(subscriber, || {

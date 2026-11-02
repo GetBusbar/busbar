@@ -325,11 +325,22 @@ async fn opaque_and_literal_settings_still_reuse_the_opened_transport() {
 #[test]
 fn nested_reference_resolution_diagnostics_do_not_contain_credentials() {
     let output = Arc::new(Mutex::new(Vec::<u8>::new()));
+    struct Output(Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for Output {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let writing = output.clone();
     let subscriber = tracing_subscriber::fmt()
         .without_time()
         .with_ansi(false)
         .with_max_level(tracing::Level::DEBUG)
-        .with_writer(output.clone())
+        .with_writer(move || Output(writing.clone()))
         .finish();
     let (env, source, _) = environment(&[SECRET_PATH], &[]);
     let hook = settings(json!({"servers": [{"env": {"TOKEN": source_reference()}}]}));
