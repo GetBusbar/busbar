@@ -48,7 +48,7 @@ use busbar_contract::export_calls::{Delivered, ExportCalls, Family, ServeRequest
 use crate::dispatch::call::Ticketed;
 use crate::dispatch::kinds::export::{Export, ExportFacts};
 use crate::dispatch::lifecycle::{
-    self, copy_blob, lend, lend_opt, open_frame, release, validate_call, why,
+    self, copy_blob, lend, lend_opt, open_frame, release, validate_call, why, AnswerLease,
 };
 use crate::dispatch::{in_head, out_head, Dispatcher, Frame, Plugin, NO_BLOB};
 
@@ -95,6 +95,7 @@ fn copy_str(s: AbiStr) -> String {
 /// The plugin's refusal, verbatim.
 pub fn validate(plugin: &Plugin<Export>, settings: &[u8]) -> Result<(), String> {
     let called = validate_call(plugin, blob(settings, BLOB_JSON));
+    let _lease = AnswerLease::new(plugin, called.lease);
     match called.outcome {
         Outcome::Ready => Ok(()),
         o => Err(why(o, called.error)),
@@ -147,7 +148,7 @@ pub fn check(
 /// One queued line.
 struct Line {
     stream: u8,
-    bytes: Vec<u8>,
+    bytes: zeroize::Zeroizing<Vec<u8>>,
     _hold: Box<dyn Send>,
 }
 
@@ -232,7 +233,9 @@ impl Shared {
             );
             return;
         };
-        let mut batch = Vec::with_capacity(lines.iter().map(|l| l.bytes.len() + 1).sum());
+        let mut batch = zeroize::Zeroizing::new(Vec::with_capacity(
+            lines.iter().map(|l| l.bytes.len() + 1).sum(),
+        ));
         for l in &lines {
             batch.extend_from_slice(&l.bytes);
             batch.push(b'\n');
@@ -258,6 +261,7 @@ impl Shared {
                 batch.clone(),
             );
             let done = (&mut call).await;
+            let _lease = AnswerLease::new(&self.plugin, done.lease);
             match done.outcome {
                 Outcome::Ready => break,
                 Outcome::Failed if attempt < DELIVER_ATTEMPTS => continue,
@@ -399,9 +403,11 @@ impl ExportInstance {
         validate(&plugin, settings)?;
         let mut f = open_frame(blob(settings, BLOB_JSON));
         let called = plugin.call(lc::OPEN, &mut f);
+        let opened = AnswerLease::new(&plugin, called.lease);
         if called.outcome != Outcome::Ready {
             return Err(called.open_failure(plugin.name()));
         }
+        drop(opened);
         let facts = plugin.context::<ExportFacts>().cloned().unwrap_or_default();
         let shared = Arc::new(Shared {
             plugin,
@@ -480,6 +486,7 @@ fn scrape_with(
         },
     );
     let mut called = plugin.call(slot::SCRAPE, &mut f);
+    let mut _lease = AnswerLease::new(plugin, called.lease);
     if let Some(token) = called.recall.take() {
         // The one re-call a short answer earns, into a buffer of the size it named.
         buf = vec![0u8; f.out.needed];
@@ -491,6 +498,7 @@ fn scrape_with(
             needed: 0,
         };
         called = plugin.recall(token, slot::SCRAPE, &mut f);
+        _lease = AnswerLease::new(plugin, called.lease);
     }
     if called.outcome != Outcome::Ready {
         return Err(why(called.outcome, called.error));
@@ -554,10 +562,9 @@ impl ExportCalls for ExportInstance {
         let settings = Arc::new(zeroize::Zeroizing::new(
             serde_json::to_vec(settings).map_err(|error| error.to_string())?,
         ));
-        let ticket = (0..self.shared.dispatcher.workers().max(1))
-            .find_map(|worker| self.shared.dispatcher.mint(worker))
+        let mut call = (0..self.shared.dispatcher.workers().max(1))
+            .find_map(|worker| Ticketed::mint(&self.shared.dispatcher, worker))
             .ok_or_else(|| "no ticket could be minted for an export refresh".to_string())?;
-        let _minted = Minted(&self.shared.dispatcher, ticket);
         let frame = Frame::new(
             busbar_contract::abi::mechanism::lifecycle::RefreshIn {
                 head: in_head(),
@@ -568,15 +575,15 @@ impl ExportCalls for ExportInstance {
             },
             out_head(),
         );
-        let done = futures::executor::block_on(self.shared.dispatcher.submit_lent(
+        call.submit(
             &self.shared.plugin,
-            ticket,
             lc::REFRESH,
             frame,
             DeadlineClass::Call,
             0,
             settings,
-        ));
+        );
+        let done = futures::executor::block_on(&mut call);
         release(&self.shared.plugin, done.lease);
         match done.outcome {
             Outcome::Ready => Ok(()),
@@ -601,6 +608,8 @@ impl ExportCalls for ExportInstance {
     }
 
     fn deliver(&self, stream: u8, line: Vec<u8>, hold: Box<dyn Send>) -> Delivered {
+        // Own the payload before every refusal path, including a full queue or faulted instance.
+        let line = zeroize::Zeroizing::new(line);
         let sh = &self.shared;
         if sh.plugin.is_faulted() || !sh.plugin.is_open() {
             return Delivered::Shed;

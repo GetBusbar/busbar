@@ -34,7 +34,9 @@ pub async fn ticks(plugin: &Plugin<Auth>, dispatcher: &Dispatcher, worker: u32) 
         if at > now {
             tokio::time::sleep(std::time::Duration::from_nanos(at - now)).await;
         }
-        let done = dispatcher.tick(plugin, driver, super::now_ns()).await;
+        // Only next_tick_ns is consumed. The worker releases READY/PENDING answer storage
+        // before publication, including when this schedule is aborted without polling again.
+        let done = dispatcher.tick_copy(plugin, driver, super::now_ns()).await;
         match (done.outcome, done.frame.map(|f| f.out.next_tick_ns)) {
             (Outcome::Ready | Outcome::Pending, Some(next)) if next != 0 => at = next,
             _ => return,

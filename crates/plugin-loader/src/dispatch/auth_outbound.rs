@@ -34,7 +34,7 @@ use busbar_contract::redacted::Secret;
 
 use super::call::{Answering, Pending, Ticketed};
 use super::kinds::auth::{Auth, AuthFacts, OutboundStyle};
-use super::lifecycle::{open_frame, release, validate_call};
+use super::lifecycle::{open_frame, release, validate_call, AnswerLease};
 use super::{in_head, out_head, Dispatcher, Done, Frame, Plugin};
 
 /// One open auth instance, the dispatcher that adopted it, and the worker a waiting `fields` is
@@ -95,14 +95,18 @@ impl OutboundInstance {
             )
         };
         let called = validate_call(&plugin, blob(settings, BLOB_JSON, 0));
+        let validated = AnswerLease::new(&plugin, called.lease);
         if called.outcome != Outcome::Ready {
             return Err(named("validate", called.outcome));
         }
+        drop(validated);
         let mut f = open_frame(blob(settings, BLOB_JSON, 0));
         let called = plugin.call(lc::OPEN, &mut f);
+        let opened = AnswerLease::new(&plugin, called.lease);
         if called.outcome != Outcome::Ready {
             return Err(named("open", called.outcome));
         }
+        drop(opened);
         Ok(Self::new(plugin, dispatcher, worker))
     }
 
@@ -384,6 +388,7 @@ impl OutboundInstance {
             },
         );
         let called = self.plugin.call(slot::OPEN_OUTBOUND, &mut frame);
+        let _lease = AnswerLease::new(&self.plugin, called.lease);
         if called.outcome == Outcome::Ready {
             return Ok(frame.out.handle);
         }
@@ -425,8 +430,9 @@ impl OutboundAuth for OutboundInstance {
         );
         // Not READY (a handle this generation does not hold, a fault): not ready, so a prober never
         // sends an unauthenticated request on it.
-        self.plugin.call(slot::OUTBOUND_READY, &mut frame).outcome == Outcome::Ready
-            && frame.out.ready != 0
+        let called = self.plugin.call(slot::OUTBOUND_READY, &mut frame);
+        let _lease = AnswerLease::new(&self.plugin, called.lease);
+        called.outcome == Outcome::Ready && frame.out.ready != 0
     }
 
     fn fields_now(&self, handle: u64, request: &FieldsRequest) -> Option<Fields> {

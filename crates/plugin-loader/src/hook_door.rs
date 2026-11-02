@@ -51,7 +51,7 @@ use crate::boot::{Candidate, Origin};
 use crate::dispatch::call::Ticketed;
 use crate::dispatch::kinds::hook::{Hook, HookContext};
 use crate::dispatch::lifecycle::{
-    blob, close, copy_blob, lend_or_null, open_frame, release, text, validate_json,
+    blob, close, copy_blob, lend_or_null, open_frame, release, text, validate_json, AnswerLease,
 };
 use crate::dispatch::{
     in_head, load_dropped_bytes, load_linked, now_ns, out_head, Bind, ConnTable, Dispatcher,
@@ -96,6 +96,7 @@ pub fn validate(plugin: &Plugin<Hook>, settings: &[u8]) -> Result<(), String> {
 fn open(plugin: &Plugin<Hook>, settings: &[u8]) -> Result<(), String> {
     let mut f = open_frame(json(settings));
     let c = plugin.call(life::OPEN, &mut f);
+    let _lease = AnswerLease::new(plugin, c.lease);
     if c.outcome == Outcome::Ready {
         Ok(())
     } else {

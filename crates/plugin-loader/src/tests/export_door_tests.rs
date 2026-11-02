@@ -168,6 +168,22 @@ fn the_ops_the_sink_does_not_serve_are_answered_as_such() {
         .is_empty());
 }
 
+/// Exercise the public refresh caller over the real door: refused and accepted settings both
+/// leave the same opened export usable for the next scrape.
+#[test]
+fn refresh_refusal_and_success_leave_the_opened_export_usable() {
+    let (plugin, dispatcher) = linked();
+    let sink = ExportInstance::open(plugin, dispatcher, br#"{"buffer_seconds":60}"#)
+        .expect("the sink opens");
+    assert!(sink.refresh(&serde_json::json!({"bogus": 1}), 2).is_err());
+    sink.refresh(&serde_json::json!({"buffer_seconds": 30}), 3)
+        .expect("valid settings refresh the existing export");
+    let text = "# TYPE private_counter counter\nprivate_counter{pool=\"private\"} 1\n\n";
+    let families = parse_families(text).unwrap();
+    assert_eq!(sink.scrape(&families).unwrap(), text.as_bytes());
+    assert!(sink.plugin().is_open());
+}
+
 /// RED (export ABI defect 4): dropping an opened instance sends its `close`. Before, the export
 /// path never closed an instance, so each instance a configuration check opened stayed open.
 #[test]
