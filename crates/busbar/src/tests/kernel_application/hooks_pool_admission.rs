@@ -103,11 +103,11 @@ async fn pool_rw_gate_resolves_as_rewrite_not_decision() {
         "advanced": {"allow_destinations": ["127.0.0.1"]},
         "store": {"module": store_module.expect("the actual store was staged"), "settings": settings},
         "hooks": {
-            "rw": {"module": hook_module, "kind": "gate", "prompt": "rw",
+            "rw": {"module": hook_module, "kind": "gate", "timeout_ms": 5000, "prompt": "rw",
                    "settings": {"url": endpoint}},
-            "read": {"module": hook_module, "kind": "gate", "prompt": "ro",
+            "read": {"module": hook_module, "kind": "gate", "timeout_ms": 5000, "prompt": "ro",
                      "settings": {"url": endpoint}},
-            "plain": {"module": hook_module, "kind": "gate", "prompt": "no",
+            "plain": {"module": hook_module, "kind": "gate", "timeout_ms": 5000, "prompt": "no",
                       "settings": {"url": endpoint}}
         },
         "pools": {
