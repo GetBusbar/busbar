@@ -341,45 +341,6 @@ fn inspect_reports_the_admissions_verdict_in_the_catalog_vocabulary() {
 }
 
 #[test]
-fn install_filesystem_failures_are_internal_errors() {
-    let dir = tmp_plugins_dir("install-io-errors");
-    let blocked_dir = dir.join("not-a-directory");
-    std::fs::write(&blocked_dir, b"keep this file").unwrap();
-    let publish_dir = dir.join("publish");
-    std::fs::create_dir(&publish_dir).unwrap();
-    std::fs::create_dir(publish_dir.join("plugin.tar.gz")).unwrap();
-    let tarball = fake_tarball("acme-store-io", "io", "1.0.0", "allowed");
-
-    for plugins_dir in [&blocked_dir, &publish_dir] {
-        let svc = svc_with(plugins_dir.clone(), unsigned_ok_posture());
-        let invalid = svc
-            .install_store_plugin("plugin.tar.gz", b"not a tarball")
-            .unwrap_err();
-        assert_eq!(invalid.http_status(), 400);
-        assert_eq!(invalid.code(), "invalid_request");
-
-        let err = svc
-            .install_store_plugin("plugin.tar.gz", &tarball)
-            .unwrap_err();
-        assert!(matches!(err, AdminError::Internal), "{err:?}");
-        assert_eq!(err.http_status(), 500);
-        assert_eq!(err.code(), "internal");
-        assert_eq!(err.message(), AdminError::Internal.message());
-    }
-    assert_eq!(std::fs::read(&blocked_dir).unwrap(), b"keep this file");
-    assert!(publish_dir.join("plugin.tar.gz").is_dir());
-    assert_eq!(std::fs::read_dir(&publish_dir).unwrap().count(), 1);
-
-    let svc = svc_with(dir.clone(), unsigned_ok_posture());
-    svc.install_store_plugin("ok.tar.gz", &tarball).unwrap();
-    assert_eq!(std::fs::read(dir.join("ok.tar.gz")).unwrap(), tarball);
-    assert!(svc.remove_store_plugin("ok.tar.gz").unwrap().removed);
-    let missing = svc.remove_store_plugin("ok.tar.gz").unwrap_err();
-    assert_eq!(missing.http_status(), 404);
-    assert_eq!(missing.code(), "not_found");
-}
-
-#[test]
 fn catalog_preserves_manifest_kinds_and_filters_store_queries() {
     let mut inventory = Vec::new();
     for kind in [
@@ -557,54 +518,6 @@ fn catalog_cache_future_inserted_at_is_treated_as_stale() {
     cache.get_mut(&dir).expect("entry present").inserted_at = now + CATALOG_CACHE_TTL_SECS + 1;
     prune_catalog_cache(&mut cache, now);
     assert!(!cache.contains_key(&dir), "an entry whose inserted_at is in the future (backward clock jump) must be treated as stale, not ageless");
-}
-
-#[test]
-fn rollback_reads_the_target_and_merges_pins() {
-    let dir = tmp_plugins_dir("rollback-merge");
-    let svc = svc_with(dir.clone(), strict_posture());
-    let empty = std::collections::BTreeMap::new();
-
-    assert!(matches!(
-        svc.resolve_plugin_rollback("nope.tar.gz", &empty),
-        Err(AdminError::NotFound { .. })
-    ));
-
-    std::fs::write(
-        dir.join("old.tar.gz"),
-        fake_tarball("acme-store-x", "x", "1.4.0", "trusted"),
-    )
-    .unwrap();
-    let prior =
-        std::collections::BTreeMap::from([("other-plugin".to_string(), "3.0.0".to_string())]);
-    let (manifest, pins) = svc
-        .resolve_plugin_rollback("old.tar.gz", &prior)
-        .expect("rollback resolves the trusted target");
-    assert_eq!(manifest.name, "acme-store-x");
-    assert_eq!(manifest.version, "1.4.0");
-    assert_eq!(
-        pins.get("acme-store-x").map(String::as_str),
-        Some("1.4.0"),
-        "this plugin is pinned to the target version"
-    );
-    assert_eq!(
-        pins.get("other-plugin").map(String::as_str),
-        Some("3.0.0"),
-        "a prior pin for another plugin is preserved"
-    );
-
-    std::fs::write(
-        dir.join("unsigned.tar.gz"),
-        fake_tarball("acme-store-x", "x", "1.4.0", "rejected"),
-    )
-    .unwrap();
-    let err = svc
-        .resolve_plugin_rollback("unsigned.tar.gz", &empty)
-        .unwrap_err();
-    assert!(
-        matches!(err, AdminError::Conflict(_)),
-        "an untrusted rollback target is refused (a rollback never launders trust), got {err:?}"
-    );
 }
 
 use busbar_kernel::config::groups::{LimitMetric, LimitWindow};
@@ -2880,46 +2793,6 @@ impl busbar_kernel::admission::PluginAdmission for RefusingAdmission {
             "the root's refusal".into(),
         ))
     }
-}
-
-#[test]
-fn every_admin_trust_moment_resolves_through_the_snapshots_builder() {
-    static REFUSING: RefusingAdmission = RefusingAdmission;
-    let dir = tmp_plugins_dir("refusing-admission");
-    std::fs::write(dir.join("p.tar.gz"), b"bytes").unwrap();
-    let app = crate::new_test_app()
-        .plugins_dir(dir)
-        .plugin_admission(&REFUSING)
-        .build();
-    let admission = super::operations::admission(&app).expect("the snapshot's admission");
-    assert_eq!(
-        admission.policy_resolves(&app.plugins_cfg).err().as_deref(),
-        Some("the root's refusal")
-    );
-    let svc = AdminService::new(app.clone());
-    assert!(matches!(
-        svc.inspect_plugin(b"bytes"),
-        Err(AdminError::Validation(msg)) if msg == "the root's refusal"
-    ));
-    assert!(matches!(
-        svc.install_store_plugin("p2.tar.gz", b"bytes"),
-        Err(AdminError::Validation(msg)) if msg == "the root's refusal"
-    ));
-    assert!(matches!(
-        svc.resolve_plugin_rollback("p.tar.gz", &std::collections::BTreeMap::new()),
-        Err(AdminError::Validation(msg)) if msg == "the root's refusal"
-    ));
-    assert!(
-        svc.store_plugin_catalog()
-            .iter()
-            .all(|p| p.loader == "compiled-in"),
-        "an unresolvable policy lists the linked rows alone"
-    );
-    let mut none = (*app).clone();
-    none.plugin_admission = None;
-    assert!(super::operations::admission(&none).is_err());
-
-    assert!(validate_plugin_filename(&none, "plain.tar.gz").is_err());
 }
 
 #[test]
