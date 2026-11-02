@@ -149,7 +149,8 @@ impl CostKit for crate::cost::CostModel {}
 
 impl GovKit for crate::governance::GovState {
     fn create_key(&self, spec: NewKeySpec, now: u64) -> Result<(VirtualKey, String), String> {
-        crate::governance::GovState::create_key(self, spec, now).map_err(|e| e.to_string())
+        crate::test_support::governance::GovStateFixtures::create_key(self, spec, now)
+            .map_err(|e| e.to_string())
     }
     fn mint_signed(
         &self,
@@ -164,7 +165,8 @@ impl GovKit for crate::governance::GovState {
         spec: NewKeySpec,
         now: u64,
     ) -> Result<(VirtualKey, String, String, String), String> {
-        crate::governance::GovState::create_key_with_aws(self, spec, now).map_err(|e| e.to_string())
+        crate::test_support::governance::GovStateFixtures::create_key_with_aws(self, spec, now)
+            .map_err(|e| e.to_string())
     }
     fn admin_token_hash(&self) -> Option<String> {
         crate::governance::GovState::admin_token_hash(self)

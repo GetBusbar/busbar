@@ -720,7 +720,7 @@ pub type BuiltApp = crate::state::App;
 fn seeded_section_plane_runtime() -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
     Some(crate::plane_driver::registry::default_section_plane_test_runtime())
 }
-#[cfg(all(not(test), feature = "test-support"))]
+#[cfg(not(test))]
 fn seeded_section_plane_runtime() -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
     None
 }
@@ -1452,7 +1452,6 @@ impl TestApp {
         // `plane::registry::default_section_plane_test_runtime`), and an EXTERNAL `test-support`
         // build seeds none. With no plane registered for the section, nothing is seeded. The decl
         // key comes from the registry, never spelled as a literal.
-        #[cfg(any(test, feature = "test-support"))]
         if let Some(decl) = crate::plane_driver::registry::plane_decl_for_config_section(
             busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2],
         ) {
@@ -1506,7 +1505,10 @@ impl TestApp {
         // while sibling tests run (`register_test_plane`), so a key read before a fallback plane
         // registers and a decl read after it named two different planes — the LLM runtime then landed
         // under the sibling's `runtime_slot_key` and clobbered that sibling's own runtime slot.
-        let fallback = crate::plane_driver::dispatch::fallback_decl();
+        let fallback = crate::plane_driver::registry::plane_decls()
+            .iter()
+            .copied()
+            .find(|decl| decl.fallback);
         let fallback_runtime_key = crate::state::runtime_slot_key(fallback.map_or("", |d| d.key));
         // Built and inserted ONLY when a real fallback (LLM) plane owns the key — otherwise `lanes`/
         // `by_model`/the `self.*` tables simply drop unused, and `App::llm_runtime` reads the empty
@@ -1864,8 +1866,8 @@ pub fn hook_axis_stand_in(
     Ok(std::sync::Arc::new(ranking_double::RankingAxis))
 }
 
-pub mod auth_helpers;
 pub mod audit;
+pub mod auth_helpers;
 pub mod governance;
 pub use governance::GovStateFixtures;
 /// THE HOOK DOUBLE (OWNER 2026-10-03, no test plugins): the kernel's hook port answered in
@@ -1984,7 +1986,7 @@ fn hook_double_env(registry: rows::Rows, doubled: &[&str]) -> crate::hooks::Hook
 pub fn metric_sum(name: &str, labels: &[(&str, &str)]) -> f64 {
     crate::snapshot::init();
     let frags: Vec<String> = labels.iter().map(|(k, v)| format!("{k}=\"{v}\"")).collect();
-    crate::snapshot::render()
+    crate::test_support::export_axis::render()
         .lines()
         .filter(|l| {
             l.strip_prefix(name)
@@ -2007,7 +2009,7 @@ pub fn record_hook_read(
     op: &str,
     identity: bool,
 ) {
-    crate::audit::amend::hook_read(amendments, name, principal, op, identity);
+    crate::audit::amend::record_test_hook_read(amendments, name, principal, op, identity);
 }
 
 /// Create (and return) a PRIVATE scratch directory for one test, under the process temp dir.

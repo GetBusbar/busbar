@@ -53,3 +53,15 @@ pub(crate) fn export_read(
 #[cfg(test)]
 #[path = "tests/amend_tests.rs"]
 mod tests;
+
+/// Exercise the real audit authority over an explicitly supplied fixture journal and read.
+#[cfg(any(test, feature = "test-support"))]
+pub fn record_test_hook_read(
+    amendments: &NodeAmendments,
+    name: &str,
+    principal: Option<&str>,
+    op: &str,
+    identity: bool,
+) {
+    hook_read(amendments, name, principal, op, identity);
+}

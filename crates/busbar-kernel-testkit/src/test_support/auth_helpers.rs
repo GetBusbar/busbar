@@ -12,7 +12,9 @@ fn inbound_style() -> Vec<String> {
     if busbar_kernel::preflight::linked_auth_names().is_empty() {
         super::outbound_auth::double_inbound_style()
     } else {
-        busbar_kernel::preflight::linked_auth_axis()
+        busbar_kernel::preflight::root_rows()
+            .auth_axis
+            .and_then(|open| busbar_kernel::preflight::linked().ok().map(open))
             .and_then(|axis| axis.default_inbound_style().ok())
             .unwrap_or_default()
     }

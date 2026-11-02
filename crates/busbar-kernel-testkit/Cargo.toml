@@ -36,3 +36,7 @@ tracing-subscriber = { workspace = true }
 metrics = { workspace = true }
 getrandom = { workspace = true }
 hex = { workspace = true }
+http-body-util = { workspace = true }
+tower = { workspace = true, features = ["util"] }
+crc32fast = { workspace = true }
+busbar-kernel-egress = { path = "../busbar-kernel-egress" }
