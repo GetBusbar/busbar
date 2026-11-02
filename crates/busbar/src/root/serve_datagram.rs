@@ -458,13 +458,9 @@ impl CallerLeg {
     /// What the association yielded: through the pairing (its lines go across), then its channels'
     /// heads name the session's channel and their messages go to the session.
     fn yielded(self: &Arc<Self>, pieces: Vec<Got>, now: Instant) {
-        self.yielded_batch(
-            busbar_core_connector::framer::Yielded {
-                pieces,
-                ..Default::default()
-            },
-            now,
-        );
+        let mut yielded = busbar_core_connector::framer::Yielded::default();
+        yielded.pieces = pieces;
+        self.yielded_batch(yielded, now);
     }
 
     fn yielded_batch(

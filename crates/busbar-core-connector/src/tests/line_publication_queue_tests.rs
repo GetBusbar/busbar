@@ -245,9 +245,10 @@ fn a_back_only_line_batch_starts_publication_and_preserves_its_empty_frame() {
         .unwrap();
     drop(pairing.publish(
         Leg::Upstream,
-        Yielded {
-            pieces: vec![piece(20, b"", false), piece(20, b"line", false)],
-            ..Yielded::default()
+        {
+            let mut yielded = Yielded::default();
+            yielded.pieces = vec![piece(20, b"", false), piece(20, b"line", false)];
+            yielded
         },
         now,
     ));
@@ -315,9 +316,10 @@ fn real_pairing_requeues_source_before_new_inputs_and_retires_both_queue_lists_o
             enqueue(&pairing, 4, b"dddd", &on_retired, &on_charges);
             drop(pairing.publish(
                 Leg::Upstream,
-                Yielded {
-                    pieces: vec![piece(20, b"", false), piece(20, b"line", false)],
-                    ..Yielded::default()
+                {
+                    let mut yielded = Yielded::default();
+                    yielded.pieces = vec![piece(20, b"", false), piece(20, b"line", false)];
+                    yielded
                 },
                 Instant::now(),
             ));

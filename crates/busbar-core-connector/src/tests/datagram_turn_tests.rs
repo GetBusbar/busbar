@@ -300,7 +300,9 @@ fn a_finite_pair_can_both_owe_same_op_recalls_before_either_host_batch_is_publis
     let mut a_turn = a
         .emit_turn(CALLER_LINE, START, true, false, Instant::now())
         .unwrap();
-    let mut a_batch = a_turn.next_batch().unwrap().unwrap().pieces.into_iter();
+    let mut a_output = a_turn.next_batch().unwrap().unwrap();
+    let mut a_batch = std::mem::take(&mut a_output.pieces).into_iter();
+    drop(a_output);
     let first_a = a_batch.next().unwrap();
     let mut b_turn = b
         .emit_turn(UPSTREAM_LINE, &first_a.bytes, true, false, Instant::now())
@@ -378,8 +380,8 @@ fn distinct_finite_emits_outgrow_two_retained_slots_without_using_the_recall_bud
                 } else {
                     (&mut b, UPSTREAM_LINE, UPSTREAM_LINE)
                 };
-                let answer = framing.emit(stream, &bytes, true, false, now).unwrap();
-                for piece in answer.pieces {
+                let mut answer = framing.emit(stream, &bytes, true, false, now).unwrap();
+                for piece in std::mem::take(&mut answer.pieces) {
                     if piece.stream == line {
                         awaiting.push_back((!at_caller, piece.bytes));
                     } else {
@@ -431,17 +433,17 @@ fn the_same_branching_framers_have_finite_feedback_with_the_callers_own_channel_
     let mut a = framing(&caller);
     let mut b = framing(&upstream);
     let now = Instant::now();
-    let a_output = a.emit(CALLER_LINE, START, true, false, now).unwrap();
+    let mut a_output = a.emit(CALLER_LINE, START, true, false, now).unwrap();
     let mut channel = Vec::new();
-    for frame in a_output.pieces {
-        let b_output = b
+    for frame in std::mem::take(&mut a_output.pieces) {
+        let mut b_output = b
             .emit(UPSTREAM_LINE, &frame.bytes, true, false, now)
             .unwrap();
-        for feedback in b_output.pieces {
-            let originating_at_a = a
+        for feedback in std::mem::take(&mut b_output.pieces) {
+            let mut originating_at_a = a
                 .emit(CALLER_LINE, &feedback.bytes, true, false, now)
                 .unwrap();
-            channel.extend(originating_at_a.pieces);
+            channel.extend(std::mem::take(&mut originating_at_a.pieces));
         }
     }
     let expected = upstream.output.lock().unwrap().emitted[0].capacity + 1;

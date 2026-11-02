@@ -590,7 +590,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 CLOSE_NORMAL
             };
             let y = framing.finish(reason);
-            self.out.extend(y.wire);
+            self.out.extend(y.wire.iter().copied());
         }
         while !self.out.is_empty() && !self.failed {
             match self.write_some(cx) {
@@ -607,9 +607,9 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
 
     /// Take what the framer answered: wire bytes to the socket, head slots and pieces to the
     /// streams, its deadline to the timer, its end to the connection.
-    fn absorb(&mut self, y: Yielded) {
-        self.out.extend(y.wire);
-        for head in y.heads {
+    fn absorb(&mut self, mut y: Yielded) {
+        self.out.extend(y.wire.iter().copied());
+        for head in std::mem::take(&mut y.heads) {
             self.heads.insert(head.stream, head);
         }
         if y.agreed != 0 {
@@ -628,7 +628,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
         for g in y.pieces.iter().filter(|g| g.ends_stream() || g.failed) {
             self.full.remove(&g.stream);
         }
-        for piece in y.pieces {
+        for piece in std::mem::take(&mut y.pieces) {
             self.piece(piece);
         }
         self.deadline = y.deadline_ns.map(|ns| {

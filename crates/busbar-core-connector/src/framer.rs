@@ -338,7 +338,31 @@ pub struct Yielded {
     pub producer: crate::publication::ProducerCustody,
 }
 
+impl Drop for Yielded {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.wire);
+    }
+}
+
 impl Yielded {
+    /// Grow on a fresh allocation: reallocating a live Vec would retire credential-bearing wire
+    /// bytes without wiping them. Both owners remain guarded through copying and unwinding.
+    fn extend_wire(&mut self, bytes: &[u8]) {
+        let required = self
+            .wire
+            .len()
+            .checked_add(bytes.len())
+            .expect("framer wire length overflow");
+        if required > self.wire.capacity() {
+            let capacity = required.max(self.wire.capacity().saturating_mul(2));
+            let mut grown = zeroize::Zeroizing::new(Vec::with_capacity(capacity));
+            grown.extend_from_slice(&self.wire);
+            zeroize::Zeroize::zeroize(&mut self.wire);
+            self.wire = std::mem::take(&mut *grown);
+        }
+        self.wire.extend_from_slice(bytes);
+    }
+
     pub(crate) fn adoption_bound(&self) -> Option<usize> {
         use std::mem::size_of;
         let containers = self.retained_capacity().checked_add(
@@ -700,7 +724,9 @@ impl Buffers {
             .wire
             .get(..usize::try_from(y.wire_len).map_err(|_| bad("wire"))?)
             .ok_or_else(|| bad("wire"))?;
-        into.wire.extend_from_slice(wire);
+        into.extend_wire(wire);
+        #[cfg(test)]
+        crate::support::watch_yielded_wire(&into.wire);
         let frame_len = usize::try_from(y.frame_len).map_err(|_| bad("frame"))?;
         let frame = self.frame.get(..frame_len).ok_or_else(|| bad("frame"))?;
         let pieces = self
@@ -2729,12 +2755,14 @@ impl Framing {
 
 /// What one more completed op yielded, after what `into` holds: its head slots, wire bytes and
 /// pieces in order, its end, and the deadline it stated last.
-fn merge(into: &mut Yielded, y: Yielded) {
-    into.heads.extend(y.heads);
-    into.wire.extend(y.wire);
-    into.pieces.extend(y.pieces);
-    into.interim.extend(y.interim);
-    into.flow.extend(y.flow);
+fn merge(into: &mut Yielded, mut y: Yielded) {
+    into.heads.append(&mut y.heads);
+    into.extend_wire(&y.wire);
+    #[cfg(test)]
+    crate::support::watch_yielded_wire(&into.wire);
+    into.pieces.append(&mut y.pieces);
+    into.interim.append(&mut y.interim);
+    into.flow.append(&mut y.flow);
     into.ended |= y.ended;
     into.deadline_ns = y.deadline_ns.or(into.deadline_ns);
     if y.agreed != 0 {

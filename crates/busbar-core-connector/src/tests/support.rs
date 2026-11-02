@@ -18,10 +18,19 @@ struct WipeWatch {
     second_result: Option<bool>,
 }
 
+struct YieldedWireWatch {
+    pointer: usize,
+    initialized: usize,
+    wiped: Option<bool>,
+}
+
 thread_local! {
     static WIPE_WATCH: std::cell::Cell<WipeWatch> = const { std::cell::Cell::new(WipeWatch {
         pointer: 0, len: 0, second: 0, second_len: 0, first_result: None, second_result: None,
     }) };
+    static YIELDED_WIRE_WATCH: std::cell::RefCell<Option<Vec<YieldedWireWatch>>> = const {
+        std::cell::RefCell::new(None)
+    };
 }
 
 struct ObservingAllocator;
@@ -38,6 +47,26 @@ unsafe impl std::alloc::GlobalAlloc for ObservingAllocator {
     }
 
     unsafe fn dealloc(&self, pointer: *mut u8, layout: std::alloc::Layout) {
+        let _ = YIELDED_WIRE_WATCH.try_with(|watch| {
+            let Ok(mut state) = watch.try_borrow_mut() else {
+                return;
+            };
+            let Some(watched) = state.as_mut() else {
+                return;
+            };
+            for allocation in watched.iter_mut().filter(|allocation| {
+                allocation.pointer == pointer as usize && allocation.wiped.is_none()
+            }) {
+                // SAFETY: the live Yielded owner registered only its initialized prefix. This
+                // current allocation pointer remains valid until System deallocates it below.
+                allocation.wiped = Some(
+                    allocation.initialized <= layout.size()
+                        && unsafe { std::slice::from_raw_parts(pointer, allocation.initialized) }
+                            .iter()
+                            .all(|byte| *byte == 0),
+                );
+            }
+        });
         let _ = WIPE_WATCH.try_with(|watch| {
             let mut state = watch.get();
             if state.pointer == pointer as usize || state.second == pointer as usize {
@@ -67,6 +96,56 @@ unsafe impl std::alloc::GlobalAlloc for ObservingAllocator {
         // SAFETY: the caller returned the allocation and original layout to its allocator.
         unsafe { std::alloc::GlobalAlloc::dealloc(&std::alloc::System, pointer, layout) };
     }
+}
+
+/// Record the actual live owner, never an allocation selected by size or contents.
+pub fn watch_yielded_wire(wire: &[u8]) {
+    if wire.is_empty() {
+        return;
+    }
+    YIELDED_WIRE_WATCH.with(|watch| {
+        let mut state = watch.borrow_mut();
+        let Some(watched) = state.as_mut() else {
+            return;
+        };
+        if let Some(allocation) = watched.iter_mut().find(|allocation| {
+            allocation.pointer == wire.as_ptr() as usize && allocation.wiped.is_none()
+        }) {
+            allocation.initialized = wire.len();
+        } else {
+            watched.push(YieldedWireWatch {
+                pointer: wire.as_ptr() as usize,
+                initialized: wire.len(),
+                wiped: None,
+            });
+        }
+    });
+}
+
+/// Observe all wire allocations through their actual retirement, including MORE growth/merges.
+pub fn observe_yielded_wires<T>(run: impl FnOnce() -> T) -> (T, Vec<Option<bool>>) {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            YIELDED_WIRE_WATCH.with(|watch| {
+                drop(watch.borrow_mut().take());
+            });
+        }
+    }
+    YIELDED_WIRE_WATCH.with(|watch| {
+        assert!(watch.borrow().is_none(), "nested yielded-wire observation");
+        *watch.borrow_mut() = Some(Vec::new());
+    });
+    let _reset = Reset;
+    let result = run();
+    let allocations = YIELDED_WIRE_WATCH.with(|watch| watch.borrow_mut().take().unwrap());
+    (
+        result,
+        allocations
+            .into_iter()
+            .map(|allocation| allocation.wiped)
+            .collect(),
+    )
 }
 
 /// Observe real destruction of an owner's initialized buffer and any explicitly lent encode copy.

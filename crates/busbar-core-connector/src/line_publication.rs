@@ -523,14 +523,13 @@ impl Pairing {
             let retained = yielded.retained_capacity();
             yielded.custody.reduce(retained);
         }
-        let Yielded {
-            pieces,
-            custody,
-            continuing,
-            piece_custody,
-            producer,
-            ..
-        } = yielded;
+        let pieces = std::mem::take(&mut yielded.pieces);
+        let custody = std::mem::take(&mut yielded.custody);
+        let continuing = yielded.continuing;
+        let piece_custody = std::mem::take(&mut yielded.piece_custody);
+        let producer = std::mem::take(&mut yielded.producer);
+        // Retire ignored wire while the transferred storage/producer custody is still live.
+        drop(yielded);
         let mut retired = Vec::new();
         let (pieces, owners, schedule, caller) = {
             let mut state = self.lock();

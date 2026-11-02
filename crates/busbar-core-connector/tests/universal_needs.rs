@@ -490,6 +490,125 @@ fn the_head_words_reach_the_framer_byte_for_byte() {
     );
 }
 
+/// The actual dropped request framer's sealed opening crosses host wire ownership and TLS with
+/// exactly its ordinary encoding, including the unmodified application body.
+#[test]
+fn a_dropped_framers_sealed_opening_keeps_its_exact_wire_bytes_through_tls() {
+    use busbar_contract::conn::SEALED_FIELDS_FIELD;
+    use busbar_core_connector::compose::{Dial, Planned};
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    const SECRET: &[u8] = b"Bearer exact-sealed-opening-credential";
+    const BODY: &[u8] = b"application-body-unchanged";
+    const METHOD: &[u8] = b"POST";
+    const TARGET: &[u8] = b"/v1/wire-custody";
+    let door = composing_door();
+    let scheme = door
+        .facts()
+        .claims
+        .iter()
+        .copied()
+        .find(|claim| {
+            framer::locate(door.as_ref(), &format!("{claim}://127.0.0.1:443/"))
+                .is_ok_and(|located| located.secure)
+        })
+        .expect("the request framer states its secured claim");
+    busbar_core_connector::tls::install_crypto_provider();
+    let rcgen::CertifiedKey { cert, signing_key } =
+        rcgen::generate_simple_self_signed(vec!["localhost".to_owned(), "127.0.0.1".to_owned()])
+            .unwrap();
+    let trust = busbar_contract::transport::trust::EgressTrust {
+        extra_anchors: vec![cert.der().to_vec()],
+        ..Default::default()
+    };
+    let mut server = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![cert.der().clone()],
+            rustls_pki_types::PrivateKeyDer::try_from(signing_key.serialize_der()).unwrap(),
+        )
+        .unwrap();
+    server.alpn_protocols = framer::accept_offer(door.as_ref()).unwrap();
+    support::worker().block_on(async {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let far = listener.local_addr().unwrap();
+        let response = respond(
+            door.facts().claims[0],
+            "{V} 200 OK\r\ncontent-length: 0\r\n\r\n",
+        );
+        let read = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_rustls::TlsAcceptor::from(Arc::new(server))
+                .accept(socket)
+                .await
+                .unwrap();
+            let mut got = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            while !got.ends_with(BODY) {
+                let read = tokio::time::timeout(Duration::from_secs(5), socket.read(&mut buffer))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert!(read > 0, "the sealed opening arrives whole");
+                got.extend_from_slice(&buffer[..read]);
+            }
+            socket.write_all(&response).await.unwrap();
+            socket.shutdown().await.unwrap();
+            got
+        });
+        let planned = Planned::locate(
+            door.clone(),
+            support::via(),
+            Dial {
+                target: format!("{scheme}://{far}/v1/wire-custody"),
+                tls: Some(Arc::new(
+                    busbar_core_connector::tls::client::build_client_config(&trust).unwrap(),
+                )),
+                alpn: Vec::new(),
+                open_timeout: Duration::from_secs(5),
+                opening: Some((
+                    vec![
+                        ("authorization".to_owned(), SECRET.to_vec()),
+                        (SEALED_FIELDS_FIELD.to_owned(), b"authorization".to_vec()),
+                    ],
+                    BODY.to_vec().into(),
+                )),
+                head_words: (METHOD.to_vec(), TARGET.to_vec()),
+                anchors: None,
+            },
+        )
+        .unwrap();
+        let (fields, body) = planned.dial().opening.as_ref().unwrap();
+        let fields: Vec<(&str, &[u8])> = fields
+            .iter()
+            .filter(|(name, _)| name != SEALED_FIELDS_FIELD)
+            .map(|(name, value)| (name.as_str(), value.as_slice()))
+            .collect();
+        let expected = framer::encode_head(door.as_ref(), METHOD, TARGET, &fields, body).unwrap();
+        let mut connection = planned.dial_at(far).unwrap();
+        let _ = tokio::time::timeout(
+            Duration::from_secs(5),
+            futures::future::poll_fn(|context| connection.poll_piece(context)),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let got = read.await.unwrap();
+        assert_eq!(
+            got, expected,
+            "TLS carries exactly the framer's original credential and body bytes"
+        );
+        assert!(got.ends_with(BODY));
+        assert!(got.windows(SECRET.len()).any(|part| part == SECRET));
+        assert!(!got
+            .windows(SEALED_FIELDS_FIELD.len())
+            .any(|part| part == SEALED_FIELDS_FIELD.as_bytes()));
+        connection.close();
+    });
+}
+
 /// THE REQUEST/RESPONSE FRAMER the head tests drive: of the libraries beside this test binary, the
 /// FRAMER (its stated role) whose own claim carries no session (one request, one response), found
 /// by what it states and never by a name. It is a pinned plugin repo's cdylib, which is in no graph

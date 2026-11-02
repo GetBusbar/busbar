@@ -160,9 +160,10 @@ fn every_channel_message_reaches_the_reader_empty_ones_and_past_the_bound() {
         let now = std::time::Instant::now();
         let _ = leg.take(
             &pairing,
-            crate::framer::Yielded {
-                pieces: vec![message(b""), message(b"x")],
-                ..Default::default()
+            {
+                let mut yielded = crate::framer::Yielded::default();
+                yielded.pieces = vec![message(b""), message(b"x")];
+                yielded
             },
             now,
         );
@@ -176,9 +177,10 @@ fn every_channel_message_reaches_the_reader_empty_ones_and_past_the_bound() {
         let past = super::MAX_READY + 5;
         let _ = leg.take(
             &pairing,
-            crate::framer::Yielded {
-                pieces: (0..past).map(|_| message(b"m")).collect(),
-                ..Default::default()
+            {
+                let mut yielded = crate::framer::Yielded::default();
+                yielded.pieces = (0..past).map(|_| message(b"m")).collect();
+                yielded
             },
             now,
         );

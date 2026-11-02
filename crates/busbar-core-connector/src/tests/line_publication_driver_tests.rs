@@ -121,9 +121,10 @@ fn bridged(caller: &Arc<Script>, upstream: &Arc<Script>) -> Arc<Pairing> {
 fn owe_recall(pairing: &Arc<Pairing>, leg: Leg) {
     let _ = pairing.publish(
         leg,
-        Yielded {
-            continuing: true,
-            ..Yielded::default()
+        {
+            let mut yielded = Yielded::default();
+            yielded.continuing = true;
+            yielded
         },
         Instant::now(),
     );
@@ -161,9 +162,10 @@ fn a_recall_published_while_a_crossing_completes_is_drained_by_the_same_actor() 
     caller.then(|input| {
         assert!(input.is_none());
         LineStep::Batch {
-            yielded: Yielded {
-                pieces: vec![got(10, b"tail", false)],
-                ..Yielded::default()
+            yielded: {
+                let mut yielded = Yielded::default();
+                yielded.pieces = vec![got(10, b"tail", false)];
+                yielded
             },
             accepted: false,
         }

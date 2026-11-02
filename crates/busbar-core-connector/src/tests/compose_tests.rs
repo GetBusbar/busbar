@@ -1255,11 +1255,9 @@ fn a_nonsealing_wire_yield_is_wiped_after_its_bytes_are_copied_for_sending() {
         let pointer = value.as_ptr();
         let len = value.len();
         let (_, wiped, _) = crate::support::observe_wipe(pointer, len, || {
-            c.absorb(Yielded {
-                wire: value,
-                ..Yielded::default()
-            })
-            .unwrap();
+            let mut yielded = Yielded::default();
+            yielded.wire = value;
+            c.absorb(yielded).unwrap();
         });
         assert_eq!(wiped, Some(true));
         assert_eq!(
@@ -1284,26 +1282,24 @@ fn duplex_pending_writes_survive_the_incoming_streams_clean_end() {
         let mut cx = Context::from_waker(std::task::Waker::noop());
         assert_eq!(c.emit(7, b"first", false, false, &mut cx).unwrap(), 5);
         assert_eq!(c.emit(7, b"second", true, false, &mut cx).unwrap(), 6);
-        c.absorb(Yielded {
-            pieces: vec![Got {
-                stream: 7,
-                bytes: Vec::new(),
-                end_of_frame: true,
-                status_code: None,
-                handoff: false,
-                status_class: 0,
-                fault: 0,
-                retry_after_secs: None,
-                declared_len: None,
-                fields: false,
-                text: false,
-                reason: None,
-                failed: false,
-                end: true,
-            }],
-            ..Yielded::default()
-        })
-        .unwrap();
+        let mut yielded = Yielded::default();
+        yielded.pieces = vec![Got {
+            stream: 7,
+            bytes: Vec::new(),
+            end_of_frame: true,
+            status_code: None,
+            handoff: false,
+            status_class: 0,
+            fault: 0,
+            retry_after_secs: None,
+            declared_len: None,
+            fields: false,
+            text: false,
+            reason: None,
+            failed: false,
+            end: true,
+        }];
+        c.absorb(yielded).unwrap();
         assert!(next(&mut c).await.unwrap().unwrap().end);
         door.host.complete(1);
         assert_eq!(

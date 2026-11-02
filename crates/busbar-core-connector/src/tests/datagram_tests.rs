@@ -550,23 +550,29 @@ fn rig(knobs: Knobs) -> Rig {
     if knobs.dial {
         description.push_str(&format!(" {},{METADATA},not-an-address", r.far.addr));
     }
-    let y = r
+    let mut y = r
         .host
         .rendezvous(description.as_bytes(), r.now)
         .expect("the rendezvous settles terms");
-    r.got
-        .extend(y.pieces.into_iter().map(|g| (g.stream, g.bytes)));
+    r.got.extend(
+        std::mem::take(&mut y.pieces)
+            .into_iter()
+            .map(|g| (g.stream, g.bytes)),
+    );
     r
 }
 
 impl Rig {
     fn deliver(&mut self, from: SocketAddr, d: &[u8]) {
-        let y = self
+        let mut y = self
             .host
             .datagram(from, d, self.now)
             .expect("the host takes it");
-        self.got
-            .extend(y.pieces.into_iter().map(|g| (g.stream, g.bytes)));
+        self.got.extend(
+            std::mem::take(&mut y.pieces)
+                .into_iter()
+                .map(|g| (g.stream, g.bytes)),
+        );
     }
 
     /// The far end's first check, then `rounds` of the clock with every datagram delivered.
@@ -574,9 +580,12 @@ impl Rig {
         for _ in 0..rounds {
             self.now += Duration::from_millis(10);
             self.far.a.handle_timeout(self.now);
-            let y = self.host.timeout(self.now).expect("the host's clock");
-            self.got
-                .extend(y.pieces.into_iter().map(|g| (g.stream, g.bytes)));
+            let mut y = self.host.timeout(self.now).expect("the host's clock");
+            self.got.extend(
+                std::mem::take(&mut y.pieces)
+                    .into_iter()
+                    .map(|g| (g.stream, g.bytes)),
+            );
             while let Some((to, d)) = self.host.poll_send() {
                 if to != self.far.addr {
                     self.elsewhere.push((to, d));

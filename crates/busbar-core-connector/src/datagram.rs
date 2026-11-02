@@ -503,9 +503,9 @@ impl Drop for DatagramTurn<'_> {
 
 fn append_batch(into: &mut Yielded, mut batch: Yielded) {
     batch.producer.prepend(std::mem::take(&mut into.producer));
-    into.producer = batch.producer;
+    into.producer = std::mem::take(&mut batch.producer);
     batch.custody.prepend(std::mem::take(&mut into.custody));
-    into.custody = batch.custody;
+    into.custody = std::mem::take(&mut batch.custody);
     into.heads.append(&mut batch.heads);
     into.pieces.append(&mut batch.pieces);
     into.piece_custody.append(&mut batch.piece_custody);
@@ -695,13 +695,9 @@ impl DatagramFraming {
                 // for credit. Publish that pause rather than requeueing the original input.
                 // `accepted` describes this raw input, not an application's held Emit job;
                 // PortAssociations::poll_line resets it for an older queued operation.
-                Ok(LineStep::Batch {
-                    yielded: Yielded {
-                        continuing: true,
-                        ..Yielded::default()
-                    },
-                    accepted,
-                })
+                let mut yielded = Yielded::default();
+                yielded.continuing = true;
+                Ok(LineStep::Batch { yielded, accepted })
             }
             step => Ok(step),
         }
@@ -1152,7 +1148,7 @@ impl DatagramFraming {
         while let Some(batch) = turn.next_batch()? {
             append_batch(&mut y, batch);
         }
-        y.wire.clear();
+        zeroize::Zeroize::zeroize(&mut y.wire);
         Ok(y)
     }
 
@@ -2031,7 +2027,7 @@ impl PortAssociations {
             };
             return Ok(vec![(id, answer)]);
         }
-        let yielded = match result.expect("the producer result was checked") {
+        let mut yielded = match result.expect("the producer result was checked") {
             LineStep::Batch { yielded, .. } => yielded,
             LineStep::Credit => {
                 assocs
@@ -2040,10 +2036,9 @@ impl PortAssociations {
                     .expect("the producer's routing record")
                     .owed
                     .push_front(op.owned());
-                Yielded {
-                    continuing: true,
-                    ..Yielded::default()
-                }
+                let mut yielded = Yielded::default();
+                yielded.continuing = true;
+                yielded
             }
             LineStep::Complete => Yielded::default(),
         };
@@ -2067,13 +2062,8 @@ impl PortAssociations {
             );
         }
         drop(assocs);
-        Ok(vec![(
-            id,
-            Ok(Yielded {
-                continuing: pending,
-                ..yielded
-            }),
-        )])
+        yielded.continuing = pending;
+        Ok(vec![(id, Ok(yielded))])
     }
 
     /// Drive a single LINE producer batch without retaining exclusive association custody
@@ -2206,11 +2196,10 @@ impl PortAssociations {
             } else {
                 out.publishing = true;
                 out.continuing = taken.framing.take();
+                let mut yielded = Yielded::default();
+                yielded.continuing = true;
                 result = Ok(LineStep::Batch {
-                    yielded: Yielded {
-                        continuing: true,
-                        ..Yielded::default()
-                    },
+                    yielded,
                     accepted: false,
                 });
             }
