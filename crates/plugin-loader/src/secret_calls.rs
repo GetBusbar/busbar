@@ -42,7 +42,7 @@ use busbar_contract::secret_ref::SecretRef;
 
 use crate::boot::{Candidate, Origin};
 use crate::dispatch::kinds::secret::Secret;
-use crate::dispatch::lifecycle::{self, blob, open_frame};
+use crate::dispatch::lifecycle::{self, blob, open_frame, AnswerLease};
 use crate::dispatch::{
     in_head, load_dropped_bytes, load_linked, now_ns, out_head, Bind, ConnTable, Dispatcher,
     EnvelopeSink, Frame, NoSink, Plugin, PluginLogConfig, NO_BLOB,
@@ -215,6 +215,7 @@ pub fn check(plugin: &Plugin<Secret>, settings: &[u8]) -> Result<(), Vec<String>
         out_head(),
     );
     let c = plugin.call(slot::CHECK, &mut f);
+    let _lease = AnswerLease::new(plugin, c.lease);
     let name = plugin.name();
     match c.outcome {
         Outcome::Ready | Outcome::Refused => Ok(()),
@@ -300,9 +301,11 @@ impl LoadedSecret {
         f.input.secrets = lent.as_ptr();
         f.input.secrets_len = lent.len();
         let c = plugin.call(life::OPEN, &mut f);
+        let opened = AnswerLease::new(&plugin, c.lease);
         if c.outcome != Outcome::Ready {
             return Err(c.open_failure(plugin.name()));
         }
+        drop(opened);
         Ok(Self {
             opened: Arc::new(Opened { plugin }),
             dispatcher,

@@ -54,7 +54,9 @@ use busbar_contract::auth_calls::{
 
 use crate::dispatch::call::{Answering, Pending, Ticketed};
 use crate::dispatch::kinds::auth::{Auth, AuthFacts};
-use crate::dispatch::lifecycle::{close, lend, lend_opt, open_frame, release, validate_call, why};
+use crate::dispatch::lifecycle::{
+    close, lend, lend_opt, open_frame, release, validate_call, why, AnswerLease,
+};
 use crate::dispatch::{
     in_head, now_ns, out_head, Diagnostic, Dispatcher, Done, Dropped, EnvelopeSink, Frame, InFrame,
     Metric, OutFrame, Plugin,
@@ -805,9 +807,11 @@ impl AuthInstance {
         let facts = plugin.context::<AuthFacts>().cloned().unwrap_or_default();
         *sink.0.family.lock().unwrap_or_else(|e| e.into_inner()) = facts.cache_family;
         let called = validate_call(&plugin, blob(settings, BLOB_JSON, 0));
+        let validated = AnswerLease::new(&plugin, called.lease);
         if called.outcome != Outcome::Ready {
             return Err(why(called.outcome, called.error));
         }
+        drop(validated);
         let blobs = secrets.blobs();
         let mut f = open_frame(blob(settings, BLOB_JSON, 0));
         if !blobs.is_empty() {
@@ -951,6 +955,7 @@ impl AuthCalls for AuthInstance {
         );
         let mut f = Frame::new(held.input(presented), identify_out());
         let called = plugin.call(slot::VERIFY, &mut f);
+        let _lease = AnswerLease::new(plugin, called.lease);
         match called.outcome {
             Outcome::Refused => None,
             Outcome::Failed if called.recall.is_some() => {
@@ -961,6 +966,7 @@ impl AuthCalls for AuthInstance {
                 let bigger = Held::new(request, seal, &headers, cap, groups, strips);
                 let mut g = Frame::new(bigger.input(presented), identify_out());
                 let again = plugin.recall(token, slot::VERIFY, &mut g);
+                let _again = AnswerLease::new(plugin, again.lease);
                 Some(verdict(again.outcome, &g.out, &bigger, plugin))
             }
             o => Some(verdict(o, &f.out, &held, plugin)),
@@ -1130,6 +1136,7 @@ impl Answering<VerifyIn, IdentifyOut> for Verify {
         done: Done<VerifyIn, IdentifyOut>,
         call: &mut Ticketed<VerifyIn, IdentifyOut>,
     ) -> Option<VerifyAnswer> {
+        let _lease = AnswerLease::new(&self.shared.plugin, done.lease);
         let out = done.frame.as_ref().map(|f| f.out);
         if done.short && !self.recalled {
             self.recalled = true;
