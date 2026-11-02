@@ -8,7 +8,7 @@ use crate::governance::recovery::{
 
 #[tokio::test]
 async fn live_flusher_resumes_not_landed_with_current_cost_without_blocking_reactor() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(ChunkStore::default());
     let journal = Arc::new(Journal::default());
     let old_cost = model(&[(
