@@ -110,27 +110,7 @@ impl OneStore {
         }) {
             return Ok(Decision::ConditionConflict);
         }
-        for mutation in &request.mutations {
-            match mutation {
-                Mutation::Put { schema, key, value } => {
-                    state
-                        .rows
-                        .insert((schema.clone(), key.clone()), value.clone());
-                }
-                Mutation::Delete { schema, key } => {
-                    state.rows.remove(&(schema.clone(), key.clone()));
-                }
-                Mutation::DeleteRange {
-                    schema,
-                    prefix,
-                    exact_key_length,
-                } => {
-                    state.rows.retain(|(s, k), _| {
-                        s != schema || k.len() as u64 != *exact_key_length || !k.starts_with(prefix)
-                    });
-                }
-            }
-        }
+        apply_mutations(&mut state.rows, &request.mutations);
         state.receipts.insert(request.op_id.0, request.clone());
         Ok(Decision::Applied)
     }
@@ -194,7 +174,7 @@ impl OneStore {
     /// Physical tombstones remain observable through `atomic.rows` for fencing assertions.
     fn visible(&self) -> Records {
         let mut rows = self.records.lock().unwrap().clone();
-        for ((schema, key), value) in &self.atomic.lock().unwrap().rows {
+        for ((schema, key), value) in &logical_rows(&self.atomic.lock().unwrap().rows) {
             let Some(kind) = schema.strip_suffix(".atomic.v1") else {
                 continue;
             };
@@ -235,28 +215,38 @@ impl OneStore {
             *body = serde_json::to_vec(&v).expect("a JSON body serializes");
         }
         drop(records);
-        for body in self.atomic.lock().unwrap().rows.values_mut() {
-            let Ok(mut v) = serde_json::from_slice::<serde_json::Value>(body) else {
-                continue;
-            };
-            older(&mut v, secs);
-            *body = serde_json::to_vec(&v).expect("a JSON body serializes");
-        }
+        self.rewrite_atomic(|_, value| older(value, secs));
     }
 
     fn age_indexes(&self, secs: u64) {
         let prefix = format!("{LABEL}ix.");
-        for ((schema, _), body) in self.atomic.lock().unwrap().rows.iter_mut() {
-            if !schema.starts_with(&prefix) {
-                continue;
+        self.rewrite_atomic(|schema, value| {
+            if schema.starts_with(&prefix) {
+                if let Some(at) = value.get("at").and_then(|at| at.as_u64()) {
+                    value["at"] = serde_json::json!(at.saturating_sub(secs));
+                }
             }
-            let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(body) else {
+        });
+    }
+
+    /// The fixture's wall-clock adjustment changes logical cells, including their physical
+    /// descriptors/chunks. It does not relax the double's real per-record validation.
+    fn rewrite_atomic(&self, mut change: impl FnMut(&str, &mut serde_json::Value)) {
+        let mut state = self.atomic.lock().unwrap();
+        for ((schema, key), body) in logical_rows(&state.rows) {
+            let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&body) else {
                 continue;
             };
-            if let Some(at) = value.get("at").and_then(|at| at.as_u64()) {
-                value["at"] = serde_json::json!(at.saturating_sub(secs));
-                *body = serde_json::to_vec(&value).unwrap();
-            }
+            change(&schema, &mut value);
+            let candidate = Shared::candidate(
+                &schema,
+                std::str::from_utf8(&key).expect("OAuth root id"),
+                Some(body),
+                serde_json::to_vec(&value).unwrap(),
+            );
+            let physical = crate::shared::records::physical(candidate).unwrap();
+            physical.validate().unwrap();
+            apply_mutations(&mut state.rows, &physical.mutations);
         }
     }
 
@@ -1973,4 +1963,176 @@ async fn a_delayed_subject_sweep_cannot_detach_a_new_consent() {
     decided.notified().await;
     sweep.await.unwrap().unwrap();
     assert_eq!(b.consents_for_subject("alice").await.unwrap().len(), 1);
+}
+
+/// Inspect physical roots as logical rows; chunk schemas never become visible OAuth records.
+fn logical_rows(
+    rows: &BTreeMap<(String, Vec<u8>), Vec<u8>>,
+) -> BTreeMap<(String, Vec<u8>), Vec<u8>> {
+    rows.iter()
+        .filter(|((schema, _), _)| schema.ends_with(".atomic.v1"))
+        .map(|((schema, key), root)| {
+            let value = match crate::shared::records::Descriptor::decode(root).unwrap() {
+                None => root.clone(),
+                Some(descriptor) => {
+                    let mut bytes = Vec::new();
+                    for part in 0..descriptor.parts() {
+                        bytes.extend_from_slice(
+                            &rows[&(
+                                crate::shared::records::parts_schema(schema),
+                                descriptor.key(key, part),
+                            )],
+                        );
+                    }
+                    assert!(
+                        descriptor.check(&bytes),
+                        "fixture observes complete atomic chunks"
+                    );
+                    bytes
+                }
+            };
+            ((schema.clone(), key.clone()), value)
+        })
+        .collect()
+}
+
+fn apply_mutations(rows: &mut BTreeMap<(String, Vec<u8>), Vec<u8>>, mutations: &[Mutation]) {
+    for mutation in mutations {
+        match mutation {
+            Mutation::Put { schema, key, value } => {
+                rows.insert((schema.clone(), key.clone()), value.clone());
+            }
+            Mutation::Delete { schema, key } => {
+                rows.remove(&(schema.clone(), key.clone()));
+            }
+            Mutation::DeleteRange {
+                schema,
+                prefix,
+                exact_key_length,
+            } => {
+                rows.retain(|(s, k), _| {
+                    s != schema || k.len() as u64 != *exact_key_length || !k.starts_with(prefix)
+                });
+            }
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_chunk_reader_retries_when_its_old_generation_was_reclaimed() {
+    let store = OneStore::default();
+    let a = Arc::new(SharedStorage::new(Arc::new(Shared::new(store.calls()))));
+    let b = SharedStorage::new(Arc::new(Shared::new(store.calls())));
+    assert_eq!(
+        a.put_refresh_token(refresh("first-chunked-refresh"))
+            .await
+            .unwrap(),
+        oauth_as::store::WriteOutcome::Applied
+    );
+    store.stall("get", "bucket", std::time::Duration::from_secs(1));
+    let reader = {
+        let a = a.clone();
+        tokio::spawn(async move { a.get_refresh_token("first-chunked-refresh").await })
+    };
+    tokio::task::yield_now().await;
+    assert!(
+        store.stalls.lock().unwrap().is_empty(),
+        "reader captured the old root"
+    );
+    assert_eq!(
+        b.put_refresh_token(refresh("second-chunked-refresh"))
+            .await
+            .unwrap(),
+        oauth_as::store::WriteOutcome::Applied
+    );
+    tokio::time::advance(std::time::Duration::from_secs(1)).await;
+    assert!(
+        reader.await.unwrap().unwrap().is_some(),
+        "reclaimed old chunks must trigger a fresh root read"
+    );
+    assert!(store
+        .atomic
+        .lock()
+        .unwrap()
+        .rows
+        .values()
+        .all(|b| b.len() <= busbar_contract::bounded::MAX_RECORD_BYTES));
+}
+
+#[tokio::test]
+async fn a_missing_chunk_under_an_unchanged_root_fails_closed() {
+    let store = OneStore::default();
+    let storage = SharedStorage::new(Arc::new(Shared::new(store.calls())));
+    assert_eq!(
+        storage
+            .put_refresh_token(refresh("corrupt-chunked-refresh"))
+            .await
+            .unwrap(),
+        oauth_as::store::WriteOutcome::Applied
+    );
+    let schema = crate::shared::atomic_schema("bucket");
+    {
+        let mut state = store.atomic.lock().unwrap();
+        let key = crate::shared::digest("atomic-client").into_bytes();
+        let descriptor =
+            crate::shared::records::Descriptor::decode(&state.rows[&(schema.clone(), key.clone())])
+                .unwrap()
+                .expect("large bucket uses bounded chunks");
+        state
+            .rows
+            .remove(&(
+                crate::shared::records::parts_schema(&schema),
+                descriptor.key(&key, 0),
+            ))
+            .unwrap();
+    }
+    let error = storage
+        .get_refresh_token("corrupt-chunked-refresh")
+        .await
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("incomplete or corrupt chunked record"));
+}
+
+#[tokio::test]
+async fn replacing_a_blind_large_index_reclaims_its_exact_old_generation() {
+    let store = OneStore::default();
+    let shared = Shared::new(store.calls());
+    shared
+        .index("rt", "large-index", &"c".repeat(600))
+        .await
+        .unwrap();
+    let schema = crate::shared::atomic_schema("ix.rt");
+    assert!(store
+        .atomic
+        .lock()
+        .unwrap()
+        .rows
+        .keys()
+        .any(|(s, _)| s == &crate::shared::records::parts_schema(&schema)));
+    shared
+        .index("rt", "large-index", "small-client")
+        .await
+        .unwrap();
+    assert_eq!(
+        shared
+            .client_of("rt", "large-index")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("small-client")
+    );
+    let state = store.atomic.lock().unwrap();
+    assert!(!state
+        .rows
+        .keys()
+        .any(|(s, _)| s == &crate::shared::records::parts_schema(&schema)));
+    let last = state.calls.last().unwrap();
+    assert!(
+        last.predicates
+            .iter()
+            .any(|p| p.schema == schema && matches!(&p.expected, Expected::Bytes(_))),
+        "blind index replacement compares its observed descriptor"
+    );
 }

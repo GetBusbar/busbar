@@ -71,6 +71,8 @@
 //! the store's reach configures `oauth_as.signing_key`, a secret reference, and nothing is minted;
 //! the build says so at `warn` when it signs with the kept key.
 
+mod records;
+
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -374,6 +376,37 @@ impl Shared {
 
     async fn submit(&self, request: Arc<Request>) -> Result<Decision, StorageError> {
         Self::require_atomic(self.calls.as_ref()).map_err(StorageError::new)?;
+        let mut request = request;
+        // Blind index publication also compares its observed root. This lets replacement reclaim
+        // precisely the old chunk generation, without deleting a concurrent writer's chunks.
+        let mut observed = Vec::new();
+        for mutation in &request.mutations {
+            if let Mutation::Put { schema, key, .. } = mutation {
+                if schema.ends_with(".atomic.v1")
+                    && !request
+                        .predicates
+                        .iter()
+                        .any(|p| p.schema == *schema && p.key == *key)
+                {
+                    observed.push(Predicate {
+                        schema: schema.clone(),
+                        key: key.clone(),
+                        expected: self
+                            .read_record(schema, key)
+                            .await?
+                            .map_or(Expected::Absent, Expected::Bytes),
+                    });
+                }
+            }
+        }
+        if !observed.is_empty() {
+            Arc::make_mut(&mut request).predicates.extend(observed);
+        }
+        self.submit_physical(records::physical(request)?).await
+    }
+
+    /// Retain and replay exactly this validated wire candidate, never plan its chunks again.
+    async fn submit_physical(&self, request: Arc<Request>) -> Result<Decision, StorageError> {
         request
             .encode()
             .map_err(|e| StorageError::new(format!("oauth_as store: {e}")))?;
@@ -413,7 +446,7 @@ impl Shared {
                 .cloned()
                 .collect();
         for request in pending {
-            self.submit(request).await?;
+            self.submit_physical(request).await?;
         }
         Ok(())
     }
@@ -636,18 +669,62 @@ impl Shared {
         Ok(())
     }
 
+    /// Reconstruct a bounded logical cell; concurrent replacement may remove an old generation.
+    /// Re-read its exact descriptor before accepting either data or a corruption diagnosis.
+    async fn read_record(&self, schema: &str, key: &[u8]) -> Result<Option<Vec<u8>>, StorageError> {
+        for _ in 0..SWAP_ATTEMPTS {
+            let Some(root) = self
+                .calls
+                .record_get(schema, key)
+                .await
+                .map_err(|f| failed("record root", f))?
+            else {
+                return Ok(None);
+            };
+            let Some(descriptor) = records::Descriptor::decode(root.as_slice())? else {
+                return Ok(Some(root.as_slice().to_vec()));
+            };
+            let mut bytes = Vec::new();
+            let parts_schema = records::parts_schema(schema);
+            for part in 0..descriptor.parts() {
+                let part_key = descriptor.key(key, part);
+                let Some(part) = self
+                    .calls
+                    .record_get(&parts_schema, &part_key)
+                    .await
+                    .map_err(|f| failed("record chunk", f))?
+                else {
+                    break;
+                };
+                bytes.extend_from_slice(part.as_slice());
+            }
+            let current = self
+                .calls
+                .record_get(schema, key)
+                .await
+                .map_err(|f| failed("record root", f))?;
+            if current.as_ref().map(|r| r.as_slice()) != Some(root.as_slice()) {
+                continue;
+            }
+            if !descriptor.check(&bytes) {
+                return Err(StorageError::new(
+                    "oauth_as store: incomplete or corrupt chunked record",
+                ));
+            }
+            return Ok(Some(bytes));
+        }
+        Err(StorageError::new(
+            "oauth_as store: chunked record repeatedly changed",
+        ))
+    }
+
     /// Read raw authority, importing a legacy row once under an absent comparison. Never fall
     /// back after raw retirement: legacy writes can finish arbitrarily late.
     async fn authority(&self, name: &str, id: &str) -> Result<Option<Vec<u8>>, StorageError> {
         let schema = atomic_schema(name);
         self.settle(&schema, Some(id.as_bytes())).await?;
         for _ in 0..SWAP_ATTEMPTS {
-            if let Some(value) = self
-                .calls
-                .record_get(&schema, id.as_bytes())
-                .await
-                .map_err(|f| failed(name, f))?
-            {
+            if let Some(value) = self.read_record(&schema, id.as_bytes()).await? {
                 authority_body(value.as_slice())?;
                 if name == "key" {
                     self.cleanup_legacy(name, id).await;
@@ -803,9 +880,11 @@ impl Shared {
             for id in superseded {
                 self.cleanup_legacy(kind_name, &id).await;
             }
-            for value in raw.values() {
-                if let Some(body) = authority_body(value.as_slice())? {
-                    rows.push(body.to_vec());
+            for key in raw.keys() {
+                if let Some(value) = self.read_record(&schema, key).await? {
+                    if let Some(body) = authority_body(&value)? {
+                        rows.push(body.to_vec());
+                    }
                 }
             }
         }
