@@ -185,15 +185,13 @@ async fn actual_inbound_foreign_binding_and_session_custody() {
         )
         .unwrap();
     let token = token.expose(&busbar_kernel::seal::lend()).clone();
-    let original = Head {
-        method: "POST".into(),
-        target: "/v1/messages".into(),
-        fields: vec![(
-            "authorization".into(),
-            format!("Bearer {token}").into_bytes(),
-        )],
-        ..Head::default()
-    };
+    let mut original = Head::default();
+    original.method = "POST".into();
+    original.target = "/v1/messages".into();
+    original.fields = vec![(
+        "authorization".into(),
+        format!("Bearer {token}").into_bytes(),
+    )];
     let request = |unit, conn, stream, framing| Call {
         owner: 7,
         generation: 3,
