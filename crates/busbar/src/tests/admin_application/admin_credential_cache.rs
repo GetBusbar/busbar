@@ -193,13 +193,11 @@ async fn filtered_credential_flush_uses_actual_admin_and_data_caches() {
         ("test-scope-module", &target_token),
         ("omitted", &omitted_token),
     ] {
-        let request = busbar_contract::auth_calls::VerifyRequest {
-            credential: Some(busbar_contract::redacted::Secret::new(
-                token.as_bytes().to_vec(),
-            )),
-            timestamp: busbar_kernel::store::now(),
-            ..Default::default()
-        };
+        let mut request = busbar_contract::auth_calls::VerifyRequest::default();
+        request.credential = Some(busbar_contract::redacted::Secret::new(
+            token.as_bytes().to_vec(),
+        ));
+        request.timestamp = busbar_kernel::store::now();
         let answer = tokio::time::timeout(
             std::time::Duration::from_secs(10),
             app.admin_modules.modules[name].calls.verify(request),

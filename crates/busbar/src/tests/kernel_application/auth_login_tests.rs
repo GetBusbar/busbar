@@ -119,6 +119,8 @@ async fn inbound_provider_retains_the_actual_opened_instance() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let build = |cold| {
+        let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+            .expect("the same actual deployment resolves for this generation");
         let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
             .expect("the actual Store bootstraps");
         let overlay = busbar_kernel::config::overlay::OverlayStore::new(
@@ -126,7 +128,7 @@ async fn inbound_provider_retains_the_actual_opened_instance() {
         )
         .expect("the actual Store supports conditional records");
         busbar_kernel::appbuild::build_app_from_config_with_store(
-            config.clone(),
+            config,
             plugin_config.clone(),
             Some(overlay),
             Default::default(),
