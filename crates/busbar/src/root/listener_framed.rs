@@ -478,8 +478,20 @@ struct StagedUpgrade {
     phase: UpgradePhase,
     stream: u64,
     yielded: Vec<Yielded>,
-    incoming: Vec<u8>,
+    incoming: Vec<zeroize::Zeroizing<Vec<u8>>>,
+    incoming_len: usize,
     bound: Pin<Box<tokio::time::Sleep>>,
+}
+
+impl StagedUpgrade {
+    fn take_incoming(&mut self) -> zeroize::Zeroizing<Vec<u8>> {
+        let mut bytes = zeroize::Zeroizing::new(Vec::with_capacity(self.incoming_len));
+        for chunk in self.incoming.drain(..) {
+            bytes.extend_from_slice(&chunk);
+        }
+        self.incoming_len = 0;
+        bytes
+    }
 }
 
 enum Step {
@@ -708,7 +720,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
             let incoming = self
                 .staged
                 .as_mut()
-                .map(|stage| std::mem::take(&mut stage.incoming))
+                .map(StagedUpgrade::take_incoming)
                 .unwrap_or_default();
             if !incoming.is_empty() {
                 if let Some(framing) = self.framing.as_mut() {
@@ -721,14 +733,14 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
         if self
             .staged
             .as_ref()
-            .is_none_or(|stage| stage.incoming.len() >= WRITE_ROOM)
+            .is_none_or(|stage| stage.incoming_len >= WRITE_ROOM)
         {
             return false;
         }
         let remaining = self
             .staged
             .as_ref()
-            .map_or(0, |stage| WRITE_ROOM - stage.incoming.len());
+            .map_or(0, |stage| WRITE_ROOM - stage.incoming_len);
         let mut bytes = [0_u8; READ_CHUNK];
         let mut buffer = ReadBuf::new(&mut bytes[..remaining.min(READ_CHUNK)]);
         match Pin::new(&mut self.io).poll_read(cx, &mut buffer) {
@@ -739,7 +751,10 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
             }
             Poll::Ready(Ok(())) => {
                 if let Some(stage) = self.staged.as_mut() {
-                    stage.incoming.extend_from_slice(buffer.filled());
+                    stage
+                        .incoming
+                        .push(zeroize::Zeroizing::new(buffer.filled().to_vec()));
+                    stage.incoming_len += buffer.filled().len();
                 }
                 // Return progress so buffered input reaches a non-parked admission next poll.
                 true
@@ -1193,6 +1208,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                     stream,
                     yielded: Vec::new(),
                     incoming: Vec::new(),
+                    incoming_len: 0,
                     bound: Box::pin(tokio::time::sleep(self.timeout)),
                 });
                 self.receive_stage(yielded);
@@ -1268,9 +1284,10 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
             return;
         }
         if matches!(stage.phase, UpgradePhase::Committing(_)) {
-            let Some(stage) = self.staged.take() else {
+            let Some(mut stage) = self.staged.take() else {
                 return;
             };
+            let incoming = stage.take_incoming();
             let UpgradePhase::Committing(pipe) = stage.phase else {
                 return;
             };
@@ -1284,9 +1301,9 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
             for batch in stage.yielded {
                 self.absorb(batch);
             }
-            if !stage.incoming.is_empty() {
+            if !incoming.is_empty() {
                 if let Some(framing) = self.framing.as_mut() {
-                    let received = framing.ingest(&stage.incoming, false);
+                    let received = framing.ingest(&incoming, false);
                     self.took(received);
                 }
             }
