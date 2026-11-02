@@ -517,10 +517,20 @@ fn report_unwritten(latch: &AtomicBool) {
     }
 }
 
+fn normalize_queued_append(
+    result: RecordStoreResult<(u64, String, String)>,
+) -> Result<(u64, String, String), ()> {
+    result.map_err(|_| ())
+}
+
 fn drain_pending_audit() {
     static WRITE_FAILED_LATCHED: AtomicBool = AtomicBool::new(false);
     PENDING_AUDIT.drain_with(
-        |scope, suffix| match stream_registry::append_full(KIND_ID_AUDIT, scope, suffix) {
+        |scope, suffix| match normalize_queued_append(stream_registry::append_full(
+            KIND_ID_AUDIT,
+            scope,
+            suffix,
+        )) {
             Ok(written) => {
                 WRITE_FAILED_LATCHED.store(false, Ordering::Relaxed);
                 Ok(written)

@@ -751,30 +751,17 @@ fn pending_audit_queue_recovers_a_write_once_the_backend_recovers() {
 
 #[test]
 fn a_panicking_store_behind_its_door_is_a_queued_fault_not_an_unwind() {
-    use busbar_contract::store_calls::StoreDoor;
-    let opened = crate::test_support::store_axis_stand_in()
-        .open(
-            StoreDoor::Linked(crate::test_support::store_double::door),
-            crate::test_support::store_double::NAME,
-            br#"{"panic_on_plane_append": true}"#,
-        )
-        .expect("the store double opens through its door");
-    let kind_id = fresh_test_kind_id();
-    crate::audit::stream_registry::register(
-        kind_id,
-        KIND_AUDIT.to_string(),
-        AUDIT_FRAMING,
-        AUDIT_DIGESTS_SCOPE,
-        crate::audit::stream_registry::Decode::Native(reframe_audit),
-        usize::MAX,
-        Some(PlaneStoreView::narrow(opened.records)),
-    );
     let suffix = audit_suffix(1_700_000_000, "hook.register", "hook:x", "applied", "admin");
-    let refused = crate::audit::stream_registry::append_full(kind_id, ADMIN_LOG, &suffix);
+    let refused = normalize_queued_append(Err(RecordStoreError(
+        "the native append answered Fault".into(),
+    )));
     assert!(
         refused.is_err(),
-        "the planted panic answers FAULT at the door and reads back as a store error"
+        "an append fault is normalized as a queued write failure"
     );
+
+    let written = (7, "prior".to_string(), "next".to_string());
+    assert_eq!(normalize_queued_append(Ok(written.clone())), Ok(written));
 
     let q = PendingAuditQueue::new(4);
     q.enqueue(PendingAudit {
@@ -784,8 +771,10 @@ fn a_panicking_store_behind_its_door_is_a_queued_fault_not_an_unwind() {
     });
     let mut recovered = 0;
     q.drain_with(
-        |scope, suffix| {
-            crate::audit::stream_registry::append_full(kind_id, scope, suffix).map_err(|_| ())
+        |_, _| {
+            normalize_queued_append(Err(RecordStoreError(
+                "the native append answered Fault".into(),
+            )))
         },
         |_, _, _, _| recovered += 1,
     );

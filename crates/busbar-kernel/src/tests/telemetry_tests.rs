@@ -159,7 +159,6 @@ fn test_request_finished_renders_premigration_names_and_labels() {
         .pool("tel-parity-pool", &[(0, 1)])
         .build();
     let ingress = shipped_protocols().1;
-    let ingress_label = format!("ingress_protocol=\"{ingress}\"");
 
     request_finished(
         &app,
@@ -169,33 +168,49 @@ fn test_request_finished_renders_premigration_names_and_labels() {
         "ok",
         0.005,
     );
-    let out = crate::snapshot::render();
-
-    let counter_line = out.lines().find(|l| {
-        !l.starts_with('#')
-            && l.starts_with(crate::snapshot::REQUESTS_TOTAL)
-            && l.contains(&ingress_label)
-            && l.contains("pool=\"tel-parity-pool\"")
-            && l.contains("outcome=\"ok\"")
-    });
+    let out = crate::snapshot::snapshot().expect("the actual recorder is installed");
+    let counter_line = out
+        .iter()
+        .flat_map(|family| &family.samples)
+        .find(|sample| {
+            sample.name == crate::snapshot::REQUESTS_TOTAL
+                && sample
+                    .labels
+                    .iter()
+                    .any(|(key, value)| key == "ingress_protocol" && value == ingress)
+                && sample
+                    .labels
+                    .iter()
+                    .any(|(key, value)| key == "pool" && value == "tel-parity-pool")
+                && sample
+                    .labels
+                    .iter()
+                    .any(|(key, value)| key == "outcome" && value == "ok")
+        });
     assert!(
         counter_line.is_some(),
-        "banked requests_total must render with the exact pre-migration labels; got:\n{out}"
+        "banked requests_total must render with the exact pre-migration labels; got:\n{out:?}"
     );
-
     assert!(
-        !counter_line.unwrap().contains("plane=\""),
-        "busbar_requests_total must NOT carry a `plane` label (v1.5.4 identity); got:\n{out}"
+        !counter_line
+            .unwrap()
+            .labels
+            .iter()
+            .any(|(key, _)| key == "plane"),
+        "busbar_requests_total must NOT carry a `plane` label (v1.5.4 identity); got:\n{out:?}"
     );
-
     assert!(
-        out.lines().any(|l| {
-            !l.starts_with('#')
-                && l.starts_with(crate::snapshot::REQUEST_DURATION_SECONDS)
-                && l.contains("pool=\"tel-parity-pool\"")
-                && l.contains("quantile=")
+        out.iter().flat_map(|family| &family.samples).any(|sample| {
+            sample
+                .name
+                .starts_with(crate::snapshot::REQUEST_DURATION_SECONDS)
+                && sample
+                    .labels
+                    .iter()
+                    .any(|(key, value)| key == "pool" && value == "tel-parity-pool")
+                && sample.labels.iter().any(|(key, _)| key == "quantile")
         }),
-        "duration summary quantile lines must render for the banked pool; got:\n{out}"
+        "duration summary quantile lines must render for the banked pool; got:\n{out:?}"
     );
     let count = metric_sum(
         "busbar_request_duration_seconds_count",

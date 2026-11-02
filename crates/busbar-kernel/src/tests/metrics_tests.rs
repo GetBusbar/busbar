@@ -3,12 +3,9 @@
 
 use super::*;
 use crate::governance::{GovState, RecordStore, VirtualKey};
-use crate::test_support::{LaneSpec, TestApp};
 use std::sync::Arc;
 
 use std::time::Duration;
-
-const LANE_PROTOCOL: &str = "unregistered-lane-protocol";
 
 #[test]
 fn test_render_exposes_emitted_counter() {
@@ -21,15 +18,20 @@ fn test_render_exposes_emitted_counter() {
     )
     .increment(1);
 
-    let out = render();
+    let out = snapshot().expect("the actual recorder is installed");
     assert!(
-        out.contains(REQUESTS_TOTAL),
-        "exposition should contain the emitted counter; got:\n{out}"
+        out.iter().any(|family| family.name == REQUESTS_TOTAL),
+        "exposition should contain the emitted counter; got:\n{out:?}"
     );
 
     assert!(
-        out.contains("outcome=\"ok\""),
-        "label should render; got:\n{out}"
+        out.iter()
+            .flat_map(|family| &family.samples)
+            .any(|sample| sample
+                .labels
+                .iter()
+                .any(|(label, value)| label == "outcome" && value == "ok")),
+        "label should render; got:\n{out:?}"
     );
 }
 
@@ -56,10 +58,11 @@ fn test_enabled_recorder_installed_retaining_and_describe_after_init() {
         "outcome" => "describe_probe"
     )
     .increment(1);
-    let out = render();
+    let out = snapshot().expect("the actual recorder is installed");
     assert!(
-        out.contains("# HELP busbar_requests_total"),
-        "describe() must have registered REQUESTS_TOTAL's HELP text; got:\n{out}"
+        out.iter()
+            .any(|family| family.name == REQUESTS_TOTAL && family.help.is_some()),
+        "describe() must have registered REQUESTS_TOTAL's HELP text; got:\n{out:?}"
     );
 }
 
@@ -75,7 +78,7 @@ fn test_init_is_idempotent_and_does_not_panic() {
     crate::snapshot::init_for_test(Duration::from_secs(3600));
     crate::snapshot::init_for_test(Duration::from_secs(3600));
 
-    let _ = render();
+    let _ = snapshot().expect("the actual recorder is installed");
 }
 
 fn gov_with_key(key: VirtualKey) -> Arc<GovState> {
@@ -127,35 +130,45 @@ fn test_scrape_gauges_key_spend_and_remaining() {
         )
         .unwrap();
 
-    let app = TestApp::new()
-        .lane(LaneSpec::new("m", LANE_PROTOCOL, "http://m"))
-        .pool("pool-a", &[(0, 1)])
-        .governance(gov)
-        .build();
+    let cost = crate::cost::CostModel::flat(1);
 
     let (recorder, handle) = local_source(GAUGE_IDLE_TIMEOUT);
-    metrics::with_local_recorder(&recorder, || refresh_scrape_gauges(&app));
+    metrics::with_local_recorder(&recorder, || {
+        money::refresh_governance_gauges(&gov, &cost, crate::store::now())
+    });
 
     let out = handle();
 
     assert!(
-        out.contains("vk_spend_test01"),
-        "key id must appear as label in scrape output; got:\n{out}"
+        out.iter()
+            .flat_map(|family| &family.samples)
+            .any(|sample| sample
+                .labels
+                .iter()
+                .any(|(label, value)| label == "key" && value == "vk_spend_test01")),
+        "key id must appear as label in scrape output; got:\n{out:?}"
     );
     assert!(
-        out.lines()
-            .any(|line| line == format!("{KEY_SPEND_CENTS}{{key=\"{}\"}} 200", key.id)),
-        "the seeded key's spend gauge must carry its actual value; got:\n{out}"
+        out.iter()
+            .flat_map(|family| &family.samples)
+            .any(|sample| sample.name == KEY_SPEND_CENTS
+                && sample.labels == [("key".to_string(), key.id.clone())]
+                && sample.value == "200"),
+        "the seeded key's spend gauge must carry its actual value; got:\n{out:?}"
     );
     assert!(
-        out.lines()
-            .any(|line| line == format!("{KEY_TOKENS_TOTAL}{{key=\"{}\"}} 5000", key.id)),
-        "the seeded key's tokens gauge must carry its actual value; got:\n{out}"
+        out.iter()
+            .flat_map(|family| &family.samples)
+            .any(|sample| sample.name == KEY_TOKENS_TOTAL
+                && sample.labels == [("key".to_string(), key.id.clone())]
+                && sample.value == "5000"),
+        "the seeded key's tokens gauge must carry its actual value; got:\n{out:?}"
     );
 
     assert!(
-        !out.contains("busbar_key_budget_remaining_cents"),
-        "the removed per-key remaining gauge must not resurface; got:\n{out}"
+        !out.iter()
+            .any(|family| family.name.contains("busbar_key_budget_remaining_cents")),
+        "the removed per-key remaining gauge must not resurface; got:\n{out:?}"
     );
 }
 
@@ -186,33 +199,33 @@ fn test_scrape_gauges_uncapped_group_bucket_no_remaining() {
                 ..Default::default()
             },
         )]);
-    let app = TestApp::new()
-        .lane(LaneSpec::new("m", LANE_PROTOCOL, "http://m"))
-        .pool("pool-b", &[(0, 1)])
-        .governance(gov)
-        .cost(crate::cost::CostModel::resolve_parts(None, 0, &groups))
-        .build();
+    let cost = crate::cost::CostModel::resolve_parts(None, 0, &groups);
 
-    refresh_scrape_gauges(&app);
+    money::refresh_governance_gauges(&gov, &cost, crate::store::now());
 
-    let out = render();
+    let out = snapshot().expect("the actual recorder is installed");
 
-    let remaining_lines: Vec<&str> = out
-        .lines()
-        .filter(|l| l.contains(BUCKET_BUDGET_REMAINING_CENTS))
+    let remaining_lines: Vec<_> = out
+        .iter()
+        .flat_map(|family| &family.samples)
+        .filter(|sample| sample.name.contains(BUCKET_BUDGET_REMAINING_CENTS))
         .collect();
     for line in &remaining_lines {
-        assert!(
-                !line.contains("uncapped-grp"),
-                "a budget-less group bucket must not appear in budget_remaining_cents lines; got:\n{line}"
-            );
+        assert!(!line.labels.iter().any(|(_, value)| value.contains("uncapped-grp")),
+            "a budget-less group bucket must not appear in budget_remaining_cents lines; got:\n{line:?}");
     }
-
     assert!(
-        out.lines().any(|l| l.contains(BUCKET_SPEND_CENTS)
-            && l.contains("group:uncapped-grp@minute")
-            && l.contains("window=\"minute\"")),
-        "the group bucket's spend gauge carries the group/window dimensions; got:\n{out}"
+        out.iter()
+            .flat_map(|family| &family.samples)
+            .any(|sample| sample.name == BUCKET_SPEND_CENTS
+                && sample.labels.iter().any(
+                    |(label, value)| label == "bucket" && value == "group:uncapped-grp@minute"
+                )
+                && sample
+                    .labels
+                    .iter()
+                    .any(|(label, value)| label == "window" && value == "minute")),
+        "the group bucket's spend gauge carries the group/window dimensions; got:\n{out:?}"
     );
 }
 
@@ -260,54 +273,79 @@ fn test_scrape_gauges_bucket_model_tier_and_key_labels() {
         1_700_000_000,
     );
 
-    let app = TestApp::new()
-        .lane(LaneSpec::new("m", LANE_PROTOCOL, "http://m"))
-        .pool("pool-b", &[(0, 1)])
-        .governance(gov)
-        .cost(crate::cost::CostModel::resolve_parts(None, 1, &groups))
-        .build();
-    refresh_scrape_gauges(&app);
-    let out = render();
+    let cost = crate::cost::CostModel::resolve_parts(None, 1, &groups);
+    money::refresh_governance_gauges(&gov, &cost, crate::store::now());
+    let out = snapshot().expect("the actual recorder is installed");
 
     let key_line = out
-        .lines()
-        .find(|l| {
-            l.starts_with("busbar_bucket_tokens")
-                && l.contains("bucket=\"vk_bucket_test1\"")
-                && l.contains("model=\"gpt-5\"")
-                && l.contains("tier=\"input\"")
+        .iter()
+        .flat_map(|family| &family.samples)
+        .find(|sample| {
+            sample.name == BUCKET_TOKENS
+                && sample
+                    .labels
+                    .iter()
+                    .any(|(label, value)| label == "bucket" && value == "vk_bucket_test1")
+                && sample
+                    .labels
+                    .iter()
+                    .any(|(label, value)| label == "model" && value == "gpt-5")
+                && sample
+                    .labels
+                    .iter()
+                    .any(|(label, value)| label == "tier" && value == "input")
         })
-        .unwrap_or_else(|| panic!("key-bucket input-tier series missing: {out}"));
+        .unwrap_or_else(|| panic!("key-bucket input-tier series missing: {out:?}"));
     assert!(
-        key_line.contains("team=\"growth\""),
-        "mint labels echo onto metric series: {key_line}"
+        key_line
+            .labels
+            .iter()
+            .any(|(label, value)| label == "team" && value == "growth"),
+        "mint labels echo onto metric series: {key_line:?}"
+    );
+    assert!(key_line.value == "100", "input tier value: {key_line:?}");
+    assert!(
+        out.iter()
+            .flat_map(|family| &family.samples)
+            .any(|sample| sample.name == BUCKET_TOKENS
+                && sample
+                    .labels
+                    .iter()
+                    .any(|(label, value)| label == "bucket" && value == "group:growth@total")
+                && sample
+                    .labels
+                    .iter()
+                    .any(|(label, value)| label == "group" && value == "growth")
+                && sample
+                    .labels
+                    .iter()
+                    .any(|(label, value)| label == "window" && value == "total")
+                && sample
+                    .labels
+                    .iter()
+                    .any(|(label, value)| label == "tier" && value == "output")),
+        "group-bucket token series missing: {out:?}"
     );
     assert!(
-        key_line.trim_end().ends_with("100"),
-        "input tier value: {key_line}"
-    );
-
-    assert!(
-        out.lines().any(|l| l.starts_with("busbar_bucket_tokens")
-            && l.contains("bucket=\"group:growth@total\"")
-            && l.contains("group=\"growth\"")
-            && l.contains("window=\"total\"")
-            && l.contains("tier=\"output\"")),
-        "group-bucket token series missing: {out}"
-    );
-
-    assert!(
-        out.lines()
-            .any(|l| l.starts_with("busbar_bucket_spend_cents")
-                && l.contains("bucket=\"group:growth@total\"")),
+        out.iter()
+            .flat_map(|family| &family.samples)
+            .any(|sample| sample.name == BUCKET_SPEND_CENTS
+                && sample
+                    .labels
+                    .iter()
+                    .any(|(label, value)| label == "bucket" && value == "group:growth@total")),
         "group spend gauge missing"
     );
     assert!(
-        out.lines()
-            .any(|l| l.starts_with("busbar_bucket_budget_remaining_cents")
-                && l.contains("bucket=\"group:growth@total\"")
-                && l.trim_end().ends_with("1000")),
-        "group remaining gauge = full cap when token spend derives to 0: {out}"
+        out.iter()
+            .flat_map(|family| &family.samples)
+            .any(|sample| sample.name == BUCKET_BUDGET_REMAINING_CENTS
+                && sample.value == "1000"
+                && sample
+                    .labels
+                    .iter()
+                    .any(|(label, value)| label == "bucket" && value == "group:growth@total")),
+        "group remaining gauge = full cap when token spend derives to 0: {out:?}"
     );
 }
 
@@ -363,20 +401,22 @@ fn test_key_gauge_limit_truncation() {
     }
 
     let gov = Arc::new(GovState::new(store, None).unwrap());
-    let app = TestApp::new()
-        .lane(LaneSpec::new("m", LANE_PROTOCOL, "http://m"))
-        .pool("pool-limit", &[(0, 1)])
-        .governance(gov)
-        .build();
+    let cost = crate::cost::CostModel::flat(1);
 
-    refresh_scrape_gauges(&app);
+    money::refresh_governance_gauges(&gov, &cost, crate::store::now());
 
-    let out = render();
+    let out = snapshot().expect("the actual recorder is installed");
 
     let spend_series_count = out
-        .lines()
-        .filter(|l| !l.starts_with('#') && l.contains(KEY_SPEND_CENTS))
-        .filter(|l| l.contains("vk_limit_"))
+        .iter()
+        .flat_map(|family| &family.samples)
+        .filter(|sample| sample.name == KEY_SPEND_CENTS)
+        .filter(|sample| {
+            sample
+                .labels
+                .iter()
+                .any(|(label, value)| label == "key" && value.starts_with("vk_limit_"))
+        })
         .count();
 
     assert_eq!(
@@ -388,7 +428,7 @@ fn test_key_gauge_limit_truncation() {
     );
 }
 
-fn app_with_n_keys(n: usize) -> Arc<App> {
+fn gov_with_n_keys(n: usize) -> Arc<GovState> {
     let store = crate::real_store::store();
     for i in 0..n {
         let id = format!("vk_bound_{i:04x}");
@@ -425,49 +465,72 @@ fn app_with_n_keys(n: usize) -> Arc<App> {
             )
             .unwrap();
     }
-    let gov = Arc::new(GovState::new(store, None).unwrap());
-    TestApp::new()
-        .lane(LaneSpec::new("m", LANE_PROTOCOL, "http://m"))
-        .pool("pool-bound", &[(0, 1)])
-        .governance(gov)
-        .build()
+    Arc::new(GovState::new(store, None).unwrap())
 }
 
 #[test]
 fn test_key_gauge_limit_warning_fires_exactly_past_the_boundary() {
-    use crate::test_support::warn_capture::WarnCapture;
-    use tracing_subscriber::layer::SubscriberExt as _;
+    use std::io::Write;
+    #[derive(Clone, Default)]
+    struct GaugeLog(Arc<std::sync::Mutex<Vec<u8>>>);
+    impl Write for GaugeLog {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
     let _latch = key_gauge_latch();
     crate::snapshot::init_for_test(Duration::from_secs(3600));
     const LIMIT: usize = crate::config::DEFAULT_KEY_GAUGE_LIMIT;
 
-    let app_at_limit = app_with_n_keys(LIMIT);
-    let cap = WarnCapture::default();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let app_at_limit = gov_with_n_keys(LIMIT);
+    let cap = GaugeLog::default();
+    let writer = cap.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::WARN)
+        .with_writer(move || writer.clone())
+        .with_ansi(false)
+        .without_time()
+        .finish();
     tracing::subscriber::with_default(subscriber, || {
-        refresh_scrape_gauges(&app_at_limit);
+        money::refresh_governance_gauges(
+            &app_at_limit,
+            &crate::cost::CostModel::flat(1),
+            crate::store::now(),
+        );
     });
+    let lines = String::from_utf8(cap.0.lock().unwrap().clone()).unwrap();
     assert!(
-        !cap.messages()
-            .iter()
-            .any(|m| m.contains("per-key gauge limit")),
+        !lines.lines().any(|m| m.contains("per-key gauge limit")),
         "exactly key_gauge_limit ({LIMIT}) keys must NOT trigger the truncation warning; got: {:?}",
-        cap.messages()
+        lines
     );
 
-    let app_over_limit = app_with_n_keys(LIMIT + 1);
-    let cap2 = WarnCapture::default();
-    let subscriber2 = tracing_subscriber::registry().with(cap2.clone());
+    let app_over_limit = gov_with_n_keys(LIMIT + 1);
+    let cap2 = GaugeLog::default();
+    let writer = cap2.clone();
+    let subscriber2 = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::WARN)
+        .with_writer(move || writer.clone())
+        .with_ansi(false)
+        .without_time()
+        .finish();
     tracing::subscriber::with_default(subscriber2, || {
-        refresh_scrape_gauges(&app_over_limit);
+        money::refresh_governance_gauges(
+            &app_over_limit,
+            &crate::cost::CostModel::flat(1),
+            crate::store::now(),
+        );
     });
+    let lines = String::from_utf8(cap2.0.lock().unwrap().clone()).unwrap();
     assert!(
-        cap2.messages()
-            .iter()
-            .any(|m| m.contains("per-key gauge limit")),
+        lines.lines().any(|m| m.contains("per-key gauge limit")),
         "key_gauge_limit + 1 ({}) keys MUST trigger the truncation warning; got: {:?}",
         LIMIT + 1,
-        cap2.messages()
+        lines
     );
 }
 
@@ -478,27 +541,27 @@ fn test_cardinality_invariant_no_raw_secret_in_labels() {
     let key = sample_vkey("vk_carinv_test01");
     let gov = gov_with_key(key);
 
-    let app = TestApp::new()
-        .lane(LaneSpec::new("m", LANE_PROTOCOL, "http://m"))
-        .pool("pool-ci", &[(0, 1)])
-        .governance(gov)
-        .build();
+    let cost = crate::cost::CostModel::flat(1);
 
-    refresh_scrape_gauges(&app);
+    money::refresh_governance_gauges(&gov, &cost, crate::store::now());
 
-    let out = render();
+    let out = snapshot().expect("the actual recorder is installed");
     assert!(
-            !out.contains("sk-bb-"),
-            "raw bearer secret prefix must never appear as a label value in the scrape output; got:\n{out}"
+            !out.iter().any(|family| family.name.contains("sk-bb-") || family.help.as_ref().is_some_and(|help| help.contains("sk-bb-"))
+            || family.samples.iter().any(|sample| sample.name.contains("sk-bb-") || sample.value.contains("sk-bb-") || sample.labels.iter().any(|(label, value)| label.contains("sk-bb-") || value.contains("sk-bb-")))),
+            "raw bearer secret prefix must never appear as a label value in the scrape output; got:\n{out:?}"
         );
 }
 
-fn local_source(idle: Duration) -> (&'static Source, impl Fn() -> String) {
+fn local_source(
+    idle: Duration,
+) -> (
+    &'static Source,
+    impl Fn() -> Vec<busbar_contract::export_calls::Family>,
+) {
     let width = Duration::from_secs(1);
     let source: &'static Source = Box::leak(Box::new(Source::new(width, SUMMARY_BUCKETS, idle)));
-    (source, move || {
-        crate::test_support::export_axis::lines(&source.snapshot())
-    })
+    (source, move || source.snapshot())
 }
 
 #[test]
@@ -511,8 +574,15 @@ fn a_gauge_that_stops_being_refreshed_is_expired() {
         metrics::gauge!("busbar_test_live_subject").set(1.0);
     });
     let before = handle();
-    assert!(before.contains("busbar_test_deleted_subject"), "{before}");
-    assert!(before.contains("busbar_test_live_subject"));
+    assert!(
+        before
+            .iter()
+            .any(|family| family.name == "busbar_test_deleted_subject"),
+        "{before:?}"
+    );
+    assert!(before
+        .iter()
+        .any(|family| family.name == "busbar_test_live_subject"));
 
     std::thread::sleep(idle * 3);
 
@@ -522,12 +592,16 @@ fn a_gauge_that_stops_being_refreshed_is_expired() {
 
     let after = handle();
     assert!(
-        !after.contains("busbar_test_deleted_subject"),
-        "a gauge nothing refreshes must stop being exported, got:\n{after}"
+        !after
+            .iter()
+            .any(|family| family.name == "busbar_test_deleted_subject"),
+        "a gauge nothing refreshes must stop being exported, got:\n{after:?}"
     );
     assert!(
-        after.contains("busbar_test_live_subject"),
-        "a refreshed gauge must survive, got:\n{after}"
+        after
+            .iter()
+            .any(|family| family.name == "busbar_test_live_subject"),
+        "a refreshed gauge must survive, got:\n{after:?}"
     );
 }
 
@@ -544,12 +618,14 @@ fn only_gauges_are_expired() {
 
     let after = handle();
     assert!(
-        after.contains("busbar_test_idle_counter"),
-        "an idle counter must survive — expiring it would reset it and break rate(), got:\n{after}"
+        after.iter().any(|family| family.name == "busbar_test_idle_counter"),
+        "an idle counter must survive — expiring it would reset it and break rate(), got:\n{after:?}"
     );
     assert!(
-        after.contains("busbar_test_idle_histogram"),
-        "an idle histogram must survive, got:\n{after}"
+        after
+            .iter()
+            .any(|family| family.name == "busbar_test_idle_histogram"),
+        "an idle histogram must survive, got:\n{after:?}"
     );
 }
 
@@ -572,13 +648,19 @@ fn money_gauge_bytes_are_the_1_5_5_bytes() {
     ];
     let counts: &[u64] = &[0, 1, 5000, (1u64 << 53) + 1, u64::MAX];
 
-    fn value_of(out: &str, family: &str, key: &str) -> String {
-        let needle = format!("key=\"{key}\"");
-        let line = out
-            .lines()
-            .find(|l| l.starts_with(family) && l.contains(&needle))
-            .unwrap_or_else(|| panic!("no `{family}` line for {key}; got:\n{out}"));
-        line.rsplit(' ').next().unwrap().to_string()
+    fn value_of(out: &[busbar_contract::export_calls::Family], family: &str, key: &str) -> String {
+        out.iter()
+            .flat_map(|family| &family.samples)
+            .find(|sample| {
+                sample.name == family
+                    && sample
+                        .labels
+                        .iter()
+                        .any(|(label, value)| label == "key" && value == key)
+            })
+            .unwrap_or_else(|| panic!("no `{family}` sample for {key}; got:\n{out:?}"))
+            .value
+            .clone()
     }
 
     let mut probes: Vec<(&str, String, String, i128)> = Vec::new();
@@ -605,7 +687,7 @@ fn money_gauge_bytes_are_the_1_5_5_bytes() {
         }
     }
 
-    let out = render();
+    let out = snapshot().expect("the actual recorder is installed");
     for (family, old, new, v) in &probes {
         let was = value_of(&out, family, old);
         let now = value_of(&out, family, new);
@@ -660,12 +742,19 @@ fn priced_at(input_utok: f64, fee: i64) -> crate::cost::CostModel {
     crate::cost::CostModel::resolve_parts(Some(&card), fee, &Default::default())
 }
 
-fn spend_of(out: &str, key: &str) -> String {
-    let needle = format!("key=\"{key}\"");
-    let line = (out.lines())
-        .find(|l| l.starts_with(KEY_SPEND_CENTS) && l.contains(&needle))
-        .unwrap_or_else(|| panic!("no spend line for {key}; got:\n{out}"));
-    line.rsplit(' ').next().unwrap().to_string()
+fn spend_of(out: &[busbar_contract::export_calls::Family], key: &str) -> String {
+    out.iter()
+        .flat_map(|family| &family.samples)
+        .find(|sample| {
+            sample.name == KEY_SPEND_CENTS
+                && sample
+                    .labels
+                    .iter()
+                    .any(|(label, value)| label == "key" && value == key)
+        })
+        .unwrap_or_else(|| panic!("no spend sample for {key}; got:\n{out:?}"))
+        .value
+        .clone()
 }
 
 /// **A SCRAPE NEVER DRIVES THE PRICING PATH BY ITSELF** (#43/#71; the export kind, property 4).
@@ -687,14 +776,9 @@ fn a_scrape_reprices_only_the_buckets_whose_facts_moved() {
         .iter()
         .map(|id| seed_viewed_key(store.as_ref(), id, 10_000))
         .collect();
-    let app = TestApp::new()
-        .lane(LaneSpec::new("m", LANE_PROTOCOL, "http://m"))
-        .pool("pool-view", &[(0, 1)])
-        .cost(priced_at(100.0, 0))
-        .governance(gov.clone())
-        .build();
+    let cost = priced_at(100.0, 0);
 
-    refresh_scrape_gauges(&app);
+    money::refresh_governance_gauges(&gov, &cost, crate::store::now());
     let first = gov.money_view_pricings();
     assert_eq!(
         first,
@@ -702,7 +786,7 @@ fn a_scrape_reprices_only_the_buckets_whose_facts_moved() {
         "the first scrape prices each bucket once"
     );
     for _ in 0..5 {
-        refresh_scrape_gauges(&app);
+        money::refresh_governance_gauges(&gov, &cost, crate::store::now());
     }
     assert_eq!(
         gov.money_view_pricings(),
@@ -711,41 +795,39 @@ fn a_scrape_reprices_only_the_buckets_whose_facts_moved() {
     );
 
     let now = 1_700_000_000;
-    gov.try_admit(&app.cost, &keys[0], "", now)
+    gov.try_admit(&cost, &keys[0], "", now)
         .expect("an uncapped key admits");
     let units = std::collections::BTreeMap::from([(
         busbar_contract::records::UNIT_INPUT.to_string(),
         5_000u64,
     )]);
-    gov.record_usage(&app.cost, &keys[0], "", "m", &units, now);
+    gov.record_usage(&cost, &keys[0], "", "m", &units, now);
     assert_eq!(
         gov.money_view_pricings(),
         first,
         "the serving path prices nothing through the money view"
     );
 
-    refresh_scrape_gauges(&app);
+    money::refresh_governance_gauges(&gov, &cost, crate::store::now());
     assert_eq!(
         gov.money_view_pricings(),
         first + 1,
         "a write between two scrapes reprices exactly that one bucket"
     );
 
-    let old = spend_of(&render(), "vk_view_b");
-    let swapped = TestApp::new()
-        .lane(LaneSpec::new("m", LANE_PROTOCOL, "http://m"))
-        .pool("pool-view", &[(0, 1)])
-        .cost(priced_at(300.0, 0))
-        .governance(gov.clone())
-        .build();
-    refresh_scrape_gauges(&swapped);
+    let old = spend_of(
+        &snapshot().expect("the actual recorder is installed"),
+        "vk_view_b",
+    );
+    let swapped_cost = priced_at(300.0, 0);
+    money::refresh_governance_gauges(&gov, &swapped_cost, crate::store::now());
     assert_eq!(
         gov.money_view_pricings(),
         first + 1 + ids.len() as u64,
         "a card swap reprices every bucket once"
     );
     let want = (gov.derived_bucket_usage(
-        &swapped.cost,
+        &swapped_cost,
         "vk_view_b",
         crate::governance::WINDOW_TOTAL,
         true,
@@ -753,7 +835,10 @@ fn a_scrape_reprices_only_the_buckets_whose_facts_moved() {
     ))
     .expect("the new card prices")
     .spend_cents;
-    let new = spend_of(&render(), "vk_view_b");
+    let new = spend_of(
+        &snapshot().expect("the actual recorder is installed"),
+        "vk_view_b",
+    );
     assert_eq!(
         new,
         want.to_string(),
@@ -858,22 +943,47 @@ gauge_plane!(
     ]
 );
 
-fn lines_of(out: &str, family: &str, needle: &str) -> Vec<String> {
-    let mut lines: Vec<String> = (out.lines())
-        .filter(|l| l.starts_with(&format!("{family}{{")) && l.contains(needle))
-        .map(str::to_string)
+fn samples_of(
+    out: &[busbar_contract::export_calls::Family],
+    family: &str,
+    id: &str,
+) -> Vec<busbar_contract::export_calls::Sample> {
+    let mut samples: Vec<_> = out
+        .iter()
+        .flat_map(|family| &family.samples)
+        .filter(|sample| {
+            sample.name == family && sample.labels.iter().any(|(_, value)| value == id)
+        })
+        .cloned()
         .collect();
-    lines.sort();
-    lines
+    samples.sort_by(|a, b| a.labels.cmp(&b.labels).then_with(|| a.value.cmp(&b.value)));
+    samples
 }
 
 #[test]
 fn bucket_token_and_spend_gauges_are_the_1_5_5_lines() {
     crate::snapshot::init_for_test(Duration::from_secs(3600));
-    let _iso = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[
-        &GAUGE_FALLBACK_PLANE,
-        &GAUGE_AUDIO_PLANE,
-    ]);
+    const CHILD: &str = "BUSBAR_OWNER_REGISTRY_BUCKET_TOKEN_AND_SPEND_GAUGES_ARE_THE_1_5_5_LINES";
+    if std::env::var_os(CHILD).is_none() {
+        let full = concat!(
+            module_path!(),
+            "::bucket_token_and_spend_gauges_are_the_1_5_5_lines"
+        );
+        let (_, name) = full.split_once("::").expect("the crate prefix");
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args(["--exact", name, "--nocapture"])
+            .env(CHILD, "1")
+            .output()
+            .expect("run the owner registry case in a fresh process");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    crate::plane_driver::registry::publish_planes(&[&GAUGE_FALLBACK_PLANE, &GAUGE_AUDIO_PLANE]);
     let key = sample_vkey("vk_gauge_bytes");
     let gov = gov_with_key(key.clone());
     let card = std::collections::BTreeMap::from([(
@@ -900,44 +1010,96 @@ fn bucket_token_and_spend_gauges_are_the_1_5_5_lines() {
         ]),
         1_700_000_000,
     );
-    let app = TestApp::new()
-        .lane(LaneSpec::new("m", LANE_PROTOCOL, "http://m"))
-        .pool("pool-gauge-bytes", &[(0, 1)])
-        .cost(cost)
-        .governance(gov)
-        .build();
-    refresh_scrape_gauges(&app);
-    let out = render();
-    let needle = "=\"vk_gauge_bytes\"";
+    money::refresh_governance_gauges(&gov, &cost, crate::store::now());
+    let out = snapshot().expect("the actual recorder is installed");
+    let needle = "vk_gauge_bytes";
     assert_eq!(
-        lines_of(&out, BUCKET_TOKENS, needle),
+        samples_of(&out, BUCKET_TOKENS, needle),
         [
-            "busbar_bucket_tokens{bucket=\"vk_gauge_bytes\",model=\"m\",tier=\"cache_read\"} 0",
-            "busbar_bucket_tokens{bucket=\"vk_gauge_bytes\",model=\"m\",tier=\"cache_write\"} 0",
-            "busbar_bucket_tokens{bucket=\"vk_gauge_bytes\",model=\"m\",tier=\"input\"} 10000",
-            "busbar_bucket_tokens{bucket=\"vk_gauge_bytes\",model=\"m\",tier=\"output\"} 7",
+            busbar_contract::export_calls::Sample {
+                name: "busbar_bucket_tokens".to_string(),
+                labels: vec![
+                    ("bucket".to_string(), "vk_gauge_bytes".to_string()),
+                    ("model".to_string(), "m".to_string()),
+                    ("tier".to_string(), "cache_read".to_string())
+                ],
+                value: "0".to_string()
+            },
+            busbar_contract::export_calls::Sample {
+                name: "busbar_bucket_tokens".to_string(),
+                labels: vec![
+                    ("bucket".to_string(), "vk_gauge_bytes".to_string()),
+                    ("model".to_string(), "m".to_string()),
+                    ("tier".to_string(), "cache_write".to_string())
+                ],
+                value: "0".to_string()
+            },
+            busbar_contract::export_calls::Sample {
+                name: "busbar_bucket_tokens".to_string(),
+                labels: vec![
+                    ("bucket".to_string(), "vk_gauge_bytes".to_string()),
+                    ("model".to_string(), "m".to_string()),
+                    ("tier".to_string(), "input".to_string())
+                ],
+                value: "10000".to_string()
+            },
+            busbar_contract::export_calls::Sample {
+                name: "busbar_bucket_tokens".to_string(),
+                labels: vec![
+                    ("bucket".to_string(), "vk_gauge_bytes".to_string()),
+                    ("model".to_string(), "m".to_string()),
+                    ("tier".to_string(), "output".to_string())
+                ],
+                value: "7".to_string()
+            },
         ],
-        "the fallback plane's token series are 1.5.5's, line for line; got:\n{out}"
+        "the fallback plane's token series are 1.5.5's, line for line; got:\n{out:?}"
     );
     assert_eq!(
-        lines_of(&out, KEY_SPEND_CENTS, needle),
-        ["busbar_key_spend_cents{key=\"vk_gauge_bytes\"} 100"],
-        "10,000 input tokens at 100 micro-units each is 100 cents; got:\n{out}"
+        samples_of(&out, KEY_SPEND_CENTS, needle),
+        [busbar_contract::export_calls::Sample {
+            name: "busbar_key_spend_cents".to_string(),
+            labels: vec![("key".to_string(), "vk_gauge_bytes".to_string())],
+            value: "100".to_string()
+        }],
+        "10,000 input tokens at 100 micro-units each is 100 cents; got:\n{out:?}"
     );
     assert_eq!(
-        lines_of(&out, KEY_TOKENS_TOTAL, needle),
-        ["busbar_key_tokens_total{key=\"vk_gauge_bytes\"} 10007"],
-        "the key's token total counts the token family only; got:\n{out}"
+        samples_of(&out, KEY_TOKENS_TOTAL, needle),
+        [busbar_contract::export_calls::Sample {
+            name: "busbar_key_tokens_total".to_string(),
+            labels: vec![("key".to_string(), "vk_gauge_bytes".to_string())],
+            value: "10007".to_string()
+        }],
+        "the key's token total counts the token family only; got:\n{out:?}"
     );
 }
 
 #[test]
 fn bucket_token_gauges_follow_the_lane_planes_declared_token_classes() {
     crate::snapshot::init_for_test(Duration::from_secs(3600));
-    let _iso = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[
-        &GAUGE_FALLBACK_PLANE,
-        &GAUGE_AUDIO_PLANE,
-    ]);
+    const CHILD: &str =
+        "BUSBAR_OWNER_REGISTRY_BUCKET_TOKEN_GAUGES_FOLLOW_THE_LANE_PLANES_DECLARED_TOKEN_CLASSES";
+    if std::env::var_os(CHILD).is_none() {
+        let full = concat!(
+            module_path!(),
+            "::bucket_token_gauges_follow_the_lane_planes_declared_token_classes"
+        );
+        let (_, name) = full.split_once("::").expect("the crate prefix");
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args(["--exact", name, "--nocapture"])
+            .env(CHILD, "1")
+            .output()
+            .expect("run the owner registry case in a fresh process");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    crate::plane_driver::registry::publish_planes(&[&GAUGE_FALLBACK_PLANE, &GAUGE_AUDIO_PLANE]);
     let key = sample_vkey("vk_gauge_audio");
     let gov = gov_with_key(key.clone());
     let cost = crate::cost::CostModel::resolve_parts(None, 0, &Default::default());
@@ -952,24 +1114,21 @@ fn bucket_token_gauges_follow_the_lane_planes_declared_token_classes() {
         ]),
         1_700_000_000,
     );
-    let app = TestApp::new()
-        .lane(LaneSpec::new("m", LANE_PROTOCOL, "http://m"))
-        .pool("pool-gauge-audio", &[(0, 1)])
-        .cost(cost)
-        .governance(gov)
-        .build();
-    refresh_scrape_gauges(&app);
-    let out = render();
-    let tiers: Vec<(String, String)> = lines_of(&out, BUCKET_TOKENS, "=\"vk_gauge_audio\"")
+    money::refresh_governance_gauges(&gov, &cost, crate::store::now());
+    let out = snapshot().expect("the actual recorder is installed");
+    let tiers: Vec<(String, String)> = samples_of(&out, BUCKET_TOKENS, "vk_gauge_audio")
         .iter()
-        .map(|l| {
-            let tier = l
-                .split("tier=\"")
-                .nth(1)
-                .and_then(|t| t.split('"').next())
-                .unwrap_or_default()
-                .to_string();
-            (tier, l.rsplit(' ').next().unwrap_or_default().to_string())
+        .map(|sample| {
+            (
+                sample
+                    .labels
+                    .iter()
+                    .find(|(label, _)| label == "tier")
+                    .expect("a tier label")
+                    .1
+                    .clone(),
+                sample.value.clone(),
+            )
         })
         .collect();
     assert_eq!(
@@ -978,6 +1137,6 @@ fn bucket_token_gauges_follow_the_lane_planes_declared_token_classes() {
             ("audio_tokens_in".to_string(), "9".to_string()),
             ("audio_tokens_out".to_string(), "0".to_string()),
         ],
-        "the lane's plane's token classes, and only those; got:\n{out}"
+        "the lane's plane's token classes, and only those; got:\n{out:?}"
     );
 }
