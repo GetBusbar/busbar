@@ -65,7 +65,7 @@ runtime = ["axum/ws"]
 openapi-schema = ["dep:schemars"]
 loom-model = ["dep:loom"]
 # Never on in a normal build; dependents enable it from [dev-dependencies].
-test-support = []
+test-support = ["busbar-kernel-identity/test-support"]
 # Default off: `timeit!` expands to `()`.
 timing = ["dep:libc"]
 

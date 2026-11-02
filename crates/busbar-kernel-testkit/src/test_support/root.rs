@@ -85,11 +85,9 @@ pub fn ensure() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         super::migration::install();
-        // A fixture with no composition root installs its own explicit operator row before
-        // deriving configuration defaults. A root-provided row already installed wins.
-        if crate::config::operator_provider().is_empty() {
-            super::operator_double::install();
-        }
+        // Metadata alone does not claim a credential row. A composition root can still
+        // install its real row later, and that record always takes precedence.
+        busbar_kernel_identity::operator::install_test_words(super::operator_double::words());
         publish();
     });
 }

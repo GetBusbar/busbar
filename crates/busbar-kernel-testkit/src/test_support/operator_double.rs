@@ -42,6 +42,11 @@ const WORDS: busbar_kernel_identity::operator::OperatorWords =
         principal_id: "admin",
     };
 
+/// Explicit fixture metadata, kept separate from installing a linked credential door.
+pub(crate) fn words() -> busbar_kernel_identity::operator::OperatorWords {
+    WORDS
+}
+
 /// The bearer carrier.
 const AUTHORIZATION: &str = "authorization";
 /// The operator's own header carrier (1.5.5's admin header).
