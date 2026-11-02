@@ -1,8 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """python3 -I scripts/conformance/test_sync.py: the manifest render refuses every bad verdict and
 renders a claim only for an armed pass."""
+import hashlib
+import io
 import json
 import sys
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -106,13 +109,22 @@ def stamped(suite, repo, commit, core, **kw):
 
 def fetched(d, repo, head, verdicts, missing=None):
     r = Path(d) / repo
-    (r / "verdicts").mkdir(parents=True, exist_ok=True)
-    rec = {"repo": repo, "check": "conformance", "from": "dev", "head": head, "sha": "0" * 64}
+    generation = r / "generation-fixture"
+    generation.mkdir(parents=True, exist_ok=True)
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as archive:
+        for v in verdicts:
+            data = json.dumps(v).encode()
+            member = tarfile.TarInfo(f"target/conformance/verdicts/{v['suite']}.json")
+            member.size = len(data)
+            archive.addfile(member, io.BytesIO(data))
+    data = buf.getvalue()
+    (generation / "artifact.tar").write_bytes(data)
+    rec = {"repo": repo, "check": "conformance", "from": "dev", "head": head,
+           "generation": generation.name, "sha": hashlib.sha256(data).hexdigest()}
     if missing:
         rec["missing"] = missing
     (r / "receipt.json").write_text(json.dumps(rec))
-    for v in verdicts:
-        (r / "verdicts" / f"{v['suite']}.json").write_text(json.dumps(v))
 
 
 class Registry(unittest.TestCase):
@@ -127,6 +139,15 @@ class Registry(unittest.TestCase):
         for s in sync.read_registry(real):
             with self.subTest(s["id"]):
                 self.assertRegex(s["repo"], r"^GetBusbar/busbar(-[a-z0-9-]+)?$")
+
+    def test_the_core_suite_list_is_unique_and_agrees_with_registry_ownership(self):
+        root = Path(__file__).resolve().parents[2]
+        registered = {s["id"]: s["repo"] for s in sync.read_registry(root / "conformance" / "registry.toml")}
+        ids = [line.split("\t", 1)[0] for line in (root / "testing" / "conformance" / "suites.tsv").read_text().splitlines()
+               if line.strip() and not line.startswith("#")]
+        self.assertEqual(len(ids), len(set(ids)), "a repeated id overwrites a prior verdict")
+        for sid in ids:
+            self.assertEqual(registered[sid], sync.CORE_REPO, sid)
 
 
 class ReleaseRender(unittest.TestCase):
@@ -155,6 +176,17 @@ class ReleaseRender(unittest.TestCase):
                          ("pass", "GetBusbar/busbar-transport-ws", P_WS, T))
         self.assertTrue(ws["evidence"].endswith("head=" + P_WS))
         self.assertEqual(ws["verified_at"], "2026-10-28T10:00:00Z")
+
+    def test_an_unbound_legacy_directory_cannot_supply_a_release_pass(self):
+        repo = "GetBusbar/busbar-transport-ws"
+        def build(directory):
+            r = directory / repo
+            (r / "verdicts").mkdir(parents=True)
+            (r / "verdicts" / "ws.json").write_text(json.dumps(stamped("ws", repo, P_WS, T)))
+            (r / "receipt.json").write_text(json.dumps({"repo": repo, "check": "conformance", "head": P_WS}))
+        _, m = self.render(build)
+        self.assertEqual(self.suite(m, "ws")["status"], "not-run")
+        self.assertIn("complete fetched generation", self.suite(m, "ws")["reason"])
 
     def test_a_suite_with_no_fetched_output_is_not_run_never_omitted(self):
         _, m = self.render(lambda f: None)

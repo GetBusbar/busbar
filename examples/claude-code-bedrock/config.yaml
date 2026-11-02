@@ -1,6 +1,7 @@
 # Demo: Claude Code (Anthropic protocol) → Busbar → Amazon Nova on Bedrock.
 # The agent speaks Anthropic; Busbar translates to Bedrock Converse and back.
 listen: "127.0.0.1:8080"
+admin_listen: "127.0.0.1:8081"
 
 # Signed-key auth: mint a key via the admin API (POST /api/v1/admin/keys) and give it to the
 # agent as its bearer token. An empty chain would be an open relay (dev only).

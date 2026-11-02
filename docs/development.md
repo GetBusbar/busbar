@@ -44,9 +44,11 @@ and the two common extension tasks.
 Single Rust binary, stable toolchain, edition 2021.
 
 ```bash
-cargo build                                   # debug build
-cargo build --release                         # release binary -> target/release/busbar
-cargo test                                    # full in-crate suite
+cargo build                                   # core workspace debug build
+cargo build --release --locked --manifest-path dist/default/Cargo.toml --target-dir target
+# assembled release binary -> target/release/busbar
+cargo test                                    # core workspace suite
+cargo test --locked --manifest-path dist/default/Cargo.toml --target-dir target # distribution integration suite
 cargo clippy --all-targets -- -D warnings     # lints must be clean (treat warnings as errors)
 cargo fmt --all                               # format (rustfmt.toml in repo)
 ```

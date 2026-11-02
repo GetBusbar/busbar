@@ -23,17 +23,21 @@ registry tier and the status, and is null for anything but a pass.
 
 A RELEASE render (`--release`) reads no file of conformance/verdicts/. It reads DIR, which
 scripts/release/conformance_gate.py fetched from ModernCI: one `<owner>/<name>/receipt.json` per repo
-(what ModernCI's `artifact` answered) with that check's `verdicts/<id>.json` beside it. Every
+(what ModernCI's `artifact` answered), selecting a complete generation whose artifact.tar hashes
+to that receipt. Verdicts are read from that exact archive; inspection JSON copies are not inputs. Every
 registered suite is rendered; a suite's verdict counts only when its stamp names the suite's registry
 `repo`, the commit it ships at (T for busbar, the plugin's shipped pin P), core pin T (or K for
 plugins when --testkit is supplied), the run id and
 the ModernCI move of that commit. Anything else is `not-run`, with the reason. The manifest-level
 `commit` is T. The bytes are canonical: sorted keys, LF.
 """
+import hashlib
+import io
 import json
 import re
 import subprocess
 import sys
+import tarfile
 import tomllib
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -213,25 +217,54 @@ def read_exceptions(root, release):
             for e in doc.get("suites", []) if isinstance(e, dict) and "suite" in e}
 
 
+def archive_verdicts(data):
+    """Read verdicts from the exact fetched archive, refusing ambiguous suite membership."""
+    out = {}
+    try:
+        archive = tarfile.open(fileobj=io.BytesIO(data), mode="r:*")
+    except tarfile.TarError as e:
+        raise Refused(f"the fetched artifact is not a readable archive: {e}") from e
+    with archive:
+        for member in archive.getmembers():
+            parts = member.name.split("/")
+            if not (member.isfile() and len(parts) >= 2 and parts[-2] == "verdicts" and parts[-1].endswith(".json")):
+                continue
+            sid = parts[-1][:-5]
+            if not re.fullmatch(r"[A-Za-z0-9_-]+", sid) or sid in out:
+                raise Refused(f"archive has an invalid or duplicate verdict id {sid!r}")
+            try:
+                out[sid] = json.loads(archive.extractfile(member).read())
+            except ValueError as e:
+                out[sid] = {"unreadable": f"not JSON: {e}"}
+    return out
+
+
 def load_fetched(directory):
     """{repo: {"receipt": {...}, "verdicts": {sid: raw}}} from what conformance_gate.py fetched. Only
-    a file beside a receipt that names its own directory's repo, with no `missing`, is read."""
+    the complete archive generation selected by a matching receipt, with no `missing`, is read."""
     out = {}
     for rec_file in sorted(Path(directory).glob("*/*/receipt.json")):
         try:
             rec = json.loads(rec_file.read_text())
-        except ValueError:
+        except (OSError, ValueError):
             continue
         repo = f"{rec_file.parent.parent.name}/{rec_file.parent.name}"
-        if not isinstance(rec, dict) or rec.get("repo") != repo:
+        if not isinstance(rec, dict) or rec.get("repo") != repo or rec.get("check") != "conformance":
             continue
         verdicts = {}
         if not rec.get("missing"):
-            for f in sorted((rec_file.parent / "verdicts").glob("*.json")):
-                try:
-                    verdicts[f.stem] = json.loads(f.read_text())
-                except ValueError as e:
-                    verdicts[f.stem] = e
+            try:
+                generation = rec.get("generation", "")
+                if not re.fullmatch(r"generation-[A-Za-z0-9_-]+", generation):
+                    raise Refused("no complete fetched generation; rebuild the candidate")
+                data = (rec_file.parent / generation / "artifact.tar").read_bytes()
+                rerun = rec.get("rerun") or {}
+                expected = rerun.get("sha") if not rerun.get("refused") and rerun else rec.get("sha")
+                if hashlib.sha256(data).hexdigest() != expected:
+                    raise Refused("the fetched archive does not hash to its receipt")
+                verdicts = archive_verdicts(data)
+            except (OSError, ValueError, tarfile.TarError, Refused) as e:
+                rec = {**rec, "missing": str(e)}
         out[repo] = {"receipt": rec, "verdicts": verdicts}
     return out
 

@@ -66,20 +66,11 @@ cd "$(dirname "$0")/.." || exit 1
 #   BUSBAR_RELEASE_PUBKEY=$(printf '0%.0s' {1..64}) scripts/pgo-build.sh
 scripts/release-key-guard.sh require || exit 1
 
-# ── THE FLAG CHANNEL, BEFORE ANY PHASE USES IT ─────────────────────────────────────────────────
-# Every phase below carries its instructions to rustc in RUSTFLAGS: -Cprofile-generate in phase 1,
-# -Cprofile-use in phase 3. Cargo gives CARGO_ENCODED_RUSTFLAGS PRECEDENCE over RUSTFLAGS, so a
-# caller that exports it silently discards BOTH - no instrumentation, no profile-use, and (before
-# the output-side assertion at the end of phase 3) a proof marker written anyway. Refuse it rather
-# than merge into it: this script's whole contract is that the flags it names are the flags the
-# compiler got, and there is no correct build that needs a caller to override them.
-if [ -n "${CARGO_ENCODED_RUSTFLAGS:-}" ]; then
-  echo "[pgo-build] CARGO_ENCODED_RUSTFLAGS is set in the environment." >&2
-  echo "[pgo-build] Cargo gives it precedence over RUSTFLAGS, so every PGO flag this script sets" >&2
-  echo "[pgo-build] (-Cprofile-generate, -Cprofile-use, the BOLT and LSE flags) would be discarded" >&2
-  echo "[pgo-build] without a word. Unset it and re-run; do not merge into it." >&2
-  exit 1
-fi
+# Production owns its flag/profile channel; preserve any existing owner instrumentation by
+# refusing to silently replace a rustc wrapper. The final compiler receipt checks resolved args.
+scripts/build-provenance-gate.sh --check-build-env || exit 1
+RECEIPT_WRAPPER="$(scripts/build-provenance-gate.sh --prepare-wrapper)" || exit 1
+RECEIPT_SOURCE="$(env -u GIT_INDEX_FILE -u GIT_DIR -u GIT_WORK_TREE git -C "$(pwd)" rev-parse --verify HEAD)" || exit 1
 
 REQS="${PGO_REQS:-2000}"
 STREAMS="${PGO_STREAMS:-200}"
@@ -137,7 +128,9 @@ if [ "${BUSBAR_ARM64_BASELINE:-0}" = "1" ]; then
   EMIT_RELOCS=""
 else
   case "$EFFECTIVE_TRIPLE" in
-    *-linux-*) EMIT_RELOCS="-Clink-arg=-Wl,--emit-relocs -Cstrip=debuginfo" ;;
+    # Preserve function symbols/unwind and a stable ELF identity for native profile custody.
+    # DWARF is stripped: these bytes support function attribution, not source-line claims.
+    *-linux-*) EMIT_RELOCS="-Clink-arg=-Wl,--emit-relocs -Clink-arg=-Wl,--build-id=sha1 -Cstrip=debuginfo" ;;
     *)         EMIT_RELOCS="" ;;
   esac
 fi
@@ -215,6 +208,7 @@ rm -rf "$PROF_DIR"; mkdir -p "$PROF_DIR"
 # must be gathered on the same ISA variant the optimized build targets, or the profile is a
 # statement about a different binary.
 # shellcheck disable=SC2086  # TARGET_FLAG is deliberately unquoted (see its definition)
+BUSBAR_PROVENANCE_SOURCE="$RECEIPT_SOURCE" BUSBAR_PROVENANCE_WRAPPER=1 RUSTC_WRAPPER="$RECEIPT_WRAPPER" \
 RUSTFLAGS="-Cprofile-generate=$PROF_DIR${LSE_FLAG:+ $LSE_FLAG}${CRT_FLAG:+ $CRT_FLAG}" \
   cargo build --release --locked --manifest-path dist/default/Cargo.toml --bin busbar $TARGET_FLAG --target-dir target/pgo-gen \
   || pgo_fail "instrumented build failed"
@@ -543,6 +537,7 @@ MERGED_SIZE="$(wc -c < "$MERGED" | tr -d ' ')"
 # definition near the top of this file. $LSE_FLAG (arm64 default only; see its definition) joins
 # here exactly as it joined the instrumented build, and BOLT's emit-relocs path is unchanged by it.
 # shellcheck disable=SC2086  # TARGET_FLAG is deliberately unquoted (see its definition)
+BUSBAR_PROVENANCE_SOURCE="$RECEIPT_SOURCE" BUSBAR_PROVENANCE_WRAPPER=1 RUSTC_WRAPPER="$RECEIPT_WRAPPER" \
 RUSTFLAGS="-Cprofile-use=$MERGED${EMIT_RELOCS:+ $EMIT_RELOCS}${LSE_FLAG:+ $LSE_FLAG}${CRT_FLAG:+ $CRT_FLAG}" \
   cargo build --release --locked --manifest-path dist/default/Cargo.toml --bin busbar $TARGET_FLAG --target-dir target/pgo \
   || pgo_fail "optimized (-Cprofile-use) build failed"

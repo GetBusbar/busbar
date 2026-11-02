@@ -6,8 +6,8 @@
 # they must agree, or what CI proves is not what the release builds:
 #
 #   .busbar-ref          "<40-hex sha> <version>", the record the release and the repin read;
-#   every Cargo.toml     each `busbar-* = { git = "https://github.com/GetBusbar/busbar", rev = ... }`;
-#   Cargo.lock           the resolved `git+https://github.com/GetBusbar/busbar?rev=<sha>#<sha>`;
+#   every Cargo.toml     each `busbar-* = { git = "https://git.getbusbar.dev/GetBusbar/busbar", rev = ... }`;
+#   Cargo.lock           the resolved `git+https://git.getbusbar.dev/GetBusbar/busbar?rev=<sha>#<sha>`;
 #   .github/workflows    each `uses: GetBusbar/busbar/.github/workflows/<file>@<ref>` (the reusable
 #                        workflows are taken at the pin, so the CI logic and the contract move together).
 #
@@ -29,11 +29,16 @@
 #        pin-check.sh --selftest           every refusal fires on its planted defect, offline
 set -euo pipefail
 
-SRC='https://github.com/GetBusbar/busbar'
-# Include the [patch] alias emitted and maintained by repin.sh.
-CORE_SOURCE_PATTERN='https://(www\.)?github\.com/GetBusbar/busbar(\.git)?'
-# The transport framer repos (their sources in a lock).
-FRAMER_SRC='https://github.com/GetBusbar/busbar-transport-'
+SRC='https://git.getbusbar.dev/GetBusbar/busbar'
+# Canonical Forgejo and historical Cargo aliases, including [patch] source spellings.
+SOURCE_HOST_PATTERN='https://(git\.getbusbar\.dev|(www\.)?github\.com)/GetBusbar/'
+CORE_SOURCE_PATTERN="${SOURCE_HOST_PATTERN}busbar(\\.git)?"
+FRAMER_SOURCE_PATTERN="${SOURCE_HOST_PATTERN}busbar-transport-[A-Za-z0-9_-]+(\\.git)?\\?"
+
+# Compare repo identity + query + resolved commit, independent of supported URL aliases.
+normalize_source() {
+  sed -E -e "s#${SOURCE_HOST_PATTERN}#https://git.getbusbar.dev/GetBusbar/#g" -e 's#\.git\?#?#g'
+}
 
 lock_sources() {  # lock_sources <Cargo.lock>: "<name> <source>" per package with a source
   awk '/^\[\[package\]\]/{n=""} /^name = /{gsub(/"/,"",$3); n=$3} /^source = /{gsub(/"/,"",$3); if (n!="") print n, $3}' "$1"
@@ -111,7 +116,7 @@ check() (
     fi
     # Each transport framer at the source busbar's own lock at the pin records for it.
     local framers name src want block
-    framers="$(lock_sources "$root/Cargo.lock" | grep -F " git+${FRAMER_SRC}" || true)"
+    framers="$(lock_sources "$root/Cargo.lock" | grep -E " git\+${FRAMER_SOURCE_PATTERN}" || true)"
     if [ -n "$framers" ]; then
       local busbar_root
       busbar_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -128,10 +133,10 @@ check() (
         err "Cargo.lock resolves a transport framer, and busbar's Cargo.lock at the pin is not at $block to hold it to"
       else
         while read -r name src; do
-          want="$(lock_sources "$block" | awk -v n="$name" '$1==n{print $2}' | sort -u)"
+          want="$(lock_sources "$block" | awk -v n="$name" '$1==n{print $2}' | normalize_source | sort -u)"
           if [ -z "$want" ]; then
             err "Cargo.lock resolves $name from $src, and busbar at the pin links no $name"
-          elif [ "$src" != "$want" ]; then
+          elif [ "$(printf '%s\n' "$src" | normalize_source)" != "$want" ]; then
             err "Cargo.lock resolves $name at ${src##*#}, not the rev busbar's lock at the pin records (${want##*#})"
           fi
         done <<< "$framers"
@@ -191,7 +196,22 @@ selftest() {
   mkc; printf '[workspace]\n' > "$tmp/r/Cargo.toml"; PIN_CHECK_LANG=c expect "a C plugin carrying a Cargo.toml is refused" red "carries Cargo.toml"
   mkc; sed -i.bak "s/@$pin/@$other/" "$tmp/r/.github/workflows/ci.yml"; PIN_CHECK_LANG=c expect "a C plugin's workflow off the pin is refused" red "not the pin"
   mkc; expect "a C plugin checked as Rust is refused (no Cargo.toml)" red "no Cargo.toml"
-  [ "$ran" = 15 ] || { echo "pin-check selftest: only $ran of 15 cases ran"; return 1; }
+  # Canonical/historical URLs are aliases for the same source, never an escape from pin checks.
+  local alias
+  for alias in https://github.com/GetBusbar/busbar https://www.github.com/GetBusbar/busbar.git https://git.getbusbar.dev/GetBusbar/busbar.git; do
+    mk; sed -i.bak "s#${SRC}#${alias}#g" "$tmp/r/logic/Cargo.toml" "$tmp/r/Cargo.lock"
+    expect "supported source alias $alias passes" ok
+    printf 'busbar-test-kit = { git = "%s", rev = "%s" }\n' "$SRC" "$other" >> "$tmp/r/adapter/Cargo.toml"
+    expect "mixed alias manifest mismatch is refused ($alias)" red "!= .busbar-ref"
+    mk; printf '[[package]]\nname = "busbar-contract"\nsource = "git+%s?rev=%s#%s"\n' "$alias" "$other" "$other" >> "$tmp/r/Cargo.lock"
+    expect "mixed alias locked core mismatch is refused ($alias)" red "Cargo.lock resolves"
+  done
+  mk
+  printf '[[package]]\nname = "busbar-transport-http"\nsource = "git+https://www.github.com/GetBusbar/busbar-transport-http.git?rev=%s#%s"\n' "$other" "$other" >> "$tmp/r/Cargo.lock"
+  PIN_CHECK_BUSBAR_LOCK="$tmp/busbar.lock" expect "historical framer alias matches canonical lock" ok
+  sed -i.bak "s/rev=$other#/rev=$pin#/" "$tmp/r/Cargo.lock"
+  PIN_CHECK_BUSBAR_LOCK="$tmp/busbar.lock" expect "historical framer mismatch is refused against canonical lock" red "not the rev busbar's lock at the pin records"
+  [ "$ran" = 26 ] || { echo "pin-check selftest: only $ran of 26 cases ran"; return 1; }
   [ "$rc" = 0 ] && echo "pin-check selftest: every refusal fires on its planted defect" || echo "pin-check selftest: FAILED"
   return "$rc"
 }

@@ -46,7 +46,7 @@ say() { printf 'conformance: %s\n' "$*" >&2; }
 # judge <raw verdict> <suite id> <command rc> <out file>: the verdict as published, or exit 1.
 judge() {
   python3 -I - "$@" <<'PY'
-import json, sys, os, datetime
+import json, sys, os, datetime, urllib.parse
 raw, suite, rc, out = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
 KEYS = {"schema", "suite", "standard", "plan", "spec_version", "status", "armed", "commit",
         "run_id", "evidence", "generated_at", "reason", "repo", "core_pin"}
@@ -83,11 +83,16 @@ env = os.environ
 repo = env.get("MODERNCI_REPO") or env["CONF_REPO"]
 head = env["CONF_HEAD"]
 frm = env.get("MODERNCI_FROM") or env.get("CONF_BRANCH") or "dev"
+expected = {"repo": repo, "commit": head, "core_pin": env["BUSBAR_PIN"]}
+for field, value in expected.items():
+    if field in v and v[field] != value:
+        v = refuse(f"the suite's subject {field} is {v[field]!r}, expected {value!r}")
+        break
 v["schema"] = "busbar.conformance.verdict/1"
 v["repo"] = repo
 v["commit"] = head
 v["core_pin"] = env["BUSBAR_PIN"]
-url = env["CONF_MCI_URL"] + "/move?repo=" + repo.replace("/", "%2F") + "&from=" + frm + "&head=" + head
+url = env["CONF_MCI_URL"].rstrip("/") + "/move?" + urllib.parse.urlencode({"repo": repo, "from": frm, "head": head})
 v["run_id"] = "modernci:" + repo + "@" + head + ":conformance"
 v["evidence"] = url
 v["generated_at"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -118,6 +123,9 @@ selftest() {
   expect 1 "an unknown field is red" '{"suite":"s1","status":"pass","armed":true,"x":1}' 0
   expect 1 "a fail is red" '{"suite":"s1","status":"fail","armed":true}' 1
   expect 1 "not-run is red" '{"suite":"s1","status":"not-run","armed":false}' 3
+  expect 1 "an older subject cannot be stamped current" '{"suite":"s1","status":"pass","armed":true,"commit":"2222222222222222222222222222222222222222"}' 0
+  expect 1 "another core cannot be stamped current" '{"suite":"s1","status":"pass","armed":true,"core_pin":"2222222222222222222222222222222222222222"}' 0
+  expect 1 "another repo cannot be stamped current" '{"suite":"s1","status":"pass","armed":true,"repo":"other/repo"}' 0
   judge <(printf '%s' '{"suite":"s1","status":"pass","armed":true}') s1 0 "$t/out.json" >/dev/null
   python3 -I -c 'import json,sys; v=json.load(open(sys.argv[1])); assert v["repo"]=="selftest/repo" and v["core_pin"].startswith("0000") and v["evidence"].endswith("&head=1111111111111111111111111111111111111111"), v' "$t/out.json" \
     && echo "  ok: the stamp names the repo, the commit, the core pin and the move" || { echo "selftest FAILED: the stamp"; ok=1; }
@@ -131,7 +139,10 @@ if [ ! -s "$LIST" ] || ! grep -qvE '^[[:space:]]*(#|$)' "$LIST"; then
   exit 0
 fi
 
-export CONF_HEAD="${MODERNCI_COMMIT:-$(git rev-parse HEAD)}"
+unset GIT_INDEX_FILE GIT_DIR GIT_WORK_TREE
+actual_head="$(git -C "$here" rev-parse HEAD)" || { say "the checkout has no source commit"; exit 2; }
+export CONF_HEAD="${MODERNCI_COMMIT:-$actual_head}"
+[ "$CONF_HEAD" = "$actual_head" ] || { say "the checkout is $actual_head, expected $CONF_HEAD"; exit 2; }
 # busbar itself carries no .busbar-ref: its core suites judge this checkout, so the pin is HEAD.
 if [ -f .busbar-ref ]; then
   pin="$(awk '{print $1; exit}' .busbar-ref)"
@@ -141,7 +152,19 @@ else
   pin="$CONF_HEAD"
 fi
 export BUSBAR_PIN="$pin"
-export CONF_REPO="$(git config --get remote.origin.url | sed -E 's#^(https://github.com/|git@github.com:)##; s#\.git$##')"
+# Infer only the repository path: authenticated HTTPS/SSH origins must never stamp credentials.
+export CONF_REPO="$(git config --get remote.origin.url | python3 -I -c '
+import sys, urllib.parse
+origin = sys.stdin.read().strip()
+if "://" in origin:
+    repo = urllib.parse.urlsplit(origin).path
+elif ":" in origin:
+    repo = origin.split(":", 1)[1]
+else:
+    repo = origin
+repo = repo.strip("/")
+print(repo[:-4] if repo.endswith(".git") else repo)
+')"
 export CONF_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
 export CONF_MCI_URL="$MCI_URL"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$here/target}"
@@ -153,7 +176,8 @@ if [ "$pin" = "$CONF_HEAD" ] && [ ! -f .busbar-ref ]; then
   export BUSBAR_CHECKOUT="$here"
 else
 export BUSBAR_CHECKOUT="$W/busbar"
-git init -q "$BUSBAR_CHECKOUT" && git -C "$BUSBAR_CHECKOUT" remote add origin https://github.com/GetBusbar/busbar.git \
+mkdir -p "$BUSBAR_CHECKOUT" && git -C "$BUSBAR_CHECKOUT" init -q \
+  && git -C "$BUSBAR_CHECKOUT" remote add origin https://git.getbusbar.dev/GetBusbar/busbar.git \
   && git -C "$BUSBAR_CHECKOUT" fetch -q --depth 1 --no-tags origin "$pin" \
   && git -C "$BUSBAR_CHECKOUT" -c advice.detachedHead=false checkout -q FETCH_HEAD \
   || { say "busbar $pin could not be fetched"; exit 2; }
@@ -162,16 +186,19 @@ fi
 # shellcheck source=testing/conformance/tools.sh
 . testing/conformance/tools.sh rust node || { say "the pinned tools could not be provisioned"; exit 2; }
 
+# Refuse duplicate ids before they can share a work directory and overwrite a verdict.
+awk -F '\t' '!/^[[:space:]]*(#|$)/ { if (seen[$1]++) { print "duplicate suite id: " $1 > "/dev/stderr"; bad=1 } } END { exit bad }' "$LIST" \
+  || { say "$LIST repeats a suite id"; exit 2; }
 rm -rf "$OUT"; mkdir -p "$OUT/verdicts"
 fail=0; n=0
-while IFS=$'\t' read -r id cmd; do
+while IFS=$'\t' read -r id cmd || [ -n "$id" ]; do
   case "$id" in ''|\#*) continue ;; esac
   [ -n "${cmd:-}" ] || { say "$LIST: suite $id names no command"; fail=1; continue; }
   n=$((n + 1))
   dir="$OUT/$id"; mkdir -p "$dir"
   say "=== $id: $cmd"
   start=$(date +%s); rc=0
-  ( export CONFORMANCE_SUITE="$id" CONFORMANCE_OUT="$dir"; bash -c "$cmd" ) || rc=$?
+  ( export CONFORMANCE_SUITE="$id" CONFORMANCE_OUT="$dir"; bash -c "$cmd" </dev/null ) || rc=$?
   say "$id: command exit $rc after $(( $(date +%s) - start ))s"
   if res="$(judge "$dir/verdict.json" "$id" "$rc" "$OUT/verdicts/$id.json")"; then
     say "$id: PASS"

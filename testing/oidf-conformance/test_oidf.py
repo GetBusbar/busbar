@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """python3 -I testing/oidf-conformance/test_oidf.py: the OIDF rig finds busbar's OIDC module at the
 rev busbar SHIPS (dist/default's lock, held to release/plugin-pins.tsv when that names it)."""
+import json
 import re
 import sys
 import tempfile
@@ -39,6 +40,17 @@ def checkout(lock=LOCK, pins=None):
 
 
 class ShippedPin(unittest.TestCase):
+    def test_forgejo_and_historical_github_pin_identities(self):
+        for url in ("https://git.getbusbar.dev/GetBusbar/busbar-auth-oidc",
+                    "https://github.com/GetBusbar/busbar-auth-oidc.git",
+                    "https://www.github.com/GetBusbar/busbar-auth-oidc"):
+            with self.subTest(url=url):
+                self.assertEqual(oidf.oidc_pin(str(checkout(lock=LOCK.replace(URL, url))))["url"], url)
+
+    def test_an_unrecognized_oidc_source_is_refused(self):
+        with self.assertRaises(oidf.Refused):
+            oidf.oidc_pin(str(checkout(lock=LOCK.replace(URL, "https://example.invalid/GetBusbar/busbar-auth-oidc"))))
+
     def test_the_oidc_module_is_found_at_the_shipped_pin(self):
         # The real checkout: the rev dist/default's lock pins, which is the rev its manifest names.
         manifest = (CHECKOUT / "dist" / "default" / "Cargo.toml").read_text()
@@ -73,6 +85,52 @@ class ShippedPin(unittest.TestCase):
 
 
 class Subject(unittest.TestCase):
+    def test_contract_overrides_follow_the_exact_manifest_sources(self):
+        sources = ("https://git.getbusbar.dev/GetBusbar/busbar",
+                   "https://github.com/GetBusbar/busbar.git")
+        for urls in ((sources[0],), (sources[1],), sources):
+            manifest = "\n".join(f'c{i} = {{ package = "busbar-contract", git = "{url}" }}'
+                                 for i, url in enumerate(urls))
+            args = oidf.contract_patches(manifest, "/checkout/crates/busbar-contract")
+            self.assertEqual(set(args[1::2]), {f'patch.{json.dumps(url)}.busbar-contract.path="/checkout/crates/busbar-contract"'
+                                             for url in urls})
+        with self.assertRaises(oidf.Refused):
+            oidf.contract_patches('[patch."https://example.invalid/other"]\nx = { path = "x" }', "/contract")
+
+    def record(self, result, reason=""):
+        return {"control": {"ok": True}, "subject": {"modules": [("subject", "FINISHED", result, reason)]},
+                "negative": {"modules": [(name, "FINISHED", "FAILED", "expected")
+                                         for name in oidf.NEGATIVE_MUST_FAIL]}}
+
+    def test_a_reasonless_skipped_module_is_a_failure(self):
+        for info, results in (({"result": "SKIPPED"}, []),
+                              ({"result": "SKIPPED", "summary": "  "}, [{"result": "SKIPPED", "src": "label", "msg": ""}]),
+                              ({"result": "SKIPPED"}, [{"result": "FAILURE", "msg": "another condition"}])):
+            reason = oidf.why(info, results)
+            self.assertEqual(reason, "")
+            status, armed, text = oidf.decide(self.record("SKIPPED", reason), signoff={})
+            self.assertEqual((status, armed), ("fail", True))
+            self.assertIn("0/1 pass", text)
+
+    def test_a_suite_supplied_skip_reason_is_preserved(self):
+        for info, results, expected in (({"result": "SKIPPED", "summary": "not applicable to plain OAuth"}, [], "not applicable to plain OAuth"),
+                                        ({"result": "SKIPPED"}, [{"result": "SKIPPED", "msg": "the suite's condition"}], "the suite's condition")):
+            reason = oidf.why(info, results)
+            self.assertEqual(reason, expected)
+            status, _, text = oidf.decide(self.record("SKIPPED", reason), signoff={})
+            self.assertEqual(status, "pass")
+            self.assertIn(expected, text)
+
+    def test_skip_handling_does_not_waive_warning_or_unsigned_review(self):
+        for result in ("WARNING", "REVIEW"):
+            self.assertEqual(oidf.decide(self.record(result, "suite finding"), signoff={})[0], "fail")
+
+    def test_only_the_owner_signed_page_makes_a_review_pass(self):
+        record = self.record("REVIEW", "owner must inspect this page")
+        record["subject"]["review_pages"] = {"subject": ["a" * 64]}
+        self.assertEqual(oidf.decide(record, signoff={"subject": "a" * 64})[0], "pass")
+        self.assertEqual(oidf.decide(record, signoff={"subject": "b" * 64})[0], "fail")
+
     def test_the_subject_is_the_shipped_binary(self):
         # The root workspace's `busbar` is core alone (no transport, so no listener); the binary busbar
         # ships is the distribution's, dist/default.

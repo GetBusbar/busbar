@@ -35,10 +35,16 @@
 #                                    the bytes it downloads from the release
 #   busbar.pgo-verified              pgo-build.sh's proof marker, for targets that declare pgo
 #
-# Requires: cargo, python3 (archiving and manifest reading; present on every GitHub runner), and
+# Requires: cargo, Python 3.11+ (archiving, manifest/config reading), and
 # for pgo targets everything scripts/pgo-build.sh requires.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+
+# Production owns its flag/profile channel; preserve any existing owner instrumentation by
+# refusing to silently replace a rustc wrapper. The final compiler receipt checks resolved args.
+scripts/build-provenance-gate.sh --check-build-env || exit 1
+RECEIPT_WRAPPER="$(scripts/build-provenance-gate.sh --prepare-wrapper)" || exit 1
+RECEIPT_SOURCE="$(env -u GIT_INDEX_FILE -u GIT_DIR -u GIT_WORK_TREE git -C "$(pwd)" rev-parse --verify HEAD)" || exit 1
 
 TARGET="${1:?usage: release-build.sh <target-triple> [--out-dir DIR] [--evidence-dir DIR]}"
 shift
@@ -180,7 +186,8 @@ else
   EMIT_RELOCS=""
   if [ "$SPEC_BASELINE" != "true" ]; then
     case "$SPEC_TRIPLE" in
-      *-linux-*) EMIT_RELOCS="-Clink-arg=-Wl,--emit-relocs -Cstrip=debuginfo" ;;
+      # Same ELF identity and function-only attribution posture as the PGO release arm.
+      *-linux-*) EMIT_RELOCS="-Clink-arg=-Wl,--emit-relocs -Clink-arg=-Wl,--build-id=sha1 -Cstrip=debuginfo" ;;
     esac
   fi
   # Same LSE parity as pgo-build.sh's arm (see the LSE_FLAG definition there): the default arm64
@@ -202,8 +209,10 @@ else
   case "$SPEC_TRIPLE" in
     *-windows-msvc) CRT_FLAG="-Ctarget-feature=+crt-static" ;;
   esac
+  BUSBAR_PROVENANCE_SOURCE="$RECEIPT_SOURCE" BUSBAR_PROVENANCE_WRAPPER=1 RUSTC_WRAPPER="$RECEIPT_WRAPPER" \
   RUSTFLAGS="${EMIT_RELOCS}${LSE_FLAG:+ $LSE_FLAG}${CRT_FLAG:+ $CRT_FLAG}" cargo build --release --locked --manifest-path dist/default/Cargo.toml --bin busbar --target-dir target --target "$SPEC_TRIPLE"
   BIN="target/${SPEC_TRIPLE}/release/${SPEC_EXE}"
+  scripts/build-provenance-gate.sh "$BIN" release false
 fi
 [ -f "$BIN" ] || { echo "[release-build] the build produced no binary at $BIN" >&2; exit 1; }
 
