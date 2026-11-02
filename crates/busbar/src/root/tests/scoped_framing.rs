@@ -273,6 +273,33 @@ fn begin(
     )
 }
 
+fn settled_stream(
+    framing: &mut Framing,
+    mut yielded: Yielded,
+    stream: u64,
+    host: &Host,
+) -> Yielded {
+    let started = std::time::Instant::now();
+    let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+    loop {
+        if yielded
+            .pieces
+            .iter()
+            .any(|piece| piece.stream == stream && piece.fields)
+        {
+            return yielded;
+        }
+        assert!(started.elapsed() < std::time::Duration::from_secs(5),
+            "real HTTP stream {stream} did not complete; last yield={yielded:?}; host calls={:?}; pending={:?}",
+            *host.seen.lock().unwrap(), host.pending.lock().unwrap().keys().copied().collect::<Vec<_>>());
+        match framing.poll_parked(&mut cx) {
+            Poll::Ready(Ok(next)) => yielded = next,
+            Poll::Ready(Err(error)) => panic!("actual HTTP continuation refused: {error}"),
+            Poll::Pending => std::thread::yield_now(),
+        }
+    }
+}
+
 #[test]
 fn loaded_http_streams_keep_their_scope_when_a_sibling_ticket_is_disposed() {
     use super::inbound_reload_tests::request;
@@ -289,6 +316,7 @@ fn loaded_http_streams_keep_their_scope_when_a_sibling_ticket_is_disposed() {
     let five = framing
         .ingest(&request(5, "/five", false), false)
         .expect("sibling progresses");
+    let five = settled_stream(&mut framing, five, 3, &host);
     assert!(one.pieces.is_empty() && three.pieces.is_empty());
     assert!(
         five.pieces
@@ -315,10 +343,7 @@ fn loaded_http_streams_keep_their_scope_when_a_sibling_ticket_is_disposed() {
         .collect::<Vec<_>>();
     assert_eq!(original_tickets.len(), 3);
     assert!(host.release(2));
-    let mut cx = Context::from_waker(futures::task::noop_waker_ref());
-    let Poll::Ready(Ok(middle)) = framing.poll_parked(&mut cx) else {
-        panic!("the second stream must complete independently");
-    };
+    let middle = settled_stream(&mut framing, Yielded::default(), 2, &host);
     assert!(middle
         .pieces
         .iter()
@@ -339,9 +364,7 @@ fn loaded_http_streams_keep_their_scope_when_a_sibling_ticket_is_disposed() {
         "disposing a sibling ticket cannot end the physical framing"
     );
     assert!(host.release(1));
-    let Poll::Ready(Ok(last)) = framing.poll_parked(&mut cx) else {
-        panic!("the original stream must resume");
-    };
+    let last = settled_stream(&mut framing, Yielded::default(), 1, &host);
     assert!(last
         .pieces
         .iter()
