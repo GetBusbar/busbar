@@ -279,8 +279,27 @@ fn settled_stream(
     stream: u64,
     host: &Host,
 ) -> Yielded {
+    struct ProgressWake {
+        generation: Mutex<u64>,
+        changed: Condvar,
+    }
+    impl std::task::Wake for ProgressWake {
+        fn wake(self: Arc<Self>) {
+            self.wake_by_ref();
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            *self.generation.lock().unwrap() += 1;
+            self.changed.notify_all();
+        }
+    }
+    let wake = Arc::new(ProgressWake {
+        generation: Mutex::new(0),
+        changed: Condvar::new(),
+    });
+    let waker = std::task::Waker::from(wake.clone());
     let started = std::time::Instant::now();
-    let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+    let bound = std::time::Duration::from_secs(5);
+    let mut cx = Context::from_waker(&waker);
     loop {
         if yielded
             .pieces
@@ -292,10 +311,20 @@ fn settled_stream(
         assert!(started.elapsed() < std::time::Duration::from_secs(5),
             "real HTTP stream {stream} did not complete; last yield={yielded:?}; host calls={:?}; pending={:?}",
             *host.seen.lock().unwrap(), host.pending.lock().unwrap().keys().copied().collect::<Vec<_>>());
+        let generation = *wake.generation.lock().unwrap();
         match framing.poll_parked(&mut cx) {
             Poll::Ready(Ok(next)) => yielded = next,
             Poll::Ready(Err(error)) => panic!("actual HTTP continuation refused: {error}"),
-            Poll::Pending => std::thread::yield_now(),
+            Poll::Pending => {
+                let _ = wake
+                    .changed
+                    .wait_timeout_while(
+                        wake.generation.lock().unwrap(),
+                        bound.saturating_sub(started.elapsed()),
+                        |current| *current == generation,
+                    )
+                    .unwrap();
+            }
         }
     }
 }
