@@ -77,6 +77,22 @@ async fn completed_refresh_answers_project_truthful_status_body_and_audit() {
         assert_eq!(row.principal, actor);
         assert_eq!(row.resource, module.unwrap_or("*"));
         assert_eq!(row.outcome, outcome);
+        let outcomes: Vec<_> = busbar_kernel::audit::auditlog::AUDIT_LOG
+            .list_filtered(
+                0,
+                audit_ring::MAX_AUDIT_ENTRIES,
+                Some("auth.cache_flush"),
+                None,
+            )
+            .into_iter()
+            .filter(|entry| entry.principal == actor)
+            .map(|entry| entry.outcome)
+            .collect();
+        assert_eq!(
+            outcomes,
+            vec![outcome],
+            "each flush records exactly one outcome"
+        );
     }
     *ACCEPTED.lock().unwrap() = None;
 }
