@@ -2412,10 +2412,10 @@ mod creating_authority_tests {
             let streams = wake.conn_state.streams();
             let framed = streams.get(&framed).unwrap();
             assert_eq!(framed.authority.conn.0, new_owner);
-            let Conn::Open(conn) = framed.conn else {
+            let Conn::Open(conn) = &framed.conn else {
                 panic!("actual request opened")
             };
-            assert!(actual.slab.get(new_owner, conn).is_ok());
+            assert!(actual.slab.get(new_owner, *conn).is_ok());
             drop(streams);
             for stream in [raw.0, held] {
                 let mut byte = [9];
