@@ -1241,7 +1241,8 @@ impl GovState {
 
     /// Install the AT-REST KEYS (`credentials.at_rest`, resolved at boot and on every apply or
     /// reload that declares them). `true` when they differ from the keys installed before (by
-    /// kid), which is when a reload re-wraps ([`Self::rewrap_credentials`]).
+    /// kid). Committed reloads re-wrap even unchanged keys to retry prior maintenance debt
+    /// ([`Self::rewrap_credentials`]).
     pub fn set_at_rest_keys(&self, keys: Option<super::at_rest::AtRestKeys>) -> bool {
         let kids = |k: Option<&super::at_rest::AtRestKeys>| {
             k.map(|k| (k.kid().to_string(), k.previous_kid().map(str::to_string)))
@@ -1269,7 +1270,7 @@ impl GovState {
     /// RE-WRAP every stored recoverable credential that is not sealed under the at-rest `key` yet
     /// but opens: one sealed under `previous`, or a pre-1.6.0 `v1:plain` row. Each is re-sealed
     /// under `key` and written back through the store, so `previous` can be retired once a pass
-    /// reports none pending. Run at boot, and on a reload that changes the keys.
+    /// reports none pending. Run at boot, and on every committed reload that declares the keys.
     ///
     /// Idempotent, and safe across nodes sharing the store: see [`Self::rewrap_rows`]. A row that
     /// opens under neither key is left as it is (it does not authenticate; the read WARNs).

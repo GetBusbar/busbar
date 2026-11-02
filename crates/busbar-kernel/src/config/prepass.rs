@@ -301,6 +301,7 @@ struct LiftingMap<'a, M> {
     inner: M,
     lift: &'a [(&'static str, Dest)],
     lifted: &'a mut Lifted,
+    seen_lifted: Vec<&'static str>,
 }
 
 impl<'de, M: MapAccess<'de>> MapAccess<'de> for LiftingMap<'_, M> {
@@ -324,6 +325,10 @@ impl<'de, M: MapAccess<'de>> MapAccess<'de> for LiftingMap<'_, M> {
                 Some(KeyOutcome::Forward(v)) => return Ok(Some(v)),
                 Some(KeyOutcome::Lift(returned)) => {
                     let (key, dest) = lifted.expect("a lifted key always names itself");
+                    if self.seen_lifted.contains(&key) {
+                        return Err(Self::Error::duplicate_field(key));
+                    }
+                    self.seen_lifted.push(key);
                     self.inner.next_value_seed(LiftedSeed {
                         key,
                         dest,
@@ -374,6 +379,7 @@ impl<'de> Visitor<'de> for AuthVisitor {
             inner: map,
             lift: AUTH_LIFTS,
             lifted: &mut lifted,
+            seen_lifted: Vec::new(),
         }))?;
         if let Some(policy) = lifted.auth_policy {
             auth.policy = policy;
@@ -422,6 +428,7 @@ impl<'de> Visitor<'de> for DocumentVisitor {
             inner: map,
             lift: &table,
             lifted: &mut lifted,
+            seen_lifted: Vec::new(),
         }))?;
         // A section a registered plane requires and the document omits: serde's own refusal for it,
         // raised where the frozen struct raised it (after the document's keys), so its bytes are the

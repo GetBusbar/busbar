@@ -674,6 +674,9 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // refs get. Here we enforce the structural requirement (a non-empty reference) and the grant/mode
     // rules below. Rejected at startup, never a silent degrade.
     for (hook_name, hook) in &cfg.hooks {
+        if let Err(refusal) = validate_hook_timeout(hook_name, hook.timeout_ms) {
+            errors.push(refusal);
+        }
         if hook.plugin.trim().is_empty() {
             errors.push(format!(
                 "hook '{hook_name}' names no plugin: set `module:` to a `kind: hook` plugin's \
@@ -1279,6 +1282,19 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     } else {
         Err(errors)
     }
+}
+
+/// The deadline bound shared by boot and the live hook registration/replacement surface.
+/// Zero keeps its existing meaning, the configured global default.
+pub fn validate_hook_timeout(name: &str, timeout_ms: u64) -> Result<(), String> {
+    if timeout_ms > MAX_DURATION_MS {
+        return Err(format!(
+            "hook '{name}' timeout_ms ({timeout_ms}) exceeds the maximum of {MAX_DURATION_MS} ms \
+             (30 years, the async runtime's own 'never' horizon); a larger duration overflows \
+             the clock arithmetic it feeds"
+        ));
+    }
+    Ok(())
 }
 
 /// Rule 6, for one pool's `breaker:` block: the pathological-but-parseable values that ship a

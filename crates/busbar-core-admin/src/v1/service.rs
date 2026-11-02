@@ -924,6 +924,8 @@ pub fn build_with_hook(current: &App, name: &str, cfg: HookCfg) -> Result<App, A
     // The `settings` map rides register/PUT too — cap it here so it is bounded on EVERY write path,
     // not just PATCH.
     validate_hook_settings_size(&cfg.settings)?;
+    busbar_kernel::config_validate::validate_hook_timeout(name, cfg.timeout_ms)
+        .map_err(AdminError::Validation)?;
     // A hook must name exactly one `kind: hook` plugin (the retired socket/webhook transports are
     // gone). Emptiness is the structural check here; the plugin's existence/kind is validated against
     // the registry below (register/PUT) and at the plugin pre-flight.

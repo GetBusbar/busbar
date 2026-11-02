@@ -1758,3 +1758,28 @@ async fn red_a_hook_that_declared_no_orders_is_refused_when_it_orders() {
         "a hook that declared `orders: false` and abstains is served: {abstains}"
     );
 }
+
+#[tokio::test]
+async fn an_unrepresentable_call_budget_is_broken_without_poisoning_either_hook_door() {
+    for way in [Way::Linked, Way::Dropped] {
+        let axis = rows(hook_door_plugin::conforming::door, "hook_door", way);
+        let calls = axis
+            .open(
+                NAME,
+                "hooks.gate",
+                &json!({"reject_over_messages": 3}),
+                BUDGET,
+            )
+            .unwrap();
+        let answer = calls.decide(frame(2), Duration::MAX).await;
+        assert!(
+            matches!(answer, Answered::Broken(ref why) if why.contains("clock range")),
+            "{way:?}: {answer:?}"
+        );
+        let recovered = calls.decide(frame(2), BUDGET).await;
+        assert!(
+            matches!(recovered, Answered::Answer { .. }),
+            "{way:?}: {recovered:?}"
+        );
+    }
+}
