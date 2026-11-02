@@ -985,7 +985,7 @@ fn pkce_code_challenge_is_s256_of_verifier() {
 
 #[tokio::test]
 async fn auth_token_bypasses_middleware_exact_match() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
 
     let mut cfg = busbar_kernel::config::AuthCfg::default_none();
     cfg.chain = vec![busbar_kernel::config::AuthChainEntry::bare("keys")];
@@ -1039,7 +1039,7 @@ async fn auth_token_bypasses_middleware_exact_match() {
 
 #[tokio::test]
 async fn auth_token_absent_from_admin_router() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let app = busbar_kernel_testkit::test_support::TestApp::new()
         .admin_chain(vec![])
         .public_url("https://busbar.example.com")
@@ -1081,7 +1081,7 @@ async fn auth_token_absent_from_admin_router() {
 
 #[tokio::test]
 async fn auth_token_bypass_does_not_apply_on_the_admin_router() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let app = busbar_kernel_testkit::test_support::TestApp::new()
         .keys_chain()
         .public_url("https://busbar.example.com")
@@ -1123,7 +1123,7 @@ async fn auth_token_bypass_does_not_apply_on_the_admin_router() {
 
 #[tokio::test]
 async fn core_route_bypass_is_exact_in_path_and_method() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let mut cfg = busbar_kernel::config::AuthCfg::default_none();
     cfg.chain = vec![busbar_kernel::config::AuthChainEntry::bare("keys")];
     let auth =
@@ -1744,7 +1744,7 @@ fn golden_cell(name: &str) -> serde_json::Value {
 
 #[tokio::test]
 async fn the_hosted_login_page_moved_with_its_1_5_5_bytes() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let golden = golden_cell("http.crosscut__auth-token__GET-none.json");
     let app = busbar_kernel_testkit::test_support::TestApp::new().build();
     let (base, handle) = serve(app).await;

@@ -112,7 +112,7 @@ fn served_paths(app: &busbar_kernel::state::App) -> std::collections::BTreeSet<S
 
 #[test]
 fn without_the_config_block_the_plane_serves_nothing() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let app = TestApp::new().build();
     assert!(
         oauth_as_plane(&app).is_none(),
@@ -140,7 +140,7 @@ fn without_the_config_block_the_plane_serves_nothing() {
 
 #[test]
 fn the_inventory_is_exactly_what_the_mount_registers() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let without = served_paths(&TestApp::new().build());
 
     let block = cfg();
@@ -182,7 +182,7 @@ fn the_inventory_is_exactly_what_the_mount_registers() {
 
 #[test]
 fn the_fapi2_posture_adds_exactly_the_par_endpoint() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let without = served_paths(&TestApp::new().build());
     let plain = served_paths(&TestApp::new().oauth_as(&cfg()).build());
 
@@ -244,7 +244,7 @@ fn an_absent_block_resolves_to_no_authorization_server() {
 
 #[test]
 fn the_mounted_surface_and_the_app_state_cannot_disagree() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let app = TestApp::new().oauth_as(&cfg()).build();
     let plane: Arc<crate::plane::AsPlane> = oauth_as_plane(&app).expect("configured, so present");
     let served = served_paths(&app);
