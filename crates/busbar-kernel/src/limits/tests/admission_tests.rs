@@ -35,10 +35,17 @@ fn denied_entry_increments_the_gate_counter() {
     let _held = gate.try_enter().expect("first entry admits");
     assert!(gate.try_enter().is_none(), "second entry must be denied");
 
-    let out = crate::snapshot::render();
+    let snapshot = crate::snapshot::snapshot().expect("the real recorder is installed");
     assert!(
-        out.contains("busbar_admission_denied_total{gate=\"test-denied-counter\"} 1"),
-        "a denied try_enter must increment the per-gate denied counter; got:\n{out}"
+        snapshot
+            .iter()
+            .flat_map(|family| family.samples.iter())
+            .any(|sample| {
+                sample.name == "busbar_admission_denied_total"
+                    && sample.labels == [("gate".to_string(), "test-denied-counter".to_string())]
+                    && sample.value == "1"
+            }),
+        "a denied try_enter must increment the per-gate denied counter; got: {snapshot:?}"
     );
 }
 
