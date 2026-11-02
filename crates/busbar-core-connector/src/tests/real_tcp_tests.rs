@@ -209,7 +209,8 @@ fn tls_listener(
 }
 
 fn upgraded_echo(connector: &Connector, target: &str) -> Result<Vec<u8>, ConnError> {
-    connector.declare(
+    DeclaredConns::declare(
+        connector,
         OWNER,
         NeedId(0),
         &need("tcp", EGRESS_OPERATOR_INFRASTRUCTURE),
@@ -310,7 +311,14 @@ fn the_real_tcp_carrier_obeys_the_production_destination_guard() {
     let mut sequence = 0;
     let mut open = |class, target: &str| -> Result<ConnId, ConnError> {
         sequence += 1;
-        connector.declare(OWNER, NeedId(sequence), &need("tcp", class), None, None)?;
+        DeclaredConns::declare(
+            &connector,
+            OWNER,
+            NeedId(sequence),
+            &need("tcp", class),
+            None,
+            None,
+        )?;
         settle(|| {
             connector.open(
                 OWNER,
@@ -382,15 +390,15 @@ fn the_real_http_framer_delivers_one_head_and_the_exact_body() {
         true,
     );
     assert!(connector.serves_scheme("http"));
-    connector
-        .declare(
-            OWNER,
-            NeedId(0),
-            &need("http", EGRESS_LOOPBACK_ALLOWED),
-            None,
-            None,
-        )
-        .unwrap();
+    DeclaredConns::declare(
+        &connector,
+        OWNER,
+        NeedId(0),
+        &need("http", EGRESS_LOOPBACK_ALLOWED),
+        None,
+        None,
+    )
+    .unwrap();
     let target = format!("http://{address}/v1/probe");
     let id = settle(|| {
         connector.open(
