@@ -21,13 +21,13 @@
 //! [`every_linked_door_plane_is_driven`] keeps the set whole: a door this build links (a plane
 //! flipped onto the driver) with no driver here fails until it has one.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use axum::http::{HeaderMap, StatusCode};
 use busbar_contract::secret_ref::{SecretRef, SECRET_MODULE_FILE};
 
 use crate::root::door_steps::tests::tool_door::{
-    send_headed, surface, three_tools, tool_digest, tool_server_listing, try_rig_tools, Rig, CALL,
+    send_headed, surface, three_tools, tool_digest, try_rig_tools, Rig, TlsToolServer, CALL,
 };
 use crate::root::serve::planes_tests::PUBLISHING;
 
@@ -171,26 +171,30 @@ fn program_section(secret: &SecretRef) -> serde_yaml::Value {
     serde_yaml::Value::Mapping(tools)
 }
 
-/// The tool door's `tools:` section: one member, `fs`, at loopback `port`, bound by a token
-/// exchange whose subject token is the reference `secret`.
-fn exchange_section(port: u16, secret: &SecretRef) -> serde_yaml::Value {
-    let mut tools: serde_yaml::Value = serde_yaml::from_str(&format!(
-        "fs:\n  url: \"http://127.0.0.1:{port}/rpc\"\n  \
-         pin: {{ mechanism: pinned_pubkey, key: \"sha256/K=\" }}\n  \
-         allow_private: true\n  aud: \"http://127.0.0.1:{port}\"\n  \
-         token_exchange:\n    token_url: \"https://as.example/token\"\n  \
-         tools_allow:\n    read_file: {{ schema_hash: \"{}\" }}\n    \
-         write_file: {{ schema_hash: \"{}\" }}\n    stat: {{ schema_hash: \"{}\" }}\n",
-        tool_digest(),
+/// The tool door's `tools:` section: one authenticated HTTPS member, `fs`, bound by a token
+/// exchange whose subject token is the reference `secret`. Keep all three explicit approvals.
+fn exchange_section(server: &TlsToolServer, secret: &SecretRef) -> serde_yaml::Value {
+    let mut tools = server.section();
+    tools["fs"]["allow_private"] = true.into();
+    tools["fs"]["aud"] = format!("https://127.0.0.1:{}", server.port).into();
+    tools["fs"]["tools_allow"]["write_file"] = serde_yaml::from_str(&format!(
+        "{{ schema_hash: \"{}\" }}",
         surface("write_digest"),
+    ))
+    .expect("an approval");
+    tools["fs"]["tools_allow"]["stat"] = serde_yaml::from_str(&format!(
+        "{{ schema_hash: \"{}\" }}",
         surface("stat_digest"),
     ))
-    .expect("a section");
-    tools["fs"]["token_exchange"]["subject_token"] = serde_yaml::to_value(serde_json::json!({
-        "module": secret.module,
-        "settings": secret.settings,
+    .expect("an approval");
+    tools["fs"]["token_exchange"] = serde_yaml::to_value(serde_json::json!({
+        "token_url": "https://as.example/token",
+        "subject_token": {
+            "module": secret.module,
+            "settings": secret.settings,
+        },
     }))
-    .expect("a reference");
+    .expect("an exchange with a reference");
     tools
 }
 
@@ -198,7 +202,7 @@ fn exchange_section(port: u16, secret: &SecretRef) -> serde_yaml::Value {
 async fn call(rig: &Rig) -> (StatusCode, HeaderMap, Vec<u8>) {
     send_headed(
         &rig.router,
-        Some(&rig.token),
+        Some(&rig.bound_token()),
         CALL,
         "tools/call",
         Some("fs_read_file"),
@@ -332,8 +336,8 @@ async fn tool_door_an_unresolved_subject_token_refuses_the_boot_naming_its_sourc
     let instance = "tools-exchange-compose";
     let secret = SecretRef::env(unset("TOOLS_EXCHANGE_COMPOSE"));
     refused_naming_its_source(&secret);
-    let (port, _heard) = tool_server_listing(Arc::new(std::sync::Mutex::new(three_tools()))).await;
-    let Err(refusal) = try_rig_tools(instance, port, exchange_section(port, &secret)) else {
+    let mut server = TlsToolServer::listing(Arc::new(Mutex::new(three_tools()))).await;
+    let Err(refusal) = server.try_rig(instance, exchange_section(&server, &secret), &|app| app) else {
         panic!("a subject token that does not resolve refuses the composition");
     };
     println!("SECRET-SOURCE {instance}: compose refused (operator): {refusal}");
@@ -341,6 +345,11 @@ async fn tool_door_an_unresolved_subject_token_refuses_the_boot_naming_its_sourc
         !source_in(&refusal, &secret).is_empty(),
         "the operator's refusal names the source: {refusal}"
     );
+    assert!(
+        server.heard.try_recv().is_err(),
+        "the unresolved subject token refuses before any upstream request"
+    );
+    server.close().await;
 }
 
 /// THE TOOL DOOR, ACROSS AN APPLY: a token-exchange member served while its subject token resolved, the
@@ -353,9 +362,8 @@ async fn tool_door_a_subject_token_gone_by_an_apply_reaches_the_caller_without_i
     let var = unset("TOOLS_EXCHANGE_APPLY");
     std::env::set_var(&var, "busbar-own-subject-token");
     let secret = SecretRef::env(&var);
-    let (port, _heard) = tool_server_listing(Arc::new(std::sync::Mutex::new(three_tools()))).await;
-    let rig =
-        try_rig_tools(instance, port, exchange_section(port, &secret)).expect("the door composes");
+    let server = TlsToolServer::listing(Arc::new(Mutex::new(three_tools()))).await;
+    let rig = server.rig(instance, exchange_section(&server, &secret), &|app| app);
     let (status, _, body) = call(&rig).await;
     assert_eq!(
         status,
@@ -363,6 +371,9 @@ async fn tool_door_a_subject_token_gone_by_an_apply_reaches_the_caller_without_i
         "served while it resolves: {}",
         String::from_utf8_lossy(&body)
     );
+    let answer: serde_json::Value = serde_json::from_slice(&body).expect("a JSON-RPC answer");
+    assert_eq!(answer["id"], 30);
+    assert_eq!(answer["result"]["content"][0]["text"], "from the server");
     let before = rig.live.current().generation;
     std::env::remove_var(&var);
     refused_naming_its_source(&secret);
@@ -382,6 +393,7 @@ async fn tool_door_a_subject_token_gone_by_an_apply_reaches_the_caller_without_i
     assert_eq!(answer["id"], 30);
     assert_eq!(answer["result"]["content"][0]["text"], "from the server");
     assert_clean(instance, status, &headers, &body, &secret);
+    server.close().await;
 }
 
 /// DECISIONS, COMPOSE TIME: a provider whose `api_key` does not resolve refuses the boot with the

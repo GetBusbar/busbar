@@ -2697,22 +2697,24 @@ mod tools_door {
 
     use crate::root::door_steps::tests::hook_parity;
     use crate::root::door_steps::tests::tool_door::{
-        protocol_version, rig_tools, send_as, send_headed, sentence, surface, three_tools,
-        tool_digest, tool_listing, tool_server, tool_server_listing, tool_server_replying, Footing,
-        Rig, STALL, TOOL_DESCRIPTION,
+        protocol_version, send_as, send_headed, sentence, surface, three_tools, tool_digest,
+        tool_listing, Rig, TlsToolServer, STALL, TOOL_DESCRIPTION,
     };
     use crate::root::serve::planes_tests::PUBLISHING;
 
     type Heard = tokio::sync::mpsc::UnboundedReceiver<String>;
 
-    /// The pin every test registration carries (the door requires one).
-    const PIN: &str = "pin: { mechanism: pinned_pubkey, key: \"sha256/K=\" }";
+    /// Keep the TLS listener alive while retaining the existing wire receiver oracles.
+    fn take_heard(server: &mut TlsToolServer) -> Heard {
+        std::mem::replace(&mut server.heard, tokio::sync::mpsc::unbounded_channel().1)
+    }
 
-    /// A `tools:` section of one registration `server` on loopback `port`, `extra` (indented YAML
-    /// lines) beside its pin, the one approved tool.
-    fn registration(server: &str, port: u16, extra: &str) -> serde_yaml::Value {
+    /// One registration with the real leaf's SPKI pin, retaining its explicit approvals.
+    fn registration(server: &str, peer: &TlsToolServer, extra: &str) -> serde_yaml::Value {
+        let port = peer.port;
+        let pin = &peer.pin;
         serde_yaml::from_str(&format!(
-            "{server}:\n  url: \"http://127.0.0.1:{port}/rpc\"\n  {PIN}\n{extra}  \
+            "{server}:\n  url: \"https://127.0.0.1:{port}/rpc\"\n  pin: {{ mechanism: cert_spki, key: \"{pin}\" }}\n{extra}  \
              tools_allow:\n    read_file: {{ schema_hash: \"{}\" }}\n",
             tool_digest()
         ))
@@ -2787,8 +2789,8 @@ mod tools_door {
     }
 
     /// A tool server answering its tool list as approved and every `tools/call` with `status`.
-    async fn answering_calls_with(status: u16) -> (u16, Heard) {
-        tool_server_replying(Arc::new(move |r: &str| {
+    async fn answering_calls_with(status: u16) -> TlsToolServer {
+        TlsToolServer::replying(Arc::new(move |r: &str| {
             if r.contains("\"tools/list\"") {
                 let list = serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"tools": tool_listing()}});
                 (200, list.to_string())
@@ -2834,7 +2836,7 @@ mod tools_door {
     /// stays closed — the last of them being the one that trips it.
     async fn fail_to_the_trip(rig: &Rig, tool: &str, heard: &mut Heard, from: usize) {
         for n in from..trip_calls() {
-            let (status, answer) = call(rig, &rig.token, tool, serde_json::json!({})).await;
+            let (status, answer) = call(rig, &rig.bound_token(), tool, serde_json::json!({})).await;
             assert_ne!(status, StatusCode::OK, "call {n}: {answer}");
             assert!(
                 drain(heard).contains(&"call"),
@@ -2854,21 +2856,33 @@ mod tools_door {
         busbar_kernel_testkit::test_support::metrics::init();
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-trip";
-        let (bad, mut bad_heard) = answering_calls_with(503).await;
-        let (good, mut good_heard) = tool_server().await;
-        let mut tools = registration("tripper", bad, "");
-        let healthy = registration("healthy", good, "");
+        let mut bad_server = answering_calls_with(503).await;
+        let mut bad_heard = take_heard(&mut bad_server);
+        let mut good_server = TlsToolServer::new().await;
+        let mut good_heard = take_heard(&mut good_server);
+        let mut tools = registration("tripper", &bad_server, "");
+        let healthy = registration("healthy", &good_server, "");
         tools
             .as_mapping_mut()
             .expect("a mapping")
             .extend(healthy.as_mapping().expect("a mapping").clone());
-        let rig = rig_tools(instance, bad, tools, &|app| app);
+        let rig = bad_server.rig_with_footing(
+            instance,
+            tools,
+            bad_server.footing_with_peers(&[&good_server]),
+            &|app| app,
+        );
         let cell = lane(&rig, "tripper");
         let failures = || scraped("busbar_upstream_failures_total", &[("lane", cell.as_str())]);
         let before = failures();
 
-        let (status, answer) =
-            call(&rig, &rig.token, "tripper_read_file", serde_json::json!({})).await;
+        let (status, answer) = call(
+            &rig,
+            &rig.bound_token(),
+            "tripper_read_file",
+            serde_json::json!({}),
+        )
+        .await;
         assert_ne!(status, StatusCode::OK, "{answer}");
         assert_eq!(
             drain(&mut bad_heard),
@@ -2881,8 +2895,13 @@ mod tools_door {
         );
         fail_to_the_trip(&rig, "tripper_read_file", &mut bad_heard, 1).await;
 
-        let (status, answer) =
-            call(&rig, &rig.token, "tripper_read_file", serde_json::json!({})).await;
+        let (status, answer) = call(
+            &rig,
+            &rig.bound_token(),
+            "tripper_read_file",
+            serde_json::json!({}),
+        )
+        .await;
         assert_eq!(status.as_u16(), 503, "{answer}");
         assert_eq!(
             answer["error"]["data"]["reason"], "upstream_unavailable",
@@ -2893,8 +2912,13 @@ mod tools_door {
             "the open cell kept the call off the wire"
         );
 
-        let (status, answer) =
-            call(&rig, &rig.token, "healthy_read_file", serde_json::json!({})).await;
+        let (status, answer) = call(
+            &rig,
+            &rig.bound_token(),
+            "healthy_read_file",
+            serde_json::json!({}),
+        )
+        .await;
         assert_eq!(
             status,
             StatusCode::OK,
@@ -2915,14 +2939,22 @@ mod tools_door {
     async fn a_tripped_tool_server_is_refused_before_dispatch_without_waiting() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-fastfail";
-        let (port, mut heard) = answering_calls_with(503).await;
-        let rig = rig_tools(instance, port, registration("flaky", port, ""), &|app| app);
+        let mut port_server = answering_calls_with(503).await;
+        let mut heard = take_heard(&mut port_server);
+        let rig = port_server.rig(instance, registration("flaky", &port_server, ""), &|app| {
+            app
+        });
         // The failures that open the cell: each reached the server.
         fail_to_the_trip(&rig, "flaky_read_file", &mut heard, 0).await;
 
         let started = Instant::now();
-        let (status, answer) =
-            call(&rig, &rig.token, "flaky_read_file", serde_json::json!({})).await;
+        let (status, answer) = call(
+            &rig,
+            &rig.bound_token(),
+            "flaky_read_file",
+            serde_json::json!({}),
+        )
+        .await;
         let took = started.elapsed();
         // The served engine's tripped-server refusal: `503`, `-32030`, `upstream_unavailable`.
         assert_eq!(status.as_u16(), 503, "{answer}");
@@ -2957,22 +2989,47 @@ mod tools_door {
     async fn a_tripped_pool_member_reroutes_the_next_call_to_its_twin_through_the_walk() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-reroute";
-        let (bad, mut bad_heard) = answering_calls_with(503).await;
-        let (good, mut good_heard) = tool_server().await;
+        let mut bad_server = answering_calls_with(503).await;
+        let bad = bad_server.port;
+        let bad_pin = bad_server.pin.clone();
+        let mut bad_heard = take_heard(&mut bad_server);
+        let mut good_server = TlsToolServer::new().await;
+        let good = good_server.port;
+        let good_pin = good_server.pin.clone();
+        let mut good_heard = take_heard(&mut good_server);
         let d = tool_digest();
         let tools: serde_yaml::Value = serde_yaml::from_str(&format!(
-            "fs:\n  url: \"http://127.0.0.1:{bad}/rpc\"\n  {PIN}\n  \
+            "fs:\n  url: \"https://127.0.0.1:{bad}/rpc\"\n  pin: {{ mechanism: cert_spki, key: \"{bad_pin}\" }}\n  \
              tools_allow:\n    read_file: {{ schema_hash: \"{d}\" }}\n\
-             fs2:\n  url: \"http://127.0.0.1:{good}/rpc\"\n  {PIN}\n  \
+             fs2:\n  url: \"https://127.0.0.1:{good}/rpc\"\n  pin: {{ mechanism: cert_spki, key: \"{good_pin}\" }}\n  \
              tools_allow:\n    read_file: {{ schema_hash: \"{d}\" }}\n"
         ))
         .expect("a section");
         let tools = pooled(tools, "twins", &["fs", "fs2"], &["read_file"]);
-        let rig = rig_tools(instance, bad, tools, &|app| app);
+        let rig = bad_server.rig_with_footing(
+            instance,
+            tools,
+            bad_server.footing_with_peers(&[&good_server]),
+            &|app| app,
+        );
+        assert_eq!(
+            rig.app
+                .planes
+                .admission_for(&crate::root::door_steps::tests::tool_door::endpoint())
+                .map(|admission| admission.audience.as_str()),
+            rig.audience.as_deref(),
+            "the pool fixture mounts the same audience its actual served door declared"
+        );
         let calls = |heard: &mut Heard| drain(heard).iter().filter(|w| **w == "call").count();
 
         // The first call: the primary is tried first, and the call fails over to its twin.
-        let (status, answer) = call(&rig, &rig.token, "fs_read_file", serde_json::json!({})).await;
+        let (status, answer) = call(
+            &rig,
+            &rig.bound_token(),
+            "fs_read_file",
+            serde_json::json!({}),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "the twin answered: {answer}");
         assert_eq!(
             answer["result"]["content"][0]["text"], "from the server",
@@ -2992,8 +3049,13 @@ mod tools_door {
         let mut failed = 1;
         let mut sent = 1;
         while failed < trip_calls() {
-            let (status, answer) =
-                call(&rig, &rig.token, "fs_read_file", serde_json::json!({})).await;
+            let (status, answer) = call(
+                &rig,
+                &rig.bound_token(),
+                "fs_read_file",
+                serde_json::json!({}),
+            )
+            .await;
             sent += 1;
             assert_eq!(status, StatusCode::OK, "call {sent}: {answer}");
             assert_eq!(
@@ -3012,8 +3074,13 @@ mod tools_door {
 
         // Tripped: the primary's open cell keeps every next call off it.
         for n in 0..3 {
-            let (status, answer) =
-                call(&rig, &rig.token, "fs_read_file", serde_json::json!({})).await;
+            let (status, answer) = call(
+                &rig,
+                &rig.bound_token(),
+                "fs_read_file",
+                serde_json::json!({}),
+            )
+            .await;
             sent += 1;
             assert_eq!(status, StatusCode::OK, "{answer}");
             assert_eq!(
@@ -3072,23 +3139,47 @@ mod tools_door {
     async fn a_pool_serves_every_call_from_its_primary_while_it_is_healthy() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-in-order";
-        let (primary, mut primary_heard) = tool_server().await;
-        let (twin, mut twin_heard) = tool_server().await;
+        let mut primary_server = TlsToolServer::new().await;
+        let primary = primary_server.port;
+        let primary_pin = primary_server.pin.clone();
+        let mut primary_heard = take_heard(&mut primary_server);
+        let mut twin_server = TlsToolServer::new().await;
+        let twin = twin_server.port;
+        let twin_pin = twin_server.pin.clone();
+        let mut twin_heard = take_heard(&mut twin_server);
         let d = tool_digest();
         let tools: serde_yaml::Value = serde_yaml::from_str(&format!(
-            "fs:\n  url: \"http://127.0.0.1:{primary}/rpc\"\n  {PIN}\n  \
+            "fs:\n  url: \"https://127.0.0.1:{primary}/rpc\"\n  pin: {{ mechanism: cert_spki, key: \"{primary_pin}\" }}\n  \
              tools_allow:\n    read_file: {{ schema_hash: \"{d}\" }}\n\
-             fs2:\n  url: \"http://127.0.0.1:{twin}/rpc\"\n  {PIN}\n  \
+             fs2:\n  url: \"https://127.0.0.1:{twin}/rpc\"\n  pin: {{ mechanism: cert_spki, key: \"{twin_pin}\" }}\n  \
              tools_allow:\n    read_file: {{ schema_hash: \"{d}\" }}\n"
         ))
         .expect("a section");
         let tools = pooled(tools, "twins", &["fs", "fs2"], &["read_file"]);
-        let rig = rig_tools(instance, primary, tools, &|app| app);
+        let rig = primary_server.rig_with_footing(
+            instance,
+            tools,
+            primary_server.footing_with_peers(&[&twin_server]),
+            &|app| app,
+        );
+        assert_eq!(
+            rig.app
+                .planes
+                .admission_for(&crate::root::door_steps::tests::tool_door::endpoint())
+                .map(|admission| admission.audience.as_str()),
+            rig.audience.as_deref(),
+            "the pool fixture mounts the same audience its actual served door declared"
+        );
         let calls = |heard: &mut Heard| drain(heard).iter().filter(|w| **w == "call").count();
         let sent = 4;
         for n in 1..=sent {
-            let (status, answer) =
-                call(&rig, &rig.token, "fs_read_file", serde_json::json!({})).await;
+            let (status, answer) = call(
+                &rig,
+                &rig.bound_token(),
+                "fs_read_file",
+                serde_json::json!({}),
+            )
+            .await;
             assert_eq!(status, StatusCode::OK, "call {n}: {answer}");
             assert_eq!(
                 answer["result"]["content"][0]["text"], "from the server",
@@ -3118,7 +3209,7 @@ mod tools_door {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-one-blip";
         let failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (port, mut heard) = tool_server_replying(Arc::new(move |r: &str| {
+        let mut port_server = TlsToolServer::replying(Arc::new(move |r: &str| {
             if r.contains("\"tools/list\"") {
                 let list = serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"tools": tool_listing()}});
                 (200, list.to_string())
@@ -3133,10 +3224,16 @@ mod tools_door {
             }
         }))
         .await;
-        let rig = rig_tools(instance, port, registration("blip", port, ""), &|app| app);
+        let mut heard = take_heard(&mut port_server);
+        let rig = port_server.rig(instance, registration("blip", &port_server, ""), &|app| app);
 
-        let (status, answer) =
-            call(&rig, &rig.token, "blip_read_file", serde_json::json!({})).await;
+        let (status, answer) = call(
+            &rig,
+            &rig.bound_token(),
+            "blip_read_file",
+            serde_json::json!({}),
+        )
+        .await;
         assert_ne!(
             status,
             StatusCode::OK,
@@ -3147,8 +3244,13 @@ mod tools_door {
             "the failing call went out"
         );
 
-        let (status, answer) =
-            call(&rig, &rig.token, "blip_read_file", serde_json::json!({})).await;
+        let (status, answer) = call(
+            &rig,
+            &rig.bound_token(),
+            "blip_read_file",
+            serde_json::json!({}),
+        )
+        .await;
         assert_eq!(
             status,
             StatusCode::OK,
@@ -3174,7 +3276,7 @@ mod tools_door {
     async fn a_stalled_tool_server_is_answered_within_its_timeout() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-stall";
-        let (port, mut heard) = tool_server_replying(Arc::new(|r: &str| {
+        let mut port_server = TlsToolServer::replying(Arc::new(|r: &str| {
             if r.contains("\"tools/list\"") {
                 let list = serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"tools": tool_listing()}});
                 (200, list.to_string())
@@ -3183,17 +3285,22 @@ mod tools_door {
             }
         }))
         .await;
-        let rig = rig_tools(
+        let mut heard = take_heard(&mut port_server);
+        let rig = port_server.rig(
             instance,
-            port,
-            registration("stall", port, "  timeout: 2s\n"),
+            registration("stall", &port_server, "  timeout: 2s\n"),
             &|app| app,
         );
 
         let started = Instant::now();
         let (status, answer) = tokio::time::timeout(
             Duration::from_secs(20),
-            call(&rig, &rig.token, "stall_read_file", serde_json::json!({})),
+            call(
+                &rig,
+                &rig.bound_token(),
+                "stall_read_file",
+                serde_json::json!({}),
+            ),
         )
         .await
         .expect("the stalled call was answered: no hung seam");
@@ -3235,7 +3342,7 @@ mod tools_door {
     async fn a_stalled_tool_server_with_no_timeout_is_answered_at_the_default() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-stall-default";
-        let (port, mut heard) = tool_server_replying(Arc::new(|r: &str| {
+        let mut port_server = TlsToolServer::replying(Arc::new(|r: &str| {
             if r.contains("\"tools/list\"") {
                 let list = serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"tools": tool_listing()}});
                 (200, list.to_string())
@@ -3244,12 +3351,20 @@ mod tools_door {
             }
         }))
         .await;
-        let rig = rig_tools(instance, port, registration("stall", port, ""), &|app| app);
+        let mut heard = take_heard(&mut port_server);
+        let rig = port_server.rig(instance, registration("stall", &port_server, ""), &|app| {
+            app
+        });
 
         let started = Instant::now();
         let (status, answer) = tokio::time::timeout(
             Duration::from_secs(60),
-            call(&rig, &rig.token, "stall_read_file", serde_json::json!({})),
+            call(
+                &rig,
+                &rig.bound_token(),
+                "stall_read_file",
+                serde_json::json!({}),
+            ),
         )
         .await
         .expect("the stalled call was answered at the default, not the walk's 120 s budget");
@@ -3279,64 +3394,22 @@ mod tools_door {
     async fn a_failed_dial_keeps_the_not_dispatched_words() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-dial-failed";
-        // One connection served (the verification's tool list), then the port is closed.
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("a loopback port");
-        let port = listener.local_addr().expect("its address").port();
-        tokio::spawn(async move {
-            use tokio::io::{AsyncReadExt, AsyncWriteExt};
-            let Ok((mut socket, _)) = listener.accept().await else {
-                return;
-            };
-            drop(listener);
-            let mut got = Vec::new();
-            let mut buf = vec![0u8; 16 * 1024];
-            loop {
-                let Ok(n) = socket.read(&mut buf).await else {
-                    return;
-                };
-                if n == 0 {
-                    return;
-                }
-                got.extend_from_slice(&buf[..n]);
-                let text = String::from_utf8_lossy(&got).to_string();
-                if let Some(at) = text.find("\r\n\r\n") {
-                    let length = text[..at]
-                        .lines()
-                        .find_map(|l| {
-                            let (name, value) = l.split_once(':')?;
-                            name.eq_ignore_ascii_case("content-length")
-                                .then(|| value.trim().parse::<usize>().ok())
-                                .flatten()
-                        })
-                        .unwrap_or(0);
-                    if got.len() >= at + 4 + length {
-                        break;
-                    }
-                }
-            }
-            let list =
-                serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"tools": tool_listing()}})
-                    .to_string();
-            let reply = format!(
-                "HTTP/1.1 200 X\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
-                 connection: close\r\n\r\n{list}",
-                list.len()
-            );
-            let _ = socket.write_all(reply.as_bytes()).await;
-            let _ = socket.shutdown().await;
-        });
-        let rig = rig_tools(
+        // Verification is served over TLS, then the listener closes before the call's dial.
+        let port_server = TlsToolServer::once().await;
+        let rig = port_server.rig(
             instance,
-            port,
-            registration("gone", port, "  timeout: 2s\n"),
+            registration("gone", &port_server, "  timeout: 2s\n"),
             &|app| app,
         );
 
         let (status, answer) = tokio::time::timeout(
             Duration::from_secs(20),
-            call(&rig, &rig.token, "gone_read_file", serde_json::json!({})),
+            call(
+                &rig,
+                &rig.bound_token(),
+                "gone_read_file",
+                serde_json::json!({}),
+            ),
         )
         .await
         .expect("answered");
@@ -3359,11 +3432,18 @@ mod tools_door {
     async fn a_rewrite_hook_rewrites_the_arguments_on_the_composed_door() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-tap";
-        let (port, mut heard) = tool_server().await;
+        let mut port_server = TlsToolServer::new().await;
+        let mut heard = take_heard(&mut port_server);
         let arguments = serde_json::json!({ "path": "/home/caller/secret.txt" });
 
-        let control = hook_parity::rig(instance, port, Vec::new());
-        let (status, _) = call(&control, &control.token, "fs_read_file", arguments.clone()).await;
+        let control = hook_parity::rig(instance, &port_server, Vec::new());
+        let (status, _) = call(
+            &control,
+            &control.bound_token(),
+            "fs_read_file",
+            arguments.clone(),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         let sent = hook_parity::calls_heard(&mut heard);
         assert!(
@@ -3374,7 +3454,7 @@ mod tools_door {
 
         let tapped = hook_parity::rig(
             instance,
-            port,
+            &port_server,
             vec![(
                 "rewrite",
                 hook_parity::gate(
@@ -3387,7 +3467,8 @@ mod tools_door {
                 ),
             )],
         );
-        let (status, answer) = call(&tapped, &tapped.token, "fs_read_file", arguments).await;
+        let (status, answer) =
+            call(&tapped, &tapped.bound_token(), "fs_read_file", arguments).await;
         assert_eq!(status, StatusCode::OK, "{answer}");
         assert_eq!(
             answer["result"]["content"][0]["text"], "from the server",
@@ -3415,10 +3496,11 @@ mod tools_door {
     async fn a_gate_hook_refuses_the_call_before_it_is_dispatched() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-gate";
-        let (port, mut heard) = tool_server().await;
+        let mut port_server = TlsToolServer::new().await;
+        let mut heard = take_heard(&mut port_server);
         let gated = hook_parity::rig(
             instance,
-            port,
+            &port_server,
             vec![(
                 "closed",
                 hook_parity::gate(
@@ -3431,7 +3513,7 @@ mod tools_door {
         );
         let (status, answer) = call(
             &gated,
-            &gated.token,
+            &gated.bound_token(),
             "fs_read_file",
             serde_json::json!({ "path": "a" }),
         )
@@ -3474,16 +3556,24 @@ mod tools_door {
     async fn every_call_is_chained_on_the_call_log_and_the_kernels_audit_chain() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-audit";
-        let (port, mut heard) = tool_server().await;
-        let rig = rig_tools(instance, port, registration("audited", port, ""), &|app| {
-            app
-        });
+        let mut port_server = TlsToolServer::new().await;
+        let mut heard = take_heard(&mut port_server);
+        let rig = port_server.rig(
+            instance,
+            registration("audited", &port_server, ""),
+            &|app| app,
+        );
         let upstream_calls =
             |heard: &mut Heard| drain(heard).iter().filter(|w| **w == "call").count();
 
         for _ in 0..2 {
-            let (status, answer) =
-                call(&rig, &rig.token, "audited_read_file", serde_json::json!({})).await;
+            let (status, answer) = call(
+                &rig,
+                &rig.bound_token(),
+                "audited_read_file",
+                serde_json::json!({}),
+            )
+            .await;
             assert_eq!(status, StatusCode::OK, "{answer}");
             assert_eq!(
                 upstream_calls(&mut heard),
@@ -3491,7 +3581,13 @@ mod tools_door {
                 "one served call is exactly one upstream leg"
             );
         }
-        let (status, _) = call(&rig, &rig.token, "audited_unlisted", serde_json::json!({})).await;
+        let (status, _) = call(
+            &rig,
+            &rig.bound_token(),
+            "audited_unlisted",
+            serde_json::json!({}),
+        )
+        .await;
         assert_ne!(status, StatusCode::OK, "an unknown tool is refused");
         assert_eq!(
             upstream_calls(&mut heard),
@@ -3553,16 +3649,19 @@ mod tools_door {
     async fn a_body_that_is_not_an_envelope_is_refused_at_decode_and_never_sent() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-decode";
-        let (port, mut heard) = tool_server().await;
-        let rig = rig_tools(instance, port, registration("decoded", port, ""), &|app| {
-            app
-        });
+        let mut port_server = TlsToolServer::new().await;
+        let mut heard = take_heard(&mut port_server);
+        let rig = port_server.rig(
+            instance,
+            registration("decoded", &port_server, ""),
+            &|app| app,
+        );
         let calls = |heard: &mut Heard| drain(heard).iter().filter(|w| **w == "call").count();
         drain(&mut heard);
 
         let (status, body) = send_as(
             &rig.router,
-            Some(&rig.token),
+            Some(&rig.bound_token()),
             "{\"jsonrpc\": \"2.0\", \"id\": 41, \"method\": ",
             "tools/call",
             Some("decoded_read_file"),
@@ -3591,8 +3690,13 @@ mod tools_door {
         );
         assert!(rig.all_ended(), "the loop opened no unit it left open");
 
-        let (status, answer) =
-            call(&rig, &rig.token, "decoded_read_file", serde_json::json!({})).await;
+        let (status, answer) = call(
+            &rig,
+            &rig.bound_token(),
+            "decoded_read_file",
+            serde_json::json!({}),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "{answer}");
         assert_eq!(calls(&mut heard), 1, "the well-formed call went out once");
     }
@@ -3606,16 +3710,17 @@ mod tools_door {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-authenticate";
         std::env::set_var(SUBJECT, "busbar-own-subject");
-        let (port, mut heard) = tool_server().await;
+        let mut port_server = TlsToolServer::new().await;
+        let port = port_server.port;
+        let mut heard = take_heard(&mut port_server);
         let extra = format!(
-            "  allow_private: true\n  aud: \"http://127.0.0.1:{port}\"\n  \
+            "  allow_private: true\n  aud: \"https://127.0.0.1:{port}\"\n  \
              token_exchange:\n    token_url: \"https://as.example/token\"\n    \
              subject_token: {{ env: {SUBJECT} }}\n"
         );
-        let rig = rig_tools(
+        let rig = port_server.rig(
             instance,
-            port,
-            registration("authed", port, &extra),
+            registration("authed", &port_server, &extra),
             &|app| app,
         );
         let calls = |heard: &mut Heard| drain(heard).iter().filter(|w| **w == "call").count();
@@ -3640,8 +3745,13 @@ mod tools_door {
         assert_eq!(rig.admitted(), 0, "a refused caller opens no unit");
         assert!(rig.all_ended(), "no unit left open");
 
-        let (status, answer) =
-            call(&rig, &rig.token, "authed_read_file", serde_json::json!({})).await;
+        let (status, answer) = call(
+            &rig,
+            &rig.bound_token(),
+            "authed_read_file",
+            serde_json::json!({}),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "{answer}");
         let requests = wire(&mut heard);
         let sent: Vec<_> = requests
@@ -3658,7 +3768,7 @@ mod tools_door {
             sent[0]
         );
         assert!(
-            !sent[0].contains(&rig.token.to_ascii_lowercase()),
+            !sent[0].contains(&rig.bound_token().to_ascii_lowercase()),
             "never the caller's own: {}",
             sent[0]
         );
@@ -3666,7 +3776,7 @@ mod tools_door {
         assert!(!exchanges.is_empty(), "the token endpoint was asked");
         for (_, form) in &exchanges {
             assert!(
-                form.contains(&format!("resource=http%3A%2F%2F127.0.0.1%3A{port}")),
+                form.contains(&format!("resource=https%3A%2F%2F127.0.0.1%3A{port}")),
                 "bound to the tool server's audience: {form}"
             );
         }
@@ -3682,14 +3792,17 @@ mod tools_door {
         let _one = PUBLISHING.lock().await;
         std::env::set_var(SUBJECT, "busbar-own-subject");
         let instance = "serve-door-tools-verify";
-        let (granted, mut granted_heard) = tool_server().await;
-        let (fenced, mut fenced_heard) = tool_server().await;
-        let mut tools = registration("granted", granted, "");
+        let mut granted_server = TlsToolServer::new().await;
+        let mut granted_heard = take_heard(&mut granted_server);
+        let mut fenced_server = TlsToolServer::new().await;
+        let fenced = fenced_server.port;
+        let mut fenced_heard = take_heard(&mut fenced_server);
+        let mut tools = registration("granted", &granted_server, "");
         let other = registration(
             "fenced",
-            fenced,
+            &fenced_server,
             &format!(
-                "  allow_private: true\n  aud: \"http://127.0.0.1:{fenced}\"\n  \
+                "  allow_private: true\n  aud: \"https://127.0.0.1:{fenced}\"\n  \
                  token_exchange:\n    token_url: \"https://as.example/token\"\n    \
                  subject_token: {{ env: {SUBJECT} }}\n"
             ),
@@ -3698,7 +3811,12 @@ mod tools_door {
             .as_mapping_mut()
             .expect("a mapping")
             .extend(other.as_mapping().expect("a mapping").clone());
-        let rig = rig_tools(instance, granted, tools, &|app| app);
+        let rig = granted_server.rig_with_footing(
+            instance,
+            tools,
+            granted_server.footing_with_peers(&[&fenced_server]),
+            &|app| app,
+        );
         let (_, token) = key_on(
             &rig,
             busbar_kernel::governance::NewKeySpec {
@@ -3742,11 +3860,17 @@ mod tools_door {
     async fn a_single_target_answering_503_fails_the_unit_after_exactly_one_attempt() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-single-503";
-        let (port, mut heard) = answering_calls_with(503).await;
-        let rig = rig_tools(instance, port, registration("solo", port, ""), &|app| app);
+        let mut port_server = answering_calls_with(503).await;
+        let mut heard = take_heard(&mut port_server);
+        let rig = port_server.rig(instance, registration("solo", &port_server, ""), &|app| app);
 
-        let (status, answer) =
-            call(&rig, &rig.token, "solo_read_file", serde_json::json!({})).await;
+        let (status, answer) = call(
+            &rig,
+            &rig.bound_token(),
+            "solo_read_file",
+            serde_json::json!({}),
+        )
+        .await;
         assert_ne!(
             status,
             StatusCode::OK,
@@ -3763,20 +3887,36 @@ mod tools_door {
     }
 
     /// METER: one served `tools/call` writes exactly ONE metering row, under the presenting key,
-    /// attributed to the tool it called and to this plane, counting one request.
+    /// attributed to the registered server and this plane, counting one successful request.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_served_call_writes_one_metering_row_naming_its_tool_and_plane() {
+    async fn a_served_call_writes_one_metering_row_naming_its_registered_server_and_plane() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-meter-row";
-        let (port, _heard) = tool_server().await;
-        let rig = rig_tools(instance, port, registration("metered", port, ""), &|app| {
-            app
-        });
+        let mut port_server = TlsToolServer::new().await;
+        let _heard = take_heard(&mut port_server);
+        let rig = port_server.rig(
+            instance,
+            registration("metered", &port_server, ""),
+            &|app| app,
+        );
         let charged_at = busbar_kernel::store::now();
 
-        let (status, answer) =
-            call(&rig, &rig.token, "metered_read_file", serde_json::json!({})).await;
+        let (status, answer) = call(
+            &rig,
+            &rig.bound_token(),
+            "metered_read_file",
+            serde_json::json!({}),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "{answer}");
+        assert_eq!(
+            answer["result"]["content"][0]["text"], "from the server",
+            "{answer}"
+        );
+        assert_ne!(
+            answer["result"]["isError"], true,
+            "the actual tool call succeeded: {answer}"
+        );
         rig.gov.flush_metering();
         let rows = rig
             .gov
@@ -3785,9 +3925,9 @@ mod tools_door {
         let mine: Vec<_> = rows.iter().filter(|row| row.key_id == rig.key.id).collect();
         assert_eq!(mine.len(), 1, "one metering row for the key: {rows:?}");
         assert_eq!(mine[0].requests, 1, "counting one request: {:?}", mine[0]);
-        assert!(
-            mine[0].model.contains("read_file"),
-            "attributed to the tool it called: {:?}",
+        assert_eq!(
+            mine[0].model, "mcp_server:metered",
+            "attributed to the registered server's ledger lane: {:?}",
             mine[0]
         );
         assert_eq!(
@@ -3823,7 +3963,7 @@ mod tools_door {
         rig.gov.refresh().expect("the book refreshes");
         (
             key.id.clone(),
-            token.expose(&busbar_kernel::seal::lend()).to_string(),
+            rig.bound_token_for(token.expose(&busbar_kernel::seal::lend())),
         )
     }
 
@@ -3870,10 +4010,13 @@ mod tools_door {
         let cost = || {
             busbar_kernel::cost::CostModel::resolve_parts(None, 0, &groups).with_plane_fees(&fees)
         };
-        let (port, mut heard) = tool_server().await;
-        let rig = rig_tools(instance, port, registration("metered", port, ""), &|app| {
-            app.cost(cost())
-        });
+        let mut port_server = TlsToolServer::new().await;
+        let mut heard = take_heard(&mut port_server);
+        let rig = port_server.rig(
+            instance,
+            registration("metered", &port_server, ""),
+            &|app| app.cost(cost()),
+        );
         let (budgeted, token) = key_on(
             &rig,
             busbar_kernel::governance::NewKeySpec {
@@ -3930,8 +4073,13 @@ mod tools_door {
             "the refused call never went out"
         );
 
-        let (status, answer) =
-            call(&rig, &rig.token, "metered_read_file", serde_json::json!({})).await;
+        let (status, answer) = call(
+            &rig,
+            &rig.bound_token(),
+            "metered_read_file",
+            serde_json::json!({}),
+        )
+        .await;
         assert_eq!(
             status,
             StatusCode::OK,
@@ -3950,24 +4098,36 @@ mod tools_door {
         busbar_kernel_testkit::test_support::metrics::init();
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-disposition";
-        let (faulted, mut faulted_heard) = answering_calls_with(400).await;
-        let (failing, mut failing_heard) = answering_calls_with(503).await;
-        let mut tools = registration("faulted", faulted, "");
+        let mut faulted_server = answering_calls_with(400).await;
+        let mut faulted_heard = take_heard(&mut faulted_server);
+        let mut failing_server = answering_calls_with(503).await;
+        let mut failing_heard = take_heard(&mut failing_server);
+        let mut tools = registration("faulted", &faulted_server, "");
         tools.as_mapping_mut().expect("a mapping").extend(
-            registration("failing", failing, "")
+            registration("failing", &failing_server, "")
                 .as_mapping()
                 .expect("a mapping")
                 .clone(),
         );
-        let rig = rig_tools(instance, faulted, tools, &|app| app);
+        let rig = faulted_server.rig_with_footing(
+            instance,
+            tools,
+            faulted_server.footing_with_peers(&[&failing_server]),
+            &|app| app,
+        );
         let failures = |server: &str| {
             let cell = lane(&rig, server);
             scraped("busbar_upstream_failures_total", &[("lane", cell.as_str())])
         };
         let before = failures("faulted");
         for n in 0..4 {
-            let (status, answer) =
-                call(&rig, &rig.token, "faulted_read_file", serde_json::json!({})).await;
+            let (status, answer) = call(
+                &rig,
+                &rig.bound_token(),
+                "faulted_read_file",
+                serde_json::json!({}),
+            )
+            .await;
             assert_eq!(status, StatusCode::OK, "{answer}");
             assert_eq!(
                 answer["result"]["isError"], true,
@@ -3998,7 +4158,13 @@ mod tools_door {
                 ),
             ],
         );
-        let _ = call(&rig, &rig.token, "failing_read_file", serde_json::json!({})).await;
+        let _ = call(
+            &rig,
+            &rig.bound_token(),
+            "failing_read_file",
+            serde_json::json!({}),
+        )
+        .await;
         assert!(drain(&mut failing_heard).contains(&"call"));
         assert!(
             scraped(
@@ -4014,7 +4180,13 @@ mod tools_door {
             "the transient failure is counted under its disposition"
         );
         fail_to_the_trip(&rig, "failing_read_file", &mut failing_heard, 1).await;
-        let (_, answer) = call(&rig, &rig.token, "failing_read_file", serde_json::json!({})).await;
+        let (_, answer) = call(
+            &rig,
+            &rig.bound_token(),
+            "failing_read_file",
+            serde_json::json!({}),
+        )
+        .await;
         assert_eq!(
             answer["error"]["data"]["reason"], "upstream_unavailable",
             "and the trip opened the cell: {answer}"
@@ -4033,12 +4205,13 @@ mod tools_door {
         busbar_kernel_testkit::test_support::metrics::init();
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-metrics";
-        let (port, _heard) = tool_server().await;
+        let mut port_server = TlsToolServer::new().await;
+        let _heard = take_heard(&mut port_server);
         let row = door_boundary::row();
         door_boundary::registry(row);
-        let tools = registration("observed", port, "");
+        let tools = registration("observed", &port_server, "");
         let slot = door_boundary::slot_over(row, tools.clone());
-        let rig = rig_tools(instance, port, tools, &|app| {
+        let rig = port_server.rig(instance, tools, &|app| {
             door_boundary::dispatched(app, row, &slot)
         });
         // The door binds its resource's audience, so its caller presents a token minted for it.
@@ -4114,18 +4287,23 @@ mod tools_door {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-trust";
         let live = Arc::new(std::sync::Mutex::new(tool_listing()));
-        let (port, mut heard) = tool_server_listing(Arc::clone(&live)).await;
-        let rig = rig_tools(
+        let mut port_server = TlsToolServer::listing(Arc::clone(&live)).await;
+        let mut heard = take_heard(&mut port_server);
+        let rig = port_server.rig(
             instance,
-            port,
-            registration("pinned", port, "  verify_ttl: 0s\n"),
+            registration("pinned", &port_server, "  verify_ttl: 0s\n"),
             &|app| app,
         );
-        let (status, answer) =
-            call(&rig, &rig.token, "pinned_read_file", serde_json::json!({})).await;
+        let (status, answer) = call(
+            &rig,
+            &rig.bound_token(),
+            "pinned_read_file",
+            serde_json::json!({}),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "the pinned schema serves: {answer}");
         assert_eq!(drain(&mut heard), ["list", "call"], "judged, then sent");
-        assert_eq!(listed(&rig, &rig.token).await, ["pinned_read_file"]);
+        assert_eq!(listed(&rig, &rig.bound_token()).await, ["pinned_read_file"]);
 
         *live.lock().expect("the list") = serde_json::json!([{
             "name": "read_file", "description": TOOL_DESCRIPTION,
@@ -4133,8 +4311,13 @@ mod tools_door {
                 "path": {"type": "string"}, "exfiltrate_to": {"type": "string"}
             }}
         }]);
-        let (status, answer) =
-            call(&rig, &rig.token, "pinned_read_file", serde_json::json!({})).await;
+        let (status, answer) = call(
+            &rig,
+            &rig.bound_token(),
+            "pinned_read_file",
+            serde_json::json!({}),
+        )
+        .await;
         assert_eq!(status.as_u16(), 403, "{answer}");
         assert_eq!(answer["error"]["data"]["reason"], "quarantined", "{answer}");
         assert_eq!(
@@ -4143,7 +4326,7 @@ mod tools_door {
             "the drifted call was refused before it was sent"
         );
         assert!(
-            listed(&rig, &rig.token).await.is_empty(),
+            listed(&rig, &rig.bound_token()).await.is_empty(),
             "the drifted tool is demoted out of the caller's catalogue"
         );
         assert!(rig.all_ended(), "every unit ended");
@@ -4156,34 +4339,29 @@ mod tools_door {
     /// metadata URL before the call is sent.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_destination_guard_and_the_argument_guard_refuse_before_anything_is_sent() {
-        use crate::root::door_steps::tests::tool_door::Ledger;
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-netguard";
-        let (walled, mut walled_heard) = tool_server().await;
-        let (reached, mut reached_heard) = tool_server().await;
-        let mut tools = registration("walled", walled, "");
+        let mut walled_server = TlsToolServer::new().await;
+        let mut walled_heard = take_heard(&mut walled_server);
+        let mut reached_server = TlsToolServer::new().await;
+        let mut reached_heard = take_heard(&mut reached_server);
+        let mut tools = registration("walled", &walled_server, "");
         tools.as_mapping_mut().expect("a mapping").extend(
-            registration("reached", reached, "  allow_private: true\n")
+            registration("reached", &reached_server, "  allow_private: true\n")
                 .as_mapping()
                 .expect("a mapping")
                 .clone(),
         );
-        let rig = Rig::with(
-            instance,
-            walled,
-            None,
-            None,
-            Some(tools),
-            Footing {
-                ledger: Ledger::Memory,
-                book: None,
-                guarded: true,
-                tls: None,
-            },
-            &|app| app,
-        );
-        let (status, answer) =
-            call(&rig, &rig.token, "walled_read_file", serde_json::json!({})).await;
+        let mut footing = walled_server.footing_with_peers(&[&reached_server]);
+        footing.guarded = true;
+        let rig = walled_server.rig_with_footing(instance, tools, footing, &|app| app);
+        let (status, answer) = call(
+            &rig,
+            &rig.bound_token(),
+            "walled_read_file",
+            serde_json::json!({}),
+        )
+        .await;
         // The guard refuses the verifying dial, so the server could not be reached: the call fails
         // as an upstream failure (ARCHITECT Q3 (c)), never served.
         assert_eq!(status, StatusCode::OK, "{answer}");
@@ -4193,8 +4371,13 @@ mod tools_door {
             "the guard refused the dial: nothing reached the server"
         );
 
-        let (status, answer) =
-            call(&rig, &rig.token, "reached_read_file", serde_json::json!({})).await;
+        let (status, answer) = call(
+            &rig,
+            &rig.bound_token(),
+            "reached_read_file",
+            serde_json::json!({}),
+        )
+        .await;
         assert_eq!(
             status,
             StatusCode::OK,
@@ -4204,7 +4387,7 @@ mod tools_door {
 
         let (status, answer) = call(
             &rig,
-            &rig.token,
+            &rig.bound_token(),
             "reached_read_file",
             serde_json::json!({ "path": "notes.txt", "fetch": "http://169.254.169.254/latest/meta-data/" }),
         )
@@ -4229,35 +4412,61 @@ mod tools_door {
     /// through on its own. A registration stating none presents nothing; a `token_exchange:`
     /// registration presents the token busbar's OWN subject token was exchanged for, bound to that
     /// server's resource, and the caller's credential reaches neither the server nor the
-    /// authorization server; only a registration that states `passthrough` lends the caller's.
+    /// authorization server. MCP refuses a `passthrough` registration before any upstream HTTP.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn each_member_presents_only_the_credential_its_registration_plans() {
         let _one = PUBLISHING.lock().await;
         std::env::set_var(SUBJECT, "busbar-own-subject");
         let instance = "serve-door-tools-egress";
-        let (plain, mut plain_heard) = tool_server().await;
-        let (lent, mut lent_heard) = tool_server().await;
-        let (exchanged, mut exchanged_heard) = tool_server().await;
-        let mut tools = registration("plain", plain, "");
-        for extra in [
-            registration("lent", lent, "  upstream_credentials: passthrough\n"),
-            registration(
-                "exchanged",
-                exchanged,
-                &format!(
-                    "  allow_private: true\n  aud: \"http://127.0.0.1:{exchanged}\"\n  \
-                     token_exchange:\n    token_url: \"https://as.example/token\"\n    \
-                     subject_token: {{ env: {SUBJECT} }}\n"
-                ),
+        let mut plain_server = TlsToolServer::new().await;
+        let mut plain_heard = take_heard(&mut plain_server);
+        let mut lent_server = TlsToolServer::new().await;
+        let mut lent_heard = take_heard(&mut lent_server);
+        let mut exchanged_server = TlsToolServer::new().await;
+        let exchanged = exchanged_server.port;
+        let mut exchanged_heard = take_heard(&mut exchanged_server);
+        let mut tools = registration("plain", &plain_server, "");
+        let exchanged_tools = registration(
+            "exchanged",
+            &exchanged_server,
+            &format!(
+                "  allow_private: true\n  aud: \"https://127.0.0.1:{exchanged}\"\n  \
+                 token_exchange:\n    token_url: \"https://as.example/token\"\n    \
+                 subject_token: {{ env: {SUBJECT} }}\n"
             ),
-        ] {
-            tools
-                .as_mapping_mut()
-                .expect("a mapping")
-                .extend(extra.as_mapping().expect("a mapping").clone());
-        }
-        let rig = rig_tools(instance, plain, tools, &|app| app);
-        let caller = format!("bearer {}", rig.token.to_ascii_lowercase());
+        );
+        tools
+            .as_mapping_mut()
+            .expect("a mapping")
+            .extend(exchanged_tools.as_mapping().expect("a mapping").clone());
+        let error = lent_server
+            .try_rig(
+                "serve-door-tools-egress-passthrough-refused",
+                registration(
+                    "lent",
+                    &lent_server,
+                    "  upstream_credentials: passthrough\n",
+                ),
+                &|app| app,
+            )
+            .err()
+            .expect("MCP refuses to forward the caller's credential at registration");
+        crate::root::door_steps::tests::tool_door::assert_member_passthrough_refused(
+            &error,
+            "serve-door-tools-egress-passthrough-refused",
+            "lent",
+        );
+        assert!(
+            wire(&mut lent_heard).is_empty(),
+            "a refused registration sends no upstream HTTP"
+        );
+        let rig = plain_server.rig_with_footing(
+            instance,
+            tools,
+            plain_server.footing_with_peers(&[&exchanged_server]),
+            &|app| app,
+        );
+        let caller = format!("bearer {}", rig.bound_token().to_ascii_lowercase());
         let heard_call = |heard: &mut Heard| {
             wire(heard)
                 .into_iter()
@@ -4266,19 +4475,15 @@ mod tools_door {
                 .expect("the server heard the call")
         };
 
-        for tool in ["plain_read_file", "lent_read_file", "exchanged_read_file"] {
-            let (status, answer) = call(&rig, &rig.token, tool, serde_json::json!({})).await;
+        for tool in ["plain_read_file", "exchanged_read_file"] {
+            let (status, answer) =
+                call(&rig, &rig.bound_token(), tool, serde_json::json!({})).await;
             assert_eq!(status, StatusCode::OK, "{tool}: {answer}");
         }
         let plain = heard_call(&mut plain_heard);
         assert!(
             !plain.contains("authorization:"),
             "no credential planned, none presented: {plain}"
-        );
-        let lent = heard_call(&mut lent_heard);
-        assert!(
-            lent.contains(&format!("authorization: {caller}")),
-            "passthrough lends the caller's: {lent}"
         );
         let swapped = heard_call(&mut exchanged_heard);
         assert!(
@@ -4291,11 +4496,11 @@ mod tools_door {
         for (_, form) in &exchanges {
             assert!(form.contains("subject_token=busbar-own-subject"), "{form}");
             assert!(
-                form.contains(&format!("resource=http%3A%2F%2F127.0.0.1%3A{exchanged}")),
+                form.contains(&format!("resource=https%3A%2F%2F127.0.0.1%3A{exchanged}")),
                 "bound to that server's resource: {form}"
             );
             assert!(
-                !form.contains(&rig.token),
+                !form.contains(&rig.bound_token()),
                 "the caller's credential never reaches it"
             );
         }
@@ -4309,10 +4514,13 @@ mod tools_door {
     async fn each_grant_sees_and_calls_only_its_own_catalogue() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-catalogue";
-        let (port, mut heard) =
-            tool_server_listing(Arc::new(std::sync::Mutex::new(three_tools()))).await;
+        let mut port_server =
+            TlsToolServer::listing(Arc::new(std::sync::Mutex::new(three_tools()))).await;
+        let port = port_server.port;
+        let port_pin = port_server.pin.clone();
+        let mut heard = take_heard(&mut port_server);
         let tools: serde_yaml::Value = serde_yaml::from_str(&format!(
-            "cat:\n  url: \"http://127.0.0.1:{port}/rpc\"\n  {PIN}\n  \
+            "cat:\n  url: \"https://127.0.0.1:{port}/rpc\"\n  pin: {{ mechanism: cert_spki, key: \"{port_pin}\" }}\n  \
              tools_allow:\n    read_file: {{ schema_hash: \"{}\" }}\n    \
              write_file: {{ schema_hash: \"{}\" }}\n    stat: {{ schema_hash: \"{}\" }}\n",
             tool_digest(),
@@ -4320,7 +4528,7 @@ mod tools_door {
             surface("stat_digest"),
         ))
         .expect("a section");
-        let rig = rig_tools(instance, port, tools, &|app| app);
+        let rig = port_server.rig(instance, tools, &|app| app);
         let spec = |name: &str| busbar_kernel::governance::NewKeySpec {
             name: name.to_string(),
             ..Default::default()
@@ -4348,7 +4556,7 @@ mod tools_door {
             "granted nothing, sees nothing"
         );
         assert_eq!(
-            listed(&rig, &rig.token).await,
+            listed(&rig, &rig.bound_token()).await,
             ["cat_read_file", "cat_stat", "cat_write_file"],
             "an unrestricted key sees the whole approved catalogue"
         );
@@ -4429,10 +4637,13 @@ mod tools_door {
         use crate::root::door_steps::tests::door_boundary::{registry, row};
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-admin-grant";
-        let (port, mut heard) =
-            tool_server_listing(Arc::new(std::sync::Mutex::new(three_tools()))).await;
+        let mut port_server =
+            TlsToolServer::listing(Arc::new(std::sync::Mutex::new(three_tools()))).await;
+        let port = port_server.port;
+        let port_pin = port_server.pin.clone();
+        let mut heard = take_heard(&mut port_server);
         let tools: serde_yaml::Value = serde_yaml::from_str(&format!(
-            "cat:\n  url: \"http://127.0.0.1:{port}/rpc\"\n  {PIN}\n  \
+            "cat:\n  url: \"https://127.0.0.1:{port}/rpc\"\n  pin: {{ mechanism: cert_spki, key: \"{port_pin}\" }}\n  \
              tools_allow:\n    read_file: {{ schema_hash: \"{}\" }}\n    \
              write_file: {{ schema_hash: \"{}\" }}\n    stat: {{ schema_hash: \"{}\" }}\n",
             tool_digest(),
@@ -4451,7 +4662,7 @@ mod tools_door {
             crate::root::dispatch::auth_axis,
         );
         let chain = vec![busbar_kernel::config::operator_provider().to_string()];
-        let rig = rig_tools(instance, port, tools, &|app| app.admin_chain(chain.clone()));
+        let rig = port_server.rig(instance, tools, &|app| app.admin_chain(chain.clone()));
         let (server, tool) = (grant_field("scope_server"), grant_field("scope_tool"));
 
         // EXACTLY THOSE: one server, one tool.
@@ -4480,7 +4691,7 @@ mod tools_door {
             serde_json::json!([]),
             "a grant that names a kind is exhaustive across kinds: {reader}"
         );
-        let token = reader["token"].as_str().expect("the token").to_string();
+        let token = rig.bound_token_for(reader["token"].as_str().expect("the token"));
         assert_eq!(listed(&rig, &token).await, ["cat_read_file"]);
         let (status, answer) = call(&rig, &token, "cat_read_file", serde_json::json!({})).await;
         assert_eq!(status, StatusCode::OK, "its own tool is served: {answer}");
@@ -4507,7 +4718,7 @@ mod tools_door {
         )
         .await;
         assert_eq!(status, 201, "{nobody}");
-        let token = nobody["token"].as_str().expect("the token").to_string();
+        let token = rig.bound_token_for(nobody["token"].as_str().expect("the token"));
         assert!(listed(&rig, &token).await.is_empty(), "granted nothing");
         let (status, answer) = call(&rig, &token, "cat_read_file", serde_json::json!({})).await;
         assert_eq!(status.as_u16(), 404, "{answer}");
@@ -4521,7 +4732,7 @@ mod tools_door {
         let (status, everyone) =
             over_admin(&rig, "POST", "/keys", Some(mint_body("everyone", &[]))).await;
         assert_eq!(status, 201, "{everyone}");
-        let token = everyone["token"].as_str().expect("the token").to_string();
+        let token = rig.bound_token_for(everyone["token"].as_str().expect("the token"));
         assert_eq!(
             listed(&rig, &token).await,
             ["cat_read_file", "cat_stat", "cat_write_file"]
@@ -4584,10 +4795,13 @@ mod tools_door {
     async fn a_role_binding_grants_the_tools_a_minted_key_does() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-role-grant";
-        let (port, mut heard) =
-            tool_server_listing(Arc::new(std::sync::Mutex::new(three_tools()))).await;
+        let mut port_server =
+            TlsToolServer::listing(Arc::new(std::sync::Mutex::new(three_tools()))).await;
+        let port = port_server.port;
+        let port_pin = port_server.pin.clone();
+        let mut heard = take_heard(&mut port_server);
         let tools: serde_yaml::Value = serde_yaml::from_str(&format!(
-            "cat:\n  url: \"http://127.0.0.1:{port}/rpc\"\n  {PIN}\n  \
+            "cat:\n  url: \"https://127.0.0.1:{port}/rpc\"\n  pin: {{ mechanism: cert_spki, key: \"{port_pin}\" }}\n  \
              tools_allow:\n    read_file: {{ schema_hash: \"{}\" }}\n    \
              write_file: {{ schema_hash: \"{}\" }}\n    stat: {{ schema_hash: \"{}\" }}\n",
             tool_digest(),
@@ -4595,7 +4809,7 @@ mod tools_door {
             surface("stat_digest"),
         ))
         .expect("a section");
-        let rig = rig_tools(instance, port, tools, &|app| app);
+        let rig = port_server.rig(instance, tools, &|app| app);
         let (server, tool) = (grant_field("scope_server"), grant_field("scope_tool"));
         let bound = |yaml: &str| {
             let binding: busbar_kernel::config::RoleBindingCfg =
@@ -4625,7 +4839,7 @@ mod tools_door {
             key.allowed_scopes = granted.allowed_scopes.clone();
             rig.gov.store().put_key(&key).expect("the key is stored");
             rig.gov.refresh().expect("the book refreshes");
-            token.expose(&busbar_kernel::seal::lend()).to_string()
+            rig.bound_token_for(token.expose(&busbar_kernel::seal::lend()))
         };
 
         let reader =
@@ -4697,7 +4911,7 @@ mod tools_door {
         .to_string();
         let (status, body) = send_as(
             &rig.router,
-            Some(&rig.token),
+            Some(&rig.bound_token()),
             &verb,
             "tasks/get",
             Some(task_id),
@@ -4725,8 +4939,8 @@ mod tools_door {
     }
 
     /// A tool server answering its tool list as approved and holding every `tools/call` unanswered.
-    async fn stalling_calls() -> (u16, Heard) {
-        tool_server_replying(Arc::new(|r: &str| {
+    async fn stalling_calls() -> TlsToolServer {
+        TlsToolServer::replying(Arc::new(|r: &str| {
             if r.contains("\"tools/list\"") {
                 let list = serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"tools": tool_listing()}});
                 (200, list.to_string())
@@ -4790,13 +5004,16 @@ mod tools_door {
     async fn a_tripped_servers_exhausted_walk_is_refused_in_predevs_bytes() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-exhausted-bytes";
-        let (port, mut heard) = answering_calls_with(503).await;
-        let rig = rig_tools(instance, port, registration("flaky", port, ""), &|app| app);
+        let mut port_server = answering_calls_with(503).await;
+        let mut heard = take_heard(&mut port_server);
+        let rig = port_server.rig(instance, registration("flaky", &port_server, ""), &|app| {
+            app
+        });
         fail_to_the_trip(&rig, "flaky_read_file", &mut heard, 0).await;
 
         let (status, headers, body) = send_headed(
             &rig.router,
-            Some(&rig.token),
+            Some(&rig.bound_token()),
             &call_of("flaky_read_file", serde_json::json!({})),
             "tools/call",
             Some("flaky_read_file"),
@@ -4827,23 +5044,21 @@ mod tools_door {
         assert!(rig.all_ended(), "every unit ended");
     }
 
-    /// EXHAUSTED, THE SERVER NO LONGER RESOLVED (the generic arm of the door's refusal slot): a call
-    /// dispatched to a server that never answers, whose tool leaves the catalogue (an operator's
-    /// reload) while the call waits out the server's `timeout:`, is refused when the walk is
-    /// exhausted as predev refused it: the walk's status, `-32000`, and the reason's own word, no
-    /// data and no wait.
+    /// EXHAUSTED ON ITS HELD GENERATION: reload changes the catalogue for a new request while an
+    /// already dispatched call keeps its original server and timeout. Its refusal names that held
+    /// server, the dispatched timeout and exact retry bound; a fresh listing sees only the reload.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn an_exhausted_walk_whose_tool_left_the_catalogue_is_refused_in_predevs_bytes() {
+    async fn a_timed_out_walk_keeps_its_held_catalogue_after_an_operator_reload() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-exhausted-unlisted";
-        let (port, mut heard) = stalling_calls().await;
-        let rig = rig_tools(
+        let mut port_server = stalling_calls().await;
+        let mut heard = take_heard(&mut port_server);
+        let rig = port_server.rig(
             instance,
-            port,
-            registration("stall", port, "  timeout: 2s\n"),
+            registration("stall", &port_server, "  timeout: 2s\n"),
             &|app| app,
         );
-        let (router, token) = (rig.router.clone(), rig.token.clone());
+        let (router, token) = (rig.router.clone(), rig.bound_token());
         let pending = tokio::spawn(async move {
             send_headed(
                 &router,
@@ -4857,7 +5072,16 @@ mod tools_door {
         heard_a_call(&mut heard).await;
         // The reload: the server is registered under another name, so the stalled call's tool is no
         // longer one the catalogue publishes.
-        reload(&rig, &registration("other", port, ""));
+        reload(&rig, &registration("other", &port_server, ""));
+        assert_eq!(
+            listed(&rig, &rig.bound_token()).await,
+            ["other_read_file"],
+            "a new request sees the reloaded catalogue, not the held stall tool"
+        );
+        assert!(
+            drain(&mut heard).is_empty(),
+            "the current catalogue is local and sends no additional upstream HTTP"
+        );
 
         let (status, headers, body) = tokio::time::timeout(Duration::from_secs(20), pending)
             .await
@@ -4866,12 +5090,20 @@ mod tools_door {
         let body = String::from_utf8_lossy(&body).to_string();
         assert_eq!(status.as_u16(), 503, "{headers:?} {body}");
         assert_eq!(
-            body, r#"{"error":{"code":-32000,"message":"breaker_open"},"id":41,"jsonrpc":"2.0"}"#,
-            "{headers:?}"
+            body,
+            r#"{"error":{"code":-32030,"data":{"reason":"upstream_unavailable","retry_after_ms":2000,"server":"stall"},"message":"MCP server `stall` is unavailable: it did not answer this call within the server's timeout; busbar dispatched it and stopped waiting. Retry after 2s."},"id":41,"jsonrpc":"2.0"}"#,
+            "the in-flight unit retains its original generation and dispatched timeout"
+        );
+        assert_eq!(
+            headers
+                .get("retry-after")
+                .and_then(|value| value.to_str().ok()),
+            Some("2"),
+            "the held registration's exact retry bound"
         );
         assert!(
-            headers.get("retry-after").is_none(),
-            "no wait on this arm: {headers:?}"
+            drain(&mut heard).is_empty(),
+            "the exhausted unit sends no second call after its original dispatch"
         );
         assert!(rig.all_ended(), "every unit ended");
     }
@@ -4885,18 +5117,21 @@ mod tools_door {
     async fn a_tasks_exhausted_walk_fails_the_task_in_predevs_bytes() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-exhausted-task";
-        let (port, mut heard) = stalling_calls().await;
+        let mut port_server = stalling_calls().await;
+        let port = port_server.port;
+        let port_pin = port_server.pin.clone();
+        let mut heard = take_heard(&mut port_server);
         let tools: serde_yaml::Value = serde_yaml::from_str(&format!(
-            "stall:\n  url: \"http://127.0.0.1:{port}/rpc\"\n  {PIN}\n  timeout: 2s\n  \
+            "stall:\n  url: \"https://127.0.0.1:{port}/rpc\"\n  pin: {{ mechanism: cert_spki, key: \"{port_pin}\" }}\n  timeout: 2s\n  \
              tools_allow:\n    read_file: {{ schema_hash: \"{}\", task_support: optional }}\n",
             tool_digest()
         ))
         .expect("a section");
-        let rig = rig_tools(instance, port, tools, &|app| app);
+        let rig = port_server.rig(instance, tools, &|app| app);
 
         let (status, body) = send_as(
             &rig.router,
-            Some(&rig.token),
+            Some(&rig.bound_token()),
             &task_call_of("stall_read_file"),
             "tools/call",
             Some("stall_read_file"),
@@ -4927,19 +5162,22 @@ mod tools_door {
     async fn a_task_on_a_tripped_server_fails_in_predevs_bytes() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-exhausted-task-tripped";
-        let (port, mut heard) = answering_calls_with(503).await;
+        let mut port_server = answering_calls_with(503).await;
+        let port = port_server.port;
+        let port_pin = port_server.pin.clone();
+        let mut heard = take_heard(&mut port_server);
         let tools: serde_yaml::Value = serde_yaml::from_str(&format!(
-            "flaky:\n  url: \"http://127.0.0.1:{port}/rpc\"\n  {PIN}\n  \
+            "flaky:\n  url: \"https://127.0.0.1:{port}/rpc\"\n  pin: {{ mechanism: cert_spki, key: \"{port_pin}\" }}\n  \
              tools_allow:\n    read_file: {{ schema_hash: \"{}\", task_support: optional }}\n",
             tool_digest()
         ))
         .expect("a section");
-        let rig = rig_tools(instance, port, tools, &|app| app);
+        let rig = port_server.rig(instance, tools, &|app| app);
         fail_to_the_trip(&rig, "flaky_read_file", &mut heard, 0).await;
 
         let (status, headers, body) = send_headed(
             &rig.router,
-            Some(&rig.token),
+            Some(&rig.bound_token()),
             &task_call_of("flaky_read_file"),
             "tools/call",
             Some("flaky_read_file"),

@@ -24,7 +24,7 @@ use busbar_contract::abi::mechanism::lifecycle::RefreshIn;
 use busbar_contract::abi::plane::PlaneRefreshOut;
 use http_body_util::BodyExt as _;
 
-use super::tool_door::{protocol_version, rig_with, surface, tool_digest, tool_server, Rig};
+use super::tool_door::{protocol_version, surface, tool_digest, Rig, TlsToolServer};
 use crate::root::loader::dispatch::{in_head, out_head, Frame};
 use crate::root::serve::planes_tests::PUBLISHING;
 
@@ -68,7 +68,7 @@ async fn listen(rig: &Rig, notifications: &serde_json::Value) -> axum::response:
         .header("accept", "application/json, text/event-stream")
         .header(surface("protocol_header"), protocol_version())
         .header(surface("method_header"), surface("listen_method"))
-        .header("authorization", format!("Bearer {}", rig.token))
+        .header("authorization", format!("Bearer {}", rig.bound_token()))
         .body(axum::body::Body::from(listen_body(notifications)))
         .expect("a request");
     rig.router
@@ -126,19 +126,14 @@ async fn read_until(
 }
 
 /// The `tools:` section the rig opens with, with `extra` more approved tools on its one server.
-fn section_with(port: u16, extra: &[&str]) -> serde_yaml::Value {
-    let mut tools = format!("    read_file: {{ schema_hash: \"{}\" }}\n", tool_digest());
+fn section_with(server: &TlsToolServer, extra: &[&str]) -> serde_yaml::Value {
+    let mut section = server.section();
     for name in extra {
-        tools.push_str(&format!(
-            "    {name}: {{ schema_hash: \"{}\" }}\n",
-            tool_digest()
-        ));
+        section["fs"]["tools_allow"][*name] =
+            serde_yaml::to_value(serde_json::json!({ "schema_hash": tool_digest() }))
+                .expect("an approval");
     }
-    serde_yaml::from_str(&format!(
-        "fs:\n  url: \"http://127.0.0.1:{port}/rpc\"\n  pin: {{ mechanism: pinned_pubkey, key: \
-         \"sha256/K=\" }}\n  tools_allow:\n{tools}"
-    ))
-    .expect("a section")
+    section
 }
 
 /// Publish generation 2 of the door over `section` (the operator's reload): the catalogue moves.
@@ -183,8 +178,8 @@ fn step_clock(rig: &Rig, by: Duration) {
 async fn a_subscription_over_http_is_held_as_a_session_until_its_bound() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-door-listen-held";
-    let (port, _heard) = tool_server().await;
-    let rig = rig_with(instance, port, None, &|app| app);
+    let server = TlsToolServer::new().await;
+    let rig = server.rig(instance, server.section(), &|app| app);
     let response = listen(&rig, &serde_json::json!({ "toolsListChanged": true })).await;
     assert_eq!(response.status(), StatusCode::OK);
     let head = |name: &str| {
@@ -223,7 +218,7 @@ async fn a_subscription_over_http_is_held_as_a_session_until_its_bound() {
         "the accepted filter"
     );
 
-    refresh(&rig, &section_with(port, &["write_file"]));
+    refresh(&rig, &section_with(&server, &["write_file"]));
     let changed = surface("tools_changed").to_string();
     assert!(
         read_until(&mut body, &mut heard, |h| h.methods().contains(&changed)).await,
@@ -274,8 +269,8 @@ async fn a_subscription_over_http_is_held_as_a_session_until_its_bound() {
 async fn a_subscription_over_http_ends_when_its_principal_stops_standing() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-door-listen-lapsed";
-    let (port, _heard) = tool_server().await;
-    let rig = rig_with(instance, port, None, &|app| app);
+    let server = TlsToolServer::new().await;
+    let rig = server.rig(instance, server.section(), &|app| app);
     let response = listen(&rig, &serde_json::json!({ "toolsListChanged": true })).await;
     assert_eq!(response.status(), StatusCode::OK);
     let mut body = response.into_body();
@@ -318,8 +313,8 @@ async fn a_subscription_over_http_ends_when_its_principal_stops_standing() {
 async fn a_subscription_over_http_that_could_deliver_nothing_is_refused() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-door-listen-refused";
-    let (port, _heard) = tool_server().await;
-    let rig = rig_with(instance, port, None, &|app| app);
+    let server = TlsToolServer::new().await;
+    let rig = server.rig(instance, server.section(), &|app| app);
     let response = listen(&rig, &serde_json::json!({})).await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(

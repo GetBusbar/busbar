@@ -2346,7 +2346,7 @@ pub(crate) mod tool_door {
     }
 
     /// The door's one endpoint (its endpoint section's fixed path).
-    fn endpoint() -> String {
+    pub(crate) fn endpoint() -> String {
         format!("/{}", endpoint_section())
     }
 
@@ -2546,20 +2546,16 @@ pub(crate) mod tool_door {
         (port, heard)
     }
 
-    async fn tool_connection<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
-        mut socket: S,
+    async fn tool_request<S: tokio::io::AsyncRead + Unpin>(
+        socket: &mut S,
         sent: tokio::sync::mpsc::UnboundedSender<String>,
-        answer: Replies,
-    ) {
+    ) -> Option<String> {
         let mut buf = vec![0u8; 16 * 1024];
         let mut got = Vec::new();
-        // The head, then the body its content-length states.
         loop {
-            let Ok(n) = socket.read(&mut buf).await else {
-                return;
-            };
+            let n = socket.read(&mut buf).await.ok()?;
             if n == 0 {
-                return;
+                return None;
             }
             got.extend_from_slice(&buf[..n]);
             let text = String::from_utf8_lossy(&got).to_string();
@@ -2574,15 +2570,20 @@ pub(crate) mod tool_door {
                     })
                     .unwrap_or(0);
                 if got.len() >= at + 4 + length {
-                    let _ = sent.send(text);
-                    break;
+                    let _ = sent.send(text.clone());
+                    return Some(text);
                 }
             }
         }
-        let (status, answer) = answer(&String::from_utf8_lossy(&got));
+    }
+
+    async fn tool_reply<S: tokio::io::AsyncWrite + Unpin>(
+        socket: &mut S,
+        status: u16,
+        answer: String,
+    ) {
         if status == STALL {
             tokio::time::sleep(std::time::Duration::from_secs(120)).await;
-            drop(socket);
             return;
         }
         let reply = format!(
@@ -2594,6 +2595,27 @@ pub(crate) mod tool_door {
         let _ = socket.shutdown().await;
     }
 
+    async fn tool_connection<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+        mut socket: S,
+        sent: tokio::sync::mpsc::UnboundedSender<String>,
+        answer: Replies,
+    ) {
+        if let Some(request) = tool_request(&mut socket, sent).await {
+            let (status, answer) = answer(&request);
+            tool_reply(&mut socket, status, answer).await;
+        }
+    }
+
+    type TlsToolSocket = tokio_rustls::server::TlsStream<tokio::net::TcpStream>;
+    type TlsToolHandler = Arc<
+        dyn Fn(
+                TlsToolSocket,
+                tokio::sync::mpsc::UnboundedSender<String>,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+            + Send
+            + Sync,
+    >;
+
     /// A real HTTPS tool server, authenticated by its generated CA and actual leaf SPKI pin.
     /// The listener owns its connection tasks; `close` (or drop on a failing test) ends them all.
     pub(crate) struct TlsToolServer {
@@ -2601,11 +2623,82 @@ pub(crate) mod tool_door {
         pub(crate) heard: tokio::sync::mpsc::UnboundedReceiver<String>,
         pub(crate) pin: String,
         tls: Arc<rustls::ClientConfig>,
+        ca_der: Vec<u8>,
         task: Option<tokio::task::JoinHandle<()>>,
     }
 
     impl TlsToolServer {
         pub(crate) async fn new() -> Self {
+            Self::listing(Arc::new(std::sync::Mutex::new(tool_listing()))).await
+        }
+
+        pub(crate) async fn answering(answer: Arc<dyn Fn(&str) -> String + Send + Sync>) -> Self {
+            Self::replying(Arc::new(move |request| (200, answer(request)))).await
+        }
+
+        pub(crate) async fn listing(tools: Arc<std::sync::Mutex<serde_json::Value>>) -> Self {
+            Self::answering(Arc::new(move |request| {
+                if request.contains("\"tools/list\"") {
+                    let list = tools.lock().map(|t| t.clone()).unwrap_or_default();
+                    serde_json::json!({"jsonrpc":"2.0","id":1,"result":{"tools":list}}).to_string()
+                } else {
+                    ANSWER.to_string()
+                }
+            }))
+            .await
+        }
+
+        pub(crate) async fn replying(answer: Replies) -> Self {
+            let handler: TlsToolHandler = Arc::new(move |socket, sent| {
+                Box::pin(tool_connection(socket, sent, Arc::clone(&answer)))
+            });
+            Self::with_handler(handler, None).await
+        }
+
+        /// One accepted TLS connection: close the listener before waiting for that response.
+        pub(crate) async fn once() -> Self {
+            let handler: TlsToolHandler = Arc::new(|socket, sent| {
+                let answer: Replies = Arc::new(|request| {
+                    (
+                        200,
+                        if request.contains("\"tools/list\"") {
+                            serde_json::json!({"jsonrpc":"2.0","id":1,"result":{"tools":tool_listing()}}).to_string()
+                        } else {
+                            ANSWER.to_string()
+                        },
+                    )
+                });
+                Box::pin(tool_connection(socket, sent, answer))
+            });
+            Self::with_handler(handler, Some(1)).await
+        }
+
+        /// Record a complete request before waiting for the task's release; lists answer at once.
+        pub(crate) async fn gated(
+            release: tokio::sync::watch::Receiver<bool>,
+            answer: impl Into<String>,
+        ) -> Self {
+            let answer = answer.into();
+            let handler: TlsToolHandler = Arc::new(move |mut socket, sent| {
+                let mut release = release.clone();
+                let answer = answer.clone();
+                Box::pin(async move {
+                    let Some(request) = tool_request(&mut socket, sent).await else {
+                        return;
+                    };
+                    let answer = if request.contains("\"tools/list\"") {
+                        serde_json::json!({"jsonrpc":"2.0","id":1,"result":{"tools":tool_listing()}}).to_string()
+                    } else {
+                        let _ = release.wait_for(|ready| *ready).await;
+                        answer
+                    };
+                    tool_reply(&mut socket, 200, answer).await;
+                })
+            });
+            Self::with_handler(handler, None).await
+        }
+
+        async fn with_handler(handler: TlsToolHandler, limit: Option<usize>) -> Self {
             use rcgen::PublicKeyData as _;
             busbar_core_connector::tls::install_crypto_provider();
             let ca_key = rcgen::KeyPair::generate().expect("a CA key");
@@ -2641,34 +2734,33 @@ pub(crate) mod tool_door {
                 .expect("a TLS port");
             let port = listener.local_addr().unwrap().port();
             let (sent, heard) = tokio::sync::mpsc::unbounded_channel();
-            let answer: Replies = Arc::new(|request| {
-                (
-                    200,
-                    if request.contains("\"tools/list\"") {
-                        serde_json::json!({"jsonrpc":"2.0","id":1,"result":{"tools":tool_listing()}}).to_string()
-                    } else {
-                        ANSWER.to_string()
-                    },
-                )
-            });
             let task = tokio::spawn(async move {
                 let mut connections = tokio::task::JoinSet::new();
+                let mut accepted = 0usize;
                 while let Ok((socket, _)) = listener.accept().await {
                     let acceptor = acceptor.clone();
                     let sent = sent.clone();
-                    let answer = Arc::clone(&answer);
+                    let handler = Arc::clone(&handler);
                     connections.spawn(async move {
                         if let Ok(tls) = acceptor.accept(socket).await {
-                            tool_connection(tls, sent, answer).await;
+                            handler(tls, sent).await;
                         }
                     });
+                    accepted += 1;
+                    if limit.is_some_and(|bound| accepted >= bound) {
+                        break;
+                    }
+                    while connections.try_join_next().is_some() {}
                 }
+                drop(listener);
+                while connections.join_next().await.is_some() {}
             });
             Self {
                 port,
                 heard,
                 pin,
                 tls: Arc::new(tls),
+                ca_der: ca.der().to_vec(),
                 task: Some(task),
             }
         }
@@ -2691,6 +2783,25 @@ pub(crate) mod tool_door {
             }
         }
 
+        /// Additional fixture CAs, on top of the normal roots, for a multi-server deployment.
+        pub(crate) fn footing_with_peers(&self, peers: &[&Self]) -> Footing<'static> {
+            let anchors = std::iter::once(&self.ca_der)
+                .chain(peers.iter().map(|p| &p.ca_der))
+                .cloned()
+                .collect();
+            let tls = busbar_core_connector::tls::client::build_client_config(
+                &busbar_contract::transport::trust::EgressTrust {
+                    extra_anchors: anchors,
+                    ..Default::default()
+                },
+            )
+            .expect("normal verification with all fixture CAs added");
+            Footing {
+                tls: Some(Arc::new(tls)),
+                ..Footing::own()
+            }
+        }
+
         /// Compose both the served door and the App's same claims/admission map, as boot does.
         pub(crate) fn rig(
             &self,
@@ -2700,16 +2811,70 @@ pub(crate) mod tool_door {
                 busbar_kernel::test_support::TestApp,
             ) -> busbar_kernel::test_support::TestApp,
         ) -> Rig {
+            self.try_rig(instance, tools, configure)
+                .unwrap_or_else(|e| panic!("the TLS door composes: {e}"))
+        }
+
+        pub(crate) fn try_rig(
+            &self,
+            instance: &'static str,
+            tools: serde_yaml::Value,
+            configure: &dyn Fn(
+                busbar_kernel::test_support::TestApp,
+            ) -> busbar_kernel::test_support::TestApp,
+        ) -> Result<Rig, String> {
+            self.try_rig_with_footing(instance, tools, None, self.footing(), configure)
+        }
+
+        pub(crate) fn rig_with_footing(
+            &self,
+            instance: &'static str,
+            tools: serde_yaml::Value,
+            footing: Footing<'_>,
+            configure: &dyn Fn(
+                busbar_kernel::test_support::TestApp,
+            ) -> busbar_kernel::test_support::TestApp,
+        ) -> Rig {
+            self.try_rig_with_footing(instance, tools, None, footing, configure)
+                .unwrap_or_else(|e| panic!("the TLS door composes: {e}"))
+        }
+
+        pub(crate) fn rig_with_grants(
+            &self,
+            instance: &'static str,
+            tools: serde_yaml::Value,
+            allowed_pools: Option<Vec<String>>,
+            configure: &dyn Fn(
+                busbar_kernel::test_support::TestApp,
+            ) -> busbar_kernel::test_support::TestApp,
+        ) -> Rig {
+            self.try_rig_with_footing(instance, tools, allowed_pools, self.footing(), configure)
+                .unwrap_or_else(|e| panic!("the granted TLS door composes: {e}"))
+        }
+
+        fn try_rig_with_footing(
+            &self,
+            instance: &'static str,
+            tools: serde_yaml::Value,
+            allowed_pools: Option<Vec<String>>,
+            mut footing: Footing<'_>,
+            configure: &dyn Fn(
+                busbar_kernel::test_support::TestApp,
+            ) -> busbar_kernel::test_support::TestApp,
+        ) -> Result<Rig, String> {
+            if footing.tls.is_none() {
+                footing.tls = Some(Arc::clone(&self.tls));
+            }
             let row = super::door_boundary::row();
             super::door_boundary::registry(row);
             let slot = super::door_boundary::slot_over(row, tools.clone());
-            Rig::with(
+            Rig::try_with(
                 instance,
                 self.port,
-                None,
+                allowed_pools,
                 None,
                 Some(tools),
-                self.footing(),
+                footing,
                 &|app| super::door_boundary::dispatched(configure(app), row, &slot),
             )
         }
@@ -2771,6 +2936,8 @@ pub(crate) mod tool_door {
         pub(crate) clock: Arc<std::sync::atomic::AtomicU64>,
         /// How far the kernel's wall clock reads ahead of the system's, in milliseconds.
         pub(crate) wall: Arc<std::sync::atomic::AtomicU64>,
+        pub(crate) work_observations: Arc<std::sync::Mutex<Vec<ObservedWork>>>,
+        pub(crate) instance: &'static str,
         /// What a config apply refreshes the served door onto (`DoorApply::apply`).
         pub(crate) live: Arc<crate::root::serve::DoorApply>,
     }
@@ -2887,11 +3054,13 @@ pub(crate) mod tool_door {
                 (&clock, &wall),
                 Arc::clone(&judge) as Arc<dyn busbar_kernel::host_services::DestJudge>,
             );
+            let work_observations = Arc::new(std::sync::Mutex::new(Vec::new()));
             let dispatcher = Arc::new(Dispatcher::with_services(
                 DispatchConfig::default(),
                 Arc::new(Clocked {
                     inner: late.served(),
                     wall: Arc::clone(&wall),
+                    work_observations: Arc::clone(&work_observations),
                 }),
             ));
             // The transport doors bind on this dispatcher and reach its host services (the clock
@@ -3114,23 +3283,29 @@ pub(crate) mod tool_door {
                 plane,
                 clock,
                 wall,
+                work_observations,
+                instance,
                 live,
             })
         }
 
         pub(crate) fn bound_token(&self) -> String {
+            self.bound_token_for(&self.token)
+        }
+
+        /// Keep a different valid caller's subject, expiry and generation while binding this resource.
+        pub(crate) fn bound_token_for(&self, plain: &str) -> String {
             use busbar_kernel::governance::signing::TokenVerifier;
             let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
             let verifier = TokenVerifier::single(signer.kid(), signer.verifying_key());
-            let generation = verifier
-                .verify(&self.token, 1_700_000_000, None)
-                .expect("plain claims")
-                .generation;
+            let claims = verifier
+                .verify(plain, 1_700_000_000, None)
+                .expect("plain claims");
             let audience = self.audience.as_deref().expect("the real door's audience");
             signer.mint_for_audience(
-                &self.key.id,
-                4_000_000_000,
-                generation.as_deref(),
+                &claims.sub,
+                claims.exp,
+                claims.generation.as_deref(),
                 audience,
                 Some("client-1"),
             )
@@ -3276,12 +3451,47 @@ pub(crate) mod tool_door {
 
     /// The host services as the door reads them, the wall clock `clock.now` answers read `wall`
     /// milliseconds ahead, as the kernel's work book reads it: every other service is `inner`'s.
+    #[derive(Clone)]
+    pub(crate) struct ObservedWork {
+        pub(crate) instance: String,
+        pub(crate) reference: Vec<u8>,
+        pub(crate) observation: busbar_contract::abi::mechanism::inspection::WorkObservation,
+    }
+
     struct Clocked {
         inner: Arc<dyn busbar_contract::services::HostServices>,
         wall: Arc<std::sync::atomic::AtomicU64>,
+        work_observations: Arc<std::sync::Mutex<Vec<ObservedWork>>>,
     }
 
     impl busbar_contract::services::HostServices for Clocked {
+        fn inspect(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            unit: Option<u64>,
+            query: &busbar_contract::abi::mechanism::inspection::InspectionQuery,
+        ) -> busbar_contract::abi::mechanism::inspection::InspectionResult {
+            use busbar_contract::abi::mechanism::inspection::{
+                InspectionObservation, InspectionQuery,
+            };
+            let result = self.inner.inspect(caller, unit, query);
+            if let (
+                InspectionQuery::Work { reference },
+                Ok(InspectionObservation::Work(observation)),
+            ) = (query, &result)
+            {
+                self.work_observations
+                    .lock()
+                    .expect("the observation log")
+                    .push(ObservedWork {
+                        instance: caller.instance.to_string(),
+                        reference: reference.clone(),
+                        observation: *observation,
+                    });
+            }
+            result
+        }
+
         fn now(&self) -> busbar_contract::services::Reading {
             let mut reading = self.inner.now();
             let ahead = self.wall.load(std::sync::atomic::Ordering::SeqCst);
@@ -3951,8 +4161,9 @@ pub(crate) mod tool_door {
     async fn an_unkeyed_tools_call_is_refused_before_anything_is_charged_or_dialled() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-unkeyed";
-        let (port, mut heard) = tool_server().await;
-        let rig = Rig::new(instance, port, None);
+        let mut server = TlsToolServer::new().await;
+        let rig = server.rig(instance, server.section(), &|app| app);
+        let heard = &mut server.heard;
 
         let (status, body) = send(&rig.router, None, CALL).await;
         let refused = u16::try_from(refusal_status(ReasonCode::Unauthenticated)).expect("a status");
@@ -3965,6 +4176,7 @@ pub(crate) mod tool_door {
         assert_eq!(rig.admitted(), 0, "nothing charged");
         assert!(heard.try_recv().is_err(), "nothing dialled");
         assert!(rig.all_ended(), "no unit left open");
+        server.close().await;
     }
 
     /// THE DECODE STEP: a body that is not JSON is refused by the plane's own decode, in its own
@@ -3973,10 +4185,11 @@ pub(crate) mod tool_door {
     async fn a_body_that_does_not_decode_is_refused_before_it_is_admitted() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-undecodable";
-        let (port, mut heard) = tool_server().await;
-        let rig = Rig::new(instance, port, None);
+        let mut server = TlsToolServer::new().await;
+        let rig = server.rig(instance, server.section(), &|app| app);
+        let heard = &mut server.heard;
 
-        let (status, body) = send(&rig.router, Some(&rig.token), "{not json").await;
+        let (status, body) = send(&rig.router, Some(&rig.bound_token()), "{not json").await;
         assert_eq!(
             status,
             StatusCode::BAD_REQUEST,
@@ -3991,6 +4204,7 @@ pub(crate) mod tool_door {
         );
         assert_eq!(rig.admitted(), 0, "nothing charged");
         assert!(heard.try_recv().is_err(), "nothing dialled");
+        server.close().await;
     }
 
     /// THE APPROVE STEP: a caller whose grant holds no scope of the plane's (an explicit empty pool
@@ -4002,10 +4216,11 @@ pub(crate) mod tool_door {
     async fn a_tools_call_outside_the_callers_grant_is_refused_before_it_dials() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-ungranted";
-        let (port, mut heard) = tool_server().await;
-        let rig = Rig::new(instance, port, Some(Vec::new()));
+        let mut server = TlsToolServer::new().await;
+        let rig = server.rig_with_grants(instance, server.section(), Some(Vec::new()), &|app| app);
+        let heard = &mut server.heard;
 
-        let (status, body) = send(&rig.router, Some(&rig.token), CALL).await;
+        let (status, body) = send(&rig.router, Some(&rig.bound_token()), CALL).await;
         assert_eq!(status.as_u16(), 404, "{}", String::from_utf8_lossy(&body));
         let body: serde_json::Value = serde_json::from_slice(&body).expect("JSON-RPC");
         assert_eq!(body["error"]["data"]["reason"], "not_granted", "{body}");
@@ -4013,6 +4228,7 @@ pub(crate) mod tool_door {
         assert_eq!(rig.admitted(), 0, "nothing charged");
         assert!(heard.try_recv().is_err(), "nothing dialled");
         assert!(rig.all_ended(), "no unit left open");
+        server.close().await;
     }
 
     /// THE ROUTE STEP: a call whose server is down ends inside its own unit — answered as an
@@ -4023,10 +4239,11 @@ pub(crate) mod tool_door {
     async fn a_tools_call_to_a_server_that_is_down_ends_inside_its_unit() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-down";
-        let port = down_port().await;
-        let rig = Rig::new(instance, port, None);
+        let server = TlsToolServer::new().await;
+        let rig = server.rig(instance, server.section(), &|app| app);
+        server.close().await;
 
-        let (status, body) = send(&rig.router, Some(&rig.token), CALL).await;
+        let (status, body) = send(&rig.router, Some(&rig.bound_token()), CALL).await;
         let answer: serde_json::Value = serde_json::from_slice(&body).expect("a JSON-RPC answer");
         assert_eq!(status, StatusCode::OK, "{answer}");
         assert_eq!(
@@ -4036,61 +4253,78 @@ pub(crate) mod tool_door {
         assert!(rig.all_ended(), "the unit ended inside itself");
     }
 
-    /// UPSTREAM CREDENTIALS FROM THE REGISTRATION (ARCHITECT round 4 Q-L3B-SURFACES (d)): a
-    /// `upstream_credentials: passthrough` registration's member is bound to the kernel's
-    /// caller-credential lending, so the server hears the caller's own verified credential as its
-    /// bearer; a registration that states none hears no credential at all.
+    /// The current registration-level grammar refusal, distinct from the Statement's refusal
+    /// of the section-wide default. Keep the actual registration and full security reason exact.
+    pub(crate) fn assert_member_passthrough_refused(error: &str, instance: &str, member: &str) {
+        let expected = format!(
+            "`tools.{member}`: `upstream_credentials: passthrough` is refused: it would present \
+             the caller's own busbar credential (the virtual key or busbar-audience token they \
+             authenticated to busbar with) to this MCP server, and a caller's busbar credential \
+             never travels upstream. Use `token_exchange:` (busbar exchanges its own subject \
+             token for a down-scoped token bound to this server's `aud:`), or `own` (the default: \
+             busbar presents no caller credential)."
+        );
+        assert!(
+            error.starts_with(&format!("{instance}: plugin ")),
+            "{error}"
+        );
+        let (_, reason) = error
+            .split_once(" open failed: ")
+            .expect("the plugin refused its open");
+        assert_eq!(
+            reason, expected,
+            "the registration's exact security refusal"
+        );
+    }
+
+    /// The MCP plane forbids forwarding a busbar caller credential (spec #65); an own-credential
+    /// registration's valid sibling still serves without lending any credential upstream.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_passthrough_registration_presents_the_callers_credential_and_no_other() {
+    async fn a_passthrough_registration_is_refused_before_the_callers_credential_can_leave() {
         let _one = PUBLISHING.lock().await;
-        let tools = |port: u16, mode: &str| -> serde_yaml::Value {
-            serde_yaml::from_str(&format!(
-                "fs:\n  url: \"http://127.0.0.1:{port}/rpc\"\n  \
-                 pin: {{ mechanism: pinned_pubkey, key: \"sha256/K=\" }}\n{mode}  \
-                 tools_allow:\n    read_file: {{ schema_hash: \"{}\" }}\n",
-                tool_digest()
-            ))
-            .expect("a section")
-        };
-        let instance = "door-passthrough";
-        for (mode, lends) in [("  upstream_credentials: passthrough\n", true), ("", false)] {
-            let (port, mut heard) = tool_server().await;
-            let rig = Rig::with(
-                instance,
-                port,
-                None,
-                None,
-                Some(tools(port, mode)),
-                Footing::own(),
-                &|app| app,
-            );
-            let (status, body) = send(&rig.router, Some(&rig.token), CALL).await;
-            assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
-            let (mut call, mut list) = (None, None);
-            while let Ok(r) = heard.try_recv() {
-                if r.contains("\"tools/call\"") {
-                    call = Some(r);
-                } else if r.contains("\"tools/list\"") {
-                    list = Some(r);
-                }
-            }
-            let bearer = format!("authorization: bearer {}", rig.token.to_ascii_lowercase());
-            // The relayed call, and the door's own verify-on-call fetch made inside the caller's
-            // unit (ARCHITECT round 5 Q-L3B-DOOR-EXCHANGE: it carries the member's binding, so a
-            // passthrough member's is lent the unit's caller credential).
-            for (what, heard) in [("call", call), ("verify-on-call list", list)] {
-                let heard = heard
-                    .unwrap_or_else(|| panic!("{mode:?}: the server heard the {what}"))
-                    .to_ascii_lowercase();
-                assert_eq!(heard.contains(&bearer), lends, "{mode:?} {what}: {heard}");
-                if !lends {
-                    assert!(
-                        !heard.contains("authorization:"),
-                        "{what}: no credential at all: {heard}"
-                    );
-                }
+        let mut server = TlsToolServer::new().await;
+        let mut forwarded = server.section();
+        forwarded["fs"]["upstream_credentials"] = "passthrough".into();
+        let refusal = server
+            .try_rig("door-passthrough-refused", forwarded, &|app| app)
+            .err()
+            .expect("the plane forbids lending its caller's busbar credential");
+        assert_member_passthrough_refused(&refusal, "door-passthrough-refused", "fs");
+        assert!(
+            server.heard.try_recv().is_err(),
+            "a refused configuration sends no upstream request"
+        );
+        let rig = server.rig("door-own-credential", server.section(), &|app| app);
+        let token = rig.bound_token();
+        let (status, body) = send(&rig.router, Some(&token), CALL).await;
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("a served answer");
+        assert_eq!(
+            body["result"]["content"][0]["text"], "from the server",
+            "{body}"
+        );
+        let (mut call, mut list) = (None, None);
+        while let Ok(request) = server.heard.try_recv() {
+            if request.contains("\"tools/call\"") {
+                call = Some(request);
+            } else if request.contains("\"tools/list\"") {
+                list = Some(request);
             }
         }
+        for (what, request) in [("call", call), ("verify-on-call list", list)] {
+            let request = request
+                .unwrap_or_else(|| panic!("the server heard the {what}"))
+                .to_ascii_lowercase();
+            assert!(
+                !request.contains("authorization:"),
+                "{what}: no credential at all: {request}"
+            );
+            assert!(
+                !request.contains(&token.to_ascii_lowercase()),
+                "the caller's token never leaves"
+            );
+        }
+        server.close().await;
     }
 
     /// The caller key's grants become exactly `scopes` (`(grant kind row, value)`, the kinds read
@@ -4147,11 +4381,13 @@ pub(crate) mod tool_door {
 
     /// A `token_exchange:` registration on loopback `port` (`aud:` the server's origin), three
     /// approved tools.
-    fn exchange_section(port: u16) -> serde_yaml::Value {
+    fn exchange_section(server: &TlsToolServer) -> serde_yaml::Value {
+        let port = server.port;
+        let pin = &server.pin;
         serde_yaml::from_str(&format!(
-            "fs:\n  url: \"http://127.0.0.1:{port}/rpc\"\n  \
-             pin: {{ mechanism: pinned_pubkey, key: \"sha256/K=\" }}\n  \
-             allow_private: true\n  aud: \"http://127.0.0.1:{port}\"\n  \
+            "fs:\n  url: \"https://127.0.0.1:{port}/rpc\"\n  \
+             pin: {{ mechanism: cert_spki, key: \"{pin}\" }}\n  \
+             allow_private: true\n  aud: \"https://127.0.0.1:{port}\"\n  \
              token_exchange:\n    token_url: \"{TOKEN_URL}\"\n    \
              subject_token: {{ env: {SUBJECT_VAR} }}\n  \
              tools_allow:\n    read_file: {{ schema_hash: \"{}\" }}\n    \
@@ -4190,13 +4426,15 @@ pub(crate) mod tool_door {
             ),
             ("door-exchange-wildcard", None, "fs_read_file"),
         ] {
-            let (port, mut heard) =
-                tool_server_listing(Arc::new(std::sync::Mutex::new(three_tools()))).await;
-            let rig = rig_tools(instance, port, exchange_section(port), &|app| app);
+            let mut server =
+                TlsToolServer::listing(Arc::new(std::sync::Mutex::new(three_tools()))).await;
+            let port = server.port;
+            let rig = server.rig(instance, exchange_section(&server), &|app| app);
+            let heard = &mut server.heard;
             if let Some(grants) = grants {
                 grant(&rig, grants);
             }
-            let (status, body) = send(&rig.router, Some(&rig.token), CALL).await;
+            let (status, body) = send(&rig.router, Some(&rig.bound_token()), CALL).await;
             assert_eq!(
                 status,
                 StatusCode::OK,
@@ -4249,14 +4487,15 @@ pub(crate) mod tool_door {
                 assert_eq!(form_value(r, "subject_token"), "busbar-own-subject-token");
                 assert_eq!(
                     form_value(r, "resource"),
-                    format!("http%3A%2F%2F127.0.0.1%3A{port}")
+                    format!("https%3A%2F%2F127.0.0.1%3A{port}")
                 );
                 assert!(
-                    !r.contains(&rig.token),
+                    !r.contains(&rig.token) && !r.contains(&rig.bound_token()),
                     "the caller's credential never reaches the authorization server"
                 );
             }
             assert!(rig.all_ended(), "every unit ended");
+            server.close().await;
         }
     }
 
@@ -4279,23 +4518,20 @@ pub(crate) mod tool_door {
             }
             n
         };
-        let tools = |bad: u16, good: u16, repeatable: &str| -> serde_yaml::Value {
-            let d = tool_digest();
-            serde_yaml::from_str(&format!(
-                "fs:\n  url: \"http://127.0.0.1:{bad}/rpc\"\n  \
-                 pin: {{ mechanism: pinned_pubkey, key: \"sha256/K=\" }}\n  \
-                 tools_allow:\n    read_file: {{ schema_hash: \"{d}\" }}\n\
-                 fs2:\n  url: \"http://127.0.0.1:{good}/rpc\"\n  \
-                 pin: {{ mechanism: pinned_pubkey, key: \"sha256/K=\" }}\n  \
-                 tools_allow:\n    read_file: {{ schema_hash: \"{d}\" }}\n\
-                 pools:\n  twins: {{ members: [fs, fs2], repeatable: [{repeatable}], \
-                 member_granted: true }}\n"
-            ))
-            .expect("a section")
+        let tools = |bad: &TlsToolServer, good: &TlsToolServer, repeatable: &str| {
+            let mut value = bad.section();
+            value["fs2"] = good.section()["fs"].clone();
+            value["pools"] = serde_yaml::to_value(serde_json::json!({
+                "twins": { "members": ["fs","fs2"], "repeatable":
+                    if repeatable.is_empty() { Vec::<&str>::new() } else { vec![repeatable] },
+                    "member_granted": true }
+            }))
+            .expect("the same pool data");
+            value
         };
         let instance = "door-tool-pool";
         for (repeatable, twin_answers) in [("read_file", true), ("", false)] {
-            let (bad, mut bad_heard) = tool_server_replying(Arc::new(move |r: &str| {
+            let mut bad = TlsToolServer::replying(Arc::new(move |r: &str| {
                 if r.contains("\"tools/list\"") {
                     (200, listing())
                 } else {
@@ -4303,30 +4539,29 @@ pub(crate) mod tool_door {
                 }
             }))
             .await;
-            let (good, mut good_heard) = tool_server().await;
-            let rig = Rig::with(
+            let mut good = TlsToolServer::new().await;
+            let rig = bad.rig_with_footing(
                 instance,
-                bad,
-                None,
-                None,
-                Some(tools(bad, good, repeatable)),
-                Footing::own(),
+                tools(&bad, &good, repeatable),
+                bad.footing_with_peers(&[&good]),
                 &|app| app,
             );
-            let (status, body) = send(&rig.router, Some(&rig.token), CALL).await;
+            let (status, body) = send(&rig.router, Some(&rig.bound_token()), CALL).await;
             let body = String::from_utf8_lossy(&body).to_string();
             assert_eq!(
                 body.contains("from the server"),
                 twin_answers,
                 "repeatable [{repeatable}]: {status} {body}"
             );
-            assert_eq!(calls(&mut bad_heard), 1, "the primary is called once");
+            assert_eq!(calls(&mut bad.heard), 1, "the primary is called once");
             assert_eq!(
-                calls(&mut good_heard),
+                calls(&mut good.heard),
                 usize::from(twin_answers),
                 "the twin hears the call only when the pool repeats the tool"
             );
             assert!(rig.all_ended(), "the unit ended inside itself");
+            bad.close().await;
+            good.close().await;
         }
     }
 
@@ -4338,14 +4573,10 @@ pub(crate) mod tool_door {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn verify_on_call_judges_the_live_list_reuses_a_fresh_look_and_fails_closed() {
         let _one = PUBLISHING.lock().await;
-        let tools = |port: u16, ttl: &str| -> serde_yaml::Value {
-            serde_yaml::from_str(&format!(
-                "fs:\n  url: \"http://127.0.0.1:{port}/rpc\"\n  \
-                 pin: {{ mechanism: pinned_pubkey, key: \"sha256/K=\" }}\n  verify_ttl: {ttl}\n  \
-                 tools_allow:\n    read_file: {{ schema_hash: \"{}\" }}\n",
-                tool_digest()
-            ))
-            .expect("a section")
+        let tools = |server: &TlsToolServer, ttl: &str| {
+            let mut value = server.section();
+            value["fs"]["verify_ttl"] = ttl.into();
+            value
         };
         let drain = |heard: &mut tokio::sync::mpsc::UnboundedReceiver<String>| {
             let mut got = Vec::new();
@@ -4364,18 +4595,11 @@ pub(crate) mod tool_door {
         // ── A FRESH LOOK IS REUSED within `verify_ttl` ───────────────────────────────────────────
         // One instance name for the three compositions: each publishes over the one before.
         let instance = "door-verify-on-call";
-        let (port, mut heard) = tool_server().await;
-        let rig = Rig::with(
-            instance,
-            port,
-            None,
-            None,
-            Some(tools(port, "1h")),
-            Footing::own(),
-            &|app| app,
-        );
+        let mut server = TlsToolServer::new().await;
+        let rig = server.rig(instance, tools(&server, "1h"), &|app| app);
+        let mut heard = &mut server.heard;
         for _ in 0..2 {
-            let (status, body) = send(&rig.router, Some(&rig.token), CALL).await;
+            let (status, body) = send(&rig.router, Some(&rig.bound_token()), CALL).await;
             assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
         }
         assert_eq!(
@@ -4384,20 +4608,14 @@ pub(crate) mod tool_door {
             "one fetch, two calls"
         );
         drop(rig);
+        server.close().await;
 
         // ── THE RUG-PULL ON THE CALL PATH: strict-live (`0s`) ─────────────────────────────────────
         let listed = Arc::new(std::sync::Mutex::new(tool_listing()));
-        let (port, mut heard) = tool_server_listing(Arc::clone(&listed)).await;
-        let rig = Rig::with(
-            instance,
-            port,
-            None,
-            None,
-            Some(tools(port, "0s")),
-            Footing::own(),
-            &|app| app,
-        );
-        let (status, _) = send(&rig.router, Some(&rig.token), CALL).await;
+        let mut server = TlsToolServer::listing(Arc::clone(&listed)).await;
+        let rig = server.rig(instance, tools(&server, "0s"), &|app| app);
+        let mut heard = &mut server.heard;
+        let (status, _) = send(&rig.router, Some(&rig.bound_token()), CALL).await;
         assert_eq!(
             status,
             StatusCode::OK,
@@ -4407,7 +4625,7 @@ pub(crate) mod tool_door {
             {"name": "read_file", "description": TOOL_DESCRIPTION,
              "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "exfil": {"type": "string"}}}}
         ]);
-        let (status, body) = send(&rig.router, Some(&rig.token), CALL).await;
+        let (status, body) = send(&rig.router, Some(&rig.bound_token()), CALL).await;
         assert_eq!(status.as_u16(), 403, "{}", String::from_utf8_lossy(&body));
         let body: serde_json::Value = serde_json::from_slice(&body).expect("JSON-RPC");
         assert_eq!(body["error"]["data"]["reason"], "quarantined", "{body}");
@@ -4417,20 +4635,14 @@ pub(crate) mod tool_door {
             "the drifted call was refused before it was sent"
         );
         drop(rig);
+        server.close().await;
 
         // ── FAIL CLOSED: the server cannot be reached at the fetch: reported to the kernel as
         // unreachable, and the call fails as an upstream failure, never sent (ARCHITECT Q3 (c)) ──
-        let port = down_port().await;
-        let rig = Rig::with(
-            instance,
-            port,
-            None,
-            None,
-            Some(tools(port, "0s")),
-            Footing::own(),
-            &|app| app,
-        );
-        let (status, body) = send(&rig.router, Some(&rig.token), CALL).await;
+        let server = TlsToolServer::new().await;
+        let rig = server.rig(instance, tools(&server, "0s"), &|app| app);
+        server.close().await;
+        let (status, body) = send(&rig.router, Some(&rig.bound_token()), CALL).await;
         assert_eq!(status.as_u16(), 200, "{}", String::from_utf8_lossy(&body));
         let body: serde_json::Value = serde_json::from_slice(&body).expect("JSON-RPC");
         assert_eq!(
@@ -4449,38 +4661,16 @@ pub(crate) mod tool_door {
     async fn the_tool_list_re_check_gives_up_at_the_registrations_timeout() {
         let _one = PUBLISHING.lock().await;
         let instance = "door-verify-timeout";
-        // A server that takes every connection and answers nothing on it.
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("a loopback port");
-        let port = listener.local_addr().expect("its address").port();
-        tokio::spawn(async move {
-            let mut held = Vec::new();
-            while let Ok((socket, _)) = listener.accept().await {
-                held.push(socket);
-            }
-        });
-        let section: serde_yaml::Value = serde_yaml::from_str(&format!(
-            "fs:\n  url: \"http://127.0.0.1:{port}/rpc\"\n  \
-             pin: {{ mechanism: pinned_pubkey, key: \"sha256/K=\" }}\n  verify_ttl: 0s\n  \
-             timeout: 1s\n  tools_allow:\n    read_file: {{ schema_hash: \"{}\" }}\n",
-            tool_digest()
-        ))
-        .expect("a section");
-        let rig = Rig::with(
-            instance,
-            port,
-            None,
-            None,
-            Some(section),
-            Footing::own(),
-            &|app| app,
-        );
+        let server = TlsToolServer::replying(Arc::new(|_| (STALL, String::new()))).await;
+        let mut section = server.section();
+        section["fs"]["verify_ttl"] = "0s".into();
+        section["fs"]["timeout"] = "1s".into();
+        let rig = server.rig(instance, section, &|app| app);
         // Bounded here so the RED is a named failure, not the harness's slow-test kill: before the
         // budget was honoured, the fetch to a server that never answers did not return at all.
         let (status, body) = tokio::time::timeout(
             std::time::Duration::from_secs(10),
-            send(&rig.router, Some(&rig.token), CALL),
+            send(&rig.router, Some(&rig.bound_token()), CALL),
         )
         .await
         .expect("the re-check gave up inside 10s: the registration's `timeout: 1s` is its budget");
@@ -4491,6 +4681,7 @@ pub(crate) mod tool_door {
             "an upstream failure: {body}"
         );
         assert!(rig.all_ended(), "the refused unit ended");
+        server.close().await;
     }
 
     /// THE ARGUMENT GUARD (the served engine's argguard): a URL a call's arguments carry to a cloud
@@ -4500,8 +4691,9 @@ pub(crate) mod tool_door {
     async fn a_metadata_url_in_the_arguments_is_refused_before_the_call_is_sent() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-argguard";
-        let (port, mut heard) = tool_server().await;
-        let rig = Rig::new(instance, port, None);
+        let mut server = TlsToolServer::new().await;
+        let rig = server.rig(instance, server.section(), &|app| app);
+        let heard = &mut server.heard;
         let call = |url: &str| {
             serde_json::json!({
                 "jsonrpc": "2.0", "id": 31, "method": "tools/call",
@@ -4518,7 +4710,7 @@ pub(crate) mod tool_door {
         };
         let (status, body) = send(
             &rig.router,
-            Some(&rig.token),
+            Some(&rig.bound_token()),
             &call("http://169.254.169.254/latest/meta-data/"),
         )
         .await;
@@ -4544,11 +4736,12 @@ pub(crate) mod tool_door {
         );
         let (status, body) = send(
             &rig.router,
-            Some(&rig.token),
+            Some(&rig.bound_token()),
             &call("https://docs.example.com/notes"),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+        server.close().await;
     }
 
     /// A `tools/call` of the rig's one tool whose undeclared `fetch` argument carries `url`.
@@ -4571,10 +4764,11 @@ pub(crate) mod tool_door {
     /// the argument guard's bytes (403, JSON-RPC -32000, `tool_argument_refused`); then a public
     /// URL in the same field is served.
     async fn refused_in_the_arguments(instance: &'static str, urls: &[&str]) {
-        let (port, mut heard) = tool_server().await;
-        let rig = Rig::new(instance, port, None);
+        let mut server = TlsToolServer::new().await;
+        let rig = server.rig(instance, server.section(), &|app| app);
+        let heard = &mut server.heard;
         for url in urls {
-            let (status, body) = send(&rig.router, Some(&rig.token), &fetching(url)).await;
+            let (status, body) = send(&rig.router, Some(&rig.bound_token()), &fetching(url)).await;
             let shown = String::from_utf8_lossy(&body);
             assert_eq!(status.as_u16(), 403, "`{url}` must be refused: {shown}");
             let body: serde_json::Value = serde_json::from_slice(&body).expect("JSON-RPC");
@@ -4594,11 +4788,12 @@ pub(crate) mod tool_door {
         );
         let (status, body) = send(
             &rig.router,
-            Some(&rig.token),
+            Some(&rig.bound_token()),
             &fetching("https://docs.example.com/notes"),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+        server.close().await;
     }
 
     /// THE ARGUMENT GUARD ASKS THE KERNEL'S `dest.judge` (THE DESIGN §11 host services B.3 item
@@ -4672,8 +4867,9 @@ pub(crate) mod tool_door {
         spellings: &[fn(&str) -> String],
         zero: &[&str],
     ) {
-        let (port, mut heard) = tool_server().await;
-        let rig = Rig::new(instance, port, None);
+        let mut server = TlsToolServer::new().await;
+        let rig = server.rig(instance, server.section(), &|app| app);
+        let heard = &mut server.heard;
         let refusal = |status: StatusCode, body: &[u8], url: &str| {
             let shown = String::from_utf8_lossy(body);
             assert_eq!(status.as_u16(), 403, "`{url}` must be refused: {shown}");
@@ -4691,10 +4887,11 @@ pub(crate) mod tool_door {
         for (odd, plain) in ODD_HOSTS {
             for spell in spellings {
                 let (odd_url, plain_url) = (spell(odd), spell(plain));
-                let (status, body) = send(&rig.router, Some(&rig.token), &fetching(&odd_url)).await;
+                let (status, body) =
+                    send(&rig.router, Some(&rig.bound_token()), &fetching(&odd_url)).await;
                 let odd_refusal = refusal(status, &body, &odd_url);
                 let (status, body) =
-                    send(&rig.router, Some(&rig.token), &fetching(&plain_url)).await;
+                    send(&rig.router, Some(&rig.bound_token()), &fetching(&plain_url)).await;
                 let plain_refusal = refusal(status, &body, &plain_url);
                 assert_eq!(
                     odd_refusal, plain_refusal,
@@ -4703,7 +4900,7 @@ pub(crate) mod tool_door {
             }
         }
         for url in zero {
-            let (status, body) = send(&rig.router, Some(&rig.token), &fetching(url)).await;
+            let (status, body) = send(&rig.router, Some(&rig.bound_token()), &fetching(url)).await;
             refusal(status, &body, url);
         }
         let mut wire = Vec::new();
@@ -4717,11 +4914,12 @@ pub(crate) mod tool_door {
         // GREEN control: a public IDN host is its punycode name, and served.
         let (status, body) = send(
             &rig.router,
-            Some(&rig.token),
+            Some(&rig.bound_token()),
             &fetching("https://b\u{fc}cher.example/notes"),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+        server.close().await;
     }
 
     /// RED (HIGH, the SSRF guard bypass): the argument guard refuses an `http://` URL whose host is
@@ -4748,10 +4946,18 @@ pub(crate) mod tool_door {
     async fn a_listing_is_answered_by_the_plane_with_no_walk_and_no_charge() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-local";
-        let (port, mut heard) = tool_server().await;
-        let rig = Rig::new(instance, port, None);
+        let mut server = TlsToolServer::new().await;
+        let rig = server.rig(instance, server.section(), &|app| app);
+        let heard = &mut server.heard;
 
-        let (status, body) = send_as(&rig.router, Some(&rig.token), LIST, "tools/list", None).await;
+        let (status, body) = send_as(
+            &rig.router,
+            Some(&rig.bound_token()),
+            LIST,
+            "tools/list",
+            None,
+        )
+        .await;
         assert_eq!(
             status,
             StatusCode::OK,
@@ -4767,6 +4973,7 @@ pub(crate) mod tool_door {
         assert_eq!(rig.admitted(), 0, "a local answer charges nothing");
         assert!(heard.try_recv().is_err(), "nothing dialled");
         assert!(rig.all_ended(), "every unit ended");
+        server.close().await;
     }
 
     /// THE PROTECTED-RESOURCE DOCUMENT (ARCHITECT Q-L3B-RFC9728, predev's plain document): the door
@@ -4778,7 +4985,8 @@ pub(crate) mod tool_door {
         use tower::ServiceExt as _;
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-metadata";
-        let (port, mut heard) = tool_server().await;
+        let mut server = TlsToolServer::new().await;
+        let port = server.port;
         let block: serde_yaml::Value = serde_yaml::from_str(&format!(
             "canonical_uri: \"http://127.0.0.1{}\"\n\
                  authorization_servers: [\"https://login.example.com\"]\n\
@@ -4791,8 +4999,8 @@ pub(crate) mod tool_door {
             port,
             None,
             Some(block),
-            None,
-            Footing::own(),
+            Some(server.section()),
+            server.footing(),
             &|app| app,
         );
         let req = axum::http::Request::builder()
@@ -4827,7 +5035,8 @@ pub(crate) mod tool_door {
         );
         assert_eq!(rig.admitted(), 0, "nothing admitted");
         assert!(rig.all_ended(), "no unit was opened");
-        assert!(heard.try_recv().is_err(), "nothing dialled");
+        assert!(server.heard.try_recv().is_err(), "nothing dialled");
+        server.close().await;
     }
 
     /// THE CLAIM: without a public base URL the door opens and claims nothing; with one its endpoint
@@ -4835,6 +5044,7 @@ pub(crate) mod tool_door {
     #[tokio::test]
     async fn the_tool_door_claims_its_endpoint_only_under_a_public_url() {
         let _one = PUBLISHING.lock().await;
+        let server = TlsToolServer::new().await;
         let compose = |instance: &'static str, public_url: Option<&str>| {
             let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
             crate::root::connector::install_io(&dispatcher);
@@ -4846,7 +5056,7 @@ pub(crate) mod tool_door {
                 crate::root::loader::dispatch::ConnTable::Probe,
             );
             let mut sections = BTreeMap::new();
-            sections.insert(plane.served().section, section(9));
+            sections.insert(plane.served().section, server.section());
             compose_planes(
                 &[(instance.to_string(), plane)],
                 &dispatcher,
@@ -4883,7 +5093,7 @@ pub(crate) mod tool_door {
                 crate::root::loader::dispatch::ConnTable::Probe,
             );
             let mut sections = BTreeMap::new();
-            sections.insert(plane.served().section, section(9));
+            sections.insert(plane.served().section, server.section());
             assert_eq!(
                 plane.served().owns,
                 [endpoint_section()],
@@ -4931,6 +5141,7 @@ pub(crate) mod tool_door {
                 .any(|c| c.verb == "POST" && c.target == endpoint()),
             "the endpoint is claimed under the public base URL"
         );
+        server.close().await;
     }
 
     /// A GRANTED ROOTS ASK, through the door (Law 11, U16): the server answers the call with an
@@ -4940,7 +5151,7 @@ pub(crate) mod tool_door {
     async fn a_granted_roots_ask_is_relayed_to_the_caller_and_no_retry_is_sent() {
         let _one = PUBLISHING.lock().await;
         let instance = "door-mrtr-roots";
-        let (port, mut heard) = tool_server_answering(Arc::new(|request: &str| {
+        let mut server = TlsToolServer::answering(Arc::new(|request: &str| {
             if request.contains("\"tools/list\"") {
                 serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"tools": tool_listing()}})
                     .to_string()
@@ -4950,24 +5161,11 @@ pub(crate) mod tool_door {
             }
         }))
         .await;
-        let tools: serde_yaml::Value = serde_yaml::from_str(&format!(
-            "fs:\n  url: \"http://127.0.0.1:{port}/rpc\"\n  \
-             pin: {{ mechanism: pinned_pubkey, key: \"sha256/K=\" }}\n  \
-             grants: {{ roots: true }}\n  \
-             tools_allow:\n    read_file: {{ schema_hash: \"{}\" }}\n",
-            tool_digest()
-        ))
-        .expect("a section");
-        let rig = Rig::with(
-            instance,
-            port,
-            None,
-            None,
-            Some(tools),
-            Footing::own(),
-            &|app| app,
-        );
-        let (status, body) = send(&rig.router, Some(&rig.token), CALL).await;
+        let mut tools = server.section();
+        tools["fs"]["grants"] = serde_yaml::to_value(serde_json::json!({"roots":true})).unwrap();
+        let rig = server.rig(instance, tools, &|app| app);
+        let heard = &mut server.heard;
+        let (status, body) = send(&rig.router, Some(&rig.bound_token()), CALL).await;
         let body: serde_json::Value = serde_json::from_slice(&body).expect("JSON-RPC");
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(
@@ -4988,6 +5186,7 @@ pub(crate) mod tool_door {
             "busbar sent no retry of its own: it answers nothing on the caller's behalf"
         );
         assert_eq!(rig.admitted(), 1, "one unit, one charge");
+        server.close().await;
     }
 }
 
@@ -5003,9 +5202,7 @@ pub(crate) mod door_boundary {
     use busbar_kernel::plane_driver::registry::{BuildCtx, PlaneDecl};
     use busbar_kernel_testkit::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
 
-    use super::tool_door::{
-        rig_tools, section, tool_server_listing, TlsToolServer, ADMIN_TOKEN, PUBLIC_URL,
-    };
+    use super::tool_door::{section, TlsToolServer, ADMIN_TOKEN, PUBLIC_URL};
     use crate::root::serve::planes_tests::PUBLISHING;
 
     /// The mcp door's registry row, folded from its Statement as the composition root folds it.
@@ -5056,6 +5253,9 @@ pub(crate) mod door_boundary {
         row: &'static PlaneDecl,
         value: serde_yaml::Value,
     ) -> Arc<dyn std::any::Any + Send + Sync> {
+        // The App fixture's facing probe receives the same plane-owned settings as the served
+        // composition. Core-owned pool tiers remain on the original egress section, not its probe.
+        let value = crate::root::serve::plane_settings(&value);
         let tools = busbar_kernel::plane_driver::door::DoorSection::new(
             row.door,
             row.config_section,
@@ -5560,13 +5760,9 @@ pub(crate) mod door_boundary {
         let listed = Arc::new(std::sync::Mutex::new(serde_json::json!([
             {"name": "read_file", "description": description, "inputSchema": schema}
         ])));
-        let (port, mut heard) = tool_server_listing(Arc::clone(&listed)).await;
+        let mut server = super::tool_door::TlsToolServer::listing(Arc::clone(&listed)).await;
         let digest = super::tool_door::surface("tool_digest");
-        let tools: serde_yaml::Value = serde_yaml::from_str(&format!(
-            "fs:\n  url: \"http://127.0.0.1:{port}/rpc\"\n  pin: {{ mechanism: pinned_pubkey, key: \"sha256/K=\" }}\n  \
-             tools_allow:\n    read_file: {{ schema_hash: \"{digest}\" }}\n"
-        ))
-        .expect("a section");
+        let tools = server.section();
         let row = row();
         registry(row);
         let slot = slot_over(row, tools.clone());
@@ -5580,7 +5776,7 @@ pub(crate) mod door_boundary {
             crate::root::dispatch::auth_axis,
         );
         let chain = vec![busbar_kernel::config::operator_provider().to_string()];
-        let rig = rig_tools(instance, port, tools, &|app| {
+        let rig = server.rig(instance, tools, &|app| {
             dispatched(app.admin_chain(chain.clone()), row, &slot)
         });
 
@@ -5595,7 +5791,10 @@ pub(crate) mod door_boundary {
         assert_eq!(body["capabilities"][0]["status"], "approved", "{body}");
         assert_eq!(body["capabilities"][0]["approved_digest"], digest, "{body}");
         assert!(
-            heard.try_recv().is_ok_and(|r| r.contains("\"tools/list\"")),
+            server
+                .heard
+                .try_recv()
+                .is_ok_and(|r| r.contains("\"tools/list\"")),
             "the server was asked for its tool list"
         );
 
@@ -5618,7 +5817,7 @@ pub(crate) mod door_boundary {
         let (status, body) =
             super::tool_door::send(&rig.router, Some(&bound), super::tool_door::CALL).await;
         assert_eq!(status.as_u16(), 200, "{}", String::from_utf8_lossy(&body));
-        let heard_now: Vec<String> = std::iter::from_fn(|| heard.try_recv().ok()).collect();
+        let heard_now: Vec<String> = std::iter::from_fn(|| server.heard.try_recv().ok()).collect();
         assert!(
             heard_now.len() == 1 && heard_now[0].contains("\"tools/call\""),
             "the connect's look is fresh, so the call fetches no list: {heard_now:?}"
@@ -5645,14 +5844,17 @@ pub(crate) mod door_boundary {
         );
         assert_eq!(body["state"], "quarantined", "{body}");
         assert_eq!(body["changed"], serde_json::json!(["read_file"]), "{body}");
-        let _ = heard.try_recv();
+        let _ = server.heard.try_recv();
 
         // ── CHANGES reads the same fact back, contacting nothing ─────────────────────────────────
         let (status, body) = admin(&rig, "GET", "/tools/fs/changes").await;
         assert_eq!(status, 200, "{body}");
         assert_eq!(body["state"], "quarantined", "{body}");
         assert_eq!(body["changed"], serde_json::json!(["read_file"]));
-        assert!(heard.try_recv().is_err(), "`changes` contacts nothing");
+        assert!(
+            server.heard.try_recv().is_err(),
+            "`changes` contacts nothing"
+        );
 
         // ── HEALTH stops serving, and the call is refused as a quarantine ─────────────────────────
         let (_, body) = admin(&rig, "GET", "/tools/fs/health").await;
@@ -5665,7 +5867,7 @@ pub(crate) mod door_boundary {
         assert_eq!(body["error"]["data"]["reason"], "quarantined", "{body}");
         // Verify-on-call fetched the list again (it found the same drift); the call never went out.
         let mut wire = Vec::new();
-        while let Ok(r) = heard.try_recv() {
+        while let Ok(r) = server.heard.try_recv() {
             wire.push(r);
         }
         assert!(
@@ -5683,13 +5885,14 @@ pub(crate) mod door_boundary {
             assert_eq!(status, 404, "{method} {path}: {body}");
             assert_eq!(body["error"]["code"], "not_found", "{body}");
         }
+        server.close().await;
     }
 
     /// THE OPERATOR'S `connect` CARRIES THE MEMBER'S BINDING (ARCHITECT round 5 Q-L3B-DOOR-EXCHANGE;
     /// round 4 (d)): a `token_exchange:` registration's tool list is fetched with the token busbar's
     /// own subject token was exchanged for under the registration's approved set; a `passthrough`
-    /// registration's credential belongs to a caller and `connect` has none, so it fetches nothing
-    /// (the previous release's refusal, its words, `400`) and no byte reaches the server.
+    /// registration is refused at declaration by the current MCP caller-credential policy, before
+    /// a door opens or any byte reaches the server.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn connect_fetches_with_the_members_binding_and_never_for_a_passthrough_member() {
         let _one = PUBLISHING.lock().await;
@@ -5697,7 +5900,6 @@ pub(crate) mod door_boundary {
             "BUSBAR_DOOR_CONNECT_TEST_SUBJECT",
             "busbar-own-connect-subject",
         );
-        let digest = super::tool_door::surface("tool_digest");
         let listed = || {
             Arc::new(std::sync::Mutex::new(serde_json::json!([
                 {"name": "read_file", "description": super::tool_door::TOOL_DESCRIPTION,
@@ -5718,24 +5920,19 @@ pub(crate) mod door_boundary {
         // ── TOKEN EXCHANGE ────────────────────────────────────────────────────────────────────────
         {
             let instance = "door-connect-exchange";
-            let (port, mut heard) = super::tool_door::tool_server_listing(listed()).await;
-            let token_url = super::tool_door::TOKEN_URL;
-            let tools: serde_yaml::Value = serde_yaml::from_str(&format!(
-            "fs:\n  url: \"http://127.0.0.1:{port}/rpc\"\n  pin: {{ mechanism: pinned_pubkey, key: \"sha256/K=\" }}\n  \
-             allow_private: true\n  aud: \"http://127.0.0.1:{port}\"\n  \
-             token_exchange:\n    token_url: \"{token_url}\"\n    \
-             subject_token: {{ env: BUSBAR_DOOR_CONNECT_TEST_SUBJECT }}\n  \
-             tools_allow:\n    read_file: {{ schema_hash: \"{digest}\" }}\n"
-        ))
-        .expect("a section");
+            let mut server = super::tool_door::TlsToolServer::listing(listed()).await;
+            let mut tools = connect_section(&server, true);
+            tools["fs"]["token_exchange"]["subject_token"]["env"] =
+                "BUSBAR_DOOR_CONNECT_TEST_SUBJECT".into();
             let slot = slot_over(row, tools.clone());
-            let rig = rig_tools(instance, port, tools, &|app| {
+            let rig = server.rig(instance, tools, &|app| {
                 dispatched(app.admin_chain(chain.clone()), row, &slot)
             });
             let (status, body) = admin(&rig, "POST", "/tools/fs/connect").await;
             assert_eq!(status, 200, "{body}");
             assert_eq!(body["state"], "approved", "{body}");
-            let list = heard
+            let list = server
+                .heard
                 .try_recv()
                 .expect("the server was asked for its tool list")
                 .to_ascii_lowercase();
@@ -5750,30 +5947,26 @@ pub(crate) mod door_boundary {
                 "busbar-own-connect-subject",
                 "busbar's own subject token"
             );
+            server.close().await;
         }
 
-        // ── PASSTHROUGH ───────────────────────────────────────────────────────────────────────────
-        let instance = "door-connect-passthrough";
-        let (port, mut heard) = super::tool_door::tool_server_listing(listed()).await;
-        let tools: serde_yaml::Value = serde_yaml::from_str(&format!(
-            "fs:\n  url: \"http://127.0.0.1:{port}/rpc\"\n  pin: {{ mechanism: pinned_pubkey, key: \"sha256/K=\" }}\n  \
-             upstream_credentials: passthrough\n  \
-             tools_allow:\n    read_file: {{ schema_hash: \"{digest}\" }}\n"
-        ))
-        .expect("a section");
-        let slot = slot_over(row, tools.clone());
-        let rig = rig_tools(instance, port, tools, &|app| {
-            dispatched(app.admin_chain(chain.clone()), row, &slot)
-        });
-        let (status, body) = admin(&rig, "POST", "/tools/fs/connect").await;
-        assert_eq!(status, 400, "{body}");
-        assert!(
-            body.to_string().contains(
-                "an operator-driven refresh has no caller and busbar will not substitute its own"
-            ),
-            "{body}"
+        // MCP refuses caller credential forwarding at registration, before any admin fetch.
+        let mut server = super::tool_door::TlsToolServer::listing(listed()).await;
+        let mut tools = server.section();
+        tools["fs"]["upstream_credentials"] = "passthrough".into();
+        let error = match server.try_rig("door-connect-passthrough", tools, &|app| {
+            app.admin_chain(chain.clone())
+        }) {
+            Ok(_) => panic!("caller credential forwarding must be refused"),
+            Err(error) => error,
+        };
+        super::tool_door::assert_member_passthrough_refused(
+            &error,
+            "door-connect-passthrough",
+            "fs",
         );
-        assert!(heard.try_recv().is_err(), "connect fetched nothing");
+        assert!(server.heard.try_recv().is_err(), "connect fetched nothing");
+        server.close().await;
     }
 
     /// The environment variable busbar's own subject token is named by in the apply cases below.
@@ -5782,23 +5975,20 @@ pub(crate) mod door_boundary {
     /// The `tools:` section of one registration `fs` on loopback `port`, its one tool approved;
     /// with `exchanged`, a `token_exchange:` registration under busbar's own subject token
     /// [`APPLY_SUBJECT_VAR`] (`aud:` the server's origin).
-    fn connect_section(port: u16, exchanged: bool) -> serde_yaml::Value {
-        let digest = super::tool_door::surface("tool_digest");
-        let token_url = super::tool_door::TOKEN_URL;
-        let exchange = if exchanged {
-            format!(
-                "  aud: \"http://127.0.0.1:{port}\"\n  token_exchange:\n    \
-                 token_url: \"{token_url}\"\n    subject_token: {{ env: {APPLY_SUBJECT_VAR} }}\n"
-            )
-        } else {
-            String::new()
-        };
-        serde_yaml::from_str(&format!(
-            "fs:\n  url: \"http://127.0.0.1:{port}/rpc\"\n  pin: {{ mechanism: pinned_pubkey, key: \"sha256/K=\" }}\n  \
-             allow_private: true\n{exchange}  \
-             tools_allow:\n    read_file: {{ schema_hash: \"{digest}\" }}\n"
-        ))
-        .expect("a section")
+    fn connect_section(
+        server: &super::tool_door::TlsToolServer,
+        exchanged: bool,
+    ) -> serde_yaml::Value {
+        let mut tools = server.section();
+        if exchanged {
+            tools["fs"]["aud"] = format!("https://127.0.0.1:{}", server.port).into();
+            tools["fs"]["token_exchange"] = serde_yaml::from_str(&format!(
+                "token_url: \"{}\"\nsubject_token: {{ env: {APPLY_SUBJECT_VAR} }}\n",
+                super::tool_door::TOKEN_URL,
+            ))
+            .expect("the exchange binding");
+        }
+        tools
     }
 
     /// The door composed as `instance` over the `tools:` section `before` (the boot), then a config
@@ -5807,8 +5997,7 @@ pub(crate) mod door_boundary {
     /// router, and what the server was sent for it.
     async fn connect_across_an_apply(
         instance: &'static str,
-        port: u16,
-        heard: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
+        server: &mut super::tool_door::TlsToolServer,
         before: serde_yaml::Value,
         after: serde_yaml::Value,
     ) -> (u16, serde_json::Value, String) {
@@ -5824,7 +6013,7 @@ pub(crate) mod door_boundary {
         let row = row();
         registry(row);
         let booted = slot_over(row, before.clone());
-        let rig = rig_tools(instance, port, before, &|app| {
+        let rig = server.rig(instance, before, &|app| {
             dispatched(app.admin_chain(chain.clone()), row, &booted)
         });
         let generation = rig.live.current().generation;
@@ -5847,7 +6036,11 @@ pub(crate) mod door_boundary {
             "the door took the apply"
         );
         let (status, body) = admin_on(&applied, "POST", "/tools/fs/connect").await;
-        let list = heard.try_recv().unwrap_or_default().to_ascii_lowercase();
+        let list = server
+            .heard
+            .try_recv()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
         (status, body, list)
     }
 
@@ -5869,20 +6062,17 @@ pub(crate) mod door_boundary {
             {"name": "read_file", "description": super::tool_door::TOOL_DESCRIPTION,
              "inputSchema": super::tool_door::tool_schema()}
         ])));
-        let (port, mut heard) = tool_server_listing(listed).await;
-        let (status, body, list) = connect_across_an_apply(
-            instance,
-            port,
-            &mut heard,
-            connect_section(port, false),
-            connect_section(port, true),
-        )
-        .await;
+        let mut server = super::tool_door::TlsToolServer::listing(listed).await;
+        let before = connect_section(&server, false);
+        let after = connect_section(&server, true);
+        let (status, body, list) =
+            connect_across_an_apply(instance, &mut server, before, after).await;
         assert_eq!(status, 200, "{body}");
         assert!(
             list.contains("authorization: bearer tok-fs_read_file"),
             "connect presents the token the applied binding exchanged: {list}"
         );
+        server.close().await;
     }
 
     /// GREEN TWIN: a `token_exchange:` registration a config apply leaves as it was keeps presenting
@@ -5895,20 +6085,17 @@ pub(crate) mod door_boundary {
             {"name": "read_file", "description": super::tool_door::TOOL_DESCRIPTION,
              "inputSchema": super::tool_door::tool_schema()}
         ])));
-        let (port, mut heard) = tool_server_listing(listed).await;
-        let (status, body, list) = connect_across_an_apply(
-            instance,
-            port,
-            &mut heard,
-            connect_section(port, true),
-            connect_section(port, true),
-        )
-        .await;
+        let mut server = super::tool_door::TlsToolServer::listing(listed).await;
+        let before = connect_section(&server, true);
+        let after = connect_section(&server, true);
+        let (status, body, list) =
+            connect_across_an_apply(instance, &mut server, before, after).await;
         assert_eq!(status, 200, "{body}");
         assert!(
             list.contains("authorization: bearer tok-fs_read_file"),
             "connect presents the token the member's binding exchanged: {list}"
         );
+        server.close().await;
     }
 }
 
@@ -5927,7 +6114,7 @@ pub(crate) mod door_boundary {
 mod spent_ledger {
     use busbar_kernel_testkit::test_support::durable_store::{durable_cfg, open_durable};
 
-    use super::tool_door::{protocol_version, rig_on, send_as, tool_server, Footing, Ledger, Rig};
+    use super::tool_door::{protocol_version, send_as, Footing, Ledger, Rig, TlsToolServer};
     use crate::root::serve::planes_tests::PUBLISHING;
 
     /// The composed instance: one name across the fleet, so the claims are one ledger's.
@@ -5941,10 +6128,12 @@ mod spent_ledger {
     const ALREADY_SPENT: &str = "state_already_spent";
 
     /// The registration whose one prompt is gated behind one round of confirmation.
-    fn tools(port: u16) -> serde_yaml::Value {
+    fn tools(server: &TlsToolServer) -> serde_yaml::Value {
+        let port = server.port;
+        let pin = &server.pin;
         serde_yaml::from_str(&format!(
-            "{SERVER}:\n  url: \"http://127.0.0.1:{port}/rpc\"\n  \
-             pin: {{ mechanism: pinned_pubkey, key: \"sha256/PEER=\" }}\n  \
+            "{SERVER}:\n  url: \"https://127.0.0.1:{port}/rpc\"\n  \
+             pin: {{ mechanism: cert_spki, key: \"{pin}\" }}\n  \
              prompts_allow:\n    {PROMPT}:\n      template: \"{RENDERED}\"\n      \
              ask_caller:\n        - confirm: {{ method: \"elicitation/create\", \
              params: {{ message: \"Confirm the transfer\" }} }}\n"
@@ -5958,17 +6147,17 @@ mod spent_ledger {
     }
 
     /// One node of the deployment on `port`, standing on `ledger`, reading `book`'s governance.
-    fn node(port: u16, ledger: Ledger, book: Option<&Rig>) -> Rig {
-        rig_on(
+    fn node(server: &TlsToolServer, ledger: Ledger, book: Option<&Rig>) -> Rig {
+        server.rig_with_footing(
             INSTANCE,
-            port,
-            tools(port),
+            tools(server),
             Footing {
                 ledger,
                 book,
                 guarded: false,
                 tls: None,
             },
+            &|app| app,
         )
     }
 
@@ -5988,7 +6177,7 @@ mod spent_ledger {
         });
         let (status, bytes) = send_as(
             &rig.router,
-            Some(&rig.token),
+            Some(&rig.bound_token()),
             &body.to_string(),
             "prompts/get",
             Some(&gated()),
@@ -6051,10 +6240,10 @@ mod spent_ledger {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_second_fleet_node_cannot_redeem_an_approval_the_first_already_spent() {
         let _one = PUBLISHING.lock().await;
-        let (port, _heard) = tool_server().await;
+        let server = TlsToolServer::new().await;
         let (file, cfg) = durable_cfg("door-askstate-fleet");
-        let node_a = node(port, Ledger::Store(open_durable(&cfg)), None);
-        let node_b = node(port, Ledger::Store(open_durable(&cfg)), Some(&node_a));
+        let node_a = node(&server, Ledger::Store(open_durable(&cfg)), None);
+        let node_b = node(&server, Ledger::Store(open_durable(&cfg)), Some(&node_a));
         let state = ask(&node_a).await;
         let first = redeem(&node_a, &state).await;
         assert!(
@@ -6069,6 +6258,7 @@ mod spent_ledger {
             file.display(),
             std::fs::read_to_string(&file).unwrap_or_else(|_| "<no file at all>".into())
         );
+        server.close().await;
     }
 
     /// THE RESTART CASE. The node that spent the approval is gone; a fresh one on the same journal
@@ -6076,32 +6266,33 @@ mod spent_ledger {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_restarted_node_cannot_redeem_an_approval_the_previous_process_spent() {
         let _one = PUBLISHING.lock().await;
-        let (port, _heard) = tool_server().await;
+        let server = TlsToolServer::new().await;
         let (_file, cfg) = durable_cfg("door-askstate-restart");
-        let before = node(port, Ledger::Store(open_durable(&cfg)), None);
+        let before = node(&server, Ledger::Store(open_durable(&cfg)), None);
         let state = ask(&before).await;
         let first = redeem(&before, &state).await;
         assert!(
             proceeded(&first),
             "the first redemption dispatches: {first:?}"
         );
-        let after = node(port, Ledger::Store(open_durable(&cfg)), Some(&before));
+        let after = node(&server, Ledger::Store(open_durable(&cfg)), Some(&before));
         drop(before);
         let second = redeem(&after, &state).await;
         assert!(
             refused_as_spent(&second),
             "a restart handed a spent approval back: {second:?}"
         );
+        server.close().await;
     }
 
     /// THE CONTROL: a DIFFERENT approval, on a fleet that already spent one, still dispatches.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_fresh_approval_is_not_refused_by_a_ledger_holding_another() {
         let _one = PUBLISHING.lock().await;
-        let (port, _heard) = tool_server().await;
+        let server = TlsToolServer::new().await;
         let (_file, cfg) = durable_cfg("door-askstate-distinct");
-        let node_a = node(port, Ledger::Store(open_durable(&cfg)), None);
-        let node_b = node(port, Ledger::Store(open_durable(&cfg)), Some(&node_a));
+        let node_a = node(&server, Ledger::Store(open_durable(&cfg)), None);
+        let node_b = node(&server, Ledger::Store(open_durable(&cfg)), Some(&node_a));
         let first = ask(&node_a).await;
         let spent = redeem(&node_a, &first).await;
         assert!(
@@ -6115,14 +6306,15 @@ mod spent_ledger {
             proceeded(&answer),
             "a freshly minted approval is not the one spent: {answer:?}"
         );
+        server.close().await;
     }
 
     /// AND ONE NODE REFUSES ITS OWN REPLAY with no store bound: the local half is the whole gate.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_node_refuses_its_own_replay_with_no_durable_store_configured() {
         let _one = PUBLISHING.lock().await;
-        let (port, _heard) = tool_server().await;
-        let solo = node(port, Ledger::Unbound, None);
+        let server = TlsToolServer::new().await;
+        let solo = node(&server, Ledger::Unbound, None);
         let state = ask(&solo).await;
         let first = redeem(&solo, &state).await;
         assert!(
@@ -6134,6 +6326,7 @@ mod spent_ledger {
             refused_as_spent(&second),
             "single use per node must hold with no store: {second:?}"
         );
+        server.close().await;
     }
 
     /// THE PERMANENT NEGATIVE: two nodes sharing the key and NO store each redeem once, the
@@ -6141,9 +6334,9 @@ mod spent_ledger {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn two_nodes_sharing_no_store_each_redeem_once_which_is_the_documented_ram_posture() {
         let _one = PUBLISHING.lock().await;
-        let (port, _heard) = tool_server().await;
-        let node_a = node(port, Ledger::Unbound, None);
-        let node_b = node(port, Ledger::Unbound, Some(&node_a));
+        let server = TlsToolServer::new().await;
+        let node_a = node(&server, Ledger::Unbound, None);
+        let node_b = node(&server, Ledger::Unbound, Some(&node_a));
         let state = ask(&node_a).await;
         let first = redeem(&node_a, &state).await;
         assert!(
@@ -6155,15 +6348,16 @@ mod spent_ledger {
             proceeded(&second),
             "with no shared ledger node B has nothing to consult: {second:?}"
         );
+        server.close().await;
     }
 
     /// AND EACH NODE'S OWN IN-MEMORY STORE IS THE SAME ARRANGEMENT: nothing is shared.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_memory_store_shares_no_ledger_which_is_the_documented_contract() {
         let _one = PUBLISHING.lock().await;
-        let (port, _heard) = tool_server().await;
-        let node_a = node(port, Ledger::Memory, None);
-        let node_b = node(port, Ledger::Memory, Some(&node_a));
+        let server = TlsToolServer::new().await;
+        let node_a = node(&server, Ledger::Memory, None);
+        let node_b = node(&server, Ledger::Memory, Some(&node_a));
         let state = ask(&node_a).await;
         let first = redeem(&node_a, &state).await;
         assert!(
@@ -6175,6 +6369,7 @@ mod spent_ledger {
             proceeded(&second),
             "an in-memory store per node keeps nothing the other reads: {second:?}"
         );
+        server.close().await;
     }
 }
 
@@ -6186,9 +6381,7 @@ mod spent_ledger {
 mod upstream_ask_relay {
     use std::sync::Arc;
 
-    use super::tool_door::{
-        rig_on, send, tool_digest, tool_listing, tool_server_answering, Footing, Rig, CALL,
-    };
+    use super::tool_door::{send, tool_digest, tool_listing, Rig, TlsToolServer, CALL};
     use crate::root::serve::planes_tests::PUBLISHING;
 
     /// The composed instance.
@@ -6198,8 +6391,8 @@ mod upstream_ask_relay {
     const ASK: &str = r#"{"jsonrpc":"2.0","id":0,"result":{"resultType":"input_required","inputRequests":{"draft":{"method":"sampling/createMessage","params":{"messages":[{"role":"user","content":{"type":"text","text":"Draft it."}}],"maxTokens":4096}}},"requestState":"s"}}"#;
 
     /// The server: a call is answered with one sampling ask; a retry carrying answers with a result.
-    async fn asking_server() -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
-        tool_server_answering(Arc::new(|request: &str| {
+    async fn asking_server() -> TlsToolServer {
+        TlsToolServer::answering(Arc::new(|request: &str| {
             if request.contains("\"tools/list\"") {
                 serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"tools": tool_listing()}})
                     .to_string()
@@ -6214,10 +6407,12 @@ mod upstream_ask_relay {
     }
 
     /// The registration: the sampling ask granted as a relay permission, or not.
-    fn tools(port: u16, granted: bool) -> serde_yaml::Value {
+    fn tools(server: &TlsToolServer, granted: bool) -> serde_yaml::Value {
+        let port = server.port;
+        let pin = &server.pin;
         serde_yaml::from_str(&format!(
-            "fs:\n  url: \"http://127.0.0.1:{port}/rpc\"\n  \
-             pin: {{ mechanism: pinned_pubkey, key: \"sha256/K=\" }}\n  \
+            "fs:\n  url: \"https://127.0.0.1:{port}/rpc\"\n  \
+             pin: {{ mechanism: cert_spki, key: \"{pin}\" }}\n  \
              grants: {{ sampling: {granted} }}\n  \
              tools_allow:\n    read_file: {{ schema_hash: \"{}\" }}\n",
             tool_digest()
@@ -6227,7 +6422,7 @@ mod upstream_ask_relay {
 
     /// One call of `body` through `rig`'s door: the status and the JSON-RPC body.
     async fn call(rig: &Rig, body: &str) -> (u16, serde_json::Value) {
-        let (status, body) = send(&rig.router, Some(&rig.token), body).await;
+        let (status, body) = send(&rig.router, Some(&rig.bound_token()), body).await;
         (
             status.as_u16(),
             serde_json::from_slice(&body).expect("JSON-RPC"),
@@ -6245,8 +6440,8 @@ mod upstream_ask_relay {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_granted_ask_reaches_the_caller_verbatim_and_its_retry_goes_back_to_the_member() {
         let _one = PUBLISHING.lock().await;
-        let (port, mut heard) = asking_server().await;
-        let rig = rig_on(INSTANCE, port, tools(port, true), Footing::own());
+        let mut server = asking_server().await;
+        let rig = server.rig(INSTANCE, tools(&server, true), &|app| app);
         let (status, body) = call(&rig, CALL).await;
         assert_eq!(status, 200, "{body}");
         let upstream: serde_json::Value = serde_json::from_str(ASK).expect("the ask");
@@ -6262,14 +6457,18 @@ mod upstream_ask_relay {
             state, "s",
             "the upstream's own state is nested in busbar's sealed one"
         );
-        let verify = heard
+        let verify = server
+            .heard
             .try_recv()
             .expect("verify-on-call fetched the tool list");
         assert!(verify.contains("\"tools/list\""), "{verify}");
-        let first = heard.try_recv().expect("the call reached the server");
+        let first = server
+            .heard
+            .try_recv()
+            .expect("the call reached the server");
         assert!(!first.contains("inputResponses"), "{first}");
         assert!(
-            heard.try_recv().is_err(),
+            server.heard.try_recv().is_err(),
             "busbar answered nothing upstream on the caller's behalf"
         );
 
@@ -6281,7 +6480,7 @@ mod upstream_ask_relay {
             "{body}"
         );
         let mut sent = None;
-        while let Ok(request) = heard.try_recv() {
+        while let Ok(request) = server.heard.try_recv() {
             if request.contains("inputResponses") {
                 sent = Some(request);
             }
@@ -6309,17 +6508,19 @@ mod upstream_ask_relay {
             body["error"]["data"]["reason"], "ask_unsolicited_state",
             "{body}"
         );
+        server.close().await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_ungranted_ask_is_refused_and_never_relayed() {
         let _one = PUBLISHING.lock().await;
-        let (port, _heard) = asking_server().await;
-        let rig = rig_on(INSTANCE, port, tools(port, false), Footing::own());
+        let server = asking_server().await;
+        let rig = server.rig(INSTANCE, tools(&server, false), &|app| app);
         let (status, body) = call(&rig, CALL).await;
         assert_eq!(status, 403, "{body}");
         assert_eq!(body["error"]["data"]["reason"], "ask_ungranted", "{body}");
         assert!(body.get("result").is_none(), "{body}");
+        server.close().await;
     }
 }
 
@@ -6335,11 +6536,10 @@ mod door_listen;
 #[cfg(all(linked_axis_plane_door, linked_section_pools))]
 mod task_continuation {
     use busbar_kernel::governance::NewKeySpec;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::tool_door::{
-        protocol_version, rig_on, rig_tools, send_as, tool_digest, tool_listing, Footing, Ledger,
-        Rig, Rows, CALL,
+        protocol_version, send_as, tool_digest, tool_listing, Footing, Ledger, Rig, Rows,
+        TlsToolServer, CALL,
     };
     use crate::root::serve::planes_tests::PUBLISHING;
 
@@ -6350,9 +6550,11 @@ mod task_continuation {
     const ANSWER: &str = r#"{"jsonrpc":"2.0","id":0,"result":{"content":[{"type":"text","text":"from the server"}]}}"#;
 
     /// The `tools:` section: the one tool, its `task_support` as given.
-    fn tools(port: u16, support: &str) -> serde_yaml::Value {
+    fn tools(server: &TlsToolServer, support: &str) -> serde_yaml::Value {
+        let port = server.port;
+        let pin = &server.pin;
         serde_yaml::from_str(&format!(
-            "fs:\n  url: \"http://127.0.0.1:{port}/rpc\"\n  pin: {{ mechanism: pinned_pubkey, key: \"sha256/K=\" }}\n  \
+            "fs:\n  url: \"https://127.0.0.1:{port}/rpc\"\n  pin: {{ mechanism: cert_spki, key: \"{pin}\" }}\n  \
              tools_allow:\n    read_file: {{ schema_hash: \"{}\", task_support: {support} }}\n",
             tool_digest()
         ))
@@ -6412,7 +6614,7 @@ mod task_continuation {
     async fn until(rig: &Rig, task_id: &str, status: &str) -> serde_json::Value {
         let deadline = tokio::time::Instant::now() + HANG_GUARD;
         while tokio::time::Instant::now() < deadline {
-            let (_, body) = ask(rig, &rig.token, "tasks/get", task_id).await;
+            let (_, body) = ask(rig, &rig.bound_token(), "tasks/get", task_id).await;
             if body["result"]["status"] == status {
                 return body;
             }
@@ -6423,65 +6625,8 @@ mod task_continuation {
 
     /// A tool server on loopback that answers its tool list at once and holds every `tools/call`
     /// until `release` turns true; every request is heard.
-    async fn gated_server(
-        release: tokio::sync::watch::Receiver<bool>,
-    ) -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("a loopback port");
-        let port = listener.local_addr().expect("its address").port();
-        let (sent, heard) = tokio::sync::mpsc::unbounded_channel();
-        tokio::spawn(async move {
-            while let Ok((mut socket, _)) = listener.accept().await {
-                let sent = sent.clone();
-                let mut release = release.clone();
-                tokio::spawn(async move {
-                    let mut buf = vec![0u8; 16 * 1024];
-                    let mut got = Vec::new();
-                    loop {
-                        let Ok(n) = socket.read(&mut buf).await else {
-                            return;
-                        };
-                        if n == 0 {
-                            return;
-                        }
-                        got.extend_from_slice(&buf[..n]);
-                        let text = String::from_utf8_lossy(&got).to_string();
-                        if let Some(at) = text.find("\r\n\r\n") {
-                            let length = text[..at]
-                                .lines()
-                                .find_map(|l| {
-                                    let (name, value) = l.split_once(':')?;
-                                    name.eq_ignore_ascii_case("content-length")
-                                        .then(|| value.trim().parse::<usize>().ok())
-                                        .flatten()
-                                })
-                                .unwrap_or(0);
-                            if got.len() >= at + 4 + length {
-                                let _ = sent.send(text);
-                                break;
-                            }
-                        }
-                    }
-                    let request = String::from_utf8_lossy(&got).to_string();
-                    let answer = if request.contains("\"tools/list\"") {
-                        serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"tools": tool_listing()}})
-                            .to_string()
-                    } else {
-                        let _ = release.wait_for(|r| *r).await;
-                        ANSWER.to_string()
-                    };
-                    let reply = format!(
-                        "HTTP/1.1 200 X\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
-                         connection: close\r\n\r\n{answer}",
-                        answer.len()
-                    );
-                    let _ = socket.write_all(reply.as_bytes()).await;
-                    let _ = socket.shutdown().await;
-                });
-            }
-        });
-        (port, heard)
+    async fn gated_server(release: tokio::sync::watch::Receiver<bool>) -> TlsToolServer {
+        TlsToolServer::gated(release, ANSWER).await
     }
 
     /// The next request the server hears that is a `tools/call`.
@@ -6503,7 +6648,7 @@ mod task_continuation {
     async fn create(rig: &Rig) -> (serde_json::Value, String) {
         let (status, body) = send_as(
             &rig.router,
-            Some(&rig.token),
+            Some(&rig.bound_token()),
             &task_call(),
             "tools/call",
             Some("fs_read_file"),
@@ -6518,21 +6663,122 @@ mod task_continuation {
         (body, task_id)
     }
 
+    fn observed_count(rig: &Rig) -> usize {
+        rig.work_observations
+            .lock()
+            .expect("the host observations")
+            .len()
+    }
+
+    /// Validate the exact wire horizon against a real observation of this work, after this
+    /// request began. No host fact or clock is invented to make a task's TTL constant.
+    fn assert_task_ttl(
+        rig: &Rig,
+        body: &serde_json::Value,
+        task_id: &str,
+        since: usize,
+    ) -> busbar_contract::abi::mechanism::inspection::WorkObservation {
+        let result = &body["result"];
+        assert_eq!(result["taskId"], task_id, "the exact observed work");
+        let stamp = result["createdAt"]
+            .as_str()
+            .expect("the real task creation timestamp");
+        assert_eq!(
+            stamp.len(),
+            24,
+            "the task's UTC millisecond timestamp: {stamp}"
+        );
+        let number = |range: std::ops::Range<usize>| {
+            stamp[range].parse::<u64>().expect("timestamp component")
+        };
+        let target = (
+            number(0..4) as i64,
+            number(5..7) as u32,
+            number(8..10) as u32,
+        );
+        let (mut lo, mut hi) = (0i64, 3_000_000i64);
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if busbar_contract::civil::civil_from_days(mid) < target {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        assert_eq!(busbar_contract::civil::civil_from_days(lo), target);
+        let seconds = u64::try_from(lo)
+            .unwrap()
+            .checked_mul(86_400)
+            .unwrap()
+            .checked_add(number(11..13).checked_mul(3600).unwrap())
+            .unwrap()
+            .checked_add(number(14..16).checked_mul(60).unwrap())
+            .unwrap()
+            .checked_add(number(17..19))
+            .unwrap();
+        let millis = number(20..23);
+        let rendered = busbar_contract::civil::rfc3339_from_secs(seconds);
+        assert_eq!(
+            format!("{}.{millis:03}Z", rendered.trim_end_matches('Z')),
+            stamp
+        );
+        let created_ms = seconds
+            .checked_mul(1000)
+            .unwrap()
+            .checked_add(millis)
+            .unwrap();
+        let ttl = result["ttlMs"].as_u64().expect("an integer TTL");
+        let observations = rig.work_observations.lock().expect("the host observations");
+        let candidates: Vec<_> = observations[since..]
+            .iter()
+            .filter(|seen| seen.reference == task_id.as_bytes() && seen.instance == rig.instance)
+            .collect();
+        assert!(
+            !candidates.is_empty(),
+            "the response inspected its own work {task_id}"
+        );
+        let seen = candidates
+            .into_iter()
+            .find(|seen| {
+                let o = seen.observation;
+                o.settled_ms
+                    .unwrap_or(o.observed_ms)
+                    .checked_add(o.retain_ms)
+                    .and_then(|horizon| horizon.checked_sub(created_ms))
+                    == Some(ttl)
+            })
+            .expect("the exact wire TTL is the real host horizon minus task creation");
+        assert!(
+            seen.observation.opened_ms >= created_ms,
+            "work opens after task creation"
+        );
+        assert_eq!(
+            seen.observation.retain_ms, 300_000,
+            "the host's actual retention policy"
+        );
+        seen.observation
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_task_call_answers_a_task_and_its_upstream_call_runs_without_a_poll() {
         let _one = PUBLISHING.lock().await;
         let instance = "door-task-runs";
         let (release, gate) = tokio::sync::watch::channel(false);
-        let (port, mut heard) = gated_server(gate).await;
-        let rig = rig_tools(instance, port, tools(port, "optional"), &|app| app);
+        let mut server = gated_server(gate).await;
+        let rig = server.rig(instance, tools(&server, "optional"), &|app| app);
 
         // THE CREATION RESULT: flat, `resultType: task`, under the caller's id.
+        let observed_before = observed_count(&rig);
         let (body, task_id) = create(&rig).await;
         let result = &body["result"];
         assert_eq!(body["id"], 30, "{body}");
         assert_eq!(result["resultType"], "task", "{body}");
         assert_eq!(result["status"], "working", "{body}");
-        assert_eq!(result["ttlMs"], 300_000, "{body}");
+        let observation = assert_task_ttl(&rig, &body, &task_id, observed_before);
+        assert!(
+            observation.settled_ms.is_none(),
+            "a live task has no established expiry"
+        );
         assert_eq!(result["pollIntervalMs"], 250, "{body}");
         assert_eq!(result["content"], serde_json::json!([]), "{body}");
         assert_eq!(
@@ -6548,10 +6794,10 @@ mod task_continuation {
         }
 
         // THE CONTINUATION RUNS WITHOUT ANY POLL: the upstream call arrives with no tasks/get sent.
-        let call = next_call(&mut heard).await;
+        let call = next_call(&mut server.heard).await;
         assert!(call.starts_with("POST /rpc "), "{call}");
         // It is in flight: the task is working.
-        let (status, working) = ask(&rig, &rig.token, "tasks/get", &task_id).await;
+        let (status, working) = ask(&rig, &rig.bound_token(), "tasks/get", &task_id).await;
         assert_eq!(status, 200, "{working}");
         assert_eq!(working["result"]["status"], "working", "{working}");
         assert_eq!(working["result"]["resultType"], "complete", "{working}");
@@ -6607,6 +6853,7 @@ mod task_continuation {
             busbar_kernel_audit::Subject::PrincipalId(rig.key.id.clone()),
             "on the caller's key"
         );
+        server.close().await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -6614,18 +6861,18 @@ mod task_continuation {
         let _one = PUBLISHING.lock().await;
         let instance = "door-task-cancel";
         let (release, gate) = tokio::sync::watch::channel(false);
-        let (port, mut heard) = gated_server(gate).await;
-        let rig = rig_tools(instance, port, tools(port, "optional"), &|app| app);
+        let mut server = gated_server(gate).await;
+        let rig = server.rig(instance, tools(&server, "optional"), &|app| app);
         let (_, task_id) = create(&rig).await;
-        let _call = next_call(&mut heard).await;
-        let (status, ack) = ask(&rig, &rig.token, "tasks/cancel", &task_id).await;
+        let _call = next_call(&mut server.heard).await;
+        let (status, ack) = ask(&rig, &rig.bound_token(), "tasks/cancel", &task_id).await;
         assert_eq!(status, 200, "{ack}");
         assert_eq!(
             ack["result"],
             serde_json::json!({ "resultType": "complete" }),
             "an empty ack: {ack}"
         );
-        let (_, got) = ask(&rig, &rig.token, "tasks/get", &task_id).await;
+        let (_, got) = ask(&rig, &rig.bound_token(), "tasks/get", &task_id).await;
         assert_eq!(got["result"]["status"], "cancelled", "{got}");
         // The continuation observes the cancel on its next step: the upstream's late answer does not
         // rewrite the settled status, and no result is inlined.
@@ -6638,15 +6885,16 @@ mod task_continuation {
         tokio::time::timeout(std::time::Duration::from_secs(10), ended)
             .await
             .expect("the continuation ended");
-        let (_, got) = ask(&rig, &rig.token, "tasks/get", &task_id).await;
+        let (_, got) = ask(&rig, &rig.bound_token(), "tasks/get", &task_id).await;
         assert_eq!(got["result"]["status"], "cancelled", "{got}");
         assert!(got["result"].get("result").is_none(), "{got}");
         // A second cancel is idempotent.
-        let (status, again) = ask(&rig, &rig.token, "tasks/cancel", &task_id).await;
+        let (status, again) = ask(&rig, &rig.bound_token(), "tasks/cancel", &task_id).await;
         assert_eq!(
             (status, again["result"].clone()),
             (200, ack["result"].clone())
         );
+        server.close().await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -6654,11 +6902,11 @@ mod task_continuation {
         let _one = PUBLISHING.lock().await;
         let instance = "door-task-required";
         let (_release, gate) = tokio::sync::watch::channel(false);
-        let (port, _heard) = gated_server(gate).await;
-        let rig = rig_tools(instance, port, tools(port, "required"), &|app| app);
+        let server = gated_server(gate).await;
+        let rig = server.rig(instance, tools(&server, "required"), &|app| app);
         let (status, body) = send_as(
             &rig.router,
-            Some(&rig.token),
+            Some(&rig.bound_token()),
             CALL,
             "tools/call",
             Some("fs_read_file"),
@@ -6679,7 +6927,7 @@ mod task_continuation {
             serde_json::json!({});
         let (status, body) = send_as(
             &rig.router,
-            Some(&rig.token),
+            Some(&rig.bound_token()),
             &undeclared.to_string(),
             "tasks/get",
             Some("x"),
@@ -6688,6 +6936,7 @@ mod task_continuation {
         let body: serde_json::Value = serde_json::from_slice(&body).expect("JSON-RPC");
         assert_eq!(status.as_u16(), 400, "{body}");
         assert_eq!(body["error"]["code"], -32021, "{body}");
+        server.close().await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -6695,8 +6944,8 @@ mod task_continuation {
         let _one = PUBLISHING.lock().await;
         let instance = "door-task-foreign";
         let (release, gate) = tokio::sync::watch::channel(true);
-        let (port, _heard) = gated_server(gate).await;
-        let rig = rig_tools(instance, port, tools(port, "optional"), &|app| app);
+        let server = gated_server(gate).await;
+        let rig = server.rig(instance, tools(&server, "optional"), &|app| app);
         let (_, task_id) = create(&rig).await;
         until(&rig, &task_id, "completed").await;
         drop(release);
@@ -6712,6 +6961,7 @@ mod task_continuation {
             )
             .expect("mint");
         let other = other.expose(&busbar_kernel::seal::lend()).to_string();
+        let other = rig.bound_token_for(&other);
         let foreign = ask(&rig, &other, "tasks/get", &task_id).await;
         let unknown = ask(
             &rig,
@@ -6733,8 +6983,9 @@ mod task_continuation {
         let cancel = ask(&rig, &other, "tasks/cancel", &task_id).await;
         assert_eq!(cancel.1["error"], unknown.1["error"]);
         // The owner still reads it.
-        let (_, mine) = ask(&rig, &rig.token, "tasks/get", &task_id).await;
+        let (_, mine) = ask(&rig, &rig.bound_token(), "tasks/get", &task_id).await;
         assert_eq!(mine["result"]["status"], "completed", "{mine}");
+        server.close().await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -6742,21 +6993,23 @@ mod task_continuation {
         let _one = PUBLISHING.lock().await;
         let instance = "door-task-ask";
         let (_release, gate) = tokio::sync::watch::channel(true);
-        let (port, mut heard) = gated_server(gate).await;
+        let mut server = gated_server(gate).await;
+        let port = server.port;
+        let pin = &server.pin;
         let section: serde_yaml::Value = serde_yaml::from_str(&format!(
-            "fs:\n  url: \"http://127.0.0.1:{port}/rpc\"\n  pin: {{ mechanism: pinned_pubkey, key: \"sha256/K=\" }}\n  \
+            "fs:\n  url: \"https://127.0.0.1:{port}/rpc\"\n  pin: {{ mechanism: cert_spki, key: \"{pin}\" }}\n  \
              tools_allow:\n    read_file:\n      schema_hash: \"{}\"\n      task_support: optional\n      \
              task_ask_caller:\n        - confirm: {{ method: elicitation/create, params: {{ message: \"Go?\" }} }}\n",
             tool_digest()
         ))
         .expect("a section");
-        let rig = rig_tools(instance, port, section, &|app| app);
+        let rig = server.rig(instance, section, &|app| app);
         let mut call: serde_json::Value = serde_json::from_str(&task_call()).expect("the call");
         call["params"]["_meta"]["io.modelcontextprotocol/clientCapabilities"]["elicitation"] =
             serde_json::json!({});
         let (status, body) = send_as(
             &rig.router,
-            Some(&rig.token),
+            Some(&rig.bound_token()),
             &call.to_string(),
             "tools/call",
             Some("fs_read_file"),
@@ -6774,7 +7027,7 @@ mod task_continuation {
             "{parked}"
         );
         // Parked: nothing went upstream but the verify fetch.
-        while let Ok(request) = heard.try_recv() {
+        while let Ok(request) = server.heard.try_recv() {
             assert!(!request.contains("\"tools/call\""), "{request}");
         }
         let mut update: serde_json::Value =
@@ -6783,7 +7036,7 @@ mod task_continuation {
             serde_json::json!({ "confirm": { "action": "accept" } });
         let (status, ack) = send_as(
             &rig.router,
-            Some(&rig.token),
+            Some(&rig.bound_token()),
             &update.to_string(),
             "tasks/update",
             Some(&task_id),
@@ -6797,21 +7050,22 @@ mod task_continuation {
             "{ack}"
         );
         // The answer became an argument of the call that went out.
-        let call = next_call(&mut heard).await;
+        let call = next_call(&mut server.heard).await;
         assert!(call.contains("\"confirm\""), "{call}");
         let done = until(&rig, &task_id, "completed").await;
         assert_eq!(
             done["result"]["result"]["content"][0]["text"], "from the server",
             "{done}"
         );
+        server.close().await;
     }
 
     /// The member's ask inside a task, as it sends it.
     const UPSTREAM_ASK: &str = r#"{"jsonrpc":"2.0","id":0,"result":{"resultType":"input_required","inputRequests":{"ok":{"method":"elicitation/create","params":{"message":"Publish it?","requestedSchema":{"type":"object","properties":{}}}}},"requestState":"theirs"}}"#;
 
     /// A member that asks its caller on the first call and answers the retry carrying answers.
-    async fn asking_member() -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
-        super::tool_door::tool_server_answering(std::sync::Arc::new(|request: &str| {
+    async fn asking_member() -> TlsToolServer {
+        TlsToolServer::answering(std::sync::Arc::new(|request: &str| {
             if request.contains("\"tools/list\"") {
                 serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"tools": tool_listing()}})
                     .to_string()
@@ -6826,9 +7080,11 @@ mod task_continuation {
     }
 
     /// The task tool's section, the elicitation ask granted as a relay permission or not.
-    fn asking_tools(port: u16, granted: bool) -> serde_yaml::Value {
+    fn asking_tools(server: &TlsToolServer, granted: bool) -> serde_yaml::Value {
+        let port = server.port;
+        let pin = &server.pin;
         serde_yaml::from_str(&format!(
-            "fs:\n  url: \"http://127.0.0.1:{port}/rpc\"\n  pin: {{ mechanism: pinned_pubkey, key: \"sha256/K=\" }}\n  \
+            "fs:\n  url: \"https://127.0.0.1:{port}/rpc\"\n  pin: {{ mechanism: cert_spki, key: \"{pin}\" }}\n  \
              grants: {{ elicitation: {granted} }}\n  \
              tools_allow:\n    read_file: {{ schema_hash: \"{}\", task_support: optional }}\n",
             tool_digest()
@@ -6845,8 +7101,8 @@ mod task_continuation {
     async fn a_members_ask_inside_a_task_reaches_the_caller_and_its_answer_reaches_the_member() {
         let _one = PUBLISHING.lock().await;
         let instance = "door-task-relay";
-        let (port, mut heard) = asking_member().await;
-        let rig = rig_tools(instance, port, asking_tools(port, true), &|app| app);
+        let mut server = asking_member().await;
+        let rig = server.rig(instance, asking_tools(&server, true), &|app| app);
         let (_, task_id) = create(&rig).await;
         let parked = until(&rig, &task_id, "input_required").await;
         let sent: serde_json::Value = serde_json::from_str(UPSTREAM_ASK).expect("the ask");
@@ -6855,7 +7111,7 @@ mod task_continuation {
             "the member's requests reach the caller verbatim: {parked}"
         );
         assert!(parked["result"].get("requestState").is_none(), "{parked}");
-        let first = next_call(&mut heard).await;
+        let first = next_call(&mut server.heard).await;
         assert!(!first.contains("inputResponses"), "{first}");
 
         let mut update: serde_json::Value =
@@ -6864,7 +7120,7 @@ mod task_continuation {
             serde_json::json!({ "ok": { "action": "accept", "content": {} } });
         let (status, ack) = send_as(
             &rig.router,
-            Some(&rig.token),
+            Some(&rig.bound_token()),
             &update.to_string(),
             "tasks/update",
             Some(&task_id),
@@ -6873,7 +7129,7 @@ mod task_continuation {
         assert_eq!(status.as_u16(), 200, "{}", String::from_utf8_lossy(&ack));
 
         // THE RETRY reaches the member: the caller's answers and the member's own state, verbatim.
-        let retry = next_call(&mut heard).await;
+        let retry = next_call(&mut server.heard).await;
         let body = retry
             .split_once("\r\n\r\n")
             .map_or(retry.as_str(), |(_, b)| b);
@@ -6892,6 +7148,7 @@ mod task_continuation {
             done["result"]["result"]["content"][0]["text"], "answered by the caller",
             "{done}"
         );
+        server.close().await;
     }
 
     /// An ungranted ask inside a task is still refused (`ask_ungranted`, the operator's policy): the
@@ -6900,8 +7157,8 @@ mod task_continuation {
     async fn an_ungranted_ask_inside_a_task_is_refused() {
         let _one = PUBLISHING.lock().await;
         let instance = "door-task-relay-ungranted";
-        let (port, _heard) = asking_member().await;
-        let rig = rig_tools(instance, port, asking_tools(port, false), &|app| app);
+        let server = asking_member().await;
+        let rig = server.rig(instance, asking_tools(&server, false), &|app| app);
         let (_, task_id) = create(&rig).await;
         let failed = until(&rig, &task_id, "failed").await;
         assert!(
@@ -6911,6 +7168,7 @@ mod task_continuation {
             "{failed}"
         );
         assert!(failed["result"].get("inputRequests").is_none(), "{failed}");
+        server.close().await;
     }
 
     // ── THE TASK STORE IS HOST RECORDS (BUSBAR-1.6.0.md §2; §1 "Admission bounds
@@ -6921,21 +7179,21 @@ mod task_continuation {
     /// `book`'s governance.
     fn node(
         instance: &'static str,
-        port: u16,
+        server: &TlsToolServer,
         rows: &std::sync::Arc<Rows>,
         max_live: usize,
         book: Option<&Rig>,
     ) -> Rig {
-        rig_on(
+        server.rig_with_footing(
             instance,
-            port,
-            tools(port, "optional"),
+            tools(server, "optional"),
             Footing {
                 ledger: Ledger::Rows(std::sync::Arc::clone(rows), max_live),
                 book,
                 guarded: false,
                 tls: None,
             },
+            &|app| app,
         )
     }
 
@@ -6959,28 +7217,46 @@ mod task_continuation {
         let _one = PUBLISHING.lock().await;
         let instance = "door-task-fleet";
         let (_release, gate) = tokio::sync::watch::channel(false);
-        let (port, mut heard) = gated_server(gate).await;
+        let mut server = gated_server(gate).await;
         let rows = std::sync::Arc::new(Rows::default());
-        let a = node(instance, port, &rows, 4096, None);
-        let b = node(instance, port, &rows, 4096, Some(&a));
+        let a = node(instance, &server, &rows, 4096, None);
+        let b = node(instance, &server, &rows, 4096, Some(&a));
         let (_, task_id) = create(&a).await;
-        let _call = next_call(&mut heard).await;
-        let (status, here) = ask(&a, &a.token, "tasks/get", &task_id).await;
+        let _call = next_call(&mut server.heard).await;
+        let observed_here = observed_count(&a);
+        let (status, here) = ask(&a, &a.bound_token(), "tasks/get", &task_id).await;
         assert_eq!(status, 200, "{here}");
         assert_eq!(here["result"]["status"], "working", "{here}");
-        // The other node reads the host's rows once the first node's writes reach them.
-        let mut there = serde_json::Value::Null;
-        for _ in 0..250 {
-            there = ask(&b, &b.token, "tasks/get", &task_id).await.1;
-            if there == here {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
+        let here_observation = assert_task_ttl(&a, &here, &task_id, observed_here);
+        let observed_there = observed_count(&b);
+        let (status, there) = ask(&b, &b.bound_token(), "tasks/get", &task_id).await;
+        assert_eq!(status, 200, "{there}");
+        let there_observation = assert_task_ttl(&b, &there, &task_id, observed_there);
+        assert!(here_observation.settled_ms.is_none() && there_observation.settled_ms.is_none());
         assert_eq!(
-            there, here,
-            "the other node answers the live task from the host's rows"
+            there["result"]["ttlMs"]
+                .as_u64()
+                .unwrap()
+                .checked_sub(here["result"]["ttlMs"].as_u64().unwrap()),
+            there_observation
+                .observed_ms
+                .checked_sub(here_observation.observed_ms),
+            "live TTL grows by exactly the host-observed age between nodes"
         );
+        let (mut here_fields, mut there_fields) = (here.clone(), there.clone());
+        here_fields["result"]
+            .as_object_mut()
+            .unwrap()
+            .remove("ttlMs");
+        there_fields["result"]
+            .as_object_mut()
+            .unwrap()
+            .remove("ttlMs");
+        assert_eq!(
+            there_fields, here_fields,
+            "every other field comes from the same host task rows"
+        );
+        server.close().await;
     }
 
     /// THE HANDLES A GONE PROCESS LEFT ARE SETTLED: a process opens live work up to its host's
@@ -6991,14 +7267,14 @@ mod task_continuation {
         let _one = PUBLISHING.lock().await;
         let instance = "door-task-restart";
         let (_release, gate) = tokio::sync::watch::channel(false);
-        let (port, _heard) = gated_server(gate).await;
+        let server = gated_server(gate).await;
         let rows = std::sync::Arc::new(Rows::default());
-        let gone = node(instance, port, &rows, 2, None);
+        let gone = node(instance, &server, &rows, 2, None);
         let (_, first) = create(&gone).await;
         let (_, second) = create(&gone).await;
         let (status, refused) = send_as(
             &gone.router,
-            Some(&gone.token),
+            Some(&gone.bound_token()),
             &task_call(),
             "tools/call",
             Some("fs_read_file"),
@@ -7012,13 +7288,13 @@ mod task_continuation {
         );
         // Its writes reach the shared rows; then its process ends, and the clock moves on.
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-        let next = node(instance, port, &rows, 2, Some(&gone));
+        let next = node(instance, &server, &rows, 2, Some(&gone));
         drop(gone);
         next.wall
             .fetch_add(3_600_000, std::sync::atomic::Ordering::SeqCst);
         let (status, body) = send_as(
             &next.router,
-            Some(&next.token),
+            Some(&next.bound_token()),
             &task_call(),
             "tools/call",
             Some("fs_read_file"),
@@ -7031,9 +7307,10 @@ mod task_continuation {
             String::from_utf8_lossy(&body)
         );
         for id in [&first, &second] {
-            let (_, got) = ask(&next, &next.token, "tasks/get", id).await;
+            let (_, got) = ask(&next, &next.bound_token(), "tasks/get", id).await;
             assert_eq!(got["result"]["status"], "cancelled", "{got}");
         }
+        server.close().await;
     }
 
     /// A SETTLE THE STORE REFUSES IS MADE AGAIN UNTIL IT LANDS: the store refuses the first two
@@ -7044,10 +7321,10 @@ mod task_continuation {
         let _one = PUBLISHING.lock().await;
         let instance = "door-task-settle-retry";
         let (_release, gate) = tokio::sync::watch::channel(true);
-        let (port, _heard) = gated_server(gate).await;
+        let server = gated_server(gate).await;
         let rows = std::sync::Arc::new(Rows::default());
         rows.1.store(2, std::sync::atomic::Ordering::SeqCst);
-        let rig = node(instance, port, &rows, 4096, None);
+        let rig = node(instance, &server, &rows, 4096, None);
         let (_, task_id) = create(&rig).await;
         ended(&rig).await;
         let reference =
@@ -7081,6 +7358,7 @@ mod task_continuation {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         assert!(settled, "the owed settle landed");
+        server.close().await;
     }
 }
 
@@ -7092,7 +7370,7 @@ mod task_continuation {
 /// list every server takes), the same verdicts, read off the far end the door dials.
 #[cfg(all(linked_axis_plane_door, linked_section_pools))]
 pub(crate) mod hook_parity {
-    use super::tool_door::{send_as, surface, tool_server, Footing, Rig};
+    use super::tool_door::{send_as, surface, Rig, TlsToolServer};
     use crate::root::serve::planes_tests::PUBLISHING;
 
     /// A `kind: gate` on the hermetic test cdylib, `prompt` the grant it holds (the served
@@ -7131,42 +7409,28 @@ pub(crate) mod hook_parity {
         )
     }
 
-    /// The door composed as `instance` against the server on `port`, `hooks` (name, document) all
-    /// attached section-level (`tools.hooks`).
+    /// The same hook deployment on a certificate-authenticated HTTPS member.
     pub(crate) fn rig(
         instance: &'static str,
-        port: u16,
+        server: &TlsToolServer,
         hooks: Vec<(&'static str, busbar_kernel::config::HookCfg)>,
     ) -> Rig {
         let env = hook_env();
-        // The door's folded row in the process's plane registry, as the composition root installs
-        // it: the deployment's per-entry hooks are resolved under the plane it names.
-        super::door_boundary::registry(super::door_boundary::row());
-        Rig::with(
-            instance,
-            port,
-            None,
-            None,
-            None,
-            Footing::own(),
-            &move |mut app| {
-                if hooks.is_empty() {
-                    return app;
-                }
-                // The section-level list is combined onto every registered server's own (the rig's
-                // one server, `fs`, attaches none of its own).
-                app.set_container_hooks(
-                    surface("plane_key"),
-                    vec![("fs".to_string(), Vec::new())],
-                    hooks.iter().map(|(n, _)| (*n).to_string()).collect(),
-                );
-                let mut app = app.hook_env(env.clone());
-                for (name, cfg) in &hooks {
-                    app = app.hook(name, cfg.clone());
-                }
-                app
-            },
-        )
+        server.rig(instance, server.section(), &move |mut app| {
+            if hooks.is_empty() {
+                return app;
+            }
+            app.set_container_hooks(
+                surface("plane_key"),
+                vec![("fs".to_string(), Vec::new())],
+                hooks.iter().map(|(n, _)| (*n).to_string()).collect(),
+            );
+            let mut app = app.hook_env(env.clone());
+            for (name, cfg) in &hooks {
+                app = app.hook(name, cfg.clone());
+            }
+            app
+        })
     }
 
     /// A `tools/call` of the one approved tool with `arguments`.
@@ -7201,11 +7465,11 @@ pub(crate) mod hook_parity {
         let instance = "door-hook-reject-all";
         let body = call(serde_json::json!({ "path": "/etc/hosts" }));
 
-        let (port, mut heard) = tool_server().await;
-        let control = rig(instance, port, Vec::new());
+        let mut server = TlsToolServer::new().await;
+        let control = rig(instance, &server, Vec::new());
         let (status, answer) = send_as(
             &control.router,
-            Some(&control.token),
+            Some(&control.bound_token()),
             &body,
             "tools/call",
             Some("fs_read_file"),
@@ -7213,7 +7477,7 @@ pub(crate) mod hook_parity {
         .await;
         assert_eq!(status.as_u16(), 200, "{}", String::from_utf8_lossy(&answer));
         assert_eq!(
-            calls_heard(&mut heard).len(),
+            calls_heard(&mut server.heard).len(),
             1,
             "the control reached the server"
         );
@@ -7221,7 +7485,7 @@ pub(crate) mod hook_parity {
 
         let gated = rig(
             instance,
-            port,
+            &server,
             vec![(
                 "reject-all",
                 gate(
@@ -7234,7 +7498,7 @@ pub(crate) mod hook_parity {
         );
         let (status, answer) = send_as(
             &gated.router,
-            Some(&gated.token),
+            Some(&gated.bound_token()),
             &body,
             "tools/call",
             Some("fs_read_file"),
@@ -7247,9 +7511,10 @@ pub(crate) mod hook_parity {
             "{answer}"
         );
         assert!(
-            calls_heard(&mut heard).is_empty(),
+            calls_heard(&mut server.heard).is_empty(),
             "a gate that rejects after the call went out stopped nothing"
         );
+        server.close().await;
     }
 
     /// What the gate sees is the call's ARGUMENTS: a screen keyed on a token found only inside
@@ -7258,10 +7523,10 @@ pub(crate) mod hook_parity {
     async fn the_calls_content_reaches_the_gate() {
         let _one = PUBLISHING.lock().await;
         let instance = "door-hook-content";
-        let (port, mut heard) = tool_server().await;
+        let mut server = TlsToolServer::new().await;
         let rig = rig(
             instance,
-            port,
+            &server,
             vec![(
                 "screen",
                 gate(
@@ -7272,7 +7537,7 @@ pub(crate) mod hook_parity {
         );
         let (status, answer) = send_as(
             &rig.router,
-            Some(&rig.token),
+            Some(&rig.bound_token()),
             &call(serde_json::json!({ "path": "/etc/hosts" })),
             "tools/call",
             Some("fs_read_file"),
@@ -7281,7 +7546,7 @@ pub(crate) mod hook_parity {
         assert_eq!(status.as_u16(), 200, "{}", String::from_utf8_lossy(&answer));
         let (status, answer) = send_as(
             &rig.router,
-            Some(&rig.token),
+            Some(&rig.bound_token()),
             &call(serde_json::json!({ "path": "/etc/shadow" })),
             "tools/call",
             Some("fs_read_file"),
@@ -7294,10 +7559,11 @@ pub(crate) mod hook_parity {
             String::from_utf8_lossy(&answer)
         );
         assert_eq!(
-            calls_heard(&mut heard).len(),
+            calls_heard(&mut server.heard).len(),
             1,
             "only the clean call went out"
         );
+        server.close().await;
     }
 
     /// A `prompt: rw` rewrite replaces the call's arguments before the server sees them: the
@@ -7306,10 +7572,10 @@ pub(crate) mod hook_parity {
     async fn a_rewrite_hook_edits_the_tool_call_arguments_before_they_go_upstream() {
         let _one = PUBLISHING.lock().await;
         let instance = "door-hook-rewrite";
-        let (port, mut heard) = tool_server().await;
+        let mut server = TlsToolServer::new().await;
         let rig = rig(
             instance,
-            port,
+            &server,
             vec![(
                 "rewrite",
                 gate(
@@ -7324,20 +7590,21 @@ pub(crate) mod hook_parity {
         );
         let (status, answer) = send_as(
             &rig.router,
-            Some(&rig.token),
+            Some(&rig.bound_token()),
             &call(serde_json::json!({ "path": "/etc/hosts" })),
             "tools/call",
             Some("fs_read_file"),
         )
         .await;
         assert_eq!(status.as_u16(), 200, "{}", String::from_utf8_lossy(&answer));
-        let wire = calls_heard(&mut heard);
+        let wire = calls_heard(&mut server.heard);
         assert_eq!(wire.len(), 1, "one call went out");
         assert!(
             wire[0].contains("/srv/rewritten-by-hook") && !wire[0].contains("/etc/hosts"),
             "the server received the arguments the hook rewrote them to: {}",
             wire[0]
         );
+        server.close().await;
     }
 
     /// A `prompt: rw` gate that screens may also reject (reject > rewrite), on the arguments, at
@@ -7346,10 +7613,10 @@ pub(crate) mod hook_parity {
     async fn a_rewrite_gate_can_reject_on_the_arguments_it_screens() {
         let _one = PUBLISHING.lock().await;
         let instance = "door-hook-rw-screen";
-        let (port, mut heard) = tool_server().await;
+        let mut server = TlsToolServer::new().await;
         let rig = rig(
             instance,
-            port,
+            &server,
             vec![(
                 "screen",
                 // Screens only: clean arguments are let through untouched (the double's default
@@ -7367,7 +7634,7 @@ pub(crate) mod hook_parity {
         );
         let (status, _) = send_as(
             &rig.router,
-            Some(&rig.token),
+            Some(&rig.bound_token()),
             &call(serde_json::json!({ "path": "/etc/hosts" })),
             "tools/call",
             Some("fs_read_file"),
@@ -7376,7 +7643,7 @@ pub(crate) mod hook_parity {
         assert_eq!(status.as_u16(), 200, "clean arguments are served");
         let (status, answer) = send_as(
             &rig.router,
-            Some(&rig.token),
+            Some(&rig.bound_token()),
             &call(serde_json::json!({ "path": "/etc/shadow" })),
             "tools/call",
             Some("fs_read_file"),
@@ -7384,10 +7651,11 @@ pub(crate) mod hook_parity {
         .await;
         assert_eq!(status.as_u16(), 451, "{}", String::from_utf8_lossy(&answer));
         assert_eq!(
-            calls_heard(&mut heard).len(),
+            calls_heard(&mut server.heard).len(),
             1,
             "the rejected call never went out"
         );
+        server.close().await;
     }
 
     /// A rewrite hook that panics is the seam's own failed verdict: `on_error: weighted` serves the
@@ -7398,10 +7666,10 @@ pub(crate) mod hook_parity {
         let _one = PUBLISHING.lock().await;
         let instance = "door-hook-panic";
         let body = call(serde_json::json!({ "path": "/etc/hosts" }));
-        let (port, mut heard) = tool_server().await;
+        let mut server = TlsToolServer::new().await;
         let weighted = rig(
             instance,
-            port,
+            &server,
             vec![(
                 "panicky",
                 gate("rw", serde_json::json!({ "panic_transform": true })),
@@ -7409,14 +7677,14 @@ pub(crate) mod hook_parity {
         );
         let (status, answer) = send_as(
             &weighted.router,
-            Some(&weighted.token),
+            Some(&weighted.bound_token()),
             &body,
             "tools/call",
             Some("fs_read_file"),
         )
         .await;
         assert_eq!(status.as_u16(), 200, "{}", String::from_utf8_lossy(&answer));
-        let wire = calls_heard(&mut heard);
+        let wire = calls_heard(&mut server.heard);
         assert!(
             wire.len() == 1 && wire[0].contains("/etc/hosts"),
             "served with the caller's original arguments: {wire:?}"
@@ -7426,10 +7694,10 @@ pub(crate) mod hook_parity {
         let mut required = gate("rw", serde_json::json!({ "panic_transform": true }));
         required.on_error =
             serde_json::from_value(serde_json::json!("reject")).expect("an on_error disposition");
-        let required = rig(instance, port, vec![("panicky-required", required)]);
+        let required = rig(instance, &server, vec![("panicky-required", required)]);
         let (status, body) = send_as(
             &required.router,
-            Some(&required.token),
+            Some(&required.bound_token()),
             &body,
             "tools/call",
             Some("fs_read_file"),
@@ -7441,7 +7709,11 @@ pub(crate) mod hook_parity {
             "a load-bearing hook that panicked refuses the call: {}",
             String::from_utf8_lossy(&body)
         );
-        assert!(calls_heard(&mut heard).is_empty(), "nothing was dispatched");
+        assert!(
+            calls_heard(&mut server.heard).is_empty(),
+            "nothing was dispatched"
+        );
+        server.close().await;
     }
 }
 
