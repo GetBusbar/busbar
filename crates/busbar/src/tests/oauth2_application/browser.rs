@@ -205,6 +205,3 @@ pub(crate) fn percent_decode(s: &str) -> String {
     }
     String::from_utf8(out).expect("the server produced UTF-8")
 }
-
-const OFFSITE_CLIENT_ID: &str = "offsite-callback-client";
-const OFFSITE_REDIRECT_URI: &str = "https://client.example/cb";

@@ -14,6 +14,7 @@ use busbar_kernel::state::App;
 mod plugins;
 
 mod browser;
+mod consent_tests;
 mod fapi2_tests;
 mod hosted_routes_tests;
 mod mount_tests;
