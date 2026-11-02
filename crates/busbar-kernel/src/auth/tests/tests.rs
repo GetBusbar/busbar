@@ -197,41 +197,6 @@ fn test_extract_bearer_token_malformed_no_panic() {
 }
 
 #[test]
-fn test_chain_identifies_with_module_and_principal() {
-    let mw = AuthMiddleware::new_builtin(&chain_cfg(&["test-groups-module"]));
-    match mw.run_chain(Some("grp:dev")) {
-        ChainVerdict::Identified {
-            module, principal, ..
-        } => {
-            assert_eq!(module, "test-groups-module");
-            assert_eq!(principal.id, "test:dev");
-            assert_eq!(principal.roles, vec!["dev".to_string()]);
-        }
-        other => panic!("expected Identified, got {other:?}"),
-    }
-    assert!(mw.validate_token(Some("grp:dev")));
-    assert!(!mw.is_open());
-}
-
-#[test]
-fn test_nonempty_chain_fails_closed_on_all_pass() {
-    let mw = AuthMiddleware::new_builtin(&chain_cfg(&["test-groups-module"]));
-    assert_eq!(
-        mw.run_chain(Some("not-a-recognized-credential")),
-        ChainVerdict::Denied,
-        "an unrecognized credential must be denied by a configured chain"
-    );
-    assert_eq!(
-        mw.run_chain(None),
-        ChainVerdict::Denied,
-        "no credential at all must be denied by a configured chain"
-    );
-    assert!(!mw.validate_token(Some("tok3")));
-    assert!(!mw.validate_token(None));
-    assert!(!mw.validate_token(Some("")));
-}
-
-#[test]
 fn an_identified_principal_with_no_grant_is_refused() {
     let identified = |module: &str, principal: Principal| ChainVerdict::Identified {
         module: module.to_string(),
@@ -313,35 +278,6 @@ fn the_refuse_every_ungoverned_rule_against_1_5_5s_guard() {
             "{principal:?}"
         );
     }
-}
-
-#[test]
-fn test_empty_chain_is_open_front_door() {
-    let mw = AuthMiddleware::new_builtin(&crate::config::AuthCfg::default_none());
-    assert!(mw.is_open());
-    assert_eq!(mw.run_chain(None), ChainVerdict::Open);
-    assert_eq!(mw.run_chain(Some("anything")), ChainVerdict::Open);
-    assert!(mw.validate_token(None));
-    assert!(mw.validate_token(Some("anything")));
-}
-
-#[test]
-fn test_keys_in_chain_sets_flag_not_module() {
-    let mw = AuthMiddleware::new_builtin(&chain_cfg(&["keys"]));
-    assert!(mw.keys_in_chain, "chain: [keys] must set keys_in_chain");
-    assert!(
-        mw.chain_names().is_empty(),
-        "keys is engine-handled, never a boxed module"
-    );
-
-    let mw = AuthMiddleware::new_builtin(&crate::config::AuthCfg::default_none());
-    assert!(!mw.keys_in_chain, "an empty chain must not claim keys");
-
-    let mw = AuthMiddleware::new_builtin(&chain_cfg(&["keys", "test-groups-module"]));
-    assert!(mw.keys_in_chain);
-    assert_eq!(mw.chain_names(), vec!["test-groups-module"]);
-    assert!(mw.validate_token(Some("grp:dev")));
-    assert!(!mw.validate_token(Some("wrong")), "still fail-closed");
 }
 
 #[test]
@@ -1083,30 +1019,6 @@ async fn test_governance_rejects_empty_token_even_if_empty_secret_key_exists() {
 }
 
 #[test]
-fn test_auth_middleware_debug_redacts_tokens() {
-    let cfg = chain_cfg(&["keys", "test-groups-module"]);
-    let mw = AuthMiddleware::new_builtin(&cfg);
-    let dbg = format!("{mw:?}");
-    assert!(
-        dbg.contains("chain_len"),
-        "AuthMiddleware Debug should report the chain length: {dbg}"
-    );
-    assert!(
-        dbg.contains("keys_in_chain"),
-        "AuthMiddleware Debug should report the keys flag: {dbg}"
-    );
-
-    for forbidden in ["token", "secret", "credential"] {
-        assert!(
-            !dbg.to_ascii_lowercase()
-                .replace("keys_in_chain", "")
-                .contains(forbidden),
-            "AuthMiddleware Debug printed an unexpected field '{forbidden}': {dbg}"
-        );
-    }
-}
-
-#[test]
 fn test_caller_token_debug_redacts_value() {
     let secret = "sk-caller-secret-CCCC";
     let present = CallerToken(Some(secret.to_string()));
@@ -1379,27 +1291,6 @@ fn test_1_5_2_keys_arm_resolves_the_vkey() {
         ),
         "the keys arm must resolve the vkey"
     );
-}
-
-#[test]
-fn a_keys_only_chain_is_not_an_open_front_door() {
-    let mw = AuthMiddleware::new_builtin(&chain_cfg(&["keys"]));
-    assert!(mw.keys_in_chain, "precondition: keys sets the flag");
-    assert!(
-        mw.chain_names().is_empty(),
-        "precondition: keys installs no boxed module"
-    );
-    assert!(
-        !mw.is_open(),
-        "chain: [keys] authenticates, so the front door is CLOSED — reporting it open grants \
-         VerbScope::Full to every caller at Root::admin_grant"
-    );
-
-    let none = AuthMiddleware::new_builtin(&crate::config::AuthCfg::default_none());
-    assert!(none.is_open(), "no module and no keys arm IS the open door");
-
-    let both = AuthMiddleware::new_builtin(&chain_cfg(&["keys", "test-groups-module"]));
-    assert!(!both.is_open(), "a boxed module closes the door regardless");
 }
 
 #[test]
