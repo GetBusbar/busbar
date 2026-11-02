@@ -1699,8 +1699,33 @@ async fn dlopen_status_and_schema_reads() {
 async fn dlopen_configure_acks_exact_version() {
     let env = test_env();
     let hook = base_gate();
+    let key = resolution::key("h", &hook, &env)
+        .expect("the loadable hook is eligible for transport publication");
+    let mut failed_loads = 0;
+    for attempt in 0..24 {
+        if resolution::published(key) {
+            break;
+        }
+        if gate_transport_offloaded("h", &hook, &env, 0).await.is_some() {
+            break;
+        }
+        // A timed-out resolver retains its claim until it publishes. Only a finished,
+        // unpublished load counts as a failure; retries retain the production deadline.
+        if !resolution::in_flight(key) {
+            failed_loads += 1;
+            if failed_loads >= 3 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(
+            attempt < 23,
+            "the loader never published a transport for hook 'h' after 24 resolve attempts; \
+             that is a HANG in plugin resolution, not a slow machine"
+        );
+    }
     assert!(
-        super::await_transport_published("h", &hook, &env).await,
+        resolution::published(key),
         "the loader must publish a transport for a loadable hook plugin"
     );
 
