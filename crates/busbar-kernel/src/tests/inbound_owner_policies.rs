@@ -415,3 +415,23 @@ fn listener_line_ids_are_nonzero_unique_unbound_and_match_the_exact_line_count()
     assert_eq!(accepted.get(&(BINDING_BIT - 1)), Some(&1));
     assert!(checked_line_ids(&[], 0).unwrap().is_empty());
 }
+
+#[test]
+fn expired_positions_stop_before_the_provider_point_is_queried() {
+    let past = std::time::Instant::now() - std::time::Duration::from_secs(1);
+    let future = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    assert!(position_deadline_expired(Some(past)));
+    assert!(!position_deadline_expired(Some(future)));
+    assert!(!position_deadline_expired(None));
+    // This decision is consumed before the production walker reads inbound_points
+    // or creates its verifying future. Settled/answered positions leave even earlier.
+    assert_eq!(
+        position_work(Some(Fixed::Denied), None),
+        PositionWork::Finished
+    );
+    assert_eq!(
+        position_work(None, Some(Judged::Pass)),
+        PositionWork::Answered
+    );
+    assert_eq!(position_work(None, None), PositionWork::Verify);
+}

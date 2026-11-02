@@ -954,6 +954,10 @@ fn handin_state_matches(
     true
 }
 
+fn position_deadline_expired(deadline: Option<std::time::Instant>) -> bool {
+    deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline)
+}
+
 struct Table {
     listener: Listener,
     doors: crate::core_routes::CoreRouteTable,
@@ -2349,7 +2353,7 @@ impl Inbound {
                     PositionWork::Answered => continue,
                     PositionWork::Verify => {}
                 }
-                if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+                if position_deadline_expired(deadline) {
                     me.record(target, p.index, &p.provider, Judging::Nothing, &table);
                     break;
                 }
