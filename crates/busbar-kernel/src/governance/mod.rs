@@ -519,12 +519,6 @@ fn era_bucket(bucket: &str) -> String {
     format!("{ERA_BUCKET_PREFIX}{}", hex::encode(&digest.as_ref()[..16]))
 }
 
-/// Clamp a u64 counter into the signed delta domain.
-#[cfg(test)]
-fn signed(v: u64) -> i64 {
-    i64::try_from(v).unwrap_or(i64::MAX)
-}
-
 /// Whether `class` counts toward a `tokens:` cap: a reserved token tier, or a class an installed
 /// plane declares in the token family (a streaming plane's `audio_tokens_in` is as much a token as
 /// an LLM's `input`). The one predicate every token total in this module reads.

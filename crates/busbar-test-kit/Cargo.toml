@@ -19,7 +19,7 @@ test = false
 
 [dependencies]
 libc = { workspace = true }
-busbar-plugin-loader = { path = "../plugin-loader" }
+busbar-plugin-loader = { path = "../plugin-loader", features = ["test-support"] }
 busbar-contract = { path = "../busbar-contract", features = ["test-support"] }
 # The suite's host connector (`conformance_host`): busbar's connector and its TLS test kit.
 busbar-core-connector = { path = "../busbar-core-connector", features = ["test-support"] }

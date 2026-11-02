@@ -7,6 +7,8 @@
 use super::*;
 use busbar_contract::abi::mechanism::inspection::InspectionRequest;
 
+type Input = (u64, Option<Arc<[u8]>>);
+
 #[derive(Debug)]
 pub(super) struct Kept {
     request: InspectionRequest,
@@ -29,7 +31,7 @@ impl ServiceStore {
         caller: usize,
         ticket: Ticket,
         unit: Option<u64>,
-    ) -> Result<(u64, Option<Arc<[u8]>>), ()> {
+    ) -> Result<Input, ()> {
         if ticket.is_none() {
             return Ok((0, None));
         }

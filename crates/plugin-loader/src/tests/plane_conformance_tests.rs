@@ -52,6 +52,7 @@ fn first_party_only_policy(release: &SigningKey) -> TrustPolicy {
         allow_unsigned: false,
         allow_third_party: false,
         min_versions: Default::default(),
+        ..TrustPolicy::default()
     }
 }
 

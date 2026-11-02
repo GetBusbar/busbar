@@ -387,9 +387,7 @@ impl Session {
                 self.sending = None;
                 moved = true;
             }
-            let Some(from) = self.from.as_ref() else {
-                return None;
-            };
+            let from = self.from.as_ref()?;
             if let Some(message) = self.messages.pop_front() {
                 let from = from.clone();
                 self.sending = Some(Box::pin(async move { from.send(message).await.is_ok() }));

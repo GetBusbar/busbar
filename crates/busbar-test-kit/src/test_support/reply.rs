@@ -48,6 +48,9 @@ mod sealed {
     #[derive(Debug, Clone, Copy)]
     pub struct Token(pub(super) ());
 
+    /// Only the reviewed generic and plane OPEN outputs carry an instance result.
+    pub trait Open {}
+
     /// Only this module implements it: the reviewed `out`s and how each is copied.
     pub trait Take: Sized {
         /// The `out`'s head.
@@ -73,6 +76,299 @@ use sealed::Token;
 pub trait Reply: AbiOut + sealed::Take {
     /// The owned copies of its reviewed fields.
     type Owned: fmt::Debug;
+}
+
+/// A reviewed OPEN output, sealed to the lifecycle's `OpenOut` and the plane's `PlaneOpenOut`.
+pub trait OpenReply: Reply + sealed::Open {}
+
+/// One typed hosted OPEN crossing: a terminal copied answer, or custody of its unfinished
+/// instance and the exact input owners needed to resume it.
+#[derive(Debug)]
+pub enum OpenStep<'h, I: AbiIn, O: OpenReply> {
+    /// READY carries the existing instance proof in [`Called::take_instance`]. A failed OPEN
+    /// carries no instance: the SDK retired its partial state before returning.
+    Complete(Called<'h, O>),
+    /// OPEN returned PENDING with a live partial instance; consume it to resume or close it.
+    Pending(PendingOpen<'h, I, O>),
+}
+
+impl<'h, I: AbiIn, O: OpenReply> OpenStep<'h, I, O> {
+    /// The latest copied answer, without transferring its unfinished instance.
+    pub fn answer(&self) -> &Called<'h, O> {
+        match self {
+            Self::Complete(answer) => answer,
+            Self::Pending(pending) => pending.answer(),
+        }
+    }
+}
+
+/// Exclusive custody of one unfinished hosted OPEN. The captured [`super::fake::LentIn`]
+/// retains both the host loan and the heap descriptor arrays its builders own. Resume reuses
+/// those exact bytes and ticket; a caller cannot substitute another input or another door.
+///
+/// Cancellation prevents further resumes. Explicit close consumes this token; abandoning it
+/// closes the partial instance once, before its input owners and host loan are released.
+pub struct PendingOpen<'h, I: AbiIn, O: OpenReply> {
+    input: Option<super::fake::LentIn<'h, I>>,
+    open: super::ViewOp,
+    close: super::ViewOp,
+    ptr: *mut c_void,
+    ticket: busbar_contract::abi::mechanism::ticket::Ticket,
+    answer: Called<'h, O>,
+    cancelled: bool,
+}
+
+impl<I: AbiIn, O: OpenReply> fmt::Debug for PendingOpen<'_, I, O> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PendingOpen")
+            .field("ticket", &self.ticket)
+            .field("outcome", &self.answer.outcome)
+            .field("cancelled", &self.cancelled)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'h, I: AbiIn, O: OpenReply> PendingOpen<'h, I, O> {
+    /// The latest copied PENDING answer.
+    pub fn answer(&self) -> &Called<'h, O> {
+        &self.answer
+    }
+
+    /// Resume the same OPEN on its original ticket and input, adding `FLAG_RESUME`. This
+    /// consumes the old token; a new PENDING token, a READY proof or a terminal failure follows.
+    ///
+    /// # Panics
+    /// Cancellation already ended this opening, or the door changes its partial instance.
+    pub fn resume(mut self) -> OpenStep<'h, I, O> {
+        assert!(
+            !self.cancelled,
+            "reply::PendingOpen: cannot resume a cancelled OPEN"
+        );
+        let mut input = self
+            .input
+            .take()
+            .expect("the unfinished OPEN owns its input");
+        input_head_mut(&mut input.input).flags |=
+            busbar_contract::abi::mechanism::call::FLAG_RESUME;
+        let ptr = self.ptr;
+        // The resumed OPEN owns retirement from this point, including a terminal failure.
+        self.ptr = ptr::null_mut();
+        let answer = run_op(
+            self.open.parts().0,
+            Some(self.open.parts().1),
+            ptr,
+            input.input,
+            self.answer.out,
+        );
+        open_step(self.open, self.close, input, answer, Some(ptr))
+    }
+
+    /// CANCEL this unfinished OPEN using this same door's typed slot and original target
+    /// ticket. The copied disposition is preserved; the token remains only for close.
+    ///
+    /// # Panics
+    /// The slot/input is not this door's CANCEL, targets another ticket, or cancellation already
+    /// ran. Rejections happen before any plugin crossing.
+    pub fn cancel<J: AbiIn, P: Reply>(
+        &mut self,
+        cancel: super::ViewOp,
+        input: &TestIn<'h, J>,
+        out: P,
+    ) -> Called<'h, P> {
+        input.check();
+        cancel.check_in::<J>();
+        let (raw, door, index) = cancel.parts();
+        assert!(
+            core::ptr::eq(door, self.open.parts().1),
+            "reply::PendingOpen: CANCEL is another door's"
+        );
+        assert_eq!(index, slot::CANCEL, "reply::PendingOpen: expected CANCEL");
+        assert!(
+            size_of::<J>() >= size_of::<busbar_contract::abi::mechanism::lifecycle::CancelIn>(),
+            "reply::PendingOpen: CANCEL input is too short"
+        );
+        // SAFETY: the same door's checked CANCEL input leads with the lifecycle CancelIn,
+        // including when a kind appends its own fields. The complete input remains live.
+        let target = unsafe {
+            (*ptr::from_ref(&input.input)
+                .cast::<busbar_contract::abi::mechanism::lifecycle::CancelIn>())
+            .ticket
+        };
+        assert_eq!(
+            target, self.ticket,
+            "reply::PendingOpen: CANCEL targets another ticket"
+        );
+        assert!(
+            !self.cancelled,
+            "reply::PendingOpen: OPEN was already cancelled"
+        );
+        let mut frame = input.input;
+        input_head_mut(&mut frame).op = slot::CANCEL;
+        input_head_mut(&mut frame).flags = 0;
+        self.cancelled = true;
+        run_op(raw, None, self.ptr, frame, out)
+    }
+
+    /// Close this partial instance exactly once, consuming its custody token. The captured
+    /// CLOSE slot and a fresh, fully initialized lifecycle head are used.
+    pub fn close(mut self) -> Called<'h, OutHead> {
+        let ptr = self.ptr;
+        self.ptr = ptr::null_mut();
+        let input = close_head();
+        // self.input remains owned until the crossing and its copied answer have completed.
+        run_op(self.close.parts().0, None, ptr, input, super::zeroed())
+    }
+}
+
+impl<I: AbiIn, O: OpenReply> Drop for PendingOpen<'_, I, O> {
+    fn drop(&mut self) {
+        if self.ptr.is_null() {
+            return;
+        }
+        let ptr = self.ptr;
+        self.ptr = ptr::null_mut();
+        let input = close_head();
+        let mut out: OutHead = super::zeroed();
+        out.size = size_of::<OutHead>() as u32;
+        // SAFETY: construction checked this same door's CLOSE on InHead. This is its live,
+        // unfinished OPEN instance; no operation overlaps it. The captured input owners and
+        // host loan still live in self, and both close frames are initialized/exclusive.
+        // Drop reads no plugin-owned reply pointers and cannot panic while copying telemetry.
+        let _ = unsafe {
+            self.close.parts().0(
+                ptr,
+                ptr::from_ref(&input).cast(),
+                ptr::from_mut(&mut out).cast(),
+            )
+        };
+    }
+}
+
+fn close_head() -> InHead {
+    let mut input: InHead = super::zeroed();
+    input.size = size_of::<InHead>() as u32;
+    input.op = slot::CLOSE;
+    input
+}
+
+fn input_head_mut<I: AbiIn>(input: &mut I) -> &mut InHead {
+    // SAFETY: AbiIn guarantees a complete leading InHead in this exclusive initialized frame.
+    unsafe { &mut *ptr::from_mut(input).cast::<InHead>() }
+}
+
+/// Begin an OPEN that may pend, retaining its owned input until a terminal answer or close.
+/// Only the proven door's OPEN/CLOSE pair and the sealed hosted input/output types are accepted.
+///
+/// # Panics
+/// The slots are not this same door's OPEN and CLOSE, the input is already a resume, or a
+/// PENDING answer lacks its live instance or ticket. Existing reply validation also applies.
+///
+/// The pending token cannot outlive the input/host loan:
+///
+/// ```compile_fail
+/// use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut};
+/// use busbar_test_kit::test_support::{ViewOp, fake::LentIn};
+/// use busbar_test_kit::test_support::reply::{open_hosted_in, OpenStep};
+/// fn escape<'h>(open: ViewOp, close: ViewOp, input: LentIn<'h, OpenIn>, out: OpenOut)
+///     -> OpenStep<'static, OpenIn, OpenOut> {
+///     open_hosted_in(open, close, input, out)
+/// }
+/// ```
+///
+/// Keeping the original loan compiles:
+///
+/// ```no_run
+/// use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut};
+/// use busbar_test_kit::test_support::{ViewOp, fake::LentIn};
+/// use busbar_test_kit::test_support::reply::{open_hosted_in, OpenStep};
+/// fn keep<'h>(open: ViewOp, close: ViewOp, input: LentIn<'h, OpenIn>, out: OpenOut)
+///     -> OpenStep<'h, OpenIn, OpenOut> {
+///     open_hosted_in(open, close, input, out)
+/// }
+/// ```
+pub fn open_hosted_in<'h, I: AbiIn + super::fake::TakesHost, O: OpenReply>(
+    open: super::ViewOp,
+    close: super::ViewOp,
+    mut input: super::fake::LentIn<'h, I>,
+    out: O,
+) -> OpenStep<'h, I, O> {
+    open.check_in::<I>();
+    close.check_in::<InHead>();
+    let (raw, door, index) = open.parts();
+    assert_eq!(index, slot::OPEN, "reply::open_hosted_in: expected OPEN");
+    assert_eq!(
+        close.parts().2,
+        slot::CLOSE,
+        "reply::open_hosted_in: expected CLOSE"
+    );
+    assert!(
+        core::ptr::eq(door, close.parts().1),
+        "reply::open_hosted_in: CLOSE is another door's"
+    );
+    let expected = if door.kind() == busbar_contract::abi::mechanism::KindCode::Plane as u32 {
+        core::any::TypeId::of::<busbar_contract::abi::plane::PlaneOpenOut>()
+    } else {
+        core::any::TypeId::of::<busbar_contract::abi::mechanism::lifecycle::OpenOut>()
+    };
+    assert_eq!(
+        core::any::TypeId::of::<O>(),
+        expected,
+        "reply::open_hosted_in: wrong OPEN output type"
+    );
+    let head = input_head_mut(&mut input.input);
+    assert_eq!(
+        head.flags & busbar_contract::abi::mechanism::call::FLAG_RESUME,
+        0,
+        "reply::open_hosted_in: first OPEN cannot resume"
+    );
+    head.op = slot::OPEN;
+    let answer = run_op(raw, Some(door), ptr::null_mut(), input.input, out);
+    open_step(open, close, input, answer, None)
+}
+
+fn open_step<'h, I: AbiIn, O: OpenReply>(
+    open: super::ViewOp,
+    close: super::ViewOp,
+    mut input: super::fake::LentIn<'h, I>,
+    answer: Called<'h, O>,
+    previous: Option<*mut c_void>,
+) -> OpenStep<'h, I, O> {
+    let opened = answer.out.opened(Token(()));
+    match answer.outcome {
+        Outcome::Pending | Outcome::Ready => {
+            assert!(
+                !opened.is_null(),
+                "reply::open_hosted_in: OPEN answered no instance"
+            );
+            if let Some(previous) = previous {
+                assert_eq!(
+                    opened, previous,
+                    "reply::open_hosted_in: OPEN changed its partial instance"
+                );
+            }
+        }
+        _ => assert!(
+            opened.is_null(),
+            "reply::open_hosted_in: failed OPEN kept an instance"
+        ),
+    }
+    if answer.outcome != Outcome::Pending {
+        return OpenStep::Complete(answer);
+    }
+    let ticket = input_head_mut(&mut input.input).ticket;
+    assert!(
+        !ticket.is_none(),
+        "reply::open_hosted_in: PENDING OPEN needs a ticket"
+    );
+    OpenStep::Pending(PendingOpen {
+        input: Some(input),
+        open,
+        close,
+        ptr: opened,
+        ticket,
+        answer,
+        cancelled: false,
+    })
 }
 
 /// One op called: its outcome, its `out` with every reviewed pointer cleared (its scalars as
@@ -615,6 +911,8 @@ impl sealed::Take for busbar_contract::abi::mechanism::lifecycle::OpenOut {
 impl Reply for busbar_contract::abi::mechanism::lifecycle::OpenOut {
     type Owned = ();
 }
+impl sealed::Open for busbar_contract::abi::mechanism::lifecycle::OpenOut {}
+impl OpenReply for busbar_contract::abi::mechanism::lifecycle::OpenOut {}
 
 impl sealed::Take for busbar_contract::abi::secret::ResolveOut {
     fn head(&mut self) -> &mut OutHead {
@@ -808,6 +1106,8 @@ impl sealed::Take for busbar_contract::abi::plane::PlaneOpenOut {
 impl Reply for busbar_contract::abi::plane::PlaneOpenOut {
     type Owned = Option<SnapshotCopy>;
 }
+impl sealed::Open for busbar_contract::abi::plane::PlaneOpenOut {}
+impl OpenReply for busbar_contract::abi::plane::PlaneOpenOut {}
 
 impl sealed::Take for busbar_contract::abi::plane::PlaneRefreshOut {
     fn head(&mut self) -> &mut OutHead {

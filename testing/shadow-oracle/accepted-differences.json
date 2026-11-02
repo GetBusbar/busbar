@@ -6070,6 +6070,132 @@
           }
         ]
       }
+    },
+    {
+      "id": "LLM-FIDELITY-20261102 Bedrock document label",
+      "kind": "improvement",
+      "changelog": "Cross-dialect Bedrock document requests use a neutral attachment label when the source filename is not a valid native document name.",
+      "by": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under standing owner authority; no new owner signature claimed)",
+      "cells": "^llm\\.fidelity\\|bedrock\\|openai\\|document\\-name$",
+      "expected_cells": 0,
+      "classes": [
+        "body"
+      ],
+      "rationale": "name spec.pdf -> attachment; media bytes unchanged; source-name WARN and audit path messages[].content[]. Fixture: busbar-plane-llm/plane-llm/src/codec/tests/proto/golden/req_o2b_attachments.json. These precise fidelity probe IDs are owed; expected_cells=0 does not forgive existing or unnamed oracle cells. Standing rule core docs/design/BUSBAR-1.6.0.md:4689-4695; independent semantic evidence product-intent-audit-20261102/llm-five-goldens-authority.md.",
+      "premise": {
+        "cell": "llm|bedrock|openai|request|ok",
+        "status": 200
+      },
+      "signoff": {
+        "who": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
+        "when": "2026-11-02",
+        "ruling": "Standing fidelity rule preapproves protocol-shaped cross-dialect byte moves; root execution direction2026-11-02 requires per-case register evidence. No per-item owner signature manufactured."
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
+    },
+    {
+      "id": "LLM-FIDELITY-20261102 Cohere citations to Anthropic",
+      "kind": "improvement",
+      "changelog": "Cross-dialect Anthropic answers omit unrepresentable citations with a named warning and audit record instead of inventing source indices.",
+      "by": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under standing owner authority; no new owner signature claimed)",
+      "cells": "^llm\\.fidelity\\|anthropic\\|cohere\\|citation\\-no\\-document\\-index$",
+      "expected_cells": 0,
+      "classes": [
+        "body"
+      ],
+      "rationale": "Omit foreign answer citation with no real Anthropic document_index; text/usage unchanged; current named citation loss audit. Fixture: busbar-plane-llm/plane-llm/src/codec/tests/proto/golden/resp_c2a_citations.json. These precise fidelity probe IDs are owed; expected_cells=0 does not forgive existing or unnamed oracle cells. Standing rule core docs/design/BUSBAR-1.6.0.md:4689-4695; independent semantic evidence product-intent-audit-20261102/llm-five-goldens-authority.md.",
+      "premise": {
+        "cell": "llm|anthropic|cohere|request|ok",
+        "status": 200
+      },
+      "signoff": {
+        "who": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
+        "when": "2026-11-02",
+        "ruling": "Standing fidelity rule preapproves protocol-shaped cross-dialect byte moves; root execution direction2026-11-02 requires per-case register evidence. No per-item owner signature manufactured."
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
+    },
+    {
+      "id": "LLM-FIDELITY-20261102 Gemini citations to Anthropic",
+      "kind": "improvement",
+      "changelog": "Cross-dialect Anthropic answers omit unrepresentable citations with a named warning and audit record instead of inventing source indices.",
+      "by": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under standing owner authority; no new owner signature claimed)",
+      "cells": "^llm\\.fidelity\\|anthropic\\|gemini\\|citation\\-no\\-encrypted\\-index$",
+      "expected_cells": 0,
+      "classes": [
+        "body"
+      ],
+      "rationale": "Omit foreign web source with no Anthropic encrypted_index; text/usage unchanged; current named citation loss audit. Fixture: busbar-plane-llm/plane-llm/src/codec/tests/proto/golden/resp_g2a_grounding.json. These precise fidelity probe IDs are owed; expected_cells=0 does not forgive existing or unnamed oracle cells. Standing rule core docs/design/BUSBAR-1.6.0.md:4689-4695; independent semantic evidence product-intent-audit-20261102/llm-five-goldens-authority.md.",
+      "premise": {
+        "cell": "llm|anthropic|gemini|request|ok",
+        "status": 200
+      },
+      "signoff": {
+        "who": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
+        "when": "2026-11-02",
+        "ruling": "Standing fidelity rule preapproves protocol-shaped cross-dialect byte moves; root execution direction2026-11-02 requires per-case register evidence. No per-item owner signature manufactured."
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
+    },
+    {
+      "id": "LLM-FIDELITY-20261102 Cohere citations to Bedrock",
+      "kind": "improvement",
+      "changelog": "Cross-dialect Bedrock citations use source web locations without reinterpreting answer offsets as source-document coordinates.",
+      "by": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under standing owner authority; no new owner signature claimed)",
+      "cells": "^llm\\.fidelity\\|bedrock\\|cohere\\|citation\\-answer\\-offsets$",
+      "expected_cells": 0,
+      "classes": [
+        "body"
+      ],
+      "rationale": "Carry source URL as location.web; omit answer offsets rather than invent documentChar documentIndex0; source quote/title/text/usage unchanged. Fixture: busbar-plane-llm/plane-llm/src/codec/tests/proto/golden/resp_c2b_citations.json. These precise fidelity probe IDs are owed; expected_cells=0 does not forgive existing or unnamed oracle cells. Standing rule core docs/design/BUSBAR-1.6.0.md:4689-4695; independent semantic evidence product-intent-audit-20261102/llm-five-goldens-authority.md.",
+      "premise": {
+        "cell": "llm|bedrock|cohere|request|ok",
+        "status": 200
+      },
+      "signoff": {
+        "who": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
+        "when": "2026-11-02",
+        "ruling": "Standing fidelity rule preapproves protocol-shaped cross-dialect byte moves; root execution direction2026-11-02 requires per-case register evidence. No per-item owner signature manufactured."
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
+    },
+    {
+      "id": "LLM-FIDELITY-20261102 malformed OpenAI tool input to Anthropic",
+      "kind": "breaking",
+      "changelog": "Cross-dialect Anthropic delivery refuses malformed tool arguments with a native error while retaining provider-reported work.",
+      "by": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under standing owner authority; no new owner signature claimed)",
+      "cells": "^llm\\.fidelity\\|anthropic\\|openai\\|malformed\\-tool\\-arguments$",
+      "expected_cells": 0,
+      "classes": [
+        "status",
+        "body"
+      ],
+      "rationale": "The original malformed OpenAI string not json cannot become object input. Refuse native api_error; keep counts50/20 through actual Reply local-delivery failure. Valid-object success has independent unit golden. No frozen1.5.5 oracle modified. Fixture: busbar-plane-llm/plane-llm/src/codec/tests/proto/golden/resp_o2a_tool_calls.json. These precise fidelity probe IDs are owed; expected_cells=0 does not forgive existing or unnamed oracle cells. Standing rule core docs/design/BUSBAR-1.6.0.md:4689-4695; independent semantic evidence product-intent-audit-20261102/llm-five-goldens-authority.md.",
+      "premise": {
+        "cell": "llm|anthropic|openai|request|ok",
+        "status": 200
+      },
+      "signoff": {
+        "who": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
+        "when": "2026-11-02",
+        "ruling": "Standing fidelity rule preapproves protocol-shaped cross-dialect byte moves; root execution direction2026-11-02 requires per-case register evidence. No per-item owner signature manufactured."
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
     }
   ]
 }

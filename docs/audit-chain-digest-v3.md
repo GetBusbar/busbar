@@ -254,19 +254,13 @@ can provide.
 
 ---
 
-## 6. Head history outlives record retention
+## 6. Head history and record retention
 
-Records age out; an operator is entitled to a retention window. Heads do not age out at all.
-
-A head is about a hundred bytes. Sampled hourly, that is 8 760 a year — under a megabyte. A node
-that cannot afford a megabyte a year cannot afford an audit chain either.
-
-So a puller that was offline while a window's records were pruned has lost the records, which was
-the deal, and **still has the anchor for that window**, which was never on the table. The retention
-pass cannot reach the head history: `AuditChain::prune_records_before` takes `&self`, so it cannot
-borrow the anchors mutably at all, and that is a compile error rather than a request.
-
-The genesis head is always kept, whatever the sampling rate.
+Decision 82 requires permanent heads independently of record retention. The earlier description
+of `AuditChain::prune_records_before` named an unused helper that was removed before release; it
+is not a supported retention API. Current Store-backed head persistence, migration and restart
+behavior are described in [recipe v4, section 6](audit-chain-digest-v4.md#6-head-history-survives-independently-of-its-records).
+The digest recipe on this page is unchanged.
 
 ---
 

@@ -200,6 +200,7 @@ fn policy(first_party: &SigningKey) -> TrustPolicy {
         allow_unsigned: false,
         allow_third_party: false,
         min_versions: Default::default(),
+        ..Default::default()
     }
 }
 
@@ -221,6 +222,59 @@ fn tmpdir(tag: &str) -> PathBuf {
 fn write_tarball(dir: &Path, file: &str, m: &Manifest, lib: &[u8]) {
     let bytes = tarball::package(m, "lib.so", lib).unwrap();
     std::fs::write(dir.join(file), bytes).unwrap();
+}
+
+#[test]
+fn only_the_exact_verified_release_seal_contributes_a_registry_keys_version() {
+    use crate::release_trust::tests::{
+        entry, keys_doc, seal_keys, seal_targets, targets_doc, TestSigner, NOW,
+    };
+    use crate::release_trust::{wire, PLUGIN_TARGET};
+
+    let root = TestSigner::ed25519(81);
+    let signer = TestSigner::ed25519(82);
+    let lib = b"registry sealed evidence fixture; never loaded";
+    let dir = tmpdir("verified-keys-evidence");
+    let mut m = manifest(
+        "busbar-store-release-evidence",
+        "release-evidence",
+        "busbar",
+    );
+    m.sha256 = crate::sign::sha256_hex(lib);
+    let canonical = crate::sign::canonical_manifest_bytes(&m);
+    let mut target = entry(
+        &m.name,
+        &m.version,
+        PLUGIN_TARGET,
+        &crate::sign::sha256_hex(&canonical),
+    );
+    target.length = canonical.len() as u64;
+    let mut keys = keys_doc(&[&signer]);
+    keys.version = 23;
+    let keys = seal_keys(&keys, &[&root]);
+    let targets = seal_targets(&targets_doc(vec![target]), &[&signer]);
+    m.signature = wire::write_seal(&keys, &targets).unwrap();
+    write_tarball(&dir, "sealed.tar.gz", &m, lib);
+    let mut p = TrustPolicy {
+        first_party_keys: vec![root.root("fixture-root")],
+        release_clock: Some(NOW),
+        ..Default::default()
+    };
+    let accepted = scan_and_validate(&dir, &p).unwrap();
+    let image = accepted.resolve(&m.name).unwrap();
+    assert_eq!(image.release_keys_version(), Some(23));
+    assert_eq!(image.lib_bytes.as_slice(), lib);
+
+    // The same well-formed document has no authority when its root is not trusted, even if the
+    // operator permits the unverified artifact. Parsing its claimed version must never raise a floor.
+    p.first_party_keys.clear();
+    p.allow_unsigned = true;
+    let allowed = scan_and_validate(&dir, &p).unwrap();
+    assert_eq!(
+        allowed.resolve(&m.name).unwrap().release_keys_version(),
+        None
+    );
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// The full happy path: two signed first-party plugins scan into a registry addressable by

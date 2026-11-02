@@ -1565,7 +1565,7 @@ impl KernelServices {
                     let schema = schema_at(*kind, false)?;
                     Mutation::Put {
                         schema: schema.as_str().to_string(),
-                        key: record_key(&caller.instance, &key),
+                        key: record_key(&caller.instance, key),
                         value: value.clone(),
                     }
                 }
@@ -1573,7 +1573,7 @@ impl KernelServices {
                     let schema = schema_at(*kind, false)?;
                     Mutation::Delete {
                         schema: schema.as_str().to_string(),
-                        key: record_key(&caller.instance, &key),
+                        key: record_key(&caller.instance, key),
                     }
                 }
             });

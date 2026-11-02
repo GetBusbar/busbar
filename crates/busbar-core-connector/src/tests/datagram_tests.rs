@@ -307,7 +307,9 @@ fn write_answer(st: &mut St, sink: &FramerSink, lane: Option<&DatagramLane>, o: 
                 stream,
                 offset: s.offset,
                 len: s.len,
-                flags: PIECE_END_OF_FRAME | st.piece_flags,
+                // The automatic rendezvous description is payload, even when the
+                // scripted nonzero streams in this batch are field blocks.
+                flags: PIECE_END_OF_FRAME | if stream == 0 { 0 } else { st.piece_flags },
                 ..std::mem::zeroed()
             });
         }

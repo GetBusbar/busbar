@@ -6241,7 +6241,7 @@ fn test_role_binding_under_browser_method_active() {
             .all(|e| !e.contains("inactive module") && !e.contains("grants nothing")),
         "methods-only module must not be flagged inactive: {res:?}"
     );
-    cfg.auth.as_mut().unwrap().methods.remove("oidc");
+    cfg.auth.as_mut().unwrap().methods.swap_remove("oidc");
     let errs = validate(&cfg).expect_err("without the browser method the binding is inactive");
     assert!(
         errs.iter()

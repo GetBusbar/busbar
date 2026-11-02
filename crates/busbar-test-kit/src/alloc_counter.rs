@@ -1,6 +1,7 @@
 //! A per-thread allocation counter, installed only by binaries that declare [`Counting`] as their
 //! global allocator. An optional scoped observer checks initialized payload prefixes at deallocation;
-//! it never scans spare capacity, padding, or unrelated allocations.
+//! it never scans spare capacity, padding, or unrelated allocations. A separate metadata-only
+//! observer can witness the lifetime of one allocation selected by its exact layout size.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::{Cell, RefCell};
@@ -14,6 +15,144 @@ thread_local! {
     static PAYLOADS: RefCell<Option<ProbeState>> = const { RefCell::new(None) };
     static READING: Cell<bool> = const { Cell::new(false) };
     static REENTERED: Cell<bool> = const { Cell::new(false) };
+    static LIFETIME: Cell<Option<LifetimeState>> = const { Cell::new(None) };
+}
+
+#[derive(Clone, Copy)]
+struct LifetimeState {
+    size: usize,
+    address: usize,
+    retired: bool,
+    observations: AllocationLifetimeObservations,
+}
+
+/// Allocator metadata from one exact-size observation window. No allocation contents or addresses
+/// are exposed. A unique allocation freed without resizing requires exactly `1`, `1`, and `0`.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct AllocationLifetimeObservations {
+    /// Successful `alloc` or `alloc_zeroed` calls whose `Layout::size()` exactly matched the size.
+    /// Multiple matches invalidate attribution, even if the allocator reused the same address.
+    pub allocations: u64,
+    /// Explicit deallocation of the first matching allocation, at most once.
+    pub deallocations: u64,
+    /// Reallocation attempts involving the tracked allocation or either selected-size layout.
+    /// Any such attempt makes the original-allocation lifetime witness ambiguous.
+    pub reallocations: u64,
+}
+
+/// A safe, thread-bound metadata observation window over the installed [`Counting`] allocator.
+///
+/// Start immediately before an otherwise allocation-free operation expected to allocate exactly
+/// one buffer of the selected size. Finish after it should release that buffer. Check all three
+/// counts: a size match alone cannot identify a buffer if another allocation has the same size.
+/// The observer never reads payloads, padding, or spare capacity and allocates no bookkeeping.
+/// Allocations and their destruction must occur on this thread to be observed.
+#[derive(Debug)]
+pub struct AllocationLifetimeProbe {
+    _thread_bound: PhantomData<Rc<()>>,
+}
+
+impl AllocationLifetimeProbe {
+    /// Observe allocations whose complete `Layout::size()` equals `size` on this thread.
+    ///
+    /// # Panics
+    /// Panics if `size` is zero or another lifetime probe is already active on this thread.
+    #[must_use]
+    pub fn start_exact_size(size: usize) -> Self {
+        assert!(
+            size != 0,
+            "a lifetime probe requires a nonzero allocation size"
+        );
+        LIFETIME.with(|lifetime| {
+            assert!(lifetime.get().is_none(), "one lifetime probe per thread");
+            lifetime.set(Some(LifetimeState {
+                size,
+                address: 0,
+                retired: false,
+                observations: AllocationLifetimeObservations::default(),
+            }));
+        });
+        Self {
+            _thread_bound: PhantomData,
+        }
+    }
+
+    /// Disarm the observer and return only allocator metadata for this window.
+    #[must_use]
+    pub fn finish(self) -> AllocationLifetimeObservations {
+        LIFETIME.with(|lifetime| lifetime.take().expect("active lifetime probe").observations)
+    }
+}
+
+impl Drop for AllocationLifetimeProbe {
+    fn drop(&mut self) {
+        let _ = LIFETIME.try_with(|lifetime| lifetime.set(None));
+    }
+}
+
+// These allocator callbacks use only Copy state in const-initialized TLS. They neither allocate
+// bookkeeping nor dereference an allocation; addresses stay private and are compared only.
+fn lifetime_allocated(address: usize, size: usize) {
+    if address == 0 {
+        return;
+    }
+    let _ = LIFETIME.try_with(|lifetime| {
+        let Some(mut state) = lifetime.get() else {
+            return;
+        };
+        if size == state.size {
+            state.observations.allocations = state.observations.allocations.saturating_add(1);
+            if state.observations.allocations == 1 {
+                state.address = address;
+            }
+            lifetime.set(Some(state));
+        }
+    });
+}
+
+fn lifetime_deallocated(address: usize) {
+    let _ = LIFETIME.try_with(|lifetime| {
+        let Some(mut state) = lifetime.get() else {
+            return;
+        };
+        if state.address != 0 && state.address == address && !state.retired {
+            state.retired = true;
+            state.observations.deallocations = state.observations.deallocations.saturating_add(1);
+            lifetime.set(Some(state));
+        }
+    });
+}
+
+fn lifetime_reallocating(address: usize, old_size: usize, new_size: usize) -> bool {
+    LIFETIME
+        .try_with(|lifetime| {
+            let Some(mut state) = lifetime.get() else {
+                return false;
+            };
+            let tracked = state.address != 0 && state.address == address && !state.retired;
+            if tracked || old_size == state.size || new_size == state.size {
+                state.observations.reallocations =
+                    state.observations.reallocations.saturating_add(1);
+                lifetime.set(Some(state));
+            }
+            tracked
+        })
+        .unwrap_or(false)
+}
+
+fn lifetime_reallocated(old_address: usize, new_address: usize, tracked: bool) {
+    if !tracked || new_address == 0 {
+        return;
+    }
+    let _ = LIFETIME.try_with(|lifetime| {
+        let Some(mut state) = lifetime.get() else {
+            return;
+        };
+        if state.address == old_address && !state.retired {
+            state.address = new_address;
+            lifetime.set(Some(state));
+        }
+    });
 }
 
 struct ProbeState {
@@ -261,7 +400,7 @@ fn read_payload(memory: &File, payload: &mut ObservedPayload) {
 }
 
 fn bump() {
-    let _ = ALLOCS.try_with(|c| c.set(c.get() + 1));
+    let _ = ALLOCS.try_with(|c| c.set(c.get().saturating_add(1)));
 }
 
 // SAFETY: allocation operations forward their original arguments to System. Registered reallocations
@@ -273,17 +412,22 @@ unsafe impl GlobalAlloc for Counting {
         note_reentry();
         bump();
         // SAFETY: forwarded verbatim under the caller's allocator contract.
-        unsafe { System.alloc(layout) }
+        let allocated = unsafe { System.alloc(layout) };
+        lifetime_allocated(allocated as usize, layout.size());
+        allocated
     }
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         note_reentry();
         bump();
         // SAFETY: forwarded verbatim under the caller's allocator contract.
-        unsafe { System.alloc_zeroed(layout) }
+        let allocated = unsafe { System.alloc_zeroed(layout) };
+        lifetime_allocated(allocated as usize, layout.size());
+        allocated
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        lifetime_deallocated(ptr as usize);
         if !note_reentry() {
             observe_deallocation(ptr as usize, layout, false);
         }
@@ -296,6 +440,7 @@ unsafe impl GlobalAlloc for Counting {
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         bump();
         note_reentry();
+        let tracked = lifetime_reallocating(ptr as usize, layout.size(), new_size);
         if registered(ptr as usize) {
             // SAFETY: the realloc contract guarantees a valid nonzero new layout.
             let new_layout = unsafe { Layout::from_size_align_unchecked(new_size, layout.align()) };
@@ -310,10 +455,13 @@ unsafe impl GlobalAlloc for Counting {
                     System.dealloc(ptr, layout);
                 }
             }
+            lifetime_reallocated(ptr as usize, new as usize, tracked);
             return new;
         }
         // SAFETY: forwarded verbatim under the caller's allocator contract.
-        unsafe { System.realloc(ptr, layout, new_size) }
+        let reallocated = unsafe { System.realloc(ptr, layout, new_size) };
+        lifetime_reallocated(ptr as usize, reallocated as usize, tracked);
+        reallocated
     }
 }
 

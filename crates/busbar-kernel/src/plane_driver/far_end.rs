@@ -1407,10 +1407,8 @@ impl EgressFarEnd<'_> {
             } else if busbar_contract::abi::host::conn::connector::is_within_field(name) {
                 pin = Some(value.clone());
                 false
-            } else if busbar_contract::conn::is_sealed_query_field(name) {
-                false
             } else {
-                true
+                !busbar_contract::conn::is_sealed_query_field(name)
             }
         });
         busbar_kernel_egress::upstream::apply_upstream_encoding(&mut request.fields);

@@ -271,11 +271,11 @@ impl Worker {
         st: &mut WorkerState,
         members: &[u32],
         primary: u32,
-        end: End,
-        mut writes: Vec<busbar_contract::plane_calls::CancelWrite>,
+        retirement: (End, Vec<busbar_contract::plane_calls::CancelWrite>),
         keep_primary: bool,
         env: &Env,
     ) {
+        let (end, mut writes) = retirement;
         let mut waiters = Vec::new();
         for &idx in members {
             let entry = &mut st.entries[idx as usize];
@@ -348,7 +348,7 @@ impl Worker {
         let unit = binding.unit;
         let members = self.unit_members(&st, &instance, unit);
         if let Some(end) = binding.end {
-            self.retire_unit(&mut st, &members, primary, end, Vec::new(), false, env);
+            self.retire_unit(&mut st, &members, primary, (end, Vec::new()), false, env);
             return Some(st);
         }
         let ticket = self.ticket(primary, st.entries[primary as usize].generation);
@@ -416,7 +416,7 @@ impl Worker {
         }
         drop_after_lock(Box::new(loans));
         drop_after_lock(Box::new(frame));
-        self.retire_unit(&mut st, &members, primary, end, writes, false, env);
+        self.retire_unit(&mut st, &members, primary, (end, writes), false, env);
         hold_past_lock(&instance);
         Some(st)
     }
@@ -449,7 +449,14 @@ impl Worker {
         if !terminal {
             return;
         }
-        self.retire_unit(st, &members, primary, End::Completed, Vec::new(), true, env);
+        self.retire_unit(
+            st,
+            &members,
+            primary,
+            (End::Completed, Vec::new()),
+            true,
+            env,
+        );
         hold_past_lock(&instance);
     }
 }

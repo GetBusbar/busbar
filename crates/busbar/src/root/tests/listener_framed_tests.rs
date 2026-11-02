@@ -43,7 +43,7 @@ fn h1_fixture_ingest_chunks_with_cap(
     );
     let mut frame = [0_u8; 1024];
     let mut pieces: [FramePiece; 4] = [zeroed(); 4];
-    let mut heads: [HeadSlots; 2] = [zeroed(); 2];
+    let mut heads = [HeadSlots::default(); 2];
     chunks
         .iter()
         .map(|bytes| {

@@ -23,7 +23,9 @@
 //! canonical name and its alias. Identity comes exclusively from the signed manifest - the tarball
 //! filename is irrelevant.
 
-use crate::sign::{evaluate, validate_structure, Manifest, TrustPolicy, Verdict, HOST_IDENTITY};
+use crate::sign::{
+    evaluate_with_evidence, validate_structure, Manifest, TrustPolicy, Verdict, HOST_IDENTITY,
+};
 use crate::tarball;
 use busbar_contract::abi::mechanism::kind;
 use std::collections::HashMap;
@@ -71,6 +73,9 @@ pub struct LoadablePlugin {
     /// Digest of the exact capped archive whose verified image `lib_bytes` retains. Never
     /// recomputed from the path, which may have been replaced after discovery.
     pub archive_sha256: Option<String>,
+    /// Authenticated keys-document version from this exact image's successful first-party seal.
+    /// Never recovered by parsing an unverified signature, and absent for linked/unverified rows.
+    accepted_release_keys_version: Option<u64>,
     /// Whether what this plugin holds is lost on restart — a store's own statement ([`LinkedPlugin`]).
     /// A dropped-in row never states it: the plugins directory is where a durable store comes from.
     pub ephemeral: bool,
@@ -81,6 +86,12 @@ pub struct LoadablePlugin {
 }
 
 impl LoadablePlugin {
+    /// The keys-document version authenticated while admitting this exact retained image.
+    #[must_use]
+    pub fn release_keys_version(&self) -> Option<u64> {
+        self.accepted_release_keys_version
+    }
+
     /// THE WORD THIS ROW'S SURFACES PRINT AND KEY IT BY: a dropped-in row's manifest name; a linked
     /// built-in's KEY, its alias (the short word the composition root's table names it by, and every
     /// refusal, log field and `secrets:` key printed before the row also answered to its canonical
@@ -483,6 +494,8 @@ pub struct SkippedPlugin {
     /// STRUCTURED rejection category from the trust evaluator — the authority for any label/column.
     /// Never derive a trust label by substring-matching `reason` (it embeds plugin-controlled bytes).
     pub kind: crate::sign::RejectKind,
+    /// Trusted first-party root identifiers, carried separately from plugin-controlled text.
+    pub trusted_keys: Vec<String>,
 }
 
 /// The registry of validated, loadable plugins, addressable by canonical name OR alias. Built only
@@ -595,6 +608,7 @@ impl PluginRegistry {
                 manifest,
                 lib_bytes: std::sync::Arc::default(),
                 archive_sha256: None,
+                accepted_release_keys_version: None,
                 ephemeral,
                 entry: Some(entry),
                 keyed_by_alias,
@@ -1191,14 +1205,15 @@ fn examine(path: &Path, policy: &TrustPolicy) -> FileOutcome {
     }
     // Phase 2: trust. A rejection here is a SKIP (logged, never dlopen'ed) - unless the plugin is
     // actually referenced, in which case resolution fails loudly with this reason attached.
-    match evaluate(&unpacked.lib_bytes, &unpacked.manifest, policy) {
-        Ok(verdict) => {
+    match evaluate_with_evidence(&unpacked.lib_bytes, &unpacked.manifest, policy) {
+        Ok((verdict, accepted_release_keys_version)) => {
             let plugin = LoadablePlugin {
                 file,
                 manifest: unpacked.manifest,
                 verdict,
                 lib_bytes: std::sync::Arc::new(unpacked.lib_bytes),
                 archive_sha256: Some(crate::sign::sha256_hex(&bytes)),
+                accepted_release_keys_version,
                 ephemeral: false,
                 entry: None,
                 keyed_by_alias: false,
@@ -1214,6 +1229,7 @@ fn examine(path: &Path, policy: &TrustPolicy) -> FileOutcome {
                         manifest: plugin.manifest,
                         reason,
                         kind: crate::sign::RejectKind::EgressGrant,
+                        trusted_keys: Vec::new(),
                     }),
                 },
             }
@@ -1223,6 +1239,7 @@ fn examine(path: &Path, policy: &TrustPolicy) -> FileOutcome {
             manifest: unpacked.manifest,
             reason: rejected.reason,
             kind: rejected.kind,
+            trusted_keys: rejected.trusted_keys,
         }),
     }
 }
@@ -1377,6 +1394,7 @@ fn supersede(outcomes: Vec<FileOutcome>) -> Vec<FileOutcome> {
                     manifest,
                     reason,
                     kind: crate::sign::RejectKind::Superseded,
+                    trusted_keys: Vec::new(),
                 })
             }
             (FileOutcome::Loadable(p), Some(reason)) => FileOutcome::Skipped(SkippedPlugin {
@@ -1384,6 +1402,7 @@ fn supersede(outcomes: Vec<FileOutcome>) -> Vec<FileOutcome> {
                 manifest: p.manifest,
                 reason,
                 kind: crate::sign::RejectKind::Superseded,
+                trusted_keys: Vec::new(),
             }),
             (o, _) => o,
         })
@@ -1495,12 +1514,13 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
                     RejectKind::EgressGrant => "third-party (egress grant)",
                     RejectKind::Superseded => "superseded",
                     RejectKind::RetiredKey => "retired-key",
+                    RejectKind::Revoked => "revoked",
                 }
                 .to_string();
                 let status = match s.kind {
                     // Only a TRUSTED-but-below-floor artifact is a hard REJECTED row; every untrusted
                     // reject (including a floored untrusted one) is a SKIP.
-                    RejectKind::AntiDowngrade | RejectKind::EgressGrant => {
+                    RejectKind::AntiDowngrade | RejectKind::EgressGrant | RejectKind::Revoked => {
                         format!("REJECTED: {}", s.reason)
                     }
                     _ => format!("SKIPPED: {}", s.reason),

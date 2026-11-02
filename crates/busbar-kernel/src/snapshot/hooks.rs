@@ -288,13 +288,13 @@ fn fold_families<'a>(hooks: impl Iterator<Item = (&'a str, &'a [HookMetric])>) -
     let mut order: Vec<&str> = Vec::new();
     let mut groups: HashMap<&str, MetricGroup<'_>> = HashMap::new();
     let mut sorted: Vec<_> = hooks.collect();
-    sorted.sort_by(|a, b| a.0.cmp(&b.0));
+    sorted.sort_by(|a, b| a.0.cmp(b.0));
     for (hook_name, metrics) in sorted {
         for m in metrics {
             if m.name.starts_with("busbar_") {
                 continue; // reserved first-party namespace — a hook cannot impersonate it
             }
-            let prom_type = prom_type_of(&m);
+            let prom_type = prom_type_of(m);
             let entry = groups.entry(m.name.as_str()).or_insert_with(|| {
                 order.push(m.name.as_str());
                 (prom_type, m.help.as_deref(), Vec::new())

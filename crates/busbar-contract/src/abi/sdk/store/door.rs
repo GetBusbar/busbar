@@ -192,6 +192,11 @@ impl Text {
     }
 }
 
+// Text::Rendered keeps bytes inline. Every previously emitted AbiStr must retain its address
+// when another text grows this vector, so each Text needs a separate stable allocation.
+#[allow(clippy::vec_box)]
+type ReplyTexts = Vec<Box<Text>>;
+
 /// One store instance as the door serves it: the backend and the error texts it keeps for the
 /// host. It is the store's [`Life`]: the SDK's one instance state, [`Held`], holds it beside the
 /// answers' leases and the host tables `open` was handed, and the generic lifecycle slots
@@ -199,7 +204,7 @@ impl Text {
 /// DESIGN, the one kind-neutral SDK lifecycle: "a kind's local copy is deleted when it is ported").
 pub struct Served<B> {
     store: B,
-    texts: Replies<Vec<Box<Text>>>,
+    texts: Replies<ReplyTexts>,
     /// The read buffers this instance's wire ops reuse.
     reads: super::wire::ReadBufs,
 }
@@ -226,7 +231,7 @@ impl<B: StoreSlots> Served<B> {
 }
 
 /// Keep `text` in this crossing's owned reply, cut to [`MAX_TEXT`] on a character boundary.
-fn reply_text(text: Text, held: &RefCell<Vec<Box<Text>>>) -> AbiStr {
+fn reply_text(text: Text, held: &RefCell<ReplyTexts>) -> AbiStr {
     let text = match text {
         Text::Owned(mut t) => {
             let mut end = t.len().min(MAX_TEXT);
@@ -339,7 +344,7 @@ struct Door<'a, B> {
     store: &'a B,
     held: &'a Held<Served<B>>,
     reply: ReplyKey,
-    texts: RefCell<Vec<Box<Text>>>,
+    texts: RefCell<ReplyTexts>,
 }
 
 impl<'a, B: StoreSlots> Door<'a, B> {

@@ -764,6 +764,7 @@ fn run<T: 'static>(
         let bound = bound_check(cx, &running.wire);
         let served = match bound {
             Bound::Passed => {
+                cx.abandon_pending_service();
                 running.unwait();
                 Served::Answer(Err(ConnFailure::Failed(
                     crate::conn::ConnError::Timeout.text().to_owned(),
@@ -784,15 +785,21 @@ fn run<T: 'static>(
         };
         let served = match (served, bound) {
             // A pend under a bound comes back at the bound at the latest.
-            (Served::Pending { wake_at_ns }, Bound::Until(at))
+            (Served::Pending { wake_at_ns, replay }, Bound::Until(at))
                 if wake_at_ns == 0 || wake_at_ns > at =>
             {
-                Served::Pending { wake_at_ns: at }
+                Served::Pending {
+                    wake_at_ns: at,
+                    replay,
+                }
             }
             (s, _) => s,
         };
         match served {
             Served::Answer(a) => {
+                if a.is_err() {
+                    cx.abandon_pending_service();
+                }
                 let mut st = running.wire.state();
                 if a.is_err() || matches!((&ask, &a), (Ask::Read, Ok(0))) {
                     st.unfit = true;
@@ -804,7 +811,10 @@ fn run<T: 'static>(
                 st.ask = None;
                 st.answer = Some(a);
             }
-            Served::Pending { wake_at_ns } => {
+            Served::Pending { wake_at_ns, replay } => {
+                if replay {
+                    cx.replay_last_service();
+                }
                 *running.buf.lock().unwrap_or_else(PoisonError::into_inner) = buf;
                 cx.park(running);
                 return Step::Pending { wake_at_ns };
@@ -868,7 +878,11 @@ fn bound_check(cx: &mut Op<'_>, wire: &Wire) -> Bound {
 /// What one service answered.
 enum Served {
     Answer(Result<usize, ConnFailure>),
-    Pending { wake_at_ns: u64 },
+    Pending {
+        wake_at_ns: u64,
+        /// A real in-flight host service retries its handle. Timer/pool/no-progress waits do not.
+        replay: bool,
+    },
 }
 
 /// The host's monotonic clock plus `delta`, or "only on a wake" when the host offers no clock.
@@ -947,6 +961,7 @@ fn connect<T>(
             drop(lease);
             return Served::Pending {
                 wake_at_ns: later(cx, RETRY_NS),
+                replay: false,
             };
         }
     }
@@ -974,7 +989,10 @@ fn connect<T>(
                 .take();
             Served::Answer(Err(e))
         }
-        Poll::Pending => Served::Pending { wake_at_ns: 0 },
+        Poll::Pending => Served::Pending {
+            wake_at_ns: 0,
+            replay: true,
+        },
     }
 }
 
@@ -1046,13 +1064,15 @@ fn serve<T>(cx: &mut Op<'_>, running: &Running<T>, ask: &Ask, buf: &mut [u8]) ->
                     Served::Answer(Err(e))
                 }
                 // Not connected yet: the RESUME establishes again from the same ask.
-                Poll::Pending => Served::Pending { wake_at_ns: 0 },
+                Poll::Pending => Served::Pending {
+                    wake_at_ns: 0,
+                    replay: true,
+                },
             };
         }
         Ask::Close => {
-            if wire.state().conn.take().is_some() {
-                cx.close_checkout();
-            }
+            wire.state().conn.take();
+            cx.close_checkout();
             let mut w = wire.state();
             w.input.clear();
             w.out.clear();
@@ -1075,7 +1095,10 @@ fn serve<T>(cx: &mut Op<'_>, running: &Running<T>, ask: &Ask, buf: &mut [u8]) ->
                     Served::Answer(Ok(0))
                 }
                 Poll::Ready(Err(e)) => Served::Answer(Err(e)),
-                Poll::Pending => Served::Pending { wake_at_ns: 0 },
+                Poll::Pending => Served::Pending {
+                    wake_at_ns: 0,
+                    replay: true,
+                },
             };
         }
         _ => {}
@@ -1106,7 +1129,12 @@ fn serve<T>(cx: &mut Op<'_>, running: &Running<T>, ask: &Ask, buf: &mut [u8]) ->
                     Poll::Ready(Ok(())) => {
                         wire.state().confirm_secure = false;
                     }
-                    Poll::Pending => return Served::Pending { wake_at_ns: 0 },
+                    Poll::Pending => {
+                        return Served::Pending {
+                            wake_at_ns: 0,
+                            replay: true,
+                        }
+                    }
                     _ => {
                         let mut st = wire.state();
                         st.out.clear();
@@ -1138,6 +1166,7 @@ fn serve<T>(cx: &mut Op<'_>, running: &Running<T>, ask: &Ask, buf: &mut [u8]) ->
                         // No room: offer the rest again shortly (a pending write wakes nothing).
                         return Served::Pending {
                             wake_at_ns: later(cx, RETRY_NS / 5),
+                            replay: false,
                         };
                     }
                 }
@@ -1147,6 +1176,7 @@ fn serve<T>(cx: &mut Op<'_>, running: &Running<T>, ask: &Ask, buf: &mut [u8]) ->
                     drop(services);
                     return Served::Pending {
                         wake_at_ns: later(cx, RETRY_NS / 5),
+                        replay: true,
                     };
                 }
             }
@@ -1157,7 +1187,10 @@ fn serve<T>(cx: &mut Op<'_>, running: &Running<T>, ask: &Ask, buf: &mut [u8]) ->
                 Served::Answer(Ok(n))
             }
             Poll::Ready(Err(e)) => Served::Answer(Err(e)),
-            Poll::Pending => Served::Pending { wake_at_ns: 0 },
+            Poll::Pending => Served::Pending {
+                wake_at_ns: 0,
+                replay: true,
+            },
         },
         Ask::Upgrade { name, verify_off } => match services.upgrade_secure_flagged(
             stream,
@@ -1170,7 +1203,10 @@ fn serve<T>(cx: &mut Op<'_>, running: &Running<T>, ask: &Ask, buf: &mut [u8]) ->
             },
         ) {
             Poll::Ready(r) => Served::Answer(r.map(|()| 0)),
-            Poll::Pending => Served::Pending { wake_at_ns: 0 },
+            Poll::Pending => Served::Pending {
+                wake_at_ns: 0,
+                replay: true,
+            },
         },
     }
 }

@@ -5,7 +5,6 @@
 
 use super::*;
 use crate::framer::{Got, Refused};
-use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::task::{Context, Poll, Waker};

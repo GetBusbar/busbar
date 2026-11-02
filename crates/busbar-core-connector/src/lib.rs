@@ -3397,7 +3397,13 @@ impl Conns for Connector {
             return d.write(bytes, end, text);
         }
         if !self.settle(&held, None)? {
-            if let Some(j) = held.judging.lock().expect("judging").as_mut() {
+            let mut judging = held.judging.lock().expect("judging");
+            // The crossing owns the dial and its replay queue until it returns. A writer
+            // beside it must re-offer its bytes, rather than append behind the crossing.
+            if held.crossing.lock().expect("crossing").is_some() {
+                return Err(ConnError::Pending);
+            }
+            if let Some(j) = judging.as_mut() {
                 if let Some(error) = j.failed {
                     return Err(error);
                 }

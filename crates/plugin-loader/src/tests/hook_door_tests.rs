@@ -821,8 +821,7 @@ async fn malformed_hook_serve_headers_are_refused_and_the_answer_lease_is_releas
             let error = calls
                 .serve(serve_request(), BUDGET)
                 .await
-                .err()
-                .expect("the actual hook answer must fail header validation");
+                .expect_err("the actual hook answer must fail header validation");
             assert!(error.contains("response header"), "{way:?}/{mode}: {error}");
             let mut count = serve_request();
             count.query = "lease-count".into();

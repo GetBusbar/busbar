@@ -15,13 +15,12 @@ use busbar_contract::abi::sdk::{Instance, Lent, Out, SafeSlot};
 
 pub const NAME: &str = "hook-checkpoint-fixture";
 const KEY: &str = "hook.configure_checkpoint.v1";
-pub static DROP_CONFIGURE: Mutex<
-    Option<(
-        std::sync::mpsc::Sender<()>,
-        std::sync::mpsc::Receiver<()>,
-        std::sync::mpsc::Sender<()>,
-    )>,
-> = Mutex::new(None);
+type ConfigureDrop = (
+    std::sync::mpsc::Sender<()>,
+    std::sync::mpsc::Receiver<()>,
+    std::sync::mpsc::Sender<()>,
+);
+pub static DROP_CONFIGURE: Mutex<Option<ConfigureDrop>> = Mutex::new(None);
 pub static BLOCK_CONFIGURE: Mutex<
     Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
 > = Mutex::new(None);

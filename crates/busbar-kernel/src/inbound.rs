@@ -417,13 +417,15 @@ pub struct Listener {
     pub scope: Option<ListenerScope>,
 }
 
+/// Resolve the selected claimant's admission using the listener's retained application state.
+pub type ListenerAdmission =
+    Arc<dyn Fn(&App, &Head) -> Option<crate::plane_driver::dispatch::PlaneAdmission> + Send + Sync>;
+
 /// Host-only route ownership retained with one listener generation.
 #[derive(Clone)]
 pub struct ListenerScope {
     /// Resolve the selected claimant's own audience, never another listener's path match.
-    pub admission: Arc<
-        dyn Fn(&App, &Head) -> Option<crate::plane_driver::dispatch::PlaneAdmission> + Send + Sync,
-    >,
+    pub admission: ListenerAdmission,
     /// Whether the root's legacy fallback surface is physically present.
     pub legacy_fallback: bool,
 }

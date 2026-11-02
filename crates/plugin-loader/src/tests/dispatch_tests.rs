@@ -97,11 +97,9 @@ mod unload_witness {
             reentered,
             dispatcher: dispatcher.map(ManuallyDrop::new),
         };
-        if let Err(undelivered) = sender.send(observed) {
-            // A failed child may have already dropped its receiver. Keep its dispatcher alive
-            // until process teardown instead of invoking Dispatcher::drop inside the finalizer.
-            std::mem::forget(undelivered.0);
-        }
+        // A failed child may have already dropped its receiver. The ManuallyDrop field keeps
+        // its dispatcher alive until process teardown, including when send returns an error.
+        let _ = sender.send(observed);
     }
 
     /// Each test owns a separate image, so another test's dlopen reference or unload cannot satisfy

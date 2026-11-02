@@ -33,6 +33,7 @@ struct NativeImage {
     bytes: std::sync::Weak<Vec<u8>>,
     row: busbar_contract::plugin_rows::Row,
     archive: String,
+    release_keys_version: Option<u64>,
     plugins: Arc<PluginsCfg>,
 }
 
@@ -49,6 +50,7 @@ fn remember_native_images(registry: &PluginRegistry, plugins: &PluginsCfg) {
                 bytes: Arc::downgrade(&image.lib_bytes),
                 row: PluginRows::resolve(registry, &image.manifest.name)?,
                 archive: image.archive_sha256.clone()?,
+                release_keys_version: image.release_keys_version(),
                 plugins: Arc::clone(&plugins),
             })
         })
@@ -84,6 +86,7 @@ fn authorize_native_image(bytes: &[u8], display: &str) -> Result<(), String> {
             authority.calls.as_ref(),
             &authority.host,
             &image.row,
+            image.release_keys_version,
             &image.plugins.first_party_floors,
         )
     } else {
@@ -335,7 +338,6 @@ pub fn trust_policy(
     cfg: &PluginsCfg,
     binary_version: &str,
 ) -> Result<super::loader::sign::TrustPolicy, String> {
-    #[allow(unused_mut)] // assigned only in a `test-harness` build
     let mut policy =
         super::loader::sign::TrustPolicy::from_config(super::loader::sign::TrustInput {
             publishers: &cfg.publisher_keys(),
@@ -345,11 +347,16 @@ pub fn trust_policy(
             first_party_floors: &cfg.first_party_floors,
             binary_version,
         })?;
+    if let Some(authority) = PLUGIN_FLOOR.get() {
+        policy.release_keys_floor =
+            super::durability::release_keys_floor(authority.calls.as_ref(), &authority.host)?;
+    }
     #[cfg(feature = "test-harness")]
     if let Some(key) =
         harness_first_party_key(std::env::var(HARNESS_FIRST_PARTY_KEY_ENV).ok().as_deref())?
     {
         policy.first_party_key = Some(key);
+        policy.first_party_keys = vec![super::loader::sign::FirstPartyKey::unnamed(key)];
     }
     Ok(policy)
 }

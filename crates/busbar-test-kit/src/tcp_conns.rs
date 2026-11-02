@@ -6,7 +6,8 @@
 //! so a store (or any kind) that reaches a real backend over the host's connector can be opened on
 //! a [`Dispatcher`](crate::dispatch::Dispatcher) in a test without the process's connector. As the
 //! connector does, it dials `host:port` (bounded by the open's timeout), a target under its local
-//! prefix (`<prefix>/absolute/path`) over a domain socket, and secures a stream on
+//! prefix (`<prefix>/absolute/path`) over a domain socket on Unix. On other platforms the local
+//! fixture uses `<prefix><numeric-loopback-address>:<port>` over TCP. It secures a stream on
 //! `upgrade_secure` with the TLS a test hands it ([`TcpConns::with_tls`], a [`SecureDial`]): TLS
 //! stays in the connector and this crate names no TLS library, so a test hands it a double of the
 //! connector's (whose real `upgrade_secure` its own suite proves). A read with nothing ready
@@ -16,6 +17,7 @@
 
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -73,6 +75,7 @@ pub trait SecuredSock: Read + Write + Send {
 /// One connection's socket.
 enum Sock {
     Tcp(TcpStream),
+    #[cfg(unix)]
     Unix(UnixStream),
     Tls(Box<dyn SecuredSock>),
     /// Not dialled yet ([`TcpConns::dialling_late`]): the table's local prefix, the dial timeout,
@@ -89,6 +92,7 @@ impl Read for Sock {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         match self {
             Self::Tcp(s) => s.read(buf),
+            #[cfg(unix)]
             Self::Unix(s) => s.read(buf),
             Self::Tls(s) => s.read(buf),
             Self::Late { .. } => Err(ErrorKind::NotConnected.into()),
@@ -101,6 +105,7 @@ impl Write for Sock {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         match self {
             Self::Tcp(s) => s.write(buf),
+            #[cfg(unix)]
             Self::Unix(s) => s.write(buf),
             Self::Tls(s) => s.write(buf),
             Self::Late { .. } | Self::Gone => Err(ErrorKind::NotConnected.into()),
@@ -109,6 +114,7 @@ impl Write for Sock {
     fn flush(&mut self) -> std::io::Result<()> {
         match self {
             Self::Tcp(s) => s.flush(),
+            #[cfg(unix)]
             Self::Unix(s) => s.flush(),
             Self::Tls(s) => s.flush(),
             Self::Late { .. } | Self::Gone => Ok(()),
@@ -235,14 +241,27 @@ fn host_of(target: &str) -> String {
 }
 
 fn dial(target: &str, local_prefix: &str, timeout_ms: u64) -> Result<Sock, ConnError> {
-    if let Some(path) = target
+    let local = target
         .strip_prefix(local_prefix)
-        .filter(|_| !local_prefix.is_empty())
-    {
+        .filter(|_| !local_prefix.is_empty());
+    #[cfg(unix)]
+    if let Some(path) = local {
         let s = UnixStream::connect(path).map_err(|_| ConnError::Refused)?;
         s.set_nonblocking(true).map_err(|e| io(&e))?;
         return Ok(Sock::Unix(s));
     }
+    #[cfg(not(unix))]
+    let target = if let Some(address) = local {
+        // The portable local fixture remains local: no DNS or remote address may bypass the
+        // network destination judge merely by carrying the local prefix.
+        let at: std::net::SocketAddr = address.parse().map_err(|_| ConnError::Refused)?;
+        if !at.ip().is_loopback() {
+            return Err(ConnError::Refused);
+        }
+        address
+    } else {
+        target
+    };
     let s = if timeout_ms == 0 {
         TcpStream::connect(target).map_err(|_| ConnError::Refused)?
     } else {
@@ -439,6 +458,7 @@ impl Conns for TcpConns {
             Sock::Tcp(s) => {
                 let _ = s.shutdown(std::net::Shutdown::Both);
             }
+            #[cfg(unix)]
             Sock::Unix(s) => {
                 let _ = s.shutdown(std::net::Shutdown::Both);
             }

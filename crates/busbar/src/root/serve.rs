@@ -913,8 +913,8 @@ impl Served {
             tokio::spawn(async move { driver.drives().await });
         }
         // THE FLUSH TICK, on the kernel's flush interval. A running unit's checkpoints stay in RAM
-        // (MONEY-DESIGN §3c, "Long units"), so nothing is journaled here; what the tick still does
-        // is refresh this node's lease on its host name (Q128, MONEY-REVIEW review 12 N4).
+        // (MONEY-DESIGN §3c, "Long units"), so the tick seals no new record. It refreshes this
+        // node's lease (Q128, MONEY-REVIEW review 12 N4) and re-offers retained journal debt.
         if let Some(post) = &self.post {
             let lease = LeaseTick {
                 node: Arc::clone(post.node()),
@@ -930,17 +930,18 @@ struct LeaseTick {
 }
 
 impl LeaseTick {
-    /// One tick: refresh THE NODE'S LEASE ON ITS HOST NAME (Q128). A node with no data directory
-    /// journals under its host's id only while it holds it, and it is held on the journal's lane to
-    /// the configured store, read directly: no lock is taken.
+    /// Refresh the node's lease (Q128), then re-offer journal records the full Store lane turned
+    /// away. The lane keeps the lease fence on every hand-off and Store transaction. No new record
+    /// is sealed, and a candidate with an unknown Store outcome stays owned by the lane worker.
     fn tick(&self) {
         if let Some(lane) = self.node.journal_lane() {
             lane.refresh_held_lease();
         }
+        self.node.retry_held_journal();
     }
 
     /// Every [`busbar_kernel::host_records::FLUSH_INTERVAL`], for the process's life; each tick's
-    /// lease refresh (a store round trip) runs on the blocking pool, never on a runtime worker.
+    /// lease refresh and retained-batch re-offer run on the blocking pool, never on a runtime worker.
     async fn ticks(self) {
         let every = busbar_kernel::host_records::FLUSH_INTERVAL;
         let mut at = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
@@ -6154,3 +6155,7 @@ mod framed_tests;
 #[cfg(all(test, linked_section_pools, linked_axis_plane_door))]
 #[path = "tests/secret_source.rs"]
 mod secret_source_tests;
+
+#[cfg(test)]
+#[path = "tests/journal_live_retry.rs"]
+mod journal_live_retry_tests;

@@ -9,7 +9,8 @@
 //!   concurrent ops beyond the bound wait for a connection and complete;
 //! * a kept connection the far end dropped fails its op and is not kept; a store that retries on a
 //!   fresh connection ([`Wire::reconnect`]) answers;
-//! * a store's dial timeout reaches the table; a `unix:` target is a unix-domain stream; a stream
+//! * a store's dial timeout reaches the table; a local target carries a real byte stream (a Unix
+//!   domain socket on Unix, loopback TCP elsewhere); a stream
 //!   secured through the table's TLS carries the op (the TLS a test double of the connector's: TLS
 //!   stays in the connector, whose own suite proves the real `upgrade_secure`).
 
@@ -453,25 +454,39 @@ fn the_stores_dial_timeout_reaches_the_hosts_table() {
 
 wire_store!(OverUnix, over_unix, max: 1, timeout: 0, tls: Tls::Off, retry: false);
 
-/// RED (VALKEY-UNIX): a `unix:/path` target is a unix-domain stream through the host's table.
+/// RED (VALKEY-UNIX): a local target is a real byte stream through the host's table. Unix proves
+/// the actual domain-socket path; other platforms exercise the same local-prefix route over TCP.
 #[test]
-fn a_unix_target_is_a_unix_domain_stream() {
-    let dir = std::env::temp_dir().join(format!("busbar-wire-unix-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("dir");
-    let path = dir.join("s.sock");
-    let l = std::os::unix::net::UnixListener::bind(&path).expect("bind");
-    std::thread::spawn(move || {
-        for s in l.incoming() {
-            let Ok(s) = s else { return };
-            let r = s.try_clone().expect("clone");
-            std::thread::spawn(move || serve_lines(r, s, Behaviour::default()));
+fn a_local_target_is_a_real_byte_stream() {
+    let (target, directory): (String, Option<std::path::PathBuf>) = {
+        #[cfg(unix)]
+        {
+            let dir = std::env::temp_dir().join(format!("busbar-wire-unix-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("dir");
+            let path = dir.join("s.sock");
+            let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let Ok(stream) = stream else { return };
+                    let reader = stream.try_clone().expect("clone");
+                    std::thread::spawn(move || serve_lines(reader, stream, Behaviour::default()));
+                }
+            });
+            (format!("unix:{}", path.display()), Some(dir))
         }
-    });
-    *OverUnix::target().lock().expect("target") = format!("unix:{}", path.display());
+        #[cfg(not(unix))]
+        {
+            let (address, _) = tcp_backend(Behaviour::default());
+            (format!("unix:{address}"), None)
+        }
+    };
+    *OverUnix::target().lock().expect("target") = target;
     let s = open_over(over_unix::door, plain);
     assert_eq!(ping_of(&s).expect("answers"), vec!["echo ping".to_string()]);
-    let _ = std::fs::remove_dir_all(&dir);
+    if let Some(directory) = directory {
+        let _ = std::fs::remove_dir_all(directory);
+    }
 }
 
 // ── AN ENDPOINT LIST: open; on reject close and try the next (THE DESIGN §5) ───────────────────

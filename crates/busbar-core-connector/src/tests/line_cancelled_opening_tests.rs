@@ -51,12 +51,7 @@ impl FramerDoor for Observed {
         }
         match &call {
             Call::Encode(input, _) => {
-                // SAFETY: the real connector lends this initialized body for this crossing.
-                let body = if input.body_len == 0 {
-                    Vec::new()
-                } else {
-                    unsafe { std::slice::from_raw_parts(input.body, input.body_len) }.to_vec()
-                };
+                let body = crate::support::lent(input.body, input.body_len);
                 self.bodies.lock().unwrap().push(body);
                 let gate = self.encode.lock().unwrap().take();
                 if let Some((entered, release)) = gate {

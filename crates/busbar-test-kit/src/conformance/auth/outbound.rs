@@ -106,6 +106,7 @@ use busbar_contract::abi::mechanism::lifecycle::OpsHead;
 use busbar_contract::abi::mechanism::rendering::ReadNeed;
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::mechanism::KindCode;
+use busbar_contract::abi::sdk::auth_outbound::{EXT_SEALED_FIELDS, SEALED_FIELDS_V1};
 use busbar_contract::abi::sdk::door::RawDoorFn;
 use busbar_contract::conn::{
     ConnError, ConnId, ConnSlab, Conns, DeclaredConns, InstanceId, NeedId, OpenDesc, Piece,
@@ -168,6 +169,9 @@ fn clock_dispatcher(timestamp: u64) -> (Arc<Clock>, Arc<Dispatcher>) {
 #[cfg(all(test, loader_self_tests))]
 #[path = "../../tests/conformance_auth_clock_tests.rs"]
 mod clock_tests;
+#[cfg(all(test, loader_self_tests))]
+#[path = "../../tests/conformance_auth_outbound_custody_tests.rs"]
+mod custody_tests;
 /// How long a submitted `tick` is awaited.
 const TICK_WAIT: Duration = Duration::from_secs(10);
 /// The failing endpoint's answer body.
@@ -829,6 +833,10 @@ impl Lend {
             flags: 0,
             _reserved: 0,
         };
+        // Match the production caller: binary custody capability first, followed by every
+        // original request extension. This owned allocation is lent with the whole call.
+        let mut ext = extensions::encode(&[(EXT_SEALED_FIELDS, SEALED_FIELDS_V1)]);
+        ext.extend_from_slice(&h.extensions_blob());
         let mut l = Box::new(Self {
             buf: vec![0_u8; auth::FIELDS_BUF_BYTES],
             spans: vec![blank; auth::FIELDS_MAX as usize],
@@ -850,7 +858,7 @@ impl Lend {
                 h.query.as_deref().unwrap_or("").as_bytes().to_vec(),
             ],
             body: h.body.clone(),
-            ext: h.extensions_blob(),
+            ext,
         });
         l.lines = l
             .names
@@ -1668,6 +1676,26 @@ extern "C" fn open_outbound_twice(
     answered
 }
 
+/// The second cell's scope, retaining every unrelated extension byte (including the host's
+/// sealed-field custody capability). Otherwise the RED could fail on custody instead of fetching
+/// a second cell. The input is the suite's own complete encoded extension entries.
+fn longer_scope(blob: &[u8]) -> Vec<u8> {
+    let mut scope = extensions::get(blob, auth::EXT_SCOPE)
+        .unwrap_or_default()
+        .to_vec();
+    scope.push(b' ');
+    let mut other = extensions::encode(&[(auth::EXT_SCOPE, &scope)]);
+    let mut offset = 0;
+    for (key, value) in extensions::entries(blob) {
+        let end = offset + 2 + key.len() + 4 + value.len();
+        if key != auth::EXT_SCOPE.as_bytes() {
+            other.extend_from_slice(&blob[offset..end]);
+        }
+        offset = end;
+    }
+    other
+}
+
 /// `fields`, and when it WAITS (an on-demand cell armed) the same call again under the scope one
 /// byte longer: a second cell armed for the same waiting request, so the waiting calls fetch twice.
 extern "C" fn fields_arming_twice(
@@ -1692,11 +1720,7 @@ extern "C" fn fields_arming_twice(
             } else {
                 std::slice::from_raw_parts(ext.ptr, ext.len)
             };
-            let mut scope = extensions::get(blob, auth::EXT_SCOPE)
-                .unwrap_or_default()
-                .to_vec();
-            scope.push(b' ');
-            let other = extensions::encode(&[(auth::EXT_SCOPE, &scope)]);
+            let other = longer_scope(blob);
             again.head.extensions = Blob {
                 ptr: other.as_ptr(),
                 len: other.len(),

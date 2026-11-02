@@ -232,9 +232,9 @@ fn a_checked_batch_pauses_before_a_same_op_empty_input_recall() {
     let expected = output.emitted[0].capacity + 1;
     let delivered: Vec<_> = first
         .pieces
-        .into_iter()
-        .chain(second.pieces)
-        .map(|piece| (piece.stream, piece.bytes))
+        .iter()
+        .chain(&second.pieces)
+        .map(|piece| (piece.stream, piece.bytes.clone()))
         .collect();
     assert_eq!(
         delivered,

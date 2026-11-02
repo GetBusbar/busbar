@@ -152,6 +152,7 @@ mod sealed {
 pub mod fake;
 pub mod far;
 pub mod reply;
+pub mod sink;
 pub mod test_in;
 
 pub use busbar_contract::abi::sdk::test_support::{zeroed, AllZero};

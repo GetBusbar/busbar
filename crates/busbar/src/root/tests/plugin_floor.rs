@@ -12,6 +12,149 @@ use busbar_contract::plugin_rows::{NeedLevel, PluginRows, Row, Skipped, Trust};
 use super::hold;
 
 #[test]
+fn release_keys_floor_survives_restart_and_a_plugin_rollback_pin_cannot_lower_it() {
+    let store = crate::root::store_double::RecordSlots::new();
+    let calls = store.calls();
+    assert_eq!(
+        super::release_keys_floor(calls.as_ref(), "node-a").unwrap(),
+        0
+    );
+    super::enforce_release_keys(calls.as_ref(), "node-a", &[7], true).unwrap();
+    // Fresh Store calls model the next boot; the authority is the shared Store, not process memory.
+    let calls = store.calls();
+    assert_eq!(
+        super::release_keys_floor(calls.as_ref(), "node-a").unwrap(),
+        7
+    );
+    let row = first_party("busbar-hook-pinned", "1.0.0");
+    let pin = BTreeMap::from([(row.name.clone(), row.version.clone())]);
+    let refusal = super::check_candidate(calls.as_ref(), "node-a", &row, Some(6), &pin)
+        .expect_err("an exact plugin rollback pin cannot lower the keys-document floor");
+    assert!(refusal.contains("keys-rollback") && refusal.contains("below 7"));
+    super::check_candidate(calls.as_ref(), "node-a", &row, Some(7), &pin).unwrap();
+    assert_eq!(
+        super::release_keys_floor(calls.as_ref(), "node-a").unwrap(),
+        7
+    );
+    super::enforce_release_keys(calls.as_ref(), "node-b", &[6], true).unwrap();
+    assert_eq!(
+        super::release_keys_floor(calls.as_ref(), "node-b").unwrap(),
+        6
+    );
+}
+
+#[test]
+fn release_keys_dry_run_never_creates_or_raises_a_floor() {
+    let store = crate::root::store_double::RecordSlots::new();
+    let calls = store.calls();
+    super::enforce_release_keys(calls.as_ref(), "node-a", &[3], false).unwrap();
+    assert_eq!(
+        super::release_keys_floor(calls.as_ref(), "node-a").unwrap(),
+        0
+    );
+    super::enforce_release_keys(calls.as_ref(), "node-a", &[3], true).unwrap();
+    store.on_transaction(|_| panic!("a read-only keys floor check must not write"));
+    super::enforce_release_keys(calls.as_ref(), "node-a", &[4], false).unwrap();
+    assert!(super::enforce_release_keys(calls.as_ref(), "node-a", &[2], false).is_err());
+    assert_eq!(
+        super::release_keys_floor(calls.as_ref(), "node-a").unwrap(),
+        3
+    );
+}
+
+#[test]
+fn a_malformed_release_keys_floor_is_never_absence_or_echoed() {
+    let store = crate::root::store_double::RecordSlots::new();
+    let key = super::release_keys_key("node-a");
+    store.put_row(
+        super::RELEASE_KEYS_FLOOR_SCHEMA,
+        &key,
+        b"private-corrupt-floor",
+    );
+    for refusal in [
+        super::release_keys_floor(store.calls().as_ref(), "node-a").unwrap_err(),
+        super::enforce_release_keys(store.calls().as_ref(), "node-a", &[10], true).unwrap_err(),
+    ] {
+        assert!(refusal.contains("malformed"));
+        assert!(!refusal.contains("private-corrupt"));
+    }
+    assert_eq!(
+        store.puts(),
+        0,
+        "refusal never overwrites a corrupt security record"
+    );
+}
+
+#[test]
+fn a_delayed_keys_document_cannot_lower_a_concurrent_newer_floor() {
+    use busbar_contract::abi::sdk::store::conditional::{Expected, Mutation};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Mutex;
+
+    const HOST: &str = "concurrent-keys-floor";
+    let store = crate::root::store_double::RecordSlots::new();
+    super::enforce_release_keys(store.calls().as_ref(), HOST, &[1], true).unwrap();
+    let (arrived, crossing) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    let release = ReleaseTransaction(Some(release));
+    let released = Mutex::new(released);
+    let first = AtomicBool::new(true);
+    store.on_transaction(move |request| {
+        let older = request.mutations.iter().any(|mutation| {
+            matches!(mutation,
+            Mutation::Put { schema, key, value } if schema == super::RELEASE_KEYS_FLOOR_SCHEMA
+                && key == &super::release_keys_key(HOST) && value.as_slice() == 2u64.to_be_bytes())
+        });
+        if older && first.swap(false, Ordering::AcqRel) {
+            arrived.send(request.clone()).unwrap();
+            released.lock().unwrap().recv_timeout(WAIT).unwrap();
+        }
+        None
+    });
+    let old_store = store.clone();
+    let old = std::thread::spawn(move || {
+        super::enforce_release_keys(old_store.calls().as_ref(), HOST, &[2], true)
+    });
+    let candidate = crossing.recv_timeout(WAIT).expect("the older CAS is held");
+    assert_eq!(
+        candidate.predicates[0].expected,
+        Expected::Bytes(1u64.to_be_bytes().to_vec())
+    );
+    super::enforce_release_keys(store.calls().as_ref(), HOST, &[3], true).unwrap();
+    release.release();
+    assert!(old.join().unwrap().unwrap_err().contains("below 3"));
+    assert_eq!(
+        super::release_keys_floor(store.calls().as_ref(), HOST).unwrap(),
+        3
+    );
+}
+
+#[test]
+fn a_release_keys_floor_with_a_lost_ack_replays_one_immutable_transaction() {
+    use std::sync::Mutex;
+    let store = crate::root::store_double::RecordSlots::new();
+    let crossed = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&crossed);
+    store.on_transaction(move |request| {
+        seen.lock().unwrap().push(request.clone());
+        None
+    });
+    store.lose_acks(true);
+    super::enforce_release_keys(store.calls().as_ref(), "lost-keys-floor", &[9], true).unwrap();
+    let crossed = crossed.lock().unwrap();
+    assert_eq!(crossed.len(), 2);
+    assert_eq!(
+        crossed[0], crossed[1],
+        "the original operation id and complete candidate are replayed"
+    );
+    assert_eq!(store.puts(), 1);
+    assert_eq!(
+        super::release_keys_floor(store.calls().as_ref(), "lost-keys-floor").unwrap(),
+        9
+    );
+}
+
+#[test]
 fn a_present_malformed_floor_is_never_treated_as_absence_or_echoed() {
     for corrupt in [
         b"private-invalid-version".as_slice(),

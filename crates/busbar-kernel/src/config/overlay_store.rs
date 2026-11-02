@@ -25,6 +25,8 @@ use super::overlay::OverlayDoc;
 const SCHEMA: &str = "busbar.config.overlay.v1";
 const HEAD: &[u8] = b"head";
 
+type OverlaySnapshot = (Option<Vec<u8>>, Option<Vec<u8>>);
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Head {
@@ -125,7 +127,7 @@ impl OverlayStore {
         "configured Store"
     }
 
-    fn snapshot(&self) -> Result<(Option<Vec<u8>>, Option<Vec<u8>>), String> {
+    fn snapshot(&self) -> Result<OverlaySnapshot, String> {
         loop {
             let (raw, bytes) = self.snapshot_once()?;
             if let Some(bytes) = bytes {
@@ -143,7 +145,7 @@ impl OverlayStore {
         }
     }
 
-    fn snapshot_once(&self) -> Result<(Option<Vec<u8>>, Option<Vec<u8>>), String> {
+    fn snapshot_once(&self) -> Result<OverlaySnapshot, String> {
         let raw = wait(self.calls.record_get(SCHEMA, HEAD)).map_err(|e| e.to_string())?;
         let Some(raw) = raw else {
             return Ok((None, None));
@@ -371,7 +373,7 @@ impl OverlayStore {
             };
             let old = {
                 let mut observed = self.observed.lock().unwrap_or_else(|p| p.into_inner());
-                std::mem::replace(&mut *observed, Some(Some(value.clone())))
+                observed.replace(Some(value.clone()))
             };
             drop(old);
         }

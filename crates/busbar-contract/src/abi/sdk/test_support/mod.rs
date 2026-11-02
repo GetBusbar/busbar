@@ -13,6 +13,8 @@
 //!   lending lists.
 //! * `chip` (behind the dev-only `test-seal` feature): a sealed credential's bytes, as a test's own
 //!   stand-in for the host's wire writes them.
+//! * [`sink`]: the actual SDK sink over exclusively borrowed host buffers, without exposing its
+//!   crate-private loan or output constructors to test callers.
 //!
 //! TEST ONLY: compiled for this crate's tests and behind the `test-support` feature busbar-test-kit
 //! (a dev-dependency only) enables, so no shipped image carries it. It adds no `#[repr(C)]` type
@@ -28,6 +30,7 @@ mod sealed {
 #[cfg(any(test, feature = "test-seal"))]
 pub mod chip;
 mod pairs;
+pub mod sink;
 
 /// `t`, lent: what the test kit's fake host hands a door as its host tables.
 ///

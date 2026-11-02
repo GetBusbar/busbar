@@ -12,7 +12,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::io::{ErrorKind, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::task::{Poll, Waker};
 use std::time::{Duration, Instant};
@@ -77,6 +77,25 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 
 fn failed(e: &std::io::Error) -> IoRefusal {
     IoRefusal::Failed(e.to_string())
+}
+
+fn program_exit(status: ExitStatus) -> u32 {
+    if let Some(code) = status.code() {
+        // Windows exposes its native 32-bit process status through i32; retain those bits.
+        return code as u32;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        status
+            .signal()
+            .map_or(128, |signal| 128_u32.saturating_add(signal as u32))
+    }
+    #[cfg(not(unix))]
+    {
+        // Platforms without Unix signals have no signal number to append.
+        128
+    }
 }
 
 /// A zero-timeout readiness query does not consume input or send probe bytes.
@@ -470,11 +489,7 @@ impl IoHost for SuiteIo {
             }),
             // The program itself, without waiting: a descendant holding its output hides nothing.
             Handle::Program { child, .. } => Ok(Ends {
-                exit: child.try_wait().map_err(|e| failed(&e))?.map(|s| {
-                    use std::os::unix::process::ExitStatusExt;
-                    s.code()
-                        .map_or_else(|| 128 + s.signal().unwrap_or(0) as u32, |c| c as u32)
-                }),
+                exit: child.try_wait().map_err(|e| failed(&e))?.map(program_exit),
                 ..Ends::default()
             }),
             Handle::Listener(_) => Ok(Ends::default()),
@@ -487,6 +502,24 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::task::Wake;
+
+    #[test]
+    fn finished_program_status_preserves_exit_codes_and_platform_termination() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            assert_eq!(program_exit(ExitStatus::from_raw(0)), 0);
+            assert_eq!(program_exit(ExitStatus::from_raw(7 << 8)), 7);
+            assert_eq!(program_exit(ExitStatus::from_raw(9)), 128 + 9);
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::ExitStatusExt;
+            assert_eq!(program_exit(ExitStatus::from_raw(0)), 0);
+            assert_eq!(program_exit(ExitStatus::from_raw(7)), 7);
+            assert_eq!(program_exit(ExitStatus::from_raw(0xc000_013a)), 0xc000_013a);
+        }
+    }
 
     #[derive(Default)]
     struct Wakes(AtomicUsize);

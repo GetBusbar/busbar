@@ -402,11 +402,10 @@ impl AuditChain {
     /// and the head history is REBUILT from them, so the head read answers with the tip the chain
     /// really has and every window's anchor is the one it had before the restart.
     ///
-    /// Rebuilt rather than restored: a head is a pure function of the record it was taken after and
-    /// of the sampling rule, so walking the records again reproduces the series the predecessor
-    /// held, without a second store that could disagree with the journal. A chain resumed from a
-    /// tail alone would answer a null head beside a `next_seq` above one, which says the chain is
-    /// empty while it is not.
+    /// This rebuild supports complete legacy journals and standalone callers. The production root
+    /// then installs its independently persisted anchors through [`Self::retaining_heads`], so
+    /// their lifetime does not depend on retaining each source record. A tail-only rebuild by
+    /// itself cannot recover earlier anchors.
     pub fn resume(sealed: &[AuditRecord]) -> Self {
         let mut chain = AuditChain::new();
         for record in sealed {
@@ -417,6 +416,34 @@ impl AuditChain {
             chain.next_seq = last.seq.saturating_add(1);
         }
         chain
+    }
+
+    /// Restore the independently retained anchors after reading the journal's remaining records.
+    /// A retained tip remains the numbering authority even when its source record is absent.
+    ///
+    /// # Errors
+    /// The retained history is behind or contradicts the journal's latest retained audit record.
+    pub fn retaining_heads(
+        mut self,
+        heads: crate::heads::HeadHistory,
+    ) -> Result<Self, &'static str> {
+        if let Some(observed) = self.heads.tip() {
+            let retained = heads
+                .tip()
+                .ok_or("retained audit history has no journal tip")?;
+            if observed.seq > retained.seq || observed.seq == retained.seq && observed != retained {
+                return Err("retained audit head disagrees with the journal");
+            }
+        }
+        if let Some(tip) = heads.tip() {
+            self.tail_hash = tip.hash.clone();
+            self.next_seq = tip
+                .seq
+                .checked_add(1)
+                .ok_or("audit head sequence is exhausted")?;
+        }
+        self.heads = heads;
+        Ok(self)
     }
 
     /// SIGN FROM HERE ON, with this key.

@@ -5,7 +5,7 @@ use super::*;
 use crate::callback_waker::Probe;
 use busbar_contract::conn::PollConns;
 use std::sync::atomic::Ordering;
-use std::task::{Context, Poll};
+use std::task::{Context, Poll, Waker};
 
 fn observed(member: &Arc<super::super::Member>) -> Arc<Probe> {
     let weak = Arc::downgrade(member);

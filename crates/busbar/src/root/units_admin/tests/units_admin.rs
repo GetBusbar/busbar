@@ -704,8 +704,10 @@ fn a_replayed_idempotency_key_answers_the_first_answers_bytes() {
         bound::replayable(
             cache,
             Some(&replay_store),
-            KernelVerb::CommitUpgrade,
-            "operator",
+            bound::ReplayScope {
+                verb: KernelVerb::CommitUpgrade,
+                actor: "operator",
+            },
             &request,
             &request.body,
             None,
@@ -4352,8 +4354,10 @@ fn a_keyed_commit_refused_before_sealing_accepts_corrected_input() {
         bound::replayable(
             &cache,
             Some(&replay_store),
-            KernelVerb::CommitUpgrade,
-            "admin",
+            bound::ReplayScope {
+                verb: KernelVerb::CommitUpgrade,
+                actor: "admin",
+            },
             request,
             &request.body,
             Some(&journal),
@@ -4434,8 +4438,10 @@ fn a_keyed_write_retried_after_a_restart_replays_and_runs_nothing_again() {
     let first = bound::replayable(
         &bound::ReplayCache::new(),
         Some(&replay_store),
-        KernelVerb::PlaneRecordWrite,
-        "operator",
+        bound::ReplayScope {
+            verb: KernelVerb::PlaneRecordWrite,
+            actor: "operator",
+        },
         &request,
         &request.body,
         None,
@@ -4446,8 +4452,10 @@ fn a_keyed_write_retried_after_a_restart_replays_and_runs_nothing_again() {
     let retried = bound::replayable(
         &bound::ReplayCache::new(),
         Some(&replay_store),
-        KernelVerb::PlaneRecordWrite,
-        "operator",
+        bound::ReplayScope {
+            verb: KernelVerb::PlaneRecordWrite,
+            actor: "operator",
+        },
         &request,
         &request.body,
         None,

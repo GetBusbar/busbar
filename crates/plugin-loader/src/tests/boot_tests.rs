@@ -424,6 +424,7 @@ fn a_linked_and_a_dropped_plane_door_load_through_the_same_path() {
         allow_unsigned: true,
         allow_third_party: true,
         min_versions: Default::default(),
+        ..crate::sign::TrustPolicy::default()
     };
     let dropped = crate::scan_and_validate(&dir.join("."), &policy).expect("the plane scans");
     let logs = PluginLogConfig::from_words(

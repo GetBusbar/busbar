@@ -274,8 +274,10 @@ fn an_unknown_plane_write_keeps_its_exact_record_and_never_repeats_the_upsert() 
         super::replayable(
             cache,
             Some(&replay_store),
-            busbar_core_admin::KernelVerb::PlaneRecordWrite,
-            "admin",
+            super::ReplayScope {
+                verb: busbar_core_admin::KernelVerb::PlaneRecordWrite,
+                actor: "admin",
+            },
             request,
             &request.body,
             None,

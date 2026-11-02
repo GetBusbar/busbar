@@ -47,6 +47,16 @@ fn policy(cfg: &PluginsCfg, binary_version: &str) -> Result<TrustPolicy, String>
     crate::root::boot::trust_policy(cfg, binary_version)
 }
 
+/// New uploads and their previews judge expiry. Installed inventory, conflict scans and explicit
+/// rollback use boot rules: time passing alone never stops an installed artifact from loading.
+/// Both contexts keep signatures, revocations and the Store-backed keys-document floor enforced.
+fn install_policy(cfg: &PluginsCfg, binary_version: &str) -> Result<TrustPolicy, String> {
+    policy(cfg, binary_version).map(|policy| TrustPolicy {
+        release_enforce_expiry: true,
+        ..policy
+    })
+}
+
 /// The audited action relaxes only its target's two independent floor gates. Trust and all
 /// other names retain the running posture.
 fn rollback_policy(mut policy: TrustPolicy, manifest: &Manifest) -> TrustPolicy {
@@ -153,7 +163,7 @@ impl PluginAdmission for RootAdmission {
         tarball: &[u8],
         cfg: &PluginsCfg,
     ) -> Result<Admitted, Refusal> {
-        let policy = policy(cfg, env!("CARGO_PKG_VERSION")).map_err(Refusal::Validation)?;
+        let policy = install_policy(cfg, env!("CARGO_PKG_VERSION")).map_err(Refusal::Validation)?;
         let unpacked = unpack_checked(tarball, "")?;
         let manifest = &unpacked.manifest;
         let judged = match evaluate(&unpacked.lib_bytes, manifest, &policy) {
@@ -170,13 +180,18 @@ impl PluginAdmission for RootAdmission {
         };
         // A corrupt tarball already in the directory makes the scan refuse: the conflict status of
         // the upload cannot be determined, so it is refused rather than published unchecked.
-        let installed = crate::root::loader::scan_and_validate(dir, &policy).map_err(|errors| {
-            Refusal::Conflict(format!(
+        let installed_policy = TrustPolicy {
+            release_enforce_expiry: false,
+            ..policy.clone()
+        };
+        let installed =
+            crate::root::loader::scan_and_validate(dir, &installed_policy).map_err(|errors| {
+                Refusal::Conflict(format!(
                 "cannot validate the installed plugin set before publishing (fix or remove the \
                  offending tarball first): {}",
                 errors.join("; ")
             ))
-        })?;
+            })?;
         for existing in installed.loadable() {
             if existing.file == file {
                 continue; // overwriting the same tarball file is a legitimate upgrade
@@ -219,7 +234,7 @@ impl PluginAdmission for RootAdmission {
     }
 
     fn inspect(&self, tarball: &[u8], cfg: &PluginsCfg) -> Result<(Stated, Judged), Refusal> {
-        let policy = policy(cfg, env!("CARGO_PKG_VERSION")).map_err(Refusal::Validation)?;
+        let policy = install_policy(cfg, env!("CARGO_PKG_VERSION")).map_err(Refusal::Validation)?;
         let unpacked = unpack_checked(tarball, "")?;
         // Trust is REPORTED, never a refusal to answer: an untrusted candidate is the case an
         // operator most wants to preview.
@@ -292,6 +307,7 @@ mod rollback_tests {
         let other = make("busbar-hook-other-fixture");
         let mut running = TrustPolicy {
             first_party_key: Some(key.verifying_key()),
+            release_keys_floor: 17,
             ..Default::default()
         };
         for name in [&target.name, &other.name] {
@@ -310,6 +326,10 @@ mod rollback_tests {
         let tarball = crate::root::loader::tarball::package(&target, "lib.so", lib).unwrap();
         let checked = unpack_checked(&tarball, " `old.tar.gz`").unwrap();
         let rollback = rollback_policy(running, &checked.manifest);
+        assert_eq!(
+            rollback.release_keys_floor, 17,
+            "a plugin rollback never relaxes keys metadata rollback protection"
+        );
         assert!(matches!(
             evaluate(&checked.lib_bytes, &checked.manifest, &rollback),
             Ok(Verdict::Trusted {

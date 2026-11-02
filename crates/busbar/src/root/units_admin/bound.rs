@@ -852,6 +852,12 @@ fn kept_answer(kept: &[u8]) -> Option<ReplayValue> {
 /// The request header carrying the client-chosen idempotency token (names arrive lowercased).
 const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
 
+/// The verb and resolved principal that scope an idempotency key.
+pub(crate) struct ReplayScope<'a> {
+    pub verb: busbar_core_admin::KernelVerb,
+    pub actor: &'a str,
+}
+
 /// Run a write under contract D-3's `Idempotency-Key` replay — the same cache, TTL, in-flight
 /// sentinel and per-principal key scoping the key mint and rotate use.
 ///
@@ -864,8 +870,7 @@ const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
 pub(crate) fn replayable(
     cache: &ReplayCache,
     store: Option<&ReplayStore>,
-    verb: busbar_core_admin::KernelVerb,
-    actor: &str,
+    scope: ReplayScope<'_>,
     unit: &super::AdminRequest,
     body: &[u8],
     journal: Option<&AmendmentJournal>,
@@ -873,6 +878,7 @@ pub(crate) fn replayable(
 ) -> Result<AdminAnswer, GovernanceError> {
     use busbar_core_admin::idempotency::Probe;
 
+    let ReplayScope { verb, actor } = scope;
     let Some(header) = unit
         .headers
         .iter()

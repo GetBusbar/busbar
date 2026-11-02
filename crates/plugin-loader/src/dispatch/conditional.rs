@@ -271,13 +271,13 @@ fn isolated(a: &super::Answer) -> Result<(), ()> {
 pub(crate) unsafe fn answer(
     wake: &'static InstanceWake,
     kind: KindCode,
-    operation: u32,
     ticket: Ticket,
     unit: Option<u64>,
-    outcome: Outcome,
     head: &OutHead,
     answer: &super::Answer,
 ) -> Result<bool, ()> {
+    let operation = answer.slot;
+    let outcome = answer.outcome;
     if kind != KindCode::Plane {
         return Ok(false);
     }

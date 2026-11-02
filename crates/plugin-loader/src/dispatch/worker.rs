@@ -777,6 +777,25 @@ impl Drop for WakeAfterLock {
     }
 }
 
+/// Dev-only acknowledgement owning the cleanup queued before its message was applied.
+#[cfg(any(test, feature = "test-support"))]
+struct RetirementAck {
+    prior: Vec<Late>,
+    ack: Sender<()>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Drop for RetirementAck {
+    fn drop(&mut self) {
+        // Explicit iteration establishes callback order independently of Vec destruction order.
+        // These owners were detached under the worker lock; this destructor runs after unlock.
+        for owner in std::mem::take(&mut self.prior) {
+            drop(owner);
+        }
+        let _ = self.ack.send(());
+    }
+}
+
 /// Keep `instance` past a drop made under the worker's lock: on a worker loop's own thread the loop
 /// takes it by [`let_go`] and drops it with the lock released; on any other thread nothing is kept.
 fn hold_past_lock(instance: &Arc<Instance>) {
@@ -1022,6 +1041,8 @@ pub(crate) enum Msg {
     Wake(Ticket, Option<&'static super::ticket::InstanceWake>),
     DropClient(Ticket),
     Recycle(Ticket),
+    #[cfg(any(test, feature = "test-support"))]
+    RetirementBarrier(Sender<()>),
     BindUnit {
         ticket: Ticket,
         instance: Arc<Instance>,
@@ -1378,6 +1399,13 @@ impl Worker {
                         }
                     }
                 }
+            }
+            #[cfg(any(test, feature = "test-support"))]
+            Msg::RetirementBarrier(ack) => {
+                // Own the preceding retirement list, including actual queued LeaseReturns.
+                // The ack retires that list explicitly before signalling, with the lock released.
+                let prior = let_go();
+                drop_after_lock(Box::new(RetirementAck { prior, ack }));
             }
             Msg::BindUnit {
                 ticket,
@@ -2585,6 +2613,27 @@ impl Dispatcher {
     /// wakes for it are dropped from then on.
     pub fn recycle(&self, t: Ticket) {
         self.pool.send(t, Msg::Recycle(t));
+    }
+
+    /// DEV ONLY: wait until this ticket's worker retires cleanup queued before this barrier.
+    /// This adds no plugin crossing. It fences previously queued cleanup; pending operations
+    /// may remain pending.
+    /// A completed call's caller can recycle its ticket, then use this to observe its actual
+    /// deferred lease release before reading conformance counters.
+    ///
+    /// Returns false for no ticket, a same-worker synchronous wait, an unavailable worker, or
+    /// timeout/disconnection. It does not judge success from a crossing count.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn retirement_barrier(&self, ticket: Ticket, timeout: Duration) -> bool {
+        let (worker, _) = decode(ticket.slot);
+        if ticket.is_none() || self.current_worker() == Some(worker) {
+            return false;
+        }
+        let (ack, retired) = channel();
+        // An unprocessed message only drops its Sender; it must not acknowledge retirement.
+        self.pool.send(ticket, Msg::RetirementBarrier(ack));
+        retired.recv_timeout(timeout).is_ok()
     }
 
     /// The client of `t` went away: its Call/Stream/Connection ops are cancelled (`cancel`, then

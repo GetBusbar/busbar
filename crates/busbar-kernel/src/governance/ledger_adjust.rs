@@ -398,10 +398,6 @@ fn segment_at(models: &[ModelCell], lane: &str, at_ms: u64) -> Option<usize> {
         .map(|(i, _)| i)
 }
 
-/// What a ROLLED-AWAY `window` holds of `lane`'s `class`: its durable row (`stored`, read before
-/// the locks; it carries no era) plus what the live cell still has parked under it. `None` when
-/// neither holds that lane at all — the window's segment is gone, or was not read.
-
 /// `count` moved by `delta`, or `None` when that leaves `u64`.
 fn moved(count: u64, delta: i64) -> Option<u64> {
     if delta >= 0 {

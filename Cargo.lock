@@ -1073,8 +1073,7 @@ dependencies = [
 [[package]]
 name = "dunce"
 version = "1.0.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
+source = "git+https://github.com/MattJackson/dunce?rev=bb4757b8dffd9bdc619ce1fda1a147bd53e7b29d#bb4757b8dffd9bdc619ce1fda1a147bd53e7b29d"
 
 [[package]]
 name = "dyn-clone"
@@ -1248,8 +1247,7 @@ dependencies = [
 [[package]]
 name = "fs_extra"
 version = "1.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c"
+source = "git+https://github.com/MattJackson/fs_extra?rev=70f47864db8ae763979f47cde6785449cd790dad#70f47864db8ae763979f47cde6785449cd790dad"
 
 [[package]]
 name = "futures"
@@ -1660,8 +1658,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 [[package]]
 name = "jobserver"
 version = "0.1.35"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c00acbd29eabad4a2392fa0e921c874934dbbf4194312ad20f04a0ed67a3cb3"
+source = "git+https://github.com/MattJackson/jobserver-rs?rev=fbe3efc1acc11add04854cc093f97876e439e129#fbe3efc1acc11add04854cc093f97876e439e129"
 dependencies = [
  "getrandom 0.4.3",
  "libc",
@@ -3012,8 +3009,7 @@ dependencies = [
 [[package]]
 name = "stringprep"
 version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b4df3d392d81bd458a8a621b8bffbd2302a12ffe288a9d931670948749463b1"
+source = "git+https://github.com/MattJackson/rust-stringprep?rev=da1e3cea3ca61b8b3882a71ee96496cd231601f2#da1e3cea3ca61b8b3882a71ee96496cd231601f2"
 dependencies = [
  "unicode-bidi",
  "unicode-normalization",

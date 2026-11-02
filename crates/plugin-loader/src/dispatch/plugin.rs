@@ -2063,10 +2063,8 @@ impl Instance {
             super::conditional::answer(
                 self.wake,
                 self.kind,
-                s,
                 inspection_ticket,
                 unit,
-                outcome,
                 &head,
                 &answer,
             )
