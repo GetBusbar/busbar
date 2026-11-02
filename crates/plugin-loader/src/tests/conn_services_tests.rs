@@ -2376,6 +2376,20 @@ fn a_replayed_identity_writes_the_callers_memory_again() {
     let mut first: ProcessIdentity = unsafe { std::mem::zeroed() };
     assert!(ready(&ask(&mut first)));
     assert_eq!(first.pid, u64::from(std::process::id()));
+    let expected_user = std::env::var("USER")
+        .or_else(|_| std::env::var("LOGNAME"))
+        .unwrap_or_default();
+    let user_of = |identity: &ProcessIdentity| {
+        if identity.os_user.len == 0 {
+            return "";
+        }
+        // SAFETY: the actual identity service lends its process-lifetime OS-user
+        // bytes; the successful crossing above initialized this complete AbiStr.
+        let bytes =
+            unsafe { std::slice::from_raw_parts(identity.os_user.ptr, identity.os_user.len) };
+        std::str::from_utf8(bytes).expect("the actual OS-user string is UTF-8")
+    };
+    assert_eq!(user_of(&first), expected_user);
     // SAFETY: as above.
     let mut replayed: ProcessIdentity = unsafe { std::mem::zeroed() };
     assert!(ready(&ask(&mut replayed)), "the same handle, again");
@@ -2383,6 +2397,11 @@ fn a_replayed_identity_writes_the_callers_memory_again() {
         replayed.pid,
         u64::from(std::process::id()),
         "a replay answered READY without writing the identity"
+    );
+    assert_eq!(
+        user_of(&replayed),
+        expected_user,
+        "the replay must also write the actual OS-user identity"
     );
 }
 
