@@ -458,17 +458,8 @@ pub fn plane_table<T: Serialize>(entry: &T) -> ProviderTable {
 /// operator wrote.
 fn with_options<T: Serialize>(entry: &T, options: &ProviderTable) -> ProviderTable {
     let mut table = plane_table(entry);
-    let descriptor =
-        crate::plane_driver::door::provider_keys(crate::plane_driver::registry::plane_decls());
     for (name, value) in options {
-        let declared = descriptor.is_some_and(|d| {
-            [&d.catalog, &d.deployment, &d.entry]
-                .iter()
-                .any(|t| t.keys.iter().any(|k| k.name == *name && !k.required))
-        });
-        if !(declared && value.is_null()) {
-            table.insert(name.clone(), value.clone());
-        }
+        table.insert(name.clone(), value.clone());
     }
     table
 }
@@ -603,6 +594,11 @@ macro_rules! provider_entry {
                                 options: &mut options,
                             }),
                         )?;
+                        if let Some(descriptor) = crate::plane_driver::door::provider_keys(
+                            crate::plane_driver::registry::plane_decls(),
+                        ) {
+                            Form::$form.omit_unset(&mut options, descriptor);
+                        }
                         entry.options = options;
                         Ok(entry)
                     }

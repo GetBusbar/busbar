@@ -24,6 +24,16 @@ impl Form {
             Self::Entry => &keys.entry,
         }
     }
+    pub(super) fn omit_unset(self, values: &mut Map<String, Value>, keys: &ProviderKeys) {
+        let table = self.table(keys);
+        values.retain(|name, value| {
+            !value.is_null()
+                || !table
+                    .keys
+                    .iter()
+                    .any(|key| key.name == *name && !key.required)
+        });
+    }
 }
 
 pub(super) struct ValueSeed<'a> {
@@ -313,6 +323,42 @@ mod tests {
             read(&key, "{required: null, optional: null, extension: null}").unwrap(),
             json!({"required":null,"extension":null})
         );
+    }
+    #[test]
+    fn top_level_null_omission_uses_only_the_entrys_own_form() {
+        let mut key = field("setting", Shape::Bool, true);
+        key.nullable = Some(true);
+        let mut optional = key.clone();
+        optional.required = false;
+        let descriptor = ProviderKeys {
+            catalog: Table {
+                name: None,
+                deny_unknown: false,
+                keys: vec![key.clone()],
+            },
+            deployment: Table {
+                name: None,
+                deny_unknown: false,
+                keys: vec![optional],
+            },
+            entry: Table {
+                name: None,
+                deny_unknown: false,
+                keys: vec![key],
+            },
+        };
+        for form in [Form::Catalog, Form::Entry, Form::Deployment] {
+            let mut values = Map::from_iter([
+                ("setting".into(), Value::Null),
+                ("extension".into(), Value::Null),
+            ]);
+            form.omit_unset(&mut values, &descriptor);
+            assert_eq!(
+                values.contains_key("setting"),
+                !matches!(form, Form::Deployment)
+            );
+            assert_eq!(values.get("extension"), Some(&Value::Null));
+        }
     }
 }
 
