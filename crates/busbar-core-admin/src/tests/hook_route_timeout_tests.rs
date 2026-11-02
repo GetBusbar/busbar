@@ -229,7 +229,7 @@ async fn timeout_only_admin_put_refreshes_both_hook_doors_and_policy_atomically(
     );
     let gov = Arc::new(
         busbar_kernel::governance::GovState::new(
-            Arc::new(busbar_kernel::governance::MemoryStore::new()),
+            Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new()),
             Some("admintok".into()),
         )
         .unwrap(),

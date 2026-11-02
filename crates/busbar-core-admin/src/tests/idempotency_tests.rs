@@ -8,7 +8,7 @@
 
 use crate::idempotency::durable::{self, Refused, Settled};
 use crate::idempotency::{IdempotencyCache, Probe, IDEMPOTENCY_TTL_SECS};
-use busbar_kernel::governance::MemoryStore;
+use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 
 fn key(actor: &str, header: &str) -> (String, String) {
     (actor.to_string(), header.to_string())

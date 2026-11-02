@@ -9,7 +9,8 @@
 
 use busbar_kernel::audit_ring;
 use busbar_kernel::governance::signing::{TokenSigner, DEFAULT_KID};
-use busbar_kernel::governance::{GovState, MemoryStore};
+use busbar_kernel::governance::GovState;
+use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 use std::sync::Arc;
 
 const X_ADMIN_TOKEN: &str = "x-admin-token";

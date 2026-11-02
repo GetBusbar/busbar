@@ -22,8 +22,9 @@ use serde_json::json;
 use crate::v1::contract::AdminError;
 use crate::v1::json::{delete_group, install_plugin};
 use busbar_kernel::config::transaction::{config_transaction, Outcome};
-use busbar_kernel::governance::{GovState, MemoryStore};
+use busbar_kernel::governance::GovState;
 use busbar_kernel::state::AppHandle;
+use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 
 // ── fixtures ─────────────────────────────────────────────────────────────────────────────────────
 

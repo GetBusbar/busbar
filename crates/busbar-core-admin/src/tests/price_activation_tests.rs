@@ -246,7 +246,7 @@ fn stored_fee(backend: &OverlayStore) -> Option<i64> {
 
 #[tokio::test]
 async fn settings_refuses_unconfirmed_prices_then_reload_confirms_the_exact_candidate_once() {
-    let _limits = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
+    let _limits = busbar_kernel_testkit::limits::LIMITS_TEST_LOCK.lock().await;
     for (fee, activation, unknown) in [
         (REFUSED_CANDIDATE_FEE, false, false),
         (UNKNOWN_CANDIDATE_FEE, false, true),
@@ -368,7 +368,7 @@ async fn settings_refuses_unconfirmed_prices_then_reload_confirms_the_exact_cand
 
 #[tokio::test]
 async fn an_absent_card_and_unchanged_prices_allow_a_successful_settings_handler() {
-    let _limits = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
+    let _limits = busbar_kernel_testkit::limits::LIMITS_TEST_LOCK.lock().await;
     let (_inputs, overlay, handle) = settings_handle("no-configured-price-card");
     let before = handle.load();
     assert_eq!(put(&handle, BASE_FEE).await.status(), StatusCode::OK);
@@ -385,7 +385,7 @@ async fn an_absent_card_and_unchanged_prices_allow_a_successful_settings_handler
 
 #[tokio::test]
 async fn config_refusal_or_unknown_reply_never_attempts_price_activation() {
-    let _limits = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
+    let _limits = busbar_kernel_testkit::limits::LIMITS_TEST_LOCK.lock().await;
     for (fee, unknown) in [(REFUSED_CONFIG_FEE, false), (UNKNOWN_CONFIG_FEE, true)] {
         let scenario = Scenario::install(fee);
         let (_inputs, overlay, handle) = settings_handle(&format!("unconfirmed-config-{fee}"));
@@ -411,7 +411,7 @@ async fn config_refusal_or_unknown_reply_never_attempts_price_activation() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pending_activation_and_canceled_handler_keep_the_old_generation_until_confirmation() {
-    let _limits = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
+    let _limits = busbar_kernel_testkit::limits::LIMITS_TEST_LOCK.lock().await;
     let scenario = Scenario::install(PENDING_ACTIVATION_FEE);
     let (_inputs, _overlay, handle) = settings_handle("pending-price-activation");
     let before = handle.load();
@@ -517,7 +517,7 @@ impl Drop for ClearPanicPath {
 
 #[tokio::test]
 async fn callback_panics_preserve_one_coherent_published_price_generation() {
-    let _limits = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
+    let _limits = busbar_kernel_testkit::limits::LIMITS_TEST_LOCK.lock().await;
     let scenario = Scenario::install(PRE_PUBLICATION_PANIC_FEE);
     let (_inputs, overlay, handle) = settings_handle("before-price-publication");
     busbar_kernel_testkit::test_support::planes::register_test_plane(&PANIC_PLANE);

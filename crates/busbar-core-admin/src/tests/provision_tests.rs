@@ -14,8 +14,9 @@ use axum::http::{HeaderMap, StatusCode};
 use serde_json::json;
 
 use busbar_kernel::audit_ring;
-use busbar_kernel::governance::{GovState, MemoryStore};
+use busbar_kernel::governance::GovState;
 use busbar_kernel::state::AppHandle;
+use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 
 /// A store whose KEY WRITES always fail — the mint half of `commit_then` cannot succeed, while the
 /// config half (which never touches the store) commits normally. Everything else delegates.

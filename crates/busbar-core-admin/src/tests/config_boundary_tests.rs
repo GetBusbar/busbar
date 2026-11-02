@@ -135,7 +135,7 @@ impl busbar_kernel::governance::RecordStore for RewrapStore {
 #[tokio::test]
 async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery() {
     busbar_kernel_testkit::test_support::metrics::init();
-    let _limits_lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
+    let _limits_lock = busbar_kernel_testkit::limits::LIMITS_TEST_LOCK.lock().await;
     for failure in ["listing", "claim"] {
         let (dir, config_path, providers_path) = write_reset_fixture(&format!("rewrap-{failure}"));
         let old_path = dir.join("old-at-rest.key");

@@ -3,8 +3,10 @@
 
 //! Tests for `crates/busbar-core/src/admin/mod.rs`.
 
-use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec};
+use busbar_kernel::governance::{GovState, NewKeySpec};
+
 use busbar_kernel_testkit::test_support::governance::GovStateFixtures;
+use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 use std::sync::Arc;
 
 fn gov() -> Arc<GovState> {

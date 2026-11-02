@@ -5,7 +5,8 @@ use super::super::{fold_adjustments, AdminService};
 use crate::v1::contract::{AdminError, UsageView};
 use busbar_contract::records::{MeteringDelta, MeteringRow, RecordStore, VirtualKey, UNIT_INPUT};
 use busbar_kernel::cost::{CostModel, History, RateCard, TierRates};
-use busbar_kernel::governance::{Adjustment, GovState, MemoryStore, UsageAdjustment};
+use busbar_kernel::governance::{Adjustment, GovState, UsageAdjustment};
+use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 

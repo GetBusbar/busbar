@@ -98,7 +98,7 @@ async fn a_failed_admin_or_data_refresh_is_not_a_successful_flush() {
         let later_admin = RefreshDoor::new(7, false);
         let data = RefreshDoor::new(5, !admin_fails);
         let later_data = RefreshDoor::new(11, false);
-        let auth = busbar_kernel::auth::AuthMiddleware::from_doors_for_test(vec![
+        let auth = busbar_kernel_testkit::test_support::auth_helpers::from_doors_for_test(vec![
             ("data".into(), data.clone()),
             ("later-data".into(), later_data.clone()),
         ]);
@@ -141,7 +141,7 @@ async fn a_filtered_flush_sums_both_chains_without_refreshing_other_modules() {
     let data = RefreshDoor::new(5, false);
     let omitted_admin = RefreshDoor::new(0, true);
     let omitted_data = RefreshDoor::new(0, true);
-    let auth = busbar_kernel::auth::AuthMiddleware::from_doors_for_test(vec![
+    let auth = busbar_kernel_testkit::test_support::auth_helpers::from_doors_for_test(vec![
         ("target".into(), data.clone()),
         ("omitted".into(), omitted_data.clone()),
     ]);

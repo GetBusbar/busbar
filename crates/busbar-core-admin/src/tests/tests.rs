@@ -1,7 +1,8 @@
 use busbar_kernel::audit_ring;
 use busbar_kernel::config::migrated_store_module;
-use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec};
+use busbar_kernel::governance::{GovState, NewKeySpec};
 use busbar_kernel_testkit::test_support::governance::GovStateFixtures;
+use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 use busbar_kernel_testkit::test_support::warn_capture::WarnCapture;
 use busbar_kernel_testkit::test_support::TestOverlayStore;
 use std::sync::Arc;
@@ -4446,7 +4447,7 @@ async fn test_admin_v1_auth_read_keys_chain_reports_1_5_5_open() {
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let mut cfg = busbar_kernel::config::AuthCfg::default_none();
     cfg.chain = vec![busbar_kernel::config::AuthChainEntry::bare("keys")];
-    let mw = busbar_kernel::auth::AuthMiddleware::new_builtin(&cfg);
+    let mw = busbar_kernel_testkit::test_support::auth_helpers::new_builtin(&cfg);
     assert!(
         !mw.is_open(),
         "the admission predicate stays closed under chain: [keys]"
@@ -9145,7 +9146,7 @@ async fn settings_test_app(
     tokio::task::JoinHandle<()>,
     tokio::sync::MutexGuard<'static, ()>, // the process-wide limits slot, held for the test
 ) {
-    let limits_lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
+    let limits_lock = busbar_kernel_testkit::limits::LIMITS_TEST_LOCK.lock().await;
     busbar_kernel_testkit::test_support::metrics::init();
     // A per-test tag keeps parallel `/config/settings` tests on DISTINCT temp dirs (the fixture dir
     // is keyed on pid + coarse timestamp, which collides for same-second parallel starts).
@@ -9891,7 +9892,7 @@ async fn test_admin_v1_config_settings_persist_failure_does_not_install_limits()
     busbar_kernel_testkit::test_support::metrics::init();
     // The installed limits are a PROCESS-GLOBAL slot; hold the lock every mutating test holds so a
     // sibling's install cannot land mid-assertion here.
-    let _limits_lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
+    let _limits_lock = busbar_kernel_testkit::limits::LIMITS_TEST_LOCK.lock().await;
     let (dir, config_path, providers_path) = write_reset_fixture("limits-persist-fail");
     let overlay = TestOverlayStore::new();
     overlay.fail_writes(true);

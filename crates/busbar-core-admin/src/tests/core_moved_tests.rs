@@ -15,7 +15,8 @@ const X_ADMIN_TOKEN: &str = "x-admin-token";
 /// authorizes, proving the 401 is the empty-filter and not a blanket reject.
 #[tokio::test]
 async fn test_admin_blank_header_token_rejected() {
-    use busbar_kernel::governance::{GovState, MemoryStore};
+    use busbar_kernel::governance::GovState;
+    use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 
     use std::sync::Arc;
 
@@ -73,7 +74,8 @@ async fn test_admin_blank_header_token_rejected() {
 ///   - wrong + wrong                          → 401
 #[tokio::test]
 async fn test_admin_token_both_carriers_or_fold_no_short_circuit() {
-    use busbar_kernel::governance::{GovState, MemoryStore};
+    use busbar_kernel::governance::GovState;
+    use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 
     use std::sync::Arc;
 
@@ -150,7 +152,8 @@ async fn test_admin_token_both_carriers_or_fold_no_short_circuit() {
 /// while the two sanctioned admin carriers MUST authorize.
 #[tokio::test]
 async fn test_admin_token_not_acceptable_via_vendor_carriers() {
-    use busbar_kernel::governance::{GovState, MemoryStore};
+    use busbar_kernel::governance::GovState;
+    use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 
     use std::sync::Arc;
 
@@ -273,7 +276,8 @@ async fn test_1_5_2_admin_path_bypasses_governance_and_mints() {
 /// reach the management plane. Both planes keep an open, unauthenticated `/healthz`.
 #[tokio::test]
 async fn split_admin_listener_no_double_exposure() {
-    use busbar_kernel::governance::{GovState, MemoryStore};
+    use busbar_kernel::governance::GovState;
+    use busbar_kernel_testkit::test_support::store_double::MemoryStore;
     use busbar_kernel_testkit::test_support::LaneSpec;
     use std::sync::Arc;
     busbar_kernel_testkit::test_support::metrics::init();
@@ -339,7 +343,8 @@ async fn split_admin_listener_no_double_exposure() {
 /// RED (valid-token POST → 404); this is its correct home, where the seam is mounted.
 #[tokio::test]
 async fn test_governance_admin_api() {
-    use busbar_kernel::governance::{GovState, MemoryStore};
+    use busbar_kernel::governance::GovState;
+    use busbar_kernel_testkit::test_support::store_double::MemoryStore;
     use std::sync::Arc;
 
     busbar_kernel_testkit::test_support::metrics::init();
@@ -460,7 +465,8 @@ async fn dp_serve(
 
 /// A governance engine (admin token set) with ONE enabled, pool-`pa` virtual key. Returns (gov, secret).
 fn dp_gov_with_key() -> (std::sync::Arc<busbar_kernel::governance::GovState>, String) {
-    use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec};
+    use busbar_kernel::governance::{GovState, NewKeySpec};
+    use busbar_kernel_testkit::test_support::store_double::MemoryStore;
     let store = std::sync::Arc::new(MemoryStore::new());
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],

@@ -1516,7 +1516,8 @@ fn build_without_group_not_found() {
 #[test]
 fn build_without_group_conflict_when_keys_still_bound() {
     use busbar_contract::records::RecordStore as _;
-    use busbar_kernel::governance::{GovState, MemoryStore};
+    use busbar_kernel::governance::GovState;
+    use busbar_kernel_testkit::test_support::store_double::MemoryStore;
     let store = std::sync::Arc::new(MemoryStore::new());
     store
         .put_key(&busbar_kernel::governance::VirtualKey {
@@ -1561,7 +1562,9 @@ fn build_without_group_conflict_when_keys_still_bound() {
 
 // ---- group usage read ----
 
-use busbar_kernel::governance::{GovState, MemoryStore, VirtualKey};
+use busbar_kernel::governance::{GovState, VirtualKey};
+
+use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 
 /// The fixture group: a group-wide requests cap (day), a group-wide budget (month), and a
 /// POOL-SCOPED budget on `frontier` (month) — three distinct `(window, pool?)` enforcement
@@ -2555,7 +2558,8 @@ store:
 mod dated_rate_card_history {
     use super::*;
     use busbar_kernel::cost::{Author, CardEntryDraft, History, RateCard, TierRates};
-    use busbar_kernel::governance::{GovState, MemoryStore};
+    use busbar_kernel::governance::GovState;
+    use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 
     /// The one priced lane. It is a metering row's `model` and a card entry's lane, spelled once.
     const LANE: &str = "m-priced-chat";
@@ -3525,7 +3529,7 @@ mod one_recorded_usage_every_surface {
     /// THE RECORDED USAGE, as the METERING book holds it: two rows in one UTC day, one per price
     /// era, because a card edit inside a day opens a second row at the edit.
     fn metering(bucket: u64, edit_ms: u64) -> Arc<busbar_kernel::governance::GovState> {
-        let store = Arc::new(busbar_kernel::governance::MemoryStore::new());
+        let store = Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new());
         for priced_from_ms in [0, edit_ms] {
             busbar_contract::records::RecordStore::add_metering(
                 store.as_ref(),
@@ -3555,7 +3559,7 @@ mod one_recorded_usage_every_surface {
     /// carrying the summed counts and NO INSTANT AT ALL. That absence is the finding, not an
     /// omission in this fixture — see the module note on `UsageLedger` below.
     fn enforcement(now: u64) -> Arc<busbar_kernel::governance::GovState> {
-        let store = Arc::new(busbar_kernel::governance::MemoryStore::new());
+        let store = Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new());
         busbar_contract::records::RecordStore::put_key(store.as_ref(), &enforcement_key())
             .expect("the memory store accepts the key needed for hydration");
         let ledger = busbar_contract::records::UsageLedger {
