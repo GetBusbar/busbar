@@ -800,12 +800,21 @@ impl StoreRecovery {
         Ok(())
     }
 
-    fn verify_checkpoint_at(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
+    fn verify_checkpoint_at(
+        &self,
+        event: &RecoveryEvent,
+        require_owned: bool,
+    ) -> Result<(), RecoveryError> {
         let (lane, node) = self.inputs()?;
         let fences = lane.recovery_predicates(node).map_err(unavailable)?;
         let calls = lane.calls();
-        let (tip, _) = head(calls.as_ref(), &event.operation_id)?
+        let (tip, raw) = head(calls.as_ref(), &event.operation_id)?
             .ok_or_else(|| invalid("recovery checkpoint has no selected operation"))?;
+        if require_owned && tip.node != node {
+            return Err(RecoveryError::Conflict(
+                "recovery checkpoint belongs to another node's selected operation".into(),
+            ));
+        }
         let actual = selected_checkpoint(
             calls.as_ref(),
             &event.operation_id,
@@ -819,6 +828,18 @@ impl StoreRecovery {
             ));
         }
         self.verify_origin_at(&actual)?;
+        if require_owned {
+            let current = head(calls.as_ref(), &event.operation_id)?;
+            if !current
+                .as_ref()
+                .is_some_and(|(tip, current_raw)| tip.node == node && current_raw == &raw)
+            {
+                return Err(RecoveryError::Conflict(
+                    "recovery ownership or selection changed during owned checkpoint confirmation"
+                        .into(),
+                ));
+            }
+        }
         if lane.recovery_predicates(node).map_err(unavailable)? != fences {
             return Err(unavailable(
                 "the local node fence changed during checkpoint verification",
@@ -1294,7 +1315,11 @@ impl RecoverySink for StoreRecovery {
     }
 
     fn verify_checkpoint(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
-        off_runtime(|| self.verify_checkpoint_at(event))
+        off_runtime(|| self.verify_checkpoint_at(event, false))
+    }
+
+    fn confirm_owned_checkpoint(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
+        off_runtime(|| self.verify_checkpoint_at(event, true))
     }
 
     fn verify_origin(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
@@ -2238,5 +2263,53 @@ mod tests {
         assert_eq!(&summary.selected, transitions.last().unwrap());
         sink.verify_checkpoint(&unknown).unwrap();
         assert_eq!(sink.replay_selections().unwrap(), vec![summary]);
+    }
+
+    #[test]
+    fn owned_confirmation_accepts_an_ancestor_after_the_operation_settles() {
+        let slots = RecordSlots::new();
+        let book = opened(&slots, "owned-flight-ancestor");
+        let sink = usage_recovery_sink(&book);
+        let initial = intent();
+        let applied = transition(&initial, RecoveryState::Applied);
+        let settled = transition(&applied, RecoveryState::Settled);
+        sink.persist(&initial).unwrap();
+        sink.persist(&applied).unwrap();
+        sink.persist(&settled).unwrap();
+        assert!(matches!(
+            sink.persist(&applied),
+            Err(RecoveryError::Conflict(_))
+        ));
+        sink.confirm_owned_checkpoint(&initial).unwrap();
+        sink.confirm_owned_checkpoint(&applied).unwrap();
+        sink.confirm_owned_checkpoint(&settled).unwrap();
+    }
+
+    #[test]
+    fn owned_confirmation_refuses_the_old_node_after_handover_but_readonly_proof_survives() {
+        let slots = RecordSlots::new();
+        let old = opened(&slots, "owned-flight-old");
+        let new = opened(&slots, "owned-flight-new");
+        let old_sink = usage_recovery_sink(&old);
+        let new_sink = usage_recovery_sink(&new);
+        let initial = intent();
+        let unknown = transition(&initial, RecoveryState::LandedUnknown);
+        old_sink.persist(&initial).unwrap();
+        old_sink.persist(&unknown).unwrap();
+        old_sink.confirm_owned_checkpoint(&initial).unwrap();
+        // This fixture has no per-operation backend sender. Keep the old node alive so a
+        // read-only ancestry proof still works after the explicitly attested handover.
+        let request = attestation(&unknown, RecoveryVerdict::NotLanded);
+        let transitions = handover_events(&unknown, RecoveryVerdict::NotLanded);
+        new_sink
+            .adopt_verdict_selection(&request, &transitions)
+            .unwrap();
+        old_sink.verify_checkpoint(&initial).unwrap();
+        assert!(matches!(
+            old_sink.confirm_owned_checkpoint(&initial),
+            Err(RecoveryError::Conflict(_))
+        ));
+        new_sink.confirm_owned_checkpoint(&initial).unwrap();
+        new_sink.confirm_owned_checkpoint(&unknown).unwrap();
     }
 }
