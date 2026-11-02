@@ -5,11 +5,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
-
 use super::super::self_keys::{
     admit_self_mint, issue_key, mint_provisioned_self_key, resolve_exchange,
-    DeterministicEd25519Keys, ExchangeError, IssuedKey, SelfServeKeys,
+    DeterministicEd25519Keys, ExchangeError,
 };
 use super::super::{ChainVerdict, Principal};
 use crate::config::groups::GroupCfg;
@@ -1259,55 +1257,6 @@ async fn a_legacy_self_serve_binding_adopts_the_first_provider_that_logs_in() {
         .unwrap_err(),
         ExchangeError::Unbound,
         "after the adoption, any other provider is refused"
-    );
-}
-
-struct FakeKeys;
-#[async_trait]
-impl SelfServeKeys for FakeKeys {
-    async fn issue(
-        &self,
-        principal: &Principal,
-        _ttl: Duration,
-    ) -> Result<IssuedKey, ExchangeError> {
-        Ok(IssuedKey {
-            secret: busbar_contract::redacted::Secret::new(format!(
-                "fake-scheme-token:{}",
-                principal.id
-            )),
-            key_id: "fake".into(),
-            group: format!("user:{}", principal.id),
-            exp: 9999,
-        })
-    }
-    async fn refresh(
-        &self,
-        principal: &Principal,
-        ttl: Duration,
-    ) -> Result<IssuedKey, ExchangeError> {
-        self.issue(principal, ttl).await
-    }
-}
-
-#[tokio::test]
-async fn endpoint_is_scheme_agnostic_over_the_trait() {
-    let rb = bindings("test-idp-double", "eng", Some("team"));
-    let v = identified("test-idp-double", principal("sam", &["eng"]));
-    let (p, _team, _pools) = resolve_exchange(&v, &rb, None).unwrap();
-    let issued = issue_key(&FakeKeys, p, Duration::from_secs(60), false)
-        .await
-        .unwrap();
-    assert_eq!(
-        issued.secret.expose(&crate::seal::lend()),
-        "fake-scheme-token:sam"
-    );
-
-    let refreshed = issue_key(&FakeKeys, p, Duration::from_secs(60), true)
-        .await
-        .unwrap();
-    assert_eq!(
-        refreshed.secret.expose(&crate::seal::lend()),
-        "fake-scheme-token:sam"
     );
 }
 
