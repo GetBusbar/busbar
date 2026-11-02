@@ -318,7 +318,10 @@ fn correction_hydration_preserves_an_older_inflight_eras_retry_and_group_owner()
     let gov = Arc::new(GovState::new(store.clone(), None).unwrap());
     let cm = minute_fee_model();
     let key = key("vk_era_hydrate", Some("g"));
-    let now = crate::governance::budget_window(super::super::WINDOW_MINUTE, crate::store::now());
+    let now = crate::governance::budget_window(
+        super::super::WINDOW_MINUTE,
+        crate::store::now().saturating_sub(120),
+    );
     let next = now + 60;
     let bucket = "group:g@minute";
     store.put_key(&key).unwrap();
