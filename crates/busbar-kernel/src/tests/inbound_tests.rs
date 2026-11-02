@@ -226,10 +226,9 @@ async fn ticket_preflight_skips_the_chain_and_only_the_final_gate_spends_it() {
     assert_eq!(earlier.calls(), 0);
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn ticket_preflight_and_final_auth_leave_the_reactor_live_during_store_waits() {
+async fn ticket_callers_leave_the_reactor_live_during_store_waits(ops: &[&'static str]) {
     crate::snapshot::init();
-    for op in ["live", "get"] {
+    for &op in ops {
         let (gov, id, ticket, release, entered) =
             crate::governance::GovState::paused_ticket_for_test(op, crate::store::now());
         let earlier = Script::new(AuthPoints::HEAD, Verified::Reject, Vec::new());
@@ -270,6 +269,16 @@ async fn ticket_preflight_and_final_auth_leave_the_reactor_live_during_store_wai
             .admit_ticket("tk_", &ticket, crate::store::now())
             .is_none());
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ticket_preflight_leaves_the_reactor_live_during_store_waits() {
+    ticket_callers_leave_the_reactor_live_during_store_waits(&["live"]).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ticket_final_auth_leaves_the_reactor_live_during_store_waits() {
+    ticket_callers_leave_the_reactor_live_during_store_waits(&["get"]).await;
 }
 
 #[test]
