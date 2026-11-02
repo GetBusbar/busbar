@@ -196,6 +196,12 @@ impl<'a> Op<'a> {
         );
     }
 
+    /// A terminal error or explicit close abandons the pending logical service. Future work
+    /// starts at the next free handle, never at that service's replay bookmark.
+    pub(crate) fn abandon_pending_service(&mut self) {
+        self.replay = None;
+    }
+
     /// Whether this op runs on a ticket, and so may answer PENDING.
     #[must_use]
     pub fn can_pend(&self) -> bool {
@@ -323,6 +329,9 @@ impl Op<'_> {
     /// Close the op's connection now (it is not fit for reuse); the next [`Op::checkout`]
     /// establishes a fresh one.
     pub(crate) fn close_checkout(&mut self) {
+        // Cleanup is a new request, including after a bound expired while a read/write pended.
+        // Clear even when no connection was established so a later dial also starts fresh.
+        self.abandon_pending_service();
         if let Some(c) = self.checkout.take() {
             if let Ok(mut s) = self.connector() {
                 let _ = s.close(c.stream);

@@ -764,6 +764,7 @@ fn run<T: 'static>(
         let bound = bound_check(cx, &running.wire);
         let served = match bound {
             Bound::Passed => {
+                cx.abandon_pending_service();
                 running.unwait();
                 Served::Answer(Err(ConnFailure::Failed(
                     crate::conn::ConnError::Timeout.text().to_owned(),
@@ -796,6 +797,9 @@ fn run<T: 'static>(
         };
         match served {
             Served::Answer(a) => {
+                if a.is_err() {
+                    cx.abandon_pending_service();
+                }
                 let mut st = running.wire.state();
                 if a.is_err() || matches!((&ask, &a), (Ask::Read, Ok(0))) {
                     st.unfit = true;
@@ -1067,9 +1071,8 @@ fn serve<T>(cx: &mut Op<'_>, running: &Running<T>, ask: &Ask, buf: &mut [u8]) ->
             };
         }
         Ask::Close => {
-            if wire.state().conn.take().is_some() {
-                cx.close_checkout();
-            }
+            wire.state().conn.take();
+            cx.close_checkout();
             let mut w = wire.state();
             w.input.clear();
             w.out.clear();
