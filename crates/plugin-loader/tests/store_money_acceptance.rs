@@ -10,36 +10,47 @@ use busbar_plugin_loader::store_adapter::StoreAdapter;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-include!(concat!(env!("OUT_DIR"), "/store_fixture.rs"));
-
-fn fresh() -> Arc<dyn RecordStore> {
-    Arc::from(store_fixture::open("{}").expect("the store opens"))
-}
-
+// #39 / STRICT2: these are four host paths through the actual SQLite product, not four
+// implementations or a customer's native Rust constructor. The descriptor path re-enters the
+// unchanged, image-held actual door through load_linked; SQLite's own tests own static-link parity.
 struct Subject {
     door: &'static str,
     store: Arc<dyn RecordStore>,
+    // Fields drop in declaration order: CLOSE the actual store before removing its database.
+    _db: v3::SQLiteTempDb,
 }
 
 fn subjects() -> Vec<Subject> {
-    vec![
-        Subject {
-            door: "rust type",
-            store: fresh(),
-        },
-        Subject {
-            door: "compiled-in table",
-            store: Arc::new(v3::compiled_in()),
-        },
-        Subject {
-            door: "adapter",
-            store: StoreAdapter::native(Arc::new(v3::compiled_in())).store(),
-        },
-        Subject {
-            door: "dropped-in table",
-            store: Arc::new(v3::dropped_in()),
-        },
+    [
+        (v3::Origin::Descriptor, false, "actual SQLite descriptor"),
+        (v3::Origin::Dropped, false, "actual SQLite dropped image"),
+        (
+            v3::Origin::Descriptor,
+            true,
+            "native adapter / actual descriptor",
+        ),
+        (
+            v3::Origin::Dropped,
+            true,
+            "native adapter / actual dropped image",
+        ),
     ]
+    .into_iter()
+    .map(|(origin, adapter, door)| {
+        let db = v3::SQLiteTempDb::new();
+        let store: Arc<dyn RecordStore> = Arc::new(v3::open(origin, &db));
+        let store = if adapter {
+            StoreAdapter::native(store).store()
+        } else {
+            store
+        };
+        Subject {
+            door,
+            store,
+            _db: db,
+        }
+    })
+    .collect()
 }
 
 fn delta(requests: i64, billable: i64, model: &str, units: &[(&str, i64)]) -> UsageDelta {
@@ -614,7 +625,8 @@ fn money_records_name_no_plugin_or_plane() {
 
 #[test]
 fn the_adapter_passes_money_through_to_the_loaded_store() {
-    let inner = fresh();
+    let subject = subjects().remove(0);
+    let inner = subject.store.clone();
     let a = StoreAdapter::native(inner.clone());
     a.store()
         .add_usage("k", DAY, &delta(2, 1, "m", &[(UNIT_OUTPUT, 9)]))
@@ -635,17 +647,18 @@ fn the_adapter_passes_money_through_to_the_loaded_store() {
 }
 
 mod v3 {
-    use std::sync::Arc;
+    use std::path::PathBuf;
+    use std::sync::{Arc, OnceLock};
 
-    use super::store_fixture;
+    use busbar_contract::abi::mechanism::door::Door;
     use busbar_contract::records::{
         MeteringDelta, MeteringRow, RecordStore, UsageDelta, UsageLedger,
     };
     use busbar_contract::store_calls::{StoreCalls, StoreFailure};
     use busbar_plugin_loader::dispatch::kinds::store::{Store, StoreFacts};
     use busbar_plugin_loader::dispatch::{
-        load_dropped, load_linked, rendering_of, Bind, DispatchConfig, Dispatcher, LinkedRow,
-        NoSink,
+        door_addresses_of_library, load_dropped, load_linked, rendering_of_library, Bind,
+        DispatchConfig, Dispatcher, LinkedRow, NoSink, Plugin,
     };
     use busbar_plugin_loader::store_v3::LoadedStore;
 
@@ -661,7 +674,7 @@ mod v3 {
 
     fn bind_to(d: &Dispatcher) -> Bind {
         Bind {
-            instance: Arc::from("the-instance"),
+            instance: Arc::from("money-acceptance"),
             max_inflight_cap: 1024,
             sink: Arc::new(NoSink),
             dispatcher: d.adopter(),
@@ -669,52 +682,142 @@ mod v3 {
         }
     }
 
-    pub fn compiled_in() -> LoadedStore {
-        let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
-        let row = LinkedRow::of(store_fixture::door).expect("the store states its Statement");
-        let p = load_linked::<Store>(&row, bind_to(&d)).expect("door");
-        LoadedStore::open(p, d, b"{}", mint).expect("open")
+    struct ActualImage {
+        // This is load_dropped(path), not load_dropped_bytes: it holds the SAME path's dlopen
+        // image while the address helper closes only its additional reference to that image.
+        _holder: Plugin<Store>,
+        _dispatcher: Arc<Dispatcher>,
+        path: PathBuf,
+        stated: Vec<u8>,
+        descriptor: usize,
     }
 
-    pub fn dropped_in() -> LoadedStore {
-        let exe = std::env::current_exe().expect("the test binary's path");
-        let name = format!(
-            "{}store_v3_door{}",
-            std::env::consts::DLL_PREFIX,
-            std::env::consts::DLL_SUFFIX
-        );
-        let path = exe
-            .parent()
-            .and_then(|deps| deps.parent())
-            .expect("the test binary sits in <profile>/deps")
-            .join("examples")
-            .join(name);
-        if !path.exists() {
-            panic!(
-                "the store_v3_door cdylib is not built: run \
-                 `cargo build -p busbar-plugin-loader --examples` first (a both-ways proof never skips)"
-            );
-        }
-        let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    static IMAGE: OnceLock<ActualImage> = OnceLock::new();
 
-        let stated = rendering_of(store_fixture::door).expect("the store renders its Statement");
-        let p = load_dropped::<Store>(&path, &stated, bind_to(&d)).expect("dropped door");
-        LoadedStore::open(p, d, b"{}", mint).expect("open")
+    fn actual_image() -> &'static ActualImage {
+        IMAGE.get_or_init(|| {
+            let path = PathBuf::from(
+                std::env::var_os("BUSBAR_TEST_SQLITE_CDYLIB")
+                    .expect("BUSBAR_TEST_SQLITE_CDYLIB must name the actual SQLite plugin"),
+            );
+            assert!(
+                path.is_absolute() && path.is_file(),
+                "actual SQLite artifact: {}",
+                path.display()
+            );
+            let stated = rendering_of_library(&path)
+                .expect("read the actual SQLite Statement")
+                .expect("the actual SQLite image exports a door");
+            let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
+            let holder = load_dropped::<Store>(&path, &stated, bind_to(&d))
+                .expect("the actual SQLite image is admitted as a Store");
+            // Requires the ordinary loader's worker-routed address inspection (ea13884d7bdb).
+            let (descriptor, _) = door_addresses_of_library(&path)
+                .expect("inspect the held actual SQLite image")
+                .expect("the actual SQLite image exports its descriptor");
+            assert_ne!(descriptor, 0);
+            ActualImage {
+                _holder: holder,
+                _dispatcher: d,
+                path,
+                stated,
+                descriptor,
+            }
+        })
+    }
+
+    // A concrete test input only: no copied table, callbacks, settings, or store implementation.
+    // IMAGE owns the validated same-path image for the process, so its immutable descriptor lives
+    // through every linked-descriptor instance and every use of this getter.
+    extern "C" fn actual_descriptor() -> *const Door {
+        IMAGE
+            .get()
+            .expect("the actual image is held before descriptor admission")
+            .descriptor as *const Door
+    }
+
+    #[derive(Clone, Copy)]
+    pub(super) enum Origin {
+        Descriptor,
+        Dropped,
+    }
+
+    pub(super) struct SQLiteTempDb {
+        directory: PathBuf,
+    }
+
+    impl SQLiteTempDb {
+        pub(super) fn new() -> Self {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            for _ in 0..1000 {
+                let directory = std::env::temp_dir().join(format!(
+                    "busbar-money-sqlite-{}-{}",
+                    std::process::id(),
+                    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                ));
+                match std::fs::create_dir(&directory) {
+                    Ok(()) => return Self { directory },
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(e) => panic!("create SQLite test directory: {e}"),
+                }
+            }
+            panic!("could not allocate a fresh SQLite test directory");
+        }
+
+        fn settings(&self) -> Vec<u8> {
+            serde_json::to_vec(
+                &serde_json::json!({"db_path": self.directory.join("governance.sqlite")}),
+            )
+            .expect("SQLite settings")
+        }
+    }
+
+    impl Drop for SQLiteTempDb {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.directory);
+        }
+    }
+
+    pub(super) fn open(origin: Origin, db: &SQLiteTempDb) -> LoadedStore {
+        let image = actual_image();
+        let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        let p = match origin {
+            Origin::Descriptor => {
+                let row = LinkedRow::of_raw(actual_descriptor)
+                    .expect("the actual descriptor states its Statement");
+                assert_eq!(
+                    row.statement, image.stated,
+                    "the held actual descriptor is unchanged"
+                );
+                load_linked::<Store>(&row, bind_to(&d)).expect("actual descriptor Store")
+            }
+            Origin::Dropped => load_dropped::<Store>(&image.path, &image.stated, bind_to(&d))
+                .expect("actual dropped Store"),
+        };
+        LoadedStore::open(p, d, &db.settings(), mint).expect("open the actual SQLite Store")
     }
 
     pub struct Bound {
         pub store: LoadedStore,
         rt: tokio::runtime::Runtime,
+        // Keep the same physical database through restart, and remove it only after CLOSE.
+        db: SQLiteTempDb,
+        origin: Origin,
     }
 
-    pub fn bind() -> Bound {
-        Bound {
-            store: compiled_in(),
-            rt: tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("runtime"),
-        }
+    pub fn bind_both() -> [Bound; 2] {
+        [Origin::Descriptor, Origin::Dropped].map(|origin| {
+            let db = SQLiteTempDb::new();
+            Bound {
+                store: open(origin, &db),
+                rt: tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("runtime"),
+                db,
+                origin,
+            }
+        })
     }
 
     impl Bound {
@@ -744,10 +847,23 @@ mod v3 {
 
         pub fn restart(self) -> Bound {
             assert!(
-                self.facts().ephemeral,
-                "a durable store restarts onto its own rows"
+                !self.facts().ephemeral,
+                "the actual SQLite Store is durable"
             );
-            bind()
+            let Bound {
+                store,
+                rt,
+                db,
+                origin,
+            } = self;
+            drop(store); // Actual LoadedStore::drop runs CLOSE before reopening the SAME file.
+            let store = open(origin, &db);
+            Bound {
+                store,
+                rt,
+                db,
+                origin,
+            }
         }
     }
 }
@@ -760,87 +876,94 @@ fn op(n: u8) -> v3::OpId {
 
 #[test]
 fn v3_a_duplicate_usage_batch_applies_once() {
-    let s = v3::bind();
-    let batch = [
-        ("k", DAY, delta(1, 1, "m", &[(UNIT_INPUT, 10)])),
-        ("g", DAY, delta(1, 1, "m", &[])),
-    ];
-    assert_eq!(s.add_usage_batch(op(1), &batch), Ok(()));
-    assert_eq!(
-        s.add_usage_batch(op(1), &batch),
-        Ok(()),
-        "the original answer"
-    );
-    assert_eq!(s.get_usage("k", DAY).requests, 1);
-    assert_eq!(tier(&s.get_usage("k", DAY), "m", UNIT_INPUT), 10);
-    assert_eq!(s.get_usage("g", DAY).requests, 1);
+    for s in v3::bind_both() {
+        let batch = [
+            ("k", DAY, delta(1, 1, "m", &[(UNIT_INPUT, 10)])),
+            ("g", DAY, delta(1, 1, "m", &[])),
+        ];
+        assert_eq!(s.add_usage_batch(op(1), &batch), Ok(()));
+        assert_eq!(
+            s.add_usage_batch(op(1), &batch),
+            Ok(()),
+            "the original answer"
+        );
+        assert_eq!(s.get_usage("k", DAY).requests, 1);
+        assert_eq!(tier(&s.get_usage("k", DAY), "m", UNIT_INPUT), 10);
+        assert_eq!(s.get_usage("g", DAY).requests, 1);
+    }
 }
 
 #[test]
 fn v3_a_duplicate_usage_batch_applies_once_after_restart() {
-    let s = v3::bind();
-    assert!(
-        s.facts().ephemeral,
-        "the fixture store states it keeps nothing across a restart"
-    );
-    let batch = [("k", DAY, delta(1, 1, "m", &[(UNIT_OUTPUT, 3)]))];
-    assert_eq!(s.add_usage_batch(op(2), &batch), Ok(()));
-    assert_eq!(s.add_usage_batch(op(2), &batch), Ok(()));
-    assert_eq!(s.get_usage("k", DAY).requests, 1);
-    let s = s.restart();
-    assert_eq!(
-        s.get_usage("k", DAY).requests,
-        0,
-        "ephemeral: nothing survives"
-    );
-    assert_eq!(s.add_usage_batch(op(2), &batch), Ok(()));
-    assert_eq!(s.add_usage_batch(op(2), &batch), Ok(()));
-    assert_eq!(s.get_usage("k", DAY).requests, 1);
+    for s in v3::bind_both() {
+        assert!(
+            !s.facts().ephemeral,
+            "the actual SQLite Store keeps its rows across a restart"
+        );
+        let batch = [("k", DAY, delta(1, 1, "m", &[(UNIT_OUTPUT, 3)]))];
+        assert_eq!(s.add_usage_batch(op(2), &batch), Ok(()));
+        assert_eq!(s.add_usage_batch(op(2), &batch), Ok(()));
+        assert_eq!(s.get_usage("k", DAY).requests, 1);
+        let s = s.restart();
+        assert_eq!(
+            s.get_usage("k", DAY).requests,
+            1,
+            "the same physical SQLite database retains the original application"
+        );
+        assert_eq!(s.add_usage_batch(op(2), &batch), Ok(()));
+        assert_eq!(s.add_usage_batch(op(2), &batch), Ok(()));
+        assert_eq!(s.get_usage("k", DAY).requests, 1);
+    }
 }
 
 #[test]
 fn v3_equal_bodies_under_distinct_op_ids_both_apply() {
-    let s = v3::bind();
-    let batch = [("k", DAY, delta(2, 2, "m", &[(UNIT_INPUT, 4)]))];
-    assert_eq!(s.add_usage_batch(op(3), &batch), Ok(()));
-    assert_eq!(s.add_usage_batch(op(4), &batch), Ok(()));
-    assert_eq!(s.get_usage("k", DAY).requests, 4);
+    for s in v3::bind_both() {
+        let batch = [("k", DAY, delta(2, 2, "m", &[(UNIT_INPUT, 4)]))];
+        assert_eq!(s.add_usage_batch(op(3), &batch), Ok(()));
+        assert_eq!(s.add_usage_batch(op(4), &batch), Ok(()));
+        assert_eq!(s.get_usage("k", DAY).requests, 4);
+    }
 }
 
 #[test]
 fn v3_a_reused_op_id_with_another_body_is_refused() {
-    let s = v3::bind();
-    let a = [("k", DAY, delta(1, 1, "m", &[]))];
-    let b = [("k", DAY, delta(7, 7, "m", &[]))];
-    assert_eq!(s.add_usage_batch(op(20), &a), Ok(()));
-    assert_eq!(s.add_usage_batch(op(20), &b), Err(StoreFailure::Conflict));
-    assert_eq!(s.get_usage("k", DAY).requests, 1);
+    for s in v3::bind_both() {
+        let a = [("k", DAY, delta(1, 1, "m", &[]))];
+        let b = [("k", DAY, delta(7, 7, "m", &[]))];
+        assert_eq!(s.add_usage_batch(op(20), &a), Ok(()));
+        assert_eq!(s.add_usage_batch(op(20), &b), Err(StoreFailure::Conflict));
+        assert_eq!(s.get_usage("k", DAY).requests, 1);
+    }
 }
 
 #[test]
 fn v3_a_batch_applies_its_cells_in_order() {
-    let s = v3::bind();
-    let batch = [
-        ("k", DAY, delta(0, -1, "m", &[])),
-        ("k", DAY, delta(0, 1, "m", &[])),
-    ];
-    s.add_usage_batch(op(5), &batch).expect("batch");
-    assert_eq!(s.get_usage("k", DAY).billable_requests, 1);
+    for s in v3::bind_both() {
+        let batch = [
+            ("k", DAY, delta(0, -1, "m", &[])),
+            ("k", DAY, delta(0, 1, "m", &[])),
+        ];
+        s.add_usage_batch(op(5), &batch).expect("batch");
+        assert_eq!(s.get_usage("k", DAY).billable_requests, 1);
+    }
 }
 
 #[test]
 fn v3_a_duplicate_metering_batch_applies_once_after_restart() {
-    let s = v3::bind();
-    let rows = [
-        meter("k", DAY, "m", "p", 30, 3),
-        meter("k", DAY, "m", "p2", 1, 1),
-    ];
-    assert_eq!(s.add_metering_batch(op(6), &rows), Ok(()));
-    assert_eq!(s.add_metering_batch(op(6), &rows), Ok(()));
-    let total = |s: &v3::Bound| -> u64 { s.list_metering(DAY).iter().map(|r| r.requests).sum() };
-    assert_eq!(total(&s), 4);
-    let s = s.restart();
-    assert_eq!(s.add_metering_batch(op(6), &rows), Ok(()));
-    assert_eq!(s.add_metering_batch(op(6), &rows), Ok(()));
-    assert_eq!(total(&s), 4);
+    for s in v3::bind_both() {
+        let rows = [
+            meter("k", DAY, "m", "p", 30, 3),
+            meter("k", DAY, "m", "p2", 1, 1),
+        ];
+        assert_eq!(s.add_metering_batch(op(6), &rows), Ok(()));
+        assert_eq!(s.add_metering_batch(op(6), &rows), Ok(()));
+        let total =
+            |s: &v3::Bound| -> u64 { s.list_metering(DAY).iter().map(|r| r.requests).sum() };
+        assert_eq!(total(&s), 4);
+        let s = s.restart();
+        assert_eq!(s.add_metering_batch(op(6), &rows), Ok(()));
+        assert_eq!(s.add_metering_batch(op(6), &rows), Ok(()));
+        assert_eq!(total(&s), 4);
+    }
 }
