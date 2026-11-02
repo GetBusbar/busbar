@@ -32,8 +32,8 @@ fn stage_plugin(directory: &std::path::Path, kind: &str, variable: &str) -> Stri
     module
 }
 
-#[test]
-fn inbound_provider_retains_the_actual_opened_instance() {
+#[tokio::test]
+async fn inbound_provider_retains_the_actual_opened_instance() {
     const CHILD: &str = "BUSBAR_AUTH_LOGIN_CUSTODY_CHILD";
     const WITNESS: &str = "actual login instance custody completed";
     if std::env::var_os(CHILD).is_none() {
