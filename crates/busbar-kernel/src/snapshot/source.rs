@@ -145,17 +145,24 @@ fn sanitized(s: &str, colon: bool) -> String {
     let ok = |i: usize, c: char| {
         c.is_ascii_alphabetic() || c == '_' || (colon && c == ':') || (i > 0 && c.is_ascii_digit())
     };
-    s.chars()
-        .enumerate()
-        .map(|(i, c)| if ok(i, c) { c } else { '_' })
-        .collect()
+    // Sanitization never expands UTF-8. Reserve before writing a private name/key.
+    let mut out = zeroize::Zeroizing::new(String::with_capacity(s.len()));
+    for (i, c) in s.chars().enumerate() {
+        out.push(if ok(i, c) { c } else { '_' });
+    }
+    std::mem::take(&mut *out)
 }
 
 /// A label value (`quotes`) or HELP text escaped as 1.5.5's recorder wrote it: a line feed as
 /// `\n`, a double quote in a label value as `\"`, and a backslash that escapes none of those
 /// doubled.
 fn escaped(s: &str, quotes: bool) -> String {
-    let (mut out, mut held) = (String::with_capacity(s.len()), false);
+    // Every input byte contributes at most two output bytes, including a held backslash.
+    let capacity = s.len().checked_mul(2).expect("metric escape size overflow");
+    let (mut out, mut held) = (
+        zeroize::Zeroizing::new(String::with_capacity(capacity)),
+        false,
+    );
     for c in s.chars() {
         match c {
             '\n' => out.push_str("\\n"),
@@ -180,7 +187,7 @@ fn escaped(s: &str, quotes: bool) -> String {
     if held {
         out.push_str("\\\\");
     }
-    out
+    std::mem::take(&mut *out)
 }
 
 /// A series' labels as the snapshot carries them: a key repeated keeps its first place and its
@@ -204,19 +211,42 @@ struct Series {
     samples: Vec<Sample>,
 }
 
+impl Drop for Series {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.labels.zeroize();
+    }
+}
+
 /// The families being built: by kind then displayed name, each series by its full raw recorder key.
-type Building = BTreeMap<(u8, String), BTreeMap<Key, Series>>;
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct SnapshotName(String);
+
+impl Drop for SnapshotName {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.0.zeroize();
+    }
+}
+
+type Building = BTreeMap<(u8, SnapshotName), BTreeMap<Key, Series>>;
 
 /// One series' lines: `(suffix, extra label, value)` each.
 fn put(out: &mut Building, kind: u8, key: &Key, lines: Vec<(&str, Option<String>, String)>) {
-    let name = sanitized(key.name(), true);
-    let labels = labels_of(key);
+    let name = SnapshotName(sanitized(key.name(), true));
+    let labels = zeroize::Zeroizing::new(labels_of(key));
     let samples = lines.into_iter().map(|(suffix, quantile, value)| {
-        let mut labels = labels.clone();
-        labels.extend(quantile.map(|q| (QUANTILE_LABEL.to_string(), q)));
+        let mut sample_labels = (*labels).clone();
+        sample_labels.extend(quantile.map(|q| (QUANTILE_LABEL.to_string(), q)));
         Sample {
-            name: format!("{name}{suffix}"),
-            labels,
+            name: {
+                let mut full =
+                    zeroize::Zeroizing::new(String::with_capacity(name.0.len() + suffix.len()));
+                full.push_str(&name.0);
+                full.push_str(suffix);
+                std::mem::take(&mut *full)
+            },
+            labels: sample_labels,
             value,
         }
     });
@@ -224,7 +254,7 @@ fn put(out: &mut Building, kind: u8, key: &Key, lines: Vec<(&str, Option<String>
     series.insert(
         key.clone(),
         Series {
-            labels: labels.clone(),
+            labels: (*labels).clone(),
             samples: samples.collect(),
         },
     );
@@ -306,7 +336,7 @@ impl Source {
             put(&mut out, SCRAPE_KIND_SUMMARY, key, lines);
         }
         let help = lock(&self.help);
-        let family = |((kind, name), series): ((u8, String), BTreeMap<_, Series>)| {
+        let family = |((kind, mut name), series): ((u8, SnapshotName), BTreeMap<Key, Series>)| {
             let mut series: Vec<_> = series.into_iter().collect();
             // Preserve historical presentation ordering. A raw-key tie-breaker makes collisions
             // deterministic without dropping either recorder handle's samples.
@@ -314,11 +344,14 @@ impl Source {
                 a.labels.cmp(&b.labels).then_with(|| a_key.cmp(b_key))
             });
             Family {
-                help: help.get(&name).cloned(),
-                name,
+                help: help.get(&name.0).cloned(),
+                name: std::mem::take(&mut name.0),
                 unit: None,
                 kind,
-                samples: series.into_iter().flat_map(|(_, s)| s.samples).collect(),
+                samples: series
+                    .into_iter()
+                    .flat_map(|(_, mut s)| std::mem::take(&mut s.samples))
+                    .collect(),
             }
         };
         out.into_iter().map(family).collect()

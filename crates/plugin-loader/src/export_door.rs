@@ -148,7 +148,7 @@ pub fn check(
 /// One queued line.
 struct Line {
     stream: u8,
-    bytes: Vec<u8>,
+    bytes: zeroize::Zeroizing<Vec<u8>>,
     _hold: Box<dyn Send>,
 }
 
@@ -233,7 +233,9 @@ impl Shared {
             );
             return;
         };
-        let mut batch = Vec::with_capacity(lines.iter().map(|l| l.bytes.len() + 1).sum());
+        let mut batch = zeroize::Zeroizing::new(Vec::with_capacity(
+            lines.iter().map(|l| l.bytes.len() + 1).sum(),
+        ));
         for l in &lines {
             batch.extend_from_slice(&l.bytes);
             batch.push(b'\n');
@@ -560,10 +562,9 @@ impl ExportCalls for ExportInstance {
         let settings = Arc::new(zeroize::Zeroizing::new(
             serde_json::to_vec(settings).map_err(|error| error.to_string())?,
         ));
-        let ticket = (0..self.shared.dispatcher.workers().max(1))
-            .find_map(|worker| self.shared.dispatcher.mint(worker))
+        let mut call = (0..self.shared.dispatcher.workers().max(1))
+            .find_map(|worker| Ticketed::mint(&self.shared.dispatcher, worker))
             .ok_or_else(|| "no ticket could be minted for an export refresh".to_string())?;
-        let _minted = Minted(&self.shared.dispatcher, ticket);
         let frame = Frame::new(
             busbar_contract::abi::mechanism::lifecycle::RefreshIn {
                 head: in_head(),
@@ -574,15 +575,15 @@ impl ExportCalls for ExportInstance {
             },
             out_head(),
         );
-        let done = futures::executor::block_on(self.shared.dispatcher.submit_lent(
+        call.submit(
             &self.shared.plugin,
-            ticket,
             lc::REFRESH,
             frame,
             DeadlineClass::Call,
             0,
             settings,
-        ));
+        );
+        let done = futures::executor::block_on(&mut call);
         release(&self.shared.plugin, done.lease);
         match done.outcome {
             Outcome::Ready => Ok(()),
@@ -607,6 +608,8 @@ impl ExportCalls for ExportInstance {
     }
 
     fn deliver(&self, stream: u8, line: Vec<u8>, hold: Box<dyn Send>) -> Delivered {
+        // Own the payload before every refusal path, including a full queue or faulted instance.
+        let line = zeroize::Zeroizing::new(line);
         let sh = &self.shared;
         if sh.plugin.is_faulted() || !sh.plugin.is_open() {
             return Delivered::Shed;

@@ -2192,38 +2192,153 @@ mod snapshot {
             return (s.len == 0).then_some(None);
         }
         let bytes = list(laid, s.ptr, s.len)?;
-        std::str::from_utf8(bytes).ok().map(|t| Some(t.to_owned()))
+        std::str::from_utf8(bytes).ok().map(|t| {
+            let owned = t.to_owned();
+            #[cfg(test)]
+            // SAFETY: this is the base initialized String, transferred without reallocation to
+            // the decoder owner. A probe's caller keeps all returned owners on this thread.
+            unsafe {
+                crate::alloc_counter::watch_initialized_payload(owned.as_bytes())
+            };
+            Some(owned)
+        })
     }
 
     /// `n` families at the head of `laid`, read back; `None` when any pointer leaves the layout.
     pub(super) fn read(laid: &[u8], n: u64) -> Option<Vec<Family>> {
         let n = usize::try_from(n).ok()?;
         let families = list(laid, laid.as_ptr().cast::<ScrapeFamily>(), n)?;
-        families
-            .iter()
-            .map(|f| {
-                let samples: &[ScrapeSample] = list(laid, f.samples, f.samples_len)?;
-                Some(Family {
-                    name: text(laid, f.name)??,
-                    help: text(laid, f.help)?,
-                    unit: text(laid, f.unit)?,
-                    kind: f.kind,
-                    samples: samples
-                        .iter()
-                        .map(|s| {
-                            let labels: &[ScrapeLabel] = list(laid, s.labels, s.labels_len)?;
-                            Some(Sample {
-                                name: text(laid, s.name)??,
-                                labels: labels
-                                    .iter()
-                                    .map(|l| Some((text(laid, l.key)??, text(laid, l.value)??)))
-                                    .collect::<Option<_>>()?,
-                                value: text(laid, s.value)??,
-                            })
-                        })
-                        .collect::<Option<_>>()?,
-                })
-            })
-            .collect()
+        let mut decoded = Vec::new();
+        for f in families {
+            // Install the wiping owner before another field can refuse a malformed layout.
+            let mut family = Family {
+                name: String::new(),
+                help: None,
+                unit: None,
+                kind: f.kind,
+                samples: Vec::new(),
+            };
+            family.name = text(laid, f.name)??;
+            family.help = text(laid, f.help)?;
+            family.unit = text(laid, f.unit)?;
+            for s in list::<ScrapeSample>(laid, f.samples, f.samples_len)? {
+                let mut sample = Sample {
+                    name: String::new(),
+                    labels: Vec::new(),
+                    value: String::new(),
+                };
+                sample.name = text(laid, s.name)??;
+                for l in list::<ScrapeLabel>(laid, s.labels, s.labels_len)? {
+                    // A valid key followed by an invalid value must wipe that partial pair too.
+                    let mut key = zeroize::Zeroizing::new(text(laid, l.key)??);
+                    let value = text(laid, l.value)??;
+                    sample.labels.push((std::mem::take(&mut *key), value));
+                }
+                sample.value = text(laid, s.value)??;
+                family.samples.push(sample);
+            }
+            decoded.push(family);
+        }
+        Some(decoded)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::alloc_counter::InitializedPayloadProbe;
+        use std::mem::size_of;
+
+        /// Construct the real ABI layout in initialized, aligned owned storage. The malformed
+        /// arm rejects only after decoding the family, sample and first label key.
+        fn layout(malformed: bool) -> Vec<u64> {
+            let mut buf = vec![0u64; 256];
+            let base = buf.as_mut_ptr().cast::<u8>();
+            let sample_at = size_of::<ScrapeFamily>();
+            let label_at = sample_at + size_of::<ScrapeSample>();
+            let mut at = label_at + size_of::<ScrapeLabel>();
+            let mut text = |s: &str| {
+                // SAFETY: all records and strings fit the initialized buffer above, with disjoint
+                // string ranges; the buffer is not resized before it is decoded below.
+                let ptr = unsafe { base.add(at) };
+                unsafe { std::ptr::copy_nonoverlapping(s.as_ptr(), ptr, s.len()) };
+                at += s.len();
+                AbiStr { ptr, len: s.len() }
+            };
+            let family_name = text("private_family_canary");
+            let sample_name = text("private_sample_canary");
+            let key = text("private_key_canary");
+            let value = text("private_value_canary");
+            let number = text("1");
+            let label = ScrapeLabel {
+                key,
+                value: if malformed {
+                    AbiStr {
+                        ptr: std::ptr::null(),
+                        len: 1,
+                    }
+                } else {
+                    value
+                },
+            };
+            let sample = ScrapeSample {
+                name: sample_name,
+                labels: unsafe { base.add(label_at).cast() },
+                labels_len: 1,
+                value: number,
+            };
+            let family = ScrapeFamily {
+                name: family_name,
+                help: AbiStr::ZERO,
+                unit: AbiStr::ZERO,
+                kind: crate::abi::export::SCRAPE_KIND_COUNTER,
+                _reserved: [0; 7],
+                samples: unsafe { base.add(sample_at).cast() },
+                samples_len: 1,
+            };
+            // SAFETY: each record starts at its aligned record boundary and the u64 allocation
+            // retains initialized ownership until after read(). No spare bytes are observed.
+            unsafe {
+                base.cast::<ScrapeFamily>().write(family);
+                base.add(sample_at).cast::<ScrapeSample>().write(sample);
+                base.add(label_at).cast::<ScrapeLabel>().write(label);
+            }
+            buf
+        }
+
+        #[test]
+        fn decoded_snapshot_strings_wipe_on_success_and_partial_layout_refusal() {
+            for malformed in [false, true] {
+                let buf = layout(malformed);
+                // SAFETY: the registered decoder Strings remain owned on this thread until the
+                // returned families or partial decoder owners drop before finish().
+                let probe = unsafe { InitializedPayloadProbe::start().expect("memory observer") };
+                let laid = unsafe {
+                    std::slice::from_raw_parts(
+                        buf.as_ptr().cast::<u8>(),
+                        std::mem::size_of_val(&buf[..]),
+                    )
+                };
+                let decoded = read(laid, 1);
+                assert_eq!(decoded.is_none(), malformed);
+                if let Some(families) = &decoded {
+                    assert_eq!(families[0].samples[0].labels[0].1, "private_value_canary");
+                }
+                drop(decoded);
+                let observed = probe.finish();
+                assert!(!observed.reentered);
+                assert_eq!(observed.payloads.len(), if malformed { 3 } else { 5 });
+                for payload in observed.payloads {
+                    assert!(
+                        payload.freed,
+                        "owned decoder string was not freed: {payload:?}"
+                    );
+                    #[cfg(target_os = "linux")]
+                    assert!(
+                        payload.wiped && payload.complete_read && payload.read_error.is_none(),
+                        "initialized snapshot data reached retirement unwiped: {payload:?}"
+                    );
+                }
+            }
+        }
     }
 }

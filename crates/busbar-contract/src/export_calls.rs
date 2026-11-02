@@ -8,6 +8,8 @@
 //! names this, and neither names the other. Nothing here crosses the plugin boundary: the export
 //! kind's ABI is `abi::export`, and the loader lowers these types to it.
 
+use zeroize::Zeroize;
+
 /// JSON list of declared route paths requesting a first-party snapshot consumer's
 /// public namespace grant. The host still reserves its own routes and verifies trust.
 pub const EXT_PUBLIC_ROUTES: &str = "listener.public_routes";
@@ -52,6 +54,23 @@ pub struct Sample {
     pub labels: Vec<(String, String)>,
     /// The value, in the recorder's own spelling.
     pub value: String,
+}
+
+impl Drop for Family {
+    fn drop(&mut self) {
+        self.name.zeroize();
+        self.help.zeroize();
+        self.unit.zeroize();
+        // Each sample wipes its own initialized strings before its allocation is released.
+    }
+}
+
+impl Drop for Sample {
+    fn drop(&mut self) {
+        self.name.zeroize();
+        self.labels.zeroize();
+        self.value.zeroize();
+    }
 }
 
 /// The `# TYPE` word of a [`Family::kind`]; `None` for a kind outside the vocabulary.
@@ -170,14 +189,19 @@ fn family(name: &str, help: Option<String>) -> Family {
 /// One sample line: `name[{k="v",…}] value`, the label values and the value kept as written.
 fn sample(line: &str) -> Result<Sample, String> {
     let name_end = line.find(['{', ' ']).ok_or("a sample with no value")?;
-    let name = line[..name_end].to_string();
+    let mut sample = Sample {
+        name: line[..name_end].to_string(),
+        labels: Vec::new(),
+        value: String::new(),
+    };
     let mut rest = &line[name_end..];
-    let mut labels = Vec::new();
     if let Some(mut body) = rest.strip_prefix('{') {
         loop {
             let (key, tail) = body.split_once("=\"").ok_or("a label with no value")?;
             let end = value_end(tail).ok_or("an unterminated label value")?;
-            labels.push((key.to_string(), tail[..end].to_string()));
+            sample
+                .labels
+                .push((key.to_string(), tail[..end].to_string()));
             match tail[end + 1..].split_at_checked(1) {
                 Some((",", next)) => body = next,
                 Some(("}", after)) => {
@@ -189,17 +213,15 @@ fn sample(line: &str) -> Result<Sample, String> {
         }
     }
     let value = rest.strip_prefix(' ').ok_or("a sample with no value")?;
-    let bad_key = labels
+    let bad_key = sample
+        .labels
         .iter()
         .any(|(k, _)| k.is_empty() || k.contains([',', '{', '}', '"', ' ']));
-    if name.is_empty() || bad_key || value.is_empty() || value.contains(' ') {
+    if sample.name.is_empty() || bad_key || value.is_empty() || value.contains(' ') {
         return Err("a sample that is not `name[{labels}] value`".into());
     }
-    Ok(Sample {
-        name,
-        labels,
-        value: value.to_string(),
-    })
+    sample.value = value.to_string();
+    Ok(sample)
 }
 
 /// Where an escaped label value ends: the first `"` no backslash escapes.

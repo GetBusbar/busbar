@@ -144,20 +144,19 @@ impl Prometheus {
 }
 
 /// One host family, as the renderer reads it.
-fn lift(f: busbar_contract::export_calls::Family) -> MetricFamily {
+fn lift(mut f: busbar_contract::export_calls::Family) -> MetricFamily {
     MetricFamily {
         kind: busbar_contract::export_calls::type_word(f.kind)
             .unwrap_or("untyped")
             .to_string(),
-        name: f.name,
-        help: f.help,
-        samples: f
-            .samples
+        name: std::mem::take(&mut f.name),
+        help: f.help.take(),
+        samples: std::mem::take(&mut f.samples)
             .into_iter()
-            .map(|s| MetricSample {
-                name: s.name,
-                labels: s.labels,
-                value: s.value,
+            .map(|mut s| MetricSample {
+                name: std::mem::take(&mut s.name),
+                labels: std::mem::take(&mut s.labels),
+                value: std::mem::take(&mut s.value),
             })
             .collect(),
     }
