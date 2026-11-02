@@ -859,21 +859,8 @@ fn rollback_reads_the_target_and_merges_pins() {
     );
 }
 
-use busbar_kernel::config::groups::{ChildDefault, LimitMetric, LimitWindow};
+use busbar_kernel::config::groups::{LimitMetric, LimitWindow};
 use busbar_kernel::config::{GroupCfg, LimitCfg};
-
-fn budget(cents: u64, per: LimitWindow) -> LimitCfg {
-    LimitCfg {
-        metric: LimitMetric::Budget,
-        amount: cents,
-        per: Some(per),
-        scope: None,
-        on_exhaust: None,
-        downgrade_to: None,
-        admission: None,
-        on_exhaustion: None,
-    }
-}
 
 use busbar_kernel::governance::{GovState, VirtualKey};
 
