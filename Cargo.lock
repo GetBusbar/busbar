@@ -285,7 +285,6 @@ dependencies = [
  "busbar-kernel-identity",
  "busbar-kernel-ledger",
  "busbar-kernel-seams",
- "busbar-kernel-testkit",
  "busbar-kernel-wal",
  "busbar-plugin-loader",
  "bytes",
@@ -356,7 +355,6 @@ dependencies = [
  "busbar-kernel",
  "busbar-kernel-egress",
  "busbar-kernel-seams",
- "busbar-kernel-testkit",
  "flate2",
  "http-body-util",
  "reqwest",
@@ -410,7 +408,6 @@ dependencies = [
  "base64 0.22.1",
  "busbar-contract",
  "busbar-kernel",
- "busbar-kernel-testkit",
  "bytes",
  "futures",
  "http",
@@ -443,7 +440,6 @@ dependencies = [
  "busbar-kernel-identity",
  "busbar-kernel-ledger",
  "busbar-kernel-seams",
- "busbar-kernel-testkit",
  "busbar-kernel-wal",
  "busbar-plugin-loader",
  "bytes",
@@ -533,35 +529,6 @@ name = "busbar-kernel-seams"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
-]
-
-[[package]]
-name = "busbar-kernel-testkit"
-version = "1.6.0"
-dependencies = [
- "axum",
- "busbar-contract",
- "busbar-kernel",
- "busbar-kernel-egress",
- "busbar-kernel-identity",
- "bytes",
- "crc32fast",
- "futures",
- "getrandom 0.3.4",
- "hex",
- "http",
- "http-body-util",
- "indexmap",
- "metrics",
- "serde",
- "serde_json",
- "serde_yaml_ng",
- "sha2",
- "tokio",
- "tower",
- "tracing",
- "tracing-subscriber",
- "zeroize",
 ]
 
 [[package]]

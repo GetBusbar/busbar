@@ -70,7 +70,6 @@ timing = ["dep:libc"]
 busbar-plugin-loader = { path = "../plugin-loader" }
 sha2 = { workspace = true }
 # External integration tests use the dev-only kit, never kernel fixture exports.
-busbar-kernel-testkit = { path = "../busbar-kernel-testkit" }
 # Dev-only: the test seal is absent from release builds.
 busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
 metrics-exporter-prometheus = { workspace = true }
