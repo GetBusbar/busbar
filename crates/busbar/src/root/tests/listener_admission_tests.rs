@@ -39,23 +39,22 @@ fn app(auth: RouteAuth, calls: &Arc<AtomicUsize>) -> Arc<busbar_kernel::state::A
     let store = crate::root::real_store::store();
     let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
         Arc::new(crate::root::door_steps::Rules::default());
-    let (mut app, rotate, limits) =
-        busbar_kernel::appbuild::build_app_from_config_with_store(
-            cfg,
-            Default::default(),
-            None,
-            Default::default(),
-            Default::default(),
-            (None, None),
-            None,
-            &rules,
-            Some(busbar_contract::store_calls::OpenedStore {
-                records: store.clone(),
-                calls: Some(store),
-            }),
-            false,
-        )
-        .expect("the product builds the admission application");
+    let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+        cfg,
+        Default::default(),
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+        Some(busbar_contract::store_calls::OpenedStore {
+            records: store.clone(),
+            calls: Some(store),
+        }),
+        false,
+    )
+    .expect("the product builds the admission application");
     limits.keep().expect("the admission limits commit");
     if let Some(rotate) = rotate {
         rotate();
