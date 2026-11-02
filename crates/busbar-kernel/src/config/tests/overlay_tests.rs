@@ -458,12 +458,126 @@ fn refused_write_never_exposes_uncommitted_generation_and_replays_original_befor
 
 #[test]
 fn unknown_commit_replays_exact_candidate_and_never_applies_the_new_request() {
-    let fixture = TestOverlayStore::new();
-    let backend = fixture.backend();
-    fixture.lose_next_commit_reply();
+    use busbar_contract::abi::sdk::store::conditional::{Decision, Request};
+    use busbar_contract::abi::store::OpId;
+    use busbar_contract::kinds::RecordBytes;
+    use busbar_contract::records::{MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta};
+    use busbar_contract::store_calls::{StoreCall, StoreCalls, StoreFailure};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    struct LostCommitReply {
+        inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
+        lose_reply: AtomicBool,
+        candidates: Mutex<Vec<Request>>,
+    }
+    impl StoreCalls for LostCommitReply {
+        fn supports_record_transaction(&self) -> bool {
+            self.inner.supports_record_transaction()
+        }
+        fn record_transaction<'a>(&'a self, request: &'a Request) -> StoreCall<'a, Decision> {
+            Box::pin(async move {
+                self.candidates.lock().unwrap().push(request.clone());
+                let decision = self.inner.record_transaction(request).await?;
+                if self.lose_reply.swap(false, Ordering::SeqCst) {
+                    Err(StoreFailure::Failed("planted lost commit reply".into()))
+                } else {
+                    Ok(decision)
+                }
+            })
+        }
+        fn add_usage_batch<'a>(
+            &'a self,
+            op: OpId,
+            cells: &'a [(&'a str, u64, UsageDelta)],
+        ) -> StoreCall<'a, ()> {
+            self.inner.add_usage_batch(op, cells)
+        }
+        fn add_metering_batch<'a>(
+            &'a self,
+            op: OpId,
+            deltas: &'a [MeteringDelta],
+        ) -> StoreCall<'a, ()> {
+            self.inner.add_metering_batch(op, deltas)
+        }
+        fn record_put<'a>(
+            &'a self,
+            schema: &'a str,
+            key: &'a [u8],
+            value: &'a RecordBytes,
+        ) -> StoreCall<'a, ()> {
+            self.inner.record_put(schema, key, value)
+        }
+        fn record_get<'a>(
+            &'a self,
+            schema: &'a str,
+            key: &'a [u8],
+        ) -> StoreCall<'a, Option<RecordBytes>> {
+            self.inner.record_get(schema, key)
+        }
+        fn record_scan<'a>(
+            &'a self,
+            schema: &'a str,
+            prefix: &'a [u8],
+            limit: u32,
+        ) -> StoreCall<'a, Vec<(Vec<u8>, RecordBytes)>> {
+            self.inner.record_scan(schema, prefix, limit)
+        }
+        fn upsert_plane_record<'a>(&'a self, record: PlaneRecordRef<'a>) -> StoreCall<'a, ()> {
+            self.inner.upsert_plane_record(record)
+        }
+        fn get_plane_record<'a>(
+            &'a self,
+            kind: &'a str,
+            id: &'a str,
+        ) -> StoreCall<'a, Option<Vec<u8>>> {
+            self.inner.get_plane_record(kind, id)
+        }
+        fn append_plane_record<'a>(
+            &'a self,
+            op: OpId,
+            record: PlaneRecordRef<'a>,
+        ) -> StoreCall<'a, ()> {
+            self.inner.append_plane_record(op, record)
+        }
+        fn list_plane_records<'a>(
+            &'a self,
+            kind: &'a str,
+            selector: &'a PlaneSelector<'a>,
+        ) -> StoreCall<'a, Vec<Vec<u8>>> {
+            self.inner.list_plane_records(kind, selector)
+        }
+        fn delete_plane_record<'a>(&'a self, kind: &'a str, id: &'a str) -> StoreCall<'a, ()> {
+            self.inner.delete_plane_record(kind, id)
+        }
+        fn redeem_plane_token<'a>(
+            &'a self,
+            kind: &'a str,
+            token: &'a str,
+            expires_at: u64,
+            now: u64,
+        ) -> StoreCall<'a, bool> {
+            self.inner.redeem_plane_token(kind, token, expires_at, now)
+        }
+        fn plane_token_live<'a>(
+            &'a self,
+            kind: &'a str,
+            token: &'a str,
+            expires_at: u64,
+            now: u64,
+        ) -> StoreCall<'a, bool> {
+            self.inner.plane_token_live(kind, token, expires_at, now)
+        }
+    }
+    let calls = Arc::new(LostCommitReply {
+        inner: crate::real_store::store(),
+        lose_reply: AtomicBool::new(true),
+        candidates: Mutex::new(Vec::new()),
+    });
+    let backend = OverlayStore::new(calls.clone()).unwrap();
     assert!(persist_root(Some(&backend), &sample_root()).is_err());
     assert!(persist_root(Some(&backend), &RootSettings::default()).is_err());
-    let candidates = fixture.candidates();
+    let candidates = calls.candidates.lock().unwrap().clone();
     assert_eq!(candidates.len(), 2);
     assert_eq!(candidates[0], candidates[1]);
     assert!(backend.read_required().unwrap().unwrap().root.is_some());
