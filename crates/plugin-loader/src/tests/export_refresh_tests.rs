@@ -446,7 +446,8 @@ fn pending_export_batch_keeps_its_target_and_credentials_after_same_instance_ref
             "auth_header":{"name":"x-generation","value":"credential-A"},"delivery_timeout_secs":600});
         let new = serde_json::json!({"url":"https://bob:new@collector-b.example/new",
             "auth_header":{"name":"x-generation","value":"credential-B"},"delivery_timeout_secs":600});
-        let sink = ExportInstance::open(plugin, d.clone(), old.to_string().as_bytes()).unwrap();
+        let sink =
+            Arc::new(ExportInstance::open(plugin, d.clone(), old.to_string().as_bytes()).unwrap());
         let first = d.inline_ticket().unwrap();
         let mut old_batch = batch(b"{\"n\":1}\n{\"n\":2}\n", 1);
         assert_eq!(
@@ -510,8 +511,12 @@ fn pending_export_batch_keeps_its_target_and_credentials_after_same_instance_ref
         // the table's callback into the same plugin's STATUS slot.
         let reentered = Arc::new(AtomicUsize::new(0));
         let calls = reentered.clone();
-        let plugin = sink.plugin().clone();
+        // Keep the callback cycle-free; acquire an owner for each reentrant crossing.
+        let callback_sink = Arc::downgrade(&sink);
         *far.on_forget.lock().unwrap() = Some(Arc::new(move |_| {
+            let callback_sink = callback_sink
+                .upgrade()
+                .expect("the test retains the instance during old-ticket retirement");
             let mut status = Frame::new(
                 in_head(),
                 StatusOut {
@@ -520,7 +525,10 @@ fn pending_export_batch_keeps_its_target_and_credentials_after_same_instance_ref
                 },
             );
             assert_eq!(
-                plugin.call(export_slot::STATUS, &mut status).outcome,
+                callback_sink
+                    .plugin()
+                    .call(export_slot::STATUS, &mut status)
+                    .outcome,
                 Outcome::Ready
             );
             calls.fetch_add(1, Ordering::SeqCst);
@@ -653,7 +661,8 @@ fn refresh_enters_at_full_export_capacity_old_batches_resume_and_new_batches_wai
             "max_inflight_deliveries":64,"delivery_timeout_secs":600});
         let new = serde_json::json!({"url":"https://collector-b.example/new",
             "max_inflight_deliveries":64,"delivery_timeout_secs":600});
-        let sink = ExportInstance::open(plugin, d.clone(), old.to_string().as_bytes()).unwrap();
+        let sink =
+            Arc::new(ExportInstance::open(plugin, d.clone(), old.to_string().as_bytes()).unwrap());
         let _answer = Released(far.clone());
         let done = Arc::new(AtomicUsize::new(0));
         for n in 0..64 {
@@ -680,12 +689,13 @@ fn refresh_enters_at_full_export_capacity_old_batches_resume_and_new_batches_wai
             }
         }));
         let mut unblock = Unblock(Some(release));
-        let plugin = sink.plugin().clone();
+        // The refresh thread retains the instance across its whole crossing.
+        let refresh_sink = Arc::clone(&sink);
         let (result, ready) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let deadline = Instant::now() + Duration::from_secs(2);
             loop {
-                let answer = refresh(&plugin, &new, 2);
+                let answer = refresh(refresh_sink.plugin(), &new, 2);
                 if answer != Outcome::Refused || Instant::now() >= deadline {
                     let _ = result.send(answer);
                     break;
