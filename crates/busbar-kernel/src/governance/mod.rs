@@ -56,8 +56,8 @@ const VK_ID_PREFIX: &str = "vk_";
 const VK_ID_HASH_PREFIX_LEN: usize = 16;
 /// The `"sk-bb-"` prefix for bearer secrets returned by `generate_secret`. Gated with it: no
 /// production path mints a hashed bearer secret any more.
-#[cfg(any(test, feature = "test-support"))]
-const SK_SECRET_PREFIX: &str = "sk-bb-";
+#[cfg(test)]
+const SK_SECRET_PREFIX: &str = crate::test_support::governance::SK_SECRET_PREFIX;
 /// The `generation_hash` prefix of a 1.5.0 signed-token binding row. A signed-token key has NO
 /// hashed bearer secret: the token is the credential, and the `generation_hash` column holds
 /// `binding:<id>:<generation>` — not a hash at all, a fingerprint compared post-resolution against
@@ -1480,24 +1480,10 @@ pub use busbar_contract::records::PlaneRequestCtx;
 /// extracted plane carries no core-private governance type.
 pub type GovCtx = busbar_contract::records::PlaneRequestCtx;
 
-/// Generate a virtual-key secret from 32 bytes of the OS CSPRNG (portable across Unix/Windows via
-/// getrandom). 256 bits — parity with the AWS secret access key beside it, raised from the old 128-bit
-/// width (still brute-force-infeasible, but 128 was the one credential axis below the project's own
-/// bar). Fails closed: if the OS exposes no entropy source we refuse to mint a key rather than fall
-/// back to a guessable (time-derived) secret. getrandom failure is near-impossible on supported
-/// platforms; on failure we return the error so the caller (`create_key`) surfaces a 500 instead of
-/// panicking the process — the server stays up.
-///
-/// Gated with its two callers. Once `create_key`/`create_key_with_aws` are test-only, the HASHED
-/// BEARER SECRET has no production minting path left at all — which is the shape 1.5.0 retired
-/// (every live key is a signed-token binding; see `docs/migration-1.5.md`). The compiler said so
-/// the moment the doors closed, and the answer is to close this too rather than to silence it.
-#[cfg(any(test, feature = "test-support"))]
+// Unit tests share the external kit's legacy-secret fixture; feature builds carry no mint.
+#[cfg(test)]
 fn generate_secret() -> Result<String, getrandom::Error> {
-    // Portable OS CSPRNG via getrandom: /dev/urandom on Unix, BCryptGenRandom on Windows, etc.
-    let mut buf = [0u8; 32];
-    getrandom::fill(&mut buf)?;
-    Ok(format!("{SK_SECRET_PREFIX}{}", hex::encode(buf)))
+    crate::test_support::governance::generate_secret()
 }
 
 /// `n` symbols of `alphabet`, each picked by one byte of the OS CSPRNG (`byte % len`, the alphabet
@@ -1526,6 +1512,16 @@ pub(crate) fn issue_credential(
     let tail = shape.id_len.saturating_sub(shape.id_prefix.len());
     let id = format!("{}{}", shape.id_prefix, draw(&shape.id_alphabet, tail)?);
     Ok((id, draw(&shape.secret_alphabet, shape.secret_len)?))
+}
+
+/// Exercise the production issued-shape generator with a fixture verifier's declared shape.
+/// This hook carries no fixture format or implementation; those belong to the external kit.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn issue_credential_for_test(
+    shape: &busbar_contract::auth_calls::IssuedShape,
+) -> Result<(String, String), getrandom::Error> {
+    issue_credential(shape)
 }
 
 /// Whether `key` may target `pool` (an OMITTED grant = all pools; an explicit list is

@@ -1383,44 +1383,13 @@ impl GovState {
     ///
     /// No production path mints through here (the admin handler goes through `mint_signed`); the
     /// compiler already agreed via `allow(dead_code)`. The gate says it in the surface instead.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn create_key(
         &self,
         spec: NewKeySpec,
         now: u64,
     ) -> RecordStoreResult<(VirtualKey, String)> {
-        // `?` converts a getrandom failure into a StoreError (see `From<getrandom::Error>`), so the
-        // admin handler returns a 500 via its existing error_response path instead of panicking.
-        let secret = generate_secret().store()?;
-        let hash = busbar_contract::redacted::sha256_hex(secret.as_bytes());
-        // `id` is a 64-bit prefix of the 256-bit secret hash, while `generation_hash` is the full hash with
-        // a UNIQUE constraint. Two distinct secrets sharing the same 64-bit prefix would produce the
-        // same `id` but different `generation_hash`; since `put_key` UPSERTs on the PRIMARY KEY `id`, the
-        // second mint would silently OVERWRITE the first key's row (replacing its `generation_hash`),
-        // invalidating the previously-issued secret with no error. Birthday-bound at ~2^32 keys, but
-        // the failure is silent, so guard it explicitly: if the derived id already exists for a
-        // DIFFERENT generation_hash, refuse rather than clobber an unrelated key. (A genuine retry that
-        // somehow reproduces the same secret — and thus the same generation_hash — is idempotent and allowed
-        // through, since it overwrites the row with identical data.)
-        let id = format!("{VK_ID_PREFIX}{}", &hash[..VK_ID_HASH_PREFIX_LEN]);
-        self.ensure_id_free_for_hash(&id, &hash)?;
-        let key = VirtualKey {
-            id,
-            generation_hash: hash,
-            name: spec.name,
-            allowed_scopes: crate::governance::grant_scopes(spec.allowed_pools, spec.plane_scopes),
-            enabled: true,
-            created_at: now,
-            group: spec.group,
-            labels: spec.labels,
-            expires_at: None,
-            deleted_at: None,
-            revision: 0,
-            ..Default::default()
-        };
-        self.store.put_key(&key)?;
-        self.refresh()?;
-        Ok((key, secret))
+        crate::test_support::governance::create_key(self, spec, now)
     }
 
     /// Mint a virtual key that ALSO carries an AWS-style access-key-id + secret access key for inbound
@@ -1442,65 +1411,13 @@ impl GovState {
     ///
     /// No production path mints through here; the compiler already agreed via `allow(dead_code)`.
     /// The gate says it in the surface instead.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn create_key_with_aws(
         &self,
         spec: NewKeySpec,
         now: u64,
     ) -> RecordStoreResult<(VirtualKey, String, String, String)> {
-        // `?` converts any getrandom failure into a StoreError (see `From<getrandom::Error>`), so the
-        // admin handler returns a 500 via its existing error_response path instead of panicking.
-        let secret = generate_secret().store()?;
-        let hash = busbar_contract::redacted::sha256_hex(secret.as_bytes());
-        let id = format!("{VK_ID_PREFIX}{}", &hash[..VK_ID_HASH_PREFIX_LEN]);
-        self.ensure_id_free_for_hash(&id, &hash)?;
-        // The shape and kind the linked signed-request verifier states, as the test double holds
-        // them (`test_support::issued`).
-        let (kind, shape) = crate::test_support::issued::double();
-        let (access_key_id, secret_access_key) = super::issue_credential(&shape).store()?;
-        let mut cred_raw = [0u8; 16];
-        getrandom::fill(&mut cred_raw)
-            .map_err(|e| RecordStoreError(format!("CSPRNG unavailable: {e}")))?;
-        let cred_id = format!("cred_{}", hex::encode(cred_raw));
-        let key = VirtualKey {
-            id: id.clone(),
-            generation_hash: hash,
-            name: spec.name,
-            allowed_scopes: crate::governance::grant_scopes(spec.allowed_pools, spec.plane_scopes),
-            enabled: true,
-            created_at: now,
-            group: spec.group,
-            labels: spec.labels,
-            expires_at: None,
-            deleted_at: None,
-            revision: 0,
-            ..Default::default()
-        };
-        // ATOMIC: persist the bearer key row and its paired credential in ONE transaction (see
-        // `put_key_with_credential`). The previous two-call autocommit sequence could orphan an
-        // inert key row if the credential write failed after the key write committed.
-        self.store.put_key_with_credential(
-            &key,
-            &CredentialSecret {
-                meta: CredentialMeta {
-                    id: cred_id,
-                    key_id: id,
-                    kind,
-                    slot: 0,
-                    public_id: access_key_id.clone(),
-                    secret_form: SecretForm::Recoverable,
-                    created_at: now,
-                    updated_at: now,
-                    expires_at: None,
-                    revoked_at: None,
-                    revoke_reason: None,
-                    revision: 0,
-                },
-                secret: format!("v1:plain:{secret_access_key}"),
-            },
-        )?;
-        self.refresh()?;
-        Ok((key, secret, access_key_id, secret_access_key))
+        crate::test_support::governance::create_key_with_aws(self, spec, now)
     }
 
     /// Guard against the silent UPSERT-overwrite described in `create_key`: the PRIMARY KEY `id` is
