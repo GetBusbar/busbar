@@ -7,7 +7,7 @@
 //! `busbar-substrate-values::ir::handle` (#83a SD-2b), which re-exports it under its historical path;
 //! its one byte-carrier method is re-expressed over this crate's own [`crate::bounded::SlabBytes`].
 //!
-//! **SEALED: a neutral TRAIT, never `Box<dyn Any>` + downcast.** Substrate
+//! **SEALED: a neutral request/response TRAIT.** Substrate
 //! defines the trait; the dialect crates implement it; no core code ever downcasts to a concrete IR.
 //! The `#[doc(hidden)]` [`sealed::Sealed`] supertrait makes "who may implement `IrHandle`" a decision
 //! the workspace keeps: an external crate cannot add an implementor without also naming
@@ -16,7 +16,7 @@
 //! hard seal. In-tree the two are equivalent: nothing outside the workspace names `Sealed`.
 //!
 //! **NAMES ONLY NEUTRAL TYPES.** Every method here is spelled in the neutral surface —
-//! `OpVerb`, `IrFacts`, `Billing`, `EgressPrep`, `EgressWire`, `TranslatedResponse`, `SlabBytes`
+//! `OpVerb`, `IrFacts`, `Billing`, `EgressWire`, `TranslatedResponse`, `SlabBytes`
 //! — and NONE of the concrete chat IR (the chat request/response/block types) that lives in the
 //! dialect crate implementing it. That is the whole point: the engine that holds a `Box<dyn IrHandle>` can drive
 //! translation/billing/preparation without the concrete IR existing in core at all.
@@ -25,8 +25,7 @@ pub mod handle_impl {
     use super::sealed;
     use crate::billing::{Billing, TokenUsage};
     use crate::bounded::SlabBytes;
-    use crate::codec::{CodecHost, EgressWire, TranslatedResponse};
-    use crate::ir::egress_prep::EgressPrep;
+    use crate::codec::{CodecError, CodecHost, EgressWire, TranslatedResponse};
     use crate::ir::facts::IrFacts;
     use crate::operation::OpVerb;
 
@@ -58,9 +57,16 @@ pub mod handle_impl {
 
         // ─────────────────────────── request-side (cross-protocol egress) ───────────────────────────
 
-        /// CROSS-PROTOCOL egress preparation — reshape this request for the target dialect. Default
-        /// no-op (the `Invoke`/`Subscribe`/leaf arms carry nothing to reshape); chat overrides.
-        fn prepare_for_egress(&mut self, _prep: &EgressPrep) {}
+        /// Apply an implementation-owned preparation context synchronously. The contract never
+        /// inspects its type or contents. A handle requiring a context must reject an incompatible
+        /// type before changing the request; handles requiring no preparation accept it unchanged.
+        ///
+        /// This is a Rust helper inside a compatible implementation, not a memory-ABI operation.
+        /// The context is borrowed only for this call; its concrete type must have the same Rust
+        /// crate/type identity as the handle expects. It must never be passed across a plugin door.
+        fn prepare_for_egress(&mut self, _context: &dyn std::any::Any) -> Result<(), CodecError> {
+            Ok(())
+        }
 
         /// Stamp the resolved wire model onto this request. Default no-op (URL-model ops carry none).
         fn set_model(&mut self, _model: &str) {}

@@ -525,8 +525,6 @@ pub struct LaneSpec {
     health: Option<crate::config::HealthCfg>,
     default_max_tokens: Option<u32>,
     upstream_model: Option<String>,
-    /// The lane's declared request-shape capabilities (default: none declared).
-    lane_caps: busbar_contract::ir::egress_prep::LaneCaps,
     // LaneData-only runtime state (defaults = a fresh, healthy, unlimited lane):
     limited: bool,
     budget: i64,
@@ -560,7 +558,6 @@ impl LaneSpec {
             health: None,
             default_max_tokens: None,
             upstream_model: None,
-            lane_caps: busbar_contract::ir::egress_prep::LaneCaps::NONE,
             limited: false,
             budget: -1,
             cooldown_until: 0,
@@ -615,11 +612,6 @@ impl LaneSpec {
     }
     pub fn upstream_model(mut self, n: &str) -> Self {
         self.upstream_model = Some(n.into());
-        self
-    }
-    /// Declare the lane's request-shape capabilities (what its provider entry would resolve to).
-    pub fn lane_caps(mut self, caps: busbar_contract::ir::egress_prep::LaneCaps) -> Self {
-        self.lane_caps = caps;
         self
     }
     /// Mark the lane as budget-limited with `n` remaining requests (sets `limited = true`).
