@@ -26,7 +26,10 @@ fn app() -> Arc<busbar_kernel::state::App> {
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
-    let directory = plugins::scratch("installed-door-route");
+    let directory = plugins::scratch(&format!(
+        "legacy-ledger-admin-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
