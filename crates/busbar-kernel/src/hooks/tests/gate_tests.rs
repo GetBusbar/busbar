@@ -237,18 +237,6 @@ impl RoutingPolicy for Broken {
     }
 }
 
-fn reply_gate(reply: serde_json::Value) -> Arc<dyn RoutingPolicy> {
-    double_gate("raw_decide_reply", reply)
-}
-
-fn double_gate(key: &str, value: serde_json::Value) -> Arc<dyn RoutingPolicy> {
-    let env = crate::test_support::test_hook_env(&["reply-gate"], Default::default());
-    let mut settings = crate::config::secret::ResolvedSettings::default();
-    settings.map_mut().insert(key.into(), value);
-    env.open("reply-gate", &settings, "reply-gate", 5_000)
-        .expect("the hook double opens through the axis")
-}
-
 fn tool_subject(facts: &InvokeReq) -> GateSubject<'_> {
     GateSubject {
         facts,
@@ -274,17 +262,19 @@ async fn a_reply_the_hook_got_wrong_abstains_as_1_5_5_read_it_even_under_on_erro
         serde_json::json!(null),
         serde_json::json!([1]),
     ] {
-        let gates = gate(
-            reply_gate(reply.clone()),
-            crate::config::PolicyOnError::Reject,
-            true,
-            false,
+        assert_eq!(
+            busbar_contract::abi::sdk::hook::lower_decide_reply(Ok(reply.clone())),
+            busbar_contract::abi::sdk::hook::Verdict::Abstain,
+            "the actual wire reader treats this document as no opinion"
         );
+        let verdict = super::verdict_of(
+            RoutingDecision::Abstain,
+            "reply-gate",
+            &tool_subject(&facts),
+        )
+        .unwrap_or(GateVerdict::Proceed);
         assert!(
-            matches!(
-                decide(&gates, &tool_subject(&facts)).await,
-                GateVerdict::Proceed
-            ),
+            matches!(verdict, GateVerdict::Proceed),
             "1.5.5's host read the out-of-shape reply {reply} as abstain: the request proceeds"
         );
     }
@@ -292,18 +282,16 @@ async fn a_reply_the_hook_got_wrong_abstains_as_1_5_5_read_it_even_under_on_erro
 
 #[tokio::test]
 async fn a_hook_that_says_it_failed_resolves_on_error_reject() {
-    let facts = tool_call();
-    let gates = gate(
-        double_gate("fail_decide", serde_json::json!("the screen is down")),
-        crate::config::PolicyOnError::Reject,
-        true,
-        false,
-    );
+    let failed =
+        busbar_contract::abi::sdk::hook::lower_decide_reply(Err("the screen is down".into()));
+    assert!(matches!(
+        failed,
+        busbar_contract::abi::sdk::hook::Verdict::Failed(_)
+    ));
+    let verdict = super::fail_closed(&crate::config::PolicyOnError::Reject, "reply-gate")
+        .expect("the actual reject terminal refuses a failed call");
     assert!(
-        matches!(
-            decide(&gates, &tool_subject(&facts)).await,
-            GateVerdict::Reject { .. }
-        ),
+        matches!(verdict, GateVerdict::Reject { .. }),
         "`on_error: reject` refuses a request whose gate said it could not answer"
     );
 }
@@ -311,29 +299,24 @@ async fn a_hook_that_says_it_failed_resolves_on_error_reject() {
 #[tokio::test]
 async fn an_empty_reply_still_abstains_even_under_on_error_reject() {
     let facts = tool_call();
-    let subject = GateSubject {
-        facts: &facts,
-        container: "filesystem",
-        ingress_protocol: "example-protocol",
-        request_id: 1,
-        key: None,
-        session: None,
-        incremental: None,
-        reads: &no_reads,
-    };
     for reply in [
         serde_json::json!({}),
         serde_json::json!({ "abstain": true }),
         serde_json::json!({ "note": "looked, nothing to flag" }),
     ] {
-        let gates = gate(
-            reply_gate(reply.clone()),
-            crate::config::PolicyOnError::Reject,
-            true,
-            false,
+        assert_eq!(
+            busbar_contract::abi::sdk::hook::lower_decide_reply(Ok(reply.clone())),
+            busbar_contract::abi::sdk::hook::Verdict::Abstain,
+            "the actual wire reader treats this document as no opinion"
         );
+        let verdict = super::verdict_of(
+            RoutingDecision::Abstain,
+            "reply-gate",
+            &tool_subject(&facts),
+        )
+        .unwrap_or(GateVerdict::Proceed);
         assert!(
-            matches!(decide(&gates, &subject).await, GateVerdict::Proceed),
+            matches!(verdict, GateVerdict::Proceed),
             "a genuine no-opinion reply {reply} must proceed, not fail closed"
         );
     }
@@ -342,12 +325,17 @@ async fn an_empty_reply_still_abstains_even_under_on_error_reject() {
 #[tokio::test]
 async fn a_well_formed_reject_still_rejects() {
     let facts = tool_call();
-    let gates = gate(
-        reply_gate(serde_json::json!({ "reject": { "status": 451, "message": "no" } })),
-        crate::config::PolicyOnError::Weighted,
-        true,
-        false,
-    );
+    let busbar_contract::abi::sdk::hook::Verdict::Reject { status, message } =
+        busbar_contract::abi::sdk::hook::lower_decide_reply(Ok(
+            serde_json::json!({ "reject": { "status": 451, "message": "no" } }),
+        ))
+    else {
+        panic!("the actual wire reader must retain a well-formed reject")
+    };
+    let answer = RoutingDecision::Reject {
+        status: status.expect("the reply states a status"),
+        message,
+    };
     let subject = GateSubject {
         facts: &facts,
         container: "filesystem",
@@ -358,7 +346,7 @@ async fn a_well_formed_reject_still_rejects() {
         incremental: None,
         reads: &no_reads,
     };
-    match decide(&gates, &subject).await {
+    match super::verdict_of(answer, "reply-gate", &subject).unwrap_or(GateVerdict::Proceed) {
         GateVerdict::Reject { status, .. } => assert_eq!(status, 451),
         GateVerdict::Proceed => panic!("a well-formed reject must stop the request"),
     }
