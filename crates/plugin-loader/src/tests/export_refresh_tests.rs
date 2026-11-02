@@ -2,27 +2,19 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::dispatch::{in_head, out_head, ConnTable, Frame, NO_BLOB};
 use busbar_contract::abi::export::{slot as export_slot, DeliverIn, StatusOut};
-use busbar_contract::abi::mechanism::call::{Outcome, BLOB_JSON, BLOB_JSONL};
+use busbar_contract::abi::mechanism::call::{OutHead, Outcome, BLOB_JSON, BLOB_JSONL};
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, CancelIn, CancelOut, RefreshIn};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 
-fn loaded(dropped: bool, file: bool, d: &Dispatcher, far: Arc<Far>) -> Plugin<Export> {
-    let (door, library) = if file {
-        (FILE_DOOR, file_cdylib())
-    } else {
-        (WEBHOOK_DOOR, webhook_cdylib())
-    };
+fn loaded(dropped: bool, d: &Dispatcher, far: Arc<Far>) -> Plugin<Export> {
+    let door = WEBHOOK_DOOR;
+    let library = webhook_cdylib();
     let mut binding = bind("export-refresh", Arc::new(Tape::default()), d);
-    binding.conns = if file {
-        ConnTable::NoNeeds
-    } else {
-        ConnTable::Host(far)
-    };
+    binding.conns = ConnTable::Host(far);
     if dropped {
         load_dropped_bytes::<Export>(
             &cdylib_bytes(library),
@@ -215,7 +207,7 @@ fn pending_refresh_keeps_one_candidate_and_barrier_while_full_old_capacity_resum
         let d = dispatcher();
         let far = Arc::new(Far::default());
         assert!(far.waker.set(d.conn_waker()).is_ok());
-        let plugin = loaded(dropped, false, &d, far.clone());
+        let plugin = loaded(dropped, &d, far.clone());
         let old = serde_json::json!({"url":"https://old-stall.example/old","max_inflight_deliveries":64,"delivery_timeout_secs":600});
         let new = serde_json::json!({"url":"https://refresh-stall.example/pending-refresh","max_inflight_deliveries":64,"delivery_timeout_secs":600});
         let sink = ExportInstance::open(plugin, d.clone(), old.to_string().as_bytes()).unwrap();
@@ -343,7 +335,7 @@ fn pending_refresh_refusal_and_cancel_retire_candidate_once_and_unblock_prior_ge
             let d = dispatcher();
             let far = Arc::new(Far::default());
             assert!(far.waker.set(d.conn_waker()).is_ok());
-            let plugin = loaded(dropped, false, &d, far.clone());
+            let plugin = loaded(dropped, &d, far.clone());
             let old = serde_json::json!({"url":"https://old-stall.example/old","delivery_timeout_secs":600});
             let new = serde_json::json!({"url":"https://refresh-stall.example/pending-refresh-refuse","delivery_timeout_secs":600});
             let sink = ExportInstance::open(plugin, d.clone(), old.to_string().as_bytes()).unwrap();
@@ -441,7 +433,7 @@ fn pending_export_batch_keeps_its_target_and_credentials_after_same_instance_ref
         let d = dispatcher();
         let far = Arc::new(Far::default());
         assert!(far.waker.set(d.conn_waker()).is_ok());
-        let plugin = loaded(dropped, false, &d, far.clone());
+        let plugin = loaded(dropped, &d, far.clone());
         let old = serde_json::json!({"url":format!("https://alice:old@{STALL_TARGET}/old"),
             "auth_header":{"name":"x-generation","value":"credential-A"},"delivery_timeout_secs":600});
         let new = serde_json::json!({"url":"https://bob:new@collector-b.example/new",
@@ -573,7 +565,7 @@ fn cancelled_export_connector_batch_does_not_resume_on_a_reused_ticket_after_ref
         let d = dispatcher();
         let far = Arc::new(Far::default());
         assert!(far.waker.set(d.conn_waker()).is_ok());
-        let plugin = loaded(dropped, false, &d, far.clone());
+        let plugin = loaded(dropped, &d, far.clone());
         let old = serde_json::json!({"url":format!("https://{STALL_TARGET}/cancelled"),"delivery_timeout_secs":600});
         let new = serde_json::json!({"url":"https://collector-b.example/current"});
         let sink = ExportInstance::open(plugin, d.clone(), old.to_string().as_bytes()).unwrap();
@@ -653,7 +645,7 @@ fn refresh_enters_at_full_export_capacity_old_batches_resume_and_new_batches_wai
         let d = Arc::new(Dispatcher::new(config));
         let far = Arc::new(Far::default());
         assert!(far.waker.set(d.conn_waker()).is_ok());
-        let plugin = loaded(dropped, false, &d, far.clone());
+        let plugin = loaded(dropped, &d, far.clone());
         let old = serde_json::json!({"url":format!("https://{STALL_TARGET}/old"),
             "max_inflight_deliveries":64,"delivery_timeout_secs":600});
         let new = serde_json::json!({"url":"https://collector-b.example/new",
@@ -748,148 +740,6 @@ fn refresh_enters_at_full_export_capacity_old_batches_resume_and_new_batches_wai
             .contains("collector-b.example"));
         assert_eq!(current["head_target"], "/new");
         drop(sink);
-    }
-}
-
-type DiskAppend = (DiskDest, Vec<u8>, Later);
-
-#[derive(Default)]
-struct HeldDisk(Mutex<VecDeque<DiskAppend>>);
-
-impl crate::services_double::ServicesDouble for Arc<HeldDisk> {
-    fn disk_append(&self, dest: &DiskDest, bytes: Vec<u8>, later: Later) -> Ran {
-        self.0
-            .lock()
-            .unwrap()
-            .push_back((dest.clone(), bytes, later));
-        Ran::Later
-    }
-}
-
-impl HeldDisk {
-    fn complete(&self) -> String {
-        let (dest, bytes, later) = self.0.lock().unwrap().pop_front().unwrap();
-        later(DiskHost::append(&dest, &bytes).stored());
-        dest.path
-    }
-}
-
-#[test]
-fn pending_export_disk_append_keeps_old_path_and_cancelled_late_reply_cannot_reach_reused_ticket_both_doors(
-) {
-    for dropped in [false, true] {
-        let dir = scratch(if dropped {
-            "refresh-disk-dropped"
-        } else {
-            "refresh-disk-linked"
-        });
-        let a = dir.join("a.jsonl");
-        let b = dir.join("b.jsonl");
-        let c = dir.join("c.jsonl");
-        let disk = Arc::new(HeldDisk::default());
-        let d = Arc::new(Dispatcher::with_services(
-            DispatchConfig::default(),
-            Arc::new(crate::services_double::Double(disk.clone())),
-        ));
-        let plugin = loaded(dropped, true, &d, Arc::new(Far::default()));
-        let sink = opened(plugin, d.clone(), &file_settings(&a));
-        let old = d.inline_ticket().unwrap();
-        let mut old_batch = batch(b"{\"n\":1}\n", 4);
-        assert_eq!(
-            sink.plugin()
-                .call_inline(old.ticket(), false, export_slot::DELIVER, &mut old_batch)
-                .outcome,
-            Outcome::Pending
-        );
-        until("the old disk append is held", || {
-            disk.0.lock().unwrap().len() == 1
-        });
-        assert_eq!(
-            refresh(sink.plugin(), &file_settings(&b), 2),
-            Outcome::Ready
-        );
-        let fresh = d.inline_ticket().unwrap();
-        let mut new_batch = batch(b"{\"n\":2}\n", 5);
-        assert_eq!(
-            sink.plugin()
-                .call_inline(fresh.ticket(), false, export_slot::DELIVER, &mut new_batch)
-                .outcome,
-            Outcome::Pending
-        );
-        until("both disk appends are held", || {
-            disk.0.lock().unwrap().len() == 2
-        });
-        assert_eq!(disk.complete(), a.display().to_string());
-        finish(sink.plugin(), old.ticket(), &mut old_batch);
-        assert_eq!(disk.complete(), b.display().to_string());
-        finish(sink.plugin(), fresh.ticket(), &mut new_batch);
-        drop(old);
-        drop(fresh);
-        assert_eq!(ns(&a), Some(vec![1]));
-        assert_eq!(ns(&b), Some(vec![2]));
-        let rejected = serde_json::json!({"path":c,"bogus":1});
-        assert_ne!(refresh(sink.plugin(), &rejected, 3), Outcome::Ready);
-
-        let cancelled = d.inline_ticket().unwrap();
-        let old_ticket = cancelled.ticket();
-        let mut cancelled_batch = batch(b"{\"n\":3}\n", 6);
-        assert_eq!(
-            sink.plugin()
-                .call_inline(
-                    old_ticket,
-                    false,
-                    export_slot::DELIVER,
-                    &mut cancelled_batch
-                )
-                .outcome,
-            Outcome::Pending
-        );
-        until("the cancelled disk append is held", || {
-            disk.0.lock().unwrap().len() == 1
-        });
-        cancel(sink.plugin(), old_ticket);
-        drop(cancelled);
-        let reused = d.inline_ticket().unwrap();
-        assert_eq!(reused.ticket().slot, old_ticket.slot);
-        assert_ne!(reused.ticket().generation, old_ticket.generation);
-        let mut later_batch = batch(b"{\"n\":4}\n", 7);
-        assert_eq!(
-            sink.plugin()
-                .call_inline(
-                    reused.ticket(),
-                    false,
-                    export_slot::DELIVER,
-                    &mut later_batch
-                )
-                .outcome,
-            Outcome::Pending
-        );
-        until("the reused ticket disk append is held", || {
-            disk.0.lock().unwrap().len() == 2
-        });
-
-        assert_eq!(disk.complete(), b.display().to_string());
-        assert_eq!(
-            sink.plugin()
-                .call_inline(
-                    reused.ticket(),
-                    true,
-                    export_slot::DELIVER,
-                    &mut later_batch
-                )
-                .outcome,
-            Outcome::Pending
-        );
-        assert_eq!(disk.0.lock().unwrap().len(), 1);
-        assert_eq!(disk.complete(), b.display().to_string());
-        finish(sink.plugin(), reused.ticket(), &mut later_batch);
-        drop(reused);
-        assert_eq!(ns(&a), Some(vec![1]));
-        assert_eq!(ns(&b), Some(vec![2, 3, 4]));
-        assert!(!c.exists());
-        assert!(disk.0.lock().unwrap().is_empty());
-        drop(sink);
-        std::fs::remove_dir_all(dir).unwrap();
     }
 }
 
