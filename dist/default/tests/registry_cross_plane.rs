@@ -712,46 +712,6 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
     assert!(dispatch.mounted_keys().is_empty(), "and it mounts nothing");
 }
 
-fn boot_app() -> Arc<busbar_kernel::state::App> {
-    register_planes();
-    let store = crate::LINKED
-        .stores
-        .iter()
-        .find(|store| store.1)
-        .expect("the actual distribution links an ephemeral product store");
-    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-        "providers": {},
-        "models": {},
-        "store": { "module": store.0 },
-        "auth": { "chain": [], "admin_auth": [] },
-    }))
-    .expect("the actual app deployment parses");
-    let config = busbar_kernel::config::resolve(&deploy, &HashMap::new())
-        .expect("the actual app deployment resolves");
-    let rules = Arc::new(crate::root::door_steps::Rules::default())
-        as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
-        config,
-        Default::default(),
-        None,
-        Default::default(),
-        Default::default(),
-        (None, None),
-        None,
-        &rules,
-    )
-    .expect("the production root builds the app and opens its real store through the ABI");
-    limits.keep().expect("the actual app's limits commit");
-    if let Some(rotate) = rotate {
-        rotate();
-    }
-    assert!(
-        app.governance.is_some(),
-        "the actual store supplies governance"
-    );
-    Arc::new(app)
-}
-
 #[test]
 fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
     static REFUSES_START: PlaneDecl = PlaneDecl {
@@ -802,7 +762,43 @@ fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
         resolve_provider: None,
         door: None,
     };
-    let app = boot_app();
+    register_planes();
+    let store = crate::LINKED
+        .stores
+        .iter()
+        .find(|store| store.1)
+        .expect("the actual distribution links an ephemeral product store");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+        "providers": {},
+        "models": {},
+        "store": { "module": store.0 },
+        "auth": { "chain": [], "admin_auth": [] },
+    }))
+    .expect("the actual app deployment parses");
+    let config = busbar_kernel::config::resolve(&deploy, &HashMap::new())
+        .expect("the actual app deployment resolves");
+    let rules = Arc::new(crate::root::door_steps::Rules::default())
+        as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+        config,
+        Default::default(),
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+    )
+    .expect("the production root builds the app and opens its real store through the ABI");
+    limits.keep().expect("the actual app's limits commit");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+    assert!(
+        app.governance.is_some(),
+        "the actual store supplies governance"
+    );
+    let app = Arc::new(app);
     let handle = Arc::new(busbar_kernel::state::AppHandle::new(app));
     let ctx = busbar_kernel::plane_driver::registry::BootCtx::for_start(&handle, None);
 
@@ -915,7 +911,43 @@ fn r2_boot_a_plane_whose_hydrate_errs_refuses_boot() {
         resolve_provider: None,
         door: None,
     };
-    let app = boot_app();
+    register_planes();
+    let store = crate::LINKED
+        .stores
+        .iter()
+        .find(|store| store.1)
+        .expect("the actual distribution links an ephemeral product store");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+        "providers": {},
+        "models": {},
+        "store": { "module": store.0 },
+        "auth": { "chain": [], "admin_auth": [] },
+    }))
+    .expect("the actual app deployment parses");
+    let config = busbar_kernel::config::resolve(&deploy, &HashMap::new())
+        .expect("the actual app deployment resolves");
+    let rules = Arc::new(crate::root::door_steps::Rules::default())
+        as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+        config,
+        Default::default(),
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+    )
+    .expect("the production root builds the app and opens its real store through the ABI");
+    limits.keep().expect("the actual app's limits commit");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+    assert!(
+        app.governance.is_some(),
+        "the actual store supplies governance"
+    );
+    let app = Arc::new(app);
     let store = busbar_kernel::store::plane_view::PlaneStoreView::narrow(
         app.governance
             .as_ref()
