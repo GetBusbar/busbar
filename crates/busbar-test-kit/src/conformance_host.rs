@@ -517,6 +517,9 @@ fn need(transport: &str, class: u32) -> ReadNeed {
             bytes: Vec::new(),
         },
         timeout_ms: 0,
+        keep_mode: busbar_contract::abi::host::conn::connector::KEEP_NAMED,
+        keep_response_headers: Vec::new(),
+        deny_response_headers: Vec::new(),
     }
 }
 

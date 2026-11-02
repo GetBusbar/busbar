@@ -125,6 +125,7 @@ pack "$OTHER_PRIV" "$WORK/wrongkey.tar.gz"
 GRANT_NEED=$(python3 - "$WORK/unsigned.tar.gz" <<'EOF'
 import json, struct, sys, tarfile
 FIRST_PARTY = {1: "provider"}   # loopback-allowed is the operator's to grant (81e3062956, OWNER 2026-10-24)
+RENDERING_MAGIC = b"BBSTMT03"  # busbar-contract's current rendering, including need retention
 with tarfile.open(sys.argv[1]) as t:
     m = json.load(t.extractfile("manifest.json"))
 st = m.get("statement")
@@ -151,8 +152,8 @@ def string():
 def blob():
     u32(); u32(); take(u32())
 strs = lambda: [string() for _ in range(count())]
-if take(8) != b"BBSTMT02":   # RENDERING_MAGIC in busbar-contract: exactly the current version
-    sys.exit("manifest statement is not a Statement rendering: the magic")
+if take(len(RENDERING_MAGIC)) != RENDERING_MAGIC:
+    sys.exit("manifest statement is not a current Statement rendering: the magic; repack the plugin")
 u32(); u32(); u32(); u32()                       # mechanism, kind, kind_abi, max_inflight
 string(); string()                               # name, version
 for _ in range(count()):                         # families
@@ -165,7 +166,8 @@ for _ in range(count()): string(); u32()         # sections
 needs = []
 for _ in range(count()):
     u32(); klass = u32(); transport = string()   # direction, egress_class, transport
-    string(); string(); string(); blob(); u64()  # auth, target_from, trust_from, details, timeout_ms
+    string(); string(); string(); blob()        # auth, target_from, trust_from, details
+    strs(); u64(); u32(); strs()                # kept headers, timeout_ms, keep_mode, denied headers
     needs.append((klass, transport))
 string(); string(); strs(); strs()               # target_from, trust_from, answers, claims
 if at != len(b):

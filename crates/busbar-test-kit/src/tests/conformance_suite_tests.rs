@@ -1476,6 +1476,9 @@ mod hook_far_ends {
                 bytes: Vec::new(),
             },
             timeout_ms: 0,
+            keep_mode: busbar_contract::abi::host::conn::connector::KEEP_NAMED,
+            keep_response_headers: Vec::new(),
+            deny_response_headers: Vec::new(),
         };
         let (owner, id) = (InstanceId(41), NeedId(0));
         table

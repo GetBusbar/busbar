@@ -6,8 +6,10 @@
 //! with the same bytes, and a manifest check built on it would pass a lying manifest.
 
 use super::*;
-use crate::abi::host::conn::connector::{DIRECTION_OUTBOUND, KEEP_NAMED};
-use crate::abi::mechanism::call::{BLOB_JSON, BLOB_OCTETS};
+use crate::abi::host::conn::connector::{
+    DIRECTION_INBOUND, DIRECTION_OUTBOUND, EGRESS_OPEN_WEB, KEEP_ALL_EXCEPT_DENIED, KEEP_NAMED,
+};
+use crate::abi::mechanism::call::{BLOB_JSON, BLOB_OCTETS, BLOB_SECRET};
 use crate::abi::mechanism::door::{
     KindTailHead, FAMILY_COUNTER, MARK_ONE_INSTANCE, MARK_WORD_HOOK, REWRITE_ALIAS, REWRITE_KEY,
     SECTION_DECLARING,
@@ -200,10 +202,6 @@ fn every_field_changes_the_bytes() {
         ..WORDS[0]
     }];
     let swapped: &[Rewrite] = &[REWRITES[1], REWRITES[0]];
-    let other_timeout: &[Need] = &[Need {
-        timeout_ms: 5_000,
-        ..NEEDS[0]
-    }];
     let mut edits: Vec<(&str, Statement)> = Vec::new();
     let mut push = |name: &'static str, f: &dyn Fn(&mut Statement)| {
         let mut st = full();
@@ -229,7 +227,6 @@ fn every_field_changes_the_bytes() {
     push("rewrites reordered", &|s| s.rewrites = swapped.as_ptr());
     push("sections dropped", &|s| s.sections_len = 0);
     push("needs dropped", &|s| s.needs_len = 0);
-    push("need.timeout_ms", &|s| s.needs = other_timeout.as_ptr());
     push("target_from", &|s| s.target_from = NONE);
     push("trust_from", &|s| s.trust_from = NONE);
     push("answers dropped", &|s| s.answers_len = 0);
@@ -242,6 +239,113 @@ fn every_field_changes_the_bytes() {
     });
     for (name, st) in &edits {
         assert_ne!(bytes(st), base, "{name} did not change the rendering");
+    }
+    // Each semantic Need field is independently bound, including the list boundaries. Padding
+    // and pointers are not facts; their live contents and declaration order are.
+    const HEADERS: &[AbiStr] = &[abi_str("x-first"), abi_str("x-second")];
+    let need = NEEDS[0];
+    for (name, other) in [
+        (
+            "direction",
+            Need {
+                direction: DIRECTION_INBOUND,
+                ..need
+            },
+        ),
+        (
+            "egress_class",
+            Need {
+                egress_class: EGRESS_OPEN_WEB,
+                ..need
+            },
+        ),
+        (
+            "transport",
+            Need {
+                transport: abi_str("other"),
+                ..need
+            },
+        ),
+        (
+            "auth",
+            Need {
+                auth: abi_str("other"),
+                ..need
+            },
+        ),
+        (
+            "target_from",
+            Need {
+                target_from: abi_str("settings.other"),
+                ..need
+            },
+        ),
+        (
+            "trust_from",
+            Need {
+                trust_from: abi_str("settings.ca"),
+                ..need
+            },
+        ),
+        (
+            "details.fmt",
+            Need {
+                details: Blob {
+                    fmt: BLOB_OCTETS,
+                    ..need.details
+                },
+                ..need
+            },
+        ),
+        (
+            "details.flags",
+            Need {
+                details: Blob {
+                    flags: BLOB_SECRET,
+                    ..need.details
+                },
+                ..need
+            },
+        ),
+        (
+            "details.bytes",
+            Need {
+                details: blob(b"[]", BLOB_JSON),
+                ..need
+            },
+        ),
+        (
+            "keep_response_headers",
+            need.with_keep_response_headers(HEADERS),
+        ),
+        (
+            "timeout_ms",
+            Need {
+                timeout_ms: 5_000,
+                ..need
+            },
+        ),
+        (
+            "keep_mode",
+            Need {
+                keep_mode: KEEP_ALL_EXCEPT_DENIED,
+                ..need
+            },
+        ),
+        (
+            "deny_response_headers",
+            Need {
+                keep_mode: KEEP_ALL_EXCEPT_DENIED,
+                ..need
+            }
+            .with_deny_response_headers(HEADERS),
+        ),
+    ] {
+        let st = Statement {
+            needs: &other,
+            ..full()
+        };
+        assert_ne!(bytes(&st), base, "need.{name} did not change the rendering");
     }
 }
 
@@ -276,9 +380,26 @@ fn a_rendering_reads_back_to_every_fact_it_carries() {
     );
     assert_eq!(r.sections, vec![("golden".to_string(), SECTION_DECLARING)]);
     assert_eq!(r.needs.len(), 1);
-    assert_eq!(r.needs[0].target_from, "settings.url");
-    assert_eq!(r.needs[0].details.bytes, b"{}");
-    assert_eq!(r.needs[0].timeout_ms, 30_000);
+    assert_eq!(
+        r.needs[0],
+        ReadNeed {
+            direction: DIRECTION_OUTBOUND,
+            egress_class: NEEDS[0].egress_class,
+            transport: "https".to_owned(),
+            auth: "bearer".to_owned(),
+            target_from: "settings.url".to_owned(),
+            trust_from: String::new(),
+            details: ReadBlob {
+                fmt: BLOB_JSON,
+                flags: 0,
+                bytes: b"{}".to_vec()
+            },
+            keep_response_headers: Vec::new(),
+            timeout_ms: 30_000,
+            keep_mode: KEEP_NAMED,
+            deny_response_headers: Vec::new(),
+        }
+    );
     assert_eq!(r.target_from, "settings.url");
     assert_eq!(r.trust_from, "settings.ca");
     assert_eq!(r.answers, vec!["status".to_string()]);
@@ -288,7 +409,7 @@ fn a_rendering_reads_back_to_every_fact_it_carries() {
 #[test]
 fn a_truncated_padded_or_foreign_rendering_is_unreadable() {
     let b = bytes(&full());
-    for cut in [0, 7, 8, 20, b.len() / 2, b.len() - 1] {
+    for cut in 0..b.len() {
         assert!(read(&b[..cut]).is_err(), "cut at {cut}");
     }
     let mut padded = b.clone();
@@ -298,9 +419,139 @@ fn a_truncated_padded_or_foreign_rendering_is_unreadable() {
     foreign[0] = b'X';
     assert_eq!(read(&foreign).unwrap_err().what, "the magic");
     // A count no rest could hold is refused, never used to size an allocation.
-    let mut huge = b[..RENDERING_MAGIC.len() + 16].to_vec();
-    huge.extend_from_slice(&u32::MAX.to_le_bytes());
-    assert!(read(&huge).is_err());
+    // Start from a valid control, then replace the families count, after both strings, so this
+    // reaches In::count rather than failing while reading a string's length.
+    let control = statement("count-control", "1", 1);
+    let mut huge = bytes(&control);
+    assert!(read(&huge).is_ok());
+    let families_at = RENDERING_MAGIC.len()
+        + 4 * core::mem::size_of::<u32>()
+        + 2 * core::mem::size_of::<u32>()
+        + control.name.len
+        + control.version.len;
+    huge[families_at..families_at + core::mem::size_of::<u32>()]
+        .copy_from_slice(&u32::MAX.to_le_bytes());
+    assert_eq!(
+        read(&huge).unwrap_err(),
+        Unreadable {
+            at: families_at,
+            what: "families"
+        }
+    );
+}
+
+#[test]
+fn retention_lists_keep_names_counts_order_and_modes_distinct() {
+    const ORDERED: &[AbiStr] = &[abi_str("x-first"), abi_str("x-second")];
+    const REVERSED: &[AbiStr] = &[abi_str("x-second"), abi_str("x-first")];
+    const RENAMED: &[AbiStr] = &[abi_str("x-third"), abi_str("x-second")];
+    let mut renderings = Vec::new();
+    for mode in [KEEP_NAMED, KEEP_ALL_EXCEPT_DENIED] {
+        for names in [&[][..], &ORDERED[..1], ORDERED, REVERSED, RENAMED] {
+            let need = Need {
+                keep_mode: mode,
+                ..NEEDS[0]
+            };
+            let need = if mode == KEEP_NAMED {
+                need.with_keep_response_headers(names)
+            } else {
+                need.with_deny_response_headers(names)
+            };
+            let st = Statement {
+                needs: &need,
+                needs_len: 1,
+                ..full()
+            };
+            // SAFETY: all statement backing and each header array live throughout this call.
+            unsafe { crate::abi::mechanism::check::check_statement(&st) }.unwrap();
+            let encoded = bytes(&st);
+            let decoded = read(&encoded).unwrap();
+            let actual = &decoded.needs[0];
+            let expected: Vec<_> = names
+                .iter()
+                .map(|name| {
+                    // SAFETY: each array element is abi_str of a live UTF-8 literal.
+                    let raw = unsafe { core::slice::from_raw_parts(name.ptr, name.len) };
+                    core::str::from_utf8(raw).unwrap().to_owned()
+                })
+                .collect();
+            assert_eq!(actual.keep_mode, mode);
+            if mode == KEEP_NAMED {
+                assert_eq!(actual.keep_response_headers, expected);
+                assert!(actual.deny_response_headers.is_empty());
+            } else {
+                assert!(actual.keep_response_headers.is_empty());
+                assert_eq!(actual.deny_response_headers, expected);
+            }
+            for prior in &renderings {
+                assert_ne!(
+                    &encoded, prior,
+                    "distinct retention policies shared signed bytes"
+                );
+            }
+            renderings.push(encoded);
+        }
+    }
+}
+
+#[test]
+fn malformed_retention_lists_refuse_at_their_own_field() {
+    const NAME: &str = "x-retention-count-control";
+    const HEADERS: &[AbiStr] = &[abi_str(NAME)];
+    for (mode, field) in [
+        (KEEP_NAMED, "need.keep_response_headers"),
+        (KEEP_ALL_EXCEPT_DENIED, "need.deny_response_headers"),
+    ] {
+        let need = Need {
+            keep_mode: mode,
+            ..NEEDS[0]
+        };
+        let need = if mode == KEEP_NAMED {
+            need.with_keep_response_headers(HEADERS)
+        } else {
+            need.with_deny_response_headers(HEADERS)
+        };
+        let control = bytes(&Statement {
+            needs: &need,
+            ..full()
+        });
+        assert!(read(&control).is_ok());
+        let name_at = control
+            .windows(NAME.len())
+            .position(|b| b == NAME.as_bytes())
+            .unwrap();
+        let count_at = name_at - 2 * core::mem::size_of::<u32>();
+        let mut huge = control.clone();
+        huge[count_at..count_at + core::mem::size_of::<u32>()]
+            .copy_from_slice(&u32::MAX.to_le_bytes());
+        assert_eq!(
+            read(&huge).unwrap_err(),
+            Unreadable {
+                at: count_at,
+                what: field
+            }
+        );
+        let mut invalid_utf8 = control.clone();
+        invalid_utf8[name_at] = u8::MAX;
+        assert_eq!(read(&invalid_utf8).unwrap_err().what, field);
+        for cut in count_at..name_at + NAME.len() {
+            assert!(read(&control[..cut]).is_err(), "{field} cut at {cut}");
+        }
+    }
+}
+
+#[test]
+fn older_renderings_require_repacking_instead_of_defaulting_missing_policy() {
+    for magic in [
+        RENDERING_MAGIC_TAIL_SIZE_ONLY,
+        RENDERING_MAGIC_WITHOUT_NEED_RETENTION,
+    ] {
+        let mut old = bytes(&full());
+        old[..magic.len()].copy_from_slice(magic);
+        let error = read(&old).unwrap_err();
+        assert_eq!(error.at, 0);
+        assert!(error.what.contains("repack the plugin"));
+    }
 }
 
 // ── THE KIND TAIL, RENDERED WHOLE (ARCHITECT ruling 2026-10-20, audit root#7 and loader#9) ───────
