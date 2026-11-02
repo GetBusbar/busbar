@@ -19,6 +19,10 @@ use busbar_contract::abi::plane::{
 };
 use busbar_contract::abi::sdk::completion_retirement::{self as wire, Domain, Handle, Retirement};
 use busbar_contract::abi::sdk::services::Services;
+use busbar_contract::services::{
+    Caller, DiskDest, HookAsk, Later, NestAsk, Ran, Reading, RecordsList, Snapshot, Stored,
+    TrustKeyRef,
+};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering::SeqCst};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -38,6 +42,7 @@ enum Defect {
     Cancel,
     PendingOverflow,
     PendingNeeded,
+    Session,
 }
 static NEXT: AtomicU8 = AtomicU8::new(0);
 static TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -49,6 +54,8 @@ struct State {
     releases: usize,
     leases: HashMap<u64, Box<[u8]>>,
     next_lease: u64,
+    resumes: usize,
+    notify: bool,
 }
 static STATES: OnceLock<Mutex<HashMap<u64, State>>> = OnceLock::new();
 fn states() -> &'static Mutex<HashMap<u64, State>> {
@@ -94,7 +101,8 @@ extern "C" fn open(
             6 => Defect::Nonce,
             7 => Defect::Cancel,
             8 => Defect::PendingOverflow,
-            _ => Defect::PendingNeeded,
+            9 => Defect::PendingNeeded,
+            _ => Defect::Session,
         };
         states().lock().unwrap().insert(
             input.open.head.host.handle,
@@ -106,6 +114,8 @@ extern "C" fn open(
                 releases: 0,
                 leases: HashMap::new(),
                 next_lease: u64::MAX,
+                resumes: 0,
+                notify: true,
             },
         );
         result
@@ -139,10 +149,14 @@ extern "C" fn drive(
         } else {
             unsafe { std::slice::from_raw_parts(ext.ptr, ext.len) }
         };
-        if state
-            .retirement
-            .begin(input.drive.head.host, input.drive.driver, ext)
-            .is_err()
+        if input.drive.head.flags & busbar_contract::abi::mechanism::call::FLAG_RESUME != 0 {
+            state.resumes += 1;
+        }
+        if state.defect != Defect::Session
+            && state
+                .retirement
+                .begin(input.drive.head.host, input.drive.driver, ext)
+                .is_err()
         {
             return RawOutcome::of(Outcome::Fault);
         }
@@ -160,13 +174,15 @@ extern "C" fn drive(
             {
                 Poll::Ready(Ok(Some(bytes))) if bytes == b"completed" => {
                     state.completed = true;
-                    if state
-                        .retirement
-                        .consumed(Handle {
-                            domain: Domain::Host,
-                            seq: 0,
-                        })
-                        .is_err()
+                    state.notify = true;
+                    if state.defect != Defect::Session
+                        && state
+                            .retirement
+                            .consumed(Handle {
+                                domain: Domain::Host,
+                                seq: 0,
+                            })
+                            .is_err()
                     {
                         return RawOutcome::of(Outcome::Fault);
                     }
@@ -174,7 +190,7 @@ extern "C" fn drive(
                 Poll::Pending
                     if matches!(
                         state.defect,
-                        Defect::PendingOverflow | Defect::PendingNeeded
+                        Defect::PendingOverflow | Defect::PendingNeeded | Defect::Session
                     ) =>
                 {
                     service_pending = true
@@ -194,7 +210,7 @@ extern "C" fn drive(
                 ack.capability.nonce += 1;
             }
         }
-        if state.defect == Defect::Cancel {
+        if matches!(state.defect, Defect::Cancel | Defect::Session) {
             ack = None;
         }
         let bytes = ack
@@ -212,7 +228,7 @@ extern "C" fn drive(
         state.next_lease -= 1;
         output.head.extensions = Blob::ZERO;
         output.head.error = busbar_contract::abi::mechanism::call::AbiStr::ZERO;
-        if state.retirement.queued() && state.defect != Defect::Cancel {
+        if state.retirement.queued() && !matches!(state.defect, Defect::Cancel | Defect::Session) {
             output.head.extensions = Blob {
                 ptr: bytes.as_ptr(),
                 len: bytes.len(),
@@ -239,6 +255,17 @@ extern "C" fn drive(
         } else {
             0
         };
+        if state.defect == Defect::Session && state.notify {
+            if input.sessions_cap == 0 || input.sessions_buf.is_null() {
+                return RawOutcome::of(Outcome::Fault);
+            }
+            // SAFETY: the actual host DRIVE frame lends sessions_cap initialized writable IDs.
+            unsafe {
+                input.sessions_buf.write(5);
+            }
+            output.sessions_written = 1;
+            state.notify = false;
+        }
         state.leases.insert(lease, bytes);
         RawOutcome::of(outcome)
     })
@@ -298,6 +325,11 @@ extern "C" fn cancel(
         let state = all
             .get_mut(&input.cancel.head.host.handle)
             .expect("bound actual MCP instance");
+        if state.defect == Defect::Session {
+            output.cancel.head.outcome = RawOutcome::of(Outcome::Ready);
+            output.cancel.disposition = busbar_contract::abi::plane::CANCEL_ABORTED;
+            return RawOutcome::of(Outcome::Ready);
+        }
         let ack = state
             .retirement
             .acknowledgement(0)
@@ -381,7 +413,212 @@ struct Provider {
     defer: bool,
     waiting: Mutex<Vec<busbar_contract::services::Later>>,
 }
-impl crate::services_double::ServicesDouble for Arc<Provider> {
+impl busbar_contract::services::HostServices for Provider {
+    fn now(&self) -> Reading {
+        let wall_ns = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+            .min(u128::from(u64::MAX)) as u64;
+        static ORIGIN: OnceLock<Instant> = OnceLock::new();
+        let mono_ns = ORIGIN
+            .get_or_init(Instant::now)
+            .elapsed()
+            .as_nanos()
+            .min(u128::from(u64::MAX)) as u64;
+        Reading { wall_ns, mono_ns }
+    }
+    fn dest_judge(&self, _dest: &str, _class: u32, _flags: u32, _later: Option<Later>) -> Ran {
+        Ran::Now(Stored::refused(
+            "not served by this completion-ACK boundary control",
+        ))
+    }
+    fn records_list(&self, _caller: &Caller, _list: RecordsList, _later: Later) -> Ran {
+        Ran::Now(Stored::refused(
+            "not served by this completion-ACK boundary control",
+        ))
+    }
+    fn records_claim(
+        &self,
+        _caller: &Caller,
+        _kind: &str,
+        _key: &[u8],
+        _ttl_ms: u64,
+        _later: Later,
+    ) -> Ran {
+        Ran::Now(Stored::refused(
+            "not served by this completion-ACK boundary control",
+        ))
+    }
+    fn sign(&self, _caller: &Caller, _data: &[u8]) -> Stored {
+        Stored::refused("not served by this completion-ACK boundary control")
+    }
+    fn trust_sight(
+        &self,
+        _caller: &Caller,
+        _counterparty: &str,
+        _hash: &str,
+        _later: Later,
+    ) -> Ran {
+        Ran::Now(Stored::refused(
+            "not served by this completion-ACK boundary control",
+        ))
+    }
+    fn trust_unreached(&self, _caller: &Caller, _counterparty: &str) -> Stored {
+        Stored::refused("not served by this completion-ACK boundary control")
+    }
+    fn trust_sight_item(
+        &self,
+        _caller: &Caller,
+        _counterparty: &str,
+        _item: &str,
+        _digest: &str,
+    ) -> Stored {
+        Stored::refused("not served by this completion-ACK boundary control")
+    }
+    fn trust_decide(
+        &self,
+        _caller: &Caller,
+        _key: TrustKeyRef<'_>,
+        _expected: Option<&str>,
+        _approve: bool,
+    ) -> Stored {
+        Stored::refused("not served by this completion-ACK boundary control")
+    }
+    fn trust_state(&self, _caller: &Caller, _counterparty: &str) -> Stored {
+        Stored::refused("not served by this completion-ACK boundary control")
+    }
+    fn trust_serves(
+        &self,
+        _caller: &Caller,
+        _counterparty: &str,
+        _item: Option<&str>,
+        _digest: Option<&str>,
+    ) -> Stored {
+        Stored::refused("not served by this completion-ACK boundary control")
+    }
+    fn trust_due(&self, _caller: &Caller) -> Stored {
+        Stored::refused("not served by this completion-ACK boundary control")
+    }
+    fn trust_verify(
+        &self,
+        _caller: &Caller,
+        _counterparty: &str,
+        _payload: &[u8],
+        _signatures: &[u8],
+    ) -> Stored {
+        Stored::refused("not served by this completion-ACK boundary control")
+    }
+    fn entitlement_check(&self, _caller: &Caller, _unit: Option<u64>, _target: &str) -> Stored {
+        Stored::refused("not served by this completion-ACK boundary control")
+    }
+    fn session_emit(&self, _caller: &Caller, _session: u64, _bytes: &[u8]) -> Stored {
+        Stored::refused("not served by this completion-ACK boundary control")
+    }
+    fn ticket_mint(
+        &self,
+        _caller: &Caller,
+        _unit: Option<u64>,
+        _ttl_secs: u64,
+        _record: &[u8],
+    ) -> Stored {
+        Stored::refused("not served by this completion-ACK boundary control")
+    }
+    fn ticket_take(&self, _caller: &Caller, _unit: Option<u64>) -> Stored {
+        Stored::refused("not served by this completion-ACK boundary control")
+    }
+    fn random_fill(&self, _len: u64) -> Stored {
+        Stored::refused("not served by this completion-ACK boundary control")
+    }
+    fn records_secret(&self, _kind: &str, _id: &str, _later: Later) -> Ran {
+        Ran::Now(Stored::refused(
+            "not served by this completion-ACK boundary control",
+        ))
+    }
+    fn unit_nest(&self, _caller: &Caller, _unit: Option<u64>, _ask: NestAsk, _later: Later) -> Ran {
+        Ran::Now(Stored::refused(
+            "not served by this completion-ACK boundary control",
+        ))
+    }
+    fn work_open(
+        &self,
+        _caller: &Caller,
+        _unit: Option<u64>,
+        _kind: &str,
+        _record: &[u8],
+        _later: Later,
+    ) -> Ran {
+        Ran::Now(Stored::refused(
+            "not served by this completion-ACK boundary control",
+        ))
+    }
+    fn work_find(
+        &self,
+        _caller: &Caller,
+        _unit: Option<u64>,
+        _reference: &[u8],
+        _later: Later,
+    ) -> Ran {
+        Ran::Now(Stored::refused(
+            "not served by this completion-ACK boundary control",
+        ))
+    }
+    fn work_settle(
+        &self,
+        _caller: &Caller,
+        _unit: Option<u64>,
+        _handle: u64,
+        _record: &[u8],
+        _later: Later,
+    ) -> Ran {
+        Ran::Now(Stored::refused(
+            "not served by this completion-ACK boundary control",
+        ))
+    }
+    fn work_resume(
+        &self,
+        _caller: &Caller,
+        _unit: Option<u64>,
+        _handle: u64,
+        _later: Later,
+    ) -> Ran {
+        Ran::Now(Stored::refused(
+            "not served by this completion-ACK boundary control",
+        ))
+    }
+    fn disk_append(&self, _dest: &DiskDest, _bytes: Vec<u8>, _later: Later) -> Ran {
+        Ran::Now(Stored::refused(
+            "not served by this completion-ACK boundary control",
+        ))
+    }
+    fn verify_lookup(&self, _caller: &Caller, _key: &[u8], _later: Later) -> Ran {
+        Ran::Now(Stored::refused(
+            "not served by this completion-ACK boundary control",
+        ))
+    }
+    fn verify_store(&self, _caller: &Caller, _key: &[u8], _entry: &[u8], _ttl_ms: u64) -> Stored {
+        Stored::refused("not served by this completion-ACK boundary control")
+    }
+    fn content_scan(
+        &self,
+        _caller: &Caller,
+        _unit: Option<u64>,
+        _content: &[u8],
+        _later: Later,
+    ) -> Ran {
+        Ran::Now(Stored::refused(
+            "not served by this completion-ACK boundary control",
+        ))
+    }
+    fn hook_call(&self, _caller: &Caller, _unit: Option<u64>, _ask: HookAsk, _later: Later) -> Ran {
+        Ran::Now(Stored::refused(
+            "not served by this completion-ACK boundary control",
+        ))
+    }
+    fn snapshot_read(&self, _caller: &Caller, _scope: u32) -> Snapshot {
+        Snapshot::Refused("not served by this completion-ACK boundary control")
+    }
+
     fn records_get(
         &self,
         _: &busbar_contract::services::Caller,
@@ -432,10 +669,7 @@ fn automatic_driver_checks_ack_before_releasing_its_answer_lease() {
             defer: matches!(defect, Defect::PendingOverflow | Defect::PendingNeeded),
             ..Provider::default()
         });
-        let dispatcher = Dispatcher::with_services(
-            DispatchConfig::default(),
-            Arc::new(crate::services_double::Double(provider.clone())),
-        );
+        let dispatcher = Dispatcher::with_services(DispatchConfig::default(), provider.clone());
         let row = LinkedRow::of(door).expect("actual MCP descriptor plus hostile ABI metadata");
         let plugin = load_linked::<Plane>(
             &row,
@@ -508,10 +742,7 @@ fn canceling_an_actual_pending_crossing_cannot_ack_its_drivers_result() {
     use busbar_contract::abi::plane::{slot, FROM_CALLER};
     NEXT.store(Defect::Cancel as u8, SeqCst);
     let provider = Arc::<Provider>::default();
-    let dispatcher = Dispatcher::with_services(
-        DispatchConfig::default(),
-        Arc::new(crate::services_double::Double(provider.clone())),
-    );
+    let dispatcher = Dispatcher::with_services(DispatchConfig::default(), provider.clone());
     let plugin = load_linked::<Plane>(
         &LinkedRow::of(door).unwrap(),
         Bind {
@@ -573,6 +804,162 @@ fn canceling_an_actual_pending_crossing_cannot_ack_its_drivers_result() {
     assert_eq!(provider.calls.load(SeqCst), 1);
     dispatcher.recycle(session);
     dispatcher.recycle(driver);
+    drop(plugin);
+    drop(dispatcher);
+    until(|| !states().lock().unwrap().contains_key(&host));
+}
+
+#[test]
+fn a_pending_driver_delivers_ids_resumes_and_retires_late_service_custody() {
+    use crate::dispatch::{in_head, out_head, Frame};
+    use busbar_contract::abi::mechanism::call::DeadlineClass;
+    use busbar_contract::abi::mechanism::lifecycle::{slot as life, TickIn, TickOut};
+    use busbar_contract::abi::plane::{slot, CANCEL_ABORTED, FROM_CALLER};
+    let _serial = TEST_LOCK.lock().unwrap();
+    NEXT.store(Defect::Session as u8, SeqCst);
+    let provider = Arc::new(Provider {
+        defer: true,
+        ..Provider::default()
+    });
+    let dispatcher = Dispatcher::with_services(DispatchConfig::default(), provider.clone());
+    let plugin = load_linked::<Plane>(
+        &LinkedRow::of(door).unwrap(),
+        Bind {
+            instance: "pending-driver-service".into(),
+            max_inflight_cap: 8,
+            sink: Arc::new(NoSink),
+            dispatcher: dispatcher.adopter(),
+            conns: ConnTable::Probe,
+        },
+    )
+    .unwrap();
+    open_door(&plugin, b"{}", b"{}", None).unwrap();
+    let host = plugin.inner.ctx().handle;
+    let driver = dispatcher.driver(&plugin, 0).unwrap();
+    crate::dispatch::ticket::host_wake(plugin.inner.ctx(), driver);
+    until(|| {
+        plugin.inner.driven.answers() == 1
+            && states()
+                .lock()
+                .unwrap()
+                .get(&host)
+                .is_some_and(|s| s.releases == 1)
+    });
+    assert_eq!(plugin.inner.driven.drain(), vec![5]);
+    assert_eq!(dispatcher.services().held.held(driver), 1);
+    assert_eq!(dispatcher.services().held(), 1);
+    crate::dispatch::ticket::host_wake(plugin.inner.ctx(), driver);
+    until(|| {
+        plugin.inner.driven.answers() == 2
+            && states()
+                .lock()
+                .unwrap()
+                .get(&host)
+                .is_some_and(|s| s.releases == 2)
+    });
+    assert!(plugin.inner.driven.drain().is_empty());
+    assert_eq!(states().lock().unwrap().get(&host).unwrap().resumes, 1);
+    assert_eq!(provider.calls.load(SeqCst), 1);
+    assert_eq!(dispatcher.services().held.held(driver), 1);
+    let completed = || {
+        let mut result = crate::dispatch::Stored::ready(busbar_contract::abi::host::service::FOUND);
+        result.bytes = b"completed".to_vec();
+        result
+            .spans
+            .push(busbar_contract::abi::host::service::ItemSpan {
+                key: busbar_contract::abi::mechanism::call::Span::ZERO,
+                value: busbar_contract::abi::mechanism::call::Span { offset: 0, len: 9 },
+            });
+        result
+    };
+    provider.waiting.lock().unwrap().pop().unwrap()(completed());
+    assert_eq!(
+        plugin
+            .inner
+            .driven
+            .answered_after(2, Duration::from_secs(5)),
+        Some(Outcome::Ready)
+    );
+    until(|| {
+        states()
+            .lock()
+            .unwrap()
+            .get(&host)
+            .is_some_and(|s| s.releases == 3)
+    });
+    assert_eq!(plugin.inner.driven.drain(), vec![5]);
+    assert_eq!(dispatcher.services().held.held(driver), 0);
+    assert_eq!(dispatcher.services().held(), 0);
+    states().lock().unwrap().get_mut(&host).unwrap().completed = false;
+    crate::dispatch::ticket::host_wake(plugin.inner.ctx(), driver);
+    until(|| {
+        plugin.inner.driven.answers() == 4
+            && states()
+                .lock()
+                .unwrap()
+                .get(&host)
+                .is_some_and(|s| s.releases == 4)
+    });
+    assert_eq!(provider.calls.load(SeqCst), 2);
+    assert!(plugin.inner.driven.drain().is_empty());
+    let session = dispatcher.mint(0).unwrap();
+    // SAFETY: these ABI frames consist of zero-valid integers and pointer/length pairs.
+    let (mut input, mut output): (OnPieceIn, OnPieceOut) =
+        unsafe { (std::mem::zeroed(), std::mem::zeroed()) };
+    input.head = in_head();
+    input.from = FROM_CALLER;
+    input.stream = 5;
+    output.head = out_head();
+    let reply = dispatcher.submit(
+        &plugin,
+        session,
+        slot::ON_PIECE,
+        Frame::new(input, output),
+        DeadlineClass::Call,
+        0,
+    );
+    until(|| dispatcher.is_pending(session));
+    dispatcher.drop_client(session);
+    let canceled = reply.wait(Duration::from_secs(5)).unwrap();
+    assert_eq!(canceled.disposition, Some(CANCEL_ABORTED));
+    dispatcher.recycle(session);
+    let late = provider.waiting.lock().unwrap().pop().unwrap();
+    dispatcher.recycle(driver);
+    let barrier = dispatcher.mint(0).unwrap();
+    let tick = || {
+        Frame::new(
+            TickIn {
+                head: in_head(),
+                now_ns: 0,
+            },
+            TickOut {
+                head: out_head(),
+                next_tick_ns: 0,
+            },
+        )
+    };
+    assert_eq!(
+        dispatcher
+            .submit(&plugin, barrier, life::TICK, tick(), DeadlineClass::Call, 0)
+            .wait(Duration::from_secs(5))
+            .unwrap()
+            .outcome,
+        Outcome::Ready
+    );
+    assert_eq!(dispatcher.services().held(), 0);
+    assert_eq!(dispatcher.services().held.held(driver), 0);
+    late(completed());
+    assert_eq!(
+        dispatcher
+            .submit(&plugin, barrier, life::TICK, tick(), DeadlineClass::Call, 0)
+            .wait(Duration::from_secs(5))
+            .unwrap()
+            .outcome,
+        Outcome::Ready
+    );
+    assert_eq!(plugin.inner.driven.answers(), 4);
+    assert!(plugin.inner.driven.drain().is_empty());
+    dispatcher.recycle(barrier);
     drop(plugin);
     drop(dispatcher);
     until(|| !states().lock().unwrap().contains_key(&host));
