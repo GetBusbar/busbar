@@ -133,7 +133,20 @@ fn boot_builds_a_pool_of_nine_unbounded_lanes_without_overflowing_its_banner() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
-    limits.keep().expect("the product limits commit");
+    limits.stage_boot();
+    let calls = app
+        .governance
+        .as_ref()
+        .expect("actual governance")
+        .store_calls()
+        .expect("actual Store calls");
+    crate::root::kernel::ROOT_CARD.keep_in_store(calls, 107);
+    crate::root::kernel::ROOT_CARD
+        .boot_in_store(None)
+        .expect("the actual card history boots");
+    limits
+        .keep()
+        .expect("the booted actual rates and limits commit");
     if let Some(rotate) = rotate {
         rotate();
     }
