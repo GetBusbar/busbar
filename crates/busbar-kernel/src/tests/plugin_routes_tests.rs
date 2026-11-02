@@ -744,3 +744,34 @@ fn paths_awaiting_restart_flags_only_newly_declared_unmounted_paths() {
     // later edit does not re-flag it.
     assert!(paths_awaiting_restart(&metrics, &metrics, &boot(&[])).is_empty());
 }
+
+/// The outbound allocation stays live through HTTP data-chunk clones, then wipes on either
+/// successful consumption or an abandoned response. Observe only its initialized owned slice.
+#[tokio::test]
+async fn response_body_wipes_when_the_last_http_chunk_retires_or_is_abandoned() {
+    use http_body_util::BodyExt;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    for consume in [false, true] {
+        let payload = b"private-outbound-metric-label".to_vec();
+        let at = payload.as_ptr();
+        let retired = Arc::new(AtomicBool::new(false));
+        let mut owner = ResponseBytes::new(payload);
+        owner.retired = Some(retired.clone());
+        let mut body = Body::from(Bytes::from_owner(owner));
+        if consume {
+            let frame = body.frame().await.unwrap().unwrap();
+            let chunk = frame.into_data().unwrap();
+            assert_eq!(chunk.as_ptr(), at, "relay preserves the guarded allocation");
+            assert_eq!(&chunk[..], b"private-outbound-metric-label");
+            let last = chunk.clone();
+            drop(chunk);
+            drop(body);
+            assert!(!retired.load(Ordering::SeqCst));
+            drop(last);
+        } else {
+            drop(body);
+        }
+        assert!(retired.load(Ordering::SeqCst), "live body retired unwiped");
+    }
+}
