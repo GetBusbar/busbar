@@ -136,6 +136,62 @@ pub fn from_journal_body(
     decode(&mut r, class).map(Some)
 }
 
+/// The independently retained head fields of one journalled audit record.
+/// This copies the published claim; full body/digest verification remains the audit verifier's job.
+pub struct JournalHead {
+    pub head: crate::heads::SignedHead,
+    pub prev_hash: String,
+    pub node: u64,
+}
+
+/// Read audit head metadata without resolving the historical plane's meter vocabulary.
+/// Skipped identity/destination fields are borrowed, never copied into new private buffers.
+///
+/// # Errors
+/// An audit prefix is truncated or its recipe is unknown. Non-audit bodies answer `None`.
+pub fn head_from_journal_body(bytes: &[u8]) -> Result<Option<JournalHead>, String> {
+    let mut r = Reader { bytes, at: 0 };
+    if r.text().as_deref() != Some(JOURNAL_TAG) {
+        return Ok(None);
+    }
+    let bad = || "an audit head prefix does not decode".to_string();
+    match r.text().as_deref().ok_or_else(bad)? {
+        crate::recipe::DIGEST_RECIPE => {}
+        crate::recipe::DIGEST_RECIPE_V2 => {
+            r.skip_text().ok_or_else(bad)?;
+        }
+        _ => return Err("an audit head names an unknown recipe".into()),
+    }
+    let seq = r.num().ok_or_else(bad)?;
+    let prev_hash = r.text().ok_or_else(bad)?;
+    let hash = r.text().ok_or_else(bad)?;
+    let signature = r.opt_text().ok_or_else(bad)?;
+    let key_id = r.opt_text().ok_or_else(bad)?;
+    r.skip_text().ok_or_else(bad)?; // subject tag
+    r.skip_text().ok_or_else(bad)?; // subject identifier
+    r.num().ok_or_else(bad)?; // unit key
+    r.num().ok_or_else(bad)?; // boot incarnation
+    r.skip_text().ok_or_else(bad)?; // operation class
+    r.skip_opt_text().ok_or_else(bad)?; // destination
+    r.opt_num().ok_or_else(bad)?; // parent
+    r.skip_opt_text().ok_or_else(bad)?; // pre-hook head
+    r.skip_opt_text().ok_or_else(bad)?; // post-hook head
+    let wall = r.num().ok_or_else(bad)?;
+    r.num().ok_or_else(bad)?; // monotonic clock
+    let node = r.num().ok_or_else(bad)?;
+    Ok(Some(JournalHead {
+        head: crate::heads::SignedHead {
+            seq,
+            hash,
+            signature,
+            key_id,
+            wall,
+        },
+        prev_hash,
+        node,
+    }))
+}
+
 fn decode(
     r: &mut Reader<'_>,
     class: &dyn Fn(&str) -> Option<MeterClassId>,
@@ -515,6 +571,20 @@ impl Reader<'_> {
     fn text(&mut self) -> Option<String> {
         let len = u32::from_be_bytes(self.take(4)?.try_into().ok()?) as usize;
         String::from_utf8(self.take(len)?.to_vec()).ok()
+    }
+
+    fn skip_text(&mut self) -> Option<()> {
+        let len = u32::from_be_bytes(self.take(4)?.try_into().ok()?) as usize;
+        std::str::from_utf8(self.take(len)?).ok()?;
+        Some(())
+    }
+
+    fn skip_opt_text(&mut self) -> Option<()> {
+        match self.num()? {
+            0 => Some(()),
+            1 => self.skip_text(),
+            _ => None,
+        }
     }
 
     fn opt_text(&mut self) -> Option<Option<String>> {

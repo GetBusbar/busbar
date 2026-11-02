@@ -482,3 +482,55 @@ fn host_lease_takeover_between_predicate_and_final_transaction_blocks_the_old_he
     );
     assert_ne!(lease_row(&slots, HOST).unwrap().0, old_holder);
 }
+
+/// A historical usage class can disappear from today's registry without changing a sealed
+/// signature. Retaining its head must not require decoding that opaque historical usage payload.
+#[test]
+fn historical_usage_class_absent_from_current_registry_keeps_its_signed_head() {
+    let mut sealed = Sealed::new();
+    let mut inputs = super::super::audit::tests::inputs(1);
+    inputs.usage.lines.push(busbar_kernel_audit::UsageLine {
+        class: busbar_contract::MeterClassId::new("unregistered-retained-head-class"),
+        quantity: 1,
+        source: busbar_kernel_audit::QuantitySource::Count,
+        estimated: false,
+    });
+    let audit = sealed
+        .audit
+        .seal(inputs, &busbar_kernel::test_support::tokens::pass());
+    let expected = SignedHead::of(&audit);
+    assert!(expected.signature.is_some());
+    let record = sealed.append(super::super::audit_entry(&audit).unwrap());
+    assert!(
+        super::super::decode_audit(&record).is_err(),
+        "the complete typed parser must actually reject the missing historical class"
+    );
+
+    let slots = RecordSlots::new();
+    let raw = raw(&record);
+    super::super::store_chain::put_record(&slots, &HeldLease::default(), &raw).unwrap();
+    assert_eq!(
+        super::super::store_chain::read_chain(&slots, NODE).unwrap(),
+        vec![raw],
+        "the original multipart journal bytes must remain intact"
+    );
+    assert_eq!(
+        load(&slots, NODE).unwrap().unwrap().anchors(),
+        vec![expected.clone()]
+    );
+
+    // Migration sees the same real journal records, with no existing independent-head schema.
+    // The typed record's read finding stays valid; backfilling its signed head is a separate seam.
+    let migrated = RecordSlots::new();
+    assert_eq!(
+        initialize(&migrated, NODE, &sealed.records)
+            .unwrap()
+            .anchors(),
+        vec![expected.clone()]
+    );
+    drop(sealed);
+    assert_eq!(
+        load(&migrated, NODE).unwrap().unwrap().anchors(),
+        vec![expected]
+    );
+}

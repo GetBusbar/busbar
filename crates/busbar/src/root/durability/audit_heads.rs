@@ -203,38 +203,68 @@ pub(super) fn initialize_fenced(
     records: &[JournalRecord],
     lease: &HeldLease,
 ) -> Result<HeadHistory, String> {
-    let sealed = records
-        .iter()
-        .map(super::decode_audit)
-        .filter_map(Result::transpose)
-        .collect::<Result<Vec<_>, _>>()?;
-    let chain = busbar_kernel_audit::AuditChain::resume(&sealed);
+    let mut observed = Vec::new();
+    for record in records {
+        if record.class != busbar_kernel_wal::RecordClass::Transaction {
+            continue;
+        }
+        if let Some(head) = busbar_kernel_audit::journal::head_from_journal_body(&record.body)? {
+            if head.node != node || record.node != node {
+                return Err("audit and journal node identities disagree".into());
+            }
+            Head::from(head.head.clone()).validate()?;
+            if let Some(last) = observed.last() {
+                let last: &busbar_kernel_audit::journal::JournalHead = last;
+                if last.head.seq.checked_add(1) != Some(head.head.seq)
+                    || last.head.hash != head.prev_hash
+                {
+                    return Err("audit head metadata has a broken link".into());
+                }
+            }
+            observed.push(head);
+        }
+    }
     if let Some(history) = load(calls, node)? {
-        busbar_kernel_audit::AuditChain::verify_window(&sealed).map_err(|e| e.to_string())?;
         let anchors = history.anchors();
         let by_seq: std::collections::BTreeMap<_, _> =
             anchors.iter().map(|head| (head.seq, head)).collect();
-        for record in &sealed {
-            if let Some(&head) = by_seq.get(&record.seq) {
-                if head != &SignedHead::of(record) {
-                    return Err("retained audit sample contradicts its journal record".into());
-                }
+        for record in &observed {
+            if by_seq
+                .get(&record.head.seq)
+                .is_some_and(|head| **head != record.head)
+            {
+                return Err("retained audit sample contradicts its journal record".into());
             }
         }
-        chain
-            .retaining_heads(history.clone())
-            .map_err(str::to_string)?;
+        if let Some(last) = observed.last() {
+            if history.tip().is_none_or(|tip| {
+                last.head.seq > tip.seq || last.head.seq == tip.seq && last.head != *tip
+            }) {
+                return Err("retained audit head disagrees with the journal".into());
+            }
+        }
         return Ok(history);
     }
-    // An old deployment can only be backfilled from its complete, verified source chain.
-    busbar_kernel_audit::AuditChain::verify_chain(&sealed).map_err(|e| e.to_string())?;
-    let expected: Vec<Head> = chain
-        .heads()
-        .series()
-        .iter()
-        .cloned()
-        .map(Head::from)
-        .collect();
+    if observed
+        .first()
+        .is_some_and(|first| first.head.seq != 1 || !first.prev_hash.is_empty())
+    {
+        return Err("an audit backfill requires its complete source chain".into());
+    }
+    let mut expected: Vec<Head> = Vec::new();
+    for record in &observed {
+        if expected
+            .last()
+            .is_none_or(|last| record.head.wall.saturating_sub(last.wall) >= HEAD_SAMPLE_SECONDS)
+        {
+            expected.push(record.head.clone().into());
+        }
+    }
+    let history = HeadHistory::from_retained(
+        expected.iter().map(Head::signed).collect(),
+        observed.last().map(|r| r.head.clone()),
+    )
+    .map_err(str::to_string)?;
     let present = samples(calls, node)?;
     if !expected.starts_with(&present) {
         return Err("an incomplete audit backfill contradicts its journal".into());
@@ -248,7 +278,7 @@ pub(super) fn initialize_fenced(
             encode(head)?,
         )?;
     }
-    if let Some(tip) = chain.heads().tip() {
+    if let Some(tip) = history.tip() {
         let checkpoint = Checkpoint {
             version: 1,
             tip: tip.clone().into(),
@@ -264,7 +294,7 @@ pub(super) fn initialize_fenced(
         };
         backfill_put(calls, node, lease, tip_key(node), encode(&checkpoint)?)?;
     }
-    Ok(chain.heads().clone())
+    Ok(history)
 }
 
 fn backfill_put(
@@ -337,7 +367,10 @@ pub(super) fn prepare(calls: &dyn StoreCalls, record: &Record) -> Result<Write, 
     let Ok(decoded) = JournalRecord::decode(&record.body) else {
         return Ok(Write::Ordinary);
     };
-    let Some(audit) = super::decode_audit(&decoded)? else {
+    if decoded.class != busbar_kernel_wal::RecordClass::Transaction {
+        return Ok(Write::Ordinary);
+    }
+    let Some(audit) = busbar_kernel_audit::journal::head_from_journal_body(&decoded.body)? else {
         return Ok(Write::Ordinary);
     };
     if decoded.node != record.node
@@ -346,11 +379,8 @@ pub(super) fn prepare(calls: &dyn StoreCalls, record: &Record) -> Result<Write, 
     {
         return Err("audit and journal node identities disagree".into());
     }
-    let head = Head::from(SignedHead::of(&audit));
+    let head = Head::from(audit.head);
     head.validate()?;
-    if busbar_kernel_audit::AuditChain::digest_of(&audit) != audit.hash {
-        return Err("the audit record digest does not verify".into());
-    }
     let (previous, last_sample, count) = match checkpoint(calls, record.node)? {
         Some((old, raw)) => {
             if old.tip == head {
