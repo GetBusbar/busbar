@@ -35,8 +35,6 @@ impl busbar_contract::transport::wire::ConnectionSecurity for HelloWrap {
     }
 }
 
-use busbar_kernel_testkit::limits::LIMITS_TEST_LOCK;
-
 #[test]
 fn accept_backoff_spins_only_on_per_connection_transients() {
     use std::io::{Error, ErrorKind};
@@ -159,15 +157,23 @@ async fn plain_http_still_works_without_tls() {
 
 #[tokio::test]
 async fn body_read_timeout_trips_on_stalled_body() {
+    let name = concat!(module_path!(), "::body_read_timeout_trips_on_stalled_body");
+    if std::env::var("BUSBAR_LISTENER_LIMITS_CHILD").as_deref() != Ok(name) {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name.split_once("::").unwrap().1])
+            .env("BUSBAR_LISTENER_LIMITS_CHILD", name)
+            .status()
+            .expect("run the listener limits case in a fresh process");
+        assert!(status.success(), "the isolated listener limits case passes");
+        return;
+    }
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    let _guard = LIMITS_TEST_LOCK.lock().await;
 
     let limits = busbar_kernel::config::LimitsResolved {
         request_body_read_timeout_secs: 1,
         ..busbar_kernel::config::LimitsResolved::default()
     };
-    let _limits_guard = busbar_kernel_testkit::limits::InstallGuard::install(&limits);
+    busbar_kernel::config::limits::publish(&limits);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -210,20 +216,71 @@ async fn body_read_timeout_trips_on_stalled_body() {
 
 #[tokio::test]
 async fn a_rejected_configs_limits_do_not_govern_later_connections() {
+    let name = concat!(
+        module_path!(),
+        "::a_rejected_configs_limits_do_not_govern_later_connections"
+    );
+    if std::env::var("BUSBAR_LISTENER_LIMITS_CHILD").as_deref() != Ok(name) {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name.split_once("::").unwrap().1])
+            .env("BUSBAR_LISTENER_LIMITS_CHILD", name)
+            .status()
+            .expect("run the listener limits case in a fresh process");
+        assert!(status.success(), "the isolated listener limits case passes");
+        return;
+    }
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    let _guard = LIMITS_TEST_LOCK.lock().await;
-
-    let _baseline = busbar_kernel_testkit::limits::InstallGuard::install(
-        &busbar_kernel::config::LimitsResolved::default(),
-    );
+    crate::dist_root_install::install();
+    let store_module = crate::LINKED
+        .stores
+        .iter()
+        .find(|store| store.1)
+        .expect("the distribution links its real ephemeral product store")
+        .0;
+    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+        "providers": {},
+        "models": {},
+        "store": { "module": store_module },
+        "auth": { "chain": [], "admin_auth": [] },
+    }))
+    .expect("the production deployment parses");
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the production deployment resolves");
+    let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
+        as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (baseline, rotate, installed) = busbar_kernel::build_app_from_config(
+        config,
+        Default::default(),
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+    )
+    .expect("the actual product builds the baseline app with its real ABI store");
+    installed.keep().expect("the baseline limits activate");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
     {
-        let _rejected = busbar_kernel_testkit::limits::InstallGuard::install(
-            &busbar_kernel::config::LimitsResolved {
-                request_body_read_timeout_secs: 1,
-                ..busbar_kernel::config::LimitsResolved::default()
-            },
-        );
+        let mut candidate = busbar_kernel::config::resolve(&deploy, &Default::default())
+            .expect("the candidate production deployment resolves");
+        candidate.limits.request_body_read_timeout_secs = 1;
+        let candidate_limits = candidate.limits.clone();
+        let (_candidate, _rotate, _rejected) = busbar_kernel::build_app_from_config(
+            candidate,
+            Default::default(),
+            None,
+            Default::default(),
+            Default::default(),
+            (None, None),
+            Some(&baseline),
+            &rules,
+        )
+        .expect("the actual product stages the candidate against the existing app and store");
+        let _scope = busbar_kernel::config::limits::BuildScope::enter(&candidate_limits);
         assert_eq!(
             busbar_kernel::limits::request_body_read_timeout_secs(),
             1,
@@ -267,13 +324,22 @@ async fn a_rejected_configs_limits_do_not_govern_later_connections() {
 
 #[tokio::test]
 async fn throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch() {
+    let name = concat!(
+        module_path!(),
+        "::throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch"
+    );
+    if std::env::var("BUSBAR_LISTENER_LIMITS_CHILD").as_deref() != Ok(name) {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name.split_once("::").unwrap().1])
+            .env("BUSBAR_LISTENER_LIMITS_CHILD", name)
+            .status()
+            .expect("run the listener limits case in a fresh process");
+        assert!(status.success(), "the isolated listener limits case passes");
+        return;
+    }
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    let _guard = LIMITS_TEST_LOCK.lock().await;
-
-    let _limits_guard = busbar_kernel_testkit::limits::InstallGuard::install(
-        &busbar_kernel::config::LimitsResolved::default(),
-    );
+    busbar_kernel::config::limits::publish(&busbar_kernel::config::LimitsResolved::default());
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -340,13 +406,22 @@ async fn throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch(
 
 #[tokio::test]
 async fn a_fast_large_upload_is_not_killed_by_the_throughput_floor() {
+    let name = concat!(
+        module_path!(),
+        "::a_fast_large_upload_is_not_killed_by_the_throughput_floor"
+    );
+    if std::env::var("BUSBAR_LISTENER_LIMITS_CHILD").as_deref() != Ok(name) {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name.split_once("::").unwrap().1])
+            .env("BUSBAR_LISTENER_LIMITS_CHILD", name)
+            .status()
+            .expect("run the listener limits case in a fresh process");
+        assert!(status.success(), "the isolated listener limits case passes");
+        return;
+    }
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    let _guard = LIMITS_TEST_LOCK.lock().await;
-
-    let _limits_guard = busbar_kernel_testkit::limits::InstallGuard::install(
-        &busbar_kernel::config::LimitsResolved::default(),
-    );
+    busbar_kernel::config::limits::publish(&busbar_kernel::config::LimitsResolved::default());
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -409,15 +484,27 @@ async fn a_fast_large_upload_is_not_killed_by_the_throughput_floor() {
 
 #[tokio::test]
 async fn total_deadline_trips_on_a_body_that_stays_above_the_floor_forever() {
+    let name = concat!(
+        module_path!(),
+        "::total_deadline_trips_on_a_body_that_stays_above_the_floor_forever"
+    );
+    if std::env::var("BUSBAR_LISTENER_LIMITS_CHILD").as_deref() != Ok(name) {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name.split_once("::").unwrap().1])
+            .env("BUSBAR_LISTENER_LIMITS_CHILD", name)
+            .status()
+            .expect("run the listener limits case in a fresh process");
+        assert!(status.success(), "the isolated listener limits case passes");
+        return;
+    }
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    let _guard = LIMITS_TEST_LOCK.lock().await;
     let limits = busbar_kernel::config::LimitsResolved {
         request_body_max_bytes: 2048,
         ..busbar_kernel::config::LimitsResolved::default()
     };
 
-    let _limits_guard = busbar_kernel_testkit::limits::InstallGuard::install(&limits);
+    busbar_kernel::config::limits::publish(&limits);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -636,7 +723,19 @@ fn recv_side_from_std_failure_releases_the_sender_increment() {
 
 #[tokio::test]
 async fn server_posture_matches_the_1_5_5_defaults() {
-    let _guard = LIMITS_TEST_LOCK.lock().await;
+    let name = concat!(
+        module_path!(),
+        "::server_posture_matches_the_1_5_5_defaults"
+    );
+    if std::env::var("BUSBAR_LISTENER_LIMITS_CHILD").as_deref() != Ok(name) {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name.split_once("::").unwrap().1])
+            .env("BUSBAR_LISTENER_LIMITS_CHILD", name)
+            .status()
+            .expect("run the listener limits case in a fresh process");
+        assert!(status.success(), "the isolated listener limits case passes");
+        return;
+    }
 
     assert_eq!(
         busbar_kernel::limits::tls_handshake_timeout_secs(),
@@ -1028,13 +1127,25 @@ async fn an_oversize_body_sent_slowly_still_reads_its_413() {
 
 #[tokio::test]
 async fn a_stalled_tls_handshake_is_dropped_at_the_limit() {
+    let name = concat!(
+        module_path!(),
+        "::a_stalled_tls_handshake_is_dropped_at_the_limit"
+    );
+    if std::env::var("BUSBAR_LISTENER_LIMITS_CHILD").as_deref() != Ok(name) {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name.split_once("::").unwrap().1])
+            .env("BUSBAR_LISTENER_LIMITS_CHILD", name)
+            .status()
+            .expect("run the listener limits case in a fresh process");
+        assert!(status.success(), "the isolated listener limits case passes");
+        return;
+    }
     use tokio::io::AsyncReadExt;
-    let _guard = LIMITS_TEST_LOCK.lock().await;
     let limits = busbar_kernel::config::LimitsResolved {
         tls_handshake_timeout_secs: 2,
         ..busbar_kernel::config::LimitsResolved::default()
     };
-    let _limits_guard = busbar_kernel_testkit::limits::InstallGuard::install(&limits);
+    busbar_kernel::config::limits::publish(&limits);
 
     let (cert_pem, key_pem) = gen_self_signed();
     let tls = busbar_kernel::config::sections::TlsCfg {
@@ -1076,15 +1187,45 @@ async fn a_stalled_tls_handshake_is_dropped_at_the_limit() {
 
 #[test]
 fn a_refused_handshake_logs_at_debug_only() {
-    use busbar_kernel_testkit::test_support::warn_capture::WarnCapture;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tracing_subscriber::layer::SubscriberExt as _;
+    use tracing_subscriber::Layer as _;
 
-    let loud = WarnCapture::default();
-    let debug = WarnCapture::capturing_debug();
+    struct LogBytes(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for LogBytes {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .expect("captured log bytes")
+                .extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let loud = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    let debug = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    let loud_writer = loud.clone();
+    let debug_writer = debug.clone();
     let subscriber = tracing_subscriber::registry()
-        .with(loud.clone())
-        .with(debug.clone());
+        .with(
+            tracing_subscriber::fmt::layer()
+                .without_time()
+                .with_ansi(false)
+                .with_writer(move || LogBytes(loud_writer.clone()))
+                .with_filter(tracing_subscriber::filter::LevelFilter::WARN),
+        )
+        .with(
+            tracing_subscriber::fmt::layer()
+                .without_time()
+                .with_ansi(false)
+                .with_writer(move || LogBytes(debug_writer.clone()))
+                .with_filter(tracing_subscriber::filter::filter_fn(|metadata| {
+                    *metadata.level() == tracing::Level::DEBUG
+                })),
+        );
     let (srv_cert_pem, srv_key_pem) = gen_self_signed();
     let (ca_pem, _leaf_pem, _leaf_key_pem) = gen_ca_and_leaf(&["busbar-client"]);
     let tls = mutual(&srv_cert_pem, &srv_key_pem, &ca_pem);
@@ -1117,15 +1258,17 @@ fn a_refused_handshake_logs_at_debug_only() {
         });
     });
 
+    let loud = String::from_utf8(loud.lock().expect("warning log bytes").clone())
+        .expect("warning events format as UTF-8");
+    let debug = String::from_utf8(debug.lock().expect("debug log bytes").clone())
+        .expect("debug events format as UTF-8");
     assert!(
         debug.contains("handshake failed"),
-        "the refusal is logged at debug: {:?}",
-        debug.messages()
+        "the refusal is logged at debug: {debug:?}"
     );
     assert!(
         !loud.contains("handshake failed") && !loud.contains("handshake timed out"),
-        "a refused handshake is never logged at warn or error: {:?}",
-        loud.messages()
+        "a refused handshake is never logged at warn or error: {loud:?}"
     );
 
     let key_body: String = srv_key_pem
@@ -1133,7 +1276,7 @@ fn a_refused_handshake_logs_at_debug_only() {
         .filter(|l| !l.starts_with("-----"))
         .collect();
     assert!(
-        !debug.messages().iter().any(|m| m.contains(&key_body)),
+        !debug.lines().any(|m| m.contains(&key_body)),
         "a log line echoed the server key"
     );
 }
