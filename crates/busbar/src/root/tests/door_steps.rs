@@ -3946,6 +3946,20 @@ pub(crate) mod tool_door {
     struct ClaimsIn(Arc<Rows>, Arc<dyn busbar_contract::records::RecordStore>);
 
     impl busbar_kernel::host_records::RecordRows for ClaimsIn {
+        fn supports_record_transaction(&self) -> bool {
+            busbar_kernel::host_records::RecordRows::supports_record_transaction(&*self.0)
+        }
+
+        fn record_transaction(
+            &self,
+            request: &busbar_contract::abi::sdk::store::conditional::Request,
+        ) -> Result<
+            busbar_contract::abi::sdk::store::conditional::Decision,
+            busbar_contract::store_calls::StoreFailure,
+        > {
+            busbar_kernel::host_records::RecordRows::record_transaction(&*self.0, request)
+        }
+
         fn claim(
             &self,
             kind: &str,
@@ -4010,6 +4024,25 @@ pub(crate) mod tool_door {
     }
 
     impl busbar_kernel::host_records::RecordRows for Rows {
+        fn supports_record_transaction(&self) -> bool {
+            busbar_kernel::host_records::RecordRows::supports_record_transaction(&StoreRows(
+                self.0.clone(),
+            ))
+        }
+
+        fn record_transaction(
+            &self,
+            request: &busbar_contract::abi::sdk::store::conditional::Request,
+        ) -> Result<
+            busbar_contract::abi::sdk::store::conditional::Decision,
+            busbar_contract::store_calls::StoreFailure,
+        > {
+            busbar_kernel::host_records::RecordRows::record_transaction(
+                &StoreRows(self.0.clone()),
+                request,
+            )
+        }
+
         fn claim(
             &self,
             kind: &str,
