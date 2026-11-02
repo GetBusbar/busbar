@@ -355,6 +355,12 @@ fn build_info_line_format_is_locked() {
         "target=",
         "target-cpu=",
         "target-features=",
+        "codegen-units=",
+        "receipt=",
+        "package=",
+        "manifest=",
+        "source-commit=",
+        "source-clean=",
     ] {
         assert!(
             line.contains(key),

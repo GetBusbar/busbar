@@ -128,7 +128,8 @@ with `config.overlay.file: /var/lib/busbar/busbar-overlay.json` in your `config.
 **Or build from source** (requires Rust 1.97+):
 
 ```bash
-cargo build --release      # binary at target/release/busbar
+cargo build --release --locked --manifest-path dist/default/Cargo.toml --target-dir target
+# assembled binary at target/release/busbar
 ```
 
 ---

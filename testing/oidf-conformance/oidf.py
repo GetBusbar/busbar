@@ -417,6 +417,8 @@ def oidc_pin(checkout):
         raise Refused(f"dist/default/Cargo.lock pins busbar-auth-oidc-plugin from {pkg.get('source')!r}, "
                       "not a git rev")
     url, rev = m.group(1), m.group(3)
+    if source_repo(url) != "busbar-auth-oidc":
+        raise Refused(f"dist/default/Cargo.lock pins the OIDC module from unsupported source {url!r}")
     pins_path = os.path.join(checkout, "release", "plugin-pins.tsv")
     if os.path.isfile(pins_path):
         with open(pins_path) as f:
@@ -428,6 +430,23 @@ def oidc_pin(checkout):
                     raise Refused(f"release/plugin-pins.tsv ships busbar-auth-oidc {cols[1]} at {cols[2]}, "
                                   f"but dist/default/Cargo.lock pins {rev}")
     return {"url": url, "rev": rev, "version": pkg["version"]}
+
+
+def source_repo(url):
+    """Canonical Forgejo and supported historical GitHub Cargo identities name the same repo."""
+    match = re.fullmatch(r"https://(?:git\.getbusbar\.dev|(?:www\.)?github\.com)/GetBusbar/([A-Za-z0-9_-]+?)(?:\.git)?", url)
+    return match.group(1) if match else None
+
+
+def contract_patches(manifest, contract):
+    """Cargo overrides for the core sources this exact plugin manifest actually names."""
+    urls = re.findall(r'''\bgit\s*=\s*["']([^"']+)["']''', manifest)
+    urls += re.findall(r'''\[patch\.["']([^"']+)["']\]''', manifest)
+    sources = sorted({url for url in urls if source_repo(url) == "busbar"})
+    if not sources:
+        raise Refused("the OIDC module manifest names no supported busbar-contract source")
+    return [arg for url in sources
+            for arg in ("--config", f'patch.{json.dumps(url)}.busbar-contract.path={json.dumps(contract)}')]
 
 
 def subject_builds(checkout):
@@ -470,10 +489,11 @@ def build_subject(checkout, target, work, log):
     if head.strip() != pin["rev"]:
         raise Refused(f"the OIDC module source is at {head.strip()}, pinned {pin['rev']}", instrument=True)
     contract = os.path.join(checkout, "crates", "busbar-contract")
-    patch = f'patch."https://github.com/GetBusbar/busbar".busbar-contract.path="{contract}"'
+    with open(os.path.join(src, "Cargo.toml")) as manifest:
+        patches = contract_patches(manifest.read(), contract)
     plugin_target = os.path.join(target, "oidf-oidc-plugin")
     argv = ["cargo", "build", "--manifest-path", os.path.join(src, "Cargo.toml"), "-p", "busbar-auth-oidc-plugin",
-            "--config", patch, "--target-dir", plugin_target]
+            *patches, "--target-dir", plugin_target]
     rc = run(argv, log, cwd=src, env=env)
     if rc != 0:
         raise Refused(f"the OIDC module did not build (exit {rc}): {tail(log, 6)}")
@@ -877,14 +897,20 @@ def judge(leg_dir, log):
 
 def why(info, results):
     """The suite's own words for anything but a clean pass: each condition that did not succeed."""
+    if info.get("result") == "SKIPPED":
+        # A condition label, source name or another condition's failure is not a skip reason.
+        reasons = [e["msg"].strip() for e in results
+                   if e.get("result") == "SKIPPED" and isinstance(e.get("msg"), str) and e["msg"].strip()]
+        summary = info.get("summary")
+        if not reasons and isinstance(summary, str) and summary.strip():
+            reasons.append(summary.strip())
+        return " / ".join(dict.fromkeys(reasons))
     seen = []
     for e in results:
         if e.get("result") in ("FAILURE", "WARNING", "REVIEW", "SKIPPED", "INTERRUPTED"):
             line = f"{e.get('result')} {e.get('src', '?')}: {str(e.get('msg', '')).strip()[:160]}"
             if line not in seen:
                 seen.append(line)
-    if info.get("result") == "SKIPPED" and not seen:
-        seen.append("SKIPPED: " + str(info.get("summary", "")).strip()[:160])
     return " / ".join(seen[:4])
 
 
@@ -1049,9 +1075,11 @@ def decide(record, signoff=None):
     owner_ok = [m for m, r, _ in done if r == "REVIEW" and m in signoff and pages.get(m) == [signoff[m]]]
     review = [m for m, r, _ in done if r == "REVIEW" and m not in owner_ok]
     warned = [f"{m} ({why})" if why else m for m, r, why in done if r == "WARNING"]
-    skipped = [f"{m} ({why})" for m, r, why in done if r == "SKIPPED"]
+    skipped = [f"{m} ({why})" for m, r, why in done if r == "SKIPPED" and why.strip()]
     red = [f"{m} {s}/{r}" + (f" ({why})" if why else "") for m, s, r, why in rows
            if s != "FINISHED" or r not in ("PASSED", "REVIEW", "WARNING", "SKIPPED")]
+    red += [f"{m} FINISHED/SKIPPED (the suite supplied no skip reason)"
+            for m, r, why in done if r == "SKIPPED" and not why.strip()]
     head = f"{len(passed) + len(skipped) + len(owner_ok)}/{len(rows)} pass"
     if owner_ok:
         head += f" ({len(owner_ok)} owner-reviewed: " + ", ".join(owner_ok) + ")"

@@ -10,7 +10,7 @@
 #                        a component's required `name` deleted (the validator refuses it); the subject
 #                        SBOM with a whole crate dropped (still schema-valid, so the cross-check against
 #                        `cargo metadata` must name that exact crate).
-#   3. SUBJECT           the SBOM cargo-cyclonedx writes for crates/busbar validates AND lists exactly
+#   3. SUBJECT           the SBOM cargo-cyclonedx writes for dist/default validates AND lists exactly
 #                        the crates `cargo metadata` resolves for the binary's closure (crosscheck.py).
 # All three always run. `pass` only when all three hold. Writes $CONFORMANCE_OUT/verdict.json.
 set -uo pipefail
@@ -75,17 +75,23 @@ fi
 # ── the subject SBOM and the metadata it is judged against ──────────────────────────────────────────
 SBOM=""; META="$W/metadata.json"
 if [ -n "$CX" ]; then
-  say "=== generating the SBOM (cargo-cyclonedx $CX_VER over crates/busbar)"
-  host="$(rustc -vV | sed -n 's/^host: //p')"
+  say "=== generating the SBOM (cargo-cyclonedx $CX_VER over dist/default, default shipped features)"
+  manifest="$repo/dist/default/Cargo.toml"
+  target="${BUSBAR_SBOM_TARGET:-${SPEC_TRIPLE:-${CARGO_BUILD_TARGET:-$(rustc -vV | sed -n 's/^host: //p')}}}"
+  lock_before="$(sha "$repo/dist/default/Cargo.lock")"
+  # The release build uses this workspace, its lock, and its default feature set. Both inputs to
+  # the comparison must use that same target and graph; core alone deliberately has no plugins.
+  (cd "$repo" && cargo metadata --format-version 1 --locked --filter-platform "$target" --manifest-path "$manifest") >"$META" 2>"$W/meta.err" \
+    || { why+=("cargo metadata failed: $(tail -1 "$W/meta.err")"); META=""; }
   before="$W/before.txt"; (cd "$repo" && git ls-files --others --exclude-standard -- '*.cdx.json' | sort) >"$before" 2>/dev/null || : >"$before"
-  if (cd "$repo" && "$CX" cyclonedx --manifest-path crates/busbar/Cargo.toml --format json --spec-version 1.5 --describe binaries) >&2 \
-     && [ -f "$repo/crates/busbar/busbar_bin.cdx.json" ]; then
-    cp "$repo/crates/busbar/busbar_bin.cdx.json" "$W/busbar.cdx.json"; SBOM="$W/busbar.cdx.json"
-  else why+=("cargo-cyclonedx wrote no SBOM for crates/busbar"); fi
+  if [ -n "$META" ] && (cd "$repo" && "$CX" cyclonedx --manifest-path "$manifest" --target "$target" --format json --spec-version 1.5 --describe binaries) >&2 \
+     && [ -f "$repo/dist/default/busbar_bin.cdx.json" ]; then
+    cp "$repo/dist/default/busbar_bin.cdx.json" "$W/busbar.cdx.json"; SBOM="$W/busbar.cdx.json"
+  else why+=("cargo-cyclonedx wrote no SBOM for dist/default's busbar binary"); fi
   # cargo-cyclonedx writes beside every workspace member's manifest: remove what this run created.
   (cd "$repo" && git ls-files --others --exclude-standard -- '*.cdx.json' | sort | comm -13 "$before" - | while IFS= read -r f; do rm -f "$f"; done)
-  (cd "$repo" && cargo metadata --format-version 1 --locked --filter-platform "$host" --manifest-path crates/busbar/Cargo.toml) >"$META" 2>"$W/meta.err" \
-    || { why+=("cargo metadata failed: $(tail -1 "$W/meta.err")"); SBOM=""; }
+  [ "$(sha "$repo/dist/default/Cargo.lock")" = "$lock_before" ] \
+    || { why+=("cargo-cyclonedx changed the shipped distribution lock"); SBOM=""; }
 fi
 
 if [ -n "$SBOM" ] && [ -n "$CLI" ]; then
@@ -114,7 +120,7 @@ import json, sys
 out, cx, cli, why = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4:]
 v = {"suite": "sbom", "status": "fail" if why else "pass", "armed": True,
      "standard": "CycloneDX 1.5 SBOM of the shipped busbar binary",
-     "plan": "cargo-cyclonedx over crates/busbar, cyclonedx-cli validate, cross-checked against cargo metadata's closure",
+     "plan": "cargo-cyclonedx over dist/default with shipped default features and target, cyclonedx-cli validate, cross-checked against its locked executable closure",
      "spec_version": f"CycloneDX 1.5; cargo-cyclonedx {cx}; cyclonedx-cli {cli}"}
 if why: v["reason"] = "; ".join(why)
 json.dump(v, open(out, "w"), indent=2); open(out, "a").write("\n")

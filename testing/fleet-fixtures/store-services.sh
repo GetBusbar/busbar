@@ -27,7 +27,7 @@
 #   store-services.sh url  <service>                     print the base DSN on stdout, NOTHING else
 #   store-services.sh ns   <service> <token>             create a per-run namespace, print ITS DSN
 #   store-services.sh ns-drop  <service> <token>         drop that namespace; idempotent
-#   store-services.sh ns-sweep <service>                 drop every leaked busbar_oracle_* namespace
+#   store-services.sh ns-sweep <postgres|mysql>          drop leaked database namespaces (inactive runs only)
 #   store-services.sh status                             one line per service: up / down
 #   store-services.sh --selftest                         prove this script's own rules, no docker
 #
@@ -42,18 +42,19 @@
 #   pg_isready / mysqladmin ping / valkey-cli ping INSIDE the container, capped at the seconds
 #   service-images.tsv pins (mysql's is 120, not 60: MySQL 8's first boot initialises the datadir and
 #   restarts once). A poll that decides WHETHER THE TEST CAN BEGIN is not a retry; exceeding a cap is
-#   a red that names the service and dumps `docker logs`, never a silent skip and never a re-run.
+#   a red that names the service, never a silent skip and never a re-run.
 #
 # NAMESPACES — THE CONCURRENCY HAZARD THE ORACLE CREATES
 #   The shadow-oracle job records the golden AND the candidate in the same job against the same
 #   services. Postgres and mysql are shared, non-reset databases, so two recordings writing the same
 #   tables make each other's failure — and, worse, the candidate could READ THE GOLDEN'S ROWS and
 #   appear to persist when it did not. `ns` hands each recording its own database (postgres, mysql) or
-#   its own logical db index (valkey), created before record.sh starts and dropped after it exits. A
-#   killed run leaks at most one empty database; `ns-sweep` removes the leaks.
+#   its own container (valkey), created before record.sh starts and dropped after it exits. A
+#   killed run can leave its database or owned Valkey container. Use database `ns-sweep` only when
+#   those recordings are inactive; Valkey uses `ns-drop valkey <owner-token>`.
 #
-#   valkey's teardown is FLUSHDB on that index. Never FLUSHALL: one recording must not be able to
-#   erase another's.
+#   Valkey teardown removes only the container labelled for that exact owner token; no shared
+#   database is flushed.
 #
 # CREDENTIALS
 #   `busbar:busbar` against a throwaway container is not a credential and is not treated as one. What
@@ -66,13 +67,15 @@
 # because `up` and `down` are separate processes BY THE DOC'S OWN CLI — an EXIT trap in `up` would
 # reap the container the moment `up` returned, and a `$$` name would be unfindable from `down`. So the
 # name is stable, `--rm` still does the reaping, and $BUSBAR_STORE_QA_TAG is there for a caller that
-# genuinely needs two sets at once. `down all` additionally sweeps every `busbar-store-qa-*`
-# container, so a tagged or `$$`-suffixed leak from any caller is still removable by one command.
+# genuinely needs two sets at once. `down all` removes only the current tag's three exact names.
+# Other tags and namespace tokens remain their callers' responsibility.
 set -uo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(cd "${here}/../.." && pwd)"
 IMAGES="${SERVICE_IMAGES_TSV:-${here}/service-images.tsv}"
+# shellcheck source=container.sh
+. "${here}/container.sh"
 
 # The three services this script can stand up. vault/wiremock/openldap are pinned in the same file
 # (so the workflow-image lint is total) but are provisioned by other rigs; naming them here would
@@ -127,8 +130,9 @@ expand() {  # expand <arg> -> the service list
 }
 
 need_docker() {
+  command -v python3 >/dev/null 2>&1 || die "python3 is required to verify fixture identity"
   command -v docker >/dev/null 2>&1 \
-    || die "docker is not on PATH. This is the one dependency; there is no way to prove a store
+    || die "docker is not on PATH. Docker and Python3 are required; there is no way to prove a store
 persists across a process death without a server to persist into. On a host without docker the
 oracle's store cells record a NAMED GAP (SKIP), never a pass — see docs/design/BUSBAR-1.6.0.md THE DESIGN, §2."
 }
@@ -145,59 +149,54 @@ assert_token() {
 
 ns_db() { printf 'busbar_oracle_%s' "$1"; }
 
-# valkey has no databases, only 16 numbered logical indexes. Index 0 is the BASE url's index, so a
-# namespace never lands on it: a run that fell back to 0 would silently share with `url`'s callers,
-# which is the exact interference the namespace exists to prevent.
-ns_index() {
-  local n
-  n="$(printf '%s' "$1" | cksum | awk '{print ($1 % 15) + 1}')"
-  printf '%s' "$n"
+# Each Valkey namespace owns a separate container. Hashing owner tokens into fifteen shared
+# indexes cannot isolate concurrent recordings, and FLUSHDB would erase a colliding owner's data.
+ns_container() { printf '%s-ns-%s' "$(container valkey)" "$1"; }
+
+wait_ready() { # <service> <container>: readiness is checked for both new and reused containers
+  local svc="$1" name="$2" waited=0 secs probe
+  secs="$(svc_secs "$svc")"; probe="$(svc_probe "$svc")"
+  # shellcheck disable=SC2086 # the probe is the pinned command in service-images.tsv
+  until docker exec "$name" $probe >/dev/null 2>&1; do
+    waited=$((waited + 1))
+    [ "$waited" -lt "$secs" ] || die "${svc} did not become ready within ${secs}s"
+    sleep 1
+  done
 }
 
 # ── verbs ────────────────────────────────────────────────────────────────────────────────────────
 do_up() {
   need_docker
-  local svc name ref lport secs probe waited
+  local svc name ref lport
   for svc in $(expand "${1:-all}"); do
     name="$(container "$svc")"
     ref="$(svc_ref "$svc")"
     lport="$(svc_lport "$svc")"
-    secs="$(svc_secs "$svc")"
-    probe="$(svc_probe "$svc")"
     if docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null | grep -q true; then
       say "  ${svc}: already up as ${name} on 127.0.0.1:${lport}"
+      fixture_container_port "$name" "$ref" "$lport" "$(svc_port "$svc")" >/dev/null || die "${svc}: existing fixture identity mismatch"
+      wait_ready "$svc" "$name"
       continue
     fi
     say "  ${svc}: docker run ${ref} -> 127.0.0.1:${lport}"
     case "$svc" in
       postgres)
-        docker run -d --rm --name "$name" \
+        docker run -d --rm --name "$name" --label "dev.getbusbar.fixture.owner=$name" \
           -e POSTGRES_USER=busbar -e POSTGRES_PASSWORD=busbar -e POSTGRES_DB=busbar_store_qa \
-          -p "${lport}:$(svc_port "$svc")" "$ref" >/dev/null || die "docker run failed for ${svc}" ;;
+          -p "127.0.0.1:${lport}:$(svc_port "$svc")" "$ref" >/dev/null || die "docker run failed for ${svc}" ;;
       mysql)
-        docker run -d --rm --name "$name" \
+        docker run -d --rm --name "$name" --label "dev.getbusbar.fixture.owner=$name" \
           -e MYSQL_ROOT_PASSWORD=busbar -e MYSQL_USER=busbar -e MYSQL_PASSWORD=busbar \
           -e MYSQL_DATABASE=busbar_store_qa \
-          -p "${lport}:$(svc_port "$svc")" "$ref" >/dev/null || die "docker run failed for ${svc}" ;;
+          -p "127.0.0.1:${lport}:$(svc_port "$svc")" "$ref" >/dev/null || die "docker run failed for ${svc}" ;;
       valkey)
-        docker run -d --rm --name "$name" \
-          -p "${lport}:$(svc_port "$svc")" "$ref" >/dev/null || die "docker run failed for ${svc}" ;;
+        docker run -d --rm --name "$name" --label "dev.getbusbar.fixture.owner=$name" \
+          -p "127.0.0.1:${lport}:$(svc_port "$svc")" "$ref" >/dev/null || die "docker run failed for ${svc}" ;;
     esac
-    # READINESS IS PROVEN. The probe runs inside the container and its cap comes from the pinned
-    # table, so mysql's 120 s datadir initialisation is a fact in a file rather than a number
-    # somebody remembered. Exceeding the cap dumps the container's own logs and is RED.
-    say "  ${svc}: waiting for readiness (${probe}), cap ${secs}s"
-    waited=0
-    # shellcheck disable=SC2086  # $probe is a pinned command line from the table, split on purpose
-    until docker exec "$name" $probe >/dev/null 2>&1; do
-      waited=$((waited + 1))
-      if [ "$waited" -ge "$secs" ]; then
-        docker logs "$name" >&2 2>/dev/null || true
-        die "${svc} did not become ready within ${secs}s. A service that did not come up is a HARD RED on any promotion branch or PR: a store that could not be tested has not been tested."
-      fi
-      sleep 1
-    done
-    say "  ${svc}: ready after ${waited}s"
+    fixture_container_port "$name" "$ref" "$lport" "$(svc_port "$svc")" >/dev/null || die "${svc}: created fixture identity mismatch"
+    wait_ready "$svc" "$name"
+    say "  ${svc}: ready"
+
   done
 }
 
@@ -206,18 +205,11 @@ do_down() {
   local svc name
   for svc in $(expand "${1:-all}"); do
     name="$(container "$svc")"
-    docker rm -f "$name" >/dev/null 2>&1 && say "  ${svc}: removed ${name}" || say "  ${svc}: nothing to remove"
+    fixture_remove_container "$name" || die "${svc}: teardown ownership could not be verified"
+    say "  ${svc}: removed or already absent: ${name}"
   done
-  # THE THIRD TEARDOWN LAYER. A container that SURVIVED and answers the next run's probe with
-  # someone else's data is the failure that matters, so `down all` sweeps every container this file's
-  # naming scheme could have produced — including a $BUSBAR_STORE_QA_TAG or `-$$` suffixed one left
-  # by a caller that died before its own trap fired.
-  if [ "${1:-all}" = "all" ]; then
-    docker ps -aq --filter 'name=^busbar-store-qa-' 2>/dev/null | while read -r cid; do
-      [ -n "$cid" ] || continue
-      docker rm -f "$cid" >/dev/null 2>&1 && say "  swept leaked container ${cid}"
-    done
-  fi
+  # Other tags and namespace tokens belong to other callers. Their owners tear them down by name.
+
 }
 
 do_url() {  # STDOUT IS THE DSN AND NOTHING ELSE — this is consumed by command substitution
@@ -231,25 +223,41 @@ do_url() {  # STDOUT IS THE DSN AND NOTHING ELSE — this is consumed by command
   esac
 }
 
+verify_service() {
+  local svc="$1"
+  fixture_container_port "$(container "$svc")" "$(svc_ref "$svc")" "$(svc_lport "$svc")" "$(svc_port "$svc")" >/dev/null \
+    || die "${svc}: fixture identity could not be verified"
+}
+
 do_ns() {
   local svc="$1" token="$2"
   assert_known "$svc"; assert_token "$token"
   local lport db; lport="$(svc_lport "$svc")"; db="$(ns_db "$token")"
   case "$svc" in
     postgres)
-      need_docker
+      need_docker; verify_service "$svc"
       docker exec "$(container "$svc")" psql -U busbar -d busbar_store_qa -v ON_ERROR_STOP=1 \
         -c "CREATE DATABASE ${db}" >/dev/null 2>&1 \
         || die "could not create namespace database ${db} on postgres"
       printf 'postgres://busbar:busbar@127.0.0.1:%s/%s\n' "$lport" "$db" ;;
     mysql)
-      need_docker
+      need_docker; verify_service "$svc"
       docker exec "$(container "$svc")" mysql -ubusbar -pbusbar \
         -e "CREATE DATABASE IF NOT EXISTS ${db}" >/dev/null 2>&1 \
         || die "could not create namespace database ${db} on mysql"
       printf 'mysql://busbar:busbar@127.0.0.1:%s/%s\n' "$lport" "$db" ;;
     valkey)
-      printf 'redis://127.0.0.1:%s/%s\n' "$lport" "$(ns_index "$token")" ;;
+      need_docker
+      local name ref
+      name="$(ns_container "$token")"; ref="$(svc_ref valkey)"
+      # Creation is exclusive, including retries with the same token: an old namespace is not
+      # fresh evidence. Docker's name reservation also closes concurrent creation races.
+      docker run -d --rm --name "$name" --label "dev.getbusbar.fixture.owner=$name" \
+        -p "127.0.0.1::6379" "$ref" >/dev/null \
+        || die "could not create fresh Valkey namespace ${token}; choose an unused owner token"
+      lport="$(fixture_container_port "$name" "$ref" '*' 6379)" || die "Valkey namespace identity mismatch"
+      wait_ready valkey "$name"
+      printf 'redis://127.0.0.1:%s/0\n' "$lport" ;;
   esac
 }
 
@@ -257,14 +265,15 @@ do_ns_drop() {
   local svc="$1" token="$2"
   assert_known "$svc"; assert_token "$token"
   need_docker
+  [ "$svc" = valkey ] || verify_service "$svc"
   local db; db="$(ns_db "$token")"
   case "$svc" in
     postgres) docker exec "$(container "$svc")" psql -U busbar -d busbar_store_qa \
                 -c "DROP DATABASE IF EXISTS ${db}" >/dev/null 2>&1 || true ;;
     mysql)    docker exec "$(container "$svc")" mysql -ubusbar -pbusbar \
                 -e "DROP DATABASE IF EXISTS ${db}" >/dev/null 2>&1 || true ;;
-    # FLUSHDB on THIS index, never FLUSHALL: one recording must not be able to erase another's.
-    valkey)   docker exec "$(container "$svc")" valkey-cli -n "$(ns_index "$token")" FLUSHDB >/dev/null 2>&1 || true ;;
+    valkey)   fixture_remove_container "$(ns_container "$token")" \
+                || die "Valkey namespace teardown ownership could not be verified" ;;
   esac
   say "  ${svc}: namespace ${token} dropped"
 }
@@ -272,6 +281,7 @@ do_ns_drop() {
 do_ns_sweep() {
   local svc="$1"
   assert_known "$svc"; need_docker
+  [ "$svc" = valkey ] || verify_service "$svc"
   case "$svc" in
     postgres)
       docker exec "$(container "$svc")" psql -U busbar -d busbar_store_qa -At \
@@ -289,7 +299,7 @@ do_ns_sweep() {
           docker exec "$(container "$svc")" mysql -ubusbar -pbusbar \
             -e "DROP DATABASE IF EXISTS ${db}" >/dev/null 2>&1 && say "  swept ${db}"
         done ;;
-    valkey) say "  valkey namespaces are logical db indexes; nothing accumulates to sweep." ;;
+    valkey) die "Valkey namespaces have owner-labelled containers; use ns-drop valkey <owner-token> for each owned namespace." ;;
   esac
 }
 
@@ -416,17 +426,17 @@ run_selftest() {
       "the validator is too strict to be usable, which makes callers route around it"
   fi
 
-  # 8. A valkey namespace NEVER lands on index 0 — index 0 is what `url` hands out, so a namespace
-  #    that fell back to it would silently share with the very callers it exists to isolate.
-  local zero=0 i
-  for i in a b c d e f g h golden candidate goldenstore_1 goldenstore_2 cand_991 x1 x2 x3; do
-    [ "$(ns_index "$i")" = "0" ] && zero=$((zero + 1))
-  done
-  owe "fixtures|valkey-ns-never-zero"
-  if [ "$zero" -eq 0 ]; then
-    record "fixtures|valkey-ns-never-zero" PASS "no namespace token maps to valkey db index 0" "16 tokens"
+  # 8. Distinct Valkey owner tokens name distinct containers, including the sixteen tokens
+  #    the old fifteen-index hash could never isolate at once.
+  local duplicate_names i
+  duplicate_names="$(for i in a b c d e f g h golden candidate goldenstore_1 goldenstore_2 cand_991 x1 x2 x3; do
+    ns_container "$i"; printf '\n'
+  done | sort | uniq -d)"
+  owe "fixtures|valkey-ns-names-unique"
+  if [ -z "$duplicate_names" ] && [ "$(ns_container a)" != "$(container valkey)" ]; then
+    record "fixtures|valkey-ns-names-unique" PASS "Valkey namespaces have distinct owner container names" "16 tokens; base fixture is separate"
   else
-    record "fixtures|valkey-ns-never-zero" FAIL "a namespace token mapped to index 0, which \`url\` also hands out" "${zero} of 16"
+    record "fixtures|valkey-ns-names-unique" FAIL "Valkey namespace owners share a container" "$duplicate_names"
   fi
 
   # 9. `url` prints ONE line and nothing else — it is consumed by command substitution, and a helpful
@@ -448,6 +458,15 @@ run_selftest() {
   else
     record "fixtures|down-is-idempotent" FAIL "down did not exit 0 when there was nothing to do" \
       "an unattended caller cannot use a teardown that fails when it succeeds"
+  fi
+
+  # Exercise the real shell entrypoints with a Docker double: wrong image/owner/endpoint,
+  # namespace collisions, exact-id teardown and sourced failure must remain refusals.
+  owe "fixtures|container-ownership"
+  if python3 -I "${here}/test_container.py" >"${work}/container-tests.log" 2>&1; then
+    record "fixtures|container-ownership" PASS "container identity, namespace and teardown controls passed" "Docker double only"
+  else
+    record "fixtures|container-ownership" FAIL "container identity regression controls failed" "see ${work}/container-tests.log"
   fi
 
   # 11. Every image: line in .github/workflows/ is covered by this table. The dedicated gate

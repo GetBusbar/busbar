@@ -99,6 +99,8 @@ class FakeMCI(cg.ModernCI):
     def artifact(self, repo, head):
         if (repo, head) not in self.outputs:
             raise cg.NoOutput(f"no check result or measurement of conformance at {head} kept outputs")
+        if isinstance(self.outputs[(repo, head)], Exception):
+            raise self.outputs[(repo, head)]
         return {"repo": repo, "from": "dev", "head": head, "state": "green"}, archive(self.outputs[(repo, head)])
 
     def rerun(self, repo, head, core):
@@ -132,8 +134,6 @@ class World:
         self.signers = [f'busbar-release namespaces="busbar-release" {kt} {kb}']
 
     def build(self, testkit=None):
-        if self.cand.exists():
-            shutil.rmtree(self.cand)
         cg.build_manifest(self.mci, self.root, commit=T, release="1.6.0", out=self.cand, testkit=testkit)
         return json.loads((self.cand / "conformance-manifest.json").read_text())
 
@@ -175,6 +175,49 @@ class GateC(unittest.TestCase):
         self.assertEqual((m["commit"], m["release"]), (T, "1.6.0"))
         self.assertEqual((status(m, "tls"), status(m, "ws")), ("pass", "pass"))
         self.assertEqual(self.w.gate(), [])
+
+    def test_a_same_head_refresh_replaces_the_entire_generation(self):
+        for latest in ([], [verdict("ws", WS, P, T, status="fail")], None):
+            with self.subTest(latest=latest):
+                self.w.mci.outputs[(WS, P)] = [verdict("ws", WS, P, T)]
+                self.assertEqual(status(self.w.build(), "ws"), "pass")
+                if latest is None:
+                    self.w.mci.outputs.pop((WS, P))
+                else:
+                    self.w.mci.outputs[(WS, P)] = latest
+                self.assertNotEqual(status(self.w.build(), "ws"), "pass")
+                self.assertRefused(self.w.gate(), "ws")
+
+    def test_a_same_head_rerun_does_not_retain_an_absent_verdict(self):
+        self.w.mci.outputs[(WS, P)] = [verdict("ws", WS, P, OLD_CORE)]
+        self.w.mci.reruns[(WS, P, T)] = [verdict("ws", WS, P, T)]
+        self.assertEqual(status(self.w.build(), "ws"), "pass")
+        self.w.mci.reruns[(WS, P, T)] = []
+        self.assertEqual(status(self.w.build(), "ws"), "not-run")
+        self.assertRefused(self.w.gate(), "ws")
+
+    def test_an_interrupted_same_head_refresh_invalidates_the_previous_pass(self):
+        self.w.build()
+        self.w.mci.outputs[(WS, P)] = cg.CannotRun("artifact lookup interrupted")
+        with self.assertRaises(cg.CannotRun):
+            self.w.build()
+        self.assertRefused(self.w.gate(), "ws", "latest fetch did not complete")
+
+    def test_only_the_archive_bound_to_the_atomic_receipt_is_used(self):
+        self.w.build()
+        directory = self.w.cand / "conformance" / WS
+        receipt = json.loads((directory / "receipt.json").read_text())
+        generation = directory / receipt["generation"]
+        # Inspection copies cannot replace the source archive's verdict.
+        (generation / "verdicts" / "ws.json").write_text(json.dumps(verdict("ws", WS, P, T, status="fail")))
+        self.assertEqual(self.w.gate(), [])
+        # An archive changed without its fetched receipt cannot qualify.
+        (generation / "artifact.tar").write_bytes(archive([]))
+        self.assertRefused(self.w.gate(), "ws", "hash")
+
+    def test_duplicate_suite_archive_members_are_refused(self):
+        with self.assertRaises(cg.sync.Refused):
+            cg.verdicts_in(archive([verdict("ws", WS, P, T), verdict("ws", WS, P, T)]))
 
     def test_a_registered_public_suite_without_a_pass_refuses_the_tag(self):
         for name, verdicts in {

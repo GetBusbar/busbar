@@ -55,9 +55,9 @@ use busbar_core_connector::listen::{AcceptLimits, Listening};
 use busbar_kernel::REQUEST_ACTIVITY_TICKS;
 
 /// THE BUILD-PROVENANCE STAMP, as one machine-parseable line. Every field is baked at compile time
-/// by `build.rs` (see its header for what cargo does and does not expose) EXCEPT `debug-assertions`,
-/// which is read here at runtime via `cfg!(debug_assertions)` — the profile it was compiled with is
-/// the only reliable source for that bit.
+/// by `build.rs` and, for the production executable, the final rustc receipt wrapper. The wrapper
+/// records resolved LTO/codegen arguments and source identity; plain builds report an unverified
+/// receipt. `debug-assertions` comes from `cfg!(debug_assertions)` in this binary's own profile.
 ///
 /// This is the piece that would have PREVENTED the ~20% "regression" incident: a non-PGO or
 /// non-release build self-reports `pgo=false` / `profile=debug` instead of masquerading as a code
@@ -67,10 +67,18 @@ use busbar_kernel::REQUEST_ACTIVITY_TICKS;
 pub(crate) fn build_info_line() -> String {
     format!(
         "profile={profile} opt-level={opt} lto={lto} debug-assertions={da} pgo={pgo} \
-         target={target} target-cpu={cpu} target-features={features}",
+         target={target} target-cpu={cpu} target-features={features} \
+         codegen-units={units} receipt={receipt} package={package} manifest={manifest} \
+         source-commit={source} source-clean={clean}",
         profile = env!("BUSBAR_BUILD_PROFILE"),
         opt = env!("BUSBAR_BUILD_OPT_LEVEL"),
         lto = env!("BUSBAR_BUILD_LTO"),
+        units = env!("BUSBAR_BUILD_CODEGEN_UNITS"),
+        receipt = env!("BUSBAR_BUILD_RECEIPT"),
+        package = env!("BUSBAR_BUILD_PACKAGE"),
+        manifest = env!("BUSBAR_BUILD_MANIFEST"),
+        source = env!("BUSBAR_BUILD_SOURCE_COMMIT"),
+        clean = env!("BUSBAR_BUILD_SOURCE_CLEAN"),
         da = if cfg!(debug_assertions) {
             "true"
         } else {

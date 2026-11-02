@@ -19,6 +19,9 @@
 //   * debug-assertions is reported by main.rs at runtime via `cfg!(debug_assertions)` (compiled with
 //     the binary's own profile — the reliable source), and
 //   * profile-table `lto` is reported as unknown here, since no build-time API reveals it.
+// Production Cargo builds use scripts/build-provenance-gate.sh as a rustc wrapper. It replaces
+// the unverified receipt defaults only on the final dist/default executable compiler invocation,
+// using resolved rustc argv for LTO/codegen units and Git source identity at that invocation.
 // PGO IS DETECTED ONE WAY, AND ONLY ONE: the `-Cprofile-use` flag appearing in
 // CARGO_ENCODED_RUSTFLAGS — the flags cargo ACTUALLY applied. It used to be an OR with an explicit
 // `BUSBAR_PGO=1` env var, described here as "belt and suspenders"; that description went stale.
@@ -50,6 +53,9 @@ fn main() {
     // Re-run when the PGO signal or the rustflags change, so the stamp never goes stale.
     println!("cargo:rerun-if-env-changed=BUSBAR_PGO");
     println!("cargo:rerun-if-env-changed=CARGO_ENCODED_RUSTFLAGS");
+    // Refresh the final compiler receipt even when a new commit leaves Rust sources unchanged.
+    // This is a cache invalidator only; the wrapper obtains source identity independently.
+    println!("cargo:rerun-if-env-changed=BUSBAR_PROVENANCE_SOURCE");
     let manifest = std::fs::read_to_string("Cargo.toml").expect("read Cargo.toml");
     let core = core_dir(&manifest);
     println!("cargo:rerun-if-changed={}", core.join("build.rs").display());
@@ -90,6 +96,20 @@ fn main() {
     // Profile-table settings are reported honestly as
     // "(profile-table; see Cargo.toml)" when governed by the profile rather than a flag.
     let lto = flag_value(&flags, "lto").unwrap_or_else(|| "(profile-table)".into());
+
+    // Unverified defaults override caller environment. The production rustc wrapper replaces
+    // these only for the final owning binary, using Cargo's resolved compiler argv and source.
+    // Plain cargo builds remain usable but cannot manufacture an optimized-release receipt.
+    for key in [
+        "CODEGEN_UNITS",
+        "RECEIPT",
+        "PACKAGE",
+        "MANIFEST",
+        "SOURCE_COMMIT",
+        "SOURCE_CLEAN",
+    ] {
+        println!("cargo:rustc-env=BUSBAR_BUILD_{key}=unverified");
+    }
 
     println!("cargo:rustc-env=BUSBAR_BUILD_PROFILE={profile}");
     println!("cargo:rustc-env=BUSBAR_BUILD_OPT_LEVEL={opt_level}");

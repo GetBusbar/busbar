@@ -5,7 +5,7 @@
 # name it can never disagree (scripts/fleet/pin-check.sh is the check this keeps green):
 #
 #   .busbar-ref          "<sha> <version>";
-#   every Cargo.toml     each `busbar-* = { git = "https://github.com/GetBusbar/busbar", rev = ... }`,
+#   every Cargo.toml     each `busbar-* = { git = "https://git.getbusbar.dev/GetBusbar/busbar", rev = ... }`,
 #                        which is what cargo actually BUILDS against, and the `[patch]` entry that
 #                        spells the same repo through `https://www.github.com/GetBusbar/busbar` (the
 #                        one busbar-contract every framer resolves to; Cargo refuses a patch naming
@@ -30,9 +30,14 @@
 #         commit (a pin taken before the release was tagged is not the release).
 set -euo pipefail
 
-SRC='https://github.com/GetBusbar/busbar'
-# The [patch] spelling of the same repo (busbar-release render.rs CONTRACT_PATCH_GIT).
-PATCH_SRC='https://www.github.com/GetBusbar/busbar'
+# Cargo source aliases; reusable-workflow repository identity stays GitHub-specific.
+CORE_SOURCE_PATTERN='https://(git\.getbusbar\.dev|(www\.)?github\.com)/GetBusbar/busbar(\.git)?'
+
+repin_manifest() {  # repin_manifest <manifest> <sha>; keep each accepted source spelling
+  sed -i.repin-bak -E \
+    -e "s#(git[[:space:]]*=[[:space:]]*\"${CORE_SOURCE_PATTERN}\",[[:space:]]*rev[[:space:]]*=[[:space:]]*\")[0-9a-f]+\"#\\1${2}\"#g" "$1"
+  rm -f "$1.repin-bak"
+}
 
 semver_order() {
   # SemVer precedence: releases follow prereleases; build metadata has no precedence.
@@ -103,13 +108,14 @@ repin() {
   [ -f Cargo.lock ] || { echo "::error::repin: run from the repo root (no Cargo.lock here)" >&2; return 1; }
 
   local manifests=() m
-  while IFS= read -r m; do manifests+=("$m"); done < <(git ls-files '*Cargo.toml' | xargs grep -l -e "git = \"${SRC}\"" -e "git = \"${PATCH_SRC}\"" || true)
+  while IFS= read -r -d '' m; do
+    if grep -Eq "git[[:space:]]*=[[:space:]]*\"${CORE_SOURCE_PATTERN}\"" "$m"; then
+      manifests+=("$m")
+    fi
+  done < <(env -u GIT_INDEX_FILE -u GIT_DIR -u GIT_WORK_TREE git -C "$PWD" ls-files -z '*Cargo.toml')
   [ "${#manifests[@]}" -gt 0 ] || { echo "::error::repin: no manifest names the busbar git source" >&2; return 1; }
   for m in "${manifests[@]}"; do
-    sed -i.repin-bak -E \
-      -e "s#(git = \"${SRC}\", rev = \")[0-9a-f]+\"#\\1${sha}\"#g" \
-      -e "s#(git = \"${PATCH_SRC}\", rev = \")[0-9a-f]+\"#\\1${sha}\"#g" "$m"
-    rm -f "$m.repin-bak"
+    repin_manifest "$m" "$sha"
   done
   printf '%s %s\n' "$sha" "$ver" > .busbar-ref
   local wf
@@ -153,8 +159,21 @@ selftest() {
   if out="$(cd "$tmp" && repin "$b" "" 2>&1)"; then echo "  [FAILED] an empty version was accepted"; rc=1
   elif printf '%s' "$out" | grep -q "usage: repin.sh"; then echo "  [ok]     repin refuses an empty version"
   else echo "  [FAILED] empty version refused for the wrong reason: $out"; rc=1; fi
+  local source suffix
+  for source in https://git.getbusbar.dev/GetBusbar/busbar https://github.com/GetBusbar/busbar https://www.github.com/GetBusbar/busbar; do
+    for suffix in '' .git; do
+      ran=$((ran + 1))
+      printf '[dependencies]\nbusbar-contract = { git = "%s%s", rev = "%s" }\n[patch."%s"]\nbusbar-contract = { git = "%s%s", rev = "%s" }\n' \
+        "$source" "$suffix" "$a" "$source" "$source" "$suffix" "$a" > "$tmp/Cargo.toml"
+      if grep -Eq "git[[:space:]]*=[[:space:]]*\"${CORE_SOURCE_PATTERN}\"" "$tmp/Cargo.toml" \
+        && repin_manifest "$tmp/Cargo.toml" "$b" \
+        && [ "$(grep -c "rev = \"$b\"" "$tmp/Cargo.toml")" = 2 ]; then
+        echo "  [ok]     dependency and patch source $source$suffix move together"
+      else echo "  [FAILED] dependency or patch source $source$suffix was overlooked"; rc=1; fi
+    done
+  done
   rm -rf "$tmp"
-  [ "$ran" = 10 ] || { echo "repin selftest: only $ran of 10 cases ran"; return 1; }
+  [ "$ran" = 16 ] || { echo "repin selftest: only $ran of 16 cases ran"; return 1; }
   [ "$rc" = 0 ] && echo "repin selftest: passed" || echo "repin selftest: FAILED"
   return "$rc"
 }

@@ -6,7 +6,8 @@
   crosscheck.py check   <sbom.json> <cargo-metadata.json>
   crosscheck.py corrupt <sbom.json> <out.json> missing-name|drop-crate
 
-`check` walks `cargo metadata`'s resolve graph from the `busbar` package over normal and build
+`check` walks `cargo metadata`'s resolve graph from the package owning the `busbar` executable in
+the assembled dist/default workspace over normal and build
 dependency edges (the metadata was taken with --filter-platform = the SBOM's target) and compares
 name@version with the SBOM's components. A crate the closure has and the SBOM lacks is a failure
 (exit 1) and is named. A component the closure does not have is also a failure: the SBOM would be
@@ -18,14 +19,21 @@ is exactly what `check` exists to catch). It prints the name@version it damaged.
 """
 import json
 import sys
+from pathlib import Path
 
 
 def closure(meta: dict) -> set:
     nodes = {n["id"]: n for n in meta["resolve"]["nodes"]}
     pk = {p["id"]: p for p in meta["packages"]}
-    roots = [p["id"] for p in meta["packages"] if p["name"] == "busbar" and p["source"] is None]
+    workspace = Path(meta["workspace_root"]).resolve()
+    if workspace.parts[-2:] != ("dist", "default"):
+        raise SystemExit("crosscheck: metadata is not the assembled dist/default workspace")
+    roots = [p["id"] for p in meta["packages"]
+             if p["id"] in meta["workspace_members"] and p["source"] is None
+             and Path(p["manifest_path"]).resolve() == workspace / "Cargo.toml"
+             and any(t["name"] == "busbar" and "bin" in t["kind"] for t in p["targets"])]
     if len(roots) != 1:
-        raise SystemExit(f"crosscheck: expected exactly one workspace package named busbar, found {len(roots)}")
+        raise SystemExit(f"crosscheck: expected one dist/default owner of the busbar executable, found {len(roots)}")
     seen, stack = {roots[0]}, [roots[0]]
     while stack:
         for d in nodes[stack.pop()]["deps"]:
@@ -40,7 +48,8 @@ def listed(sbom: dict) -> set:
 
 
 def check(sbom_path: str, meta_path: str) -> int:
-    want, have = closure(json.load(open(meta_path))), listed(json.load(open(sbom_path)))
+    want = closure(json.loads(Path(meta_path).read_text()))
+    have = listed(json.loads(Path(sbom_path).read_text()))
     missing, extra = sorted(want - have), sorted(have - want)
     print(f"crosscheck: cargo metadata lists {len(want)} crates for the shipped closure, the SBOM {len(have)}")
     for n, v in missing:
