@@ -518,22 +518,30 @@ async fn register_defaulting_to(
 
 #[tokio::test]
 async fn a_metadata_document_client_naming_no_scope_is_shown_the_default_it_is_granted() {
-    let (origin, app) = serve().await;
-    oauth_as_plane(&app)
-        .expect("configured")
+    let plane = owner_plane();
+    plane
         .server()
         .store()
         .set_fetcher(Arc::new(StubDocumentHost(serde_json::json!({
-            "client_id": CIMD_CLIENT_ID,
-            "redirect_uris": [REDIRECT_URI],
-            "token_endpoint_auth_method": "none",
-            "client_name": "an agent",
+            "client_id":CIMD_CLIENT_ID,"redirect_uris":[REDIRECT_URI],
+            "token_endpoint_auth_method":"none","client_name":"an agent",
         }))));
-    let (shown, granted) = shown_and_granted(&origin, &app, CIMD_CLIENT_ID, "").await;
+    let shown = plane
+        .granted_scope(CIMD_CLIENT_ID, None)
+        .await
+        .expect("the actual owner resolves the consent grant");
+    let token = approved_token(&plane, CIMD_CLIENT_ID).await;
+    let record = plane
+        .server()
+        .introspect(&token.access_token)
+        .await
+        .expect("introspection must not fail")
+        .expect("the freshly minted token must be live");
+    let granted = record.scope.to_string();
     assert_eq!(granted, SCOPE, "the operator's default_grant is granted");
     assert_eq!(
         shown, granted,
-        "the consent screen must name the scope the approval grants"
+        "the consent grant resolver must name the scope the approval grants"
     );
 }
 
@@ -693,75 +701,6 @@ impl StoreCalls for FailClientRead {
     }
 }
 
-async fn mint_access_token(origin: &str, client_id: &str) -> String {
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .expect("client");
-    let mut jar = Jar::new(false);
-
-    let authorize = format!(
-        "{origin}/authorize?response_type=code&client_id={}\
-         &redirect_uri=http%3A%2F%2F127.0.0.1%3A9999%2Fcb&state=s1&scope={SCOPE}\
-         &code_challenge={CHALLENGE}&code_challenge_method=S256",
-        encode_component(client_id)
-    );
-
-    let (status, headers, body) =
-        send(&client, &mut jar, reqwest::Method::GET, &authorize, None).await;
-    assert_eq!(status, 302, "authorize must redirect to consent: {body}");
-    let consent = location(&headers, origin);
-
-    let (status, _headers, body) =
-        send(&client, &mut jar, reqwest::Method::GET, &consent, None).await;
-    assert_eq!(status, 200, "the consent screen must render: {body}");
-
-    let return_to =
-        query_param(&consent, "return").expect("the screen carries the pending request");
-    let return_to = percent_decode(&return_to);
-    let (status, headers, body) = send(
-        &client,
-        &mut jar,
-        reqwest::Method::POST,
-        &format!("{origin}/consent"),
-        Some(&[("return", return_to.as_str())]),
-    )
-    .await;
-    assert_eq!(status, 302, "an approval must redirect back: {body}");
-    let back = location(&headers, origin);
-
-    let (status, headers, body) = send(&client, &mut jar, reqwest::Method::GET, &back, None).await;
-    assert_eq!(status, 302, "the approved request must redirect: {body}");
-    let redirect = location(&headers, origin);
-    assert!(
-        redirect.starts_with(REDIRECT_URI),
-        "an approved request goes to the client's redirect URI: {redirect}"
-    );
-    let code = query_param(&redirect, "code")
-        .unwrap_or_else(|| panic!("the approved request must carry a code: {redirect}"));
-
-    let (status, _headers, body) = send(
-        &client,
-        &mut jar,
-        reqwest::Method::POST,
-        &format!("{origin}/token"),
-        Some(&[
-            ("grant_type", "authorization_code"),
-            ("code", code.as_str()),
-            ("client_id", client_id),
-            ("redirect_uri", REDIRECT_URI),
-            ("code_verifier", VERIFIER),
-        ]),
-    )
-    .await;
-    assert_eq!(status, 200, "the code must be exchangeable: {body}");
-    let token: serde_json::Value = serde_json::from_str(&body).expect("a token response is JSON");
-    token["access_token"]
-        .as_str()
-        .unwrap_or_else(|| panic!("no access_token: {body}"))
-        .to_string()
-}
-
 pub(crate) fn encode_component(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
@@ -771,30 +710,6 @@ pub(crate) fn encode_component(s: &str) -> String {
             other => format!("%{other:02X}"),
         })
         .collect()
-}
-
-async fn register(origin: &str, body: &str) -> u16 {
-    reqwest::Client::new()
-        .post(format!("{origin}/register"))
-        .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .body(body.to_string())
-        .send()
-        .await
-        .expect("register")
-        .status()
-        .as_u16()
-}
-
-fn registration(name: &str) -> String {
-    serde_json::json!({
-        "redirect_uris": [REDIRECT_URI],
-        "token_endpoint_auth_method": "none",
-        "response_types": ["code"],
-        "grant_types": ["authorization_code", "refresh_token"],
-        "client_name": name,
-        "scope": SCOPE,
-    })
-    .to_string()
 }
 
 const CIMD_CLIENT_ID: &str = "https://client.example/oauth-client";
@@ -819,24 +734,18 @@ impl crate::cimd::CimdFetch for StubDocumentHost {
 
 #[tokio::test]
 async fn a_client_id_metadata_document_admits_a_client_end_to_end() {
-    let (origin, app) = serve().await;
-    oauth_as_plane(&app)
-        .expect("configured")
+    let plane = owner_plane();
+    plane
         .server()
         .store()
         .set_fetcher(Arc::new(StubDocumentHost(serde_json::json!({
-            "client_id": CIMD_CLIENT_ID,
-            "redirect_uris": [REDIRECT_URI],
-            "token_endpoint_auth_method": "none",
-            "client_name": "an agent",
-            "scope": SCOPE,
+            "client_id":CIMD_CLIENT_ID,"redirect_uris":[REDIRECT_URI],
+            "token_endpoint_auth_method":"none","client_name":"an agent","scope":SCOPE,
         }))));
-
-    let access = mint_access_token(&origin, CIMD_CLIENT_ID).await;
-    let record = oauth_as_plane(&app)
-        .expect("configured")
+    let token = approved_token(&plane, CIMD_CLIENT_ID).await;
+    let record = plane
         .server()
-        .introspect(&access)
+        .introspect(&token.access_token)
         .await
         .expect("introspection must not fail")
         .expect("the freshly minted token must be live");
@@ -846,6 +755,62 @@ async fn a_client_id_metadata_document_admits_a_client_end_to_end() {
         "the URL is the client's identity, verbatim"
     );
     assert_eq!(record.scope.to_string(), SCOPE);
+}
+
+fn owner_plane() -> Arc<crate::plane::AsPlane> {
+    let config = OauthAsCfg {
+        issuer: "https://as.example.com".into(),
+        default_grant: vec![SCOPE.into()],
+        ..Default::default()
+    };
+    let block = serde_yaml::to_value(config).expect("owner config serializes");
+    crate::plane::seam_build::<crate::NoConnections>(
+        &block,
+        Vec::new(),
+        Vec::new(),
+        None,
+        Some(crate::testkit::store_calls()),
+    )
+    .expect("the actual owner seam builds over the supplied Store product")
+    .downcast::<crate::plane::AsPlane>()
+    .unwrap_or_else(|_| panic!("the owner seam returns its plane"))
+}
+
+async fn approved_token(
+    plane: &crate::plane::AsPlane,
+    client_id: &str,
+) -> oauth_as::token::TokenResponse {
+    let request = oauth_as::authorization::AuthorizationRequest::from_pairs([
+        ("response_type", "code"),
+        ("client_id", client_id),
+        ("redirect_uri", REDIRECT_URI),
+        ("code_challenge", CHALLENGE),
+        ("code_challenge_method", "S256"),
+    ]);
+    let validated = plane
+        .server()
+        .validate_authorization_request(&request)
+        .await
+        .expect("request validates");
+    let code = plane
+        .server()
+        .issue_authorization_code(oauth_as::server::UserApproval::granted(
+            &validated,
+            "busbar-operator",
+        ))
+        .await
+        .expect("the approved owner request mints a code");
+    plane
+        .server()
+        .token(oauth_as::server::TokenRequest::AuthorizationCode {
+            client_id: ClientId::new(client_id),
+            client_secret: None,
+            code: code.code,
+            redirect_uri: Some(REDIRECT_URI.into()),
+            code_verifier: Some(VERIFIER.into()),
+        })
+        .await
+        .expect("the approved code exchanges")
 }
 
 pub(crate) fn percent_decode(s: &str) -> String {
