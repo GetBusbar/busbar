@@ -58,8 +58,7 @@ fn a_rebuild_carries_the_session_store_and_defaults_scan_off() {
     let (prior, rotate, limits) = busbar_kernel::build_app_from_config(
         busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the same product deployment resolves"),
-        plugin_busbar_kernel::config::resolve(&deploy, &Default::default())
-            .expect("the same product deployment resolves"),
+        plugin_config.clone(),
         None,
         Default::default(),
         Default::default(),
@@ -79,8 +78,7 @@ fn a_rebuild_carries_the_session_store_and_defaults_scan_off() {
     let (next, rotate, limits) = busbar_kernel::build_app_from_config(
         busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the same product deployment resolves"),
-        plugin_busbar_kernel::config::resolve(&deploy, &Default::default())
-            .expect("the same product deployment resolves"),
+        plugin_config.clone(),
         None,
         Default::default(),
         Default::default(),
@@ -151,8 +149,7 @@ fn an_apply_carries_the_node_amendment_journal_its_governance_owns() {
     let (prior, rotate, limits) = busbar_kernel::build_app_from_config(
         busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the same product deployment resolves"),
-        plugin_busbar_kernel::config::resolve(&deploy, &Default::default())
-            .expect("the same product deployment resolves"),
+        plugin_config.clone(),
         None,
         Default::default(),
         Default::default(),
@@ -176,8 +173,7 @@ fn an_apply_carries_the_node_amendment_journal_its_governance_owns() {
     let (next, rotate, limits) = busbar_kernel::build_app_from_config(
         busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the same product deployment resolves"),
-        plugin_busbar_kernel::config::resolve(&deploy, &Default::default())
-            .expect("the same product deployment resolves"),
+        plugin_config.clone(),
         None,
         Default::default(),
         Default::default(),

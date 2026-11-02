@@ -197,17 +197,13 @@ fn a_completed_candidate_refusal_is_returned_before_a_reload_can_replace_the_old
     let accepting: Arc<dyn RootRules> = Arc::new(busbar_kernel::appbuild::AcceptAll);
     let (prior, rotate, limits) = busbar_kernel::build_app_from_config(
         {
-            let mut candidate = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("the same product deployment resolves");
+            let mut candidate = busbar_kernel::config::resolve(&deploy, &Default::default())
+                .expect("the same product deployment resolves");
             candidate.allow_all_metadata = config.allow_all_metadata;
             candidate.public_url = config.public_url.clone();
             candidate
         },
-        plugin_{
-            let mut candidate = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("the same product deployment resolves");
-            candidate.allow_all_metadata = config.allow_all_metadata;
-            candidate.public_url = config.public_url.clone();
-            candidate
-        },
+        plugin_config.clone(),
         None,
         Default::default(),
         Default::default(),
@@ -301,17 +297,13 @@ fn a_kept_build_raises_its_destinations_to_the_rules_it_was_judged_by() {
 
     let (_app, _, unkept) = busbar_kernel::build_app_from_config(
         {
-            let mut candidate = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("the same product deployment resolves");
+            let mut candidate = busbar_kernel::config::resolve(&deploy, &Default::default())
+                .expect("the same product deployment resolves");
             candidate.allow_all_metadata = config.allow_all_metadata;
             candidate.public_url = config.public_url.clone();
             candidate
         },
-        plugin_{
-            let mut candidate = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("the same product deployment resolves");
-            candidate.allow_all_metadata = config.allow_all_metadata;
-            candidate.public_url = config.public_url.clone();
-            candidate
-        },
+        plugin_config.clone(),
         None,
         std::collections::HashSet::new(),
         std::collections::HashSet::new(),
@@ -412,17 +404,13 @@ fn a_configuration_the_root_rules_refuse_is_refused_by_the_build() {
     assert_eq!(
         busbar_kernel::build_app_from_config(
             {
-            let mut candidate = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("the same product deployment resolves");
-            candidate.allow_all_metadata = config.allow_all_metadata;
-            candidate.public_url = config.public_url.clone();
-            candidate
-        },
-            plugin_{
-            let mut candidate = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("the same product deployment resolves");
-            candidate.allow_all_metadata = config.allow_all_metadata;
-            candidate.public_url = config.public_url.clone();
-            candidate
-        },
+                let mut candidate = busbar_kernel::config::resolve(&deploy, &Default::default())
+                    .expect("the same product deployment resolves");
+                candidate.allow_all_metadata = config.allow_all_metadata;
+                candidate.public_url = config.public_url.clone();
+                candidate
+            },
+            plugin_config.clone(),
             None,
             Default::default(),
             Default::default(),
@@ -437,17 +425,13 @@ fn a_configuration_the_root_rules_refuse_is_refused_by_the_build() {
     config.public_url = None;
     let (app, _, _) = busbar_kernel::build_app_from_config(
         {
-            let mut candidate = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("the same product deployment resolves");
+            let mut candidate = busbar_kernel::config::resolve(&deploy, &Default::default())
+                .expect("the same product deployment resolves");
             candidate.allow_all_metadata = config.allow_all_metadata;
             candidate.public_url = config.public_url.clone();
             candidate
         },
-        plugin_{
-            let mut candidate = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("the same product deployment resolves");
-            candidate.allow_all_metadata = config.allow_all_metadata;
-            candidate.public_url = config.public_url.clone();
-            candidate
-        },
+        plugin_config.clone(),
         None,
         Default::default(),
         Default::default(),
