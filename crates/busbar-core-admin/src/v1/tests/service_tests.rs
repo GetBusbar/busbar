@@ -930,6 +930,7 @@ mod dated_rate_card_history {
 
 #[cfg(test)]
 mod usage_as_of {
+    use super::validated_snapshot;
     use super::dated_rate_card_history::{
         card, metering_rows, priced_metering_rows, read_as_of, source, windows,
     };
