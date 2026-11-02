@@ -278,7 +278,7 @@ jobs:
             echo "BUSBAR_GOLDEN_DIR=$GITHUB_WORKSPACE/busbar/testing/shadow-oracle/golden"
             if [ "$CHECKOUT" = true ]; then
               echo "BUSBAR_CHECKOUT=$GITHUB_WORKSPACE/busbar"
-              echo "BUSBAR_TARGET_DIR=$GITHUB_WORKSPACE/busbar/target"
+              echo "BUSBAR_TARGET_DIR=$CARGO_TARGET_DIR"
               # The nested busbar build is busbar's release profile; a CI leg needs it fast, not small.
               echo "CARGO_PROFILE_RELEASE_LTO=off"
               echo "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16"
@@ -502,7 +502,7 @@ jobs:
           if [ "$CHECKOUT" = true ]; then
             {
               echo "BUSBAR_CHECKOUT=$GITHUB_WORKSPACE/busbar"
-              echo "BUSBAR_TARGET_DIR=$GITHUB_WORKSPACE/busbar/target"
+              echo "BUSBAR_TARGET_DIR=$CARGO_TARGET_DIR"
               echo "CARGO_PROFILE_RELEASE_LTO=off"
               echo "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16"
             } >> "$GITHUB_ENV"
@@ -651,7 +651,7 @@ jobs:
             echo "BUSBAR_GOLDEN_DIR=$GITHUB_WORKSPACE/busbar/testing/shadow-oracle/golden"
             if [ "$CHECKOUT" = true ]; then
               echo "BUSBAR_CHECKOUT=$GITHUB_WORKSPACE/busbar"
-              echo "BUSBAR_TARGET_DIR=$GITHUB_WORKSPACE/busbar/target"
+              echo "BUSBAR_TARGET_DIR=$CARGO_TARGET_DIR"
               echo "CARGO_PROFILE_RELEASE_LTO=off"
               echo "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16"
             fi
