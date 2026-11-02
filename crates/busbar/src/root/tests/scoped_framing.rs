@@ -40,16 +40,21 @@ struct Seen {
 #[derive(Default)]
 struct Host {
     seen: Mutex<Vec<Seen>>,
-    pending: Mutex<HashMap<u64, AuthDone>>,
+    pending: Mutex<HashMap<u64, (AuthDone, AuthCallAnswer)>>,
+    units: Mutex<HashMap<(u64, u64), UnitSecret>>,
+    handed: Mutex<Vec<u64>>,
     pending_changed: Condvar,
     ended: Mutex<Vec<u64>>,
     close_seen: Mutex<Vec<(Option<u64>, Option<u64>)>>,
 }
 
-fn answer(_stream: u64) -> AuthCallAnswer {
+const UNIT_SECRET: [u64; 2] = [17, 23];
+
+fn answer(owner: u64, generation: u64, stream: u64) -> AuthCallAnswer {
     AuthCallAnswer {
         flow: FLOW_CONTINUE,
-        unit: UnitRef::NONE,
+        unit: auth_handle::mint_unit_ref(UNIT_SECRET, generation, owner, 0, 1000 + stream)
+            .expect("the host mints the actual request unit"),
         strips: Vec::new(),
     }
 }
@@ -68,8 +73,8 @@ impl Host {
     }
     fn release(&self, stream: u64) -> bool {
         let done = self.pending.lock().unwrap().remove(&stream);
-        if let Some(done) = done {
-            done(Ok(answer(stream)));
+        if let Some((done, answer)) = done {
+            done(Ok(answer));
             true
         } else {
             false
@@ -78,8 +83,8 @@ impl Host {
 }
 
 impl AuthHandleHost for Host {
-    fn unit_secret(&self, _: u64, _: u64) -> Option<UnitSecret> {
-        None
+    fn unit_secret(&self, owner: u64, unit: u64) -> Option<UnitSecret> {
+        self.units.lock().unwrap().get(&(owner, unit)).copied()
     }
     fn auth_call(&self, ask: AuthCallAsk, done: AuthDone) -> AuthRan {
         let scope = framing_context::current();
@@ -93,18 +98,28 @@ impl AuthHandleHost for Host {
             physical: scope.as_ref().map(|s| s.connection()),
             target: ask.request.target.clone(),
         });
+        let answer = answer(ask.owner, ask.generation, stream);
+        self.units.lock().unwrap().insert(
+            (ask.owner, answer.unit.id),
+            UnitSecret {
+                secret: UNIT_SECRET,
+                generation: ask.generation,
+                line: 0,
+            },
+        );
         if matches!(stream, 1 | 2) {
-            self.pending.lock().unwrap().insert(stream, done);
+            self.pending.lock().unwrap().insert(stream, (done, answer));
             self.pending_changed.notify_all();
             AuthRan::Pending
         } else {
-            AuthRan::Now(Ok(answer(stream)))
+            AuthRan::Now(Ok(answer))
         }
     }
     fn hand_in(&self, ask: HandInAsk) -> Result<(u32, UnitRef), &'static str> {
         let scope = framing_context::current().expect("real HTTP hand-in retains its scope");
         assert_eq!(ask.framing, Some(scope.leg()));
         assert_eq!(ask.owner, scope.owner());
+        self.handed.lock().unwrap().push(ask.stream);
         Ok((FLOW_CONTINUE, ask.unit))
     }
     fn refuse(&self, ask: RefuseAsk) -> Result<RefusalBytes, &'static str> {
@@ -127,9 +142,15 @@ impl AuthHandleHost for Host {
 struct ReleaseAll(Arc<Host>);
 impl Drop for ReleaseAll {
     fn drop(&mut self) {
-        let pending: Vec<_> = self.0.pending.lock().unwrap().drain().collect();
-        for (stream, done) in pending {
-            done(Ok(answer(stream)));
+        let pending: Vec<_> = self
+            .0
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .drain()
+            .collect();
+        for (_, (done, answer)) in pending {
+            done(Ok(answer));
         }
     }
 }
@@ -308,9 +329,17 @@ fn settled_stream(
         {
             return yielded;
         }
-        assert!(started.elapsed() < std::time::Duration::from_secs(5),
-            "real HTTP stream {stream} did not complete; last yield={yielded:?}; host calls={:?}; pending={:?}",
-            *host.seen.lock().unwrap(), host.pending.lock().unwrap().keys().copied().collect::<Vec<_>>());
+        if started.elapsed() >= bound {
+            let seen = format!("{:?}", *host.seen.lock().unwrap());
+            let pending = host
+                .pending
+                .lock()
+                .unwrap()
+                .keys()
+                .copied()
+                .collect::<Vec<_>>();
+            panic!("real HTTP stream {stream} did not complete; last yield={yielded:?}; host calls={seen}; pending={pending:?}");
+        }
         let generation = *wake.generation.lock().unwrap();
         match framing.poll_parked(&mut cx) {
             Poll::Ready(Ok(next)) => yielded = next,
@@ -549,6 +578,11 @@ fn a_worker_resume_and_lifecycle_hop_retain_the_submitted_framing_scope() {
 
     assert!(caller_scope_restored && pending && released);
     assert_eq!(done.map(|d| d.outcome), Some(Outcome::Ready));
+    assert_eq!(
+        *host.handed.lock().unwrap(),
+        vec![1],
+        "the resumed real HTTP request completed its actual host hand-in"
+    );
     assert_eq!(closed.outcome, Outcome::Ready);
     let seen = host.seen.lock().unwrap();
     assert_eq!(seen.iter().map(|s| s.stream).collect::<Vec<_>>(), [1]);
