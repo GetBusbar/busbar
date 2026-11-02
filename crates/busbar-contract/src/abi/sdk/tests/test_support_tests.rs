@@ -774,11 +774,21 @@ fn a_plane_open_reply_yields_an_instance_proof_that_close_consumes() {
         }
         RawOutcome::of(Outcome::Ready)
     }
-    const OPS: &crate::abi::plane::Ops = &{
-        let mut ops = crate::abi::sdk::door::absent_table::<crate::abi::plane::Ops>();
-        ops.head.open = Some(open);
-        ops.head.close = Some(close);
-        ops
+    const OPS: &crate::abi::plane::Ops = &crate::abi::plane::Ops {
+        // Use the macro's header builder: the full plane table must attest both its byte
+        // size and slot count before DoorView may lend either typed lifecycle slot.
+        head: crate::abi::sdk::door::ops_head::<crate::abi::plane::Ops>(
+            None,
+            Some(open),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(close),
+        ),
+        ..crate::abi::sdk::door::absent_table::<crate::abi::plane::Ops>()
     };
     // SAFETY: both table slots and the existing Statement/tail have immutable static backing.
     const DOOR: &crate::abi::mechanism::door::Door = &unsafe {
@@ -794,7 +804,7 @@ fn a_plane_open_reply_yields_an_instance_proof_that_close_consumes() {
         view.op::<crate::abi::plane::Ops>(|ops| &ops.head.open)
             .unwrap(),
         None,
-        &TestIn::<OpenIn>::new(),
+        &TestIn::<crate::abi::plane::PlaneOpenIn>::new(),
         zeroed::<crate::abi::plane::PlaneOpenOut>(),
     );
     assert_eq!(opened.outcome, Outcome::Ready);
