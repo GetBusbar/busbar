@@ -201,31 +201,52 @@ fn plane_config_validate(
         return Ok(());
     };
 
-    let entry =
-        serde_yaml::to_value(def).map_err(|e| format!("`{}.{name}`: {e}", section.key()))?;
-    crate::config::plane_sections::validate_plane_entry(
-        section.key(),
-        name,
-        &entry,
-        decl.trust_keys,
-        &crate::config::plane_sections::config_sections(),
-    )?;
-
-    crate::config::plane_sections::refuse_registration_forwarding_caller_credential(
-        &format!("`{}.{name}`", section.key()),
-        &entry,
-        decl.caller_credential_refusal,
-    )?;
-    if let Some(f) = decl.config_validate {
-        f(decl, name, def)?;
+    PlaneDefinition {
+        section: section.key(),
+        trust_keys: decl.trust_keys,
+        caller_credential_refusal: decl.caller_credential_refusal,
+        sections: &crate::config::plane_sections::config_sections(),
     }
+    .validate(name, def, || {
+        if let Some(f) = decl.config_validate {
+            f(decl, name, def)?;
+        }
+        Ok(())
+    })
+}
 
-    crate::trust::section::parse_entry(
-        &format!("`{}.{name}`", section.key()),
-        &entry,
-        decl.trust_keys,
-    )
-    .map(|_| ())
+struct PlaneDefinition<'a> {
+    section: &'a str,
+    trust_keys: &'a [busbar_contract::plane::TrustKeyDecl],
+    caller_credential_refusal: Option<&'a str>,
+    sections: &'a [&'static str],
+}
+
+impl PlaneDefinition<'_> {
+    fn validate(
+        &self,
+        name: &str,
+        def: &serde_json::Value,
+        validate: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(), String> {
+        let section = self.section;
+        let entry = serde_yaml::to_value(def).map_err(|e| format!("`{section}.{name}`: {e}"))?;
+        crate::config::plane_sections::validate_plane_entry(
+            section,
+            name,
+            &entry,
+            self.trust_keys,
+            self.sections,
+        )?;
+        crate::config::plane_sections::refuse_registration_forwarding_caller_credential(
+            &format!("`{section}.{name}`"),
+            &entry,
+            self.caller_credential_refusal,
+        )?;
+        validate()?;
+        crate::trust::section::parse_entry(&format!("`{section}.{name}`"), &entry, self.trust_keys)
+            .map(|_| ())
+    }
 }
 
 pub enum NamedDef {
@@ -283,3 +304,7 @@ pub enum NamedMapShape {
 #[cfg(test)]
 #[path = "tests/named_map_tests.rs"]
 mod named_map_tests;
+
+#[cfg(test)]
+#[path = "tests/plane_boot_validation_tests.rs"]
+mod plane_policy_tests;

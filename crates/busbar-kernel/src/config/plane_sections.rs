@@ -384,10 +384,6 @@ where
     )
 }
 
-#[cfg(test)]
-#[path = "tests/plane_boot_validation_tests.rs"]
-mod boot_validation_tests;
-
 pub trait PlaneCfg: std::any::Any + Send + Sync + std::fmt::Debug {
     fn secret_refs(&self) -> Vec<(String, &busbar_contract::secret_ref::SecretRef)>;
 
