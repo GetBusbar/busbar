@@ -155,8 +155,6 @@ async fn one_recorded_usage_is_one_number_on_every_surface() {
     let one_micros = i64::try_from(one.micros()).expect("the figure fits");
 
     crate::dist_root_install::install();
-    crate::root::kernel::ROOT_CARD.apply(card(RATE_EARNED), 0);
-    crate::root::kernel::ROOT_CARD.apply(card(RATE_CURRENT), edit_ms);
     crate::dist_root_install::install();
     let library_path = std::path::PathBuf::from(
         std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
@@ -199,7 +197,7 @@ async fn one_recorded_usage_is_one_number_on_every_surface() {
         "providers": {},
         "models": {},
         "rate_card": BTreeMap::from([(LANE, busbar_kernel::config::RateEntryCfg {
-            input_utok: RATE_CURRENT, output_utok: 0.0, ..Default::default()
+            input_utok: RATE_EARNED, output_utok: 0.0, ..Default::default()
         })]),
         "groups": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
@@ -209,7 +207,7 @@ async fn one_recorded_usage_is_one_number_on_every_surface() {
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
+    let deploy = busbar_kernel::config::deploy_from_deserializer(document.clone())
         .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
@@ -220,21 +218,79 @@ async fn one_recorded_usage_is_one_number_on_every_surface() {
     };
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
-        plugin_config,
+        plugin_config.clone(),
         None,
         Default::default(),
         Default::default(),
         (None, None),
         None,
         &rules,
+        None,
+        true,
     )
     .expect("the actual product builds the swap deployment");
-    limits.keep().expect("the product limits commit");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual Store binds the node book and rate history");
+    limits
+        .keep()
+        .expect("the actual boot card commits after the book opens");
     if let Some(rotate) = rotate {
         rotate();
     }
+    document["rate_card"] = serde_json::to_value(BTreeMap::from([(
+        LANE,
+        busbar_kernel::config::RateEntryCfg {
+            input_utok: RATE_CURRENT,
+            ..Default::default()
+        },
+    )]))
+    .unwrap();
+    let current = busbar_kernel::config::deploy_from_deserializer(document)
+        .expect("the current deployment parses");
+    let current = busbar_kernel::config::resolve(&current, &Default::default())
+        .expect("the current deployment resolves");
+    let (next, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+        current,
+        plugin_config,
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        Some(&app),
+        &rules,
+        None,
+        false,
+    )
+    .expect("the actual current configuration rebuilds against the same Store");
+    limits.keep().expect("the actual current rates commit");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+    app = next;
+    let historical = busbar_kernel::config::card::CardFields {
+        rate_card: Some(BTreeMap::from([(
+            LANE.to_string(),
+            busbar_kernel::config::RateEntryCfg {
+                input_utok: RATE_CURRENT,
+                ..Default::default()
+            },
+        )])),
+        ..Default::default()
+    };
+    crate::root::kernel::ROOT_CARD
+        .card_store()
+        .expect("the actual Store-backed rate history is loaded")
+        .amend(
+            edit_ms,
+            (bucket + DAY) * 1_000,
+            historical,
+            [7u8; 32],
+            "cross-surface historical posting",
+        )
+        .expect("the actual Store confirms the historical rate window");
     let gov = app
         .governance
         .as_ref()
