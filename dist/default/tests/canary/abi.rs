@@ -84,18 +84,6 @@ fn registry() -> Arc<PluginRegistry> {
     )
 }
 
-fn issuer() -> &'static busbar_test_kit::test_issuer::Issuer {
-    static ONE: OnceLock<busbar_test_kit::test_issuer::Issuer> = OnceLock::new();
-    ONE.get_or_init(|| {
-        let issuer =
-            busbar_test_kit::test_issuer::Issuer::start("https://issuer.canary.invalid", "canary");
-        let conns = busbar_test_kit::https_conns::HttpsConns::new();
-        conns.serve_issuer(&issuer);
-        busbar_test_kit::auth_axis::stand_in_conns(Arc::new(conns));
-        issuer
-    })
-}
-
 fn tracing_capture() -> &'static Arc<Mutex<Vec<u8>>> {
     static BUF: OnceLock<Arc<Mutex<Vec<u8>>>> = OnceLock::new();
     BUF.get_or_init(|| {
@@ -176,7 +164,6 @@ pub fn run(c: &AbiCanaries) -> (Vec<Sink>, Vec<String>) {
     common::root_install::install();
     let tracing = tracing_capture();
     let traced_from = tracing.lock().unwrap_or_else(|p| p.into_inner()).len();
-    let issuer = issuer();
     let d = doors();
     let reg = registry();
     let rows: Arc<dyn PluginRows> = reg.clone();
@@ -216,7 +203,7 @@ pub fn run(c: &AbiCanaries) -> (Vec<Sink>, Vec<String>) {
     let audience = "api://canary";
     let env_var = format!("BUSBAR_CANARY_AUD_{pid}_{run}");
     std::env::set_var(&env_var, &c.settings_env_ref.value);
-    let mut s = issuer.settings(audience);
+    let mut s = common::credentials::settings(audience);
     s.insert(
         "audience".into(),
         serde_json::json!({ SECRET_MODULE_ENV: env_var }),
@@ -225,7 +212,7 @@ pub fn run(c: &AbiCanaries) -> (Vec<Sink>, Vec<String>) {
 
     let tpl_var = format!("BUSBAR_CANARY_TPL_{pid}_{run}");
     std::env::set_var(&tpl_var, &c.settings_template.value);
-    let mut s = issuer.settings(audience);
+    let mut s = common::credentials::settings(audience);
     s.insert(
         "audience".into(),
         serde_json::json!({ SECRET_MODULE_TEMPLATE: format!("aud-${{{tpl_var}}}") }),
@@ -242,7 +229,7 @@ pub fn run(c: &AbiCanaries) -> (Vec<Sink>, Vec<String>) {
             .expect("the config text interpolates");
     let parsed: serde_json::Map<String, serde_json::Value> =
         serde_yaml::from_str(&text).expect("the interpolated settings parse");
-    let mut s = issuer.settings(audience);
+    let mut s = common::credentials::settings(audience);
     s.extend(parsed);
     outcome(
         "oidc settings (${VAR} interpolation)",

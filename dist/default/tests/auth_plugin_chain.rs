@@ -25,27 +25,14 @@ fn unsigned_tarball(m: busbar_plugin_loader::sign::Manifest, lib: &[u8]) -> Vec<
     common::plugins::seal(m, lib)
 }
 
-const ISSUER: &str = "https://issuer.plugin-chain.invalid";
 const AUDIENCE: &str = "api://plugin-chain";
 
-fn issuer() -> &'static busbar_test_kit::test_issuer::Issuer {
-    static ONE: std::sync::OnceLock<busbar_test_kit::test_issuer::Issuer> =
-        std::sync::OnceLock::new();
-    ONE.get_or_init(|| {
-        let issuer = busbar_test_kit::test_issuer::Issuer::start(ISSUER, "plugin-chain");
-        let conns = busbar_test_kit::https_conns::HttpsConns::new();
-        conns.serve_issuer(&issuer);
-        busbar_test_kit::auth_axis::stand_in_conns(std::sync::Arc::new(conns));
-        issuer
-    })
-}
-
 fn settings() -> serde_json::Map<String, serde_json::Value> {
-    issuer().settings(AUDIENCE)
+    common::credentials::settings(AUDIENCE)
 }
 
 fn alice_token() -> String {
-    issuer().mint("alice", &["platform"], AUDIENCE)
+    common::credentials::token_for("alice", &["platform"], AUDIENCE)
 }
 
 fn module_name() -> &'static str {
@@ -137,7 +124,10 @@ fn auth_plugin_undeclared_setting_is_delivered_as_written_and_a_reference_there_
     let plugins = plugins_cfg_allow_unsigned(&dir);
 
     let mut written = settings();
-    written.insert("ca_cert_pem".into(), serde_json::json!(issuer().cert_pem()));
+    written.insert(
+        "ca_cert_pem".into(),
+        serde_json::json!(common::credentials::cert_pem()),
+    );
     let cfg = chain_with("ref-auth", written);
     let registry = busbar_kernel::plugins_preflight(
         None,
@@ -161,7 +151,7 @@ fn auth_plugin_undeclared_setting_is_delivered_as_written_and_a_reference_there_
     }
 
     let var = format!("BUSBAR_PLUGIN_CA_PEM_{}", std::process::id());
-    std::env::set_var(&var, issuer().cert_pem());
+    std::env::set_var(&var, common::credentials::cert_pem());
     let mut settings = settings();
     settings.insert(
         "ca_cert_pem".into(),
@@ -218,7 +208,11 @@ fn auth_plugin_schema_marked_setting_is_not_declared_so_a_reference_there_is_ref
         &busbar_kernel::config::secret::SecretResolver::builtins_only(),
     )
     .expect("the audience written as its value is delivered");
-    match mw.run_chain(Some(&issuer().mint("alice", &["platform"], raw_audience))) {
+    match mw.run_chain(Some(&common::credentials::token_for(
+        "alice",
+        &["platform"],
+        raw_audience,
+    ))) {
         ChainVerdict::Identified { principal, .. } => assert_eq!(principal.id, "oidc:alice"),
         other => panic!("a token for the delivered audience must authenticate: {other:?}"),
     }
