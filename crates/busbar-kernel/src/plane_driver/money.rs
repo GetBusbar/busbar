@@ -267,8 +267,14 @@ impl PlaneMoney {
                         .filter_map(|c| m.classes.get(*c as usize))
                         .filter(|u| u.as_str() != busbar_contract::plane::PER_REQUEST)
                     {
-                        self.gov
-                            .refund_fee_unit(&m.cost, &m.key, &m.pool, m.arrived, unit);
+                        self.gov.refund_fee_unit_in_era(
+                            &m.cost,
+                            &m.key,
+                            &m.pool,
+                            m.arrived,
+                            unit,
+                            Some(m.charge.raw_era()),
+                        );
                     }
                 }
             }
@@ -332,13 +338,26 @@ impl PlaneMoney {
                 &saturated
             }
         };
-        self.gov.record_usage_served(
-            &m.cost, &m.key, &m.pool, &m.lane, provider, units, m.arrived,
+        self.gov.record_usage_served_in_era(
+            &m.cost,
+            &m.key,
+            &m.pool,
+            &m.lane,
+            provider,
+            units,
+            m.arrived,
+            m.charge.raw_era(),
         );
         if metered(counts) {
             let units = checked.unwrap_or_default();
-            self.gov
-                .record_lane_metering_for_key(&m.key, &m.lane, provider, &units, m.arrived);
+            self.gov.record_lane_metering_in_era(
+                &m.key,
+                &m.lane,
+                provider,
+                &units,
+                m.arrived,
+                m.charge.raw_era(),
+            );
         }
     }
 
