@@ -3,14 +3,43 @@
 
 mod linked;
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
-use busbar_kernel::rate_apply::{RateApply, RawRates};
+use busbar_kernel::rate_apply::{PreparedRates, RateApply, RateCommit, RawRates};
 use busbar_kernel_testkit::test_support::rate_holders::install_rate_apply;
 
-struct Recorder(Mutex<Vec<i64>>);
+struct Recorder(Arc<Mutex<Vec<i64>>>);
+
+struct PendingRate {
+    seen: Arc<Mutex<Vec<i64>>>,
+    flat_minor: i64,
+}
+
+impl PreparedRates for PendingRate {
+    fn confirm_activation(self: Box<Self>) -> Result<Box<dyn RateCommit>, String> {
+        Ok(self)
+    }
+}
+
+impl RateCommit for PendingRate {
+    fn commit(self: Box<Self>) {
+        self.seen.lock().unwrap().push(self.flat_minor);
+    }
+}
 
 impl RateApply for Recorder {
+    fn prepare(
+        &self,
+        _: &busbar_kernel::config::card::CardFields,
+        rates: &RawRates<'_>,
+        _: &str,
+    ) -> Result<Box<dyn PreparedRates>, String> {
+        Ok(Box::new(PendingRate {
+            seen: Arc::clone(&self.0),
+            flat_minor: rates.flat_minor,
+        }))
+    }
+
     fn rates_applied(&self, rates: &RawRates<'_>) {
         self.0.lock().unwrap().push(rates.flat_minor);
     }
@@ -45,7 +74,8 @@ fn build(
 fn an_apply_that_never_commits_raises_no_rates_and_one_that_commits_raises_them_once() {
     busbar_kernel_testkit::test_support::metrics::init();
     linked::install();
-    let recorder: &'static Recorder = Box::leak(Box::new(Recorder(Mutex::new(Vec::new()))));
+    let recorder: &'static Recorder =
+        Box::leak(Box::new(Recorder(Arc::new(Mutex::new(Vec::new())))));
     install_rate_apply(recorder);
 
     let (_app, _rotate, limits) = build(424_242);
