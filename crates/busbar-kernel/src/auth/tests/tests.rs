@@ -1160,32 +1160,6 @@ fn successive_admin_answer_projections_do_not_reuse_an_earlier_identity() {
     );
 }
 
-struct NamingDoor(busbar_contract::auth_calls::VerifyAnswer);
-
-impl busbar_contract::auth_calls::AuthCalls for NamingDoor {
-    fn name(&self) -> &str {
-        "naming-door"
-    }
-    fn facts(&self) -> u32 {
-        0
-    }
-    fn verify_now(
-        &self,
-        _: &busbar_contract::auth_calls::VerifyRequest,
-    ) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
-        Some(self.0.clone())
-    }
-    fn verify(
-        &self,
-        _: busbar_contract::auth_calls::VerifyRequest,
-    ) -> Box<dyn busbar_contract::auth_calls::Verifying> {
-        Box::new(Answered(Some(self.0.clone())))
-    }
-    fn refresh(&self) -> Result<u64, String> {
-        Ok(0)
-    }
-}
-
 fn hook_answer(
     key: Option<&str>,
     strips: Vec<busbar_contract::auth_calls::Strip>,
@@ -1206,15 +1180,6 @@ fn hook_answer(
         strips,
         ..VerifyAnswer::from(identity)
     }
-}
-
-fn naming_chain(
-    answer: busbar_contract::auth_calls::VerifyAnswer,
-) -> std::sync::Arc<AuthMiddleware> {
-    std::sync::Arc::new(AuthMiddleware::from_doors_for_test(vec![(
-        "door".to_string(),
-        std::sync::Arc::new(NamingDoor(answer)) as std::sync::Arc<dyn AuthCalls>,
-    )]))
 }
 
 fn replay_gov() -> std::sync::Arc<crate::governance::GovState> {
@@ -1316,75 +1281,40 @@ async fn a_replayed_verified_identity_inside_its_ttl_is_denied() {
     );
 }
 
-async fn echo_behind_the_gate(
-    app: std::sync::Arc<crate::state::App>,
-) -> (String, tokio::task::JoinHandle<()>) {
-    async fn echo(
-        axum::extract::OriginalUri(original): axum::extract::OriginalUri,
-        consumed: Option<axum::Extension<ConsumedCredentials>>,
-        req: Request<Body>,
-    ) -> axum::Json<serde_json::Value> {
-        let mut headers = req.headers().clone();
-        ConsumedCredentials::strip_from(consumed.as_ref().map(|c| &c.0), &mut headers);
-        let names: Vec<&str> = headers.keys().map(|n| n.as_str()).collect();
-        axum::Json(serde_json::json!({
-            "uri": req.uri().to_string(),
-            "original": original.to_string(),
-            "headers": names,
-        }))
-    }
-    let handle = std::sync::Arc::new(crate::state::AppHandle::new(app));
-    let core_routes: &'static crate::core_routes::CoreRouteTable = Box::leak(Box::default());
-    let router = axum::Router::new()
-        .route("/echo", axum::routing::any(echo))
-        .layer(axum::middleware::from_fn_with_state(
-            handle.clone(),
-            move |app: crate::state::CurrentApp,
-                  req: axum::extract::Request,
-                  next: axum::middleware::Next| {
-                auth_middleware(app, core_routes, req, next)
-            },
-        ))
-        .with_state(handle);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let served = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    (format!("http://{addr}"), served)
-}
-
-fn naming_app(
-    answer: busbar_contract::auth_calls::VerifyAnswer,
-) -> std::sync::Arc<crate::state::App> {
-    let mut rb = crate::config::RoleBindings::default();
-    rb.entry("door".to_string())
-        .or_default()
-        .entry("hooks".to_string())
-        .or_default();
-    crate::test_support::TestApp::new()
-        .auth(naming_chain(answer))
-        .role_bindings(rb)
-        .governance(replay_gov())
-        .build()
-}
-
 #[tokio::test]
-async fn a_replayed_signed_delivery_is_answered_401_the_second_time() {
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let app = naming_app(hook_answer(Some("standard-webhooks/msg_1"), Vec::new()));
-    let (base, served) = echo_behind_the_gate(app).await;
-    let deliver = || async {
-        reqwest::Client::new()
-            .post(format!("{base}/echo"))
-            .bearer_auth("signed")
-            .send()
-            .await
-            .unwrap()
-            .status()
-            .as_u16()
+async fn a_replayed_verified_delivery_is_denied_before_dispatch() {
+    // INTERNAL post-verification admission over the actual conditional Store. The former
+    // NamingDoor/echo server only invented verification; real HTTP auth is exercised at root.
+    let gov = replay_gov();
+    let bindings = bindings_for("door", &[("hooks", binding(None, None, None))]);
+    let run = || {
+        let answered = chain_verdict_of(hook_answer(Some("standard-webhooks/msg_1"), Vec::new()));
+        let verdict = complete_chain(chain_position_verdict("door", answered.verdict));
+        let pending = PendingClaim::of(
+            ReplayClaim::of("door", answered.replay, busbar_kernel::store::now()),
+            Some(gov.clone()),
+        );
+        (verdict, pending)
     };
-    assert_eq!(deliver().await, 200, "the first delivery is served");
-    assert_eq!(deliver().await, 401, "the replay is refused");
-    served.abort();
+    let (verdict, pending) = run();
+    assert!(admit_verified_session(&bindings, verdict, pending.as_ref())
+        .await
+        .is_ok());
+    let (verdict, pending) = run();
+    let refused = admit_verified_session(&bindings, verdict, pending.as_ref())
+        .await
+        .expect_err("the replay must never reach a handler");
+    assert_eq!(refused, IdentityRefusal::Denied);
+    let response = identity_refusal_response(refused, None, true, || {
+        unauthorized_ingress_response(crate::plane_driver::dispatch::Ingress::Fallback(
+            crate::ingress::protocols::residual_dialect_for_path("/pa/v1/messages"),
+        ))
+    });
+    assert_eq!(
+        response.status(),
+        StatusCode::UNAUTHORIZED,
+        "the production refusal projection returns the same 401 envelope as native ingress"
+    );
 }
 
 #[test]
@@ -1485,25 +1415,6 @@ async fn an_admin_identity_replayed_is_denied_and_its_named_lines_ride_out() {
     );
 }
 
-fn replay_app(
-    answer: busbar_contract::auth_calls::VerifyAnswer,
-    gov: std::sync::Arc<crate::governance::GovState>,
-    bound: bool,
-) -> std::sync::Arc<crate::state::App> {
-    let mut rb = crate::config::RoleBindings::default();
-    if bound {
-        rb.entry("door".to_string())
-            .or_default()
-            .entry("hooks".to_string())
-            .or_default();
-    }
-    crate::test_support::TestApp::new()
-        .auth(naming_chain(answer))
-        .role_bindings(rb)
-        .governance(gov)
-        .build()
-}
-
 async fn still_unclaimed(gov: &crate::governance::GovState, provider: &str, key: &str) -> bool {
     let replay = busbar_contract::auth_calls::Replay {
         key: key.to_string(),
@@ -1514,32 +1425,39 @@ async fn still_unclaimed(gov: &crate::governance::GovState, provider: &str, key:
 
 #[tokio::test]
 async fn a_delivery_refused_for_its_grant_leaves_its_replay_key_unclaimed() {
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let gov = replay_gov();
-    let answer = hook_answer(Some("standard-webhooks/msg_r6"), Vec::new());
-    let deliver = |base: String| async move {
-        reqwest::Client::new()
-            .post(format!("{base}/echo"))
-            .bearer_auth("signed")
-            .send()
-            .await
-            .unwrap()
-            .status()
-            .as_u16()
+    let run = || {
+        let answered = chain_verdict_of(hook_answer(Some("standard-webhooks/msg_r6"), Vec::new()));
+        let verdict = complete_chain(chain_position_verdict("door", answered.verdict));
+        let pending = PendingClaim::of(
+            ReplayClaim::of("door", answered.replay, busbar_kernel::store::now()),
+            Some(gov.clone()),
+        );
+        (verdict, pending)
     };
-    let (unbound, served) =
-        echo_behind_the_gate(replay_app(answer.clone(), gov.clone(), false)).await;
-    assert_eq!(deliver(unbound.clone()).await, 401, "no grant: refused");
-    assert_eq!(deliver(unbound).await, 401, "no grant again: refused");
-    served.abort();
-    let (bound, served) = echo_behind_the_gate(replay_app(answer, gov, true)).await;
-    assert_eq!(
-        deliver(bound.clone()).await,
-        200,
-        "the group bound, the redelivery is served: the refused ones claimed nothing"
+    for _ in 0..2 {
+        let (verdict, pending) = run();
+        assert!(matches!(
+            admit_verified_session(&Default::default(), verdict, pending.as_ref()).await,
+            Err(IdentityRefusal::NoGrant)
+        ));
+    }
+    let bindings = bindings_for("door", &[("hooks", binding(None, None, None))]);
+    let (verdict, pending) = run();
+    assert!(
+        admit_verified_session(&bindings, verdict, pending.as_ref())
+            .await
+            .is_ok(),
+        "binding the group must admit the still-unclaimed delivery"
     );
-    assert_eq!(deliver(bound).await, 401, "its replay is refused");
-    served.abort();
+    let (verdict, pending) = run();
+    assert!(
+        matches!(
+            admit_verified_session(&bindings, verdict, pending.as_ref()).await,
+            Err(IdentityRefusal::Denied)
+        ),
+        "the admitted delivery now owns its replay claim"
+    );
 }
 
 #[tokio::test]
@@ -1626,36 +1544,41 @@ async fn an_admin_identity_refused_for_scope_leaves_its_replay_key_unclaimed() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_racing_identical_deliveries_admit_at_most_one() {
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let app = replay_app(
-        hook_answer(Some("standard-webhooks/msg_race"), Vec::new()),
-        replay_gov(),
-        true,
-    );
-    let (base, served) = echo_behind_the_gate(app).await;
-    let deliver = || {
-        let base = base.clone();
-        tokio::spawn(async move {
-            reqwest::Client::new()
-                .post(format!("{base}/echo"))
-                .bearer_auth("signed")
-                .send()
-                .await
-                .unwrap()
-                .status()
-                .as_u16()
-        })
-    };
-    let racing: Vec<_> = (0..8).map(|_| deliver()).collect();
-    let mut statuses = Vec::new();
-    for one in racing {
-        statuses.push(one.await.unwrap());
+    let gov = replay_gov();
+    let bindings = std::sync::Arc::new(bindings_for(
+        "door",
+        &[("hooks", binding(None, None, None))],
+    ));
+    let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(8));
+    let mut racing = Vec::new();
+    for _ in 0..8 {
+        let gov = gov.clone();
+        let bindings = bindings.clone();
+        let barrier = barrier.clone();
+        racing.push(tokio::spawn(async move {
+            let answered =
+                chain_verdict_of(hook_answer(Some("standard-webhooks/msg_race"), Vec::new()));
+            let verdict = complete_chain(chain_position_verdict("door", answered.verdict));
+            let pending = PendingClaim::of(
+                ReplayClaim::of("door", answered.replay, busbar_kernel::store::now()),
+                Some(gov),
+            );
+            barrier.wait().await;
+            match admit_verified_session(&bindings, verdict, pending.as_ref()).await {
+                Ok(_) => true,
+                Err(IdentityRefusal::Denied) => false,
+                Err(other) => panic!("unexpected grant refusal: {other:?}"),
+            }
+        }));
     }
-    served.abort();
-    statuses.sort_unstable();
-    let mut expected = vec![200];
-    expected.extend([401; 7]);
-    assert_eq!(statuses, expected, "exactly one admitted");
+    let mut admitted = 0;
+    for one in racing {
+        admitted += usize::from(one.await.unwrap());
+    }
+    assert_eq!(
+        admitted, 1,
+        "the actual conditional Store admits exactly one of eight racing claims"
+    );
 }
 
 const DOOR_BODY: &str =
