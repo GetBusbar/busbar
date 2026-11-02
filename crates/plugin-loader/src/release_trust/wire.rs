@@ -127,13 +127,15 @@ pub fn key_id(key: &ReleaseKey) -> String {
 /// An unknown keytype/scheme pair or a public key of the wrong shape.
 pub fn read_key_object(v: &Value) -> Result<ReleaseKey, String> {
     let obj = v.as_object().ok_or("a key is not an object")?;
+    only_fields(obj, &["keytype", "scheme", "keyval"], "key")?;
     let keytype = str_field(obj, "keytype")?;
     let scheme = str_field(obj, "scheme")?;
-    let public = obj
+    let keyval = obj
         .get("keyval")
-        .and_then(|kv| kv.get("public"))
-        .and_then(Value::as_str)
-        .ok_or("a key has no keyval.public")?;
+        .and_then(Value::as_object)
+        .ok_or("a key has no keyval object")?;
+    only_fields(keyval, &["public"], "keyval")?;
+    let public = str_field(keyval, "public")?;
     match (keytype, scheme) {
         ("ed25519", "ed25519") => crate::sign::public_key_from_hex(public).map(ReleaseKey::Ed25519),
         ("ecdsa", "ecdsa-sha2-nistp256") => ReleaseKey::p256_from_hex(public),
@@ -192,14 +194,12 @@ fn read_envelope(bytes: &[u8], what: &str) -> Result<(Value, Vec<u8>, KeyedSigs)
         .and_then(Value::as_array)
         .ok_or_else(|| format!("the {what} has no `signatures` list"))?
     {
-        let keyid = s
-            .get("keyid")
-            .and_then(Value::as_str)
-            .ok_or_else(|| format!("a {what} signature has no keyid"))?;
-        let sig = s
-            .get("sig")
-            .and_then(Value::as_str)
-            .ok_or_else(|| format!("a {what} signature has no sig"))?;
+        let signature = s
+            .as_object()
+            .ok_or_else(|| format!("a {what} signature is not an object"))?;
+        only_fields(signature, &["keyid", "sig"], "signature")?;
+        let keyid = str_field(signature, "keyid")?;
+        let sig = str_field(signature, "sig")?;
         let sig = hex::decode(sig).map_err(|e| format!("a {what} signature is not hex: {e}"))?;
         sigs.push((keyid.to_string(), sig));
     }
@@ -391,6 +391,7 @@ pub fn read_targets(bytes: &[u8]) -> Result<Signed<TargetsDoc>, String> {
             .get("custom")
             .and_then(Value::as_object)
             .ok_or_else(|| format!("target {path} has no custom"))?;
+        only_fields(custom, &["name", "version", "target"], "target custom")?;
         let (name, version, target) = (
             str_field(custom, "name")?,
             str_field(custom, "version")?,
@@ -401,11 +402,12 @@ pub fn read_targets(bytes: &[u8]) -> Result<Signed<TargetsDoc>, String> {
                 "target {path} is not named <name>/<version>/<target> of its custom"
             ));
         }
-        let sha256 = t
+        let hashes = t
             .get("hashes")
-            .and_then(|h| h.get("sha256"))
-            .and_then(Value::as_str)
-            .ok_or_else(|| format!("target {path} has no hashes.sha256"))?;
+            .and_then(Value::as_object)
+            .ok_or_else(|| format!("target {path} has no hashes object"))?;
+        only_fields(hashes, &["sha256"], "target hashes")?;
+        let sha256 = str_field(hashes, "sha256")?;
         if sha256.len() != 64
             || !sha256
                 .bytes()

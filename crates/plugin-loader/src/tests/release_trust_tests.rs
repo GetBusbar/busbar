@@ -654,6 +654,44 @@ fn a_document_with_an_unknown_field_or_spec_version_is_refused() {
 }
 
 #[test]
+fn unknown_fields_in_keys_signatures_and_target_details_are_refused() {
+    let signer = TestSigner::ed25519(8);
+    for nested in [false, true] {
+        let mut key = wire::key_object(&signer.key());
+        if nested {
+            key["keyval"]["extra"] = serde_json::json!("unsupported");
+        } else {
+            key["extra"] = serde_json::json!("unsupported");
+        }
+        assert!(wire::read_key_object(&key)
+            .unwrap_err()
+            .contains("unknown field 'extra'"));
+    }
+
+    let keys = seal_keys(&keys_doc(&[&signer]), &[&signer]);
+    let mut envelope: serde_json::Value = serde_json::from_slice(&keys).unwrap();
+    envelope["signatures"][0]["extra"] = serde_json::json!("unsupported");
+    assert!(wire::read_keys(&serde_json::to_vec(&envelope).unwrap())
+        .unwrap_err()
+        .contains("unknown field 'extra'"));
+
+    for nested in ["custom", "hashes"] {
+        let mut signed = wire::targets_signed(&targets_doc(vec![entry(
+            NAME,
+            VERSION,
+            PLUGIN_TARGET,
+            &artefact(),
+        )]));
+        let path = format!("{NAME}/{VERSION}/{PLUGIN_TARGET}");
+        signed["targets"][&path][nested]["extra"] = serde_json::json!("unsupported");
+        let envelope = wire::write_envelope(&signed, &[]).unwrap();
+        assert!(wire::read_targets(&envelope)
+            .unwrap_err()
+            .contains("unknown field 'extra'"));
+    }
+}
+
+#[test]
 fn malformed_revocation_lists_are_refused_instead_of_ignored() {
     let signer = TestSigner::ed25519(8);
     for (field, value) in [
