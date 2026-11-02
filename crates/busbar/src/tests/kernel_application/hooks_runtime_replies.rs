@@ -464,5 +464,109 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
         before,
         "a rejected actual product push must not commit new settings"
     );
+    // Secret indirection is never eligible for publication; plain settings are.
+    let mut with_secret = app.hook_registry["read"].clone();
+    with_secret.settings.insert(
+        "licenseKey".into(),
+        serde_json::json!({"env":"BUSBAR_TEST_HOOK_LICENSE_KEY"}),
+    );
+    assert_eq!(
+        busbar_kernel::hooks::transport_publication_for_test("read", &with_secret, &app.hook_env),
+        None,
+        "a SecretRef-carrying hook must be resolved fresh every time, never published for reuse"
+    );
+    assert!(
+        busbar_kernel::hooks::transport_publication_for_test(
+            "read",
+            &app.hook_registry["read"],
+            &app.hook_env
+        )
+        .is_some(),
+        "a hook with no secret indirection is eligible"
+    );
+
+    // Actual policy identities and returned deadlines replace BudgetAxis call bookkeeping.
+    let mut budget_hooks = app.hook_registry.clone();
+    budget_hooks.get_mut("read").unwrap().timeout_ms = 41;
+    let first = busbar_kernel::hooks::resolve_pool_gates(&pool, &budget_hooks, &app.hook_env, 0);
+    let same = busbar_kernel::hooks::resolve_pool_gates(&pool, &budget_hooks, &app.hook_env, 0);
+    let ResolvedPolicy::Policy {
+        policy: first,
+        timeout: first_budget,
+        ..
+    } = &first[0].1;
+    let ResolvedPolicy::Policy { policy: same, .. } = &same[0].1;
+    assert!(Arc::ptr_eq(first, same));
+    budget_hooks.get_mut("read").unwrap().timeout_ms = 84;
+    let changed = busbar_kernel::hooks::resolve_pool_gates(&pool, &budget_hooks, &app.hook_env, 0);
+    let ResolvedPolicy::Policy {
+        policy: changed,
+        timeout: changed_budget,
+        ..
+    } = &changed[0].1;
+    assert!(!Arc::ptr_eq(first, changed));
+    assert_eq!(
+        [*first_budget, *changed_budget],
+        [
+            std::time::Duration::from_millis(41),
+            std::time::Duration::from_millis(84)
+        ]
+    );
+    budget_hooks.get_mut("read").unwrap().timeout_ms = 0;
+    let implicit = busbar_kernel::hooks::resolve_pool_gates(&pool, &budget_hooks, &app.hook_env, 0);
+    budget_hooks.get_mut("read").unwrap().timeout_ms =
+        busbar_kernel::config::DEFAULT_POLICY_TIMEOUT_MS;
+    let explicit = busbar_kernel::hooks::resolve_pool_gates(&pool, &budget_hooks, &app.hook_env, 0);
+    let ResolvedPolicy::Policy {
+        policy: implicit,
+        timeout: default_budget,
+        ..
+    } = &implicit[0].1;
+    let ResolvedPolicy::Policy {
+        policy: explicit, ..
+    } = &explicit[0].1;
+    assert!(Arc::ptr_eq(implicit, explicit));
+    assert_eq!(
+        [*first_budget, *changed_budget, *default_budget],
+        [
+            std::time::Duration::from_millis(41),
+            std::time::Duration::from_millis(84),
+            std::time::Duration::from_millis(busbar_kernel::config::DEFAULT_POLICY_TIMEOUT_MS)
+        ]
+    );
+
+    // A real policy has the configured instance name and documented default deadline.
+    let mut named = app.hook_registry["read"].clone();
+    named.timeout_ms = busbar_kernel::config::DEFAULT_POLICY_TIMEOUT_MS;
+    let definitions = std::collections::HashMap::from([("h".into(), named)]);
+    let named_pool = busbar_kernel::config::PoolCfg {
+        gates: vec!["h".into()],
+        ..Default::default()
+    };
+    let named =
+        busbar_kernel::hooks::resolve_pool_gates(&named_pool, &definitions, &app.hook_env, 0);
+    let ResolvedPolicy::Policy {
+        policy: named,
+        timeout,
+        ..
+    } = &named[0].1;
+    assert_eq!(
+        named.name(),
+        "h",
+        "the HookPolicy carries the hook's registry name"
+    );
+    assert_eq!(
+        *timeout,
+        std::time::Duration::from_millis(busbar_kernel::config::DEFAULT_POLICY_TIMEOUT_MS),
+        "a gate with the default timeout resolves to the documented deadline, not 0ms"
+    );
+    let empty = busbar_kernel::hooks::HookEnv::new(
+        Arc::new(busbar_plugin_loader::PluginRegistry::empty()),
+        Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only()),
+    )
+    .expect("the actual empty registry's hook axis");
+    assert!(
+        busbar_kernel::hooks::resolve_pool_gates(&named_pool, &definitions, &empty, 0).is_empty()
+    );
     server.abort();
 }
