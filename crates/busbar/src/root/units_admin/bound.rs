@@ -466,11 +466,11 @@ pub(crate) fn trust_decide_effect(
             "conflict",
             &format!("trust key `{key}` was never sighted"),
         )),
-        // The core-admin verbs state no expected fingerprint, so a stale one is never theirs.
+        // A changed declaration or another local decision in progress asks the operator to retry.
         Err(TrustRefused::Stale) => Ok(refused(
             409,
             "conflict",
-            &format!("trust key `{key}` moved since it was seen"),
+            &format!("trust key `{key}` changed or has another decision in progress; retry"),
         )),
         // NEVER PIN WHAT WAS NOT VERIFIED: the typed verbs refuse it alike (a2a.md:265).
         Err(TrustRefused::Unverified) => Ok(refused(
