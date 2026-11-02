@@ -173,6 +173,23 @@ impl GovState {
     /// Select missing child Intents only after their exact parent checkpoint is
     /// confirmed. This also reconstructs the crash cut between parent and child.
     pub(super) fn drive_recovery_children(&self, parent: &RecoveryEvent) -> RecordStoreResult<()> {
+        self.select_recovery_children(parent, false)
+    }
+
+    fn select_recovery_children(
+        &self,
+        parent: &RecoveryEvent,
+        raw_only: bool,
+    ) -> RecordStoreResult<()> {
+        let links: Links = decode(&parent.payload)?;
+        let children: Vec<_> = links
+            .handoffs
+            .into_iter()
+            .filter(|child| !raw_only || child.kind != RecoveryKind::Correction)
+            .collect();
+        if children.is_empty() {
+            return Ok(());
+        }
         if self
             .recovery_ancestor(parent.operation_id, parent.fingerprint().map_err(invalid)?)
             .is_none()
@@ -183,8 +200,7 @@ impl GovState {
             .recovery_event(parent.operation_id)
             .ok_or_else(|| invalid("parent selection disappeared"))?;
         self.keep_recovery_event(&current)?;
-        let links: Links = decode(&parent.payload)?;
-        for child in links.handoffs {
+        for child in children {
             if child.operation_id == parent.operation_id {
                 return Err(invalid("recovery child reuses parent operation identity"));
             }
@@ -296,6 +312,7 @@ impl GovState {
                 .map(|event| (event.operation_id, event.revision))
                 .collect();
             for event in self.selected_recovery_events() {
+                self.select_recovery_children(&event, true)?;
                 if event.kind != RecoveryKind::Correction && event.state != RecoveryState::Settled {
                     self.drive_raw_recovery(event.operation_id)?;
                 }
